@@ -7,7 +7,7 @@ import {
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { contentHash } from "../../src/canonical/index.js";
+import { canonicalContentHash, contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -845,7 +845,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     fx.bundle.vetRecords = [
       {
         anchor: { kind: "storage-program", locator: "vet-j1" },
-        contentHash: contentHash(composite as unknown as Record<string, unknown>),
+        contentHash: canonicalContentHash(composite as unknown as Record<string, unknown>),
       },
     ];
     await resignFixture(fx, [
@@ -914,7 +914,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     ]) {
       const replayed = { ...composite, ...replay };
       const vetRecords = fx.bundle.vetRecords as Array<{ contentHash: string }>;
-      vetRecords[0]!.contentHash = contentHash(
+      vetRecords[0]!.contentHash = canonicalContentHash(
         replayed as unknown as Record<string, unknown>,
       );
       await resignFixture(fx, [
@@ -950,7 +950,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     }
 
     const restoredVetRefs = fx.bundle.vetRecords as Array<{ contentHash: string }>;
-    restoredVetRefs[0]!.contentHash = contentHash(
+    restoredVetRefs[0]!.contentHash = canonicalContentHash(
       composite as unknown as Record<string, unknown>,
     );
     await resignFixture(fx, [
@@ -982,7 +982,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
 
     composite.overallDecision = "fail";
     const vetRecords = fx.bundle.vetRecords as Array<{ contentHash: string }>;
-    vetRecords[0]!.contentHash = contentHash(
+    vetRecords[0]!.contentHash = canonicalContentHash(
       composite as unknown as Record<string, unknown>,
     );
     await resignFixture(fx, [

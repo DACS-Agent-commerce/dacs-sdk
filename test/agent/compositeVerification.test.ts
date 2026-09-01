@@ -2,8 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   aggregateCompositeVerification,
+  canonicalContentHash,
   canonicalize,
-  contentHash,
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
@@ -133,7 +133,7 @@ async function fixture() {
   });
   const ref: VerifyResultRef = {
     anchor: { kind: "storage-program", locator: RESULT_LOCATOR },
-    contentHash: contentHash(result as unknown as Record<string, unknown>),
+    contentHash: canonicalContentHash(result as unknown as Record<string, unknown>),
     recipeVersion: 1,
   };
   const record = await signRecord({
@@ -405,7 +405,7 @@ describe("strict DACS-2 composite verification closure", () => {
     expect(result).toMatchObject({ status: "invalid", code: "record-signature" });
   });
 
-  test("snapshots resolved VerifyResults before signature callbacks", async () => {
+  test("snapshots resolved VerifyResults and binds their signature bytes before callbacks", async () => {
     const f = await fixture();
     const replay = await withResult(f.result, { identifier: "mallory.example" });
     const candidate = structuredClone(f.result);
@@ -430,7 +430,7 @@ describe("strict DACS-2 composite verification closure", () => {
     );
     expect(result).toMatchObject({
       status: "invalid",
-      code: "verify-result-signature",
+      code: "verify-result-hash",
     });
   });
 
@@ -618,7 +618,7 @@ describe("strict DACS-2 composite verification closure", () => {
     const expired = await withResult(f.result, { validUntil: NOW - 1 });
     const expiredRef = {
       ...f.ref,
-      contentHash: contentHash(expired as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(expired as unknown as Record<string, unknown>),
     };
     f.resolved.set(RESULT_LOCATOR, {
       encoding: "canonical-json",
@@ -644,7 +644,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const oldRef = {
       ...f.ref,
-      contentHash: contentHash(old as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(old as unknown as Record<string, unknown>),
     };
     const tightRequirement: CompositeBundleRequirement = {
       ...requirement,
@@ -684,7 +684,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const invertedRef = {
       ...f.ref,
-      contentHash: contentHash(inverted as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(inverted as unknown as Record<string, unknown>),
     };
     f.resolved.set(RESULT_LOCATOR, {
       encoding: "canonical-json",
@@ -725,7 +725,7 @@ describe("strict DACS-2 composite verification closure", () => {
       const candidate = await withResult(f.result, patch);
       const candidateRef = {
         ...f.ref,
-        contentHash: contentHash(candidate as unknown as Record<string, unknown>),
+        contentHash: canonicalContentHash(candidate as unknown as Record<string, unknown>),
       };
       f.resolved.set(RESULT_LOCATOR, {
         encoding: "canonical-json",
@@ -778,7 +778,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const historicalRef: VerifyResultRef = {
       ...f.ref,
-      contentHash: contentHash(
+      contentHash: canonicalContentHash(
         historical as unknown as Record<string, unknown>,
       ),
     };
@@ -816,7 +816,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const overlongRef: VerifyResultRef = {
       ...historicalRef,
-      contentHash: contentHash(overlong as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(overlong as unknown as Record<string, unknown>),
     };
     f.resolved.set(RESULT_LOCATOR, {
       encoding: "canonical-json",
@@ -859,7 +859,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const futureRef: VerifyResultRef = {
       ...historicalRef,
-      contentHash: contentHash(
+      contentHash: canonicalContentHash(
         futureQuery as unknown as Record<string, unknown>,
       ),
     };
@@ -1042,7 +1042,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
     const failedRef: VerifyResultRef = {
       ...f.ref,
-      contentHash: contentHash(
+      contentHash: canonicalContentHash(
         failedResult as unknown as Record<string, unknown>,
       ),
     };
@@ -1077,7 +1077,7 @@ describe("strict DACS-2 composite verification closure", () => {
     const replay = await withResult(f.result, { identifier: "mallory.example" });
     const replayRef = {
       ...f.ref,
-      contentHash: contentHash(replay as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(replay as unknown as Record<string, unknown>),
     };
     f.resolved.set(RESULT_LOCATOR, {
       encoding: "canonical-json",
@@ -1186,7 +1186,7 @@ describe("strict DACS-2 composite verification closure", () => {
     const failed = await withResult(f.result, { decision: "fail" });
     const failedRef = {
       ...f.ref,
-      contentHash: contentHash(failed as unknown as Record<string, unknown>),
+      contentHash: canonicalContentHash(failed as unknown as Record<string, unknown>),
     };
     f.resolved.set(RESULT_LOCATOR, {
       encoding: "canonical-json",

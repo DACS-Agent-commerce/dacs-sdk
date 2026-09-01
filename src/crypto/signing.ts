@@ -1,6 +1,6 @@
 import { type KeyObject } from "node:crypto";
 
-import { contentHash } from "../canonical/hash.js";
+import { signatureScopeHash } from "../canonical/hash.js";
 import { DacsError } from "../errors.js";
 import {
   ed25519Sign,
@@ -140,7 +140,7 @@ export function signArtifact(
     );
   }
   const key = signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer;
-  return ed25519Sign(signedBytes(separator, contentHash(doc)), key);
+  return ed25519Sign(signedBytes(separator, signatureScopeHash(doc)), key);
 }
 
 /**
@@ -160,7 +160,7 @@ export function verifyArtifact(
   if (isCompositeSeparator(separator)) return false;
   const key = publicKey instanceof Uint8Array ? publicKeyFromRaw(publicKey) : publicKey;
   try {
-    return ed25519Verify(signedBytes(separator, contentHash(doc)), signature, key);
+    return ed25519Verify(signedBytes(separator, signatureScopeHash(doc)), signature, key);
   } catch {
     return false;
   }

@@ -33,7 +33,21 @@ export function canonicalSignedScope(doc: Record<string, unknown>): string {
   return canonicalize(stripSignature(doc));
 }
 
-/** Content hash: sha256 hex of the canonical form of the signed scope (§7.2). */
-export function contentHash(doc: Record<string, unknown>): string {
+/** sha256 of the signature scope, with signature envelope fields omitted. */
+export function signatureScopeHash(doc: Record<string, unknown>): string {
   return sha256Hex(canonicalSignedScope(doc));
+}
+
+/**
+ * @deprecated Use `signatureScopeHash()` for signature payloads or
+ * `canonicalContentHash()` for immutable stored-artifact references.
+ */
+export function contentHash(doc: Record<string, unknown>): string {
+  return signatureScopeHash(doc);
+}
+
+/** sha256 of the complete RFC 8785 JSON document, including signatures. */
+export function canonicalContentHash(doc: Record<string, unknown>): string {
+  const snapshot = snapshotCanonicalJsonRead(doc, "canonical stored artifact");
+  return sha256Hex(canonicalize(snapshot));
 }

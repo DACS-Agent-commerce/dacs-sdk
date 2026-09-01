@@ -4,7 +4,10 @@ import { describe, expect, test } from "vitest";
 
 import {
   aggregatePresenceAwareCompositeVerification,
+  canonicalContentHash,
   canonicalize,
+  contentHash,
+  ed25519Sign,
   ed25519Verify,
   identityBundleHash,
   isCompositeBundleRequirement,
@@ -13,17 +16,28 @@ import {
   isVerifyResult,
   parseCanonicalClaimReference,
   presenceRequirementPreflight,
+  privateKeyFromSeed,
   publicKeyFromRaw,
+  publicKeyFromSeed,
+  rawPublicKey,
   sha256Hex,
+  signComponentArtifact,
   signedBytes,
   verifyComponentSignature,
+  verifyCompositeVerificationRecord,
   type CompositeBundleRequirement,
   type CompositeClaimRequirement,
+  type CompositeVerificationRecord,
   type IdentityBundle,
   type VerificationDecision,
   type VerifyResult,
   type VerifyResultRef,
 } from "../../src/index.js";
+
+const RECIPE_SEED = new Uint8Array(32).fill(119);
+const RECIPE_SIGNER = `key:${Buffer.from(
+  rawPublicKey(publicKeyFromSeed(RECIPE_SEED)),
+).toString("hex")}`;
 
 interface PresenceVector {
   name: string;
@@ -181,5 +195,117 @@ describe("DACS-1 v0.7 / DACS-2 v0.6 presence-only corpus", () => {
       actual: await replay(vector),
     })));
     expect(outcomes.filter((outcome) => outcome.actual !== outcome.expected)).toEqual([]);
+  });
+
+  test("resolves the exact adopted complete-artifact VerifyResultRef through the strict API", async () => {
+    const vector = corpus.vectors.find(
+      (candidate) => candidate.name === "mixed-required-presence-and-verified-pass",
+    )!;
+    expect(isCompositeVerificationRecord(vector.compositeRecord)).toBe(true);
+    expect(isCompositeBundleRequirement(vector.requirement)).toBe(true);
+    expect(isIdentityBundle(vector.bundle)).toBe(true);
+    const record = vector.compositeRecord as CompositeVerificationRecord;
+    const requirement = vector.requirement as CompositeBundleRequirement;
+    const bundle = vector.bundle as IdentityBundle;
+    const exact = vector.resolvedResults[0]!;
+    expect(exact.ref.contentHash).toBe(
+      canonicalContentHash(exact.artifact as unknown as Record<string, unknown>),
+    );
+    expect(exact.ref.contentHash).not.toBe(
+      contentHash(exact.artifact as unknown as Record<string, unknown>),
+    );
+
+    const recipe = await signComponentArtifact(
+      {
+        recipeVersion: 1,
+        scheme: "did",
+        defaultMethod: { kind: "self-signed" as const },
+        defaultMaxAgeSec: 3_600,
+        parserRules: { format: "raw" as const, matcher: "identity" },
+        retryClass: "permanent" as const,
+        availability: "live" as const,
+        governance: {
+          proposedBy: RECIPE_SIGNER,
+          acceptedAt: vector.evaluatedAt - 20_000,
+          anchoring: "single-signer" as const,
+        },
+      },
+      "dacs-recipe:v1:",
+      {
+        algorithm: "ed25519",
+        signer: RECIPE_SIGNER,
+        sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(RECIPE_SEED)),
+      },
+    );
+    const authorityBytes = Uint8Array.from(Buffer.from(
+      `attestation:did:example:presence-vector:pass:${exact.artifact.verifiedAt}`,
+      "utf8",
+    ));
+
+    const result = await verifyCompositeVerificationRecord(
+      record,
+      {
+        jobId: record.jobId,
+        evaluatedParty: record.evaluatedParty,
+        bundleHash: record.bundleHash,
+        requirement,
+        verifier: record.signature.signer,
+        freshness: [],
+        dealSpecific: [{
+          ref: exact.ref,
+          scheme: "did",
+          identifier: "example:presence-vector",
+          method: "self-signed",
+          requirement: requirement.required[1]!,
+        }],
+        presence: {
+          bundle,
+          sessionRecipeRegistrySnapshotHash: "a".repeat(64),
+        },
+      },
+      {
+        nowMs: () => vector.evaluatedAt,
+        resolve: async (ref) => {
+          if (ref.anchor.locator === exact.ref.anchor.locator) {
+            return {
+              encoding: "canonical-json" as const,
+              value: structuredClone(
+                exact.artifact as unknown as Record<string, unknown>,
+              ),
+            };
+          }
+          if (ref.anchor.locator === exact.artifact.attestation.anchor.locator) {
+            return { encoding: "bytes" as const, value: authorityBytes };
+          }
+          return null;
+        },
+        resolveRecipe: async () => recipe,
+        isRecipeSignerAuthorized: (_value, signature) =>
+          signature.signer === RECIPE_SIGNER,
+        isVerifyResultSignerAuthorized: (_value, signature) =>
+          signature.signer === exact.artifact.signature.signer,
+        resolvePublicKey: ({ signer }) => keyBytes(signer),
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: ({ result: verified, content }) =>
+          verified.attestation.signer === exact.artifact.signature.signer &&
+          content.encoding === "bytes" &&
+          sha256Hex(content.value) === verified.attestation.contentHash
+            ? "valid"
+            : "invalid",
+        isSessionRecipeRegistrySnapshotAuthenticated: () => true,
+        verifyIdentityPresentation: ({ bundle: presented }) =>
+          presentationAuthenticated(presented),
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "valid",
+      dealSpecific: [exact.artifact],
+    });
   });
 });

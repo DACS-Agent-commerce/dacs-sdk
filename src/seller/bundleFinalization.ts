@@ -1493,7 +1493,7 @@ function requirementMap(
     const source = refSource(phase.attestationRef);
     add("phase-attestation", source);
   }
-  for (const ref of session.vetRecords) add("vet-record", refSource(ref));
+  for (const ref of session.vetRecords) add("vet-record", refSource(ref, "jcs"));
   for (const ref of session.settlementEvidence) {
     add("settlement-evidence", refSource(ref));
   }
@@ -2086,7 +2086,11 @@ async function auditResolvedDependencyGraph(
     ...session.sessionPartyVets,
   ];
   for (const ref of session.vetRecords) {
-    const record = resolvedArtifact(refSource(ref), resolved, "CompositeVerificationRecord");
+    const record = resolvedArtifact(
+      refSource(ref, "jcs"),
+      resolved,
+      "CompositeVerificationRecord",
+    );
     const expected = expectedVetParties.filter((party) =>
       exact(party.vetRecordRef, ref),
     );
@@ -2815,12 +2819,14 @@ async function verifyDependencies(
             refSource({
               anchor: claim.verifiedBy.anchor,
               contentHash: claim.verifiedBy.contentHash,
-            }),
+            }, "jcs"),
           );
         }
       }
       if (requirement.kinds.includes("agreement") && isAgreementArtifact(artifact)) {
-        for (const party of artifact.parties) addRequirement("vet-record", refSource(party.vetRecordRef));
+        for (const party of artifact.parties) {
+          addRequirement("vet-record", refSource(party.vetRecordRef, "jcs"));
+        }
         if (artifact.terms.priceAnchor) {
           addRequirement(
             "price-anchor",
@@ -2845,7 +2851,7 @@ async function verifyDependencies(
             refSource({
               anchor: resultRef.anchor,
               contentHash: resultRef.contentHash,
-            }),
+            }, "jcs"),
           );
         }
         for (const signal of artifact.supplementary) {

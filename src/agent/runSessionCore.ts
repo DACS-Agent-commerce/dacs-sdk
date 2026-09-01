@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import {
+  canonicalContentHash,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -3196,11 +3197,13 @@ export async function runSessionCore(
     await authenticateListing();
   }
 
-  /** Content-addressed ref to a signed artifact's signed scope. */
+  /** Content-addressed ref using each artifact family's normative storage scope. */
   const refTo = (kind: string, id: string, value: Record<string, unknown>): AttestationRef => ({
     kind,
     id,
-    contentHash: contentHash(stripSignature(value)),
+    contentHash: kind === "dacs-2-composite"
+      ? canonicalContentHash(value)
+      : contentHash(stripSignature(value)),
   });
 
   const matchSessionBundle = (v: Record<string, unknown>): Match => {
@@ -3316,8 +3319,9 @@ export async function runSessionCore(
         };
       }
       if (
-        contentHash(verification.record as unknown as Record<string, unknown>) !==
-          contentHash(candidate) ||
+        canonicalContentHash(
+          verification.record as unknown as Record<string, unknown>,
+        ) !== canonicalContentHash(candidate) ||
         verification.record.signature.algorithm !== candidate.signature.algorithm ||
         verification.record.signature.signer !== candidate.signature.signer ||
         verification.record.signature.value !== candidate.signature.value
@@ -3334,7 +3338,9 @@ export async function runSessionCore(
       nativeAddress: string,
       claimed?: FinalizedVetAnchor,
     ): Promise<FinalizedVetAnchor> => {
-      const hash = contentHash(record as unknown as Record<string, unknown>);
+      const hash = canonicalContentHash(
+        record as unknown as Record<string, unknown>,
+      );
       const rawAuthenticated = await finalityAuthenticator(
           immutableSnapshot(
             {
@@ -3411,7 +3417,7 @@ export async function runSessionCore(
         production.recordRef.anchor.locator !==
           production.anchorReceipt.nativeAddress ||
         production.recordRef.contentHash !==
-          contentHash(
+          canonicalContentHash(
             production.record as unknown as Record<string, unknown>,
           ) ||
         production.anchorReceipt.logicalAddress !== vetName ||

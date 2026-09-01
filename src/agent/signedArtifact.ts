@@ -1,4 +1,4 @@
-import { contentHash, stripSignature } from "../canonical/index.js";
+import { signatureScopeHash, stripSignature } from "../canonical/index.js";
 import {
   type DomainSeparator,
   signedBytes,
@@ -7,7 +7,7 @@ import {
 /**
  * An artifact with its detached signature attached. The signed scope is the
  * artifact with `signature` omitted; the signature is over
- * `signedBytes(separator, contentHash(signedScope))` (§7.7).
+ * `signedBytes(separator, signatureScopeHash(signedScope))` (§7.7).
  */
 export type SignedArtifact<T extends object> = T & {
   signature: string;
@@ -43,7 +43,7 @@ export async function buildSignedArtifact<T extends object>(
   sign: Signer,
 ): Promise<SignedArtifact<T>> {
   const scope = stripSignature(artifact as Record<string, unknown>);
-  const bytes = signedBytes(separator, contentHash(scope));
+  const bytes = signedBytes(separator, signatureScopeHash(scope));
   const signature = await sign(bytes);
   return { ...artifact, signature: toHex(signature) };
 }
@@ -61,7 +61,7 @@ export async function verifySignedArtifact(
 ): Promise<boolean> {
   const signature = signed["signature"];
   if (typeof signature !== "string") return false;
-  const bytes = signedBytes(separator, contentHash(stripSignature(signed)));
+  const bytes = signedBytes(separator, signatureScopeHash(stripSignature(signed)));
   try {
     return await verify(bytes, fromHex(signature), publicKey);
   } catch {

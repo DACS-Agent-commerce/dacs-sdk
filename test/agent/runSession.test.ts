@@ -13,6 +13,7 @@ import type {
   VerificationDecision,
 } from "../../src/artifacts/types.js";
 import {
+  canonicalContentHash,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -102,7 +103,7 @@ function currentVetProduction(
     `dacs2:composite:${encodeAddressSegment(jobId)}:` +
     encodeAddressSegment(evaluatedParty);
   const nativeAddress = `stor-${logicalAddress}`;
-  const hash = contentHash(record as unknown as Record<string, unknown>);
+  const hash = canonicalContentHash(record as unknown as Record<string, unknown>);
   store?.set(nativeAddress, structuredClone(record) as unknown as Record<string, unknown>);
   return {
     record,

@@ -25,6 +25,7 @@ import {
   buildTwoSidedBundle,
   bundleAddress,
   bundleConsistency,
+  canonicalContentHash,
   canonicalize,
   commitFixedPriceAgreement,
   contentHash,
@@ -542,7 +543,7 @@ function vetRef(role: "buyer" | "seller"): AttestationRef {
       kind: "storage-program",
       locator: `dacs2:composite:${JOB_ID}:${encodeAddressSegment(evaluatedParty)}`,
     },
-    contentHash: contentHash(record as unknown as Record<string, unknown>),
+    contentHash: canonicalContentHash(record as unknown as Record<string, unknown>),
   };
 }
 
@@ -2649,12 +2650,12 @@ async function closeDetachedRoleBundles(input: {
       fulfilment.evidenceAnchorReceipt,
     ),
     dependency(
-      { kind: "attestation-ref", ref: buyerVetRef },
+      { kind: "attestation-ref", ref: buyerVetRef, encoding: "jcs" },
       buyerVetRef.contentHash,
       buyerVetRef.anchor.locator,
     ),
     dependency(
-      { kind: "attestation-ref", ref: sellerVetRef },
+      { kind: "attestation-ref", ref: sellerVetRef, encoding: "jcs" },
       sellerVetRef.contentHash,
       sellerVetRef.anchor.locator,
     ),
@@ -2761,7 +2762,7 @@ async function closeDetachedRoleBundles(input: {
       return verifySignature(
         signedBytes(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
-          requirement.contentHash,
+          contentHash(record as unknown as Record<string, unknown>),
         ),
         record.signature,
       ) ? "valid" : "invalid";
@@ -2857,7 +2858,7 @@ async function closeDetachedRoleBundles(input: {
       }
       const expectedEnvelope = {
         ...standard331Envelope,
-        vetRecordHash: contentHash(
+        vetRecordHash: canonicalContentHash(
           compositeRecord as unknown as Record<string, unknown>,
         ),
         evaluatedParty: invocation.evaluatedParty,

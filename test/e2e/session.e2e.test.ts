@@ -25,6 +25,7 @@ import {
 } from "../../src/artifacts/signatures.js";
 import { resolveRecipe } from "../../src/registry/resolve.js";
 import {
+  canonicalContentHash,
   canonicalize,
   contentHash,
   listingAddress,
@@ -392,7 +393,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             },
             anchorFinalizedArtifact: async ({ artifact, logicalAddress }) => {
               const locator = await sub.anchor(logicalAddress, artifact);
-              const hash = contentHash(artifact as Record<string, unknown>);
+              const hash = canonicalContentHash(artifact as Record<string, unknown>);
               return {
                 ref: {
                   anchor: { kind: "storage-program", locator },
@@ -423,7 +424,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             }) => {
               const locator = `stor:${logicalAddress}`;
               const artifact = await sub.read(locator);
-              if (!artifact || contentHash(artifact) !== expectedContentHash) {
+              if (!artifact || canonicalContentHash(artifact) !== expectedContentHash) {
                 return null;
               }
               return {
@@ -461,7 +462,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
         const persisted = await sub.read(request.nativeAddress);
         if (
           persisted === null ||
-          contentHash(persisted) !== request.contentHash ||
+          canonicalContentHash(persisted) !== request.contentHash ||
           canonicalize(persisted) !== canonicalize(request.record)
         ) {
           return null;
@@ -603,6 +604,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       v.refs
         .filter((ref) => ref.kind !== "dacs-3-agreement")
         .every((ref) => ref.verdict === "ok"),
+      JSON.stringify(v.refs),
     ).toBe(true);
     // The bundle records the exact version it pinned, not a hardcoded 1.
     expect(v.bundle?.listingRef.version).toBe(2);

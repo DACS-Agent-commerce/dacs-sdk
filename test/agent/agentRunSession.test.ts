@@ -14,6 +14,7 @@ import type {
   IdentityBundle,
 } from "../../src/artifacts/types.js";
 import {
+  canonicalContentHash,
   contentHash,
   encodeAddressSegment,
   listingAddress,
@@ -878,7 +879,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
             `dacs2:composite:${encodeAddressSegment(jobId)}:` +
             encodeAddressSegment(evaluatedParty);
           const nativeAddress = `stor:${logicalAddress}`;
-          const hash = contentHash(
+          const hash = canonicalContentHash(
             record as unknown as Record<string, unknown>,
           );
           store.set(
@@ -1151,7 +1152,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
             kind: "storage-program" as const,
             locator: "stor:composite",
           },
-          contentHash: contentHash(
+          contentHash: canonicalContentHash(
             composite as unknown as Record<string, unknown>,
           ),
         },

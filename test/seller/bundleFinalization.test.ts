@@ -17,6 +17,7 @@ import {
 } from "../../src/artifacts/index.js";
 import {
   bundleAddress,
+  canonicalContentHash,
   canonicalize,
   contentHash,
   listingAddress,
@@ -107,6 +108,11 @@ const ref = (name: string, value: Record<string, unknown>): AttestationRef => ({
   contentHash: contentHash(value),
 });
 
+const completeRef = (name: string, value: Record<string, unknown>): AttestationRef => ({
+  anchor: { kind: "storage-program", locator: `dacs-test:${name}` },
+  contentHash: canonicalContentHash(value),
+});
+
 function receipt(
   contentHashValue: string,
   logicalAddress = `dacs-test:${contentHashValue.slice(0, 12)}`,
@@ -159,6 +165,8 @@ function fixture(
     sellerVetDecision?: "pass" | "fail" | "indeterminate" | "error";
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
+    invalidBuyerVetRecordSignature?: boolean;
+    invalidBuyerVerifyResultSignature?: boolean;
   } = {},
 ) {
   const attested = deliveryMode === "attested";
@@ -318,16 +326,19 @@ function fixture(
       "dacs-verifyresult:v1:",
     );
   const buyerVerifyResult = makeVerifyResult(BUYER, buyerAuthorityRef);
+  if (options.invalidBuyerVerifyResultSignature) {
+    buyerVerifyResult.signature.value = Buffer.alloc(64, 98).toString("base64url");
+  }
   const sellerVerifyResult = makeVerifyResult(
     SELLER,
     sellerAuthorityRef,
     options.sellerVerifyDecision,
   );
-  const buyerVerifyAttestationRef = ref(
+  const buyerVerifyAttestationRef = completeRef(
     "buyer-verify-result",
     buyerVerifyResult as unknown as Record<string, unknown>,
   );
-  const sellerVerifyAttestationRef = ref(
+  const sellerVerifyAttestationRef = completeRef(
     "seller-verify-result",
     sellerVerifyResult as unknown as Record<string, unknown>,
   );
@@ -371,6 +382,9 @@ function fixture(
     buyerVerifyRef,
     buyerVetRequirement,
   );
+  if (options.invalidBuyerVetRecordSignature) {
+    buyerVet.signature.value = Buffer.alloc(64, 99).toString("base64url");
+  }
   const sellerVet = makeVetRecord(
     SELLER,
     sellerSessionBundleHash,
@@ -378,11 +392,11 @@ function fixture(
     sellerVetRequirement,
     options.sellerVetDecision,
   );
-  const buyerVetRef = ref(
+  const buyerVetRef = completeRef(
     "buyer-vet",
     buyerVet as unknown as Record<string, unknown>,
   );
-  const sellerVetRef = ref(
+  const sellerVetRef = completeRef(
     "seller-vet",
     sellerVet as unknown as Record<string, unknown>,
   );
@@ -1036,6 +1050,12 @@ function fixture(
     source,
     anchorReceipt: receipt(hash, logicalAddress),
   });
+  const completeArtifactLocators = new Set([
+    buyerVetRef.anchor.locator,
+    sellerVetRef.anchor.locator,
+    buyerVerifyAttestationRef.anchor.locator,
+    sellerVerifyAttestationRef.anchor.locator,
+  ]);
   input.dependencies = [
     dependency(
       { kind: "listing", listingRef: listingPin },
@@ -1059,7 +1079,13 @@ function fixture(
       ...(attested ? [payloadAttestationRef, methodEvidenceRef] : []),
     ].map((artifactRef) =>
       dependency(
-        { kind: "attestation-ref", ref: artifactRef },
+        {
+          kind: "attestation-ref",
+          ref: artifactRef,
+          ...(completeArtifactLocators.has(artifactRef.anchor.locator)
+            ? { encoding: "jcs" as const }
+            : {}),
+        },
         artifactRef.contentHash,
         artifactRef.anchor.locator,
       ),
@@ -2015,30 +2041,17 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
   });
 
   test("cryptographically verifies composite and VerifyResult signatures", async () => {
-    const badRecord = fixture();
-    const recordHash = badRecord.input.sessionArtifacts.vetRecords[0]!.contentHash;
-    mutateResolvedArtifact(badRecord, recordHash, (artifact) => ({
-      ...artifact,
-      signature: {
-        ...(artifact.signature as ComponentSignature),
-        value: Buffer.alloc(64, 99).toString("base64url"),
-      },
-    }));
+    const badRecord = fixture("pure", "storage", false, false, false, {
+      invalidBuyerVetRecordSignature: true,
+    });
     await expect(
       finalizeCompletedSellerBundleCore(badRecord.input, badRecord.provider),
     ).rejects.toThrow(/strict verification failed \(record-signature\)/);
     expect(badRecord.provider.submitSellerBundle).not.toHaveBeenCalled();
 
-    const badResult = fixture();
-    const resultHash = badResult.input.sessionArtifacts.vetRequirements[0]!
-      .dealSpecific[0]!.ref.contentHash;
-    mutateResolvedArtifact(badResult, resultHash, (artifact) => ({
-      ...artifact,
-      signature: {
-        ...(artifact.signature as ComponentSignature),
-        value: Buffer.alloc(64, 98).toString("base64url"),
-      },
-    }));
+    const badResult = fixture("pure", "storage", false, false, false, {
+      invalidBuyerVerifyResultSignature: true,
+    });
     await expect(
       finalizeCompletedSellerBundleCore(badResult.input, badResult.provider),
     ).rejects.toThrow(/strict verification failed \(verify-result-signature\)/);

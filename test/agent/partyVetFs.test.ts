@@ -16,8 +16,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  canonicalContentHash,
   canonicalize,
-  contentHash,
   createFsFencedSessionStore,
   ed25519Sign,
   ed25519Verify,
@@ -397,7 +397,7 @@ async function createFsEffects(
     await increment("anchors");
     return withFileLock(artifactLock(logicalAddress), async () => {
       const exact = structuredClone(artifact) as Record<string, unknown>;
-      const hash = contentHash(exact);
+      const hash = canonicalContentHash(exact);
       const existing = await readArtifact(logicalAddress);
       if (existing) {
         if (
@@ -453,7 +453,7 @@ async function createFsEffects(
       stored.ref.anchor.locator === ref.anchor.locator &&
       stored.ref.contentHash === ref.contentHash &&
       receipt.logicalAddress === logicalAddress &&
-      receipt.contentHash === contentHash(
+      receipt.contentHash === canonicalContentHash(
         artifact as unknown as Record<string, unknown>,
       ) &&
       canonicalize(stored.artifact) === canonicalize(artifact);

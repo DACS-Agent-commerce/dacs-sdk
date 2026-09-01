@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  canonicalContentHash,
   canonicalize,
-  contentHash,
   createInMemoryFencedSessionStore,
   ed25519Sign,
   ed25519Verify,
@@ -152,7 +152,7 @@ async function takeOverEffectLease(
 }
 
 function artifactHash(artifact: Record<string, unknown>): string {
-  return contentHash(artifact);
+  return canonicalContentHash(artifact);
 }
 
 function receiptFor(
@@ -684,7 +684,7 @@ async function storeCarriedResult(
       ),
     },
   );
-  const hash = contentHash(result as unknown as Record<string, unknown>);
+  const hash = canonicalContentHash(result as unknown as Record<string, unknown>);
   const logicalAddress = `dacs2:carried:${subject}`;
   const nativeAddress = `memory:${logicalAddress}:${hash}`;
   const ref: AttestationRef = {
@@ -787,7 +787,7 @@ describe("partyVetCore durable party-level producer", () => {
       production.record.dealSpecific.map((ref) => ref.anchor.locator),
     ).size).toBe(2);
     expect(production.recordRef.contentHash).toBe(
-      contentHash(production.record as unknown as Record<string, unknown>),
+      canonicalContentHash(production.record as unknown as Record<string, unknown>),
     );
     expect(harness.effects).toEqual({ methods: 2, signs: 3, anchors: 3 });
     expect(harness.checkpoints.size).toBe(3);

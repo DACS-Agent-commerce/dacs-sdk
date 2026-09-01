@@ -118,7 +118,9 @@ export {
   sha256Hex,
   stripSignature,
   canonicalSignedScope,
+  signatureScopeHash,
   contentHash,
+  canonicalContentHash,
 } from "./canonical/index.js";
 export {
   privateKeyFromSeed,

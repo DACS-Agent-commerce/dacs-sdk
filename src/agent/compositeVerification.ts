@@ -1,4 +1,8 @@
-import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
+import {
+  canonicalContentHash,
+  canonicalize,
+  sha256Hex,
+} from "../canonical/index.js";
 import type {
   AttestationAnchor,
   AttestationRef,
@@ -1289,7 +1293,7 @@ async function resolveResult<TKey>(
   const result = deepFreezeSnapshot(resolvedSnapshot.value);
   let hash: string;
   try {
-    hash = contentHash(result);
+    hash = canonicalContentHash(result);
   } catch (error) {
     return invalid("verify-result-shape", String(error));
   }
@@ -1759,9 +1763,13 @@ export function verifyResultRefFromAnchor(
   if (!isVerifyResult(result) || !isAttestationRef(anchored)) {
     throw new TypeError("current VerifyResult and AttestationRef are required");
   }
-  const expectedHash = contentHash(result as unknown as Record<string, unknown>);
+  const expectedHash = canonicalContentHash(
+    result as unknown as Record<string, unknown>,
+  );
   if (anchored.contentHash !== expectedHash) {
-    throw new TypeError("anchored VerifyResult contentHash does not match its signed scope");
+    throw new TypeError(
+      "anchored VerifyResult contentHash does not match its complete canonical bytes",
+    );
   }
   return {
     anchor: anchored.anchor,

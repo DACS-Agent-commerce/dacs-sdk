@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  canonicalContentHash,
   canonicalize,
   compositeVerificationAddress,
   contentHash,
@@ -209,11 +210,7 @@ function receiptFor(
 }
 
 function finalizedArtifactHash(artifact: Record<string, unknown>): string {
-  // The method-native assertion's `signature` is evidence, not the component
-  // envelope field excluded from a VerifyResult/composite signed scope.
-  return artifact.assertionVersion === "1"
-    ? sha256Hex(canonicalize(artifact))
-    : contentHash(artifact);
+  return canonicalContentHash(artifact);
 }
 
 function baseDeps(
@@ -489,7 +486,7 @@ describe("vetCore current DACS-2 producer", () => {
     expect(production.record.dealSpecific).toHaveLength(1);
     expect(production.record.signature.signer).toBe(VERIFIER);
     expect(production.recordRef.contentHash).toBe(
-      contentHash(production.record as unknown as Record<string, unknown>),
+      canonicalContentHash(production.record as unknown as Record<string, unknown>),
     );
     expect(production.anchorReceipt).toMatchObject({
       state: "finalized",
@@ -566,7 +563,7 @@ describe("vetCore current DACS-2 producer", () => {
               kind: "storage-program" as const,
               locator: `memory:${resultAddress}`,
             },
-            contentHash: contentHash(
+            contentHash: canonicalContentHash(
               expectedResult as unknown as Record<string, unknown>,
             ),
             recipeVersion: 1,
@@ -1040,6 +1037,48 @@ describe("vetCore current DACS-2 producer", () => {
         deps,
       ),
     ).rejects.toThrow(/malformed (state|or mismatched finalized anchor)/);
+  });
+
+  test("rejects legacy signature-scope Vet anchors instead of silently importing them", async () => {
+    const deps = baseDeps(new Map());
+    const anchor = deps.anchorFinalizedArtifact;
+    const resolve = deps.resolveFinalizedArtifact!;
+    deps.anchorFinalizedArtifact = async (input) => {
+      const anchored = await anchor(input);
+      const legacyHash = contentHash(
+        input.artifact as unknown as Record<string, unknown>,
+      );
+      return {
+        ...anchored,
+        ref: { ...anchored.ref, contentHash: legacyHash },
+        receipt: { ...anchored.receipt, contentHash: legacyHash },
+      };
+    };
+    deps.resolveFinalizedArtifact = async (input) => {
+      const anchored = await resolve(input);
+      if (anchored === null) return null;
+      const persisted = await deps.readAnchoredJson(anchored.ref);
+      if (persisted === null) return null;
+      const legacyHash = contentHash(persisted);
+      return {
+        ...anchored,
+        ref: { ...anchored.ref, contentHash: legacyHash },
+        receipt: { ...anchored.receipt, contentHash: legacyHash },
+      };
+    };
+
+    await expect(
+      vetCore(
+        {
+          jobId: "job-vet-legacy-signed-scope-anchor",
+          subject: "domain:alice.example",
+          bundleHash: BUNDLE_HASH,
+          requirement: requirement("domain"),
+          recipe: await authenticatedRecipe(),
+        },
+        deps,
+      ),
+    ).rejects.toThrow(/legacy signature-scope content addressing/);
   });
 
   test("rejects a composite anchor that is not finalized", async () => {

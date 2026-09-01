@@ -1,6 +1,12 @@
 import { types as nodeTypes } from "node:util";
 
-import { canonicalize, contentHash, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
+import {
+  canonicalContentHash,
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  sha256Hex,
+} from "../canonical/index.js";
 import type {
   AttestationRef,
   BundleClaim,
@@ -518,7 +524,7 @@ async function authenticateFinalizedJson(
   anchor: FinalizedVetAnchor,
   deps: VetDeps,
   validate: (value: unknown) => boolean,
-  hashArtifact: (value: Record<string, unknown>) => string = contentHash,
+  hashArtifact: (value: Record<string, unknown>) => string = canonicalContentHash,
 ): Promise<FinalizedVetAnchor> {
   if (!isExactJsonRecord(artifact)) {
     throw new DacsError(`${logicalAddress} artifact must be exact JSON data`);
@@ -531,6 +537,18 @@ async function authenticateFinalizedJson(
     throw new DacsError(`${logicalAddress} returned a malformed finalized anchor`);
   }
   const anchored = snapshot(anchor, `${logicalAddress} anchor result`);
+  const legacySignedScopeHash = contentHash(artifactSnapshot);
+  if (
+    expectedHash !== legacySignedScopeHash &&
+    isRecord(anchored) &&
+    isAttestationRef(anchored.ref) &&
+    anchored.ref.contentHash === legacySignedScopeHash
+  ) {
+    throw new DacsError(
+      `${logicalAddress} uses legacy signature-scope content addressing; ` +
+        "start a new Vet job to publish complete canonical signed bytes",
+    );
+  }
   if (
     !isRecord(anchored) ||
     !isAttestationRef(anchored.ref) ||
@@ -590,7 +608,7 @@ async function persistFinalizedJson(
   artifact: Record<string, unknown>,
   deps: VetDeps,
   validate: (value: unknown) => boolean,
-  hashArtifact: (value: Record<string, unknown>) => string = contentHash,
+  hashArtifact: (value: Record<string, unknown>) => string = canonicalContentHash,
 ): Promise<FinalizedVetAnchor> {
   const artifactSnapshot = deepFreezeSnapshot(
     snapshot(artifact, `${logicalAddress} artifact`),
@@ -1976,7 +1994,7 @@ function canonicalEqual(left: unknown, right: unknown): boolean {
 
 function exactArtifactHash(value: unknown): string {
   try {
-    return sha256Hex(canonicalize(value));
+    return canonicalContentHash(value as Record<string, unknown>);
   } catch {
     throw new DacsError("Vet durable artifact is not canonicalizable");
   }
@@ -2295,7 +2313,7 @@ async function resolveFinalizedJson(
   artifact: Record<string, unknown>,
   deps: VetDeps,
   validate: (value: unknown) => boolean,
-  hashArtifact: (value: Record<string, unknown>) => string = contentHash,
+  hashArtifact: (value: Record<string, unknown>) => string = canonicalContentHash,
 ): Promise<FinalizedVetAnchor | null> {
   const expectedHash = hashArtifact(artifact);
   let resolved: FinalizedVetAnchor | null;
@@ -2325,7 +2343,7 @@ async function reconcileOrPersistFinalizedJson(
   artifact: Record<string, unknown>,
   deps: VetDeps,
   validate: (value: unknown) => boolean,
-  hashArtifact: (value: Record<string, unknown>) => string = contentHash,
+  hashArtifact: (value: Record<string, unknown>) => string = canonicalContentHash,
 ): Promise<FinalizedVetAnchor> {
   const existing = await resolveFinalizedJson(
     logicalAddress,
@@ -3115,7 +3133,7 @@ async function authenticateCarriedResult<TKey>(
   ) as VerifyResult;
   const { scheme, identifier } = claimParts(claimSubject);
   if (
-    contentHash(result as unknown as Record<string, unknown>) !==
+    canonicalContentHash(result as unknown as Record<string, unknown>) !==
       claim.verifiedBy.contentHash ||
     result.recipeVersion !== claim.verifiedBy.recipeVersion ||
     result.scheme !== scheme ||

@@ -1,6 +1,10 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash, stripSignature } from "../canonical/index.js";
+import {
+  canonicalContentHash,
+  contentHash,
+  stripSignature,
+} from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
@@ -559,11 +563,15 @@ function checkArtifact(
   expectedHash: string,
   validateScope: (v: Record<string, unknown>) => boolean,
   resolved: Record<string, unknown> | null,
+  hashMode: "signed-scope" | "complete" = "signed-scope",
 ): RefCheck {
   if (!resolved) return { kind, id, verdict: "missing" };
   const scope = stripSignature(resolved) as Record<string, unknown>;
   if (!validateScope(scope)) return { kind, id, verdict: "invalid-shape" };
-  if (contentHash(scope) !== expectedHash)
+  const actualHash = hashMode === "complete"
+    ? canonicalContentHash(resolved)
+    : contentHash(scope);
+  if (actualHash !== expectedHash)
     return { kind, id, verdict: "hash-mismatch" };
   return { kind, id, verdict: "ok" };
 }
@@ -1382,6 +1390,7 @@ export async function verifyBundleCore(
     authenticate?: (
       value: Record<string, unknown>,
     ) => Promise<RefSignatureCheck>,
+    hashMode: "signed-scope" | "complete" = "signed-scope",
   ): Promise<{ check: RefCheck; value: Record<string, unknown> | null }> => {
     const resolved = await resolveReadableRef(ref);
     if (!resolved.supported) {
@@ -1418,6 +1427,7 @@ export async function verifyBundleCore(
       ref.contentHash,
       validateScope,
       value,
+      hashMode,
     );
     return {
       check:
@@ -1529,6 +1539,8 @@ export async function verifyBundleCore(
       "dacs-2-composite",
       vr,
       isCompositeVerificationRecordScope,
+      undefined,
+      "complete",
     );
     if (composite.check.verdict === "ok" && composite.value) {
       if (!deps.verifyCompositeRecord) {
@@ -1556,9 +1568,11 @@ export async function verifyBundleCore(
               verification.status !== "valid" ||
             (bundle.outcome === "completed" &&
               verification.record.overallDecision !== "pass") ||
-            contentHash(
+            canonicalContentHash(
               verification.record as unknown as Record<string, unknown>,
-            ) !== contentHash(candidate as unknown as Record<string, unknown>) ||
+            ) !== canonicalContentHash(
+              candidate as unknown as Record<string, unknown>,
+            ) ||
             verification.record.signature.algorithm !== candidate.signature.algorithm ||
             verification.record.signature.signer !== candidate.signature.signer ||
             verification.record.signature.value !== candidate.signature.value

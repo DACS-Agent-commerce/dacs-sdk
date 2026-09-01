@@ -1,6 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash } from "../canonical/index.js";
+import { signatureScopeHash } from "../canonical/index.js";
 import {
   isSafeJsonString,
   snapshotCanonicalJson,
@@ -344,7 +344,7 @@ async function buildComponentSignatureFromSnapshot(
   const sign = options.sign;
 
   const context = { algorithm, signer };
-  const expectedBytes = signedBytes(separator, contentHash(asRecord(artifact)));
+  const expectedBytes = signedBytes(separator, signatureScopeHash(asRecord(artifact)));
   const callbackBytes = Uint8Array.from(expectedBytes);
   const callbackContext = { ...context };
   const rawValue = await sign(callbackBytes, callbackContext);
@@ -365,7 +365,7 @@ async function buildComponentSignatureFromSnapshot(
 }
 
 /**
- * Construct a ComponentSignature over `separator || contentHash(artifact)`.
+ * Construct a ComponentSignature over `separator || signatureScopeHash(artifact)`.
  * The input must be unsigned; this prevents accidentally replacing or nesting
  * an existing signature while producing a new envelope. This foundation
  * accepts only the closed v0.x separator registry; SIG-4 `dacs-x-*` extension
@@ -543,9 +543,9 @@ export async function verifyComponentSignature<TKey>(
 
   let payload: Uint8Array;
   try {
-    // contentHash omits the signature field(s) but preserves every unknown
+    // signatureScopeHash omits the signature field(s) but preserves every unknown
     // artifact field, which is the SIG-5 signed scope required here.
-    payload = signedBytes(separator, contentHash(artifactSnapshot));
+    payload = signedBytes(separator, signatureScopeHash(artifactSnapshot));
   } catch {
     return {
       status: "malformed",
