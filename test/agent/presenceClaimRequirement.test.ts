@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   aggregatePresenceAwareCompositeVerification,
   canonicalize,
+  contentHash,
   ed25519Verify,
   identityBundleHash,
   isCompositeBundleRequirement,
@@ -100,7 +101,10 @@ function exactRef(left: VerifyResultRef, right: VerifyResultRef): boolean {
   return canonicalize(left) === canonicalize(right);
 }
 
-async function replay(vector: PresenceVector): Promise<VerificationDecision> {
+async function replay(
+  vector: PresenceVector,
+  options: Readonly<{ acceptStandard359VectorHashRegression?: boolean }> = {},
+): Promise<VerificationDecision> {
   const record = vector.compositeRecord;
   if (!isCompositeVerificationRecord(record)) return "error";
   if (!(await componentAuthenticated(record))) return "error";
@@ -132,13 +136,18 @@ async function replay(vector: PresenceVector): Promise<VerificationDecision> {
   }> = [];
   for (const ref of refs) {
     const resolved = vector.resolvedResults.find((entry) => exactRef(entry.ref, ref));
-    if (resolved && (
-      !isVerifyResult(resolved.artifact) ||
-      sha256Hex(canonicalize(resolved.artifact)) !==
-        ref.contentHash ||
-      !(await componentAuthenticated(resolved.artifact))
-    )) {
-      return "error";
+    if (resolved) {
+      if (!isVerifyResult(resolved.artifact)) return "error";
+      const normativeHash = contentHash(
+        resolved.artifact as unknown as Record<string, unknown>,
+      );
+      const knownRegressedHash = sha256Hex(canonicalize(resolved.artifact));
+      const referenceMatches = normativeHash === ref.contentHash ||
+        (options.acceptStandard359VectorHashRegression === true &&
+          knownRegressedHash === ref.contentHash);
+      if (!referenceMatches || !(await componentAuthenticated(resolved.artifact))) {
+        return "error";
+      }
     }
     const scheme = resolved?.artifact.scheme ?? bundle.claims.find(
       (claim) => claim.verifiedBy && exactRef(claim.verifiedBy, ref),
@@ -173,12 +182,25 @@ async function replay(vector: PresenceVector): Promise<VerificationDecision> {
 }
 
 describe("DACS-1 v0.7 / DACS-2 v0.6 presence-only corpus", () => {
-  test("replays the exact adopted 38-case corpus", async () => {
+  test("quarantines the eight signature-included refs tracked by Standard #359", () => {
+    const resolved = corpus.vectors.flatMap((vector) => vector.resolvedResults);
+    const regressions = resolved.filter(({ ref, artifact }) =>
+      contentHash(artifact as unknown as Record<string, unknown>) !== ref.contentHash
+    );
+
+    expect(resolved).toHaveLength(8);
+    expect(regressions).toHaveLength(8);
+    expect(regressions.every(({ ref, artifact }) =>
+      sha256Hex(canonicalize(artifact)) === ref.contentHash
+    )).toBe(true);
+  });
+
+  test("replays all 38 semantic outcomes with only the quarantined #359 hash waived", async () => {
     expect(corpus.count).toBe(38);
     const outcomes = await Promise.all(corpus.vectors.map(async (vector) => ({
       name: vector.name,
       expected: vector.expected,
-      actual: await replay(vector),
+      actual: await replay(vector, { acceptStandard359VectorHashRegression: true }),
     })));
     expect(outcomes.filter((outcome) => outcome.actual !== outcome.expected)).toEqual([]);
   });
