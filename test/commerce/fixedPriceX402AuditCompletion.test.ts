@@ -35,6 +35,7 @@ import {
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  verifyCompletedTwoSidedSession,
   verifyFixedPriceX402AuditCompletion,
   type FixedPriceX402AuditCompletionDeps,
   type FixedPriceX402CoordinatorRole,
@@ -472,6 +473,41 @@ async function fixture() {
 }
 
 describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
+  it("exposes a rail-neutral strict two-sided completion result", async () => {
+    const fx = await fixture();
+    await expect(verifyCompletedTwoSidedSession({
+      jobId: JOB_ID,
+      buyer: BUYER.did,
+      seller: SELLER.did,
+      sellerClosure: fx.input.sellerClosure,
+      copies: fx.input.copies,
+    }, fx.deps)).resolves.toEqual({
+      state: "audit-complete",
+      jobId: JOB_ID,
+      buyer: {
+        logicalAddress: bundleAddress(JOB_ID, "buyer"),
+        nativeAddress: fx.buyerNative,
+        bundleContentHash: attestationBundleHash(fx.buyerBundle),
+      },
+      seller: {
+        logicalAddress: bundleAddress(JOB_ID, "seller"),
+        nativeAddress: fx.sellerNative,
+        bundleContentHash: attestationBundleHash(fx.sellerBundle),
+      },
+    });
+  });
+
+  it("binds the rail-neutral result to independently supplied session parties", async () => {
+    const fx = await fixture();
+    await expect(verifyCompletedTwoSidedSession({
+      jobId: JOB_ID,
+      buyer: SELLER.did,
+      seller: BUYER.did,
+      sellerClosure: fx.input.sellerClosure,
+      copies: fx.input.copies,
+    }, fx.deps)).rejects.toThrow(/changed an order party/);
+  });
+
   it("uses the pinned v0.3 perspective-pair rule instead of coarse track outcomes", () => {
     const vectors = JSON.parse(readFileSync(new URL(
       "../../vendor/DACS-Standard/conformance/vectors/security/fault-bundle-perspective-pair-v0.3.json",

@@ -38,7 +38,6 @@ import {
 import {
   combineFixedPriceX402OrderStatus,
   type FixedPriceX402CombinedOrderStatus,
-  type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderStatus,
 } from "./fixedPriceX402Coordinator.js";
 
@@ -56,8 +55,11 @@ export type FixedPriceX402BundleAnchorVerificationDisposition =
   | { disposition: "valid"; mapping: "pure" | "write-input" }
   | { disposition: "invalid" | "indeterminate" | "error"; reason: string };
 
-export interface FixedPriceX402CompletedBundleCopy {
-  role: FixedPriceX402CoordinatorRole;
+/** One independently published role-owned copy of a completed DACS-5 bundle. */
+export type CompletedTwoSidedSessionRole = "buyer" | "seller";
+
+export interface CompletedTwoSidedBundleCopy {
+  role: CompletedTwoSidedSessionRole;
   nativeAddress: string;
   bundle: Readonly<FaultAttestationBundle>;
   anchorReceipt: Readonly<AnchorReceipt>;
@@ -65,14 +67,51 @@ export interface FixedPriceX402CompletedBundleCopy {
   binding?: Readonly<BundleBinding>;
 }
 
+/** Backwards-compatible profile name retained for existing x402 callers. */
+export type FixedPriceX402CompletedBundleCopy = CompletedTwoSidedBundleCopy;
+
 /**
  * The exact durable `audit-pending` session closure and retained seller
  * finalization result. The SDK re-authenticates both with the existing strict
  * seller ST-11 verifier; this is not a caller-selected expected-ref list.
  */
-export interface FixedPriceX402SellerCompletionClosure {
+export interface CompletedTwoSidedSellerClosure {
   verificationInput: Readonly<VerifyFinalizedSellerBundleInput>;
   result: Readonly<FinalizedSellerBundle>;
+}
+
+/** Backwards-compatible profile name retained for existing x402 callers. */
+export type FixedPriceX402SellerCompletionClosure = CompletedTwoSidedSellerClosure;
+
+/**
+ * Rail-neutral input to the strict two-sided completed-session gate. The
+ * seller closure is the authenticated ST-11 dependency manifest; the two
+ * publications remain independently role-owned.
+ */
+export interface CompletedTwoSidedSessionInput {
+  jobId: string;
+  buyer: string;
+  seller: string;
+  sellerClosure: Readonly<CompletedTwoSidedSellerClosure>;
+  copies: Readonly<{
+    buyer: Readonly<CompletedTwoSidedBundleCopy>;
+    seller: Readonly<CompletedTwoSidedBundleCopy>;
+  }>;
+}
+
+export interface CompletedTwoSidedSessionResult {
+  state: "audit-complete";
+  jobId: string;
+  buyer: Readonly<{
+    logicalAddress: string;
+    nativeAddress: string;
+    bundleContentHash: string;
+  }>;
+  seller: Readonly<{
+    logicalAddress: string;
+    nativeAddress: string;
+    bundleContentHash: string;
+  }>;
 }
 
 export interface FixedPriceX402AuditCompletionInput {
@@ -85,7 +124,7 @@ export interface FixedPriceX402AuditCompletionInput {
   }>;
 }
 
-export interface FixedPriceX402AuditCompletionDeps {
+export interface CompletedTwoSidedSessionDeps {
   /**
    * Existing strict seller finalization provider. Its dependency graph is the
    * authoritative completed-session manifest: Listing, DACS-2 composites,
@@ -96,7 +135,7 @@ export interface FixedPriceX402AuditCompletionDeps {
   /** Independently read an exact role-owned bundle at its native address. */
   readBundleCopy(
     nativeAddress: string,
-    role: FixedPriceX402CoordinatorRole,
+    role: CompletedTwoSidedSessionRole,
   ):
     | Promise<Readonly<Record<string, unknown>> | null>
     | Readonly<Record<string, unknown>>
@@ -108,7 +147,7 @@ export interface FixedPriceX402AuditCompletionDeps {
    * BB-1..BB-8 verification is additionally required below.
    */
   verifyBundleAnchor(
-    copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+    copy: Readonly<CompletedTwoSidedBundleCopy>,
   ):
     | Promise<FixedPriceX402BundleAnchorVerificationDisposition>
     | FixedPriceX402BundleAnchorVerificationDisposition;
@@ -120,7 +159,7 @@ export interface FixedPriceX402AuditCompletionDeps {
   resolveBundleBinding?: (
     logicalAddress: string,
     signer: string,
-    role: FixedPriceX402CoordinatorRole,
+    role: CompletedTwoSidedSessionRole,
   ) =>
     | Promise<
       | { disposition: "present"; binding: unknown }
@@ -142,17 +181,21 @@ export interface FixedPriceX402AuditCompletionDeps {
     | FixedPriceX402AuditVerificationDisposition;
 }
 
+/** Backwards-compatible profile name retained for existing x402 callers. */
+export interface FixedPriceX402AuditCompletionDeps
+  extends CompletedTwoSidedSessionDeps {}
+
 interface CapturedAuditCompletionDeps {
   sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
   sellerMapping: "pure" | "write-input";
   bundleCopyVerifier: BundleCopyDeps;
-  readBundleCopy: FixedPriceX402AuditCompletionDeps["readBundleCopy"];
-  verifyBundleAnchor: FixedPriceX402AuditCompletionDeps["verifyBundleAnchor"];
+  readBundleCopy: CompletedTwoSidedSessionDeps["readBundleCopy"];
+  verifyBundleAnchor: CompletedTwoSidedSessionDeps["verifyBundleAnchor"];
   resolveBundleBinding?: NonNullable<
-    FixedPriceX402AuditCompletionDeps["resolveBundleBinding"]
+    CompletedTwoSidedSessionDeps["resolveBundleBinding"]
   >;
   verifyBundleBinding?: NonNullable<
-    FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]
+    CompletedTwoSidedSessionDeps["verifyBundleBinding"]
   >;
 }
 
@@ -314,38 +357,70 @@ function captureInput(value: unknown): FixedPriceX402AuditCompletionInput {
   return retained as unknown as FixedPriceX402AuditCompletionInput;
 }
 
+function captureCompletedInput(value: unknown): CompletedTwoSidedSessionInput {
+  const retained = snapshotCanonicalJsonRead(
+    value,
+    "completed two-sided session input",
+  );
+  if (!isRecord(retained) ||
+      !exactKeys(retained, ["jobId", "buyer", "seller", "sellerClosure", "copies"]) ||
+      typeof retained.jobId !== "string" || retained.jobId.length === 0 ||
+      retained.jobId.trim() !== retained.jobId ||
+      retained.jobId.normalize("NFC") !== retained.jobId ||
+      /[\u0000-\u001f\u007f]/.test(retained.jobId) ||
+      !isCanonicalClaimReference(retained.buyer) ||
+      !isCanonicalClaimReference(retained.seller) ||
+      sameCanonicalClaimIdentity(retained.buyer, retained.seller) ||
+      !isRecord(retained.sellerClosure) ||
+      !exactKeys(retained.sellerClosure, ["verificationInput", "result"]) ||
+      !isRecord(retained.copies) || !exactKeys(retained.copies, ["buyer", "seller"])) {
+    throw new DacsError("completed two-sided session input is malformed");
+  }
+  for (const role of ["buyer", "seller"] as const) {
+    const copy = retained.copies[role];
+    if (!isRecord(copy) || !exactKeys(
+      copy,
+      ["role", "nativeAddress", "bundle", "anchorReceipt"],
+      ["binding"],
+    ) || copy.role !== role) {
+      throw new DacsError(`completed ${role} session copy is malformed`);
+    }
+  }
+  return retained as unknown as CompletedTwoSidedSessionInput;
+}
+
 function captureDeps(value: unknown): CapturedAuditCompletionDeps {
-  const source = objectBoundary(value, "fixed-price x402 audit completion dependencies");
-  const readBundleCopy = method<FixedPriceX402AuditCompletionDeps["readBundleCopy"]>(
+  const source = objectBoundary(value, "completed two-sided session dependencies");
+  const readBundleCopy = method<CompletedTwoSidedSessionDeps["readBundleCopy"]>(
     source,
     "readBundleCopy",
-    "fixed-price x402 audit completion dependencies",
+    "completed two-sided session dependencies",
   )!;
-  const verifyBundleAnchor = method<FixedPriceX402AuditCompletionDeps["verifyBundleAnchor"]>(
+  const verifyBundleAnchor = method<CompletedTwoSidedSessionDeps["verifyBundleAnchor"]>(
     source,
     "verifyBundleAnchor",
-    "fixed-price x402 audit completion dependencies",
+    "completed two-sided session dependencies",
   )!;
   const verifyBundleBinding = method<
-    NonNullable<FixedPriceX402AuditCompletionDeps["verifyBundleBinding"]>
+    NonNullable<CompletedTwoSidedSessionDeps["verifyBundleBinding"]>
   >(
     source,
     "verifyBundleBinding",
-    "fixed-price x402 audit completion dependencies",
+    "completed two-sided session dependencies",
     true,
   );
   const resolveBundleBinding = method<
-    NonNullable<FixedPriceX402AuditCompletionDeps["resolveBundleBinding"]>
+    NonNullable<CompletedTwoSidedSessionDeps["resolveBundleBinding"]>
   >(
     source,
     "resolveBundleBinding",
-    "fixed-price x402 audit completion dependencies",
+    "completed two-sided session dependencies",
     true,
   );
   const sellerFinalizationProvider = dataProperty<SellerBundleFinalizationReadProvider>(
     source,
     "sellerFinalizationProvider",
-    "fixed-price x402 audit completion dependencies",
+    "completed two-sided session dependencies",
   );
   const provider = objectBoundary(
     sellerFinalizationProvider,
@@ -370,7 +445,7 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
     bundleCopyVerifier,
     readBundleCopy: async (
       nativeAddress: string,
-      role: FixedPriceX402CoordinatorRole,
+      role: CompletedTwoSidedSessionRole,
     ) => {
       const bundle = await readBundleCopy(nativeAddress, role);
       return bundle === null
@@ -378,13 +453,13 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
         : snapshotCanonicalJsonRead(bundle, `${role} native bundle readback`);
     },
     verifyBundleAnchor: async (
-      copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+      copy: Readonly<CompletedTwoSidedBundleCopy>,
     ) => verifyBundleAnchor(clone(copy)),
     ...(resolveBundleBinding
       ? { resolveBundleBinding: async (
           logicalAddress: string,
           signer: string,
-          role: FixedPriceX402CoordinatorRole,
+          role: CompletedTwoSidedSessionRole,
         ) => snapshotCanonicalJsonRead(
           await resolveBundleBinding(logicalAddress, signer, role),
           `${role} BundleBinding resolution`,
@@ -407,7 +482,7 @@ function exact(left: unknown, right: unknown): boolean {
 
 function roleParty(
   bundle: Readonly<FaultAttestationBundle>,
-  role: FixedPriceX402CoordinatorRole,
+  role: CompletedTwoSidedSessionRole,
 ): string {
   const matches = bundle.parties.filter((party) => party.role === role);
   if (matches.length !== 1 || !isCanonicalClaimReference(matches[0]!.primaryClaim)) {
@@ -417,7 +492,7 @@ function roleParty(
 }
 
 function requireExactReceipt(
-  copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+  copy: Readonly<CompletedTwoSidedBundleCopy>,
   bundleHash: string,
 ): AnchorReceipt {
   const receipt = copy.anchorReceipt;
@@ -436,7 +511,7 @@ function requireExactReceipt(
 }
 
 async function requireBinding(
-  copy: Readonly<FixedPriceX402CompletedBundleCopy>,
+  copy: Readonly<CompletedTwoSidedBundleCopy>,
   bundleHash: string,
   deps: CapturedAuditCompletionDeps,
 ): Promise<void> {
@@ -506,31 +581,36 @@ async function requireBinding(
 }
 
 async function verifyCopy(
-  copy: Readonly<FixedPriceX402CompletedBundleCopy>,
-  status: Readonly<FixedPriceX402OrderStatus>,
+  copy: Readonly<CompletedTwoSidedBundleCopy>,
+  expected: Readonly<{
+    role: CompletedTwoSidedSessionRole;
+    jobId: string;
+    buyer: string;
+    seller: string;
+  }>,
   deps: CapturedAuditCompletionDeps,
 ): Promise<{
   bundle: Record<string, unknown>;
   mapping: "pure" | "write-input";
 }> {
-  if (copy.role !== status.role || !isFaultAttestationBundle(copy.bundle) ||
+  if (copy.role !== expected.role || !isFaultAttestationBundle(copy.bundle) ||
       copy.bundle.faultBundleVersion !== "1" || copy.bundle.bundleVersion !== undefined ||
       copy.bundle.outcome !== "completed" || copy.bundle.faultedParty !== "none" ||
-      copy.bundle.anchoredByRole !== copy.role || copy.bundle.jobId !== status.jobId ||
+      copy.bundle.anchoredByRole !== copy.role || copy.bundle.jobId !== expected.jobId ||
       typeof copy.nativeAddress !== "string" || copy.nativeAddress.length === 0) {
-    throw new DacsError(`completed ${status.role} bundle has the wrong type or session binding`);
+    throw new DacsError(`completed ${expected.role} bundle has the wrong type or session binding`);
   }
   if (copy.bundle.parties.length !== 2 ||
       copy.bundle.parties.some((party) => party.role === "orchestrator")) {
     throw new DacsError(
-      `completed ${status.role} bundle contradicts the seller-as-orchestrator topology`,
+      `completed ${expected.role} bundle contradicts the seller-as-orchestrator topology`,
     );
   }
   const buyer = roleParty(copy.bundle, "buyer");
   const seller = roleParty(copy.bundle, "seller");
-  if (!sameCanonicalClaimIdentity(buyer, status.buyer) ||
-      !sameCanonicalClaimIdentity(seller, status.seller)) {
-    throw new DacsError(`completed ${status.role} bundle changed an order party`);
+  if (!sameCanonicalClaimIdentity(buyer, expected.buyer) ||
+      !sameCanonicalClaimIdentity(seller, expected.seller)) {
+    throw new DacsError(`completed ${expected.role} bundle changed an order party`);
   }
   const copyObject = clone(copy.bundle) as unknown as Record<string, unknown>;
   const local = await verifyBundleCopy(copyObject, copy.role, deps.bundleCopyVerifier);
@@ -578,37 +658,20 @@ async function verifyCopy(
 }
 
 /**
- * DACS-5 §10.3.1 ST-11 completion gate, checked against Standard `next`
- * 81ded2b49851d8fa17399e3fdade9e36e33a4ff7.
+ * Rail-neutral DACS-5 completed-session gate.
  *
- * The synchronous combiner is intentionally operational and can never return
- * `audit-complete`. This function first re-authenticates the exact durable
- * seller session with the SDK's strict finalization verifier, including its
- * complete transitive dependency closure. It then independently reads and
- * authenticates each role-owned bundle receipt/mapping/binding and requires
- * both copies to carry the byte-identical signed production scope.
+ * This function accepts no signer and performs no publication. It
+ * re-authenticates the seller's exact ST-11 closure, independently reads and
+ * verifies both role-owned bundle copies, enforces finalized receipt/mapping
+ * and BB-1 binding rules, and requires a unified fully signed pair. Only this
+ * stronger boundary returns `audit-complete`.
  */
-export async function verifyFixedPriceX402AuditCompletion(
-  input: Readonly<FixedPriceX402AuditCompletionInput>,
-  deps: FixedPriceX402AuditCompletionDeps,
-): Promise<FixedPriceX402CombinedOrderStatus> {
-  const retained = captureInput(input);
+export async function verifyCompletedTwoSidedSession(
+  input: Readonly<CompletedTwoSidedSessionInput>,
+  deps: CompletedTwoSidedSessionDeps,
+): Promise<CompletedTwoSidedSessionResult> {
+  const retained = captureCompletedInput(input);
   const capturedDeps = captureDeps(deps);
-  const operational = combineFixedPriceX402OrderStatus({
-    buyer: retained.buyer,
-    seller: retained.seller,
-  });
-  if (retained.buyer.tracks.audit?.state !== "final" ||
-      retained.buyer.tracks.audit.outcome !== "success" ||
-      retained.seller.tracks.audit?.state !== "final" ||
-      retained.seller.tracks.audit.outcome !== "success" ||
-      retained.buyer.tracks.audit.reference !== retained.copies.buyer.nativeAddress ||
-      retained.seller.tracks.audit.reference !== retained.copies.seller.nativeAddress) {
-    throw new DacsError(
-      "audit completion requires both operational audit tracks to reference their exact bundle",
-    );
-  }
-
   const verifiedClosure = await verifyFinalizedSellerBundleReadOnly(
     clone(retained.sellerClosure.verificationInput),
     clone(retained.sellerClosure.result),
@@ -630,8 +693,18 @@ export async function verifyFixedPriceX402AuditCompletion(
   }
 
   const [buyerCopy, sellerCopy] = await Promise.all([
-    verifyCopy(retained.copies.buyer, retained.buyer, capturedDeps),
-    verifyCopy(retained.copies.seller, retained.seller, capturedDeps),
+    verifyCopy(retained.copies.buyer, {
+      role: "buyer",
+      jobId: retained.jobId,
+      buyer: retained.buyer,
+      seller: retained.seller,
+    }, capturedDeps),
+    verifyCopy(retained.copies.seller, {
+      role: "seller",
+      jobId: retained.jobId,
+      buyer: retained.buyer,
+      seller: retained.seller,
+    }, capturedDeps),
   ]);
   if (!exact(
     bundleSignedScope(retained.copies.buyer.bundle),
@@ -651,5 +724,59 @@ export async function verifyFixedPriceX402AuditCompletion(
   if (consistency !== "unified") {
     throw new DacsError(`completed bundle pair is ${consistency}, not unified`);
   }
+  return clone({
+    state: "audit-complete" as const,
+    jobId: retained.jobId,
+    buyer: {
+      logicalAddress: bundleAddress(retained.jobId, "buyer"),
+      nativeAddress: retained.copies.buyer.nativeAddress,
+      bundleContentHash: attestationBundleHash(retained.copies.buyer.bundle),
+    },
+    seller: {
+      logicalAddress: bundleAddress(retained.jobId, "seller"),
+      nativeAddress: retained.copies.seller.nativeAddress,
+      bundleContentHash: attestationBundleHash(retained.copies.seller.bundle),
+    },
+  });
+}
+
+/**
+ * DACS-5 §10.3.1 ST-11 completion gate, checked against Standard `next`
+ * 81ded2b49851d8fa17399e3fdade9e36e33a4ff7.
+ *
+ * The synchronous combiner is intentionally operational and can never return
+ * `audit-complete`. This function first re-authenticates the exact durable
+ * seller session with the SDK's strict finalization verifier, including its
+ * complete transitive dependency closure. It then independently reads and
+ * authenticates each role-owned bundle receipt/mapping/binding and requires
+ * both copies to carry the byte-identical signed production scope.
+ */
+export async function verifyFixedPriceX402AuditCompletion(
+  input: Readonly<FixedPriceX402AuditCompletionInput>,
+  deps: FixedPriceX402AuditCompletionDeps,
+): Promise<FixedPriceX402CombinedOrderStatus> {
+  const retained = captureInput(input);
+  const operational = combineFixedPriceX402OrderStatus({
+    buyer: retained.buyer,
+    seller: retained.seller,
+  });
+  if (retained.buyer.tracks.audit?.state !== "final" ||
+      retained.buyer.tracks.audit.outcome !== "success" ||
+      retained.seller.tracks.audit?.state !== "final" ||
+      retained.seller.tracks.audit.outcome !== "success" ||
+      retained.buyer.tracks.audit.reference !== retained.copies.buyer.nativeAddress ||
+      retained.seller.tracks.audit.reference !== retained.copies.seller.nativeAddress) {
+    throw new DacsError(
+      "audit completion requires both operational audit tracks to reference their exact bundle",
+    );
+  }
+
+  await verifyCompletedTwoSidedSession({
+    jobId: retained.buyer.jobId,
+    buyer: retained.buyer.buyer,
+    seller: retained.buyer.seller,
+    sellerClosure: retained.sellerClosure,
+    copies: retained.copies,
+  }, deps);
   return clone({ ...operational, milestone: "audit-complete" as const });
 }
