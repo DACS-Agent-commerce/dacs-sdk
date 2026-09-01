@@ -440,6 +440,18 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2
