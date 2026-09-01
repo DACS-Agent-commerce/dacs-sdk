@@ -43,6 +43,17 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+Domain ClaimReferences use a strict trust boundary. Native Demos
+`web2.domain` records may be converted to the current lower-case ASCII
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
+signed current `domain:` reference is never repaired during reading. Historical
+`web2:domain:` aliases are available only through
+`readAuthenticatedDomainClaims()`, which authenticates the original artifact
+before deriving a separate, deduplicated semantic claim set. For persistent GCR
+evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
+transaction/finality, writer, validation-profile, freshness and presentation-
+control inputs; it never treats copied bundle metadata as authority.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
