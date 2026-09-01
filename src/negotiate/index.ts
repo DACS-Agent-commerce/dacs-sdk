@@ -60,6 +60,7 @@ export {
   durableRfqLifecycleBindingHash,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
+  parseRfqLifecyclePacket,
   rfqLifecyclePacketId,
   type DurableRfqLifecycleRole,
   type DurableRfqAgreementAuthority,
@@ -92,6 +93,24 @@ export {
   createFsDurableRfqLifecycleStore,
   type FsDurableRfqLifecycleStoreOptions,
 } from "./durableRfqLifecycleStoreFs.js";
+export {
+  createDemosL2psRfqAesGcmCodec,
+  createDemosL2psRfqTransport,
+  type DemosL2psRfqEncryptedMessage,
+  type DemosL2psRfqIncomingPayload,
+  type DemosL2psRfqMessageStatus,
+  type DemosL2psRfqStoredMessage,
+  type DemosL2psRfqHistoryPage,
+  type DemosL2psRfqSendResult,
+  type DemosL2psRfqMessageHandler,
+  type DemosL2psRfqPeerLike,
+  type DemosL2psRfqWireContext,
+  type DemosL2psRfqWireCodec,
+  type DemosL2psRfqAesGcmCodecOptions,
+  type DemosL2psRfqTransportOptions,
+  type DemosL2psRfqTransport,
+  type DemosL2psRfqInboundRecoveryResult,
+} from "./demosL2psRfqTransport.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
   LEGACY_COMMITMENT_SEPARATOR,

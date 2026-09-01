@@ -37,7 +37,7 @@ All five lifecycle stages run end to end:
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` · `createDurableRfqLifecycleClient` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable transport-neutral buyer/seller RFQ lifecycle |
+| **Negotiate** | `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -49,16 +49,18 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
-The transport-neutral RFQ core performs authenticated channel admission,
+The RFQ stack performs authenticated channel admission,
 durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
 restart-safe state transitions, exact accepted-term agreement derivation,
 role-separated replay-safe transport outboxes, detached buyer/seller
 co-signatures, finalized SR-2 commitment, complete private-transcript
-reverification, and fail-closed Listing disclosure policy. It does not invent
-the still-undefined Demos signature or encrypted transcript wires and is not yet
-a complete live Demos L2PS phase handler; see the
+reverification, fail-closed Listing disclosure policy, and Demos-compatible
+AES-GCM L2PS packet transport with outbound and inbound history recovery. It
+does not invent the still-undefined DACS signature or encrypted-transcript
+publication wires, and clean construction of demosdk's messaging peer awaits a
+focused public demosdk export; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
-and the upstream signature-format dependency.
+and the upstream dependencies.
 
 `createFsDurableRfqLifecycleStore()` provides the single-host production
 restart boundary for one RFQ role: keyed record authentication, strict local
