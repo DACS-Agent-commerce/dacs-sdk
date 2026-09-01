@@ -221,7 +221,9 @@ import {
   createBuyerRatingRecord,
   createSellerRatingRecord,
   isRatingRecord,
+  publishRatingRecordDurably,
 } from "@kynesyslabs/dacs";
+import { createSqliteRatingPublicationEffectStore } from "@kynesyslabs/dacs-node/sqlite";
 
 const buyerRating = await createBuyerRatingRecord(
   {
@@ -243,12 +245,40 @@ if (!isRatingRecord(buyerRating)) throw new Error("invalid RatingRecord");
 // The seller-owned direction uses the same session parties but necessarily
 // produces seller -> buyer with targetRole "buyer".
 const sellerRating = await createSellerRatingRecord(ratingInput, sellerSigner);
+
+const publishedRating = await publishRatingRecordDurably(
+  {
+    record: buyerRating,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    expectedOwner: buyerDemosWalletAddress,
+  },
+  {
+    effectStore: createSqliteRatingPublicationEffectStore(buyerDatabase),
+    workerId: processInstanceId,
+    leaseDurationMs: 30_000,
+    repository: buyerBoundArtifactRepository,
+    // Must authenticate both the rating signature and the exact rater -> Demos
+    // writer relationship from trusted IdentityBundle/session state.
+    authenticateRatingRecord,
+    // Must authenticate canonical anchor inclusion/finality and writer
+    // provenance; shape-only receipts are insufficient.
+    authenticateAnchor: authenticateRatingAnchor,
+  },
+);
+if (publishedRating.disposition !== "published") {
+  throw new Error(`rating publication is ${publishedRating.disposition}`);
+}
 ```
 
-These functions produce and validate the signed RatingRecord. Durable SR-2
-publication, optional/required rate-phase orchestration, terminal-bundle
-handoff, and reputation aggregation remain separate lifecycle operations; an
-application must not treat a locally signed record as an anchored rating.
+The durable publisher writes the exact signed record to the actor-local effect
+journal before invoking SR-2. A lost response moves the effect to
+reconciliation; retrying reuses the same immutable bytes, logical address, and
+idempotency identity. It returns a `ratingRef` only after authenticated finality,
+role-owned binding visibility, and exact independently authenticated readback.
+Optional/required rate-phase orchestration, terminal-bundle handoff, and
+reputation aggregation remain separate lifecycle operations; an application
+must not treat a locally signed record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already
