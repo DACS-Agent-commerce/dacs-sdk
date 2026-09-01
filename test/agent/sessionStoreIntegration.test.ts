@@ -9,7 +9,10 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import type { SettlementFinalityParameters } from "../../src/artifacts/types.js";
+import type {
+  IdentityBundle,
+  SettlementFinalityParameters,
+} from "../../src/artifacts/types.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -21,6 +24,17 @@ const seed = Uint8Array.from(Buffer.alloc(32, 5));
 const priv = privateKeyFromSeed(seed);
 const sign: Signer = (b) => ed25519Sign(b, priv);
 const sellerDid = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
+const buyerDid = "did:demos:agent:buyer";
+const buyerIdentity: IdentityBundle = {
+  bundleVersion: "1",
+  presentedBy: buyerDid,
+  presentedAt: 1_780_000_000_000,
+  claims: [{ ref: buyerDid }],
+  presentation: {
+    kind: "per-claim",
+    signatures: [{ ref: buyerDid, signature: "test-presentation" }],
+  },
+};
 
 const listing = {
   agentId: sellerDid,
@@ -84,7 +98,9 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     kv.set(listingRef, (await buildSignedArtifact(listing, ARTIFACT_SEPARATORS.Listing, sign)) as Record<string, unknown>);
   }
   const deps: SessionDeps = {
-    buyerId: "did:demos:agent:buyer",
+    buyerId: buyerDid,
+    buyerIdentityBundle: buyerIdentity,
+    authenticateBuyerIdentityBundle: () => true,
     readListing: async (ref) => kv.get(ref) ?? null,
     sign: (artifact, sep) => buildSignedArtifact(artifact, sep as never, sign),
     signBytes: async (b) => sign(b),

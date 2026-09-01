@@ -9,7 +9,10 @@ import {
   createFsDemosWriteJournal,
   createInMemoryBindingStore,
   createX402Rail,
+  ed25519Verify,
+  publicKeyFromRaw,
   x402Settle,
+  type IdentityBundle,
 } from "../../src/index.js";
 import { startLiveX402Paywall } from "./live-x402-paywall.js";
 
@@ -19,6 +22,7 @@ import { startLiveX402Paywall } from "./live-x402-paywall.js";
  * acknowledgement are supplied.
  *
  *   DEMOS_RPC=… SELLER_WALLET=… SELLER_DID=… BUYER_WALLET=… BUYER_DID=… \
+ *   SELLER_IDENTITY_BUNDLE_JSON=… BUYER_IDENTITY_BUNDLE_JSON=… \
  *   BUYER_EVM_KEY=0x… PAYWALL_URL=local PAY_NETWORK=eip155:84532 \
  *   SELLER_EVM=0x… PAY_TOKEN=0x… DACS_STATE_DIR=… LIVE_E2E_CONFIRM=1 \
  *   npx vitest run test/integration/live.e2e.test.ts
@@ -28,8 +32,10 @@ const ENV = [
   "DEMOS_RPC",
   "SELLER_WALLET",
   "SELLER_DID",
+  "SELLER_IDENTITY_BUNDLE_JSON",
   "BUYER_WALLET",
   "BUYER_DID",
+  "BUYER_IDENTITY_BUNDLE_JSON",
   "BUYER_EVM_KEY",
   "PAYWALL_URL",
   "PAY_NETWORK",
@@ -94,6 +100,37 @@ function requireIdentity(label: string, address: string, did: string) {
   }
 }
 
+function verifyDemosIdentityPresentation(input: {
+  bundle: Readonly<IdentityBundle>;
+  signedBytes: Uint8Array;
+}): boolean {
+  if (
+    input.bundle.presentation.kind !== "per-claim" ||
+    input.bundle.presentation.signatures.length !== input.bundle.claims.length ||
+    !input.bundle.claims.some(({ ref }) => ref === input.bundle.presentedBy)
+  ) {
+    return false;
+  }
+  const proofs = new Map<string, string>();
+  for (const proof of input.bundle.presentation.signatures) {
+    if (proofs.has(proof.ref)) return false;
+    proofs.set(proof.ref, proof.signature);
+  }
+  return input.bundle.claims.every(({ ref }) => {
+    const keyHex = ref.match(/^did:demos:agent:([0-9a-f]{64})$/)?.[1];
+    const encoded = proofs.get(ref);
+    if (!keyHex || !encoded || !/^[A-Za-z0-9_-]+$/.test(encoded)) return false;
+    const signature = Uint8Array.from(Buffer.from(encoded, "base64url"));
+    return signature.length === 64 &&
+      Buffer.from(signature).toString("base64url") === encoded &&
+      ed25519Verify(
+        input.signedBytes,
+        signature,
+        publicKeyFromRaw(Uint8Array.from(Buffer.from(keyHex, "hex"))),
+      );
+  });
+}
+
 async function tokenBalance(address: string): Promise<bigint> {
   const rpc =
     process.env.PAY_RPC ??
@@ -142,18 +179,28 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-demos-writes"),
         }),
       ]);
+      const sellerIdentity = JSON.parse(
+        env.SELLER_IDENTITY_BUNDLE_JSON!,
+      ) as IdentityBundle;
+      const buyerIdentity = JSON.parse(
+        env.BUYER_IDENTITY_BUNDLE_JSON!,
+      ) as IdentityBundle;
       const seller = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
         demosWriteJournal: sellerWriteJournal,
-        identity: { agentId: env.SELLER_DID! },
+        identity: { agentId: env.SELLER_DID!, bundle: sellerIdentity },
         bindings: { index: sellerBindings, publisher: sellerBindings },
       });
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
         demosWriteJournal: buyerWriteJournal,
-        identity: { agentId: env.BUYER_DID! },
+        identity: {
+          agentId: env.BUYER_DID!,
+          bundle: buyerIdentity,
+          verifyPresentation: verifyDemosIdentityPresentation,
+        },
       });
       const rail = await createX402Rail({ evmPrivateKey: env.BUYER_EVM_KEY! });
 
@@ -207,21 +254,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           listingVersion: 1,
           listingId,
           seller: {
-            identity: {
-              bundleVersion: "1",
-              presentedBy: env.SELLER_DID!,
-              presentedAt: runStartedAt,
-              claims: [{ ref: env.SELLER_DID! }],
-              presentation: {
-                kind: "per-claim",
-                signatures: [
-                  {
-                    ref: env.SELLER_DID!,
-                    signature: "live-wallet-presentation",
-                  },
-                ],
-              },
-            },
+            identity: sellerIdentity,
             displayName: "Live E2E",
             publicEndpoint: localPaywall?.url ?? env.PAYWALL_URL!,
           },
