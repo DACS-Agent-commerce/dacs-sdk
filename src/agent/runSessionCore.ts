@@ -377,6 +377,14 @@ export interface SessionDeps {
 }
 
 export interface SessionResult {
+  /**
+   * Explicit quarantine marker for the pre-v0.3 buyer-only producer. This path
+   * stops after settlement and therefore MUST NOT be interpreted as delivery,
+   * commercial-performance, or DACS-5 audit completion.
+   */
+  profile: "legacy-mvp-settlement-only";
+  /** Always false: this producer has no fulfilment or delivery-evidence phase. */
+  commerceComplete: false;
   outcome: "completed" | "failed";
   jobId: string;
   /** Exact DACS-1 §6.3.4 LR-1 Listing tuple used for this session. */
@@ -4370,6 +4378,8 @@ export async function runSessionCore(
   }
 
   return {
+    profile: "legacy-mvp-settlement-only",
+    commerceComplete: false,
     outcome,
     jobId,
     listingPin: listingView.pin,

@@ -610,7 +610,13 @@ export interface Agent<
    * (Seller-identity vetting is the separate Vet stage.)
    */
   discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
-  /** Buyer: run a fixed-price session (negotiate → settle → verify). */
+  /**
+   * @deprecated Buyer-only legacy settlement runner. Its result is explicitly
+   * marked `legacy-mvp-settlement-only` and `commerceComplete: false`; it does
+   * not run seller fulfilment, delivery evidence, or two-sided DACS-5
+   * finalisation. New production integrations use the role-separated
+   * fixed-price commerce coordinators.
+   */
   runSession(
     listing: SessionListingInput,
     opts: RunSessionOptions,

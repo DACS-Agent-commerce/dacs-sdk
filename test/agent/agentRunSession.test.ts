@@ -527,6 +527,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
       },
     });
+    expect(res.profile).toBe("legacy-mvp-settlement-only");
+    expect(res.commerceComplete).toBe(false);
     expect(res.outcome).toBe("completed");
     expect(settled).toBe(true);
 
