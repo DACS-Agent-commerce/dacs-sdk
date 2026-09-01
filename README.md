@@ -462,6 +462,22 @@ Exit codes are stable:
 - `4`: unexpected doctor internal error.
 - `5`: required checks are still blocked/incomplete.
 
+### Canonical JSON compatibility
+
+The canonical API follows RFC 8785 plus DACS CF-1 as clarified in
+DACS-Standard `4df6294b8d1cfc047af456d3d5ce84cd9b3b9983`: string values are
+NFC-normalised, while object member names are preserved and sorted by their
+original UTF-16 code units. Canonically equivalent NFC/NFD names are distinct
+signed members; the SDK does not merge or rename them.
+
+SDK versions before this repair incorrectly normalised member names. A
+historical artifact affected by that behavior must retain its original bytes
+and producer/release provenance and be handled through an explicitly selected
+legacy verification/quarantine policy. Current hashing and signing never
+silently rewrite, re-hash, or re-sign those bytes as a current artifact; a
+signature that only verifies under the old non-conforming transformation is
+rejected by the current verifier.
+
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be

@@ -250,7 +250,8 @@ function snapshotCanonicalJsonInternal<T>(
     );
     // Parsing the canonical wire form both owns the result and deliberately
     // expands repeated in-memory references into independent JSON values.
-    // CF-1 normalization therefore also happens exactly once at this boundary.
+    // CF-1 string-value normalization therefore happens exactly once at this
+    // boundary; canonical member names are deliberately preserved.
     const snapshot = JSON.parse(canonical) as T;
     if (!isDataOnlyJson(snapshot) || canonicalize(snapshot) !== canonical) {
       throw new TypeError("snapshot changed canonical bytes");
