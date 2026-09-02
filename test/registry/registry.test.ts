@@ -1607,7 +1607,7 @@ describe("registry resolution (T12/T13)", () => {
       "x402:default",
       {
         ...depsFor({ entries: [entry] }),
-        stewardSigner: `did:demos:steward:${"11".repeat(32)}`,
+        stewardSigner: `did:demos:agent:${"11".repeat(31)}`,
       },
     )).rejects.toThrow(/trust material is malformed/);
   });
