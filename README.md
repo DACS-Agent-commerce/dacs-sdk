@@ -482,6 +482,16 @@ still remains `audit-pending` until the bundle itself is finalized and
 independently resolvable under ST-11. EBFAB extended pointers require the same
 verified authority token; URL shape validation is not a deployment SSRF policy.
 
+For reputation that makes an explicit settlement-verification claim, use
+`deriveSettlementVerifiedReputation()` or its replayable counterpart. These
+emit the distinct DACS-5 v0.4 settlement-verified discriminators and never
+reinterpret the released `derivationVersion: "1"` type. The caller must supply
+independent bundle, SettlementEvidence, Agreement, role/binding, finality and
+SB-1..SB-3 authority. Any rejected or unavailable presented evidence excludes
+the whole job without assigning fresh fault. See the
+[settlement-verified reputation guide](./docs/settlement-verified-reputation.md)
+for the authority contract and replay boundary.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2

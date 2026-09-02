@@ -8,6 +8,9 @@ import {
   evaluateEvidenceBoundSettlementSet,
   verifyFaultBundleExtendedPointer,
   buildEvidenceBoundTwoSidedBundle,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
   type EvidenceBoundBundleAuthority,
   type EvidenceBoundBundleVerifierDeps,
   type ClaimQualificationDeps,
@@ -35,6 +38,13 @@ const verifyBundlePointer: typeof verifyFaultBundleExtendedPointer =
   verifyFaultBundleExtendedPointer;
 const buildEvidenceBound: typeof buildEvidenceBoundTwoSidedBundle =
   buildEvidenceBoundTwoSidedBundle;
+const deriveSettlementVerified: typeof deriveSettlementVerifiedReputation =
+  deriveSettlementVerifiedReputation;
+const deriveReplayableSettlementVerified:
+  typeof deriveReplayableSettlementVerifiedReputation =
+    deriveReplayableSettlementVerifiedReputation;
+const replaySettlementVerified: typeof replaySettlementVerifiedReputation =
+  replaySettlementVerifiedReputation;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -55,6 +65,9 @@ void verifyEvidenceBound(ebfabAuthority, ebfabDeps);
 void evaluateExactSet;
 void verifyBundlePointer;
 void buildEvidenceBound;
+void deriveSettlementVerified;
+void deriveReplayableSettlementVerified;
+void replaySettlementVerified;
 void adapter;
 void journal;
 void result;
