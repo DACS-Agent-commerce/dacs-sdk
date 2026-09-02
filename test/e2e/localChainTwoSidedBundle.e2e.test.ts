@@ -596,12 +596,12 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           buyer: {
             primaryClaim: buyerDid,
             bundleHash: identityBundleHash(buyerIdentity),
-            signer: BUYER_SEED,
+            signer: privateKeyFromSeed(BUYER_SEED),
           },
           seller: {
             primaryClaim: sellerDid,
             bundleHash: identityBundleHash(sellerIdentity),
-            signer: SELLER_SEED,
+            signer: privateKeyFromSeed(SELLER_SEED),
           },
         });
         expect(buyerCopy).toBeDefined();

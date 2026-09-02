@@ -46,6 +46,7 @@ import {
   x402PaywallCore,
   x402PaywallSettlementKey,
   runSessionCore,
+  legacyMvpSessionAnchorName,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
   type DurableSellerFulfilmentDeps,
@@ -86,6 +87,7 @@ import {
   advanceTerminalBundleDurable as agentAdvanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus as agentGetTerminalBundleFinalizationStatus,
   verifyFinalizedTerminalBundleReadOnly as agentVerifyFinalizedTerminalBundleReadOnly,
+  legacyMvpSessionAnchorName as agentLegacyMvpSessionAnchorName,
 } from "../../src/agent/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
@@ -338,9 +340,17 @@ describe("public core surface (#14)", () => {
     expect(railsX402PaywallSettlementKey).toBe(x402PaywallSettlementKey);
   });
 
-  // NOTE (#48): `sessionAnchorName` is intentionally NOT part of the public
-  // surface yet — its MVP address strings are not the normative §6.3.x schemes,
-  // so exporting them as "the scheme a verifier reproduces" would mislead. It
-  // stays internal until canonical addressing lands; no public-API test asserts
-  // those strings as normative.
+  it("#178: exposes historical session names only under an explicit legacy label", () => {
+    expect(agentLegacyMvpSessionAnchorName).toBe(legacyMvpSessionAnchorName);
+    expect(Object.isFrozen(legacyMvpSessionAnchorName)).toBe(true);
+    expect(legacyMvpSessionAnchorName.agreement("job-1")).toBe(
+      "dacs3:agreement:job-1",
+    );
+    expect(legacyMvpSessionAnchorName.evidence("job-1")).toBe(
+      "dacs4:evidence:job-1",
+    );
+    expect(legacyMvpSessionAnchorName.bundle("job-1")).toBe(
+      "dacs5:bundle:job-1",
+    );
+  });
 });

@@ -43,6 +43,23 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+Domain ClaimReferences use a strict trust boundary. Native Demos
+`web2.domain` records may be converted to the current lower-case ASCII
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
+signed current `domain:` reference is never repaired during reading. Historical
+`web2:domain:` aliases are available only through
+`readAuthenticatedDomainClaims()`, which authenticates the original artifact
+before deriving a separate, deduplicated semantic claim set. For persistent GCR
+evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
+transaction/finality, writer, validation-profile, freshness and presentation-
+control inputs; it never treats copied bundle metadata as authority.
+
+The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
+filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
+content only and fails closed on malformed input; see the
+[ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
+injection contract.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
@@ -483,6 +500,13 @@ Normative producers, including `buildTwoSidedBundle`, reject those legacy
 shapes. The existing buyer-only `runSessionCore` producer remains explicitly
 quarantined on `LegacyMvp*` until its v0.3 migration in #81.
 
+Its deterministic historical names are available as
+`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
+prefix is intentional: these strings must not be used as the current DACS
+address grammar. New code should use the typed address helper exported by the
+relevant producer, such as `compositeVerificationAddress`,
+`fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
+
 ## Doctor
 
 The package ships a read-only preflight command:
@@ -522,6 +546,22 @@ Exit codes are stable:
 - `4`: unexpected doctor internal error.
 - `5`: required checks are still blocked/incomplete.
 
+### Canonical JSON compatibility
+
+The canonical API follows RFC 8785 plus DACS CF-1 as clarified in
+DACS-Standard `4df6294b8d1cfc047af456d3d5ce84cd9b3b9983`: string values are
+NFC-normalised, while object member names are preserved and sorted by their
+original UTF-16 code units. Canonically equivalent NFC/NFD names are distinct
+signed members; the SDK does not merge or rename them.
+
+SDK versions before this repair incorrectly normalised member names. A
+historical artifact affected by that behavior must retain its original bytes
+and producer/release provenance and be handled through an explicitly selected
+legacy verification/quarantine policy. Current hashing and signing never
+silently rewrite, re-hash, or re-sign those bytes as a current artifact; a
+signature that only verifies under the old non-conforming transformation is
+rejected by the current verifier.
+
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be
@@ -546,6 +586,9 @@ registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
+
+The optional signed `pay-alternative` Listing profile is documented in
+[the alternative-payment projection guide](./docs/alternative-payment-projection.md).
 
 Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
 and compose it with the authenticated seller spine. It settles or reconciles
