@@ -14,6 +14,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
 const makeAdapter = (
@@ -194,7 +195,7 @@ describe("DemosAdapter", () => {
       /not connected/,
     );
     await expect(
-      adapter.findSubjectsByClaim("web2:twitter:alice"),
+      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
     ).rejects.toThrow(/not connected/);
   });
 
@@ -233,6 +234,61 @@ describe("DemosAdapter", () => {
       "getIdentities",
       "legacy-demos-address",
     );
+  });
+
+  it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(Identities.prototype, "getIdentities").mockResolvedValue({
+      response: {
+        web2: {
+          github: new Array(
+            DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength + 1,
+          ).fill("alice"),
+        },
+      },
+    } as never);
+
+    await expect(adapter.resolveIdentity("subject")).rejects.toThrow(
+      /maxArrayLength/,
+    );
+  });
+
+  it("reverse-resolves canonical CCI web2 and chain/subchain wallet refs", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity")
+      .mockResolvedValue([{ pubkey: "subject-a" }, {}, { pubkey: "subject-b" }] as never);
+    const wallet = vi.spyOn(Identities.prototype, "getDemosIdsByWeb3Identity")
+      .mockResolvedValue([{ pubkey: "subject-c" }] as never);
+
+    await expect(
+      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
+    ).resolves.toEqual(["subject-a", "subject-b"]);
+    expect(web2).toHaveBeenCalledWith(adapter.raw, "twitter", "alice");
+
+    await expect(
+      adapter.findSubjectsByClaim(
+        `cci-xm:evm:base-sepolia:0x${"11".repeat(20)}`,
+      ),
+    ).resolves.toEqual(["subject-c"]);
+    expect(wallet).toHaveBeenCalledWith(
+      adapter.raw,
+      "evm.base-sepolia",
+      `0x${"11".repeat(20)}`,
+    );
+  });
+
+  it("fails closed when the current Demos SDK lacks a reverse resolver", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+
+    await expect(
+      adapter.findSubjectsByClaim("domain:alice.example"),
+    ).rejects.toThrow(/domain reverse lookup is not exposed/);
+    await expect(
+      adapter.findSubjectsByClaim(`cci-nomis:0x${"11".repeat(20)}`),
+    ).rejects.toThrow(/not a reverse-resolvable/);
   });
 
   it("anchorWriteOnce returns only an exact existing envelope", async () => {

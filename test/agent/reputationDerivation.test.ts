@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 
 import {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationWindow,
 } from "../../src/agent/reputationDerivation.js";
 import type { AttestationBundle, FaultAttestationBundle } from "../../src/artifacts/types.js";
+import { bundleAddress } from "../../src/canonical/addressing.js";
 
 const PARTY = "did:demos:buyer";
 const CP = "did:demos:seller";
@@ -342,6 +344,115 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       { isValid: (b) => b.jobId === "a", copyAbsence: () => "absent" },
     );
     expect(r.bundleCount).toBe(1);
+  });
+
+  test("rejects an async predicate on the synchronous scorer instead of treating its Promise as valid", () => {
+    expect(() =>
+      deriveReputation(
+        PARTY,
+        [bundle("a", "completed", 1100)],
+        WINDOW,
+        {
+          // JavaScript and casted callers can bypass the TypeScript return type;
+          // the runtime boundary must still fail closed on Promise truthiness.
+          isValid: (async () => false) as unknown as () => boolean,
+          copyAbsence: () => "absent",
+        },
+      ),
+    ).toThrow(/boolean synchronously|deriveReputationWithValidation/);
+  });
+
+  test("async validation admits only primitive true and excludes false, rejection, and non-boolean results", async () => {
+    const r = await deriveReputationWithValidation(
+      PARTY,
+      [
+        bundle("accepted", "completed", 1100),
+        bundle("false", "completed", 1200),
+        bundle("rejected", "completed", 1300),
+        bundle("truthy-object", "completed", 1400),
+      ],
+      WINDOW,
+      {
+        validate: async (candidate) => {
+          if (candidate.jobId === "accepted") return true;
+          if (candidate.jobId === "rejected") throw new Error("indeterminate");
+          if (candidate.jobId === "truthy-object") {
+            return { valid: true } as unknown as boolean;
+          }
+          return Promise.resolve(false);
+        },
+        copyAbsence: () => "absent",
+      },
+    );
+
+    expect(r.bundleCount).toBe(1);
+    expect(r.bundleRefs[0]?.anchor.locator).toBe(
+      bundleAddress("accepted", "buyer"),
+    );
+    expect(r.metrics.completionRate).toBe(1);
+  });
+
+  test("async validation rejects a hostile candidate before the scorer reads its fields", async () => {
+    let propertyReads = 0;
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          propertyReads += 1;
+          throw new Error("must not inspect rejected wire input");
+        },
+      },
+    ) as unknown as ReturnType<typeof bundle>;
+
+    const r = await deriveReputationWithValidation(
+      PARTY,
+      [hostile],
+      WINDOW,
+      {
+        validate: async () => false,
+        copyAbsence: () => "absent",
+      },
+    );
+
+    expect(propertyReads).toBe(0);
+    expect(r.bundleCount).toBe(0);
+  });
+
+  test("async validation snapshots each accepted copy before a later await permits caller mutation", async () => {
+    const accepted = bundle("accepted", "completed", 1100);
+    const delayed = bundle("delayed", "completed", 1200);
+    let releaseDelayed!: () => void;
+    const delayedGate = new Promise<void>((resolve) => {
+      releaseDelayed = resolve;
+    });
+    let signalDelayed!: () => void;
+    const delayedStarted = new Promise<void>((resolve) => {
+      signalDelayed = resolve;
+    });
+
+    const pending = deriveReputationWithValidation(
+      PARTY,
+      [accepted, delayed],
+      WINDOW,
+      {
+        validate: async (candidate) => {
+          if (candidate === accepted) return true;
+          signalDelayed();
+          await delayedGate;
+          return false;
+        },
+        copyAbsence: () => "absent",
+      },
+    );
+
+    await delayedStarted;
+    accepted.outcome = "failed-perm";
+    accepted.parties[0]!.primaryClaim = "did:demos:mutated";
+    releaseDelayed();
+
+    const r = await pending;
+    expect(r.bundleCount).toBe(1);
+    expect(r.metrics.completionRate).toBe(1);
   });
 
   test("requires an explicit isValid or trustBundles — no fail-open default", () => {
