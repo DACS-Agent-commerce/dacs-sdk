@@ -54,6 +54,40 @@ evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.
 
+CCI resolution covers all eight production Demos identity contexts. Live
+`xm`, `web2`, `pqc`, `ud`, `nomis`, `humanpassport`, `ethos`, and TLSN-backed
+Web2 records are projected into canonical `cci-*` ClaimReferences; chain,
+subchain, algorithm, score, profile, expiry, and proof-commitment coordinates
+are retained in typed claims. The parser owns a data-only snapshot and drops an
+entry rather than inventing an identifier (for example, an old Ethos entry
+without its profile id). Unknown or incomplete native data remains available
+only under `record.raw`. Conflicting records for one canonical reference are
+rejected rather than selected by RPC order, and fixed byte/depth/node/
+collection/string ceilings bound the decoded response before it is cloned.
+
+Reputation projection has a separate trust boundary. Use
+`authenticateDemosCciRecord()` with an application/provider capability that
+authenticates the exact GCR response, subject binding, and applicable Demos
+current-state/finality evidence. Provider scores additionally require the
+separate `authenticateProviderClaim` capability to establish provider semantics
+and subject/control binding for each exact claim. A successful RPC status or
+GCR inclusion alone is not either proof. The returned runtime-branded record
+can be passed to `projectCciSupplementarySignals()` with explicit Nomis, Human
+Passport, and Ethos freshness ceilings; stale, expired, future-dated, and
+non-passing values are reported as omissions. The resulting signals are
+advisory DACS-2 `supplementary` entries and never affect `overallDecision`.
+`AgentConfig.demosCci` exposes the same captured capabilities through
+`agent.resolveAuthenticatedIdentity()`.
+
+Native `cci-tlsn:<proof-hash>` claims are not external TLSNotary recipes.
+`classifyCciTlsnProof()` requires an authenticated CCI record, a current
+presentation-authenticated IdentityBundle, the canonical active job/session
+context, explicit freshness ceilings, and a native TLSN verifier over those
+exact coordinates. It selects `native-cci` only when the same current
+commitment appears in both sources and the native verifier authenticates it;
+an unregistered session proof remains on the external `tlsnotary` path. See
+[the Demos CCI integration guide](./docs/demos-cci-identities.md).
+
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
@@ -166,7 +200,12 @@ if (
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({ evmPrivateKey });
+const rail = await createX402Rail({
+  evmPrivateKey,
+  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
+  // Use the exact positive value from the authenticated rail descriptor.
+  finalityBlocks: 1,
+});
 // Passing the authenticated result (not only `resolved.ref`) pins the selected
 // content hash across runSession's pre-payment re-read.
 const session = await buyer.runSession(resolved, {
@@ -451,6 +490,16 @@ copy gets the matching role-relative `outcome` and signs under
 `AttestationBundle` records, and consistency/reputation reconciliation supports
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
+
+`prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
+coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
+recursive production authenticator, and creates DACS-5 `vet-failed` terminal
+authority only for an authenticated objective `fail`. A passing record remains
+non-terminal; `indeterminate`, verifier `error`, an unresolved closure, or a
+thrown authentication dependency cannot blame the counterparty. The returned
+authority contains no signing capability and is intended for the existing
+role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
+co-signed; single-signature suppression is available only for an honest abort.
 
 ### Normative artifact references
 
