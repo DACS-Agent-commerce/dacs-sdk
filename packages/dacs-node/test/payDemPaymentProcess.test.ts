@@ -121,13 +121,10 @@ function crashFixtureEnvironment(
   // This is a new Vitest controller, not a descendant worker of the outer test.
   // Inheriting the outer worker markers can make the nested controller exit
   // without running its selected fixture when the full suite is concurrent.
-  for (const name of [
-    "VITEST",
-    "VITEST_POOL_ID",
-    "VITEST_WORKER_ID",
-    "VITEST_VM_POOL",
-  ]) {
-    delete environment[name];
+  for (const name of Object.keys(environment)) {
+    if (name === "VITEST" || name.startsWith("VITEST_")) {
+      delete environment[name];
+    }
   }
   environment.DACS_PAY_DEM_CRASH_DATABASE = databasePath;
   environment.DACS_PAY_DEM_CRASH_READY = readyPath;
@@ -203,9 +200,10 @@ describe("native DEM process recovery", () => {
     expect(exited).toEqual({ code: null, signal: "SIGKILL" });
 
     // Both the outer coordinator lease and the inner irreversible-effect lease
-    // were held by the dead process. Let them expire before the new worker claims
-    // a strictly newer generation from the same durable database.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // were held by the dead process. Let the fixture's two-second leases expire
+    // before the new worker claims a strictly newer generation from the same
+    // durable database.
+    await new Promise((resolve) => setTimeout(resolve, 2_250));
 
     const database = await openDacsNodeSqliteDatabase({
       databasePath,
