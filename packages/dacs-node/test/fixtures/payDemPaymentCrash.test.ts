@@ -120,16 +120,27 @@ describe("native DEM payment crash fixture", () => {
           flag: "wx",
           mode: 0o600,
         });
-        // A pending Promise alone does not retain Node's event loop. Keep an
-        // active handle so every supported Node release leaves this fixture at
-        // the exact prepared checkpoint until the parent deliberately SIGKILLs
-        // the process.
-        await new Promise<void>(() => {
-          setInterval(() => undefined, 1_000);
-        });
-        throw new Error("unreachable");
+        // A nested Vitest controller may terminate a worker whose only active
+        // handle is a timer. Block the worker synchronously so the process group
+        // can exit only when the parent deliberately sends SIGKILL.
+        const lock = new Int32Array(new SharedArrayBuffer(4));
+        while (true) Atomics.wait(lock, 0, 0, 1_000);
       },
     };
+    const bootstrap = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-bootstrap",
+      operations: { agreement: success },
+      leaseDurationMs: 5_000,
+    });
+    await bootstrap.startOrder(ORDER);
+    await bootstrap.runPending({ limit: 1 });
+    const bootstrapped = await bootstrap.getOrderStatus(JOB_ID);
+    if (bootstrapped?.tracks.agreement?.state !== "final" ||
+        bootstrapped.tracks.agreement.outcome !== "success") {
+      throw new Error("crash fixture could not finalize its agreement prerequisite");
+    }
+
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       database,
       workerId: "buyer-payment-before-kill",
@@ -137,16 +148,16 @@ describe("native DEM payment crash fixture", () => {
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
       publishNotice: () => undefined,
-      effectLeaseDurationMs: 100,
+      effectLeaseDurationMs: 2_000,
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-kill",
-      operations: { agreement: success, payment },
-      leaseDurationMs: 100,
+      operations: { payment },
+      leaseDurationMs: 2_000,
     });
-    await coordinator.startOrder(ORDER);
-    await coordinator.runPending({ limit: 2 });
+    await coordinator.runPending({ limit: 1 });
+    throw new Error("crash fixture returned without reaching its prepared checkpoint");
   }, 30_000);
 });

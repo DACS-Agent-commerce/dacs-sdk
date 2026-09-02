@@ -94,7 +94,8 @@ async function waitForPreparedCheckpoint(
   child: ChildProcess,
   output: () => string,
 ): Promise<void> {
-  const deadline = Date.now() + 15_000;
+  // A fresh nested Vitest transform can be slow on a saturated CI runner.
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     try {
       if (await readFile(readyPath, "utf8") === "prepared") return;
@@ -120,13 +121,10 @@ function crashFixtureEnvironment(
   // This is a new Vitest controller, not a descendant worker of the outer test.
   // Inheriting the outer worker markers can make the nested controller exit
   // without running its selected fixture when the full suite is concurrent.
-  for (const name of [
-    "VITEST",
-    "VITEST_POOL_ID",
-    "VITEST_WORKER_ID",
-    "VITEST_VM_POOL",
-  ]) {
-    delete environment[name];
+  for (const name of Object.keys(environment)) {
+    if (name === "VITEST" || name.startsWith("VITEST_")) {
+      delete environment[name];
+    }
   }
   environment.DACS_PAY_DEM_CRASH_DATABASE = databasePath;
   environment.DACS_PAY_DEM_CRASH_READY = readyPath;
@@ -202,9 +200,10 @@ describe("native DEM process recovery", () => {
     expect(exited).toEqual({ code: null, signal: "SIGKILL" });
 
     // Both the outer coordinator lease and the inner irreversible-effect lease
-    // were held by the dead process. Let them expire before the new worker claims
-    // a strictly newer generation from the same durable database.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // were held by the dead process. Let the fixture's two-second leases expire
+    // before the new worker claims a strictly newer generation from the same
+    // durable database.
+    await new Promise((resolve) => setTimeout(resolve, 2_250));
 
     const database = await openDacsNodeSqliteDatabase({
       databasePath,
@@ -251,14 +250,16 @@ describe("native DEM process recovery", () => {
       resolveAuthority: () => AUTHORITY,
       reconcile,
       publishNotice,
-      effectLeaseDurationMs: 100,
+      // The dead fixture's 100 ms lease has already expired. Give the recovery
+      // worker enough time to finish even when a loaded CI runner pauses it.
+      effectLeaseDurationMs: 5_000,
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-kill",
       operations: { payment },
-      leaseDurationMs: 100,
+      leaseDurationMs: 5_000,
     });
 
     await coordinator.runPending({ limit: 1 });
@@ -272,5 +273,5 @@ describe("native DEM process recovery", () => {
         payment: { state: "final", outcome: "success" },
       },
     });
-  }, 30_000);
+  }, 75_000);
 });
