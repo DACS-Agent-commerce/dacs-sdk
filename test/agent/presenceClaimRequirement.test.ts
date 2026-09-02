@@ -103,7 +103,6 @@ function exactRef(left: VerifyResultRef, right: VerifyResultRef): boolean {
 
 async function replay(
   vector: PresenceVector,
-  options: Readonly<{ acceptStandard359VectorHashRegression?: boolean }> = {},
 ): Promise<VerificationDecision> {
   const record = vector.compositeRecord;
   if (!isCompositeVerificationRecord(record)) return "error";
@@ -138,14 +137,11 @@ async function replay(
     const resolved = vector.resolvedResults.find((entry) => exactRef(entry.ref, ref));
     if (resolved) {
       if (!isVerifyResult(resolved.artifact)) return "error";
-      const normativeHash = contentHash(
-        resolved.artifact as unknown as Record<string, unknown>,
-      );
-      const knownRegressedHash = sha256Hex(canonicalize(resolved.artifact));
-      const referenceMatches = normativeHash === ref.contentHash ||
-        (options.acceptStandard359VectorHashRegression === true &&
-          knownRegressedHash === ref.contentHash);
-      if (!referenceMatches || !(await componentAuthenticated(resolved.artifact))) {
+      if (
+        contentHash(resolved.artifact as unknown as Record<string, unknown>) !==
+          ref.contentHash ||
+        !(await componentAuthenticated(resolved.artifact))
+      ) {
         return "error";
       }
     }
@@ -182,25 +178,24 @@ async function replay(
 }
 
 describe("DACS-1 v0.7 / DACS-2 v0.6 presence-only corpus", () => {
-  test("quarantines the eight signature-included refs tracked by Standard #359", () => {
+  test("uses CORE §B.2 signature-omitted refs for every resolved result", () => {
     const resolved = corpus.vectors.flatMap((vector) => vector.resolvedResults);
-    const regressions = resolved.filter(({ ref, artifact }) =>
-      contentHash(artifact as unknown as Record<string, unknown>) !== ref.contentHash
-    );
 
     expect(resolved).toHaveLength(8);
-    expect(regressions).toHaveLength(8);
-    expect(regressions.every(({ ref, artifact }) =>
-      sha256Hex(canonicalize(artifact)) === ref.contentHash
+    expect(resolved.every(({ ref, artifact }) =>
+      contentHash(artifact as unknown as Record<string, unknown>) === ref.contentHash
+    )).toBe(true);
+    expect(resolved.every(({ ref, artifact }) =>
+      sha256Hex(canonicalize(artifact)) !== ref.contentHash
     )).toBe(true);
   });
 
-  test("replays all 38 semantic outcomes with only the quarantined #359 hash waived", async () => {
+  test("strictly replays all 38 authenticated semantic outcomes", async () => {
     expect(corpus.count).toBe(38);
     const outcomes = await Promise.all(corpus.vectors.map(async (vector) => ({
       name: vector.name,
       expected: vector.expected,
-      actual: await replay(vector, { acceptStandard359VectorHashRegression: true }),
+      actual: await replay(vector),
     })));
     expect(outcomes.filter((outcome) => outcome.actual !== outcome.expected)).toEqual([]);
   });
