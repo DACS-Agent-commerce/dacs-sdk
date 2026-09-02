@@ -5,6 +5,7 @@ import type {
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
   CompositeVerificationRecord,
+  IdentityBundle,
   ListingDraft,
   ListingPin,
 } from "../artifacts/types.js";
@@ -14,6 +15,7 @@ import {
   isAnyAttestationBundle,
   isAgreementArtifact,
   isAttestationRef,
+  isIdentityBundle,
   isLegacyMvpListing,
   isListing,
   readListingArtifact,
@@ -340,8 +342,22 @@ export interface AgentConfig {
   wallet?: string;
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
-  /** Optional identity metadata (e.g. the agent's DID / primary claim). */
-  identity?: { agentId?: string };
+  /**
+   * Local identity authority. Session-capable agents must provide the exact
+   * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
+   * (or an explicitly configured listing-validation fallback); the SDK
+   * computes every session party hash from these bytes rather than `agentId`.
+   */
+  identity?: {
+    agentId?: string;
+    bundle?: IdentityBundle;
+    /**
+     * Authenticate this agent's exact DACS-1 bundle presentation before any
+     * session effect. Keep this authority independent from seller Listing
+     * validation when the two identities use different keys or claim methods.
+     */
+    verifyPresentation?: ListingValidationDeps["verifyIdentityPresentation"];
+  };
   /** DACS-1 §6.3.4 LP-6 authority read for pay-bearing Listing publication. */
   loadListingRailResolution?: (
     listing: Readonly<ListingDraft>,
@@ -688,6 +704,45 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
+  const identityBundleInput =
+    identity === undefined
+      ? undefined
+      : stableAgentData(identity, "bundle", "AgentConfig.identity.bundle");
+  const configuredBuyerIdentityBundle =
+    identityBundleInput === undefined
+      ? undefined
+      : snapshotCanonicalJson(
+          identityBundleInput,
+          "AgentConfig.identity.bundle",
+        );
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    !isIdentityBundle(configuredBuyerIdentityBundle)
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    configuredBuyerId !== undefined &&
+    configuredBuyerIdentityBundle.presentedBy !== configuredBuyerId
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle.presentedBy must equal AgentConfig.identity.agentId",
+    );
+  }
+  const configuredBuyerIdentityPresentationVerifier =
+    identity === undefined
+      ? undefined
+      : stableAgentMethod<
+          NonNullable<AgentConfig["identity"]>["verifyPresentation"]
+        >(
+          identity,
+          "verifyPresentation",
+          "AgentConfig.identity.verifyPresentation",
+          true,
+        );
   const sign: Signer = (bytes) => adapter.sign(bytes);
   const listingValidator = (deps: ListingValidationDeps | undefined) =>
     deps
@@ -1204,6 +1259,21 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
+      const buyerIdentityBundle = configuredBuyerIdentityBundle;
+      if (!buyerIdentityBundle) {
+        throw new DacsError(
+          "runSession requires createAgent({ identity: { agentId, bundle } })",
+        );
+      }
+      const buyerIdentityPresentationVerifier =
+        configuredBuyerIdentityPresentationVerifier ??
+        sessionListingValidationDeps?.verifyIdentityPresentation ??
+        configuredListingValidationDeps?.verifyIdentityPresentation;
+      if (!buyerIdentityPresentationVerifier) {
+        throw new DacsError(
+          "runSession requires a configured DACS-1 identity presentation verifier",
+        );
+      }
       if (
         buyerId.normalize("NFC") !== buyerId ||
         buyerId.trim() !== buyerId ||
@@ -1358,6 +1428,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         options.terms,
         {
           buyerId,
+          buyerIdentityBundle,
+          authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
+            buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
           readListing: (ref) => adapter.readAnchor(ref),
           // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
           // migration is owned by #98; it is deliberately not coerced into a

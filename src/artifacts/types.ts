@@ -961,12 +961,18 @@ export type SettlementEvidence =
       attestationRef?: AttestationRef;
     });
 
-/** DACS-5 — a rating recorded as a standalone RatingRecord (§10.6). */
-export interface Rating {
-  from: string;
-  to: string;
-  score: number;
+/** DACS-5 §10.6 — one signed, standalone rating direction. */
+export interface RatingRecord {
+  ratingVersion: "1";
+  jobId: string;
+  rater: ClaimRef;
+  target: ClaimRef;
+  targetRole: "buyer" | "seller";
+  value: number;
+  freeText?: string;
   dimensions?: Record<string, number>;
+  ratedAt: number;
+  signature: ComponentSignature;
 }
 
 /** A party to an attestation bundle, with the content hash of its IdentityBundle. */

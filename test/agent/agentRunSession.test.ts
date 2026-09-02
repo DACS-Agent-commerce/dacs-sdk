@@ -57,6 +57,32 @@ const sellerDid = `did:demos:agent:${sellerHex}`;
 const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
 const buyerDid = `did:demos:agent:${Buffer.from(buyerPublicKey).toString("hex")}`;
 
+function signedIdentityBundle(
+  presentedBy: string,
+  privateKey: typeof buyerPriv,
+): IdentityBundle {
+  const bundle: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy,
+    presentedAt: 1_780_000_000_000,
+    claims: [{ ref: presentedBy }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: presentedBy, signature: "pending" }],
+    },
+  };
+  if (bundle.presentation.kind !== "per-claim") throw new Error("fixture drift");
+  bundle.presentation.signatures[0]!.signature = Buffer.from(
+    ed25519Sign(
+      signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
+      privateKey,
+    ),
+  ).toString("base64url");
+  return bundle;
+}
+
+const buyerIdentity = signedIdentityBundle(buyerDid, buyerPriv);
+
 /** In-memory adapter — just the surface buildAgent's runSession path touches. */
 function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
@@ -235,11 +261,16 @@ function listingValidationDeps(
       const proof = bundle.presentation.signatures.find(
         (candidate) => candidate.ref === bundle.presentedBy,
       );
-      return bundle.presentedBy === sellerDid && !!proof &&
+      const publicKey = bundle.presentedBy === sellerDid
+        ? sellerPublicKey
+        : bundle.presentedBy === buyerDid
+          ? buyerPublicKey
+          : null;
+      return publicKey !== null && !!proof &&
         ed25519Verify(
           bytes,
           Uint8Array.from(Buffer.from(proof.signature, "base64url")),
-          publicKeyFromRaw(sellerPublicKey),
+          publicKeyFromRaw(publicKey),
         );
     },
     loadRailResolution: () => ({
@@ -263,6 +294,15 @@ function listingValidationDeps(
 }
 
 describe("Agent.runSession wires the #41 listing verifier (public surface)", () => {
+  test("rejects a configured bundle for a different agent at construction", () => {
+    const { adapter } = memAdapter();
+    expect(() => buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: sellerDid, bundle: buyerIdentity },
+    })).toThrow(/bundle\.presentedBy must equal/);
+  });
+
   test("binds a cross-namespace x402 recipient explicitly and rejects omission before rail submission", async () => {
     const recipientEvm = "0x1111111111111111111111111111111111111111";
     const asset = "0x2222222222222222222222222222222222222222";
@@ -282,11 +322,49 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
 
     const boundAdapter = memAdapter();
     const boundRef = await anchorListing(boundAdapter.store);
+    const verifyBuyerPresentation = vi.fn(
+      ({ bundle, signedBytes: bytes }: {
+        bundle: Readonly<IdentityBundle>;
+        signedBytes: Uint8Array;
+      }) => {
+        if (
+          bundle.presentedBy !== buyerDid ||
+          bundle.presentation.kind !== "per-claim"
+        ) return false;
+        const proof = bundle.presentation.signatures.find(
+          (candidate) => candidate.ref === buyerDid,
+        );
+        return !!proof && ed25519Verify(
+          bytes,
+          Uint8Array.from(Buffer.from(proof.signature, "base64url")),
+          publicKeyFromRaw(buyerPublicKey),
+        );
+      },
+    );
+    const sellerOnlyValidation = listingValidationDeps();
+    sellerOnlyValidation.verifyIdentityPresentation = ({ bundle, signedBytes: bytes }) => {
+      if (
+        bundle.presentedBy !== sellerDid ||
+        bundle.presentation.kind !== "per-claim"
+      ) return false;
+      const proof = bundle.presentation.signatures.find(
+        (candidate) => candidate.ref === sellerDid,
+      );
+      return !!proof && ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(proof.signature, "base64url")),
+        publicKeyFromRaw(sellerPublicKey),
+      );
+    };
     const boundAgent = buildAgent(boundAdapter.adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
-      listingValidationDeps: listingValidationDeps(),
+      identity: {
+        agentId: buyerDid,
+        bundle: buyerIdentity,
+        verifyPresentation: verifyBuyerPresentation,
+      },
+      listingValidationDeps: sellerOnlyValidation,
     });
     const boundRail = makeRail();
     await expect(
@@ -302,13 +380,14 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(boundRail.settle).toHaveBeenCalledTimes(1);
+    expect(verifyBuyerPresentation).toHaveBeenCalledTimes(1);
 
     const omittedAdapter = memAdapter();
     const omittedRef = await anchorListing(omittedAdapter.store);
     const omittedAgent = buildAgent(omittedAdapter.adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
     const omittedRail = makeRail();
@@ -324,6 +403,35 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();
+  });
+
+  test("rejects an unauthenticated configured buyer bundle before settlement", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const settle = vi.fn(async () => ({
+      ok: true,
+      txHash: "tx-must-not-run",
+      chainId: "demos:testnet",
+      payer: buyerDid,
+      payee: sellerDid,
+    }));
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: {
+        agentId: buyerDid,
+        bundle: buyerIdentity,
+        verifyPresentation: () => false,
+      },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    const anchorsBefore = store.size;
+
+    await expect(
+      agent.runSession(ref, { terms: TERMS, settle }),
+    ).rejects.toThrow(/presentation could not be authenticated/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(store.size).toBe(anchorsBefore);
   });
 
   test("defaults a normative pay-dem session to the seller Demos claim", async () => {
@@ -344,7 +452,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: {
         ...listingValidationDeps(),
         loadRailResolution: () => ({
@@ -417,7 +525,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
 
@@ -457,7 +565,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
     let settleCalls = 0;
@@ -509,7 +617,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
 
@@ -542,7 +650,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       const agent = buildAgent(adapter as never, {
         demosRpc: "mem",
         wallet: "x",
-        identity: { agentId: buyerDid },
+        identity: { agentId: buyerDid, bundle: buyerIdentity },
         listingValidationDeps: listingValidationDeps(() => Date.now()),
       });
       let settleCalls = 0;
@@ -681,7 +789,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
 
@@ -710,7 +818,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
     });
     let finalityCalls = 0;
     let settleCalls = 0;
@@ -823,7 +931,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
     });
     await expect(agent.getReputation(buyerDid, ["stor:forged-bundle"]))
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
@@ -1176,7 +1284,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
     });
     const result = await agent.verifyBundle("stor:pre-commit-bundle");
     expect(result.ok).toBe(true);

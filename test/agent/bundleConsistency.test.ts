@@ -2,12 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, test } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 
 import {
   bundleConsistency,
   bundlesDiverge,
+  lookupBundleCopies,
 } from "../../src/agent/bundleConsistency.js";
+import { bundleAddress } from "../../src/canonical/addressing.js";
 
 const CONF = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -24,6 +26,107 @@ const present = (bundle: Record<string, unknown>) =>
   ({ disposition: "present", bundle }) as const;
 const absent = { disposition: "absent" } as const;
 const indeterminate = { disposition: "indeterminate" } as const;
+
+describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
+  test("fetches both role-specific addresses concurrently and preserves presence", async () => {
+    const calls: Array<[string, string]> = [];
+    const gates = new Map<string, () => void>();
+    const started = new Promise<void>((resolve) => {
+      gates.set("both", resolve);
+    });
+    let starts = 0;
+    const lookup = lookupBundleCopies("job-1", async (address, role) => {
+      calls.push([address, role]);
+      starts += 1;
+      if (starts === 2) gates.get("both")?.();
+      await started;
+      return { disposition: "present", bundle: { jobId: "job-1", role } };
+    });
+
+    await expect(lookup).resolves.toEqual({
+      buyer: {
+        disposition: "present",
+        bundle: { jobId: "job-1", role: "buyer" },
+      },
+      seller: {
+        disposition: "present",
+        bundle: { jobId: "job-1", role: "seller" },
+      },
+    });
+    expect(calls).toEqual([
+      [bundleAddress("job-1", "buyer"), "buyer"],
+      [bundleAddress("job-1", "seller"), "seller"],
+    ]);
+  });
+
+  test("preserves absent/indeterminate and converts reader failure to indeterminate", async () => {
+    await expect(
+      lookupBundleCopies("job-2", async (_address, role) =>
+        role === "buyer"
+          ? { disposition: "absent" }
+          : { disposition: "indeterminate", reason: "not finalized" },
+      ),
+    ).resolves.toEqual({
+      buyer: { disposition: "absent" },
+      seller: { disposition: "indeterminate", reason: "not finalized" },
+    });
+
+    await expect(
+      lookupBundleCopies("job-2", async (_address, role) => {
+        if (role === "buyer") throw new Error("rpc unavailable");
+        return { disposition: "absent" };
+      }),
+    ).resolves.toEqual({
+      buyer: {
+        disposition: "indeterminate",
+        reason: "buyer bundle lookup failed: rpc unavailable",
+      },
+      seller: { disposition: "absent" },
+    });
+  });
+
+  test("ignores cross-session content and fails malformed responses closed", async () => {
+    await expect(
+      lookupBundleCopies("job-3", async (_address, role) =>
+        role === "buyer"
+          ? { disposition: "present", bundle: { jobId: "job-other" } }
+          : { disposition: "present", bundle: {} },
+      ),
+    ).resolves.toMatchObject({
+      buyer: { disposition: "absent" },
+      seller: {
+        disposition: "indeterminate",
+        reason: expect.stringContaining("without a valid jobId"),
+      },
+    });
+  });
+
+  test("owns callback data before returning it", async () => {
+    const returned: {
+      disposition: "present";
+      bundle: { jobId: string; phaseSummary: Array<{ index: number }> };
+    } = {
+      disposition: "present",
+      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+    };
+    const result = await lookupBundleCopies("job-4", async (_address, role) =>
+      role === "buyer" ? returned : { disposition: "absent" },
+    );
+    returned.bundle.phaseSummary[0]!.index = 9;
+    expect(result.buyer).toEqual({
+      disposition: "present",
+      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+    });
+  });
+
+  test("rejects non-canonical job identifiers before reading", async () => {
+    const read = vi.fn();
+    await expect(lookupBundleCopies(" job-1", read)).rejects.toThrow(
+      /jobId must be non-empty canonical text/,
+    );
+    expect(read).not.toHaveBeenCalled();
+  });
+});
 
 describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
   test("requires an explicit validation gate — neither dep rejects (no fail-open)", async () => {
@@ -155,6 +258,21 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
         { isValid: (_b, role) => role === "buyer" },
       ),
     ).rejects.toThrow(/invalid content.*seller/);
+  });
+
+  test("a non-boolean async validation result cannot pass through truthiness", async () => {
+    const buyer = { outcome: "completed", phaseSummary: [] };
+    await expect(
+      bundleConsistency(
+        { buyer: present(buyer), seller: absent },
+        {
+          isValid: (async () => ({ valid: false })) as unknown as (
+            bundle: Record<string, unknown>,
+            role: "buyer" | "seller",
+          ) => Promise<boolean>,
+        },
+      ),
+    ).rejects.toThrow(/invalid content.*buyer/);
   });
 
   test("§10.4.3(b) third arm: a lone single-signed NON-abort copy the isValid gate rejects → absent", async () => {

@@ -14,6 +14,7 @@ import {
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
+  isNegotiablePriceWithinBand,
   generateCanonicalJobId,
   isCanonicalJobId,
   isAgreementDocument,
@@ -21,6 +22,7 @@ import {
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  negotiablePriceBand,
   sha256Hex,
   signFixedPriceAgreement,
   signedBytes,
@@ -241,6 +243,63 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     };
     expect(deriveFixedPriceAgreement(input(value)).terms.price).toEqual(
       value.pricing.bandCenter,
+    );
+  });
+
+  test("derives inclusive negotiable bounds with exact half-up rounding", () => {
+    const pricing = {
+      kind: "negotiable" as const,
+      bandCenter: { amount: "1.23", currency: "USDC" },
+      minPct: 10,
+      maxPct: 10,
+    };
+    expect(negotiablePriceBand(pricing)).toEqual({ lower: "1.11", upper: "1.35" });
+    expect(isNegotiablePriceWithinBand("1.11", pricing)).toBe(true);
+    expect(isNegotiablePriceWithinBand("1.35", pricing)).toBe(true);
+    expect(isNegotiablePriceWithinBand("1.109", pricing)).toBe(false);
+    expect(isNegotiablePriceWithinBand("1.351", pricing)).toBe(false);
+
+    expect(negotiablePriceBand({
+      ...pricing,
+      bandCenter: { amount: "100", currency: "USDC" },
+      minPct: 12.5,
+      maxPct: 12.5,
+    })).toEqual({ lower: "88", upper: "113" });
+  });
+
+  test("rejects malformed negotiable band inputs before arithmetic", () => {
+    const pricing = {
+      kind: "negotiable" as const,
+      bandCenter: { amount: "1", currency: "USDC" },
+      minPct: 10,
+      maxPct: 10,
+    };
+    expect(() => isNegotiablePriceWithinBand("1.00", pricing)).toThrow(/CD-1/);
+    expect(() => negotiablePriceBand({ ...pricing, minPct: 100 })).toThrow(
+      /positive lower bound/,
+    );
+    expect(() => negotiablePriceBand({
+      ...pricing,
+      bandCenter: { amount: "01", currency: "USDC" },
+    })).toThrow(/CD-1/);
+    expect(() => negotiablePriceBand({ kind: "negotiable" } as never)).toThrow(
+      /requires negotiable pricing/,
+    );
+
+    let getterRuns = 0;
+    const accessor = Object.defineProperty({}, "kind", {
+      enumerable: true,
+      get() {
+        getterRuns += 1;
+        return "negotiable";
+      },
+    });
+    expect(() => negotiablePriceBand(accessor as never)).toThrow(
+      /stable canonical JSON|plain data|accessor/,
+    );
+    expect(getterRuns).toBe(0);
+    expect(() => negotiablePriceBand(new Proxy(pricing, {}) as never)).toThrow(
+      /stable canonical JSON|Proxy|plain data/,
     );
   });
 

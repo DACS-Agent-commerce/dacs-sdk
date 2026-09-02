@@ -36,9 +36,12 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  lookupBundleCopies,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
+  type BundleCopyRead,
+  type BundleCopyReader,
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
@@ -67,11 +70,14 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
   type ReputationWindow,
   type SessionOutcome,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,
@@ -80,6 +86,15 @@ export {
   type Dacs5ResumableSessionState,
   type Dacs5SessionTransitionContext,
 } from "./sessionSemantics.js";
+export {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+  type VerificationRetryPolicy,
+  type VetPhaseFailureCause,
+  type VetPhaseFailureClass,
+} from "./vetSemantics.js";
 export {
   discoverListings,
   verifyReadableListingArtifact,
@@ -286,6 +301,57 @@ export {
   type TwoSidedSession,
   type TwoSidedBundles,
 } from "./twoSidedBundle.js";
+export {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  type CreateRatingRecordInput,
+  type RatingRecordSigner,
+} from "./ratingRecord.js";
+export {
+  publishRatingRecordDurably,
+  type DurablePublishedRating,
+  type DurableRatingPublicationDeps,
+  type DurableRatingPublicationInput,
+  type DurableRatingPublicationProgress,
+  type DurableRatingPublicationStage,
+  type RatingAnchorAuthenticationVerdict,
+  type RatingAuthenticationVerdict,
+  type RatingPublicationEffectClaim,
+  type RatingPublicationEffectLease,
+  type RatingPublicationEffectRecord,
+  type RatingPublicationEffectStore,
+  type RatingPublicationEffectWrite,
+} from "./durableRatingPublication.js";
+export {
+  createRatingPhasePlan,
+  completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
+  type RatingPartyRole,
+  type RatingPhaseParty,
+  type RatingPhasePriorResult,
+  type RatingPhaseAuthorityInput,
+  type RatingPhaseAuthenticationVerdict,
+  type CreateRatingPhasePlanDeps,
+  type RatingPhasePlan,
+  type RatingPhaseSubmission,
+  type RatingPhaseCompletedEntry,
+  type RatingPhaseRoleResult,
+  type RatingPhaseReadyHandoff,
+  type RatingPhaseCompletion,
+  type CompleteRatingPhaseDeps,
+} from "./ratingPhase.js";
+export {
+  RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
+  type RatingPhaseHandoffAuthenticationInput,
+  type AuthenticateRatingPhaseHandoff,
+  type PersistRatingPhaseHandoffDeps,
+  type RecoverRatingPhaseHandoffDeps,
+  type RatingPhaseHandoffStage,
+  type PersistRatingPhaseHandoffResult,
+  type RecoverRatingPhaseHandoffResult,
+} from "./durableRatingPhaseHandoff.js";
 export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
