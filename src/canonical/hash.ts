@@ -21,8 +21,9 @@ export function stripSignature<T extends Record<string, unknown>>(doc: T): Parti
   // Object.fromEntries uses CreateDataProperty rather than [[Set]]. An own
   // `__proto__` member therefore remains ordinary signed data instead of
   // dispatching through Object.prototype.__proto__ and disappearing. The
-  // canonical snapshot also normalises CF-1 aliases, catches key collisions,
-  // and ensures the returned normal-prototype object owns its complete graph.
+  // The canonical snapshot normalises CF-1 string values while preserving
+  // member names exactly, and ensures the returned normal-prototype object owns
+  // its complete graph.
   return Object.fromEntries(
     Object.entries(snapshot).filter(([key]) => !SIGNATURE_FIELDS.includes(key)),
   ) as Partial<T>;
