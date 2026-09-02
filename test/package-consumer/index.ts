@@ -48,6 +48,10 @@ import {
   type Ap2BindingStore,
   type Ap2MandateVerifier,
   type Ap2ProviderAdapter,
+  advanceSolanaSplSettlement,
+  createSolanaSplSettlementIntent,
+  type SolanaSplAdapter,
+  type SolanaSplSettlementStore,
 } from "@kynesyslabs/dacs/rails";
 
 const config: DemosAdapterConfig = { rpc: "https://example.invalid" };
@@ -118,6 +122,8 @@ const replaySettlementVerified: typeof replaySettlementVerifiedReputation =
   replaySettlementVerifiedReputation;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
+const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
+const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -130,6 +136,8 @@ declare const ebfabDeps: EvidenceBoundBundleVerifierDeps;
 declare const ap2Store: Ap2BindingStore;
 declare const ap2Verifier: Ap2MandateVerifier;
 declare const ap2Provider: Ap2ProviderAdapter;
+declare const solanaAdapter: SolanaSplAdapter;
+declare const solanaStore: SolanaSplSettlementStore;
 
 void config;
 void verifier;
@@ -171,3 +179,7 @@ void ap2IdempotencyKey;
 void ap2Store;
 void ap2Verifier;
 void ap2Provider;
+void solanaAdvance;
+void solanaIntent;
+void solanaAdapter;
+void solanaStore;

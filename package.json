@@ -88,6 +88,7 @@
     "docs/rfq-negotiation-core.md",
     "docs/settlement-verified-reputation.md",
     "docs/pay-ap2.md",
+    "docs/pay-solana-spl.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
   ],
