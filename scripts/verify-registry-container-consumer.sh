@@ -130,9 +130,15 @@ docker run --detach \
   >/dev/null
 registry_started=1
 
-host_port=$(docker inspect --format \
-  '{{(index (index .NetworkSettings.Ports "4873/tcp") 0).HostPort}}' \
-  "$registry_container")
+host_port=
+for attempt in $(seq 1 30); do
+  host_port=$(docker port "$registry_container" 4873/tcp 2>/dev/null \
+    | sed -n '1s/.*://p')
+  if [ -n "$host_port" ]; then
+    break
+  fi
+  sleep 1
+done
 case "$host_port" in
   ''|*[!0-9]*) echo "Verdaccio host port is invalid" >&2; exit 1 ;;
 esac
