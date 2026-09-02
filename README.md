@@ -276,6 +276,14 @@ const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
+`Agent.getReputation()` is the normal untrusted-input path and fully verifies
+each referenced bundle before scoring it. Lower-level consumers that already
+hold candidate bundle objects must use `deriveReputationWithValidation()` when
+their cryptographic verifier is asynchronous. The pure `deriveReputation()`
+helper accepts only a synchronous primitive-boolean predicate over copies that
+were authenticated upstream; a Promise-valued predicate is rejected rather
+than treated as truthy.
+
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
 
