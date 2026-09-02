@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import type { IdentityBundle } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { signedBytes } from "../crypto/signing.js";
@@ -50,6 +52,7 @@ export function siwdResourcesBindBundleHash(
 ): boolean {
   try {
     if (
+      nodeTypes.isProxy(resources) ||
       !Array.isArray(resources) ||
       Object.getPrototypeOf(resources) !== Array.prototype
     ) {
