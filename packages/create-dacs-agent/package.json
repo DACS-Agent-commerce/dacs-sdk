@@ -1,8 +1,17 @@
 {
   "name": "create-dacs-agent",
   "version": "0.1.0-alpha.0",
-  "description": "Create a bounded offline DACS verifier simulation project.",
+  "description": "Create bounded offline or guarded live DACS agent projects.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git",
+    "directory": "packages/create-dacs-agent"
+  },
+  "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/create-dacs-agent#readme",
+  "bugs": {
+    "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -23,6 +32,14 @@
     "README.md",
     "LICENSE"
   ],
+  "dacs": {
+    "releaseMetadataVersion": 1,
+    "standardRevision": "965df755aba4ff392f1fb37a93d287242b177ba4",
+    "configSchemaVersion": 1,
+    "sqliteSchemaVersion": 7,
+    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7],
+    "breakingConfigurationChanges": []
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run clean && npm run build",
@@ -30,6 +47,10 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "devDependencies": {
     "@types/node": "^20",

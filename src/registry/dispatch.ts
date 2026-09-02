@@ -558,13 +558,15 @@ function requiredEvmPrivateKey(
   return value;
 }
 
-function requiredFinalityBlocks(
-  descriptor: AuthenticatedRailDefinition,
-): number {
+function requiredFinalityBlocks(descriptor: Readonly<{
+  railId: string;
+  railType: string;
+  parameters: Record<string, unknown>;
+}>): number {
   const value = descriptor.parameters["finalityBlocks"];
   if (!Number.isSafeInteger(value) || (value as number) <= 0) {
     throw new DacsError(
-      `${descriptor.railType} rail "${descriptor.railId}" definition requires a positive parameters.finalityBlocks`,
+      `${descriptor.railType} rail "${descriptor.railId}" descriptor requires a positive parameters.finalityBlocks`,
     );
   }
   return value as number;
@@ -695,7 +697,7 @@ export async function settleFromRail(
         ),
         rpcUrl: capturedOptions.rpcUrl,
         network,
-        finalityBlocks: requiredFinalityBlocks(descriptor),
+        finalityBlocks: requiredFinalityBlocks(capturedDescriptor),
       });
       return bindDescriptorRequest(descriptorIdentity, evmErc20Settle(rail, {
         tokenAddress: capturedDescriptor.asset.contract,

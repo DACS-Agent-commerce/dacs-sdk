@@ -4,6 +4,7 @@ import { stdin, stdout } from "node:process";
 
 import {
   OFFLINE_PROFILE,
+  LIVE_PROFILE,
   createDacsAgentProject,
   type CreateDacsAgentOptions,
 } from "./index.js";
@@ -12,8 +13,9 @@ interface ParsedArguments extends CreateDacsAgentOptions {
   yes: boolean;
 }
 
-const ROLES = new Set(["demo-all"]);
+const ROLES = new Set(["demo-all", "buyer", "seller"]);
 const DEPLOYMENTS = new Set(["local", "docker"]);
+const RAILS = new Set(["x402", "pay-dem", "both"]);
 
 function valueAfter(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
@@ -29,6 +31,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
   let profile: string | undefined;
   let role: CreateDacsAgentOptions["role"];
   let deployment: CreateDacsAgentOptions["deployment"];
+  let rails: CreateDacsAgentOptions["rails"];
   let yes = false;
   let install = true;
   let run = false;
@@ -51,9 +54,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     } else if (argument === "--role") {
       const value = valueAfter(args, index, argument);
       if (!ROLES.has(value)) {
-        throw new Error(
-          "--role must be demo-all; independent role services are not implemented",
-        );
+        throw new Error("--role must be demo-all, buyer or seller");
       }
       role = value as CreateDacsAgentOptions["role"];
       index += 1;
@@ -63,6 +64,13 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
         throw new Error("--deploy must be local or docker");
       }
       deployment = value as CreateDacsAgentOptions["deployment"];
+      index += 1;
+    } else if (argument === "--rails") {
+      const value = valueAfter(args, index, argument);
+      if (!RAILS.has(value)) {
+        throw new Error("--rails must be x402, pay-dem or both");
+      }
+      rails = value as CreateDacsAgentOptions["rails"];
       index += 1;
     } else if (argument.startsWith("--")) {
       throw new Error(`unknown option: ${argument}`);
@@ -79,6 +87,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     profile,
     role,
     deployment,
+    rails,
     install,
     run,
     yes,
@@ -116,25 +125,43 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
 
   await boundedAnswer("Package manager [npm]: ", new Set(["npm"]), "npm");
   const mode = (parsed.mode ??
-    (await boundedAnswer("Mode [offline]: ", new Set(["offline"]), "offline"))) as
-    | "offline";
-  const role = parsed.role ?? "demo-all";
+    (await boundedAnswer(
+      "Mode [offline] (offline/live-demos): ",
+      new Set(["offline", "live-demos"]),
+      "offline",
+    ))) as "offline" | "live-demos";
+  const role = (parsed.role ?? (await boundedAnswer(
+    mode === "offline"
+      ? "Process role [demo-all]: "
+      : "Process role [buyer] (buyer/seller): ",
+    mode === "offline" ? new Set(["demo-all"]) : new Set(["buyer", "seller"]),
+    mode === "offline" ? "demo-all" : "buyer",
+  ))) as CreateDacsAgentOptions["role"];
   const deployment = (parsed.deployment ??
     (await boundedAnswer(
       "Deployment [local] (local/docker): ",
       DEPLOYMENTS,
       "local",
     ))) as CreateDacsAgentOptions["deployment"];
-  const runAnswer = parsed.run
-    ? "yes"
-    : await boundedAnswer("Run offline smoke now? [yes] (yes/no): ", new Set(["yes", "no"]), "yes");
+  const rails = mode === "live-demos"
+    ? (parsed.rails ?? await boundedAnswer(
+        "Payment rails [both] (x402/pay-dem/both): ",
+        RAILS,
+        "both",
+      )) as CreateDacsAgentOptions["rails"]
+    : undefined;
+  const runAnswer = mode === "offline"
+    ? parsed.run ? "yes" : await boundedAnswer(
+      "Run offline smoke now? [yes] (yes/no): ", new Set(["yes", "no"]), "yes")
+    : "no";
   return {
     ...parsed,
     targetDirectory,
     mode,
-    profile: parsed.profile ?? OFFLINE_PROFILE,
+    profile: parsed.profile ?? (mode === "offline" ? OFFLINE_PROFILE : LIVE_PROFILE),
     role,
     deployment,
+    rails,
     run: runAnswer === "yes",
   };
 }
@@ -150,6 +177,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     `\nCreated ${created.targetDirectory}\n` +
       `Profile: ${created.profile}\n` +
       `Installed: ${created.installed ? "yes" : "no"}\n` +
-      `Ran verifier simulation: ${created.ran ? "yes" : "no"}\n`,
+      `Ran verifier simulation: ${created.ran ? "yes" : "no"}\n` +
+      `Doctor: ${created.doctor}\n`,
   );
 }

@@ -193,11 +193,12 @@ const TOKEN_SYMBOL = "USDC";
 const TOKEN_DECIMALS = 6;
 const OS_PER_DEM = 1_000_000_000n;
 // Ten seller writes and six buyer writes at the currently observed 2 DEM
-// storage-program fee, plus three DEM per identity of explicit headroom. The
-// extra writes are the role-owned BundleBindings and buyer finalization handoff.
+// storage-program fee, plus the currently observed 1 DEM finalization effect
+// debit and explicit headroom. The extra writes are the role-owned
+// BundleBindings and buyer finalization handoff.
 const SELLER_MINIMUM_OS = 23n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 15n * OS_PER_DEM;
-const PROJECTED_DEMOS_DEBIT_OS = 32n * OS_PER_DEM;
+const PROJECTED_DEMOS_DEBIT_OS = 33n * OS_PER_DEM;
 const HARD_MAX_DEMOS_DEBIT_OS = SELLER_MINIMUM_OS + BUYER_MINIMUM_OS;
 const LEASE_DURATION_MS = 120_000;
 const EIP3009_AUTHORIZATION_USED_EVENT = parseAbiItem(
@@ -520,28 +521,43 @@ function configuredPositiveInteger(value: string, code: string): bigint {
   return BigInt(value);
 }
 
-function confirmedDemosFeeOs(value: unknown): bigint | undefined {
-  const data = (value as {
+function confirmedDemosDebitOs(value: unknown): bigint | undefined {
+  const content = (value as {
     response?: {
       data?: {
-        gas_operation?: unknown;
-        transaction?: { content?: { transaction_fee?: unknown }; hash?: unknown };
+        transaction?: {
+          content?: { from?: unknown; gcr_edits?: unknown };
+        };
       };
     };
-  })?.response?.data;
-  if (!data || typeof data !== "object") return undefined;
-  const fees = data.gas_operation == null
-    ? data.transaction?.content?.transaction_fee
-    : typeof data.gas_operation === "object" && !Array.isArray(data.gas_operation)
-      ? (data.gas_operation as { fees?: unknown }).fees
-      : undefined;
-  if (!fees || typeof fees !== "object" || Array.isArray(fees)) return undefined;
-  const record = fees as Record<string, unknown>;
-  const components = [record.network_fee, record.rpc_fee, record.additional_fee];
-  if (!components.every((component) =>
-    typeof component === "string" && /^(?:0|[1-9][0-9]*)$/.test(component)
-  )) return undefined;
-  return components.reduce<bigint>((total, component) => total + BigInt(component as string), 0n);
+  })?.response?.data?.transaction?.content;
+  if (typeof content?.from !== "string" || !Array.isArray(content.gcr_edits)) {
+    return undefined;
+  }
+  const sender = content.from.toLowerCase();
+  let debitOs = 0n;
+  let foundSenderDebit = false;
+  for (const candidate of content.gcr_edits) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return undefined;
+    }
+    const edit = candidate as Record<string, unknown>;
+    if (edit.type !== "balance" || edit.operation !== "remove") {
+      continue;
+    }
+    if (typeof edit.account !== "string" || typeof edit.isRollback !== "boolean") {
+      return undefined;
+    }
+    if (edit.account.toLowerCase() !== sender || edit.isRollback) {
+      continue;
+    }
+    if (typeof edit.amount !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(edit.amount)) {
+      return undefined;
+    }
+    foundSenderDebit = true;
+    debitOs += BigInt(edit.amount);
+  }
+  return foundSenderDebit ? debitOs : undefined;
 }
 
 interface FundedDemosDebitBudget {
@@ -569,9 +585,9 @@ function createFundedDemosDebitBudget(maximumOs: bigint): FundedDemosDebitBudget
       );
       const hash = transaction.hash.replace(/^0x/i, "").toLowerCase();
       if (transactions.has(hash)) return;
-      const feeOs = confirmedDemosFeeOs(validity);
-      requireCondition(feeOs !== undefined, "demos-debit-fee-unavailable");
-      const next = reservedOs + feeOs;
+      const transactionDebitOs = confirmedDemosDebitOs(validity);
+      requireCondition(transactionDebitOs !== undefined, "demos-debit-effect-unavailable");
+      const next = reservedOs + transactionDebitOs;
       requireCondition(next <= maximumOs, "demos-debit-cap-exceeded");
       transactions.add(hash);
       reservedOs = next;
@@ -1674,6 +1690,20 @@ interface PublishedVetArtifacts extends VetArtifacts {
   externalSellerProvenanceReceipt: AnchorReceipt;
 }
 
+function assertPreparedVetSignerBindings(
+  prepared: PreparedVetArtifacts,
+  buyerDid: string,
+  sellerDid: string,
+): void {
+  requireCondition(
+    prepared.buyer.signature.signer === sellerDid &&
+      prepared.buyerRef.signer === sellerDid &&
+      prepared.seller.signature.signer === buyerDid &&
+      prepared.sellerRef.signer === buyerDid,
+    "prepared-vet-signer-binding-invalid",
+  );
+}
+
 async function prepareVetRecords(input: {
   preflight: Preflight;
   jobId: string;
@@ -1694,8 +1724,8 @@ async function prepareVetRecords(input: {
       jobId: input.jobId,
       evaluatedParty: input.preflight.env.SELLER_DID,
       bundle: input.sellerIdentity,
-      verifier: input.preflight.env.SELLER_DID,
-      signer: input.preflight.seller.adapter,
+      verifier: input.preflight.env.BUYER_DID,
+      signer: input.preflight.buyer.adapter,
       generatedAt: input.now,
     }),
   ]);
@@ -1719,7 +1749,7 @@ async function prepareVetRecords(input: {
       ),
     },
     contentHash: contentHash(sellerRecord as unknown as Record<string, unknown>),
-    signer: input.preflight.env.SELLER_DID,
+    signer: input.preflight.env.BUYER_DID,
   };
   // DACS Standard #331 has not yet defined authenticated provenance for a
   // complementary VPC requirement. This is an explicit, external, fail-closed
@@ -1732,7 +1762,7 @@ async function prepareVetRecords(input: {
     standardsGap: "DACS-Standard#331" as const,
     jobId: input.jobId,
     evaluatedParty: input.preflight.env.SELLER_DID,
-    verifier: input.preflight.env.SELLER_DID,
+    verifier: input.preflight.env.BUYER_DID,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
     vetRecordHash: sellerRef.contentHash,
   };
@@ -1771,17 +1801,23 @@ async function publishPreparedVetRecords(input: {
   preflight: Preflight;
   prepared: PreparedVetArtifacts;
 }): Promise<VetArtifacts> {
+  assertPreparedVetSignerBindings(
+    input.prepared,
+    input.preflight.env.BUYER_DID,
+    input.preflight.env.SELLER_DID,
+  );
   const [buyerAnchor, sellerAnchor] = await Promise.all([
     anchorArtifact({
       adapter: input.preflight.seller.adapter,
       writer: input.preflight.env.SELLER_DID,
+      refSigner: input.prepared.buyerRef.signer,
       logicalAddress: input.prepared.buyerRef.anchor.locator,
       artifact: input.prepared.buyer as unknown as Record<string, unknown>,
     }),
     anchorArtifact({
       adapter: input.preflight.buyer.adapter,
       writer: input.preflight.env.BUYER_DID,
-      refSigner: input.preflight.env.SELLER_DID,
+      refSigner: input.prepared.sellerRef.signer,
       logicalAddress: input.prepared.sellerRef.anchor.locator,
       artifact: input.prepared.seller as unknown as Record<string, unknown>,
     }),
@@ -3140,7 +3176,7 @@ async function createSellerRuntime(input: {
                 vetRecordRef: structuredClone(vet.sellerRef),
                 evaluatedParty: preflight.env.SELLER_DID,
                 requirement: structuredClone(EMPTY_REQUIREMENT),
-                verifier: preflight.env.SELLER_DID,
+                verifier: preflight.env.BUYER_DID,
                 freshness: [],
                 dealSpecific: [],
               },
@@ -5001,9 +5037,10 @@ async function closeDurableDetachedRoleBundles(input: {
       isVerifyResultSignerAuthorized: (result: unknown, signature: { signer: string }) => {
         if (!result || typeof result !== "object" || Array.isArray(result)) return false;
         const evaluatedParty = (result as Record<string, unknown>).evaluatedParty;
-        return (evaluatedParty === input.preflight.env.BUYER_DID ||
-          evaluatedParty === input.preflight.env.SELLER_DID) &&
-          signature.signer === input.preflight.env.SELLER_DID;
+        return (evaluatedParty === input.preflight.env.BUYER_DID &&
+          signature.signer === input.preflight.env.SELLER_DID) ||
+          (evaluatedParty === input.preflight.env.SELLER_DID &&
+            signature.signer === input.preflight.env.BUYER_DID);
       },
       resolvePublicKey: async (signature: { signer: string; algorithm: string }) =>
         signature.algorithm === "ed25519" ? publicKey(signature.signer) : null,
@@ -5126,7 +5163,9 @@ async function closeDurableDetachedRoleBundles(input: {
           requirement.contentHash === input.vet.sellerRef.contentHash) {
         const vetRecord = requirement.contentHash === input.vet.buyerRef.contentHash
           ? input.vet.buyer : input.vet.seller;
-        const verifier = input.preflight.env.SELLER_DID;
+        const verifier = requirement.contentHash === input.vet.buyerRef.contentHash
+          ? input.preflight.env.SELLER_DID
+          : input.preflight.env.BUYER_DID;
         return canonicalize(record) === canonicalize(vetRecord) && verifyEd25519(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           vetRecord as unknown as Record<string, unknown>,
@@ -5703,6 +5742,27 @@ async function closeDurableDetachedRoleBundles(input: {
 }
 
 describe("issue #114 guarded funded two-agent spine", () => {
+  it("binds each prepared Vet reference to the verifier that signed it", () => {
+    const buyerDid = "did:demos:agent:buyer";
+    const sellerDid = "did:demos:agent:seller";
+    const prepared = {
+      buyer: { signature: { signer: sellerDid } },
+      buyerRef: { signer: sellerDid },
+      seller: { signature: { signer: buyerDid } },
+      sellerRef: { signer: buyerDid },
+    } as unknown as PreparedVetArtifacts;
+
+    expect(() =>
+      assertPreparedVetSignerBindings(prepared, buyerDid, sellerDid)
+    ).not.toThrow();
+
+    const rebound = structuredClone(prepared);
+    rebound.sellerRef.signer = sellerDid;
+    expect(() =>
+      assertPreparedVetSignerBindings(rebound, buyerDid, sellerDid)
+    ).toThrow("funded-e2e:prepared-vet-signer-binding-invalid");
+  });
+
   it("retries immutable proof reads without promoting a non-establishing view", async () => {
     let recoveringCalls = 0;
     const recovered = await retryEstablishedRead(async () => {
@@ -5918,7 +5978,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
     );
   });
 
-  it("reserves every confirmed Demos fee before invoking its broadcast", async () => {
+  it("reserves every confirmed Demos debit effect before invoking its broadcast", async () => {
     const calls: unknown[] = [];
     const adapter = {
       raw: {
@@ -5930,34 +5990,69 @@ describe("issue #114 guarded funded two-agent spine", () => {
         },
       },
     } as unknown as DemosBackedAdapter;
-    const budget = createFundedDemosDebitBudget(3n);
+    const budget = createFundedDemosDebitBudget(4n);
     installFundedDemosDebitGuard(adapter, budget);
-    const validity = (hash: string, networkFee: string) => ({
+    const sender = `0x${"a".repeat(64)}`;
+    const validity = (hash: string, balanceRemovals: readonly string[]) => ({
       response: {
         data: {
           transaction: {
             hash,
             content: {
+              from: sender,
               transaction_fee: {
-                network_fee: networkFee,
+                network_fee: "2",
                 rpc_fee: "1",
                 additional_fee: "0",
               },
+              gcr_edits: balanceRemovals.map((amount) => ({
+                type: "balance",
+                operation: "remove",
+                isRollback: false,
+                account: sender,
+                amount,
+              })),
             },
           },
         },
       },
     });
-    await adapter.raw.tx.broadcast(validity("1".repeat(64), "2"));
-    requireCondition(budget.reservedOs === 3n && calls.length === 1, "demos-debit-not-reserved");
+    // The first confirmed transaction declares a 3 OS fee but removes 4 OS
+    // from the sender. The total sender effect, not only transaction_fee, is
+    // the irreversible debit that the operator's cap must cover.
+    await adapter.raw.tx.broadcast(validity("1".repeat(64), ["1", "2", "1"]));
+    requireCondition(budget.reservedOs === 4n && calls.length === 1, "demos-debit-not-reserved");
 
     let rejected = false;
     try {
-      await adapter.raw.tx.broadcast(validity("2".repeat(64), "1"));
+      await adapter.raw.tx.broadcast(validity("2".repeat(64), ["1"]));
     } catch (error) {
       rejected = error instanceof Error && error.message === "funded-e2e:demos-debit-cap-exceeded";
     }
-    requireCondition(rejected && budget.reservedOs === 3n && calls.length === 1, "demos-cap-not-fail-closed");
+    requireCondition(rejected && budget.reservedOs === 4n && calls.length === 1, "demos-cap-not-fail-closed");
+
+    const malformedBudget = createFundedDemosDebitBudget(10n);
+    installFundedDemosDebitGuard(adapter, malformedBudget);
+    let malformedRejected = false;
+    try {
+      await adapter.raw.tx.broadcast({
+        response: {
+          data: {
+            transaction: {
+              hash: "3".repeat(64),
+              content: { from: sender, gcr_edits: [] },
+            },
+          },
+        },
+      });
+    } catch (error) {
+      malformedRejected = error instanceof Error &&
+        error.message === "funded-e2e:demos-debit-effect-unavailable";
+    }
+    requireCondition(
+      malformedRejected && malformedBudget.reservedOs === 0n && calls.length === 1,
+      "demos-malformed-effect-not-fail-closed",
+    );
   });
 
   it("persists the public coordinates needed to reconcile the original x402 run", () => {

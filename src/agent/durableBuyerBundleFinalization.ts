@@ -134,6 +134,18 @@ export interface DurableFinalizedBuyerBundle extends FinalizedBuyerBundle {
   };
 }
 
+/**
+ * Data-only authenticated seller closure retained by the buyer finalizer.
+ * It contains no signing authority and is safe to pass to an independent
+ * two-copy completion verifier after both role publications exist.
+ */
+export interface DurableBuyerSessionCompletion {
+  sellerClosure: {
+    verificationInput: Readonly<VerifyFinalizedSellerBundleInput>;
+    result: Readonly<FinalizedSellerBundle>;
+  };
+}
+
 export interface BuyerBundleTransport {
   resolveSellerRequest: (
     identity: Readonly<BuyerBundleTransportIdentity>,
@@ -252,6 +264,7 @@ export type DurableBuyerBundleFinalizationProgress =
   | {
       disposition: "finalised";
       result: DurableFinalizedBuyerBundle;
+      completion: DurableBuyerSessionCompletion;
       recovered: boolean;
     }
   | {
@@ -2620,6 +2633,18 @@ class DurableBuyerCoordinator {
     });
   }
 
+  #completion(): DurableBuyerSessionCompletion {
+    if (!this.#sellerFinalization) {
+      throw new DacsError("authenticated seller completion is unavailable");
+    }
+    return immutable({
+      sellerClosure: {
+        verificationInput: this.#finalVerificationInput(),
+        result: clone(this.#sellerFinalization),
+      },
+    });
+  }
+
   #resultData(result: DurableFinalizedBuyerBundle): Record<string, CheckpointValue> {
     const encoded = encodeCanonical(result, "terminal buyer bundle result");
     return {
@@ -2935,7 +2960,12 @@ class DurableBuyerCoordinator {
     if (record.phase === "buyer:finalised") {
       try {
         const result = await this.#recoverTerminal(record);
-        return { disposition: "finalised", result, recovered: true };
+        return {
+          disposition: "finalised",
+          result,
+          completion: this.#completion(),
+          recovered: true,
+        };
       } catch (error) {
         if (error instanceof SubstrateError) {
           return {
@@ -2971,7 +3001,12 @@ class DurableBuyerCoordinator {
     try {
       const result = this.#withRolePublications(coreResult);
       await this.#finish(result);
-      return { disposition: "finalised", result: immutable(result), recovered: false };
+      return {
+        disposition: "finalised",
+        result: immutable(result),
+        completion: this.#completion(),
+        recovered: false,
+      };
     } catch (error) {
       if (error instanceof ProgressSignal) throw error;
       if (error instanceof SubstrateError) {

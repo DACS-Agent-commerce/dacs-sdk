@@ -179,6 +179,7 @@ export {
   createFixedPriceAgreementSigningPlan,
   fixedPriceAgreementSignedBytes,
   createFixedPriceAgreementSignatureContribution,
+  isFixedPriceAgreementSignatureContribution,
   finalizeFixedPriceAgreementContributions,
   type FixedPriceAgreementSigningRole,
   type FixedPriceAgreementRequiredSigner,
@@ -197,6 +198,8 @@ export {
   type DurableFixedPriceAgreementInput,
   type FixedPriceAgreementTransportIdentity,
   type FixedPriceAgreementProposal,
+  type FixedPriceAgreementProposalEnvelope,
+  isFixedPriceAgreementProposalEnvelope,
   type FixedPriceAgreementResolution,
   type FixedPriceAgreementEffectSubmission,
   type FixedPriceAgreementSignatureReconciliation,
@@ -293,6 +296,8 @@ export type {
   DemosWriteJournalKey,
   DemosWriteJournalRecord,
   DemosWriteJournalSnapshot,
+  DemosWriteJournalOperation,
+  DemosNativeTransferJournalBinding,
 } from "./substrate/demosWriteJournal.js";
 export {
   createInMemoryDemosWriteJournal,
@@ -509,6 +514,7 @@ export {
 
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
+  isDacsPublicAddressV1,
   createAgent,
   type Agent,
   type AgentConfig,
@@ -979,6 +985,7 @@ export {
   type DurableBuyerBundleFinalizationProvider,
   type AuthenticatedBundleRolePublication,
   type DurableFinalizedBuyerBundle,
+  type DurableBuyerSessionCompletion,
   type BuyerBundleTransportIdentity,
   type BuyerBundleTransportResolution,
   type BuyerCounterSignaturePublication,
@@ -1192,6 +1199,7 @@ export {
   createFsX402BuyerSettlementStore,
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   createDacsX402BuyerEvmChallengeClient,
   advanceX402BuyerSettlement,
   type X402BuyerJson,
@@ -1291,6 +1299,7 @@ export {
   type SellerFixedPriceAgreementContributionTransport,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFixedPriceAgreementResponse,
+  isDurableSellerFixedPriceAgreementResponse,
   type DurableSellerFixedPriceAgreementStage,
   type DurableSellerFixedPriceAgreementProgress,
   deriveX402ReceiptCommitment,

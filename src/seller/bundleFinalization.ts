@@ -2079,6 +2079,11 @@ async function auditResolvedDependencyGraph(
         ? agreementParty.role === "seller" || agreementParty.role === "bidder-non-winning"
         : agreementParty.role === "buyer" || agreementParty.role === "bidder-non-winning"
       : false;
+    const expectedVerifier = expected[0]?.primaryClaim === session.buyer.primaryClaim
+      ? session.seller.primaryClaim
+      : expected[0]?.primaryClaim === session.seller.primaryClaim
+        ? session.buyer.primaryClaim
+        : phaseOrchestrator;
     if (
       expected.length === 0 ||
       expected.some(
@@ -2092,7 +2097,7 @@ async function auditResolvedDependencyGraph(
       record.evaluatedParty !== expected[0]!.primaryClaim ||
       invocation.evaluatedParty !== record.evaluatedParty ||
       record.bundleHash !== expected[0]!.bundleHash ||
-      invocation.verifier !== phaseOrchestrator ||
+      invocation.verifier !== expectedVerifier ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement))
     ) {
       throw new DacsError("completed session carries an invalid Vet record/requirement invocation");

@@ -1064,7 +1064,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             attestationRef: context.evidenceRef,
           },
           {
-            resolvePublicKey: async (signer) => publicKeyFromDid(signer),
+            resolvePublicKey: resolveCanonicalSigningKeyForRead,
             verify: ed25519RawVerify,
           },
         );

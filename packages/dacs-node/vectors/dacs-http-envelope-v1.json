@@ -21,17 +21,66 @@
           "audience": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
         },
         "proposal": {
-          "numericEdge": 9007199254740991,
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
           "label": "Café",
-          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+          "numericEdge": 9007199254740991
+        },
+        "sellerVetRecord": {
+          "recordVersion": "1",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "evaluatedParty": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+          "bundleHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "requirementHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "freshness": [],
+          "supplementary": [],
+          "dealSpecific": [],
+          "overallDecision": "pass",
+          "generatedAt": 1800000000000,
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "value": "buyer-vet-vector-signature"
+          }
+        },
+        "sellerVetRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "dacs2:vector:seller-vet"
+          },
+          "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "signer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+        },
+        "sellerVetReceipt": {
+          "receiptVersion": "1",
+          "substrate": "demos",
+          "finalityProfile": "demos-bft-confirmed-native-read",
+          "logicalAddress": "dacs2:vector:seller-vet",
+          "nativeAddress": "stor-dddddddddddddddddddddddddddddddddddddddd",
+          "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "transactionRef": {
+            "kind": "demos-storage-program",
+            "value": "tx-vector-seller-vet"
+          },
+          "writer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "state": "finalized",
+          "observationDisposition": "established",
+          "observedAt": 1800000000000,
+          "blockRef": {
+            "id": "block-vector-seller-vet",
+            "height": "41"
+          },
+          "evidence": {
+            "kind": "demos-bft-write-proof-v1",
+            "value": "vector-proof"
+          }
         }
       },
-      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
-      "payloadHash": "1475e7fa9b53d986c06d5533543b57e673d07950c3181145299be76955dc447a",
-      "envelopeId": "519af08b90428f8ed9cebdc536eadfd541b102c4c8ee4bb563aca98279b27282",
-      "envelopeHash": "c8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ac8732437e71d45ac26de2af35b6f76bd52f325e1d17293009ad7dba56dd4c2c8",
-      "signature": "uEtUwrbDvG_KE1byReUcnWXEd01hlT9Hs6SLX7v7Y7doFmsvxPt9RQjIyN7AYuF9mIOO_jby1zLJITxA3sd4BQ"
+      "payloadCanonical": "{\"proposal\":{\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"label\":\"Café\",\"numericEdge\":9007199254740991},\"sellerVetReceipt\":{\"blockRef\":{\"height\":\"41\",\"id\":\"block-vector-seller-vet\"},\"contentHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"evidence\":{\"kind\":\"demos-bft-write-proof-v1\",\"value\":\"vector-proof\"},\"finalityProfile\":\"demos-bft-confirmed-native-read\",\"logicalAddress\":\"dacs2:vector:seller-vet\",\"nativeAddress\":\"stor-dddddddddddddddddddddddddddddddddddddddd\",\"observationDisposition\":\"established\",\"observedAt\":1800000000000,\"receiptVersion\":\"1\",\"state\":\"finalized\",\"substrate\":\"demos\",\"transactionRef\":{\"kind\":\"demos-storage-program\",\"value\":\"tx-vector-seller-vet\"},\"writer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"},\"sellerVetRecord\":{\"bundleHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"dealSpecific\":[],\"evaluatedParty\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"freshness\":[],\"generatedAt\":1800000000000,\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"overallDecision\":\"pass\",\"recordVersion\":\"1\",\"requirementHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"signature\":{\"algorithm\":\"ed25519\",\"signer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"value\":\"buyer-vet-vector-signature\"},\"supplementary\":[]},\"sellerVetRef\":{\"anchor\":{\"kind\":\"storage-program\",\"locator\":\"dacs2:vector:seller-vet\"},\"contentHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"signer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"},\"transportIdentity\":{\"audience\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sender\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}}",
+      "payloadHash": "247cfc1790e388013989c48ce6486016f56a5e0bca54f0b81109042c3989d680",
+      "envelopeId": "0d3276544a4082c9af9e6681b30e52a1c172fede1cfcf0056f126c6e3eb382e6",
+      "envelopeHash": "61979c61b8fd9f890b8e765509097c865cda6e8ca37d81e25e3670d1d6eef61a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a61979c61b8fd9f890b8e765509097c865cda6e8ca37d81e25e3670d1d6eef61a",
+      "signature": "petst9_3i4iRgcAwnnGx9CuKrmWLsdKPbbYLk-qI1LChpy2vBzA9x_t_9TVkBUkJEVQBaUR7OF58U3eWHNtICg"
     },
     {
       "type": "agreement-response",
@@ -49,8 +98,53 @@
       "signature": "Dh1a5u7CN4clGjbfdpkx4ox_iBg8XaO12LEgK2xzYTpucHzVKJL_sIaWAvy2rh6Np8_jNUceZsQbMf68L4bzAw"
     },
     {
-      "type": "payment-evidence-request",
+      "type": "pay-dem-payment-notice",
       "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "payload": {
+        "paymentNoticeVersion": "1",
+        "payment": {
+          "authorityVersion": "1",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "phaseIndex": 2,
+          "railId": "demos-native:DEM",
+          "railVersion": 1,
+          "railDescriptorHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "network": "demos",
+          "payer": "1111111111111111111111111111111111111111111111111111111111111111",
+          "payee": "2222222222222222222222222222222222222222222222222222222222222222",
+          "amountOs": "1000000000",
+          "maxTotalDebitOs": "2000000000",
+          "agreementHash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "termsHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "payoutBindingHash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "paymentInputVersion": "1",
+          "orderBindingHash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "orderLocalBindingHash": "7777777777777777777777777777777777777777777777777777777777777777",
+          "settlementKey": "demos-native:DEM:01ARZ3NDEKTSV4RRFFQ69G5FAV:2"
+        },
+        "settlement": {
+          "ok": true,
+          "txHash": "8888888888888888888888888888888888888888888888888888888888888888",
+          "chainId": "demos",
+          "payer": "1111111111111111111111111111111111111111111111111111111111111111",
+          "payee": "2222222222222222222222222222222222222222222222222222222222222222",
+          "finality": {
+            "model": "bft-final"
+          },
+          "blockNumber": 42,
+          "txRefKind": "demos"
+        }
+      },
+      "payloadCanonical": "{\"payment\":{\"agreementHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"amountOs\":\"1000000000\",\"authorityVersion\":\"1\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"maxTotalDebitOs\":\"2000000000\",\"network\":\"demos\",\"orderBindingHash\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"orderLocalBindingHash\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"payee\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"payer\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"paymentInputVersion\":\"1\",\"payoutBindingHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"phaseIndex\":2,\"railDescriptorHash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"railId\":\"demos-native:DEM\",\"railVersion\":1,\"settlementKey\":\"demos-native:DEM:01ARZ3NDEKTSV4RRFFQ69G5FAV:2\",\"termsHash\":\"4444444444444444444444444444444444444444444444444444444444444444\"},\"paymentNoticeVersion\":\"1\",\"settlement\":{\"blockNumber\":42,\"chainId\":\"demos\",\"finality\":{\"model\":\"bft-final\"},\"ok\":true,\"payee\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"payer\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"txHash\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"txRefKind\":\"demos\"}}",
+      "payloadHash": "cfc1e038e35d02b413e75ef42bc015f2d90969fedb40b381afeb10a1923e2e85",
+      "envelopeId": "a4012f08f344925ea4daed8d8c6921b2c8ed0a8a91780307b19bfe3d4ab9a1ca",
+      "envelopeHash": "265f4a7b096df6326bbf496f85358bca0c78dad99e5602c2e454d8904ff300d9",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a265f4a7b096df6326bbf496f85358bca0c78dad99e5602c2e454d8904ff300d9",
+      "signature": "sO8SXcrv2B8ArMCBKXWDd549lj3l88xR476DnSwRMT4yaH3orOhpYBr5DlqzraQHUVQeiIXe4SZZGXRwOU16BQ"
+    },
+    {
+      "type": "payment-evidence-request",
+      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
       "payload": {
         "messageId": "request-vector",
         "requestHash": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -60,14 +154,14 @@
       },
       "payloadCanonical": "{\"buyer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"request-vector\",\"requestHash\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"seller\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}",
       "payloadHash": "af9209d4a7c1aa1987c965e42c276502210fedeb1f320810f58e8cd672be05bb",
-      "envelopeId": "24b7fc52b7380ed0607b81246148212f9b9d6c6d97291d2b9a6f76aea9b3831a",
-      "envelopeHash": "782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a782a5964af5d43ef7690be5cb0d0b0396d719e1865aa1377d6729da77f8bc36a",
-      "signature": "nkKb2REPq0ERonNqbR2bnskCedls3j2kOj3hWsXcE1-AyJIbxEXZdq6ihn-0wUE73LlaTJGOLmuTXaKwMmDhAQ"
+      "envelopeId": "b7d6b9e571edc211b0af356949ea953474df7ddd5686d65922325d777d85b2ce",
+      "envelopeHash": "0eeb2529d59371881bc306aba7fe556cad960b40b1a3ce7351bcd1214b5eea69",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a0eeb2529d59371881bc306aba7fe556cad960b40b1a3ce7351bcd1214b5eea69",
+      "signature": "iOgN-qBaNJlRzFQ2KqlUT91u5FJU4gCABqFhWVfBsPv1oEZwBHrIRAzrFQtp7_mUpmceoLD6SXl4tVmPv1HeDA"
     },
     {
       "type": "payment-evidence-completion",
-      "nonce": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+      "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
       "payload": {
         "messageId": "completion-vector",
         "completionHash": "2222222222222222222222222222222222222222222222222222222222222222",
@@ -76,14 +170,14 @@
       },
       "payloadCanonical": "{\"buyer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"completionHash\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"messageId\":\"completion-vector\"}",
       "payloadHash": "b0210de459b24d620c09855ee898dc7b2df7ce59a3b7b009dc73466512d96d8d",
-      "envelopeId": "9f5dc5714d088e73c805a44de8de4aa6fa436874e8a7dc7443d932c52c3c2fe8",
-      "envelopeHash": "96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a96fb2fe51c70b77bf97875f8e5a579bca43253c645cd2bbbfb1f9a653da3fc38",
-      "signature": "HEtdxNPSY6NCefuaXRswhTsl_FTVIzL_MsLO8WuCZ0pGMSSMmmvs344fRcscrJ8_8_JB2gcVtdKQQ0QD7Q3yBQ"
+      "envelopeId": "5f1e722c7132b31c08a45ee91aecf610dc3c7fc77a5f3e5d6f60572050dba4bf",
+      "envelopeHash": "a8f9da404fdd3054b3feda5f253995c8895cbfe0f8d82ba73693ded81777d705",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aa8f9da404fdd3054b3feda5f253995c8895cbfe0f8d82ba73693ded81777d705",
+      "signature": "hiXYqthPPSiFj7XYY81cBleY9RRAhzWlaZ09b82N3aCA1lZR7cE4y_PFVzV2aTM7_jsFOu9VRHh5sreSpxW_Dg"
     },
     {
       "type": "bundle-signature-request",
-      "nonce": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
       "payload": {
         "bundleContentHash": "3333333333333333333333333333333333333333333333333333333333333333",
         "signedScope": {
@@ -97,14 +191,14 @@
       },
       "payloadCanonical": "{\"bundleContentHash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"requiredCounterSigners\":[\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"],\"signedBytes\":\"AQID\",\"signedScope\":{\"a\":\"Å\",\"z\":0}}",
       "payloadHash": "9941e730ff5cee3f271b477a2f20d09e5aa0a3988b92e93b9ba6fe60386bd563",
-      "envelopeId": "516e0438b1995fe386e91f51d61fe3eceeaaeab513084a72a7a4ee995d8a0977",
-      "envelopeHash": "408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a408ed8518fabddbbc08515f7311e41245712d51e580b6e2b4976be2f8a239ac8",
-      "signature": "5d266CBR6sCSvXV72O3f33pWYko01bHGgUzLq-kzFo7lhlnsa5anhMbW-8t-eUlTLEjjiq8IBTvpErGGFollAA"
+      "envelopeId": "92a04fe805d9d2fb7253cc9bccb7896d6006afac83af96fff83f434aecab20b4",
+      "envelopeHash": "0092ba8e667a2826c109f402458cb22775c71e9cb622b21f3aaef027c8489e17",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a0092ba8e667a2826c109f402458cb22775c71e9cb622b21f3aaef027c8489e17",
+      "signature": "fPWygLCqickL_YjNOBX0cICcJy7FpUyo5-28dNgZGvuPwGqcoLPgRw59OvguFHbd85M1berwn2W-acVxtMUaDg"
     },
     {
       "type": "bundle-signature-response",
-      "nonce": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
       "payload": {
         "party": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
         "algorithm": "ed25519",
@@ -112,14 +206,66 @@
       },
       "payloadCanonical": "{\"algorithm\":\"ed25519\",\"party\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"signature\":\"vector-signature\"}",
       "payloadHash": "8163c58bd137179620c4818333f59998d258ae1b503ce455cf6890b63127dc7a",
-      "envelopeId": "948986c78b0aefc26a97f0ff366c4b584b43e228be2716c584818c97dbd8e823",
-      "envelopeHash": "add81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aadd81e860f5948f4b433005d1c67c3c87044bad7e54157ba4f6672137bb9e92e",
-      "signature": "WJaURF2VykNMRMlKa4E6drQPU4U76_qrlw__OITLT-aSSP0m8Ml1nSCIs9tW1Pm2XABrbuTG9rAlm3cT02lCCQ"
+      "envelopeId": "01bf72fd20c36ca82a47d385f3435842993e100c0483991d14f7e4d71c22bdbc",
+      "envelopeHash": "233bc4893df7167ff34c194355164b9cac88d4fcbd4d6e6ac0751469500e5990",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a233bc4893df7167ff34c194355164b9cac88d4fcbd4d6e6ac0751469500e5990",
+      "signature": "agGodDLUM6HWLIto1kf8YYU3Gdv3vwS8Z3KddLObmkzyGwmKD6FNoWPbsZmBYF7DQr-DUOLBUTzjtWn5Qex0Dw"
+    },
+    {
+      "type": "terminal-bundle-proposal-buyer",
+      "nonce": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "payload": {
+        "vector": "buyer-terminal-proposal"
+      },
+      "payloadCanonical": "{\"vector\":\"buyer-terminal-proposal\"}",
+      "payloadHash": "39a9dd709929c842de7cbd98142a21e27703d21a2a36234c805b21ed8d0c7afb",
+      "envelopeId": "3301d7f4d0e34df58db444f52ec18239a4bc5b8f451e8b97e2b2eed458f993e8",
+      "envelopeHash": "8c6b5b497c91dfc8c939ea1d9a46345ca5a695b360dcd1ca3a098cd757c01f55",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a8c6b5b497c91dfc8c939ea1d9a46345ca5a695b360dcd1ca3a098cd757c01f55",
+      "signature": "ZK5r5mwJpt8UDbWvHpArf_mxlFwwgEqIjER0dEDkRs8ijb--jdjNh67cwvuzMTcz7-Xb-kom-Mp3hkRdmtq8Cg"
+    },
+    {
+      "type": "terminal-bundle-proposal-seller",
+      "nonce": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+      "payload": {
+        "vector": "seller-terminal-proposal"
+      },
+      "payloadCanonical": "{\"vector\":\"seller-terminal-proposal\"}",
+      "payloadHash": "64e660fa8e174a97106aeb5b2b251d6696a79626ff9a1c0b47f23c2b7764beed",
+      "envelopeId": "ee9f6314539a3ab4b88f5b8534f9178ab90981ad9c932a4d2326496ca9bdde8b",
+      "envelopeHash": "e2cc2684657d083d4d951a085cb30aea83ac981f9d70a2472b8659ad7e2dd32a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ae2cc2684657d083d4d951a085cb30aea83ac981f9d70a2472b8659ad7e2dd32a",
+      "signature": "MCPBcb6xN4eoPnCSPbRIrUSZ6tBEATuoW_QXDSekWuuuPaduZFhtFkwSBQXkCjrkMLZQmQc8VInLb571a9LaDQ"
+    },
+    {
+      "type": "terminal-bundle-contribution-buyer",
+      "nonce": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "payload": {
+        "vector": "buyer-terminal-contribution"
+      },
+      "payloadCanonical": "{\"vector\":\"buyer-terminal-contribution\"}",
+      "payloadHash": "2d295491500af228b0548e62de86e18dea98ded8fb07056bbfb37cbafbba35e6",
+      "envelopeId": "992c46bae91ad30346c199b8c79ce68728c9ce396e8f689fb6571787089b1cda",
+      "envelopeHash": "dcaa727e3dcb6de5dd47ac9fbf14f9d1b8b0d021af97e4692874a4396bc8ce9a",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313adcaa727e3dcb6de5dd47ac9fbf14f9d1b8b0d021af97e4692874a4396bc8ce9a",
+      "signature": "Nqz7jCHEccTWjkIf0AzxVQnSpuf-2J0PLf9lTpvTNiF5g81NGaJrw0ntBusppK5zlFme6YHBnXxNSUIpT1sICg"
+    },
+    {
+      "type": "terminal-bundle-contribution-seller",
+      "nonce": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "payload": {
+        "vector": "seller-terminal-contribution"
+      },
+      "payloadCanonical": "{\"vector\":\"seller-terminal-contribution\"}",
+      "payloadHash": "d9d3d22c8e2f658047ff0fbfb44a070c130f3ad7a880355c0f84786a40abd5f3",
+      "envelopeId": "71c6d80e805276185e753e9dce8205a33d190d7674fae5b1279fb1f0fedbcd3a",
+      "envelopeHash": "5ecd0f324878f16f1cc21ff22f7668a8f76719744837eea15cfc54d58349e55f",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a5ecd0f324878f16f1cc21ff22f7668a8f76719744837eea15cfc54d58349e55f",
+      "signature": "2qmWehdGtLQ0siFd0eJgAMOBJd45lqhXdnaE7yIvPrO5n75aN8COX5IHi9KEfSveTHxYBhDl8PYorrGnUGV3DQ"
     },
     {
       "type": "acknowledgement",
-      "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "nonce": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
       "payload": {
         "acknowledgedEnvelopeId": "4444444444444444444444444444444444444444444444444444444444444444",
         "acknowledgedPayloadHash": "5555555555555555555555555555555555555555555555555555555555555555",
@@ -127,10 +273,197 @@
       },
       "payloadCanonical": "{\"acknowledgedEnvelopeId\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"acknowledgedPayloadHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"disposition\":\"accepted\"}",
       "payloadHash": "4230548f3af0a9ff387d56eb08af9e4cd38fd3192d55d90138a2f3b1f212afe0",
-      "envelopeId": "09846d7e8cc376d4ebc0b08a4dadd24d307d70704b22af38f19dfc71ff00bfab",
-      "envelopeHash": "771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
-      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a771914d54236f719ff7f6e756715a3dcda6c397093c646b4afa7fbafa2a1145a",
-      "signature": "rgBduV18DxGXWRs5h0G2VVAoZQSRhFJAaEBL9In1VQehFddGhRKQVN8s_ffmp2N4XpEamRhc0n8G--DOMwH-CQ"
+      "envelopeId": "d37af69befaefea07b26a7cba01991bbb91ba80f0657add135611db95dd788ab",
+      "envelopeHash": "0b0c11bf0ba31c94225faec155d5b67dabc70b300cc0374574d05699f440fe4e",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a0b0c11bf0ba31c94225faec155d5b67dabc70b300cc0374574d05699f440fe4e",
+      "signature": "-PTxLAbeI7ek-pWIH6qCV3fh0NAutR-mzwd9S5hunIfcXqBeGx6w2RRnuSKNA2AbyBb7DOGTTBxOdgQCOBTCBw"
+    },
+    {
+      "type": "diagnostic-probe-buyer",
+      "nonce": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0",
+      "payload": {
+        "purpose": "transport-readiness",
+        "challenge": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+      },
+      "payloadCanonical": "{\"challenge\":\"CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg\",\"purpose\":\"transport-readiness\"}",
+      "payloadHash": "587ceb7cee37db60c4951c73b72cc4fcf0c990f71b75b3120de5ed7309b8d36b",
+      "envelopeId": "39d68a17ed80b7d00c2b2cec381860bd85173490134724dbd82b47692278d769",
+      "envelopeHash": "59b00817fec5caa22a59ddef57ef50c1187d584616b9be24209c5a800aa135b7",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a59b00817fec5caa22a59ddef57ef50c1187d584616b9be24209c5a800aa135b7",
+      "signature": "Hx4BBvAtOwAusWor2bTNFkXvLj6V9nFNCYqAVGU4h8hzryv3lJj4xdJVqBxmy0p_8L1M7pcCYzIqHXvfsgejBA"
+    },
+    {
+      "type": "diagnostic-probe-seller",
+      "nonce": "Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4",
+      "payload": {
+        "purpose": "transport-readiness",
+        "challenge": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+      },
+      "payloadCanonical": "{\"challenge\":\"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\",\"purpose\":\"transport-readiness\"}",
+      "payloadHash": "d267f94b64a2a942708fec783eaee38bde318e74da21cbcebf6aed42cdc64b94",
+      "envelopeId": "9ae8b7cc1b538cea816a289636391284777acaaa298d482afe92ff8a1a90c2e2",
+      "envelopeHash": "0590449192e89c4582677cb981e976177d2deae4240c61f1bc25ff07622faec8",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a0590449192e89c4582677cb981e976177d2deae4240c61f1bc25ff07622faec8",
+      "signature": "brM0EZpI5H8hp6rxRWKSeKaueVSOPBsUpz7k4N043AXkxNgCV1q8lAe6qQeHqVfXyefm4koQ9qm35Mc81DE5Ag"
+    },
+    {
+      "type": "session-init",
+      "nonce": "Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8",
+      "payload": {
+        "bootstrapVersion": "1",
+        "order": {
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "buyer": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "seller": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+        },
+        "application": {
+          "requestVersion": "1",
+          "query": "session vector"
+        },
+        "sellerChallenge": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "payloadCanonical": "{\"application\":{\"query\":\"session vector\",\"requestVersion\":\"1\"},\"bootstrapVersion\":\"1\",\"order\":{\"buyer\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"seller\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"},\"sellerChallenge\":\"6666666666666666666666666666666666666666666666666666666666666666\"}",
+      "payloadHash": "777dd4ad1ad631d921a2b91cd298cb82c6e76f594c9a3d39db0330569fd74a0f",
+      "envelopeId": "50739b1b9a1fff30fbada1c70464945cef8af4894ba16612192ffe522b1a5e98",
+      "envelopeHash": "533c6d52ef683a49b7a29a4466bb47aeea5de0121f2c28823c05546e2cbdff02",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a533c6d52ef683a49b7a29a4466bb47aeea5de0121f2c28823c05546e2cbdff02",
+      "signature": "4hMvwu6LH_aIEjGH8qeU7szjm3mdTS_5tMNvXrEHV97cwmGnCaGrQhxIcFWfl6m_F6fhHQH-I5uwTmVLf81iCQ"
+    },
+    {
+      "type": "session-challenge",
+      "nonce": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+      "payload": {
+        "bootstrapVersion": "1",
+        "initPayloadHash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "sellerChallenge": "6666666666666666666666666666666666666666666666666666666666666666",
+        "buyerChallenge": "8888888888888888888888888888888888888888888888888888888888888888",
+        "sellerIdentity": {
+          "bundleVersion": "1",
+          "presentedBy": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+          "presentedAt": 1800000000000,
+          "sessionNonce": "6666666666666666666666666666666666666666666666666666666666666666",
+          "claims": [
+            {
+              "ref": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+                "signature": "seller-vector-signature"
+              }
+            ]
+          }
+        }
+      },
+      "payloadCanonical": "{\"bootstrapVersion\":\"1\",\"buyerChallenge\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"initPayloadHash\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"sellerChallenge\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"sellerIdentity\":{\"bundleVersion\":\"1\",\"claims\":[{\"ref\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"}],\"presentation\":{\"kind\":\"per-claim\",\"signatures\":[{\"ref\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"signature\":\"seller-vector-signature\"}]},\"presentedAt\":1800000000000,\"presentedBy\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"sessionNonce\":\"6666666666666666666666666666666666666666666666666666666666666666\"}}",
+      "payloadHash": "c1977f2a4d743881b2f50258727263407f947b92a5225a6d76486813d466bd18",
+      "envelopeId": "e150845d12e40943b2bca5e5c1ba71a126e85153ff532a6fc9cad7b5704fbeca",
+      "envelopeHash": "3f73ea6436252650430458758257dc47b4123f6dc70163966a33c6acc4a4f6df",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a3f73ea6436252650430458758257dc47b4123f6dc70163966a33c6acc4a4f6df",
+      "signature": "EJUnYGIWtqci4vazhtWh81PaBko7eZhIceISZHvGLsru3SgqBiKTehl5-45Eowb-WduVu4xH3uzP8564hUr8Ag"
+    },
+    {
+      "type": "session-presentation",
+      "nonce": "ERERERERERERERERERERERERERERERERERERERERERE",
+      "payload": {
+        "bootstrapVersion": "1",
+        "challengePayloadHash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "buyerChallenge": "8888888888888888888888888888888888888888888888888888888888888888",
+        "buyerIdentity": {
+          "bundleVersion": "1",
+          "presentedBy": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "presentedAt": 1800000000000,
+          "sessionNonce": "8888888888888888888888888888888888888888888888888888888888888888",
+          "claims": [
+            {
+              "ref": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+                "signature": "buyer-vector-signature"
+              }
+            ]
+          }
+        }
+      },
+      "payloadCanonical": "{\"bootstrapVersion\":\"1\",\"buyerChallenge\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"buyerIdentity\":{\"bundleVersion\":\"1\",\"claims\":[{\"ref\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\"}],\"presentation\":{\"kind\":\"per-claim\",\"signatures\":[{\"ref\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"signature\":\"buyer-vector-signature\"}]},\"presentedAt\":1800000000000,\"presentedBy\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"sessionNonce\":\"8888888888888888888888888888888888888888888888888888888888888888\"},\"challengePayloadHash\":\"9999999999999999999999999999999999999999999999999999999999999999\"}",
+      "payloadHash": "9d3e2b035747b8307263e62a962380a18c59b3fa5e2290a3c73f8fadd2bcc918",
+      "envelopeId": "3700763956cd575a9469dfd7e2203f12ab9a789c419246fdff75978987a5c241",
+      "envelopeHash": "6284c310b4680a3a38ffe443ac60961813958a276aa9506fd37f77d37edb0810",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a6284c310b4680a3a38ffe443ac60961813958a276aa9506fd37f77d37edb0810",
+      "signature": "BSZhxN-iYth0JBIOg5Nh6w6aM-9N7GvqvQZz-boOLApPEkdMRxLLXC142xZzQup9HOngQ3kGjqOKR1a645g-DA"
+    },
+    {
+      "type": "session-admission",
+      "nonce": "EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI",
+      "payload": {
+        "bootstrapVersion": "1",
+        "presentationPayloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "buyerIdentityHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sellerIdentityHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "buyerVetRecord": {
+          "recordVersion": "1",
+          "jobId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "evaluatedParty": "did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "bundleHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "requirementHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "freshness": [],
+          "supplementary": [],
+          "dealSpecific": [],
+          "overallDecision": "pass",
+          "generatedAt": 1800000000000,
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+            "value": "seller-vet-vector-signature"
+          }
+        },
+        "buyerVetRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "dacs2:vector:buyer-vet"
+          },
+          "contentHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "signer": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396"
+        },
+        "buyerVetReceipt": {
+          "receiptVersion": "1",
+          "substrate": "demos",
+          "finalityProfile": "demos-bft-confirmed-native-read",
+          "logicalAddress": "dacs2:vector:buyer-vet",
+          "nativeAddress": "stor-ffffffffffffffffffffffffffffffffffffffff",
+          "contentHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "transactionRef": {
+            "kind": "demos-storage-program",
+            "value": "tx-vector-buyer-vet"
+          },
+          "writer": "did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396",
+          "state": "finalized",
+          "observationDisposition": "established",
+          "observedAt": 1800000000000,
+          "blockRef": {
+            "id": "block-vector-buyer-vet",
+            "height": "42"
+          },
+          "evidence": {
+            "kind": "demos-bft-write-proof-v1",
+            "value": "vector-proof"
+          }
+        }
+      },
+      "payloadCanonical": "{\"bootstrapVersion\":\"1\",\"buyerIdentityHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"buyerVetReceipt\":{\"blockRef\":{\"height\":\"42\",\"id\":\"block-vector-buyer-vet\"},\"contentHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"evidence\":{\"kind\":\"demos-bft-write-proof-v1\",\"value\":\"vector-proof\"},\"finalityProfile\":\"demos-bft-confirmed-native-read\",\"logicalAddress\":\"dacs2:vector:buyer-vet\",\"nativeAddress\":\"stor-ffffffffffffffffffffffffffffffffffffffff\",\"observationDisposition\":\"established\",\"observedAt\":1800000000000,\"receiptVersion\":\"1\",\"state\":\"finalized\",\"substrate\":\"demos\",\"transactionRef\":{\"kind\":\"demos-storage-program\",\"value\":\"tx-vector-buyer-vet\"},\"writer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"},\"buyerVetRecord\":{\"bundleHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"dealSpecific\":[],\"evaluatedParty\":\"did:demos:agent:03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"freshness\":[],\"generatedAt\":1800000000000,\"jobId\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"overallDecision\":\"pass\",\"recordVersion\":\"1\",\"requirementHash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"signature\":{\"algorithm\":\"ed25519\",\"signer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\",\"value\":\"seller-vet-vector-signature\"},\"supplementary\":[]},\"buyerVetRef\":{\"anchor\":{\"kind\":\"storage-program\",\"locator\":\"dacs2:vector:buyer-vet\"},\"contentHash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"signer\":\"did:demos:agent:bafc71bead3ac5e4b63e9c8216ee71a34aaec65722eedbca728b4e9b3ccce396\"},\"presentationPayloadHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sellerIdentityHash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+      "payloadHash": "feb2abe04f60ea991bd56d05de176144f6129fa7448914ef89775997d1ae1b3e",
+      "envelopeId": "62e16c2cc5a4193c629de245f40e249781c99c01eeafb8122dff961d813dc25b",
+      "envelopeHash": "c8cc548e0250e4123b774331c125ba42c13216941ee3f833ecf7b82b57cff051",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313ac8cc548e0250e4123b774331c125ba42c13216941ee3f833ecf7b82b57cff051",
+      "signature": "2qZT9dN4qe75FD1mKpCQuHOO8rSbqvN0-yHou9uLp0qq4-evSFKBsLtJopmHosXCx6gvQJCyXDpCuPJKRUkqAw"
     }
   ],
   "negativeCases": [

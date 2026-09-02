@@ -28,15 +28,26 @@ import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { bundlesDiverge } from "../../src/agent/bundleConsistency.js";
 import { bundleAddress, contentHash } from "../../src/canonical/index.js";
 import {
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  combineFixedPricePayDemOrderStatus,
   combineFixedPriceX402OrderStatus,
+  createFixedPricePayDemBuyerCoordinator,
+  createFixedPricePayDemSellerCoordinator,
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
+  createInMemoryFixedPricePayDemCoordinatorStore,
   createInMemoryFixedPriceX402CoordinatorStore,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   verifyCompletedTwoSidedSession,
+  verifyFixedPricePayDemAuditCompletion,
   verifyFixedPriceX402AuditCompletion,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
+  type FixedPricePayDemTrackOperation,
   type FixedPriceX402AuditCompletionDeps,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
@@ -90,6 +101,26 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
   },
 };
 
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER.did,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: h("3"),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: h("4"),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
+    availability: "live",
+  },
+};
+
 function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
   return {
     jobId: JOB_ID,
@@ -114,6 +145,13 @@ function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
           deliveryEvidence: "seller:delivery-evidence",
           audit: "seller:audit",
         },
+  };
+}
+
+function payDemOrder(role: FixedPriceX402CoordinatorRole): FixedPricePayDemOrderInput {
+  return {
+    ...order(role),
+    protocol: PAY_DEM_PROTOCOL,
   };
 }
 
@@ -307,7 +345,7 @@ function binding(
   };
 }
 
-async function fixture() {
+async function fixture(phaseKind: "pay-x402" | "pay-dem" = "pay-x402") {
   const { listing, agreement, evidence } = artifacts();
   const agreementRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "agreement-j1" },
@@ -334,7 +372,7 @@ async function fixture() {
     ],
     phaseSummary: [{
       index: 0,
-      kind: "pay-x402",
+      kind: phaseKind,
       outcome: "ok",
       attestationRef: evidenceRef,
     }],
@@ -540,6 +578,63 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     expect(verifySellerClosure.mock.calls[0]![0]).toEqual(
       fx.input.sellerClosure.verificationInput,
     );
+  });
+
+  it("projects the same strict audit-complete boundary for native DEM", async () => {
+    const fx = await fixture("pay-dem");
+    const operation = (
+      role: FixedPriceX402CoordinatorRole,
+      track: string,
+    ): FixedPricePayDemTrackOperation => async () => ({
+      status: "final",
+      outcome: "success",
+      reference: track === "audit"
+        ? (role === "buyer" ? fx.buyerNative : fx.sellerNative)
+        : `${role}:${track}`,
+    });
+    const store = createInMemoryFixedPricePayDemCoordinatorStore({
+      now: () => 1780000000000,
+    });
+    const buyer = createFixedPricePayDemBuyerCoordinator({
+      store,
+      workerId: "buyer-dem-worker",
+      operations: Object.fromEntries([
+        "agreement",
+        "payment",
+        "payment-evidence",
+        "buyer-received",
+        "audit",
+      ].map((track) => [track, operation("buyer", track)])),
+    });
+    const seller = createFixedPricePayDemSellerCoordinator({
+      store,
+      workerId: "seller-dem-worker",
+      operations: Object.fromEntries([
+        "agreement",
+        "payment",
+        "payment-evidence",
+        "delivery",
+        "delivery-evidence",
+        "audit",
+      ].map((track) => [track, operation("seller", track)])),
+    });
+    await buyer.startOrder(payDemOrder("buyer"));
+    await seller.startOrder(payDemOrder("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    const buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+    expect(combineFixedPricePayDemOrderStatus({ buyer: buyerStatus, seller: sellerStatus })
+      .milestone).toBe("actor-audit-final");
+    await expect(verifyFixedPricePayDemAuditCompletion({
+      buyer: buyerStatus,
+      seller: sellerStatus,
+      sellerClosure: fx.input.sellerClosure,
+      copies: fx.input.copies,
+    }, fx.deps)).resolves.toMatchObject({
+      protocol: { phase: "pay-dem" },
+      milestone: "audit-complete",
+    });
   });
 
   it("rejects opaque audit references, missing readback, and a forged receipt writer", async () => {

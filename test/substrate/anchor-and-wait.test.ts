@@ -4,8 +4,10 @@ import {
   AnchorWaitError,
   DemosAdapter,
   createInMemoryDemosWriteJournal,
+  demosSignedTransactionProofHash,
   demosWriteEvidenceToAnchorReceipt,
   type AnchorAttemptReceipt,
+  type DemosWriteJournalRecord,
 } from "../../src/substrate/index.js";
 import {
   canonicalize,
@@ -56,7 +58,85 @@ function signedStorageTransaction(
   };
 }
 
-async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
+function pendingNativeTransfer(
+  generation: number,
+  payer: string,
+  payee: string,
+  txRef: string,
+  nonce: number,
+): DemosWriteJournalRecord {
+  return {
+    writeId: `pay-dem-${txRef}`,
+    generation,
+    kind: "native-transfer",
+    operation: "transfer",
+    stage: "broadcast-intent",
+    logicalName: "pay-dem:pay-dem:job:0",
+    programName: "native-dem-transfer",
+    owner: payer,
+    nativeAddress: payee,
+    valueHash: "34".repeat(32),
+    nonce,
+    txRef,
+    transfer: {
+      payer,
+      payee,
+      amountOs: "1000000000",
+      denomination: "os",
+      network: "demos",
+      maxTotalDebitOs: "2000000000",
+      settlementKey: "pay-dem:job:0",
+    },
+    updatedAt: Date.now(),
+  };
+}
+
+function pendingAnchorWrite(
+  generation: number,
+  wallet: string,
+  txRef: string,
+  nonce: number,
+  logicalName: string,
+  nativeAddress: string,
+  data: Record<string, unknown>,
+): { record: DemosWriteJournalRecord; payload: Record<string, unknown> } {
+  const programName = logicalToStorageProgramName(logicalName);
+  const payload = {
+    operation: "CREATE_STORAGE_PROGRAM",
+    programName,
+    storageAddress: nativeAddress,
+    encoding: "json",
+    data,
+  };
+  const signed = signedStorageTransaction(wallet, txRef, payload, nonce);
+  const signedTransaction = canonicalize(signed);
+  return {
+    payload,
+    record: {
+      writeId: `write-${txRef}`,
+      generation,
+      kind: "mutable",
+      operation: "create",
+      stage: "broadcast-intent",
+      logicalName,
+      programName,
+      owner: wallet,
+      nativeAddress,
+      valueHash: sha256Hex(canonicalize(data)),
+      nonce,
+      txRef,
+      signedTransaction,
+      signedTransactionHash: demosSignedTransactionProofHash(signed),
+      updatedAt: Date.now(),
+    },
+  };
+}
+
+async function makeAdapter(options?: {
+  rpc?: string;
+  wallet?: string;
+  maximumFeeOs?: bigint;
+}) {
   fixtureId += 1;
   const id = fixtureId;
   const rpc = options?.rpc ?? `https://node-${id}.test`;
@@ -67,6 +147,8 @@ async function makeAdapter(options?: { rpc?: string; wallet?: string }) {
     rpc,
     chainIdentity: "test-chain",
     writeJournal,
+    ...(options?.maximumFeeOs === undefined
+      ? {} : { maximumFeeOs: options.maximumFeeOs }),
   });
   const raw = adapter.raw as any;
   let signedCount = 0;
@@ -180,6 +262,205 @@ afterEach(() => {
 });
 
 describe("DemosAdapter.anchorAndWait", () => {
+  it("refuses an over-ceiling mutable anchor fee before broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "3",
+              rpc_fee: "0",
+              additional_fee: "0",
+            },
+          },
+        },
+      },
+    }));
+
+    const error = await adapter.anchorAndWait(
+      "mutable-over-fee-ceiling",
+      { value: 1 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AnchorWaitError);
+    expect((error as Error & { cause?: unknown }).cause).toMatchObject({
+      message: expect.stringMatching(/exceeds maximumFeeOs/),
+    });
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("authenticates a pending native transfer and advances the next anchor nonce", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const payer = wallet.replace(/^0x/, "").toLowerCase();
+    const payee = "cd".repeat(32);
+    const txRef = "12".repeat(32);
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    await lease.put(pendingNativeTransfer(
+      lease.generation,
+      payer,
+      payee,
+      txRef,
+      9,
+    ));
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 44 });
+    raw.getTxByHash.mockResolvedValue({
+      hash: txRef,
+      status: "confirmed",
+      blockNumber: 44,
+      content: {
+        type: "native",
+        from: payer,
+        from_ed25519_address: `0x${payer}`,
+        to: payee,
+        nonce: 9,
+        amount: "1000000000",
+        data: [
+          "native",
+          { nativeOperation: "send", args: [payee, "1000000000"] },
+        ],
+      },
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 44,
+      hash: "block-44",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+    raw.getAddressNonce.mockResolvedValue(9);
+
+    await adapter.reconcileNativeTransferJournal(lease, 1_000);
+    expect(lease.snapshot.records).toMatchObject([
+      {
+        txRef,
+        stage: "canonical-confirmed",
+        blockNumber: 44,
+        blockHash: "block-44",
+        finalityProofHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
+    await lease.release();
+
+    raw.getAddressNonce.mockResolvedValue(0);
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    await adapter.anchorAndWait(
+      "after-native-transfer",
+      { value: 1 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch(() => undefined);
+    expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
+      expect.anything(),
+      { nonce: 10 },
+    );
+  });
+
+  it("authenticates a pending anchor before a native transfer can reuse its nonce", async () => {
+    const { adapter, raw, wallet, recordSignedPayload } = await makeAdapter();
+    const txRef = "78".repeat(32);
+    const logicalName = "dacs4:payment-evidence:nonce-fence";
+    const nativeAddress = "storage:pending-anchor";
+    const data = { evidenceVersion: "1", value: "pending" };
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    const pending = pendingAnchorWrite(
+      lease.generation,
+      wallet,
+      txRef,
+      8,
+      logicalName,
+      nativeAddress,
+      data,
+    );
+    await lease.put(pending.record);
+    recordSignedPayload(txRef, pending.payload, 8);
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 46 });
+    raw.getTxByHash.mockResolvedValue({
+      ...signedStorageTransaction(wallet, txRef, pending.payload, 8),
+      status: "confirmed",
+      blockNumber: 46,
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 46,
+      hash: "block-46",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+    raw.getAddressNonce
+      .mockResolvedValueOnce(7)
+      .mockResolvedValue(8);
+
+    await adapter.reconcileWalletJournal(lease, 1_000);
+
+    expect(lease.snapshot.records).toMatchObject([{
+      txRef,
+      nonce: 8,
+      stage: "native-visible",
+      blockNumber: 46,
+      blockHash: "block-46",
+      nativeRead: {
+        owner: wallet,
+        programName: pending.record.programName,
+        valueHash: pending.record.valueHash,
+      },
+    }]);
+    expect(raw.getAddressNonce).toHaveBeenCalledTimes(2);
+    await lease.release();
+  });
+
+  it("refuses to close a native transfer whose canonical amount changed", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const payer = wallet.replace(/^0x/, "").toLowerCase();
+    const payee = "cd".repeat(32);
+    const txRef = "56".repeat(32);
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    await lease.put(pendingNativeTransfer(
+      lease.generation,
+      payer,
+      payee,
+      txRef,
+      4,
+    ));
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 45 });
+    raw.getTxByHash.mockResolvedValue({
+      hash: txRef,
+      status: "confirmed",
+      blockNumber: 45,
+      content: {
+        type: "native",
+        from: payer,
+        to: payee,
+        nonce: 4,
+        amount: "2",
+        data: ["native", { nativeOperation: "send", args: [payee, "2"] }],
+      },
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 45,
+      hash: "block-45",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+    await expect(adapter.reconcileNativeTransferJournal(lease, 1_000))
+      .rejects.toMatchObject({ code: "inclusion-failed" });
+    expect(lease.snapshot.records[0]?.stage).toBe("broadcast-intent");
+    await lease.release();
+  });
+
   it("binds a mutable create to the nonce used to derive its address", async () => {
     const { adapter, raw } = await makeAdapter();
 
@@ -937,6 +1218,76 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(
       adapter.verifyDemosAnchorReceipt(portableReceipt),
     ).resolves.toBe(true);
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+      createdByTx: anchored.txRef,
+      lastModifiedByTx: anchored.txRef,
+      interactionTxs: [anchored.txRef],
+    });
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).resolves.toMatchObject({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      transactionRef: { value: anchored.txRef },
+      state: "finalized",
+      observationDisposition: "established",
+    });
+    const historyTransaction = await raw.getTxByHash(anchored.txRef);
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+    });
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => options.start === 0 ? [historyTransaction] : []);
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).resolves.toMatchObject({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      transactionRef: { value: anchored.txRef },
+      state: "finalized",
+    });
+    expect(raw.getTransactionHistory).toHaveBeenCalledWith(
+      wallet,
+      "storageProgram",
+      { start: 0, limit: 100 },
+    );
+    raw.getTxByHash.mockClear();
+    raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: name,
+      data: value,
+      createdByTx: anchored.txRef,
+      lastModifiedByTx: "tx-untrusted-latest",
+      interactionTxs: [anchored.txRef, "tx-untrusted-latest"],
+    });
+    await expect(adapter.resolveDemosAnchorReceipt({
+      logicalAddress: name,
+      nativeAddress: anchored.address,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+    })).rejects.toThrow(/provenance could not be authenticated/);
+    expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(raw.getTxByHash).toHaveBeenCalledWith("tx-untrusted-latest");
     await expect(
       adapter.verifyDemosAnchorReceipt({
         ...portableReceipt,
@@ -1006,6 +1357,242 @@ describe("DemosAdapter.anchorAndWait", () => {
       writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
       evidence: anchored.demosEvidence!,
     })).not.toThrow();
+  });
+
+  it("refuses an over-ceiling confirmed Storage Program fee before broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "1",
+              rpc_fee: "1",
+              additional_fee: "1",
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-over-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/exceeds maximumFeeOs/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("refuses a capped Storage Program write when confirmed fees are absent", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 2n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-missing-confirmed-fee",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/requires authoritative confirmed transaction fees/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts a Storage Program write at the exact confirmed fee ceiling", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: "1",
+              rpc_fee: "1",
+              additional_fee: "1",
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes legacy confirmed DEM fee numbers before applying an OS ceiling", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3_000_000_000n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: false } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: {
+              network_fee: 1,
+              rpc_fee: 1,
+              additional_fee: 1,
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-legacy-dem-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains failed-attempt fees and blocks aggregate-budget overspend before rebroadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "1", rpc_fee: "1", additional_fee: "1" },
+          },
+        },
+      },
+    }));
+    raw.nodeCall.mockResolvedValue({ state: "failed" });
+    const feeBudget = {
+      budgetId: "fixed-price:test-job:buyer",
+      maximumPerWriteFeeOs: 3n,
+      maximumTotalFeeOs: 3n,
+    };
+
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 20, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/terminal state failed/);
+    await expect(adapter.anchorWriteOnce(
+      "budgeted-failed-immutable",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1, feeBudget },
+    )).rejects.toThrow(/aggregate confirmed fee exceeds purchase budget/);
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed aggregate fee budgets before confirmation or broadcast", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    await expect(adapter.anchorWriteOnce(
+      "invalid-aggregate-budget",
+      { value: 1 },
+      { feeBudget: {
+        budgetId: "bad budget",
+        maximumPerWriteFeeOs: 1n,
+        maximumTotalFeeOs: -1n,
+      } },
+    )).rejects.toThrow(/aggregate fee budget is invalid/);
+    expect(raw.tx.confirm).not.toHaveBeenCalled();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("enforces the retained per-write budget when the adapter ceiling is higher", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 10n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: { hash: signed.hash },
+          gas_operation: {
+            fees: { network_fee: "2", rpc_fee: "2", additional_fee: "2" },
+          },
+        },
+      },
+    }));
+    await expect(adapter.anchorWriteOnce(
+      "per-write-budgeted-immutable",
+      { value: 1 },
+      { feeBudget: {
+        budgetId: "fixed-price:test-job:buyer",
+        maximumPerWriteFeeOs: 5n,
+        maximumTotalFeeOs: 20n,
+      } },
+    )).rejects.toThrow(/confirmed fee exceeds per-write purchase budget/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("uses the confirmed transaction fee only when gas-operation fees are absent", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-at-fallback-fee-ceiling",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).resolves.toMatchObject({ txRef: expect.stringMatching(/^tx-/) });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fall back from a malformed gas-operation fee to transaction content", async () => {
+    const { adapter, raw } = await makeAdapter({ maximumFeeOs: 3n });
+    raw.getNetworkInfo = vi.fn(async () => ({
+      forks: { osDenomination: { activated: true } },
+    }));
+    raw.tx.confirm.mockImplementation(async (signed: { hash: string }) => ({
+      response: {
+        data: {
+          transaction: {
+            hash: signed.hash,
+            content: {
+              transaction_fee: {
+                network_fee: "1",
+                rpc_fee: "1",
+                additional_fee: "1",
+              },
+            },
+          },
+          gas_operation: { fees: { network_fee: "1" } },
+        },
+      },
+    }));
+
+    await expect(adapter.anchorWriteOnce(
+      "immutable-malformed-authoritative-fee",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    )).rejects.toThrow(/requires authoritative confirmed transaction fees/);
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
   it("refuses an immutable create signed with a different nonce", async () => {

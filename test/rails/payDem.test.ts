@@ -76,6 +76,28 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(client.sent!.amountOs).toBe(1_000_000_000n);
   });
 
+  test("passes the exact per-payment total-debit ceiling to the native client", async () => {
+    const client = fakeClient();
+    await payDemSettleCore(params({ maxTotalDebitOs: "2000000000" }), client);
+    expect(client.sent).toMatchObject({
+      amountOs: 1_500_000_000n,
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+  });
+
+  test("rejects a malformed or underfunded per-payment debit ceiling before transfer", async () => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(
+      params({ maxTotalDebitOs: "1499999999" }),
+      client,
+    )).rejects.toThrow(/cannot be less than the amount/);
+    await expect(payDemSettleCore(
+      params({ maxTotalDebitOs: "1.5" }),
+      client,
+    )).rejects.toThrow(/positive integer OS text/);
+    expect(client.sent).toBeUndefined();
+  });
+
   test("rejects a non-integer / invalid base-unit amount", async () => {
     await expect(payDemSettleCore(params({ amount: "1.5" }), fakeClient())).rejects.toThrow(
       /invalid OS base-unit amount/,

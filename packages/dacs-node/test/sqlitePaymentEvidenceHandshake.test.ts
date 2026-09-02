@@ -40,6 +40,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const SELLER = "did:example:seller";
@@ -931,6 +932,7 @@ describe("SQLite payment-evidence handshake store", () => {
     database.checkpoint();
     close(database);
     const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
@@ -940,6 +942,7 @@ describe("SQLite payment-evidence handshake store", () => {
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       UPDATE dacs_store_metadata SET schema_version = 4 WHERE singleton = 1;

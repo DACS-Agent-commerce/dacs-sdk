@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
+import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
   type X402BuyerJson,
@@ -40,13 +41,14 @@ export interface X402BuyerChallengeClient {
 export interface PrepareX402BuyerSettlementInput {
   /** Complete authenticated DACS authority, excluding challenge-derived fields. */
   authority: Readonly<X402BuyerPreparationAuthority>;
-  /** Optional non-authority request headers for the unpaid GET. */
+  /** Optional `Accept` header for the unpaid GET; every other caller header is refused. */
   challengeHeaders?: X402BuyerHeaderInit;
 }
 
 export interface PrepareX402BuyerSettlementDeps {
   client: X402BuyerChallengeClient;
-  fetchImpl?: typeof fetch;
+  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
+  fetchImpl: typeof fetch;
 }
 
 export type X402BuyerSettlementPreparation =
@@ -57,8 +59,9 @@ export type X402BuyerSettlementPreparation =
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export interface X402BuyerPaidRequestTransportOptions {
-  fetchImpl?: typeof fetch;
-  /** Captured once; payment and legacy payment headers are forbidden. */
+  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
+  fetchImpl: typeof fetch;
+  /** Optional `Accept` header; every other base header is refused before payment is added. */
   headers?: X402BuyerHeaderInit;
 }
 
@@ -66,6 +69,8 @@ export type X402BuyerHeaderInit =
   | Headers
   | Record<string, string>
   | Array<[string, string]>;
+
+const ALLOWED_X402_BUYER_BASE_HEADERS = new Set(["accept"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -215,6 +220,15 @@ function captureHeaders(value: X402BuyerHeaderInit | undefined): Headers {
   if (headers.has(PAYMENT_SIGNATURE) || headers.has("X-PAYMENT")) {
     throw new TypeError("x402 buyer base headers cannot contain payment authorization");
   }
+  // `keys()` is declared only by DOM.Iterable. The parser engine's XPath
+  // types load base `lib.dom`, so using it here makes otherwise-compatible
+  // feature branches fail to compile together. `forEach()` is part of the
+  // base Fetch Headers contract and preserves the same allowlist gate.
+  headers.forEach((_value, name) => {
+    if (!ALLOWED_X402_BUYER_BASE_HEADERS.has(name)) {
+      throw new TypeError("x402 buyer base headers must be allowlisted and non-credentialed");
+    }
+  });
   return headers;
 }
 
@@ -256,7 +270,7 @@ export async function prepareX402BuyerSettlement(
   } catch {
     return { disposition: "rejected", reason: "x402-challenge-headers-invalid" };
   }
-  const fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = deps?.fetchImpl;
   if (typeof fetchImpl !== "function" || !deps?.client ||
       (deps.client.isPaymentRequirementsAuthorized !== undefined &&
         typeof deps.client.isPaymentRequirementsAuthorized !== "function") ||
@@ -332,14 +346,15 @@ export async function prepareX402BuyerSettlement(
 
 /**
  * Create the paid HTTP effect used by the durable buyer coordinator. It sends
- * only the retained bearer, refuses redirects, and treats the response header
- * as a candidate until the independent authorization provider authenticates
- * the chain event.
+ * only the retained bearer credential plus an optional caller `Accept` header
+ * and the safe transport's own representation/user-agent headers. It refuses
+ * redirects and treats the response header as a candidate until the independent
+ * authorization provider authenticates the chain event.
  */
 export function createX402BuyerPaidRequestTransport(
-  options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+  options: Readonly<X402BuyerPaidRequestTransportOptions>,
 ): X402BuyerPaidRequestTransport {
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = options?.fetchImpl;
   if (typeof fetchImpl !== "function") {
     throw new TypeError("x402 buyer paid transport requires fetch");
   }
@@ -383,4 +398,21 @@ export function createX402BuyerPaidRequestTransport(
     },
   };
   return Object.freeze(transport);
+}
+
+/**
+ * Recover a lost PAYMENT-RESPONSE by replaying only the exact retained paid
+ * request. The EIP-3009 authorization provider invokes this callback only
+ * after it has observed the retained nonce as used on-chain, and it still
+ * authenticates the returned transaction against the canonical receipt.
+ * Reusing the same signed nonce cannot authorize a second token transfer.
+ */
+export function createX402BuyerRetainedDisclosureRecovery(
+  options: Readonly<X402BuyerPaidRequestTransportOptions>,
+): X402BuyerEvmDisclosureRecovery {
+  const transport = createX402BuyerPaidRequestTransport(options);
+  return async ({ intent, fence }) => {
+    const result = await transport.submitRetained(intent, fence);
+    return result.disposition === "response" ? result.disclosure : undefined;
+  };
 }

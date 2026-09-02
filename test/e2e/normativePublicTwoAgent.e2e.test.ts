@@ -350,6 +350,8 @@ function signedVetRecord(
   role: "buyer" | "seller",
 ): CompositeVerificationRecord {
   const party = role === "buyer" ? BUYER : SELLER;
+  const verifier = role === "buyer" ? SELLER : BUYER;
+  const verifierSeed = role === "buyer" ? SELLER_SEED : BUYER_SEED;
   const bundle = role === "buyer" ? BUYER_IDENTITY : SELLER_IDENTITY;
   const unsigned = {
     recordVersion: "1" as const,
@@ -367,13 +369,13 @@ function signedVetRecord(
     ...unsigned,
     signature: {
       algorithm: "ed25519",
-      signer: SELLER,
+      signer: verifier,
       value: Buffer.from(ed25519Sign(
         signedBytes(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           contentHash(unsigned),
         ),
-        privateKeyFromSeed(SELLER_SEED),
+        privateKeyFromSeed(verifierSeed),
       )).toString("base64url"),
     },
   };
@@ -1582,7 +1584,7 @@ async function createSellerRuntime(input: {
               vetRecordRef: vetRef("seller"),
               evaluatedParty: SELLER,
               requirement: structuredClone(EMPTY_REQUIREMENT),
-              verifier: SELLER,
+              verifier: BUYER,
               freshness: [],
               dealSpecific: [],
             },
@@ -2781,7 +2783,7 @@ async function closeDetachedRoleBundles(input: {
     vetRecordHash: sellerVetRef.contentHash,
     evaluatedParty: SELLER,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-    verifier: SELLER,
+    verifier: BUYER,
   } as const;
   const standard331Signature = ed25519Sign(
     Buffer.from(canonicalize(standard331Envelope), "utf8"),
@@ -2794,11 +2796,14 @@ async function closeDetachedRoleBundles(input: {
       resolveRecipe: async () => null,
       isRecipeSignerAuthorized: () => false,
       isVerifyResultSignerAuthorized: (_result: unknown, signature: { signer: string }) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       resolvePublicKey: async (signature: { signer: string; algorithm: string }) =>
-        signature.signer === SELLER && signature.algorithm === "ed25519"
-          ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
-          : null,
+        signature.algorithm !== "ed25519" ? null
+          : signature.signer === SELLER
+            ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
+            : signature.signer === BUYER
+              ? rawPublicKey(publicKeyFromSeed(BUYER_SEED))
+              : null,
       verify: ({ signedBytes: bytes, signature, publicKey }: {
         signedBytes: Uint8Array;
         signature: { value: string };

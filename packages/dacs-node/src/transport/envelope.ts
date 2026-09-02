@@ -1,12 +1,29 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import type { BundleSignature } from "@kynesyslabs/dacs/artifacts";
+import {
+  isAttestationRef,
+  isCompositeVerificationRecord,
+  isIdentityBundle,
+  isReadableAnchorReceipt,
+  type AttestationRef,
+  type BundleSignature,
+  type CompositeVerificationRecord,
+  type IdentityBundle,
+} from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemOrderInput,
+  FixedPriceX402OrderInput,
   PaymentEvidenceAnchorCompletion,
   PaymentEvidenceAnchorRequest,
   PaymentEvidenceAuthenticatedPeer,
 } from "@kynesyslabs/dacs/commerce";
+import type {
+  PrepareVetTerminalBundleInput,
+  ProtocolAnchorReceipt,
+  TerminalBundlePlan,
+  TerminalBundleSignatureContribution,
+} from "@kynesyslabs/dacs";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import {
   parseCanonicalClaimReference,
@@ -18,6 +35,8 @@ import {
   type FixedPriceAgreementTransportIdentity,
 } from "@kynesyslabs/dacs/negotiate";
 import type { DurableSellerFixedPriceAgreementResponse } from "@kynesyslabs/dacs/seller";
+
+import type { DacsPayDemPaymentNoticeV1 } from "../payDemPayment.js";
 
 export const DACS_HTTP_TRANSPORT_PATH = "/dacs-transport/v1/messages" as const;
 export const DACS_HTTP_ENVELOPE_VERSION = "1" as const;
@@ -31,12 +50,23 @@ export const DACS_HTTP_SIGNATURE_BYTES = 64 as const;
 export const DACS_HTTP_MAX_BODY_BYTES = 262_144 as const;
 
 export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
+  "session-init",
+  "session-challenge",
+  "session-presentation",
+  "session-admission",
   "agreement-proposal",
   "agreement-response",
+  "pay-dem-payment-notice",
   "payment-evidence-request",
   "payment-evidence-completion",
   "bundle-signature-request",
   "bundle-signature-response",
+  "terminal-bundle-proposal-buyer",
+  "terminal-bundle-proposal-seller",
+  "terminal-bundle-contribution-buyer",
+  "terminal-bundle-contribution-seller",
+  "diagnostic-probe-buyer",
+  "diagnostic-probe-seller",
   "acknowledgement",
 ] as const);
 
@@ -45,6 +75,54 @@ export type DacsHttpMessageType = typeof DACS_HTTP_MESSAGE_TYPES[number];
 export interface DacsAgreementProposalPayloadV1 {
   proposal: Readonly<FixedPriceAgreementProposal>;
   transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+  /**
+   * Buyer-produced DACS-2 Vet of the seller. This rides with the proposal so
+   * both role-owned Vets can be produced concurrently during bootstrap while
+   * the seller can still reconstruct the Agreement from authenticated local
+   * inputs without waiting for the logical-name index.
+   */
+  sellerVetRecord: Readonly<CompositeVerificationRecord>;
+  sellerVetRef: Readonly<AttestationRef>;
+  sellerVetReceipt: Readonly<ProtocolAnchorReceipt>;
+}
+
+export interface DacsSessionInitPayloadV1<
+  Order extends FixedPriceX402OrderInput | FixedPricePayDemOrderInput =
+    FixedPriceX402OrderInput,
+> {
+  bootstrapVersion: "1";
+  order: Readonly<Order>;
+  application: Readonly<Record<string, unknown>>;
+  sellerChallenge: string;
+}
+
+export type DacsLiveSessionInitPayloadV1 =
+  | DacsSessionInitPayloadV1<FixedPriceX402OrderInput>
+  | DacsSessionInitPayloadV1<FixedPricePayDemOrderInput>;
+
+export interface DacsSessionChallengePayloadV1 {
+  bootstrapVersion: "1";
+  initPayloadHash: string;
+  sellerChallenge: string;
+  buyerChallenge: string;
+  sellerIdentity: Readonly<IdentityBundle>;
+}
+
+export interface DacsSessionPresentationPayloadV1 {
+  bootstrapVersion: "1";
+  challengePayloadHash: string;
+  buyerChallenge: string;
+  buyerIdentity: Readonly<IdentityBundle>;
+}
+
+export interface DacsSessionAdmissionPayloadV1 {
+  bootstrapVersion: "1";
+  presentationPayloadHash: string;
+  buyerIdentityHash: string;
+  sellerIdentityHash: string;
+  buyerVetRecord: Readonly<CompositeVerificationRecord>;
+  buyerVetRef: Readonly<AttestationRef>;
+  buyerVetReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
 export interface DacsBundleSignatureRequestV1 {
@@ -54,6 +132,12 @@ export interface DacsBundleSignatureRequestV1 {
   requiredCounterSigners: readonly string[];
 }
 
+export interface DacsVetTerminalBundleProposalV1 {
+  proposalVersion: "1";
+  terminalInput: Readonly<PrepareVetTerminalBundleInput>;
+  plan: Readonly<TerminalBundlePlan>;
+}
+
 export interface DacsHttpAcknowledgementV1 {
   acknowledgedEnvelopeId: string;
   acknowledgedPayloadHash: string;
@@ -61,13 +145,29 @@ export interface DacsHttpAcknowledgementV1 {
   reasonCode?: string;
 }
 
+export interface DacsHttpDiagnosticProbePayloadV1 {
+  purpose: "transport-readiness";
+  challenge: string;
+}
+
 export interface DacsHttpPayloadByType {
+  "session-init": DacsLiveSessionInitPayloadV1;
+  "session-challenge": DacsSessionChallengePayloadV1;
+  "session-presentation": DacsSessionPresentationPayloadV1;
+  "session-admission": DacsSessionAdmissionPayloadV1;
   "agreement-proposal": DacsAgreementProposalPayloadV1;
   "agreement-response": DurableSellerFixedPriceAgreementResponse;
+  "pay-dem-payment-notice": DacsPayDemPaymentNoticeV1;
   "payment-evidence-request": PaymentEvidenceAnchorRequest;
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
   "bundle-signature-response": BundleSignature;
+  "terminal-bundle-proposal-buyer": DacsVetTerminalBundleProposalV1;
+  "terminal-bundle-proposal-seller": DacsVetTerminalBundleProposalV1;
+  "terminal-bundle-contribution-buyer": TerminalBundleSignatureContribution;
+  "terminal-bundle-contribution-seller": TerminalBundleSignatureContribution;
+  "diagnostic-probe-buyer": DacsHttpDiagnosticProbePayloadV1;
+  "diagnostic-probe-seller": DacsHttpDiagnosticProbePayloadV1;
   acknowledgement: DacsHttpAcknowledgementV1;
 }
 
@@ -216,13 +316,31 @@ export type DacsHttpEnvelopeSelfVerificationV1 = Readonly<
 
 const TYPE_SET = new Set<string>(DACS_HTTP_MESSAGE_TYPES);
 const REQUIRED_SENDER_ROLE = Object.freeze({
+  "session-init": "buyer",
+  "session-challenge": "seller",
+  "session-presentation": "buyer",
+  "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
+  "pay-dem-payment-notice": "buyer",
   "payment-evidence-request": "seller",
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
   "bundle-signature-response": "buyer",
+  "terminal-bundle-proposal-buyer": "buyer",
+  "terminal-bundle-proposal-seller": "seller",
+  "terminal-bundle-contribution-buyer": "buyer",
+  "terminal-bundle-contribution-seller": "seller",
+  "diagnostic-probe-buyer": "buyer",
+  "diagnostic-probe-seller": "seller",
 } as const);
+
+/** One authoritative sender-role mapping shared by authentication and stores. */
+export function dacsHttpRequiredSenderRoleV1(
+  type: DacsHttpMessageType,
+): "buyer" | "seller" | undefined {
+  return type === "acknowledgement" ? undefined : REQUIRED_SENDER_ROLE[type];
+}
 const HASH_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_REJECTION_CODE_SET = new Set<DacsHttpIdentityRejectionCode>([
   "identity-unresolved",
@@ -281,6 +399,74 @@ function record(value: unknown): value is Record<string, unknown> {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor !== undefined && descriptor.enumerable && "value" in descriptor;
   });
+}
+
+export function validateDacsHttpDiagnosticProbePayloadV1(
+  value: unknown,
+): value is Readonly<DacsHttpDiagnosticProbePayloadV1> {
+  if (!record(value) || Object.keys(value).length !== 2 ||
+      value.purpose !== "transport-readiness" ||
+      typeof value.challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.challenge)) {
+    return false;
+  }
+  try {
+    const decoded = Buffer.from(value.challenge, "base64url");
+    return decoded.byteLength === 32 && decoded.toString("base64url") === value.challenge;
+  } catch {
+    return false;
+  }
+}
+
+function sessionChallenge(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function hash(value: unknown): value is string {
+  return typeof value === "string" && HASH_RE.test(value);
+}
+
+export function validateDacsHttpSessionInitPayloadV1(
+  value: unknown,
+): value is Readonly<DacsLiveSessionInitPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "order", "application", "sellerChallenge",
+  ]) && value.bootstrapVersion === "1" && record(value.order) &&
+    record(value.application) && sessionChallenge(value.sellerChallenge);
+}
+
+export function validateDacsHttpSessionChallengePayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionChallengePayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "initPayloadHash", "sellerChallenge", "buyerChallenge",
+    "sellerIdentity",
+  ]) && value.bootstrapVersion === "1" && hash(value.initPayloadHash) &&
+    sessionChallenge(value.sellerChallenge) && sessionChallenge(value.buyerChallenge) &&
+    value.sellerChallenge !== value.buyerChallenge && isIdentityBundle(value.sellerIdentity) &&
+    value.sellerIdentity.sessionNonce === value.sellerChallenge;
+}
+
+export function validateDacsHttpSessionPresentationPayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionPresentationPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "challengePayloadHash", "buyerChallenge", "buyerIdentity",
+  ]) && value.bootstrapVersion === "1" && hash(value.challengePayloadHash) &&
+    sessionChallenge(value.buyerChallenge) && isIdentityBundle(value.buyerIdentity) &&
+    value.buyerIdentity.sessionNonce === value.buyerChallenge;
+}
+
+export function validateDacsHttpSessionAdmissionPayloadV1(
+  value: unknown,
+): value is Readonly<DacsSessionAdmissionPayloadV1> {
+  return record(value) && exactKeys(value, [
+    "bootstrapVersion", "presentationPayloadHash", "buyerIdentityHash",
+    "sellerIdentityHash", "buyerVetRecord", "buyerVetRef", "buyerVetReceipt",
+  ]) && value.bootstrapVersion === "1" && hash(value.presentationPayloadHash) &&
+    hash(value.buyerIdentityHash) && hash(value.sellerIdentityHash) &&
+    isCompositeVerificationRecord(value.buyerVetRecord) &&
+    isAttestationRef(value.buyerVetRef) &&
+    isReadableAnchorReceipt(value.buyerVetReceipt);
 }
 
 function exactKeys(
@@ -640,7 +826,7 @@ export async function authenticateDacsHttpEnvelopeV1(
       failure("authentication", "identity-resolution-mismatch");
     }
     if (envelope.type !== "acknowledgement" &&
-        identity.role !== REQUIRED_SENDER_ROLE[envelope.type]) {
+        identity.role !== dacsHttpRequiredSenderRoleV1(envelope.type)) {
       failure("authentication", "identity-role-incompatible");
     }
     let signatureValid = false;

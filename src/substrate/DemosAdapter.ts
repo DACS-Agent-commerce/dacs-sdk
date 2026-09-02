@@ -10,8 +10,17 @@ import {
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
+import {
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
-import { parseClaimRef } from "../identity/index.js";
+import {
+  parseClaimRef,
+  parseDemosAgentClaimReference,
+} from "../identity/index.js";
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
@@ -21,6 +30,7 @@ import {
   demosSignedTransactionProofHash,
   demosTransactionContentDifferencePaths,
   demosWriteEvidenceBindsReceiptContent,
+  demosWriteEvidenceToAnchorReceipt,
 } from "./demosWriteEvidence.js";
 import {
   classifyAnchorResolution,
@@ -67,9 +77,30 @@ const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
+const RECEIPT_HISTORY_PAGE_SIZE = 100;
+const RECEIPT_HISTORY_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const exactJsonHash = (value: Record<string, unknown>): string =>
   sha256Hex(canonicalize(value));
+
+export interface DemosAnchorReceiptLookup {
+  logicalAddress: string;
+  nativeAddress: string;
+  contentHash: string;
+  /** Protocol ClaimRef or native Ed25519 address expected to own the write. */
+  writer: string;
+}
+
+function demosNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
 
 /** Demos block headers currently expose Unix seconds; CORE timestamps are ms. */
 function demosBlockTimestampMs(value: unknown): number | undefined {
@@ -93,6 +124,105 @@ function normalizeRpcQueueKey(rpc: string): string {
     // transports while still collapsing the common trailing-slash spelling.
     return rpc.trim().replace(/\/+$/, "");
   }
+}
+
+function normalizedDemosAddress(value: unknown): string | undefined {
+  if (typeof value !== "string" || !/^(?:0x)?[0-9a-f]{64}$/i.test(value)) {
+    return undefined;
+  }
+  return value.toLowerCase().replace(/^0x/, "");
+}
+
+function sameDemosWallet(left: unknown, right: unknown): boolean {
+  const canonicalLeft = normalizedDemosAddress(left);
+  const canonicalRight = normalizedDemosAddress(right);
+  return canonicalLeft !== undefined && canonicalRight !== undefined
+    ? canonicalLeft === canonicalRight
+    : typeof left === "string" && typeof right === "string" &&
+      left.toLowerCase() === right.toLowerCase();
+}
+
+const DEMOS_OS_PER_DEM = 1_000_000_000n;
+
+function demosConfirmedFeeComponentOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+    return BigInt(value);
+  }
+  if (!postFork && typeof value === "number" && Number.isSafeInteger(value) &&
+      value >= 0 && !Object.is(value, -0)) {
+    return BigInt(value) * DEMOS_OS_PER_DEM;
+  }
+  return undefined;
+}
+
+function demosConfirmedTransactionFeeOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const network = demosConfirmedFeeComponentOs(value.network_fee, postFork);
+  const rpc = demosConfirmedFeeComponentOs(value.rpc_fee, postFork);
+  const additional = demosConfirmedFeeComponentOs(value.additional_fee, postFork);
+  return network === undefined || rpc === undefined || additional === undefined
+    ? undefined : network + rpc + additional;
+}
+
+function demosConfirmedValidityFeeOs(
+  value: unknown,
+  postFork: boolean,
+): bigint | undefined {
+  const data = isRecord(value) && isRecord(value.response) &&
+      isRecord(value.response.data)
+    ? value.response.data : undefined;
+  if (data === undefined) return undefined;
+  if (data.gas_operation !== null && data.gas_operation !== undefined) {
+    if (!isJsonObject(data.gas_operation) ||
+        data.gas_operation.fees === null || data.gas_operation.fees === undefined) {
+      return undefined;
+    }
+    return demosConfirmedTransactionFeeOs(data.gas_operation.fees, postFork);
+  }
+  return isRecord(data.transaction) && isRecord(data.transaction.content)
+    ? demosConfirmedTransactionFeeOs(data.transaction.content.transaction_fee, postFork)
+    : undefined;
+}
+
+function demosOsDenominationActivated(value: unknown): boolean | undefined {
+  return isRecord(value) && isRecord(value.forks) &&
+      isRecord(value.forks.osDenomination) &&
+      typeof value.forks.osDenomination.activated === "boolean"
+    ? value.forks.osDenomination.activated : undefined;
+}
+
+function demosTransferAmountOs(
+  value: unknown,
+  denomination: "os" | "dem",
+  allowProjectedOsNumber = false,
+): bigint | undefined {
+  if (denomination === "os") {
+    if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) {
+      return BigInt(value);
+    }
+    if (allowProjectedOsNumber && typeof value === "number" &&
+        Number.isSafeInteger(value) && value >= 0 &&
+        !Object.is(value, -0)) {
+      return BigInt(value);
+    }
+    return undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+      !Object.is(value, -0)
+    ? BigInt(value) * DEMOS_OS_PER_DEM
+    : undefined;
+}
+
+function sameOptionalJsonObject(left: unknown, right: unknown): boolean {
+  if (left === undefined && right === undefined) return true;
+  return isJsonObject(left) && isJsonObject(right) &&
+    canonicalize(left) === canonicalize(right);
 }
 
 type MutableReceipt = Omit<AnchorAttemptReceipt, "attempts" | "timings"> & {
@@ -642,6 +772,11 @@ export class DemosAdapter implements SubstrateAdapter {
     return previousHash;
   }
 
+  /** Stable authenticated Demos chain identity used to bind guarded plans. */
+  async getChainIdentity(): Promise<string> {
+    return this.resolveChainIdentity();
+  }
+
   private async acquireWriteLease(): Promise<DemosWriteJournalLease> {
     if (!this.config.writeJournal) {
       throw new DacsError(
@@ -741,9 +876,77 @@ export class DemosAdapter implements SubstrateAdapter {
     });
   }
 
+  private async assertConfirmedFeeWithinCap(
+    validity: unknown,
+    requireConfirmedFee = false,
+  ): Promise<bigint | undefined> {
+    const maximumFeeOs = this.config.maximumFeeOs;
+    if (maximumFeeOs === undefined && !requireConfirmedFee) return undefined;
+    const postFork = demosOsDenominationActivated(
+      await this.demos.getNetworkInfo(),
+    );
+    if (postFork === undefined) {
+      throw new SubstrateError(
+        "Demos fee ceiling cannot authenticate the network denomination",
+      );
+    }
+    const confirmedFeeOs = demosConfirmedValidityFeeOs(validity, postFork);
+    if (confirmedFeeOs === undefined) {
+      throw new SubstrateError(
+        "Demos fee ceiling requires authoritative confirmed transaction fees",
+      );
+    }
+    if (maximumFeeOs !== undefined && confirmedFeeOs > maximumFeeOs) {
+      throw new SubstrateError(
+        "Demos confirmed transaction fee exceeds maximumFeeOs",
+      );
+    }
+    return confirmedFeeOs;
+  }
+
+  private reserveAggregateFeeBudget(
+    input: Readonly<{
+      budgetId: string;
+      maximumPerWriteFeeOs: bigint;
+      maximumTotalFeeOs: bigint;
+    }>,
+    confirmedFeeOs: bigint,
+  ) {
+    const lease = this.activeWriteLease;
+    if (!lease) throw new DacsError("Demos write journal lease is missing");
+    let reserved = 0n;
+    for (const record of lease.snapshot.records) {
+      const budget = record.feeBudget;
+      if (budget?.budgetId !== input.budgetId) continue;
+      if (BigInt(budget.maximumTotalFeeOs) !== input.maximumTotalFeeOs) {
+        throw new DacsError("Demos aggregate fee budget ceiling conflicts with its journal");
+      }
+      if (BigInt(budget.maximumPerWriteFeeOs) !== input.maximumPerWriteFeeOs) {
+        throw new DacsError("Demos per-write fee budget ceiling conflicts with its journal");
+      }
+      reserved += BigInt(budget.reservedFeeOs);
+    }
+    if (confirmedFeeOs > input.maximumPerWriteFeeOs) {
+      throw new SubstrateError("Demos confirmed fee exceeds per-write purchase budget");
+    }
+    if (reserved + confirmedFeeOs > input.maximumTotalFeeOs) {
+      throw new SubstrateError("Demos aggregate confirmed fee exceeds purchase budget");
+    }
+    return {
+      budgetId: input.budgetId,
+      maximumPerWriteFeeOs: input.maximumPerWriteFeeOs.toString(),
+      maximumTotalFeeOs: input.maximumTotalFeeOs.toString(),
+      reservedFeeOs: confirmedFeeOs.toString(),
+    };
+  }
+
   constructor(config: DemosAdapterConfig) {
     if (!config?.rpc) {
       throw new Error("DemosAdapter requires an rpc URL");
+    }
+    if (config.maximumFeeOs !== undefined &&
+        (typeof config.maximumFeeOs !== "bigint" || config.maximumFeeOs < 0n)) {
+      throw new Error("DemosAdapter maximumFeeOs must be a non-negative bigint");
     }
     this.config = config;
     this.demos = new Demos();
@@ -950,15 +1153,336 @@ export class DemosAdapter implements SubstrateAdapter {
     );
   }
 
+  /**
+   * Recover a portable CORE receipt for an already-finalized native Demos
+   * Storage Program write. This is the read-side counterpart to
+   * `demosWriteEvidenceToAnchorReceipt`: it follows the native provenance tx,
+   * authenticates its canonical block and exact current readback, and never
+   * treats an RPC/provenance failure as absence.
+   */
+  async resolveDemosAnchorReceipt(
+    input: Readonly<DemosAnchorReceiptLookup>,
+  ): Promise<ProtocolAnchorReceipt | null> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    if (!isRecord(input) ||
+        typeof input.logicalAddress !== "string" || input.logicalAddress.length === 0 ||
+        input.logicalAddress.trim() !== input.logicalAddress ||
+        typeof input.nativeAddress !== "string" || input.nativeAddress.length === 0 ||
+        input.nativeAddress.trim() !== input.nativeAddress ||
+        typeof input.contentHash !== "string" || !/^[0-9a-f]{64}$/.test(input.contentHash) ||
+        typeof input.writer !== "string" || input.writer.length === 0 ||
+        input.writer.trim() !== input.writer) {
+      throw new TypeError("Demos anchor receipt lookup is invalid");
+    }
+
+    let nativeObservation: unknown;
+    try {
+      nativeObservation = await this.demos.storagePrograms.read(input.nativeAddress);
+    } catch (error) {
+      if (httpStatus(error) === 404) return null;
+      throw new SubstrateError("Demos receipt native read failed", { cause: error });
+    }
+    if (!isRecord(nativeObservation)) {
+      throw new SubstrateError("Demos receipt native read is malformed");
+    }
+    const nativeMarker =
+      `${nativeObservation.errorCode ?? ""} ${nativeObservation.error ?? ""}`.toLowerCase();
+    if (nativeObservation.success !== true) {
+      if (nativeMarker.includes("not_found") || nativeMarker.includes("not found")) {
+        return null;
+      }
+      throw new SubstrateError("Demos receipt native read is indeterminate");
+    }
+    if (nativeObservation.storageAddress !== input.nativeAddress ||
+        typeof nativeObservation.owner !== "string" ||
+        typeof nativeObservation.programName !== "string" ||
+        !isJsonObject(nativeObservation.data)) {
+      throw new SubstrateError("Demos receipt native read lacks exact provenance");
+    }
+
+    // The latest mutation is authoritative when present. Falling back from a
+    // malformed latest update to the create transaction could authenticate a
+    // stale value that was later changed and then restored byte-for-byte.
+    const latestProvenance = typeof nativeObservation.lastModifiedByTx === "string" &&
+        nativeObservation.lastModifiedByTx.length > 0
+      ? nativeObservation.lastModifiedByTx
+      : nativeObservation.createdByTx;
+    let provenanceCandidates = typeof latestProvenance === "string" &&
+        latestProvenance.length > 0
+      ? [latestProvenance]
+      : [];
+    if (provenanceCandidates.length === 0) {
+      provenanceCandidates = await this.resolveDemosProvenanceFromHistory(
+        input.nativeAddress,
+        nativeObservation,
+      );
+    }
+
+    let lastFailure: unknown;
+    for (const transactionRef of provenanceCandidates) {
+      try {
+        const transactionObservation = await this.demos.getTxByHash(transactionRef);
+        const transaction = isRecord(transactionObservation) &&
+            isRecord(transactionObservation.response)
+          ? transactionObservation.response
+          : transactionObservation;
+        if (!isRecord(transaction) || transaction.status !== "confirmed" ||
+            transaction.hash !== transactionRef || !isRecord(transaction.content)) {
+          throw new SubstrateError("Demos receipt transaction is not canonical");
+        }
+        const blockNumber = demosNonNegativeInteger(transaction.blockNumber);
+        const nonce = demosNonNegativeInteger(transaction.content.nonce);
+        const tuple = Array.isArray(transaction.content.data)
+          ? transaction.content.data : [];
+        const payload = isRecord(tuple[1]) ? tuple[1] : undefined;
+        const operation = payload?.operation === "CREATE_STORAGE_PROGRAM"
+          ? "create" as const
+          : payload?.operation === "WRITE_STORAGE"
+            ? "update" as const
+            : undefined;
+        if (blockNumber === undefined || nonce === undefined || operation === undefined) {
+          throw new SubstrateError("Demos receipt transaction lacks write provenance");
+        }
+
+        const blockObservation = await this.demos.getBlockByNumber(blockNumber);
+        const block = isRecord(blockObservation) && isRecord(blockObservation.response)
+          ? blockObservation.response : blockObservation;
+        const blockContent = isRecord(block) && isRecord(block.content)
+          ? block.content : undefined;
+        const blockTimestamp = demosBlockTimestampMs(blockContent?.timestamp);
+        if (!isRecord(block) || typeof block.hash !== "string" ||
+            blockTimestamp === undefined || block.validation_data === undefined) {
+          throw new SubstrateError("Demos receipt block is malformed");
+        }
+        const finalityProof = serializeSignedTransaction(block.validation_data);
+        const signedTransaction = serializeSignedTransaction(transaction);
+        const metadataHash = nativeObservation.metadata === undefined ||
+            nativeObservation.metadata === null
+          ? undefined
+          : isJsonObject(nativeObservation.metadata)
+            ? exactJsonHash(nativeObservation.metadata)
+            : null;
+        if (metadataHash === null) {
+          throw new SubstrateError("Demos receipt metadata is malformed");
+        }
+        const evidence: DemosWriteEvidence = {
+          evidenceVersion: "1",
+          chainIdentity: await this.resolveChainIdentity(),
+          writer: nativeObservation.owner,
+          logicalName: input.logicalAddress,
+          nativeAddress: input.nativeAddress,
+          operation,
+          nonce,
+          transactionRef,
+          signedTransaction,
+          signedTransactionHash: demosSignedTransactionProofHash(transaction),
+          blockNumber,
+          blockHash: block.hash,
+          blockTimestamp,
+          finalityProof,
+          finalityProofHash: sha256Hex(finalityProof),
+          nativeRead: {
+            owner: nativeObservation.owner,
+            programName: nativeObservation.programName,
+            valueHash: exactJsonHash(nativeObservation.data),
+            ...(metadataHash === undefined ? {} : { metadataHash }),
+            observedAt: Date.now(),
+          },
+        };
+        assertDemosWriteEvidence(evidence);
+        if (!this.demosEvidenceMatchesObservations(
+          evidence,
+          transaction,
+          block,
+          nativeObservation,
+        )) {
+          throw new SubstrateError("Demos receipt observations are inconsistent");
+        }
+        return demosWriteEvidenceToAnchorReceipt({
+          logicalAddress: input.logicalAddress,
+          contentHash: input.contentHash,
+          writer: input.writer,
+          evidence,
+        });
+      } catch (error) {
+        lastFailure = error;
+      }
+    }
+    throw new SubstrateError("Demos receipt provenance could not be authenticated", {
+      cause: lastFailure,
+    });
+  }
+
+  /**
+   * Older public nodes omit `createdByTx`/`lastModifiedByTx` from otherwise
+   * complete Storage Program reads. Recover the latest owner mutation from a
+   * stable, exhaustively paged owner history; any malformed row, moving head,
+   * unsupported latest operation or post-scan native change fails closed.
+   */
+  private async resolveDemosProvenanceFromHistory(
+    nativeAddress: string,
+    nativeObservation: Readonly<Record<string, unknown>>,
+  ): Promise<string[]> {
+    const owner = normalizedDemosAddress(nativeObservation.owner);
+    if (owner === undefined) {
+      throw new SubstrateError("Demos receipt native owner is invalid");
+    }
+    const ownerAddress = `0x${owner}`;
+    const rows: unknown[] = [];
+    let firstHash: string | undefined;
+    for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
+      const start = page * RECEIPT_HISTORY_PAGE_SIZE;
+      const raw = await this.demos.getTransactionHistory(
+        ownerAddress,
+        "storageProgram",
+        { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
+      ) as unknown;
+      if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
+        throw new SubstrateError("Demos receipt history page is malformed");
+      }
+      if (page === 0 && raw.length > 0) {
+        const head = raw[0];
+        if (!isRecord(head) || typeof head.hash !== "string" || head.hash.length === 0) {
+          throw new SubstrateError("Demos receipt history head is malformed");
+        }
+        firstHash = head.hash;
+      }
+      rows.push(...raw);
+      if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
+        const lookahead = await this.demos.getTransactionHistory(
+          ownerAddress,
+          "storageProgram",
+          { start: start + raw.length, limit: 1 },
+        ) as unknown;
+        if (!Array.isArray(lookahead) || lookahead.length !== 0) {
+          throw new SubstrateError("Demos receipt history page is incomplete");
+        }
+        break;
+      }
+      if (page === RECEIPT_HISTORY_MAX_PAGES - 1) {
+        throw new SubstrateError("Demos receipt history exceeds the verification cap");
+      }
+    }
+    if (firstHash === undefined) {
+      throw new SubstrateError("Demos receipt native provenance is unavailable");
+    }
+    const headCheck = await this.demos.getTransactionHistory(
+      ownerAddress,
+      "storageProgram",
+      { start: 0, limit: 1 },
+    ) as unknown;
+    if (!Array.isArray(headCheck) || headCheck.length !== 1 ||
+        !isRecord(headCheck[0]) || headCheck[0].hash !== firstHash) {
+      throw new SubstrateError("Demos receipt history changed during verification");
+    }
+
+    const mutations: Array<Readonly<{
+      hash: string;
+      blockNumber: number;
+      nonce: number;
+      operation: string;
+      data: unknown;
+      metadata: unknown;
+    }>> = [];
+    for (const [index, raw] of rows.entries()) {
+      if (!isRecord(raw) || typeof raw.hash !== "string" || raw.hash.length === 0 ||
+          typeof raw.status !== "string") {
+        throw new SubstrateError(`Demos receipt history row ${index} is malformed`);
+      }
+      if (raw.status === "failed") continue;
+      if (raw.status !== "confirmed" || !isRecord(raw.content) ||
+          raw.content.type !== "storageProgram") {
+        throw new SubstrateError(`Demos receipt history row ${index} is not canonical`);
+      }
+      if (normalizedDemosAddress(raw.content.from) !== owner) continue;
+      const tuple = Array.isArray(raw.content.data) ? raw.content.data : [];
+      const payload = isRecord(tuple[1]) ? tuple[1] : undefined;
+      const touchesNative = raw.content.to === nativeAddress ||
+        payload?.storageAddress === nativeAddress;
+      if (!touchesNative) continue;
+      if (tuple[0] !== "storageProgram" || payload === undefined ||
+          raw.content.to !== nativeAddress || payload.storageAddress !== nativeAddress ||
+          typeof payload.operation !== "string") {
+        throw new SubstrateError("Demos receipt history has inconsistent native provenance");
+      }
+      const blockNumber = demosNonNegativeInteger(raw.blockNumber);
+      const nonce = demosNonNegativeInteger(raw.content.nonce);
+      if (blockNumber === undefined || nonce === undefined) {
+        throw new SubstrateError("Demos receipt history mutation lacks ordering evidence");
+      }
+      mutations.push({
+        hash: raw.hash,
+        blockNumber,
+        nonce,
+        operation: payload.operation,
+        data: payload.data,
+        metadata: payload.metadata,
+      });
+    }
+    mutations.sort((left, right) =>
+      right.blockNumber - left.blockNumber || right.nonce - left.nonce);
+    const latest = mutations[0];
+    if (latest === undefined ||
+        (latest.operation !== "CREATE_STORAGE_PROGRAM" &&
+          latest.operation !== "WRITE_STORAGE")) {
+      throw new SubstrateError("Demos receipt latest native mutation is unsupported");
+    }
+    const observedMetadata = nativeObservation.metadata ?? undefined;
+    if (!isJsonObject(latest.data) ||
+        canonicalize(latest.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(latest.metadata ?? undefined, observedMetadata)) {
+      throw new SubstrateError("Demos receipt history does not bind the native value");
+    }
+    const fresh = await this.demos.storagePrograms.read(nativeAddress) as unknown;
+    if (!isRecord(fresh) || fresh.success !== true ||
+        fresh.storageAddress !== nativeAddress ||
+        normalizedDemosAddress(fresh.owner) !== owner ||
+        fresh.programName !== nativeObservation.programName ||
+        !isJsonObject(fresh.data) ||
+        canonicalize(fresh.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
+      throw new SubstrateError("Demos receipt native value changed during verification");
+    }
+    return [latest.hash];
+  }
+
   async sign(bytes: Uint8Array): Promise<Uint8Array> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const result = await (this.demos as any).crypto.sign(
-      (this.demos as any).algorithm,
-      bytes,
-    );
-    return result.signature as Uint8Array;
+    if (!(bytes instanceof Uint8Array)) {
+      throw new SubstrateError("Demos Ed25519 signer input is invalid");
+    }
+    const identity = await (this.demos as any).crypto.getIdentity("ed25519") as {
+      privateKey?: unknown;
+      publicKey?: unknown;
+    };
+    if (!(identity.privateKey instanceof Uint8Array) ||
+        identity.privateKey.byteLength !== 64 ||
+        !(identity.publicKey instanceof Uint8Array) ||
+        identity.publicKey.byteLength !== 32) {
+      throw new SubstrateError("Demos Ed25519 signing identity is invalid");
+    }
+    // demosdk's generic signer decodes input as UTF-8 before signing. DACS
+    // signs domain-separated binary hash bytes, so that path corrupts any
+    // non-UTF-8 octets. Forge exposes its Ed25519 private key as the RFC 8032
+    // 32-byte seed followed by the 32-byte public key; derive a Node KeyObject
+    // from a private copy and prove it matches the connected wallet before use.
+    const seed = Uint8Array.from(identity.privateKey.subarray(0, 32));
+    try {
+      const key = privateKeyFromSeed(seed);
+      if (!Buffer.from(rawPublicKey(publicKeyFromSeed(seed)))
+        .equals(Buffer.from(identity.publicKey))) {
+        throw new SubstrateError(
+          "Demos Ed25519 signing identity does not match its public key",
+        );
+      }
+      return ed25519Sign(bytes, key);
+    } finally {
+      seed.fill(0);
+    }
   }
 
   async getPublicKey(): Promise<Uint8Array> {
@@ -1030,6 +1554,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const owner = this.demos.getAddress();
     const journalBindings = (this.activeWriteLease?.snapshot.records ?? [])
       .filter((record) =>
+        record.kind !== "native-transfer" &&
         record.logicalName === name &&
         record.owner.toLowerCase() === owner.toLowerCase() &&
         (record.stage === "native-visible" || record.stage === "index-visible")
@@ -1515,6 +2040,13 @@ export class DemosAdapter implements SubstrateAdapter {
     chainIdentity = this.activeWriteLease?.key.chainIdentity,
   ) {
     if (
+      record.kind === "native-transfer" ||
+      (record.operation !== "create" && record.operation !== "update")
+    ) {
+      throw new DacsError("native DEM wallet journal records are not anchor evidence");
+    }
+    const operation = record.operation;
+    if (
       !chainIdentity ||
       !record.txRef ||
       !record.signedTransaction ||
@@ -1536,7 +2068,7 @@ export class DemosAdapter implements SubstrateAdapter {
       writer: record.owner,
       logicalName: record.logicalName,
       nativeAddress: record.nativeAddress,
-      operation: record.operation,
+      operation,
       nonce: record.nonce,
       transactionRef: record.txRef,
       signedTransaction: record.signedTransaction!,
@@ -1548,6 +2080,280 @@ export class DemosAdapter implements SubstrateAdapter {
       finalityProofHash: record.finalityProofHash,
       nativeRead: structuredClone(record.nativeRead),
     };
+  }
+
+  private async authenticateCanonicalNativeTransfer(
+    record: DemosWriteJournalRecord,
+    ctx: AnchorContext,
+  ): Promise<Pick<
+    DemosWriteJournalRecord,
+    | "blockNumber"
+    | "blockHash"
+    | "blockTimestamp"
+    | "finalityProof"
+    | "finalityProofHash"
+  >> {
+    const transaction = ctx.canonicalTransaction;
+    const blockNumber = ctx.receipt.blockNumber;
+    const transfer = record.transfer;
+    const content = isRecord(transaction?.content) ? transaction.content : undefined;
+    const payerFields = [content?.from, content?.from_ed25519_address]
+      .filter((value) => value !== undefined);
+    const tuple = Array.isArray(content?.data) ? content.data : [];
+    const native = isRecord(tuple[1]) ? tuple[1] : undefined;
+    const args = Array.isArray(native?.args) ? native.args : [];
+    const expectedAmountOs = transfer !== undefined &&
+        /^[1-9][0-9]*$/.test(transfer.amountOs)
+      ? BigInt(transfer.amountOs)
+      : undefined;
+    if (record.kind !== "native-transfer" || transfer === undefined ||
+        !transaction || !Number.isSafeInteger(blockNumber) || blockNumber! < 0 ||
+        normalizedDemosAddress(transaction.hash) !== record.txRef ||
+        normalizedDemosAddress(transfer.payer) !== normalizedDemosAddress(record.owner) ||
+        normalizedDemosAddress(transfer.payee) !== normalizedDemosAddress(record.nativeAddress) ||
+        content?.type !== "native" || content.custom_charges != null ||
+        demosNonNegativeInteger(content.nonce) !== record.nonce ||
+        payerFields.length === 0 || payerFields.some((value) =>
+          normalizedDemosAddress(value) !== normalizedDemosAddress(record.owner)) ||
+        normalizedDemosAddress(content.to) !== normalizedDemosAddress(transfer.payee) ||
+        demosTransferAmountOs(content.amount, transfer.denomination, true) !==
+          expectedAmountOs ||
+        tuple.length !== 2 || tuple[0] !== "native" ||
+        native?.nativeOperation !== "send" || args.length !== 2 ||
+        normalizedDemosAddress(args[0]) !== normalizedDemosAddress(transfer.payee) ||
+        demosTransferAmountOs(args[1], transfer.denomination) !== expectedAmountOs) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `canonical Demos transfer ${record.txRef} does not match its wallet journal`,
+      );
+    }
+    const observed = await this.waitFor(
+      ctx,
+      this.demos.getBlockByNumber(blockNumber!),
+      "canonical transfer block authentication",
+    ) as unknown;
+    const block = isRecord(observed) && isRecord(observed.response)
+      ? observed.response : observed;
+    const blockContent = isRecord(block) && isRecord(block.content)
+      ? block.content : undefined;
+    const blockHash = isRecord(block) && typeof block.hash === "string" ? block.hash : "";
+    const blockTimestamp = demosBlockTimestampMs(blockContent?.timestamp);
+    const orderedTransactions = Array.isArray(blockContent?.ordered_transactions)
+      ? blockContent.ordered_transactions : [];
+    if (!isRecord(block) || !blockHash || block.status !== "confirmed" ||
+        block.number !== blockNumber || blockTimestamp === undefined ||
+        !orderedTransactions.includes(record.txRef) || block.validation_data === undefined) {
+      throw this.fail(
+        ctx,
+        "inclusion-failed",
+        `Demos block ${String(blockNumber)} does not authenticate transfer ${record.txRef}`,
+      );
+    }
+    const finalityProof = serializeSignedTransaction(block.validation_data);
+    return {
+      blockNumber: blockNumber!,
+      blockHash,
+      blockTimestamp,
+      finalityProof,
+      finalityProofHash: sha256Hex(finalityProof),
+    };
+  }
+
+  private async waitForWalletNonceVisibility(
+    lease: DemosWriteJournalLease,
+    deadline: number,
+    pollMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const highestCanonicalNonce = lease.snapshot.records.reduce<number | undefined>(
+      (highest, record) =>
+        record.stage === "canonical-confirmed" ||
+        record.stage === "native-visible" ||
+        record.stage === "index-visible"
+          ? Math.max(highest ?? -1, record.nonce)
+          : highest,
+      undefined,
+    );
+    if (highestCanonicalNonce === undefined) return;
+    const ctx = this.newContext(
+      `wallet-nonce:${lease.key.wallet}`,
+      Math.max(1, deadline - Date.now()),
+      pollMs,
+      signal === undefined ? undefined : { signal },
+    );
+    for (;;) {
+      await lease.assertCurrent();
+      ctx.receipt.attempts.visibilityReads += 1;
+      try {
+        const observed = await this.waitFor(
+          ctx,
+          this.demos.getAddressNonce(this.demos.getAddress()),
+          "wallet nonce visibility",
+        ) as unknown;
+        if (typeof observed === "number" && Number.isSafeInteger(observed) &&
+            observed >= highestCanonicalNonce) return;
+        ctx.receipt.lastObservedState = "wallet-nonce-lagging";
+      } catch (error) {
+        if (error instanceof AnchorWaitError && error.code === "timeout") {
+          throw this.fail(
+            ctx,
+            "timeout",
+            `Demos wallet nonce did not reach ${highestCanonicalNonce} after canonical finality`,
+            error,
+          );
+        }
+        ctx.receipt.lastObservedState = "wallet-nonce-unavailable";
+      }
+      try {
+        await this.delay(ctx);
+      } catch (error) {
+        if (error instanceof AnchorWaitError && error.code === "timeout") {
+          throw this.fail(
+            ctx,
+            "timeout",
+            `Demos wallet nonce did not reach ${highestCanonicalNonce} after canonical finality`,
+            error,
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Reconcile every broadcast-intent for this wallet before another nonce is
+   * signed. Anchors and native transfers share one Demos account nonce, so a
+   * caller may never recover only its own write kind.
+   */
+  async reconcileWalletJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs = AMBIGUOUS_WRITE_RECOVERY_MS,
+    options: Readonly<{
+      pollMs?: number;
+      signal?: AbortSignal;
+      requireNonceVisibility?: boolean;
+    }> = {},
+  ): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new DacsError("Demos wallet journal reconciliation input is invalid");
+    }
+    await lease.assertCurrent();
+    // There is no chain state to authenticate until a prior write exists. This
+    // also preserves the adapter's read-before-create seam for empty journals;
+    // the subsequently prepared write is still retained under this exact
+    // chain/wallet lease before any broadcast is attempted.
+    if (lease.snapshot.records.length === 0) return;
+    const wallet = normalizedDemosAddress(this.demos.getAddress());
+    if (!this.connected) throw new DacsError("Demos adapter is not connected");
+    if (wallet === undefined) throw new DacsError("Demos wallet address is invalid");
+    if (!sameDemosWallet(lease.key.wallet, wallet)) {
+      throw new DacsError("Demos wallet journal belongs to another wallet");
+    }
+    if (lease.key.chainIdentity !== await this.resolveChainIdentity()) {
+      throw new DacsError("Demos wallet journal belongs to another chain");
+    }
+    const deadline = Date.now() + timeoutMs;
+    const pollMs = options.pollMs ?? DEFAULT_ANCHOR_POLL_MS;
+    const contextOptions = options.signal === undefined
+      ? undefined
+      : { signal: options.signal };
+    for (const retained of lease.snapshot.records) {
+      if (retained.stage === "prepared" ||
+          retained.stage === "canonical-failed") continue;
+      if (retained.kind === "native-transfer") {
+        if (retained.stage === "canonical-confirmed") continue;
+        if (retained.stage !== "broadcast-intent" || !retained.txRef) {
+          throw new DacsError("native DEM wallet journal has an invalid pending record");
+        }
+        const ctx = this.newContext(
+          retained.logicalName,
+          Math.max(1, deadline - Date.now()),
+          pollMs,
+          contextOptions,
+        );
+        ctx.receipt.address = retained.nativeAddress;
+        ctx.receipt.txRef = retained.txRef;
+        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const current = { ...retained, generation: lease.generation };
+        if (terminal === "failed") {
+          await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
+          continue;
+        }
+        const finality = await this.authenticateCanonicalNativeTransfer(current, ctx);
+        await lease.put({
+          ...current,
+          ...finality,
+          stage: "canonical-confirmed",
+          updatedAt: Date.now(),
+        });
+        continue;
+      }
+
+      if (retained.stage !== "broadcast-intent" &&
+          retained.stage !== "canonical-confirmed") continue;
+      if (!retained.txRef) {
+        throw new DacsError("Demos wallet journal has an anchor without a transaction hash");
+      }
+      const ctx = this.newContext(
+        retained.logicalName,
+        Math.max(1, deadline - Date.now()),
+        pollMs,
+        contextOptions,
+      );
+      ctx.receipt.address = retained.nativeAddress;
+      ctx.receipt.txRef = retained.txRef;
+      let current = { ...retained, generation: lease.generation };
+      if (retained.stage === "broadcast-intent") {
+        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        if (terminal === "failed") {
+          await lease.put({
+            ...current,
+            stage: "canonical-failed",
+            updatedAt: Date.now(),
+          });
+          continue;
+        }
+        const finality = await this.authenticateCanonicalWrite(current, ctx);
+        current = {
+          ...current,
+          ...finality,
+          stage: "canonical-confirmed" as const,
+          updatedAt: Date.now(),
+        };
+        await lease.put(current);
+      } else {
+        ctx.receipt.state = "included";
+        ctx.receipt.completion = "included";
+        if (retained.blockNumber !== undefined) {
+          ctx.receipt.blockNumber = retained.blockNumber;
+        }
+      }
+      const nativeRead = await this.waitForNativeJournalVisibility(current, ctx);
+      await lease.put({
+        ...current,
+        generation: lease.generation,
+        nativeRead,
+        stage: "native-visible",
+        updatedAt: Date.now(),
+      });
+    }
+    if (options.requireNonceVisibility !== false) {
+      await this.waitForWalletNonceVisibility(
+        lease,
+        deadline,
+        pollMs,
+        options.signal,
+      );
+    }
+  }
+
+  /** @deprecated Use reconcileWalletJournal; this alias is wallet-wide too. */
+  async reconcileNativeTransferJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs = AMBIGUOUS_WRITE_RECOVERY_MS,
+  ): Promise<void> {
+    await this.reconcileWalletJournal(lease, timeoutMs);
   }
 
   private writeEvidenceFromLease(
@@ -1644,64 +2450,31 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  private async reconcilePrevious(
-    key: string,
-    current: AnchorContext,
-  ): Promise<void> {
+  private async reconcilePrevious(current: AnchorContext): Promise<void> {
     const lease = this.activeWriteLease;
     if (!lease) throw new DacsError("Demos write journal lease is missing");
-    for (const prior of lease.snapshot.records) {
-      if (
-        prior.stage !== "broadcast-intent" &&
-        prior.stage !== "canonical-confirmed"
-      ) {
-        continue;
-      }
-      if (!prior.txRef) {
-        throw new DacsError(
-          `Demos write journal ${prior.writeId} lacks its transaction hash`,
-        );
-      }
-      const ctx = this.newContext(
-        prior.logicalName,
+    try {
+      await this.reconcileWalletJournal(
+        lease,
         Math.max(1, current.deadline - Date.now()),
-        current.pollMs,
-        { signal: current.signal },
+        {
+          pollMs: current.pollMs,
+          signal: current.signal,
+          // Anchor nonce selection additionally consults the canonical journal,
+          // so it need not wait for the node's address-nonce index to catch up.
+          requireNonceVisibility: false,
+        },
       );
-      ctx.receipt.address = prior.nativeAddress;
-      ctx.receipt.txRef = prior.txRef;
-      if (prior.stage === "canonical-confirmed") {
-        ctx.receipt.state = "included";
-        ctx.receipt.completion = "included";
-        if (prior.blockNumber !== undefined) {
-          ctx.receipt.blockNumber = prior.blockNumber;
-        }
-      }
-      this.activeWriteRecord = {
-        ...prior,
-        generation: lease.generation,
-      };
-      try {
-        await this.reconcileUntilNonceSafe(
-          key,
-          prior.txRef,
-          prior.nonce,
-          ctx,
-          prior.stage === "canonical-confirmed",
+    } catch (error) {
+      if (error instanceof AnchorWaitError) {
+        throw new AnchorWaitError(
+          error.code,
+          "previous wallet write is unresolved; refusing a potentially conflicting nonce",
+          error.receipt,
+          { cause: error },
         );
-      } catch (error) {
-        if (error instanceof AnchorWaitError) {
-          throw new AnchorWaitError(
-            error.code,
-            `previous anchor ${prior.txRef} is unresolved; refusing a potentially conflicting nonce`,
-            error.receipt,
-            { cause: error },
-          );
-        }
-        throw error;
-      } finally {
-        this.activeWriteRecord = undefined;
       }
+      throw error;
     }
   }
 
@@ -1805,7 +2578,7 @@ export class DemosAdapter implements SubstrateAdapter {
     expected: string | undefined,
     ctx: AnchorContext,
   ): Promise<QueuedWrite<AnchorReceipt>> {
-    await this.reconcilePrevious(key, ctx);
+    await this.reconcilePrevious(ctx);
 
     let prepared: Awaited<ReturnType<DemosAdapter["prepareAnchorPayload"]>>;
     try {
@@ -1858,6 +2631,11 @@ export class DemosAdapter implements SubstrateAdapter {
         ctx,
         this.demos.tx.confirm(signed, this.demos),
         "confirmation",
+      );
+      await this.waitFor(
+        ctx,
+        this.assertConfirmedFeeWithinCap(validity),
+        "confirmed fee ceiling",
       );
     } catch (error) {
       if (error instanceof AnchorWaitError) throw error;
@@ -2438,6 +3216,41 @@ export class DemosAdapter implements SubstrateAdapter {
         "anchorWriteOnce timeoutMs/pollMs must be non-negative",
       );
     }
+    let feeBudget: Readonly<{
+      budgetId: string;
+      maximumPerWriteFeeOs: bigint;
+      maximumTotalFeeOs: bigint;
+    }> | undefined;
+    if (opts?.feeBudget !== undefined) {
+      const raw = opts.feeBudget;
+      if (raw === null || typeof raw !== "object") {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      const keys = Reflect.ownKeys(raw);
+      const budgetId = Object.getOwnPropertyDescriptor(raw, "budgetId");
+      const perWrite = Object.getOwnPropertyDescriptor(raw, "maximumPerWriteFeeOs");
+      const maximum = Object.getOwnPropertyDescriptor(raw, "maximumTotalFeeOs");
+      if (keys.length !== 3 || !keys.every((key) =>
+        key === "budgetId" || key === "maximumPerWriteFeeOs" ||
+          key === "maximumTotalFeeOs") ||
+          budgetId === undefined || !("value" in budgetId) || !budgetId.enumerable ||
+          perWrite === undefined || !("value" in perWrite) || !perWrite.enumerable ||
+          maximum === undefined || !("value" in maximum) || !maximum.enumerable ||
+          typeof budgetId.value !== "string" || budgetId.value.length === 0 ||
+          budgetId.value.length > 256 || budgetId.value.trim() !== budgetId.value ||
+          budgetId.value.includes("\0") || typeof perWrite.value !== "bigint" ||
+          perWrite.value < 0n || typeof maximum.value !== "bigint" || maximum.value < 0n) {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      if (perWrite.value > maximum.value) {
+        throw new DacsError("anchorWriteOnce aggregate fee budget is invalid");
+      }
+      feeBudget = Object.freeze({
+        budgetId: budgetId.value,
+        maximumPerWriteFeeOs: perWrite.value,
+        maximumTotalFeeOs: maximum.value,
+      });
+    }
 
     const data = value as Record<string, unknown>;
     let metadata: Record<string, unknown> | undefined;
@@ -2467,7 +3280,7 @@ export class DemosAdapter implements SubstrateAdapter {
       (turn) => turn,
       () => this.withWriteLease<AnchorRef>(async () => {
       const ctx = this.newContext(name, timeoutMs, pollMs, opts);
-      await this.reconcilePrevious(key, ctx);
+      await this.reconcilePrevious(ctx);
       const owner = this.demos.getAddress();
       const programName = logicalToStorageProgramName(name);
       const metadataLogicalAddress = typeof metadata?.logicalAddress === "string" &&
@@ -2593,6 +3406,11 @@ export class DemosAdapter implements SubstrateAdapter {
         this.demos.tx.confirm(signed, this.demos),
         "immutable confirmation",
       );
+      const confirmedFeeOs = await this.waitFor(
+        ctx,
+        this.assertConfirmedFeeWithinCap(validity, feeBudget !== undefined),
+        "immutable confirmed fee ceiling",
+      );
       const signedRecord = signed as unknown as {
         hash?: string;
         content?: { nonce?: unknown };
@@ -2636,6 +3454,9 @@ export class DemosAdapter implements SubstrateAdapter {
         txRef,
         signedTransaction,
         signedTransactionHash: demosSignedTransactionProofHash(signed),
+        ...(feeBudget === undefined || confirmedFeeOs === undefined
+          ? {}
+          : { feeBudget: this.reserveAggregateFeeBudget(feeBudget, confirmedFeeOs) }),
       });
       if (this.remaining(ctx) <= 0) {
         throw this.fail(
@@ -2854,9 +3675,11 @@ export class DemosAdapter implements SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution | null> {
     const journal = this.config.writeJournal;
+    const wallet = this.demos.getAddress().toLowerCase();
+    const expectedWallet = expectedOwner.toLowerCase();
     if (
       !journal ||
-      this.demos.getAddress().toLowerCase() !== expectedOwner.toLowerCase()
+      !sameDemosWallet(wallet, expectedWallet)
     ) return null;
 
     let lease = this.activeWriteLease;
@@ -2865,13 +3688,14 @@ export class DemosAdapter implements SubstrateAdapter {
       if (!lease) {
         lease = await journal.acquire({
           chainIdentity: await this.resolveChainIdentity(),
-          wallet: this.demos.getAddress().toLowerCase(),
+          wallet,
         });
         release = true;
       }
       const bindings = lease.snapshot.records.filter((record) =>
+        record.kind !== "native-transfer" &&
         record.logicalName === name &&
-        record.owner.toLowerCase() === expectedOwner.toLowerCase() &&
+        sameDemosWallet(record.owner, expectedWallet) &&
         JOURNAL_STAGE_RANK[record.stage] >= JOURNAL_STAGE_RANK["native-visible"]
       );
       if (bindings.length === 0) return null;
@@ -2890,7 +3714,7 @@ export class DemosAdapter implements SubstrateAdapter {
         native.success !== true ||
         native.storageAddress !== address ||
         typeof native.owner !== "string" ||
-        native.owner.toLowerCase() !== expectedOwner.toLowerCase() ||
+        !sameDemosWallet(native.owner, expectedWallet) ||
         native.programName !== programName
       ) {
         return {
@@ -3038,6 +3862,17 @@ export class DemosAdapter implements SubstrateAdapter {
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const intrinsic = parseDemosAgentClaimReference(ref);
+    if (intrinsic !== null) {
+      return {
+        ref: intrinsic.canonicalReference,
+        boundTo: intrinsic.canonicalIdentity,
+        raw: {
+          profile: "demos-primary-self-certifying:v1",
+          publicKey: Buffer.from(intrinsic.publicKey).toString("hex"),
+        },
+      };
     }
     const raw = await new Identities().getIdentities(
       this.demos,

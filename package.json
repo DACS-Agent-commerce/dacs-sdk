@@ -106,7 +106,10 @@
     "clean": "rm -rf dist",
     "prepack": "npm run clean && npm run build",
     "package:verify": "node scripts/verify-package.mjs",
-    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs"
+    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
+    "release:set:verify": "node scripts/verify-release-set.mjs",
+    "release:set:publish": "node scripts/publish-release-set.mjs",
+    "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh"
   },
   "publishConfig": {
     "access": "public",
@@ -120,12 +123,20 @@
     "re2-wasm": "^1.0.2",
     "xpath": "^0.0.34"
   },
+  "dacs": {
+    "releaseMetadataVersion": 1,
+    "standardRevision": "f2e96627d9f5251cb32c69a31f44b35cda613b64",
+    "configSchemaVersion": 1,
+    "sqliteSchemaVersion": 7,
+    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7],
+    "breakingConfigurationChanges": []
+  },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.16",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
-    "viem": "^2.52.2"
+    "viem": "^2.55.19"
   },
   "peerDependenciesMeta": {
     "@kynesyslabs/demosdk": { "optional": true },
@@ -142,7 +153,7 @@
     "@x402/fetch": "^2.15.0",
     "ganache": "7.9.2",
     "typescript": "^5",
-    "viem": "^2.52.2",
+    "viem": "^2.55.19",
     "vitest": "^4.0.18"
   }
 }

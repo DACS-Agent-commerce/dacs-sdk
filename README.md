@@ -723,6 +723,10 @@ Only then does it return `state: "audit-complete"` with separate buyer and
 seller logical/native references. The v1 fixed-price topology is exactly two
 parties with the seller acting as phase orchestrator; a distinct orchestrator
 requires its own reviewed profile and role-owned publication.
+`verifyFixedPriceX402AuditCompletion(...)` and
+`verifyFixedPricePayDemAuditCompletion(...)` additionally bind that proof to
+the exact successful buyer/seller coordinator audit references for their
+respective rail before projecting the combined `audit-complete` milestone.
 
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
@@ -867,7 +871,9 @@ reproduce the release-candidate checks locally:
 
 ```sh
 npm ci
-npm run package:verify -- --output-dir package-artifacts
+mkdir -p package-artifacts
+npm run package:verify -- --output-dir package-artifacts/core
+npm run release:set:verify -- --output-dir package-artifacts/release-set
 ```
 
 The verifier creates the package twice and requires byte-identical tarballs,
@@ -876,8 +882,16 @@ digests, and installs the exact tarball in a fresh Bun consumer. It then removes
 the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
-tarball and `provenance.json` for the exact checkout SHA. This is a qualified
-package candidate, not evidence that the package was published to npm.
+core tarball and `provenance.json` for the exact checkout SHA. The release-set
+verifier additionally requires byte-identical core, Node host and generator
+tarballs at one version with identical compatibility metadata. It emits exact
+checksums, one CycloneDX SBOM per package and combined release provenance. These
+are qualified package candidates, not evidence that the packages were published
+to npm.
+
+Maintainer-controlled prerelease publication and first-release credential
+bootstrap are documented in
+[the npm prerelease release runbook](./docs/npm-prerelease-release.md).
 
 ## License
 

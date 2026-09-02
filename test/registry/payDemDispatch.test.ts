@@ -632,8 +632,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         network: "eip155:84532",
         recipient: "0x2222222222222222222222222222222222222222",
       },
-      fetchImpl: firstFetch,
       rpcUrl: "https://rpc.example",
+      fetchImpl: firstFetch,
     };
 
     const pending = settleFromRail(descriptor, options);

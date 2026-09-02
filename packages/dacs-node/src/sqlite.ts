@@ -18,10 +18,14 @@ import { sameCanonicalClaimIdentity, VERSION } from "@kynesyslabs/dacs";
 import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
   fixedPriceOfflineOrderLocalBindingHash,
   fixedPriceOfflineOrderViolation,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
+  fixedPricePayDemOrderViolation,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   fixedPriceX402OrderViolation,
@@ -36,6 +40,8 @@ import {
   type FixedPriceOfflineSimulationOutcome,
   type FixedPriceOfflineTrackOperationResult,
   type FixedPriceOfflineTrackRecord,
+  type FixedPricePayDemCoordinatorStore,
+  type FixedPricePayDemOrderRecord,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402CoordinatorStore,
   type FixedPriceX402ErrorClass,
@@ -81,7 +87,7 @@ import {
 
 export { createSqliteRatingPublicationEffectStore } from "./sqliteRatingPublication.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 6 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 7 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -89,6 +95,7 @@ export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const EFFECT_KINDS = new Set<DacsNodeSqliteEffectKind>([
+  "session",
   "payment",
   "fulfilment",
   "artifact-publication",
@@ -140,6 +147,7 @@ const NETWORK_FILESYSTEM_MAGIC = new Set([
 
 export type DacsNodeSqliteActorRole = "buyer" | "seller" | "verifier";
 export type DacsNodeSqliteEffectKind =
+  | "session"
   | "payment"
   | "fulfilment"
   | "artifact-publication"
@@ -172,6 +180,7 @@ export interface DacsNodeSqliteDatabaseOptions {
   /** Omit to use the exact Standard revision supported by the selected profile. */
   standardRevision?:
     | typeof FIXED_PRICE_OFFLINE_STANDARD_REVISION
+    | typeof FIXED_PRICE_PAY_DEM_STANDARD_REVISION
     | typeof FIXED_PRICE_X402_STANDARD_REVISION;
   busyTimeoutMs?: number;
 }
@@ -270,6 +279,22 @@ export type DacsNodeSqliteEffectWrite = Readonly<
   | { status: "missing" | "stale" | "conflict" }
 >;
 
+export type DacsNodeSqliteEffectCheckpointWrite = Readonly<
+  | {
+      status: "recorded" | "existing";
+      checkpoint: Readonly<DacsNodeSqliteEffectCheckpoint>;
+    }
+  | { status: "missing" | "stale" | "conflict" }
+>;
+
+export interface DacsNodeSqliteEffectCheckpoint {
+  name: string;
+  generation: number;
+  valueHash: string;
+  value: unknown;
+  recordedAt: number;
+}
+
 export interface DacsNodeSqliteDiagnostics {
   databasePath: string;
   schemaVersion: number;
@@ -287,6 +312,40 @@ export interface DacsNodeSqliteDiagnostics {
   filesystemMagic: number;
 }
 
+export interface DacsNodeSqliteUpgradeSafetyV1 {
+  safe: boolean;
+  intentEffects: number;
+  activeEffects: number;
+  reconciliationEffects: number;
+  operatorActionEffects: number;
+  incompleteOrders: number;
+}
+
+export type DacsNodeSqliteReadOnlyInspection = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
+export type DacsNodeSqliteUpgradeInspectionV1 = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+      safety: Readonly<DacsNodeSqliteUpgradeSafetyV1>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
 export interface DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: Readonly<{
@@ -299,9 +358,14 @@ export interface DacsNodeSqliteDatabase {
   }>;
   readTime(): number;
   diagnostics(): Readonly<DacsNodeSqliteDiagnostics>;
+  /** Read-only release gate; upgrades never proceed across unfinished effects or orders. */
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1>;
   createLiveCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceX402CoordinatorStore;
+  createPayDemCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPricePayDemCoordinatorStore;
   createOfflineCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceOfflineCoordinatorStore;
@@ -350,6 +414,15 @@ export interface DacsNodeSqliteDatabase {
     kind: DacsNodeSqliteEffectKind,
     effectId: string,
   ): Readonly<DacsNodeSqliteEffectRecord> | undefined;
+  /**
+   * Load the exact authenticated intent payload for local effect recovery.
+   * This may contain a retained one-use authorization and must never be logged
+   * or exposed through diagnostics/status APIs.
+   */
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined;
   claimEffect(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -363,6 +436,21 @@ export interface DacsNodeSqliteDatabase {
     bindingHash: string;
     lease: Readonly<DacsNodeSqliteEffectLease>;
   }>): boolean;
+  /** Commit public recovery coordinates before an irreversible adapter call. */
+  recordEffectCheckpoint(input: Readonly<{
+    kind: DacsNodeSqliteEffectKind;
+    effectId: string;
+    bindingHash: string;
+    lease: Readonly<DacsNodeSqliteEffectLease>;
+    name: string;
+    value: unknown;
+  }>): DacsNodeSqliteEffectCheckpointWrite;
+  /** Load the newest integrity-checked checkpoint with this name. */
+  loadEffectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined;
   recordEffectCompleted(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -550,8 +638,11 @@ interface PaymentEvidenceHistoryRow {
   entry_hash: string;
 }
 
-type CoordinatorProfile = "live-x402" | "offline";
-type CoordinatorRecord = FixedPriceX402OrderRecord | FixedPriceOfflineOrderRecord;
+type CoordinatorProfile = "live-x402" | "live-pay-dem" | "offline";
+type CoordinatorRecord =
+  | FixedPriceX402OrderRecord
+  | FixedPricePayDemOrderRecord
+  | FixedPriceOfflineOrderRecord;
 type CoordinatorTrackRecord = FixedPriceX402TrackRecord | FixedPriceOfflineTrackRecord;
 type CoordinatorOutcome = FixedPriceX402NormativeOutcome | FixedPriceOfflineSimulationOutcome;
 type CoordinatorErrorClass = FixedPriceX402ErrorClass | FixedPriceOfflineSimulationErrorClass;
@@ -1222,6 +1313,53 @@ CREATE INDEX dacs_http_outbox_history_record_idx
   ON dacs_http_outbox_history (envelope_id, revision);
 `;
 
+/**
+ * Add a separate native-DEM coordinator namespace. Historical x402 rows retain
+ * their exact profile and bytes; the migration only broadens the constrained
+ * operational profile discriminator used by new records.
+ */
+const MIGRATION_7_PREPARE = MIGRATION_4_PREPARE
+  .replaceAll("_v3", "_v6")
+  .replaceAll(
+    "CHECK (profile IN ('live-x402', 'offline'))",
+    "CHECK (profile IN ('live-x402', 'live-pay-dem', 'offline'))",
+  )
+  .replace(
+    "(profile = 'live-x402' AND",
+    "(profile IN ('live-x402', 'live-pay-dem') AND",
+  );
+
+const MIGRATION_7_COPY = `
+INSERT INTO dacs_coordinator_orders (
+  profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+)
+SELECT profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+FROM dacs_coordinator_orders_v6;
+
+INSERT INTO dacs_coordinator_tracks (
+  profile, role, job_id, local_binding_hash, track, eligible, state, outcome,
+  error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+)
+SELECT profile, role, job_id, local_binding_hash, track, eligible, state,
+  outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+FROM dacs_coordinator_tracks_v6;
+`;
+
+const MIGRATION_7_FINALIZE = `
+DROP TABLE dacs_coordinator_tracks_v6;
+DROP TABLE dacs_coordinator_orders_v6;
+`;
+
+function applyMigration7(database: BetterSqlite3.Database): void {
+  database.exec(MIGRATION_7_PREPARE);
+  database.exec(MIGRATION_7_COPY);
+  database.exec(MIGRATION_7_FINALIZE);
+}
+
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
     value.trim() === value && !value.includes("\0");
@@ -1249,6 +1387,10 @@ function coordinatorTracks(
   return COORDINATOR_TRACKS_BY_ROLE[role];
 }
 
+function liveCoordinatorProfile(profile: CoordinatorProfile): boolean {
+  return profile === "live-x402" || profile === "live-pay-dem";
+}
+
 function emptyCoordinatorTracks(
   role: FixedPriceX402CoordinatorRole,
   now: number,
@@ -1265,7 +1407,9 @@ function coordinatorViolation(
 ): string | null {
   return profile === "live-x402"
     ? fixedPriceX402OrderViolation(value)
-    : fixedPriceOfflineOrderViolation(value);
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderViolation(value)
+      : fixedPriceOfflineOrderViolation(value);
 }
 
 function coordinatorBindingHash(
@@ -1281,9 +1425,13 @@ function coordinatorBindingHash(
     ? fixedPriceX402OrderBindingHash(
         value as Parameters<typeof fixedPriceX402OrderBindingHash>[0],
       )
-    : fixedPriceOfflineOrderBindingHash(
-        value as Parameters<typeof fixedPriceOfflineOrderBindingHash>[0],
-      );
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderBindingHash(
+          value as Parameters<typeof fixedPricePayDemOrderBindingHash>[0],
+        )
+      : fixedPriceOfflineOrderBindingHash(
+          value as Parameters<typeof fixedPriceOfflineOrderBindingHash>[0],
+        );
 }
 
 function coordinatorLocalBindingHash(
@@ -1300,30 +1448,34 @@ function coordinatorLocalBindingHash(
     ? fixedPriceX402OrderLocalBindingHash(
         value as Parameters<typeof fixedPriceX402OrderLocalBindingHash>[0],
       )
-    : fixedPriceOfflineOrderLocalBindingHash(
-        value as Parameters<typeof fixedPriceOfflineOrderLocalBindingHash>[0],
-      );
+    : profile === "live-pay-dem"
+      ? fixedPricePayDemOrderLocalBindingHash(
+          value as Parameters<typeof fixedPricePayDemOrderLocalBindingHash>[0],
+        )
+      : fixedPriceOfflineOrderLocalBindingHash(
+          value as Parameters<typeof fixedPriceOfflineOrderLocalBindingHash>[0],
+        );
 }
 
 function coordinatorSuccessOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "success" : "simulated-success";
+  return profile === "offline" ? "simulated-success" : "success";
 }
 
 function coordinatorFailureOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "failure" : "simulated-failure";
+  return profile === "offline" ? "simulated-failure" : "failure";
 }
 
 function coordinatorAbortedOutcome(profile: CoordinatorProfile): CoordinatorOutcome {
-  return profile === "live-x402" ? "aborted" : "simulated-aborted";
+  return profile === "offline" ? "simulated-aborted" : "aborted";
 }
 
 function coordinatorErrorClassAllowed(
   profile: CoordinatorProfile,
   value: unknown,
 ): value is CoordinatorErrorClass {
-  return profile === "live-x402"
-    ? COORDINATOR_ERROR_CLASSES.has(value as FixedPriceX402ErrorClass)
-    : OFFLINE_COORDINATOR_ERROR_CLASSES.has(value as FixedPriceOfflineSimulationErrorClass);
+  return profile === "offline"
+    ? OFFLINE_COORDINATOR_ERROR_CLASSES.has(value as FixedPriceOfflineSimulationErrorClass)
+    : COORDINATOR_ERROR_CLASSES.has(value as FixedPriceX402ErrorClass);
 }
 
 function coordinatorAuthorityMatches(
@@ -1471,7 +1623,7 @@ function legacyCoordinatorFromRow(
     if (!retained) {
       return { status: "corrupt", reason: "legacy coordinator track map is incomplete" };
     }
-    if (profile === "live-x402" && retained.state === "final" &&
+    if (liveCoordinatorProfile(profile) && retained.state === "final" &&
         (retained.outcome === "failure" || retained.outcome === "aborted")) {
       return {
         status: "corrupt",
@@ -1632,7 +1784,7 @@ function coordinatorResultAllowed(
     withdrawnBy?: FixedPriceX402CoordinatorRole;
   }>,
 ): boolean {
-  if (profile === "live-x402" && result.outcome === "failure" &&
+  if (liveCoordinatorProfile(profile) && result.outcome === "failure" &&
       (result.faultedParty === "orchestrator" ||
         (result.errorClass === "substrate") !== (result.faultedParty === "none"))) {
     return false;
@@ -1647,9 +1799,11 @@ function coordinatorResultAllowed(
     return result.outcome === expected.outcome &&
       (expected.outcome !== coordinatorFailureOutcome(profile) ||
         (result.errorClass === expected.errorClass &&
-          (profile !== "live-x402" || result.faultedParty === expected.faultedParty))) &&
+          (!liveCoordinatorProfile(profile) ||
+            result.faultedParty === expected.faultedParty))) &&
       (expected.outcome !== coordinatorAbortedOutcome(profile) ||
-        profile !== "live-x402" || result.withdrawnBy === expected.withdrawnBy);
+        !liveCoordinatorProfile(profile) ||
+        result.withdrawnBy === expected.withdrawnBy);
   }
   if (result.outcome === coordinatorAbortedOutcome(profile) &&
       (coordinatorTrackSuccessful(profile, record, "payment") ||
@@ -2067,18 +2221,18 @@ function captureCoordinatorResult(
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
     return clone(value) as unknown as CoordinatorOperationResult;
   }
-  const abortedKeys = profile === "live-x402"
+  const abortedKeys = liveCoordinatorProfile(profile)
     ? ["status", "outcome", "withdrawnBy", "reference"]
     : ["status", "outcome", "reference"];
   if (exactDataKeys(value, abortedKeys, ["authenticationHash"]) &&
       value.status === "final" && value.outcome === coordinatorAbortedOutcome(profile) &&
-      (profile !== "live-x402" || value.withdrawnBy === "buyer" ||
+      (!liveCoordinatorProfile(profile) || value.withdrawnBy === "buyer" ||
         value.withdrawnBy === "seller") &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
     return clone(value) as unknown as CoordinatorOperationResult;
   }
-  const failureKeys = profile === "live-x402"
+  const failureKeys = liveCoordinatorProfile(profile)
     ? ["status", "outcome", "errorClass", "faultedParty", "reference"]
     : ["status", "outcome", "errorClass", "reference"];
   if (exactDataKeys(
@@ -2087,7 +2241,7 @@ function captureCoordinatorResult(
     ["authenticationHash"],
   ) && value.status === "final" && value.outcome === coordinatorFailureOutcome(profile) &&
       coordinatorErrorClassAllowed(profile, value.errorClass) &&
-      (profile !== "live-x402" ||
+      (!liveCoordinatorProfile(profile) ||
         FAULTED_PARTIES.has(value.faultedParty as FixedPriceX402FaultedParty)) &&
       nonEmpty(value.reference) &&
       (value.authenticationHash === undefined || hash(value.authenticationHash))) {
@@ -2516,6 +2670,7 @@ function reservationKindForEffect(
   kind: DacsNodeSqliteEffectKind,
 ): DacsNodeSqliteReservationKind {
   switch (kind) {
+    case "session": return "session";
     case "payment": return "payment-effect";
     case "fulfilment": return "fulfilment-effect";
     case "artifact-publication": return "artifact-publication";
@@ -4027,6 +4182,56 @@ function createSqlitePaymentEvidenceHandshakeStore(
   };
 }
 
+function readUpgradeSafety(
+  database: BetterSqlite3.Database,
+): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+  return readSnapshot(database, () => {
+    const effectCounts = database.prepare(`
+      SELECT
+        SUM(CASE WHEN state = 'intent' THEN 1 ELSE 0 END) AS intent_effects,
+        SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END) AS active_effects,
+        SUM(CASE WHEN state = 'reconciliation-required' THEN 1 ELSE 0 END)
+          AS reconciliation_effects,
+        SUM(CASE WHEN state = 'operator-action' THEN 1 ELSE 0 END)
+          AS operator_action_effects
+      FROM dacs_effects
+    `).get() as Readonly<{
+      intent_effects: number | null;
+      active_effects: number | null;
+      reconciliation_effects: number | null;
+      operator_action_effects: number | null;
+    }>;
+    const orderCounts = database.prepare(`
+      SELECT COUNT(*) AS incomplete_orders
+      FROM dacs_coordinator_orders
+      WHERE json_extract(record_json, '$.tracks.audit.state') IS NULL
+         OR json_extract(record_json, '$.tracks.audit.state') <> 'final'
+    `).get() as Readonly<{ incomplete_orders: number }>;
+    const intentEffects = effectCounts.intent_effects ?? 0;
+    const activeEffects = effectCounts.active_effects ?? 0;
+    const reconciliationEffects = effectCounts.reconciliation_effects ?? 0;
+    const operatorActionEffects = effectCounts.operator_action_effects ?? 0;
+    const incompleteOrders = orderCounts.incomplete_orders;
+    if ([intentEffects, activeEffects, reconciliationEffects,
+      operatorActionEffects, incompleteOrders]
+      .some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new DacsNodeSqliteError(
+        "database-upgrade-safety-invalid",
+        "SQLite upgrade-safety projection is invalid",
+      );
+    }
+    return Object.freeze({
+      safe: intentEffects === 0 && activeEffects === 0 && reconciliationEffects === 0 &&
+        operatorActionEffects === 0 && incompleteOrders === 0,
+      intentEffects,
+      activeEffects,
+      reconciliationEffects,
+      operatorActionEffects,
+      incompleteOrders,
+    });
+  });
+}
+
 class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: DacsNodeSqliteDatabase["metadata"];
@@ -4088,6 +4293,11 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     };
   }
 
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+    this.assertOpen();
+    return readUpgradeSafety(this.database);
+  }
+
   createLiveCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceX402CoordinatorStore {
@@ -4098,6 +4308,19 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       );
     }
     return this.createCoordinatorStore("live-x402", role);
+  }
+
+  createPayDemCoordinatorStore(
+    role: FixedPriceX402CoordinatorRole,
+  ): FixedPricePayDemCoordinatorStore {
+    if (this.metadata.mode !== "live-demos") {
+      throw new DacsNodeSqliteError(
+        "coordinator-profile-mismatch",
+        "A pay-dem coordinator store requires a live Demos actor database",
+      );
+    }
+    return this.createCoordinatorStore("live-pay-dem", role) as unknown as
+      FixedPricePayDemCoordinatorStore;
   }
 
   createOfflineCoordinatorStore(
@@ -4310,6 +4533,18 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
           }
           const violation = coordinatorViolation(profile, record);
           if (violation) return { status: "corrupt" as const, reason: violation };
+          // One actor-local job may bind to exactly one live rail. This check
+          // runs inside BEGIN IMMEDIATE, so competing x402/pay-DEM creators on
+          // this process or another connection cannot both observe absence and
+          // insert different profile rows. Offline databases never mix live
+          // profiles, but retaining the same identity rule there is harmless.
+          const otherProfile = database.prepare(`
+            SELECT profile FROM dacs_coordinator_orders
+            WHERE role = ? AND job_id = ? AND profile <> ?
+            LIMIT 1
+          `).get(role, input.order.jobId, profile) as
+            { profile: string } | undefined;
+          if (otherProfile !== undefined) return { status: "conflict" as const };
           const existing = loadRecord(input.order.jobId);
           if (existing.status !== "missing") {
             if (existing.status !== "ok") return existing;
@@ -4574,14 +4809,14 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                       }>).errorClass,
                     }
                   : {}),
-                ...(profile === "live-x402" && result.outcome === "failure"
+                ...(liveCoordinatorProfile(profile) && result.outcome === "failure"
                   ? {
                       faultedParty: (result as Readonly<{
                         faultedParty: FixedPriceX402FaultedParty;
                       }>).faultedParty,
                     }
                   : {}),
-                ...(profile === "live-x402" && result.outcome === "aborted"
+                ...(liveCoordinatorProfile(profile) && result.outcome === "aborted"
                   ? {
                       withdrawnBy: (result as Readonly<{
                         withdrawnBy: FixedPriceX402CoordinatorRole;
@@ -4895,6 +5130,22 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     });
   }
 
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined {
+    this.assertOpen();
+    if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId)) {
+      throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect lookup is malformed");
+    }
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      if (!row) return undefined;
+      this.validatedEffectRecord(row);
+      return clone(JSON.parse(row.input_json) as unknown);
+    });
+  }
+
   claimEffect(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -5025,6 +5276,125 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
       const record = this.validatedEffectRecord(row);
       return record.bindingHash === retained.bindingHash &&
         exactLease(record, retained.lease, databaseTime(this.database));
+    });
+  }
+
+  recordEffectCheckpoint(input: Readonly<{
+    kind: DacsNodeSqliteEffectKind;
+    effectId: string;
+    bindingHash: string;
+    lease: Readonly<DacsNodeSqliteEffectLease>;
+    name: string;
+    value: unknown;
+  }>): DacsNodeSqliteEffectCheckpointWrite {
+    this.assertOpen();
+    const captured = captureExactData(
+      input,
+      ["kind", "effectId", "bindingHash", "lease", "name", "value"],
+    );
+    const lease = captured ? captureEffectLease(captured.lease) : null;
+    if (!captured || !lease || lease.mode !== "perform" ||
+        !reasonCode(captured.name)) {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint is malformed",
+      );
+    }
+    const retained = Object.freeze({
+      kind: captured.kind as DacsNodeSqliteEffectKind,
+      effectId: captured.effectId as string,
+      bindingHash: captured.bindingHash as string,
+      lease,
+      name: captured.name,
+    });
+    validateEffectIdentity(retained);
+    let value: unknown;
+    let valueJson: string;
+    try {
+      value = captureCanonicalData(captured.value);
+      valueJson = canonicalize(value);
+    } catch {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint must contain canonical JSON data",
+      );
+    }
+    const valueHash = sha256Hex(valueJson);
+    return beginImmediate(this.database, () => {
+      const row = this.effectRow(retained.kind, retained.effectId);
+      if (!row) return { status: "missing" as const };
+      const current = this.validatedEffectRecord(row);
+      if (current.bindingHash !== retained.bindingHash) {
+        return { status: "stale" as const };
+      }
+      const now = databaseTime(this.database);
+      if (!exactLease(current, retained.lease, now)) {
+        return { status: "stale" as const };
+      }
+      const existing = this.effectCheckpoint(
+        retained.kind,
+        retained.effectId,
+        retained.name,
+        retained.lease.generation,
+      );
+      if (existing) {
+        return existing.valueHash === valueHash &&
+            canonicalize(existing.value) === valueJson
+          ? { status: "existing" as const, checkpoint: clone(existing) }
+          : { status: "conflict" as const };
+      }
+      this.database.prepare(`
+        UPDATE dacs_effects SET updated_at = ?
+        WHERE effect_kind = ? AND effect_id = ? AND generation = ?
+      `).run(
+        Math.max(current.updatedAt, now),
+        retained.kind,
+        retained.effectId,
+        retained.lease.generation,
+      );
+      this.appendEffectHistory(
+        retained.kind,
+        retained.effectId,
+        "effect-checkpoint",
+        retained.lease.generation,
+        now,
+        { name: retained.name, valueHash, value },
+      );
+      const checkpoint = this.effectCheckpoint(
+        retained.kind,
+        retained.effectId,
+        retained.name,
+        retained.lease.generation,
+      );
+      if (!checkpoint) {
+        throw new DacsNodeSqliteError(
+          "database-logical-corruption",
+          "SQLite effect checkpoint was not retained",
+        );
+      }
+      this.validatedEffectRecord(this.effectRow(retained.kind, retained.effectId)!);
+      return { status: "recorded" as const, checkpoint: clone(checkpoint) };
+    });
+  }
+
+  loadEffectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined {
+    this.assertOpen();
+    if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId) || !reasonCode(name)) {
+      throw new DacsNodeSqliteError(
+        "effect-checkpoint-malformed",
+        "SQLite effect checkpoint lookup is malformed",
+      );
+    }
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      if (!row) return undefined;
+      this.validatedEffectRecord(row);
+      const checkpoint = this.effectCheckpoint(kind, effectId, name);
+      return checkpoint ? clone(checkpoint) : undefined;
     });
   }
 
@@ -5340,6 +5710,42 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     `).get(kind, effectId) as EffectRow | undefined;
   }
 
+  private effectCheckpoint(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+    name: string,
+    generation?: number,
+  ): Readonly<DacsNodeSqliteEffectCheckpoint> | undefined {
+    const rows = this.database.prepare(`
+      SELECT generation, occurred_at, detail_json
+      FROM dacs_effect_history
+      WHERE effect_kind = ? AND effect_id = ? AND event = 'effect-checkpoint'
+        ${generation === undefined ? "" : "AND generation = ?"}
+      ORDER BY sequence DESC
+    `).all(
+      kind,
+      effectId,
+      ...(generation === undefined ? [] : [generation]),
+    ) as Array<{
+      generation: number;
+      occurred_at: number;
+      detail_json: string;
+    }>;
+    for (const row of rows) {
+      const details = JSON.parse(row.detail_json) as Record<string, unknown>;
+      if (details.name === name) {
+        return {
+          name,
+          generation: row.generation,
+          valueHash: details.valueHash as string,
+          value: clone(details.value),
+          recordedAt: row.occurred_at,
+        };
+      }
+    }
+    return undefined;
+  }
+
   private validatedEffectRecord(row: EffectRow): DacsNodeSqliteEffectRecord {
     const record = effectFromRow(row);
     if (record.jobId !== undefined && !isCanonicalJobId(record.jobId)) {
@@ -5505,7 +5911,7 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
-type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
@@ -5581,6 +5987,11 @@ function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): Schema
     }
     if (version >= 5) reference.exec(MIGRATION_5);
     if (version >= 6) reference.exec(MIGRATION_6);
+    if (version >= 7) {
+      reference.exec(MIGRATION_7_PREPARE);
+      reference.exec(MIGRATION_7_COPY);
+      reference.exec(MIGRATION_7_FINALIZE);
+    }
     const objects = schemaObjects(reference, 64);
     const fingerprint = Object.freeze({
       objects,
@@ -5706,7 +6117,7 @@ function verifyMigrationHistory(
       SELECT version, applied_at
       FROM dacs_migrations
       ORDER BY version
-      LIMIT 6
+      LIMIT 8
     `).all() as MigrationRow[];
   } catch {
     throw new DacsNodeSqliteError(
@@ -5780,6 +6191,8 @@ function verifyEffectHistory(
   let last: EffectHistoryValidationRow | undefined;
   let latestAbsence: EffectHistoryValidationRow | undefined;
   let count = 0;
+  let lastWasCheckpoint = false;
+  const checkpoints = new Set<string>();
 
   for (const row of database.prepare(`
     SELECT sequence, effect_kind, effect_id, event, generation, occurred_at,
@@ -5830,9 +6243,11 @@ function verifyEffectHistory(
         effectLogicalCorruption("SQLite effect history has no integrity-bound origin event");
       }
       last = row;
+      lastWasCheckpoint = false;
       continue;
     }
 
+    lastWasCheckpoint = false;
     switch (row.event) {
       case "perform-claimed":
         if (phase !== "intent" || row.generation !== generation + 1 ||
@@ -5844,6 +6259,21 @@ function verifyEffectHistory(
         generation = row.generation;
         phase = "active-perform";
         break;
+      case "effect-checkpoint": {
+        if (phase !== "active-perform" || row.generation !== generation ||
+            !exactDataKeys(details, ["name", "valueHash", "value"]) ||
+            !reasonCode(details.name) || !hash(details.valueHash) ||
+            details.valueHash !== effectHistoryDetailHash(details.value)) {
+          effectLogicalCorruption("SQLite effect history has an invalid checkpoint");
+        }
+        const checkpointKey = `${generation}:${details.name}`;
+        if (checkpoints.has(checkpointKey)) {
+          effectLogicalCorruption("SQLite effect history repeats a checkpoint identity");
+        }
+        checkpoints.add(checkpointKey);
+        lastWasCheckpoint = true;
+        break;
+      }
       case "reconcile-claimed":
         if ((phase !== "active-perform" && phase !== "active-reconcile" &&
             phase !== "reconciliation-required") || row.generation !== generation + 1 ||
@@ -5966,7 +6396,7 @@ function verifyEffectHistory(
       expectedFinalDetailHash = effectHistoryDetailHash({ resultHash: effect.resultHash });
       break;
   }
-  if (last.detail_hash !== expectedFinalDetailHash) {
+  if (!lastWasCheckpoint && last.detail_hash !== expectedFinalDetailHash) {
     effectLogicalCorruption("SQLite effect state differs from its final history event");
   }
 }
@@ -6014,13 +6444,14 @@ function verifyLogicalRows(
       verifyEffectHistory(database, effect);
     }
     if (version >= 2) {
-      const expectedProfile: CoordinatorProfile = options.mode === "offline"
-        ? "offline"
-        : "live-x402";
+      const allowedProfiles = options.mode === "offline"
+        ? new Set<CoordinatorProfile>(["offline"])
+        : new Set<CoordinatorProfile>(["live-x402", "live-pay-dem"]);
       for (const row of database.prepare(
         "SELECT * FROM dacs_coordinator_orders ORDER BY profile, role, job_id",
       ).iterate() as IterableIterator<CoordinatorRow | LegacyCoordinatorRow>) {
-        if (row.profile !== expectedProfile || row.role !== options.role ||
+        if (!allowedProfiles.has(row.profile as CoordinatorProfile) ||
+            row.role !== options.role ||
             (row.role !== "buyer" && row.role !== "seller")) {
           throw new DacsNodeSqliteError(
             "database-logical-corruption",
@@ -6029,26 +6460,27 @@ function verifyLogicalRows(
         }
         let authenticatedRecord: Readonly<CoordinatorRecord> | undefined;
         let projectionMatches = false;
+        const rowProfile = row.profile as CoordinatorProfile;
         if (version >= 4) {
-          const decoded = coordinatorFromRow(row as CoordinatorRow, expectedProfile);
+          const decoded = coordinatorFromRow(row as CoordinatorRow, rowProfile);
           if (decoded.status === "ok") {
             authenticatedRecord = decoded.record;
             projectionMatches = coordinatorTrackProjectionMatches(
               database,
-              expectedProfile,
+              rowProfile,
               decoded.record,
             );
           }
         } else {
           const decoded = legacyCoordinatorFromRow(
             row as LegacyCoordinatorRow,
-            expectedProfile,
+            rowProfile,
           );
           if (decoded.status === "ok") {
             authenticatedRecord = decoded.record;
             projectionMatches = version < 3 || legacyCoordinatorTrackProjectionMatches(
               database,
-              expectedProfile,
+              rowProfile,
               decoded.legacyRecord,
             );
           }
@@ -6236,6 +6668,7 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -6253,11 +6686,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6270,7 +6703,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3 | 4 | 5,
+  version: 1 | 2 | 3 | 4 | 5 | 6,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -6331,15 +6764,16 @@ function migrateV1Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now, now);
+      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6366,15 +6800,16 @@ function migrateV2Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (3, ?), (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now, now);
+      VALUES (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6400,14 +6835,16 @@ function migrateV3Database(
     database.exec(MIGRATION_4_FINALIZE);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?), (6, ?)
-    `).run(now, now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (4, ?), (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6430,14 +6867,16 @@ function migrateV4Database(
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_5);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?), (6, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (5, ?), (6, ?), (7, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
 }
 
@@ -6459,15 +6898,170 @@ function migrateV5Database(
     `).get() as { applied_at: number };
     const now = Math.max(databaseTime(database), previous.applied_at);
     database.exec(MIGRATION_6);
+    applyMigration7(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?), (7, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 7);
+  });
+}
+
+function migrateV6Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v6 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 6);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 6
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    applyMigration7(database);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (7, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
   });
+}
+
+/**
+ * Validate an existing actor database without creating, migrating or writing
+ * it. This is the pre-start doctor seam; initialization and migration remain
+ * explicit lifecycle actions owned by the generated supervisor.
+ */
+export function inspectExistingDacsNodeSqliteDatabaseV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteReadOnlyInspection> {
+  const options = validateOptions(rawOptions);
+  const location = inspectDacsNodeSqliteLocation(options.databasePath);
+  if (location.status === "blocked") {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: location.reasonCode,
+      databasePath: location.databasePath,
+    });
+  }
+  if (!existsSync(location.databasePath)) {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: "database-missing",
+      databasePath: location.databasePath,
+    });
+  }
+  try {
+    const version = validateExistingReadOnly(location.databasePath, options);
+    if (version === 0) {
+      return Object.freeze({
+        status: "fail" as const,
+        reasonCode: "database-uninitialized",
+        databasePath: location.databasePath,
+      });
+    }
+    if (version < DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return Object.freeze({
+        status: "blocked" as const,
+        reasonCode: "database-migration-required",
+        databasePath: location.databasePath,
+      });
+    }
+    const database = new BetterSqlite3(location.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    try {
+      configureAdmissionConnection(database, options);
+      const journal = database.pragma("journal_mode", { simple: true });
+      if (journal !== "wal") {
+        return Object.freeze({
+          status: "fail" as const,
+          reasonCode: "database-durability-mismatch",
+          databasePath: location.databasePath,
+        });
+      }
+    } finally {
+      database.close();
+    }
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: Object.freeze({
+        databasePath: location.databasePath,
+        schemaVersion: version,
+        applicationId: DACS_NODE_SQLITE_APPLICATION_ID,
+        mode: options.mode,
+        profile: options.profile,
+        role: options.role,
+        authority: options.authority,
+        sdkVersion: options.sdkVersion,
+        standardRevision: options.standardRevision,
+        journalMode: "wal" as const,
+        synchronous: "full" as const,
+        quickCheck: "ok" as const,
+        ...(location.filesystemType === undefined
+          ? {} : { filesystemType: location.filesystemType }),
+        filesystemMagic: location.filesystemMagic,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-admission-failed",
+      databasePath: location.databasePath,
+    });
+  }
+}
+
+/**
+ * Authenticate the current store and project upgrade blockers through a
+ * read-only SQLite handle. It never initializes, migrates, checkpoints or
+ * backs up the database; those remain explicit upgrade-time operations.
+ */
+export function inspectDacsNodeSqliteUpgradeSafetyV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteUpgradeInspectionV1> {
+  const options = validateOptions(rawOptions);
+  const admitted = inspectExistingDacsNodeSqliteDatabaseV1(options);
+  if (admitted.status !== "pass") return admitted;
+  let database: BetterSqlite3.Database | undefined;
+  try {
+    database = new BetterSqlite3(admitted.diagnostics.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    configureAdmissionConnection(database, options);
+    verifyVersionedDatabase(database, options, DACS_NODE_SQLITE_SCHEMA_VERSION);
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: admitted.diagnostics,
+      safety: readUpgradeSafety(database),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-upgrade-safety-unavailable",
+      databasePath: admitted.diagnostics.databasePath,
+    });
+  } finally {
+    database?.close();
+  }
 }
 
 export async function openDacsNodeSqliteDatabase(
@@ -6571,8 +7165,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 6) {
+      verifyVersionedDatabase(database, options, 6);
+      const backup = await createValidatedBackup(database, options, 6);
+      try {
+        migrateV6Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 6));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 7));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -6583,7 +7189,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 6);
+    verifyVersionedDatabase(database, options, 7);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();

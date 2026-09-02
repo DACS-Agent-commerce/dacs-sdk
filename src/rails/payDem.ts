@@ -218,12 +218,26 @@ export interface PayDemSettleParams {
   /** Network label recorded on the evidence (default "demos"). */
   network?: string;
   /**
+   * Exact per-payment ceiling in OS for the transfer amount plus confirmed
+   * Demos fees. Live coordinators bind this value to the retained purchase
+   * authority so one long-lived rail can safely serve differently capped
+   * orders. A rail-level ceiling, when configured, remains an additional
+   * upper bound.
+   */
+  maxTotalDebitOs?: string;
+  /**
    * Optional PC-7 recovery identity supplied by the runSession bridge. When
    * present it is persisted with the prepared transaction before broadcast so
    * a durable journal can bind the signed hash to the exact rail/session/phase
    * idempotency key instead of relying on transaction identity alone.
    */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
+  /** Durable per-attempt journal committed after validation and before broadcast. */
+  journalPreparedTransfer?: (
+    transfer: Readonly<PayDemPreparedTransfer>,
+  ) => Promise<void>;
+  /** Generation fence asserted immediately before the irreversible broadcast. */
+  assertCurrentBeforeBroadcast?: () => Promise<void>;
 }
 
 export interface PayDemSettlementRecoveryContext {
@@ -295,7 +309,12 @@ export interface DemosNativeClient {
   transfer(args: {
     to: string;
     amountOs: bigint;
+    maxTotalDebitOs?: bigint;
     recovery?: Readonly<PayDemSettlementRecoveryContext>;
+    journalPreparedTransfer?: (
+      transfer: Readonly<PayDemPreparedTransfer>,
+    ) => Promise<void>;
+    assertCurrentBeforeBroadcast?: () => Promise<void>;
   }): Promise<DemosTransferResult>;
 }
 
@@ -384,6 +403,7 @@ function captureRecoveryContext(
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
+  defaultNetwork = "demos",
 ): Promise<SettleResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
@@ -395,7 +415,12 @@ export async function payDemSettleCore(
     "pay-dem recipient",
   );
   const amount = requiredStableString(params, "amount", "pay-dem amount");
-  const network = optionalStableString(params, "network", "pay-dem network");
+  if (typeof defaultNetwork !== "string" || defaultNetwork.length === 0 ||
+      defaultNetwork.trim() !== defaultNetwork || defaultNetwork.includes("\0")) {
+    throw new DacsError("pay-dem default network must be stable text");
+  }
+  const network = optionalStableString(params, "network", "pay-dem network") ??
+    defaultNetwork;
   const recoveryProperty = stableDataProperty(
     params,
     "recovery",
@@ -404,6 +429,32 @@ export async function payDemSettleCore(
   const recovery = captureRecoveryContext(
     recoveryProperty.found ? recoveryProperty.value : undefined,
   );
+  const journalProperty = stableDataProperty(
+    params,
+    "journalPreparedTransfer",
+    "pay-dem per-settlement prepared-transfer journal",
+  );
+  const journalPreparedTransfer = !journalProperty.found ||
+      journalProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<PayDemSettleParams["journalPreparedTransfer"]>>(
+        params,
+        "journalPreparedTransfer",
+        "pay-dem per-settlement prepared-transfer journal",
+      );
+  const fenceProperty = stableDataProperty(
+    params,
+    "assertCurrentBeforeBroadcast",
+    "pay-dem pre-broadcast fence",
+  );
+  const assertCurrentBeforeBroadcast = !fenceProperty.found ||
+      fenceProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<PayDemSettleParams["assertCurrentBeforeBroadcast"]>>(
+        params,
+        "assertCurrentBeforeBroadcast",
+        "pay-dem pre-broadcast fence",
+      );
   const payer = requiredStableString(client, "address", "pay-dem payer");
   const transfer = stableMethod<DemosNativeClient["transfer"]>(
     client,
@@ -419,6 +470,22 @@ export async function payDemSettleCore(
   }
   if (amountOs <= 0n) {
     throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
+  }
+  const maxTotalDebitProperty = stableDataProperty(
+    params,
+    "maxTotalDebitOs",
+    "pay-dem maximum total debit",
+  );
+  let maxTotalDebitOs: bigint | undefined;
+  if (maxTotalDebitProperty.found && maxTotalDebitProperty.value !== undefined) {
+    if (typeof maxTotalDebitProperty.value !== "string" ||
+        !/^[1-9][0-9]*$/.test(maxTotalDebitProperty.value)) {
+      throw new DacsError("pay-dem maximum total debit must be positive integer OS text");
+    }
+    maxTotalDebitOs = BigInt(maxTotalDebitProperty.value);
+    if (maxTotalDebitOs < amountOs) {
+      throw new DacsError("pay-dem maximum total debit cannot be less than the amount");
+    }
   }
 
   if (recovery !== undefined) {
@@ -442,7 +509,12 @@ export async function payDemSettleCore(
   const response = await transfer({
     to: recipient,
     amountOs,
+    ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
+    ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
+    ...(assertCurrentBeforeBroadcast === undefined
+      ? {}
+      : { assertCurrentBeforeBroadcast }),
   });
   const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
   const hashProperty = stableDataProperty(
@@ -555,6 +627,12 @@ export interface PayDemPreparedTransfer {
   payer: string;
   payee: string;
   amountOs: string;
+  /**
+   * Wire denomination authenticated before broadcast for exact restart
+   * reconciliation. Current SDK rails always provide it; optionality preserves
+   * read compatibility with prepared checkpoints written by older prereleases.
+   */
+  denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
@@ -966,11 +1044,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "maxTotalDebitOs",
     "pay-dem rail maxTotalDebitOs",
   );
-  const maxTotalDebitOs = maxTotalDebitProperty.found
+  const configuredMaxTotalDebitOs = maxTotalDebitProperty.found
     ? maxTotalDebitProperty.value
     : undefined;
-  if (maxTotalDebitOs !== undefined &&
-      (typeof maxTotalDebitOs !== "bigint" || maxTotalDebitOs <= 0n)) {
+  if (configuredMaxTotalDebitOs !== undefined &&
+      (typeof configuredMaxTotalDebitOs !== "bigint" || configuredMaxTotalDebitOs <= 0n)) {
     throw new DacsError("pay-dem rail maxTotalDebitOs must be positive");
   }
   const journalProperty = stableDataProperty(
@@ -1092,7 +1170,23 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   const client: DemosNativeClient = {
     address,
-    transfer: async ({ to, amountOs, recovery }) => {
+    transfer: async ({
+      to,
+      amountOs,
+      maxTotalDebitOs: invocationMaxTotalDebitOs,
+      recovery,
+      journalPreparedTransfer: invocationJournal,
+      assertCurrentBeforeBroadcast,
+    }) => {
+      if (configuredMaxTotalDebitOs !== undefined &&
+          invocationMaxTotalDebitOs !== undefined &&
+          invocationMaxTotalDebitOs > configuredMaxTotalDebitOs) {
+        throw new DacsError(
+          "pay-dem per-payment maximum total debit exceeds the rail ceiling",
+        );
+      }
+      const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
+        configuredMaxTotalDebitOs;
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
       // an otherwise valid signature/confirmation payload.
@@ -1182,7 +1276,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem: signed and confirmed transaction bodies do not bind the requested native transfer; refusing broadcast",
         );
       }
-      if (maxTotalDebitOs !== undefined) {
+      if (effectiveMaxTotalDebitOs !== undefined) {
         const confirmedDebitOs = confirmedDebitFromValidity(validity, {
           ...transferBinding,
         });
@@ -1191,7 +1285,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
             "pay-dem: confirmed transaction has no unambiguous bound OS debit; refusing broadcast under maxTotalDebitOs",
           );
         }
-        if (confirmedDebitOs > maxTotalDebitOs) {
+        if (confirmedDebitOs > effectiveMaxTotalDebitOs) {
           throw new DacsError(
             "pay-dem: confirmed transaction exceeds maxTotalDebitOs; refusing broadcast",
           );
@@ -1209,17 +1303,20 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         payer: canonicalPayer,
         payee: canonicalPayee,
         amountOs: amountOs.toString(),
+        denomination: postFork ? "os" : "dem",
         network: network ?? "demos",
-        ...(maxTotalDebitOs === undefined
+        ...(effectiveMaxTotalDebitOs === undefined
           ? {}
-          : { maxTotalDebitOs: maxTotalDebitOs.toString() }),
+          : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
       // This is the last operation before the only irreversible call. A funded
       // runner's hook fsyncs hash + nonce and the already-validated immutable
       // transfer facts. Any journal failure aborts before broadcast.
-      if (journalPreparedTransfer) await journalPreparedTransfer(prepared);
+      const preparedJournal = invocationJournal ?? journalPreparedTransfer;
+      if (preparedJournal) await preparedJournal(prepared);
+      if (assertCurrentBeforeBroadcast) await assertCurrentBeforeBroadcast();
 
       // Start exactly one submission. Do not await the HTTP response: demosdk's
       // transport has no request timeout, so the response can remain pending
@@ -1277,8 +1374,24 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   return {
     address: client.address,
-    settle: (params) =>
-      payDemSettleCore({ ...params, network: params.network ?? network ?? "demos" }, client),
+    settle: async (params) => {
+      const invocationJournal = stableDataProperty(
+        params,
+        "journalPreparedTransfer",
+        "pay-dem per-settlement prepared-transfer journal",
+      );
+      if (journalPreparedTransfer !== undefined && invocationJournal.found &&
+          invocationJournal.value !== undefined) {
+        throw new DacsError(
+          "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
+        );
+      }
+      return payDemSettleCore(
+        params,
+        client,
+        network ?? "demos",
+      );
+    },
   };
 }
 
