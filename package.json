@@ -82,6 +82,7 @@
     "README.md",
     "docs/parser-engine.md",
     "docs/alternative-payment-projection.md",
+    "docs/demos-cci-identities.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/pay-cross-chain-htlc.md",

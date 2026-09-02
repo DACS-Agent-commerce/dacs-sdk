@@ -3,6 +3,8 @@ export {
   buildAgent,
   type Agent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
@@ -80,6 +82,15 @@ export {
   type Dacs5ResumableSessionState,
   type Dacs5SessionTransitionContext,
 } from "./sessionSemantics.js";
+export {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+  type VerificationRetryPolicy,
+  type VetPhaseFailureCause,
+  type VetPhaseFailureClass,
+} from "./vetSemantics.js";
 export {
   discoverListings,
   verifyReadableListingArtifact,
@@ -313,6 +324,15 @@ export {
   type TerminalPhaseAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+export {
+  prepareVetTerminalBundle,
+  type PrepareVetTerminalBundleDeps,
+  type PrepareVetTerminalBundleInput,
+  type PreparedVetTerminalBundle,
+  type VetFailureTerminalSessionRecord,
+  type VetProductionAuthentication,
+  type VetTerminalSessionParty,
+} from "./vetTerminalBundle.js";
 export {
   advanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus,
