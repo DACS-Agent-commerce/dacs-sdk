@@ -471,6 +471,17 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+For DACS-5 v0.4 exact settlement-evidence closure, use
+`verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
+EBFAB and Listing domains, derives the executed evidence phase keys from their
+signed trace, binds every SettlementEvidence to independent SB-1 execution
+authority and SR-2 receipts, and enforces SEB-1..SEB-6, ST-8, and lifecycle
+gates. `buildEvidenceBoundTwoSidedBundle()` produces type-specific copies only
+after the caller wires that complete evidence-set gate; completed publication
+still remains `audit-pending` until the bundle itself is finalized and
+independently resolvable under ST-11. EBFAB extended pointers require the same
+verified authority token; URL shape validation is not a deployment SSRF policy.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2

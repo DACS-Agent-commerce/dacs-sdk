@@ -49,8 +49,14 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
-import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
+import {
+  isAbsoluteFaultBundle,
+  faultedPartyIsPermitted,
+  isEvidenceBoundFaultBundle,
+  isFaultBundle,
+} from "./bundleSemantics.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
+import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -243,6 +249,14 @@ export interface VerifyBundleDeps {
     record: Readonly<CompositeVerificationRecord>,
     bundle: Readonly<ReadableAttestationBundle>,
   ) => Promise<StrictCompositeVerification>;
+  /**
+   * Required for an EvidenceBoundFaultAttestationBundle. Compose
+   * `verifyEvidenceBoundFaultBundle` with the caller's authenticated Listing,
+   * execution-authority, receipt, lifecycle, and exact evidence resolvers.
+   */
+  verifyEvidenceBound?: (
+    bundle: Readonly<Record<string, unknown>>,
+  ) => Promise<EvidenceBoundBundleVerification>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -286,6 +300,7 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
     const verifySource = deps.verify.bind(deps);
     const verifyEvidenceSource = deps.verifyEvidence?.bind(deps);
     const verifyCompositeSource = deps.verifyCompositeRecord?.bind(deps);
+    const verifyEvidenceBoundSource = deps.verifyEvidenceBound?.bind(deps);
     return Object.freeze({
       readArtifact: async (ref: string) =>
         snapshotRecord(await readArtifactSource(ref)),
@@ -393,6 +408,18 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
             },
           }
         : {}),
+      ...(verifyEvidenceBoundSource
+        ? {
+            verifyEvidenceBound: async (bundle: Readonly<Record<string, unknown>>) => {
+              const raw = await verifyEvidenceBoundSource(
+                deepFreezeSnapshot(structuredClone(bundle)),
+              );
+              const captured = snapshotRecord(raw as unknown as Record<string, unknown>);
+              if (!captured) throw new TypeError("EBFAB verifier returned a non-wire verdict");
+              return captured as unknown as EvidenceBoundBundleVerification;
+            },
+          }
+        : {}),
     });
   } catch {
     return null;
@@ -455,6 +482,7 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     "verifyCompositeRecord",
     false,
   );
+  const verifyEvidenceBound = ownDependency(deps, "verifyEvidenceBound", false);
 
   if (typeof readArtifact !== "function" || nodeTypes.isProxy(readArtifact)) {
     throw new DacsError(
@@ -481,6 +509,7 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     ["verifyEvidence", verifyEvidence],
     ["verifyAlternativePaymentProjection", verifyAlternativePaymentProjection],
     ["verifyCompositeRecord", verifyCompositeRecord],
+    ["verifyEvidenceBound", verifyEvidenceBound],
   ] as const) {
     if (
       candidate !== undefined &&
@@ -570,6 +599,14 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
               "CompositeVerificationRecord verification verdict",
             ) as unknown as StrictCompositeVerification;
           },
+        }),
+    ...(verifyEvidenceBound === undefined
+      ? {}
+      : {
+          verifyEvidenceBound: bindMethod(
+            verifyEvidenceBound as NonNullable<VerifyBundleDeps["verifyEvidenceBound"]>,
+            deps,
+          ),
         }),
   };
 }
@@ -1238,7 +1275,7 @@ export async function verifyBundleCore(
     await deps.readArtifact(bundleRef),
     "resolved attestation bundle",
   );
-  if (raw && isFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
+  if (raw && isAbsoluteFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,
       reason: "faultedParty is not permitted for outcome and anchoredByRole",
@@ -1260,6 +1297,45 @@ export async function verifyBundleCore(
     };
   }
   const bundle = raw as ReadableAttestationBundle;
+  if (isNormativeGraph && isEvidenceBoundFaultBundle(bundle as unknown as Record<string, unknown>)) {
+    if (!deps.verifyEvidenceBound) {
+      return {
+        ok: false,
+        reason: "EvidenceBoundFaultAttestationBundle requires SEB-1..SEB-6 authority verification",
+        fullyVerified: false,
+        signatures: [],
+        refs: [],
+        bundle: structuredClone(bundle),
+      };
+    }
+    let exactSet: EvidenceBoundBundleVerification | null = null;
+    try {
+      const rawVerdict = await deps.verifyEvidenceBound(
+        structuredClone(bundle) as unknown as Record<string, unknown>,
+      );
+      const captured = snapshotDependencyRecord(rawVerdict, "EBFAB verification verdict");
+      if (
+        captured &&
+        ["verified", "rejected", "indeterminate"].includes(captured.decision as string) &&
+        typeof captured.reasonCode === "string" &&
+        typeof captured.reason === "string"
+      ) exactSet = captured as unknown as EvidenceBoundBundleVerification;
+    } catch {
+      // Remains fail closed below.
+    }
+    if (exactSet?.decision !== "verified") {
+      return {
+        ok: false,
+        reason: exactSet
+          ? `EBFAB exact-set verification ${exactSet.decision}: ${exactSet.reason}`
+          : "EBFAB exact-set verifier failed",
+        fullyVerified: false,
+        signatures: [],
+        refs: [],
+        bundle: structuredClone(bundle),
+      };
+    }
+  }
   const canonicalBundleClaims = bundleClaimReferencesAreCanonical(bundle);
   const parties = isNormativeGraph
     ? validatedBundleParties(bundle as AnyAttestationBundle)
@@ -1303,9 +1379,11 @@ export async function verifyBundleCore(
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const message = signedBytes(
-    isFaultBundle(bundle as unknown as Record<string, unknown>)
-      ? ARTIFACT_SEPARATORS.FaultAttestationBundle
-      : ARTIFACT_SEPARATORS.AttestationBundle,
+    isEvidenceBoundFaultBundle(bundle as unknown as Record<string, unknown>)
+      ? ARTIFACT_SEPARATORS.EvidenceBoundFaultAttestationBundle
+      : isFaultBundle(bundle as unknown as Record<string, unknown>)
+        ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+        : ARTIFACT_SEPARATORS.AttestationBundle,
     contentHash(scope),
   );
 

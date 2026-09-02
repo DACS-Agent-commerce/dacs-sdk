@@ -13,6 +13,9 @@ import type {
   BundleBinding,
   CompositeVerificationRecord,
   DeliverableSpec,
+  EvidenceBoundFaultAttestationBundle,
+  EvidenceBoundFaultBundleExtendedPointer,
+  FaultBundleExtendedPointer,
   FaultAttestationBundle,
   FinalityCommitmentRecord,
   IdentityBundle,
@@ -1946,20 +1949,23 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
     (v.attestationRef === undefined || isAttestationRef(v.attestationRef));
   if (!validDeliveryFields) return false;
   if (v.outcome === "failure") return isNonEmptyStr(v.reason);
-  if (
-    v.reason !== undefined ||
-    !isSha256(v.deliverableContentHash) ||
-    !isObj(anchor)
-  ) {
+  if (v.reason !== undefined || !isSha256(v.deliverableContentHash)) {
     return false;
   }
-  return v.phase !== "deliver-attested-payload" || isAttestationRef(v.attestationRef);
+  if (v.phase === "deliver-storage-program") {
+    return isObj(anchor) && anchor.kind === "storage-program";
+  }
+  if (v.phase === "deliver-attested-payload") {
+    return isObj(anchor) && isAttestationRef(v.attestationRef);
+  }
+  return true;
 }
 
 function hasBundleFields(
   v: Record<string, unknown>,
   partiesAreValid: (parties: unknown) => boolean,
   phaseKindIsValid: (kind: unknown) => boolean,
+  allowRetryExhausted = false,
 ): boolean {
   const lr = v.listingRef;
   return (
@@ -1991,6 +1997,7 @@ function hasBundleFields(
           "errorClass",
           "txRefs",
           "attestationRef",
+          ...(allowRetryExhausted ? ["retryExhausted"] : []),
         ]) &&
         isNonNegativeInt(ph.index) &&
         phaseKindIsValid(ph.kind) &&
@@ -1998,7 +2005,10 @@ function hasBundleFields(
         (ph.errorClass === undefined || isOneOf(BUNDLE_PHASE_ERROR_CLASSES, ph.errorClass)) &&
         (ph.txRefs === undefined ||
           (Array.isArray(ph.txRefs) && ph.txRefs.every(isChainTxRef))) &&
-        (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)),
+        (ph.attestationRef === undefined || isAttestationRef(ph.attestationRef)) &&
+        (!allowRetryExhausted ||
+          ph.retryExhausted === undefined ||
+          ph.retryExhausted === true),
     ) &&
     new Set(v.phaseSummary.map((ph) => (ph as Record<string, unknown>).index)).size ===
       v.phaseSummary.length &&
@@ -2026,11 +2036,24 @@ function hasBundleFields(
   );
 }
 
+function hasNoUnknownBundleDiscriminator(v: Record<string, unknown>): boolean {
+  const known = new Set([
+    "bundleVersion",
+    "faultBundleVersion",
+    "evidenceBoundFaultBundleVersion",
+  ]);
+  return !Object.keys(v).some(
+    (key) => key.endsWith("BundleVersion") && !known.has(key),
+  );
+}
+
 export function isAttestationBundle(v: unknown): v is AttestationBundle {
   if (!isObj(v)) return false;
   return (
+    hasNoUnknownBundleDiscriminator(v) &&
     v.bundleVersion === "1" &&
     v.faultBundleVersion === undefined &&
+    v.evidenceBoundFaultBundleVersion === undefined &&
     v.faultedParty === undefined &&
     hasBundleFields(v, isBundleParties, isNonEmptyStr)
   );
@@ -2039,13 +2062,96 @@ export function isAttestationBundle(v: unknown): v is AttestationBundle {
 export function isFaultAttestationBundle(v: unknown): v is FaultAttestationBundle {
   if (!isObj(v)) return false;
   return (
+    hasNoUnknownBundleDiscriminator(v) &&
     v.faultBundleVersion === "1" &&
     v.bundleVersion === undefined &&
+    v.evidenceBoundFaultBundleVersion === undefined &&
     isOneOf(["buyer", "seller", "orchestrator", "none"], v.faultedParty) &&
     hasBundleFields(v, isFaultBundleParties, (kind) =>
       isOneOf(PHASE_TYPES, kind),
     ) &&
     faultedPartyIsPermitted(v)
+  );
+}
+
+export function isEvidenceBoundFaultAttestationBundle(
+  v: unknown,
+): v is EvidenceBoundFaultAttestationBundle {
+  if (!isObj(v)) return false;
+  return (
+    hasNoUnknownBundleDiscriminator(v) &&
+    v.evidenceBoundFaultBundleVersion === "1" &&
+    v.bundleVersion === undefined &&
+    v.faultBundleVersion === undefined &&
+    isOneOf(["buyer", "seller", "orchestrator", "none"], v.faultedParty) &&
+    hasBundleFields(
+      v,
+      isFaultBundleParties,
+      (kind) => isOneOf(PHASE_TYPES, kind),
+      true,
+    ) &&
+    faultedPartyIsPermitted(v)
+  );
+}
+
+function isAbsoluteHttpsWithoutUserinfo(value: unknown): boolean {
+  if (!isNonEmptyStr(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname.length > 0 &&
+      parsed.username === "" &&
+      parsed.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isFaultBundleExtendedPointer(
+  v: unknown,
+): v is FaultBundleExtendedPointer {
+  return (
+    isObj(v) &&
+    hasOnlyKeys(v, [
+      "faultBundleVersion",
+      "pointerKind",
+      "fullBundleUrl",
+      "fullBundleContentHash",
+      "segmentRefs",
+      "signature",
+    ]) &&
+    v.faultBundleVersion === "1" &&
+    v.pointerKind === "extended" &&
+    isStr(v.fullBundleUrl) &&
+    isSha256(v.fullBundleContentHash) &&
+    (v.segmentRefs === undefined ||
+      (Array.isArray(v.segmentRefs) && v.segmentRefs.every(isAttestationRef))) &&
+    isComponentSignature(v.signature)
+  );
+}
+
+export function isEvidenceBoundFaultBundleExtendedPointer(
+  v: unknown,
+): v is EvidenceBoundFaultBundleExtendedPointer {
+  return (
+    isObj(v) &&
+    hasOnlyKeys(v, [
+      "evidenceBoundFaultBundleVersion",
+      "pointerKind",
+      "fullBundleUrl",
+      "fullBundleContentHash",
+      "segmentRefs",
+      "signature",
+    ]) &&
+    v.evidenceBoundFaultBundleVersion === "1" &&
+    v.pointerKind === "extended" &&
+    isAbsoluteHttpsWithoutUserinfo(v.fullBundleUrl) &&
+    isSha256(v.fullBundleContentHash) &&
+    (v.segmentRefs === undefined ||
+      (Array.isArray(v.segmentRefs) && v.segmentRefs.every(isAttestationRef))) &&
+    isComponentSignature(v.signature)
   );
 }
 
@@ -2080,5 +2186,9 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
 }
 
 export function isAnyAttestationBundle(v: unknown): v is AnyAttestationBundle {
-  return isAttestationBundle(v) || isFaultAttestationBundle(v);
+  return (
+    isAttestationBundle(v) ||
+    isFaultAttestationBundle(v) ||
+    isEvidenceBoundFaultAttestationBundle(v)
+  );
 }

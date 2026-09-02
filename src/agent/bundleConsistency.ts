@@ -1,5 +1,10 @@
 import { DacsError } from "../errors.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
+import {
+  bundleArtifactType,
+  bundleArtifactTypeRank,
+  type BundleArtifactType,
+} from "./bundleSemantics.js";
 
 // Re-exported for API compatibility — the canonical §10.4.3 predicate now lives
 // in bundleDivergence.js and is shared with the §10.5.1 reputation deriver (#224).
@@ -157,4 +162,44 @@ export async function bundleConsistency(
   }
   if (present.length === 1) return "oneSided";
   return "absent";
+}
+
+export interface AuthoritativeBundleSelection {
+  role: BundleRole;
+  type: BundleArtifactType;
+  bundle: Record<string, unknown>;
+}
+
+/**
+ * Select the strongest non-divergent, fully validated DACS-5 copy. EBFAB ranks
+ * above FAB, which ranks above legacy, but type rank is never consulted until
+ * the caller's complete validity gate (including SEB for EBFAB) has passed.
+ */
+export async function selectAuthoritativeBundleCopy(
+  copies: BundleCopies,
+  deps: Pick<BundleConsistencyDeps, "isValid">,
+): Promise<AuthoritativeBundleSelection | null> {
+  if (!deps.isValid) {
+    throw new DacsError(
+      "selectAuthoritativeBundleCopy requires a complete validity gate; trustBundles is not permitted",
+    );
+  }
+  const valid: AuthoritativeBundleSelection[] = [];
+  for (const role of ["buyer", "seller"] as const) {
+    const read = copies[role];
+    if (read.disposition !== "present") continue;
+    if (!isObj(read.bundle) || !(await deps.isValid(read.bundle, role))) continue;
+    const type = bundleArtifactType(read.bundle);
+    if (!type) continue;
+    valid.push({ role, type, bundle: structuredClone(read.bundle) });
+  }
+  if (valid.length === 0) return null;
+  if (valid.length === 2 && bundlesDiverge(valid[0]!.bundle, valid[1]!.bundle)) {
+    return null;
+  }
+  return valid.sort(
+    (left, right) =>
+      bundleArtifactTypeRank(right.bundle) - bundleArtifactTypeRank(left.bundle) ||
+      (left.role === "buyer" ? -1 : 1),
+  )[0]!;
 }
