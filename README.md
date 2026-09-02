@@ -36,12 +36,20 @@ All five lifecycle stages run end to end:
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
+
+Use `evaluateRailAvailabilitySelection` at the session selection boundary. It
+authenticates and pins the complete RailDefinition before applying local
+production/preflight policy; discovery and counterparty availability hints are
+never authority. Use `evaluateClaimRequirementQualification` when consuming
+the DACS-2 CRQ projection outside `partyVetCore`: it authenticates either the
+orchestrator-owned active SessionContext or the signed replay bundle/CVR/result
+closure before recipe-family qualification and four-state aggregation.
 
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached

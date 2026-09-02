@@ -906,6 +906,11 @@ function isRailDefinition(
   );
 }
 
+/** Strict current RailDefinition wire validator used after full-scope authentication. */
+export function isRailDefinitionWire(value: unknown): value is RailDefinition {
+  return isRecord(value) && isRailDefinition(value);
+}
+
 export function isRecipeDescriptor(
   e: Record<string, unknown>,
 ): e is Record<string, unknown> & RecipeDescriptor & {
