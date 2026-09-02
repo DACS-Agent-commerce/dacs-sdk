@@ -1,3 +1,7 @@
+import { LIFECYCLE_SOURCE } from "./lifecycleTemplate.js";
+import { FULFILMENT_EXAMPLES_SOURCE } from "./fulfilmentTemplate.js";
+import { TELEMETRY_SOURCE } from "./telemetryTemplate.js";
+
 export interface LiveProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
@@ -33,7 +37,11 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       "dacs:setup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js setup",
       "dacs:buy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js buy",
       "dacs:status": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js status",
+      "dacs:metrics": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js metrics",
       "dacs:down": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js down",
+      "dacs:backup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js backup",
+      "dacs:restore": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js restore",
+      "dacs:uninstall": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js uninstall",
       "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
       "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
       "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
@@ -103,7 +111,7 @@ import type { DacsLiveAgentConfig } from "@kynesyslabs/dacs-node";
 let persistentConfirmationDetected = false;
 if (existsSync(".env")) {
   const persisted = readFileSync(".env", "utf8");
-  if (/^\\s*(?:export\\s+)?DACS_(?:SETUP_WRITE|PURCHASE|DOCTOR_FUNDED)_CONFIRM\\s*=/mu
+  if (/^\\s*(?:export\\s+)?DACS_(?:SETUP_WRITE|PURCHASE|DOCTOR_FUNDED|RESTORE|UNINSTALL)_CONFIRM\\s*=/mu
       .test(persisted)) {
     persistentConfirmationDetected = true;
   } else {
@@ -2666,9 +2674,11 @@ export async function checkGeneratedUpgradeV1(
       supportedOnlyFromRestorableBackup: true,
       instructions: Object.freeze([
         "Stop both role services before changing packages or store files.",
-        "Record the exact installed package version and preserve each actor database backup.",
-        "Restore buyer and seller backups independently while both services remain stopped.",
-        "Reinstall all three DACS packages at the recorded exact version.",
+        "Run dacs:backup to preserve one authenticated two-role snapshot and its printed ID.",
+        "Record the exact generated project, package lock and three installed package versions.",
+        "Regenerate the replacement project from one exact reviewed three-package release set.",
+        "Use dacs:restore with the authenticated backup ID while both services remain stopped.",
+        "For rollback, reinstall the recorded generated project and exact package lock before restore.",
         "Refuse rollback when that runtime does not support the restored store schema.",
         "Run pre-start doctor before restarting either role service.",
       ]),
@@ -2720,6 +2730,13 @@ import {
   startDacsLocalRoleServices,
   stopDacsLocalRoleServices,
 } from "./local-lifecycle.js";
+import {
+  assertGeneratedBackupRestorableV1,
+  createGeneratedBackupV1,
+  inspectGeneratedBackupV1,
+  restoreGeneratedBackupV1,
+} from "./lifecycle.js";
+import { readGeneratedCommerceTimingV1 } from "./telemetry.js";
 import { checkGeneratedUpgradeV1 } from "./upgrade.js";
 
 type DoctorPhase = "pre-start" | "post-start";
@@ -2736,14 +2753,17 @@ function doctorArguments(args: readonly string[]): {
   scope: DoctorScope;
   rail?: "x402" | "pay-dem";
   json: boolean;
+  explain: boolean;
 } {
   let phase: DoctorPhase = "pre-start";
   let scope: DoctorScope = "start";
   let requestedRail: string | undefined;
   let json = false;
+  let explain = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === "--json") json = true;
+    else if (argument === "--explain") explain = true;
     else if (argument === "--phase") {
       const value = valueAfter(args, index, argument);
       if (value !== "pre-start" && value !== "post-start") throw new Error("invalid doctor phase");
@@ -2763,7 +2783,8 @@ function doctorArguments(args: readonly string[]): {
   if (scope === "start" && requestedRail !== undefined) {
     throw new Error("--rail applies only to setup or buy doctor scopes");
   }
-  if (scope === "start") return { phase, scope, json };
+  if (json && explain) throw new Error("--json and --explain are mutually exclusive");
+  if (scope === "start") return { phase, scope, json, explain };
   const enabledRails = dacsLiveRailProfiles(loadRoleConfig(scope === "setup" ? "seller" : "buyer"));
   const rail = requestedRail === undefined && enabledRails.length === 1
     ? enabledRails[0] : requestedRail;
@@ -2772,11 +2793,52 @@ function doctorArguments(args: readonly string[]): {
       ? "--rail must select one enabled rail: x402 or pay-dem"
       : "selected doctor rail is not enabled");
   }
-  return { phase, scope, rail, json };
+  return { phase, scope, rail, json, explain };
 }
 
-function printDoctor(report: Readonly<DacsLiveDoctorReportV1>, json = false): void {
+function doctorGuidance(report: Readonly<DacsLiveDoctorReportV1>): readonly string[] {
+  const reasons = report.checks.flatMap((item) =>
+    item.status === "pass" || typeof item.reasonCode !== "string"
+      ? [] : [item.reasonCode]);
+  const guidance = new Set<string>();
+  for (const reason of reasons) {
+    if (reason.includes("secret") || reason.includes("credential")) {
+      guidance.add("Create separate buyer/seller secret files, set their *_SECRET_FILE paths, and chmod each file 0600.");
+    } else if (reason.includes("authority") || reason.includes("identity")) {
+      guidance.add("Set the canonical buyer, seller, and rail-steward authorities derived from the configured role keys.");
+    } else if (reason.includes("balance") || reason.includes("fund")) {
+      guidance.add("Fund only the reported public testnet address, then rerun the same read-only doctor scope.");
+    } else if (reason.includes("rpc") || reason.includes("network") ||
+        reason.includes("facilitator")) {
+      guidance.add("Verify the public RPC/facilitator URL and network selection; never paste a secret into .env.");
+    } else if (reason.includes("listing")) {
+      guidance.add("Validate the rail-specific Listing draft, then run the plan-only dacs:setup command.");
+    } else if (reason.includes("service") || reason.includes("endpoint") ||
+        reason.includes("readiness")) {
+      guidance.add("Start both role services and rerun post-start doctor before setup or purchase.");
+    } else if (reason.includes("permission") || reason.includes("directory") ||
+        reason.includes("sqlite")) {
+      guidance.add("Keep each actor data directory private and independently owned; do not share a database between roles.");
+    } else if (reason.includes("version") || reason.includes("release") ||
+        reason.includes("schema")) {
+      guidance.add("Run dacs:upgrade -- --check and preserve authenticated actor backups before changing packages.");
+    }
+  }
+  if (guidance.size === 0 && report.exitCode !== 0) {
+    guidance.add("Use --json for the exact sanitized reason codes; do not bypass a blocked gate.");
+  }
+  return Object.freeze([...guidance]);
+}
+
+function printDoctor(
+  report: Readonly<DacsLiveDoctorReportV1>,
+  json = false,
+  explain = false,
+): void {
   process.stdout.write(json ? JSON.stringify(report) + "\\n" : formatDacsLiveDoctorTextV1(report));
+  if (explain) {
+    for (const item of doctorGuidance(report)) process.stdout.write("next: " + item + "\\n");
+  }
 }
 
 async function doctor(args: readonly string[]): Promise<number> {
@@ -2786,7 +2848,7 @@ async function doctor(args: readonly string[]): Promise<number> {
     parsed.scope,
     parsed.rail === undefined ? undefined : { rail: parsed.rail },
   );
-  printDoctor(report, parsed.json);
+  printDoctor(report, parsed.json, parsed.explain);
   return report.exitCode;
 }
 
@@ -2853,6 +2915,15 @@ async function serviceStatus(): Promise<number> {
   });
   process.stdout.write(JSON.stringify(report) + "\\n");
   return report.status === "available" ? 0 : 5;
+}
+
+async function commerceMetrics(args: readonly string[]): Promise<number> {
+  if (args.length !== 2 || args[0] !== "--job" || !isCanonicalJobId(args[1]!)) {
+    throw new Error("metrics requires one canonical --job ID");
+  }
+  const report = await readGeneratedCommerceTimingV1(args[1]!);
+  process.stdout.write(JSON.stringify(report) + "\\n");
+  return report.start === null ? 5 : 0;
 }
 
 function decimalWithin(value: string, ceiling: string): string {
@@ -3178,6 +3249,146 @@ async function guardedFundedDoctor(args: readonly string[]): Promise<number> {
   return result.status === "completed" || result.status === "existing-completion" ? 0 : 5;
 }
 
+function maintenanceArguments(
+  args: readonly string[],
+  required: readonly string[],
+): Readonly<{ values: Readonly<Record<string, string>>; nonInteractive: boolean }> {
+  const values: Record<string, string> = {};
+  let nonInteractive = false;
+  const allowed = new Set(required);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--non-interactive") {
+      if (nonInteractive) throw new Error("maintenance option is repeated");
+      nonInteractive = true;
+      continue;
+    }
+    if (!allowed.has(argument) || Object.hasOwn(values, argument)) {
+      throw new Error("unknown or repeated maintenance option: " + argument);
+    }
+    values[argument] = valueAfter(args, index, argument);
+    index += 1;
+  }
+  for (const name of required) {
+    if (!Object.hasOwn(values, name)) throw new Error(name + " is required");
+  }
+  return Object.freeze({ values: Object.freeze(values), nonInteractive });
+}
+
+async function maintenanceConfirmation(
+  promptText: string,
+  nonInteractive: boolean,
+): Promise<boolean> {
+  if (nonInteractive) return true;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("interactive maintenance requires a terminal; use --non-interactive explicitly");
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await prompt.question(promptText + " Type yes to continue: ") === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
+async function stopForMaintenance(): Promise<number> {
+  return (process.env.DACS_DEPLOYMENT ?? "docker") === "local"
+    ? stopDacsLocalRoleServices()
+    : command("docker", ["compose", "stop"]);
+}
+
+async function backup(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(args, ["--output"]);
+  if (await stopForMaintenance() !== 0) return 5;
+  const manifest = await createGeneratedBackupV1({
+    outputDirectory: parsed.values["--output"]!,
+  });
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "backup",
+    backupId: manifest.backupId,
+    outputDirectory: parsed.values["--output"],
+    services: "stopped",
+  }) + "\\n");
+  return 0;
+}
+
+async function restore(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(
+    args,
+    ["--from", "--backup-id", "--safety-backup"],
+  );
+  const manifest = await inspectGeneratedBackupV1({
+    backupDirectory: parsed.values["--from"]!,
+  });
+  assertGeneratedBackupRestorableV1(manifest);
+  if (manifest.backupId !== parsed.values["--backup-id"]) {
+    throw new Error("restore-backup-identity-mismatch");
+  }
+  process.stdout.write(JSON.stringify({
+    execute: false,
+    operation: "restore",
+    backupId: manifest.backupId,
+    backupDirectory: parsed.values["--from"],
+    safetyBackupDirectory: parsed.values["--safety-backup"],
+    servicesRequired: "stopped",
+  }) + "\\n");
+  const confirmation = process.env.DACS_RESTORE_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("restore confirmation is malformed");
+  if (!await maintenanceConfirmation(
+    "Restore authenticated backup " + manifest.backupId + " and replace both actor data directories?",
+    parsed.nonInteractive,
+  )) return 5;
+  if (await stopForMaintenance() !== 0) return 5;
+  const result = await restoreGeneratedBackupV1({
+    backupDirectory: parsed.values["--from"]!,
+    expectedBackupId: manifest.backupId,
+    safetyBackupDirectory: parsed.values["--safety-backup"]!,
+  });
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "restore",
+    ...result,
+    services: "stopped",
+    next: "run pre-start doctor before dacs:up",
+  }) + "\\n");
+  return 0;
+}
+
+async function uninstall(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(args, ["--backup"]);
+  process.stdout.write(JSON.stringify({
+    execute: false,
+    operation: "uninstall",
+    backupDirectory: parsed.values["--backup"],
+    dataPolicy: "retain",
+    removesData: false,
+  }) + "\\n");
+  const confirmation = process.env.DACS_UNINSTALL_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("uninstall confirmation is malformed");
+  if (!await maintenanceConfirmation(
+    "Stop and decommission this deployment after creating its authenticated backup?",
+    parsed.nonInteractive,
+  )) return 5;
+  if (await stopForMaintenance() !== 0) return 5;
+  const manifest = await createGeneratedBackupV1({
+    outputDirectory: parsed.values["--backup"]!,
+  });
+  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "docker" &&
+      await command("docker", ["compose", "down", "--remove-orphans"]) !== 0) return 5;
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "uninstall",
+    backupId: manifest.backupId,
+    dataPolicy: "retain",
+    removesData: false,
+    next: "remove the project and actor data manually only after verifying the backup",
+  }) + "\\n");
+  return 0;
+}
+
 async function main(args = process.argv.slice(2)): Promise<void> {
   const [operation = "doctor", ...rest] = args;
   if (operation === "doctor") process.exitCode = await doctor(rest);
@@ -3193,6 +3404,14 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       : await command("docker", ["compose", "down"]);
   } else if (operation === "status") {
     process.exitCode = await serviceStatus();
+  } else if (operation === "metrics") {
+    process.exitCode = await commerceMetrics(rest);
+  } else if (operation === "backup") {
+    process.exitCode = await backup(rest);
+  } else if (operation === "restore") {
+    process.exitCode = await restore(rest);
+  } else if (operation === "uninstall") {
+    process.exitCode = await uninstall(rest);
   } else if (operation === "setup") process.exitCode = await guardedSetup(rest);
   else if (operation === "buy") process.exitCode = await guardedPurchase(rest);
   else if (operation === "doctor-funded") process.exitCode = await guardedFundedDoctor(rest);
@@ -3233,7 +3452,6 @@ import {
   dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
-  type DacsNodeEvent,
   type DacsX402HttpResultObservationV1,
 } from "@kynesyslabs/dacs-node";
 
@@ -3255,16 +3473,12 @@ import {
   serviceEndpoint,
 } from "./config.js";
 import { fulfil } from "./seller.js";
+import { createGeneratedTelemetrySinkV1 } from "./telemetry.js";
 
 function loopbackHostname(hostname: string): boolean {
   const value = hostname.toLowerCase().replace(/\\.$/, "");
   return value === "localhost" || value.endsWith(".localhost") || value === "[::1]" ||
     value === "::1" || /^127(?:\\.\\d{1,3}){3}$/.test(value);
-}
-
-function eventSink(event: Readonly<DacsNodeEvent>): void {
-  if (event.level === "debug" && event.code === "service-worker-cycle-complete") return;
-  process.stderr.write(JSON.stringify({ event: "dacs.live-service.event", ...event }) + "\\n");
 }
 
 async function main(): Promise<void> {
@@ -3274,6 +3488,7 @@ async function main(): Promise<void> {
   }
   const peerRole = role === "buyer" ? "seller" : "buyer";
   const config = loadRoleConfig(role);
+  const telemetry = createGeneratedTelemetrySinkV1(role);
   const authority = configuredAuthority(role);
   const peerAuthority = configuredAuthority(peerRole);
   const demosIdentityFilePath = actorSecretPath(role, "demos-identity");
@@ -3450,7 +3665,7 @@ async function main(): Promise<void> {
     ...(discovery === undefined ? {} : {
       handlePublicRequest: createDacsListingDiscoveryRequestHandlerV1(discovery),
     }),
-    events: { emit: eventSink },
+    events: telemetry,
     server: { hostname: ownEndpoint.hostname, port },
   });
   const hooks = installDacsRoleServiceProcessHooksV1(runtime);
@@ -3506,19 +3721,14 @@ const BUYER_SOURCE = `export const buyerApplication = Object.freeze({
 });
 `;
 
-const SELLER_SOURCE = `import type {
-  DacsPublicStorageDeliverableInputV1,
-} from "@kynesyslabs/dacs-node";
+const SELLER_SOURCE = `import type { DacsPublicStorageDeliverableInputV1 } from "@kynesyslabs/dacs-node";
+
+import { echoRequestFulfilment } from "./fulfilment-examples.js";
 
 export async function fulfil(input: Readonly<DacsPublicStorageDeliverableInputV1>) {
-  // Replace only this pure/idempotent callback with the seller's bounded work.
-  // The host persists its JSON output and owns every irreversible publication.
-  return Object.freeze({
-    jobId: input.jobId,
-    fulfilmentId: input.fulfilmentId,
-    request: input.request,
-    status: "completed" as const,
-  });
+  // Replace only this replay-safe callback with the seller's bounded work.
+  // See fulfilment-examples.ts before integrating any external side effect.
+  return echoRequestFulfilment(input);
 }
 `;
 
@@ -3530,12 +3740,199 @@ const VERIFIER_SOURCE = `export const verifierApplication = Object.freeze({
 
 const TEST_SOURCE = `import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { DACS_LIVE_DOCTOR_CHECK_IDS } from "@kynesyslabs/dacs-node";
 import { runGeneratedDoctor } from "../src/doctor.js";
+import {
+  createStaticJsonFulfilment,
+  echoRequestFulfilment,
+} from "../src/fulfilment-examples.js";
+import {
+  assertGeneratedBackupRestorableV1,
+  createGeneratedBackupV1,
+  inspectGeneratedBackupV1,
+  restoreGeneratedBackupV1,
+} from "../src/lifecycle.js";
 import { checkGeneratedUpgradeV1 } from "../src/upgrade.js";
+import {
+  createGeneratedTelemetrySinkV1,
+  readGeneratedCommerceTimingV1,
+} from "../src/telemetry.js";
+
+test("durable telemetry projects the four operational finish lines", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-generated-telemetry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await chmod(root, 0o700);
+  const buyerDirectory = join(root, "buyer");
+  const sellerDirectory = join(root, "seller");
+  await Promise.all([
+    mkdir(buyerDirectory, { mode: 0o700 }),
+    mkdir(sellerDirectory, { mode: 0o700 }),
+  ]);
+  const previousBuyer = process.env.DACS_BUYER_DATA_DIRECTORY;
+  const previousSeller = process.env.DACS_SELLER_DATA_DIRECTORY;
+  process.env.DACS_BUYER_DATA_DIRECTORY = buyerDirectory;
+  process.env.DACS_SELLER_DATA_DIRECTORY = sellerDirectory;
+  t.after(() => {
+    if (previousBuyer === undefined) delete process.env.DACS_BUYER_DATA_DIRECTORY;
+    else process.env.DACS_BUYER_DATA_DIRECTORY = previousBuyer;
+    if (previousSeller === undefined) delete process.env.DACS_SELLER_DATA_DIRECTORY;
+    else process.env.DACS_SELLER_DATA_DIRECTORY = previousSeller;
+  });
+  const jobId = "job:telemetry-example";
+  const buyer = createGeneratedTelemetrySinkV1("buyer");
+  const seller = createGeneratedTelemetrySinkV1("seller");
+  const event = (role: "buyer" | "seller", occurredAt: number, code: string,
+    details?: Record<string, string>) => ({
+      version: 1, sequence: occurredAt, occurredAt, level: "info",
+      kind: "order-progress", code, role, jobId,
+      ...(details === undefined ? {} : { details }),
+    }) as never;
+  await buyer.emit(event("buyer", 1_000, "order-started"));
+  await seller.emit(event("seller", 2_000, "order-track-processed",
+    { track: "delivery", state: "final", outcome: "success" }));
+  await buyer.emit(event("buyer", 2_500, "order-track-processed",
+    { track: "buyer-received", state: "final", outcome: "success" }));
+  await seller.emit(event("seller", 3_000, "order-track-processed",
+    { track: "delivery-evidence", state: "final", outcome: "success" }));
+  await buyer.emit(event("buyer", 4_000, "order-track-processed",
+    { track: "audit", state: "final", outcome: "success" }));
+  await seller.emit(event("seller", 4_500, "order-track-processed",
+    { track: "audit", state: "final", outcome: "success" }));
+  const report = await readGeneratedCommerceTimingV1(jobId);
+  assert.equal(report.evidenceClass, "operational-telemetry-not-normative-proof");
+  assert.equal(report.milestones.sellerReady?.elapsedMs, 1_000);
+  assert.equal(report.milestones.buyerReceived?.elapsedMs, 1_500);
+  assert.equal(report.milestones.commerceComplete?.elapsedMs, 2_000);
+  assert.equal(report.milestones.auditComplete?.elapsedMs, 3_500);
+  assert.equal(report.log.matchingEvents, 6);
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(join(buyerDirectory, "telemetry", "events.jsonl"))).mode &
+      0o777, 0o600);
+  }
+  await assert.rejects(
+    async () => buyer.emit(event("seller", 5_000, "order-started")),
+    /telemetry-role-mismatch/,
+  );
+});
+
+test("fulfilment examples are deterministic, isolated and bounded", async () => {
+  const request = Object.freeze({ query: "hello" });
+  const input = Object.freeze({
+    jobId: "job:example",
+    fulfilmentId: "fulfilment:example",
+    request,
+  }) as never;
+  const echoed = await echoRequestFulfilment(input);
+  assert.deepEqual(echoed, {
+    jobId: "job:example",
+    fulfilmentId: "fulfilment:example",
+    request: { query: "hello" },
+    status: "completed",
+  });
+  assert.notEqual(echoed.request, request);
+  const staticDocument = { answer: { value: 42 } };
+  const fulfil = createStaticJsonFulfilment(staticDocument);
+  staticDocument.answer.value = 99;
+  const first = await fulfil(input);
+  const second = await fulfil(input);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.deliverable, { answer: { value: 42 } });
+  assert.notEqual(first.deliverable, second.deliverable);
+  assert.throws(() => createStaticJsonFulfilment("x".repeat(1_048_576)),
+    /exceeds 1 MiB/);
+});
+
+test("authenticated lifecycle backup restores both roles and rejects tampering", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-generated-lifecycle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await chmod(root, 0o700);
+  const buyer = join(root, "buyer");
+  const seller = join(root, "seller");
+  const backupParent = join(root, "backups");
+  const backupDirectory = join(backupParent, "baseline");
+  const safetyBackupDirectory = join(backupParent, "pre-restore");
+  const authKeyFile = join(root, "backup-auth.hex");
+  await Promise.all([
+    mkdir(buyer, { mode: 0o700 }),
+    mkdir(seller, { mode: 0o700 }),
+    mkdir(backupParent, { mode: 0o700 }),
+  ]);
+  await Promise.all([
+    writeFile(join(buyer, "actor.sqlite"), "buyer-original", { mode: 0o600 }),
+    writeFile(join(seller, "actor.sqlite"), "seller-original", { mode: 0o600 }),
+    writeFile(authKeyFile, "11".repeat(32) + "\\n", { mode: 0o600 }),
+  ]);
+  await chmod(authKeyFile, 0o600);
+  const paths = { buyer, seller, authKeyFile };
+  const backup = await createGeneratedBackupV1({
+    outputDirectory: backupDirectory,
+    backupId: "11111111-1111-4111-8111-111111111111",
+    now: 1_700_000_000_000,
+    paths,
+  });
+  assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
+  assert.equal((await inspectGeneratedBackupV1({
+    backupDirectory,
+    authKeyFile,
+  })).backupId, backup.backupId);
+  assert.throws(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, configSchemaVersion: backup.release.configSchemaVersion + 1 },
+  }), /restore-backup-release-incompatible/);
+
+  await Promise.all([
+    writeFile(join(buyer, "actor.sqlite"), "buyer-changed", "utf8"),
+    writeFile(join(seller, "actor.sqlite"), "seller-changed", "utf8"),
+  ]);
+  const restored = await restoreGeneratedBackupV1({
+    backupDirectory,
+    expectedBackupId: backup.backupId,
+    safetyBackupDirectory,
+    paths,
+  });
+  assert.equal(restored.backupId, backup.backupId);
+  assert.equal(await readFile(join(buyer, "actor.sqlite"), "utf8"), "buyer-original");
+  assert.equal(await readFile(join(seller, "actor.sqlite"), "utf8"), "seller-original");
+  assert.equal(await readFile(
+    join(safetyBackupDirectory, "roles", "buyer", "actor.sqlite"), "utf8"),
+  "buyer-changed");
+
+  await writeFile(
+    join(backupDirectory, "roles", "buyer", "actor.sqlite"),
+    "tampered",
+    "utf8",
+  );
+  await assert.rejects(
+    inspectGeneratedBackupV1({ backupDirectory, authKeyFile }),
+    /backup-content-mismatch/,
+  );
+  const emptyDirectory = join(buyer, "empty");
+  await mkdir(emptyDirectory, { mode: 0o700 });
+  await assert.rejects(createGeneratedBackupV1({
+    outputDirectory: join(backupParent, "reject-empty"),
+    paths,
+  }), /backup-empty-directory-unsupported/);
+  await rm(emptyDirectory, { recursive: true });
+  await chmod(authKeyFile, 0o644);
+  await assert.rejects(createGeneratedBackupV1({
+    outputDirectory: join(backupParent, "reject-key-permissions"),
+    paths,
+  }), /backup-owned-file-unsafe/);
+});
 
 test("fresh live bootstrap is complete, read-only and visibly blocked", async () => {
   const before = existsSync("./data/buyer/actor.sqlite");
@@ -3943,6 +4340,7 @@ DACS_SELLER_EVM_SECRET_FILE=
 DACS_FUNDED_DOCTOR_AUTHORITY=
 DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE=
 DACS_FUNDED_DOCTOR_DATA_ROOT=./data/funded-doctor
+DACS_BACKUP_AUTH_KEY_FILE=
 `;
   const draftLines = options.rails === "both"
     ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n" +
@@ -3993,6 +4391,10 @@ generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
 The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
+Backup and restore require a separate operator-owned
+\`DACS_BACKUP_AUTH_KEY_FILE\`. Store exactly 32 random bytes as 64 hexadecimal
+characters, keep the file outside this project, and set mode 0600. It
+authenticates backup manifests but is not a buyer or seller protocol key.
 Do not persist a write-confirmation variable in .env or Compose.
 `;
 }
@@ -4027,7 +4429,9 @@ ${setupCommands}
 ${purchaseCommands}
 npm run dacs:doctor:funded -- --wallet disposable-alpha --max-cost-dem 2
 npm run dacs:status
+npm run dacs:metrics -- --job <printed-job-id>
 npm run dacs:upgrade -- --check
+npm run dacs:backup -- --output ../backups/agent-YYYYMMDD
 npm run dacs:down
 \`\`\`
 
@@ -4086,9 +4490,42 @@ Upgrade check is read-only. It queries the public npm \`next\` manifests for all
 three exact-version DACS packages, compares their declared Standard, config and
 SQLite compatibility, authenticates each existing actor store, and blocks on
 unfinished or recovering work. Package application is intentionally not
-automatic in this release: stop both services and retain independent actor
-backups before following the report's rollback instructions. An older runtime
+automatic in this release: stop both services and create one authenticated
+two-role backup before following the report's rollback instructions. An older runtime
 must never open a store schema newer than it supports.
+
+Seller application work lives only in \`src/seller.ts\`. The generated
+\`src/fulfilment-examples.ts\` provides deterministic request-echo and bounded
+static-JSON examples. Both are replay-safe. Do not add an email, subprocess,
+model charge, API mutation or external job directly to the callback: recovery
+may invoke it again. Such effects require their own durable intent and exact
+idempotency/reconciliation adapter keyed by \`fulfilmentId\`.
+
+\`dacs:metrics -- --job <id>\` reads the private per-role event journals and
+reports seller-ready, buyer-received, commerce-complete and two-role
+audit-complete durations. These are durable operational timings, explicitly not
+normative DACS proof; the anchored evidence and audit bundles remain the source
+of protocol truth. The journals are capped at 64 MiB per role and are included
+in lifecycle backups. Capacity exhaustion degrades service health instead of
+silently discarding events.
+
+Backup stops both services and writes separate buyer/seller data trees plus a
+keyed manifest into a new directory. Restore is plan-only unless
+\`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
+rehashes every file, creates a separate safety backup, then replaces both actor
+directories with rollback on partial failure. Example:
+
+\`\`\`bash
+npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \\
+  --backup-id <printed-backup-id> \\
+  --safety-backup ../backups/pre-restore-YYYYMMDD
+\`\`\`
+
+\`dacs:uninstall -- --backup <new-directory>\` is a safe decommission command.
+It is plan-only unless \`DACS_UNINSTALL_CONFIRM=1\` is supplied, stops the
+deployment and creates an authenticated backup, but deliberately retains actor
+data and never recursively deletes the project. Verify the backup before any
+manual deletion.
 
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
@@ -4126,7 +4563,10 @@ export function liveProjectTemplates(
     "src/setup.ts": SETUP_SOURCE,
     "src/purchase.ts": PURCHASE_SOURCE,
     "src/funded-doctor.ts": FUNDED_DOCTOR_SOURCE,
+    "src/fulfilment-examples.ts": FULFILMENT_EXAMPLES_SOURCE,
     "src/upgrade.ts": UPGRADE_SOURCE,
+    "src/lifecycle.ts": LIFECYCLE_SOURCE,
+    "src/telemetry.ts": TELEMETRY_SOURCE,
     "src/local-lifecycle.ts": LOCAL_LIFECYCLE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,

@@ -47,6 +47,34 @@ read-only verifier placeholder is not exposed as a runnable live role until a
 real independent verifier service is implemented. Offline mode still runs its
 logical verifier simulation and labels it non-conformant.
 
+The generated live project also provides guarded operator commands:
+
+```bash
+npm run dacs:doctor -- --phase pre-start --for start --explain
+npm run dacs:status
+npm run dacs:metrics -- --job <printed-job-id>
+npm run dacs:backup -- --output ../backups/agent-YYYYMMDD
+npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \
+  --backup-id <printed-backup-id> \
+  --safety-backup ../backups/pre-restore-YYYYMMDD
+npm run dacs:uninstall -- --backup ../backups/final-YYYYMMDD
+```
+
+Backup manifests are HMAC-authenticated by a separate operator key, contain
+independent buyer/seller trees, and are rehashed before restore. Restore checks
+the Standard, configuration and SQLite migration compatibility, requires its
+own ephemeral confirmation, creates a safety backup, and rolls both role trees
+back on a partial replacement. Uninstall is deliberately a non-destructive
+decommission: it stops the deployment and backs it up but retains the actor
+data and project.
+
+Operational event journals are private, durable and capped. `dacs:metrics`
+projects seller-ready, buyer-received, commerce-complete and two-role
+audit-complete timing without presenting the journal as normative DACS proof.
+The default fulfilment and static-JSON example are deterministic and
+replay-safe; external jobs require a separately reviewed durable
+idempotency/reconciliation adapter.
+
 Runs use fresh job and presentation identifiers, but the simulation has neither
 the durable CORE §B.8 nonce ledger nor the DACS-4 §9.4.4 RAV-R5 rail authority
 required by a conformant session.

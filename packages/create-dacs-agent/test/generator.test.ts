@@ -222,7 +222,10 @@ describe("create-dacs-agent", () => {
       "src/cli.ts",
       "src/doctor.ts",
       "src/funded-doctor.ts",
+      "src/fulfilment-examples.ts",
+      "src/lifecycle.ts",
       "src/local-lifecycle.ts",
+      "src/telemetry.ts",
       "src/purchase.ts",
       "src/setup.ts",
       "src/service.ts",
@@ -265,8 +268,12 @@ describe("create-dacs-agent", () => {
       "dacs:setup": expect.any(String),
       "dacs:buy": expect.any(String),
       "dacs:status": expect.any(String),
+      "dacs:metrics": expect.any(String),
       "dacs:down": expect.any(String),
       "dacs:upgrade": expect.any(String),
+      "dacs:backup": expect.any(String),
+      "dacs:restore": expect.any(String),
+      "dacs:uninstall": expect.any(String),
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
@@ -298,6 +305,9 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).not.toContain("DACS_SETUP_WRITE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_PURCHASE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_DOCTOR_FUNDED_CONFIRM");
+    expect(environmentExample).not.toContain("DACS_RESTORE_CONFIRM");
+    expect(environmentExample).not.toContain("DACS_UNINSTALL_CONFIRM");
+    expect(environmentExample).toContain("DACS_BACKUP_AUTH_KEY_FILE=");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
     expect(generatedConfig).toContain("dacs4:registry:v0.1");
@@ -369,6 +379,18 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");
     expect(combined).toContain("DACS_DOCTOR_FUNDED_CONFIRM=1");
+    expect(combined).toContain("DACS_RESTORE_CONFIRM=1");
+    expect(combined).toContain("DACS_UNINSTALL_CONFIRM=1");
+    expect(combined).toContain("dacs-generated-backup/v1");
+    expect(combined).toContain("backup-authentication-failed");
+    expect(combined).toContain("safetyBackupDirectory");
+    expect(combined).toContain("--explain");
+    expect(combined).toContain("createStaticJsonFulfilment");
+    expect(combined).toContain("reconcileExactEffectBeforeRetry");
+    expect(combined).toContain("blindRetryPermitted: false");
+    expect(combined).toContain("dacs-generated-commerce-timing/v1");
+    expect(combined).toContain("operational-telemetry-not-normative-proof");
+    expect(combined).toContain("telemetry-capacity-reached");
     expect(combined).toContain("prepareDacsFundedDoctorV1");
     expect(combined).toContain("createDacsFundedDoctorExecutorV1");
     expect(combined).toContain("--resume-run");
