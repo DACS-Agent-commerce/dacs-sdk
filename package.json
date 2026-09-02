@@ -85,6 +85,7 @@
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/rfq-negotiation-core.md",
+    "docs/settlement-verified-reputation.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
   ],

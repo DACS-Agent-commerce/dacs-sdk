@@ -742,11 +742,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const pub = hex(golden.signing.publicKeyHex);
       expect(verifyArtifact("dacs-bundle:v1:", golden.signing.doc, sig, pub)).toBe(want);
     },
-    // DIVERGENCE (it.fails below): the golden pins a closed registry of
-    // exactly 24 separators (§B.7); the SDK's SIGNATURE_DOMAIN_SEPARATORS
-    // carries 18 — it deliberately excludes the composite-payload separators
-    // (session-binding, auto-accept-*) and lacks bundle-binding,
-    // fault-bundle-pointer and finality-commitment. Tracked in #86.
+    // The oracle pins a closed registry of 28 separators and the SDK exposes the same
+    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
+    // below. The only remaining it.fails divergence is canonical-number handling.
     "sig-registry-closed": (want) => {
       expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(want.count);
       expect([...SIGNATURE_DOMAIN_SEPARATORS].sort()).toEqual(want.separators);
@@ -2356,9 +2354,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     expect(manifest.cases).toHaveLength(236);
   });
 
-  it("#86 plus payload attestation: the SDK exposes all 25 separators", () => {
+  it("the SDK exposes the current closed set of 28 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
-    // reconciled the SDK to the closed §B.7 set, so it is now a passing case.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(25);
+    // reconciled the SDK to the closed §B.7 set (25). The 662be1d pin adds the
+    // evidence-bound fault bundle, its pointer, and prior-payment disposition.
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(28);
   });
 });

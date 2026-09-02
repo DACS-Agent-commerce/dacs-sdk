@@ -36,8 +36,27 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  evidenceBoundBundleSignedScope,
+  type EvidenceBoundReasonCode,
+  type EvidenceLifecycle,
+  type EvidencePhaseExecutionAuthority,
+  type EvidenceAnchorReceiptAuthority,
+  type ResolvedEvidenceAuthority,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type EvidenceBoundBundleVerification,
+  type CompactEvidenceRecord,
+  type EvidenceBoundExactSetInput,
+  type VerifiedEvidenceBoundExecutionAuthority,
+  type BundlePointerVerification,
+} from "./evidenceBoundBundle.js";
+export {
   lookupBundleCopies,
   bundleConsistency,
+  selectAuthoritativeBundleCopy,
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopyRead,
@@ -45,6 +64,7 @@ export {
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
+  type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
   verifySettlementEvidence,
@@ -81,6 +101,32 @@ export {
   type DeriveReputationValidationDeps,
   type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
+export {
+  DACS4_PAYMENT_PHASE_TYPES,
+  settlementEvidenceReferenceMultisetsEqual,
+  isSuccessfulDacs4PaymentProjection,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
+  isSettlementVerifiedReputationDerivation,
+  isReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerificationDisposition,
+  type ReputationRoleEvidence,
+  type ReputationBb6Context,
+  type ReputationAbsenceEvidenceRef,
+  type JobBoundResolutionContextEntry,
+  type SettlementVerifiedBundleInput,
+  type AuthenticatedSettlementBundle,
+  type AuthenticatedPresentedSettlement,
+  type AuthenticatedReputationAgreement,
+  type SettlementVerifiedRatingRecord,
+  type AuthenticatedReputationRating,
+  type CancellationAuthorityDisposition,
+  type SettlementVerifiedReputationDeps,
+  type SettlementVerifiedReputationDerivation,
+  type ReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerifiedReputationReplayResult,
+} from "./settlementVerifiedReputation.js";
 export {
   isDacs5SessionTransitionAllowed,
   dacs5BundleOutcomeForTerminalState,
@@ -175,10 +221,16 @@ export {
 } from "./partyVetPlan.js";
 export {
   aggregateCompositeVerification,
+  aggregatePresenceAwareCompositeVerification,
+  classifyPresenceClaimRequirement,
   isCompositeBundleRequirement,
+  presenceRequirementPreflight,
   verifyCompositeVerificationRecord,
   type CompositeClaimRequirement,
   type CompositeBundleRequirement,
+  type PresenceClaimDecision,
+  type PresenceAwareAggregationInput,
+  type PresenceAwareVerifiedEvidence,
   type ExpectedVerifyResult,
   type CompositeVerificationExpectations,
   type ResolvedVerificationContent,
@@ -189,6 +241,20 @@ export {
   type CompositeVerificationUnresolvedCode,
   type StrictCompositeVerification,
 } from "./compositeVerification.js";
+export {
+  evaluateClaimRequirementQualification,
+  type ClaimQualificationDecision,
+  type ClaimQualificationResultProjection,
+  type ClaimQualificationResultReuse,
+  type ClaimQualificationProductionAuthority,
+  type ClaimQualificationReplayAuthority,
+  type ClaimQualificationAuthority,
+  type ClaimQualificationInput,
+  type ClaimQualificationRecipeRegistry,
+  type ClaimQualificationAuthentication,
+  type ClaimQualificationDeps,
+  type ClaimQualificationEvaluation,
+} from "./claimRequirementQualification.js";
 export {
   evaluateParserSpec,
   defaultParserEngine,
@@ -291,6 +357,7 @@ export {
 } from "./durableRecipePin.js";
 export {
   buildTwoSidedBundle,
+  buildEvidenceBoundTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
@@ -302,6 +369,9 @@ export {
   type SigningSessionParty,
   type TwoSidedSession,
   type TwoSidedBundles,
+  type EvidenceBoundTwoSidedSession,
+  type EvidenceBoundTwoSidedBundles,
+  type EvidenceBoundBundleProducerDeps,
 } from "./twoSidedBundle.js";
 export {
   createBuyerRatingRecord,

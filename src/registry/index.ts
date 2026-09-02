@@ -2,6 +2,7 @@ export {
   RAIL_REGISTRY_INDEX_ADDRESS,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
+  isRailDefinitionWire,
   resolveRail,
   resolveRecipe,
   type AuthenticatedRailDefinition,
@@ -52,6 +53,14 @@ export {
   type PinnedRecipeGovernanceInput,
   type PinnedRecipeGovernanceDecision,
 } from "./governance.js";
+export {
+  evaluateRailAvailabilitySelection,
+  type RailAvailabilityAuthority,
+  type RailAvailabilityDecision,
+  type RailAvailabilityEvaluation,
+  type RailSessionState,
+  type TrustedRailOperatorContext,
+} from "./railAvailability.js";
 export type {
   AssetSpec,
   Availability,

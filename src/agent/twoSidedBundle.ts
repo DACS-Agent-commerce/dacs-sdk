@@ -13,14 +13,18 @@
  * round-trip across the two copies.
  */
 import type { KeyObject } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { isFaultAttestationBundle } from "../artifacts/validators.js";
+import {
+  isEvidenceBoundFaultAttestationBundle,
+  isFaultAttestationBundle,
+} from "../artifacts/validators.js";
 import { ed25519Sign } from "../crypto/ed25519.js";
-import { signedBytes } from "../crypto/signing.js";
+import { signedBytes, type DomainSeparator } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
 import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type {
@@ -28,6 +32,8 @@ import type {
   BundleParty,
   BundlePartyRole,
   BundleSignature,
+  EvidenceBoundFaultAttestationBundle,
+  EvidenceBoundPhaseSummaryEntry,
   FaultAttestationBundle,
   FaultedParty,
 } from "../artifacts/types.js";
@@ -184,8 +190,12 @@ function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
 
-async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
-  const payload = signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, hash);
+async function signOver(
+  party: SigningSessionParty,
+  hash: string,
+  separator: DomainSeparator = ARTIFACT_SEPARATORS.FaultAttestationBundle,
+): Promise<BundleSignature> {
+  const payload = signedBytes(separator, hash);
   assertNoRawSessionSeed(party.signer, `session signer ${party.primaryClaim}`);
   const raw =
     typeof party.signer === "function"
@@ -442,4 +452,123 @@ export async function buildTwoSidedBundle(
     if (role === "orchestrator") out.orchestratorCopy = bundle;
   }
   return out;
+}
+
+export interface EvidenceBoundTwoSidedSession
+  extends Omit<TwoSidedSession, "faultBundleVersion" | "phaseSummary"> {
+  evidenceBoundFaultBundleVersion?: "1";
+  phaseSummary: EvidenceBoundPhaseSummaryEntry[];
+}
+
+export interface EvidenceBoundTwoSidedBundles {
+  buyerCopy?: EvidenceBoundFaultAttestationBundle;
+  sellerCopy?: EvidenceBoundFaultAttestationBundle;
+  orchestratorCopy?: EvidenceBoundFaultAttestationBundle;
+}
+
+export interface EvidenceBoundBundleProducerDeps {
+  /**
+   * Validate the signed candidate against independently authenticated SEB
+   * inputs supplied by the producer's closure. Returning anything other than
+   * verified refuses production. Publication still remains in `audit-pending`
+   * until the completed bundle itself passes ST-11 finality/resolvability.
+   */
+  validateEvidenceSet: (
+    bundle: Readonly<EvidenceBoundFaultAttestationBundle>,
+  ) => Promise<{ decision: "verified" | "rejected" | "indeterminate"; reason?: string }>;
+}
+
+/**
+ * Produce v0.4 EBFAB perspective copies through the established v0.3 session
+ * guards, then re-domain-sign the structurally distinct artifact and require
+ * the producer's complete SEB gate. No FAB signature or discriminator is
+ * retained, so cross-type replay is impossible.
+ */
+export async function buildEvidenceBoundTwoSidedBundle(
+  session: EvidenceBoundTwoSidedSession,
+  deps: EvidenceBoundBundleProducerDeps,
+): Promise<EvidenceBoundTwoSidedBundles> {
+  if (
+    session.evidenceBoundFaultBundleVersion !== undefined &&
+    session.evidenceBoundFaultBundleVersion !== "1"
+  ) {
+    throw new DacsError("only evidenceBoundFaultBundleVersion \"1\" is supported");
+  }
+  if (!deps || typeof deps !== "object" || nodeTypes.isProxy(deps)) {
+    throw new DacsError("EBFAB production requires stable producer dependencies");
+  }
+  const validatorDescriptor = Object.getOwnPropertyDescriptor(
+    deps,
+    "validateEvidenceSet",
+  );
+  if (
+    !validatorDescriptor ||
+    !("value" in validatorDescriptor) ||
+    typeof validatorDescriptor.value !== "function" ||
+    nodeTypes.isProxy(validatorDescriptor.value)
+  ) {
+    throw new DacsError("EBFAB production requires validateEvidenceSet");
+  }
+  const validateEvidenceSet = validatorDescriptor.value.bind(deps) as
+    EvidenceBoundBundleProducerDeps["validateEvidenceSet"];
+  const fabCopies = await buildTwoSidedBundle({
+    ...session,
+    faultBundleVersion: "1",
+  });
+  const partyByClaim = new Map<string, SigningSessionParty>();
+  for (const party of [session.buyer, session.seller, session.orchestrator]) {
+    if (party && canSign(party)) partyByClaim.set(party.primaryClaim, party);
+  }
+  const convert = async (
+    fab: FaultAttestationBundle | undefined,
+  ): Promise<EvidenceBoundFaultAttestationBundle | undefined> => {
+    if (!fab) return undefined;
+    const {
+      faultBundleVersion: _discardVersion,
+      signatures: oldSignatures,
+      ...fields
+    } = fab;
+    const candidate = {
+      evidenceBoundFaultBundleVersion: "1",
+      ...fields,
+      signatures: [] as BundleSignature[],
+    } as EvidenceBoundFaultAttestationBundle;
+    const hash = attestationBundleHash(candidate);
+    const signatures: BundleSignature[] = [];
+    for (const old of oldSignatures) {
+      const party = partyByClaim.get(old.party);
+      if (!party) throw new DacsError(`no EBFAB signer is available for ${old.party}`);
+      signatures.push(
+        await signOver(
+          party,
+          hash,
+          ARTIFACT_SEPARATORS.EvidenceBoundFaultAttestationBundle,
+        ),
+      );
+    }
+    const signed = { ...candidate, signatures };
+    if (!isEvidenceBoundFaultAttestationBundle(signed)) {
+      throw new DacsError("session facts do not form a valid EvidenceBoundFaultAttestationBundle");
+    }
+    let verdict: { decision: "verified" | "rejected" | "indeterminate"; reason?: string };
+    try {
+      verdict = snapshotCanonicalJsonRead(
+        await validateEvidenceSet(structuredClone(signed)),
+        "EBFAB producer exact-set verdict",
+      ) as typeof verdict;
+    } catch {
+      throw new DacsError("EBFAB producer exact-set validation failed");
+    }
+    if (verdict?.decision !== "verified") {
+      throw new DacsError(
+        `EBFAB producer exact-set validation ${verdict?.decision ?? "failed"}: ${verdict?.reason ?? "no reason"}`,
+      );
+    }
+    return signed;
+  };
+  return {
+    buyerCopy: await convert(fabCopies.buyerCopy),
+    sellerCopy: await convert(fabCopies.sellerCopy),
+    orchestratorCopy: await convert(fabCopies.orchestratorCopy),
+  };
 }

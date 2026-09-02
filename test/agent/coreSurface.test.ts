@@ -41,6 +41,9 @@ import {
   terminalBundleFinalizationCheckpointKey,
   verifyFinalizedTerminalBundleReadOnly,
   isCanonicalSettlementIdentity,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
   createX402Paywall,
   deriveReputationWithValidation,
   lookupBundleCopies,
@@ -133,6 +136,12 @@ describe("public core surface (#14)", () => {
 
   it("F1: runSessionCore is exported from the barrel", () => {
     expect(typeof runSessionCore).toBe("function");
+  });
+
+  it("#272: settlement-verified reputation producer and replay APIs are public", () => {
+    expect(typeof deriveSettlementVerifiedReputation).toBe("function");
+    expect(typeof deriveReplayableSettlementVerifiedReputation).toBe("function");
+    expect(typeof replaySettlementVerifiedReputation).toBe("function");
   });
 
   it("#55: durable seller recovery is exported from root and seller surfaces", () => {

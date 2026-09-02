@@ -10,6 +10,20 @@ import {
   type RatingPhasePlan,
   type RatingPhaseReadyHandoff,
   type FencedSessionStoreV2,
+  evaluateClaimRequirementQualification,
+  evaluateRailAvailabilitySelection,
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  buildEvidenceBoundTwoSidedBundle,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type ClaimQualificationDeps,
+  type ClaimQualificationInput,
+  type RailAvailabilityAuthority,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
@@ -76,10 +90,34 @@ const validatedReputationDeps: DeriveReputationValidationDeps = {
   resolveAndAuthenticateRating: async () => authenticatedRatingResolution,
 };
 declare const ratingEffectStore: RatingPublicationEffectStore;
+const qualify: typeof evaluateClaimRequirementQualification =
+  evaluateClaimRequirementQualification;
+const selectRail: typeof evaluateRailAvailabilitySelection =
+  evaluateRailAvailabilitySelection;
+const verifyEvidenceBound: typeof verifyEvidenceBoundFaultBundle =
+  verifyEvidenceBoundFaultBundle;
+const evaluateExactSet: typeof evaluateEvidenceBoundSettlementSet =
+  evaluateEvidenceBoundSettlementSet;
+const verifyBundlePointer: typeof verifyFaultBundleExtendedPointer =
+  verifyFaultBundleExtendedPointer;
+const buildEvidenceBound: typeof buildEvidenceBoundTwoSidedBundle =
+  buildEvidenceBoundTwoSidedBundle;
+const deriveSettlementVerified: typeof deriveSettlementVerifiedReputation =
+  deriveSettlementVerifiedReputation;
+const deriveReplayableSettlementVerified:
+  typeof deriveReplayableSettlementVerifiedReputation =
+    deriveReplayableSettlementVerifiedReputation;
+const replaySettlementVerified: typeof replaySettlementVerifiedReputation =
+  replaySettlementVerifiedReputation;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const qualificationInput: ClaimQualificationInput;
+declare const qualificationDeps: ClaimQualificationDeps;
+declare const railAuthority: RailAvailabilityAuthority;
+declare const ebfabAuthority: EvidenceBoundBundleAuthority;
+declare const ebfabDeps: EvidenceBoundBundleVerifierDeps;
 
 void config;
 void verifier;
@@ -104,6 +142,15 @@ void fencedSessionStore;
 void validatedReputationDeriver;
 void validatedReputationDeps;
 void ratingEffectStore;
+void qualify(qualificationInput, qualificationDeps);
+void selectRail({}, railAuthority);
+void verifyEvidenceBound(ebfabAuthority, ebfabDeps);
+void evaluateExactSet;
+void verifyBundlePointer;
+void buildEvidenceBound;
+void deriveSettlementVerified;
+void deriveReplayableSettlementVerified;
+void replaySettlementVerified;
 void adapter;
 void journal;
 void result;

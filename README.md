@@ -36,7 +36,7 @@ All five lifecycle stages run end to end:
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
+| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
@@ -49,6 +49,14 @@ use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
 non-canonical CD-1 amounts instead of normalising them into acceptance.
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
+
+Use `evaluateRailAvailabilitySelection` at the session selection boundary. It
+authenticates and pins the complete RailDefinition before applying local
+production/preflight policy; discovery and counterparty availability hints are
+never authority. Use `evaluateClaimRequirementQualification` when consuming
+the DACS-2 CRQ projection outside `partyVetCore`: it authenticates either the
+orchestrator-owned active SessionContext or the signed replay bundle/CVR/result
+closure before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
@@ -85,6 +93,17 @@ restart boundary for one RFQ role: keyed record authentication, strict local
 permissions, synchronized atomic writes, cross-process locking, and monotonic
 compare-and-swap validation. Buyer and seller require separate directories and
 separate integrity keys; the in-memory RFQ store remains test-only.
+
+`partyVetCore` evaluates DACS-1 presence-only members directly against the
+exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
+not resolve an optional `verifiedBy` merely to prove presence. Mixed
+presence/verified production must supply the durable
+`sessionRecipeRegistrySnapshot` pinned at session start. A strict consumer must
+provide the same bundle and snapshot hash through
+`CompositeVerificationExpectations.presence`, authenticate both, and re-run
+the mixed decision and exact-claim selector-control rules. A temporarily
+unavailable result is retained as indeterminate evidence; an independently
+conclusive failure still has the Standard's fail-first precedence.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
@@ -663,6 +682,27 @@ ignores content returned for another job. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
+
+For DACS-5 v0.4 exact settlement-evidence closure, use
+`verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
+EBFAB and Listing domains, derives the executed evidence phase keys from their
+signed trace, binds every SettlementEvidence to independent SB-1 execution
+authority and SR-2 receipts, and enforces SEB-1..SEB-6, ST-8, and lifecycle
+gates. `buildEvidenceBoundTwoSidedBundle()` produces type-specific copies only
+after the caller wires that complete evidence-set gate; completed publication
+still remains `audit-pending` until the bundle itself is finalized and
+independently resolvable under ST-11. EBFAB extended pointers require the same
+verified authority token; URL shape validation is not a deployment SSRF policy.
+
+For reputation that makes an explicit settlement-verification claim, use
+`deriveSettlementVerifiedReputation()` or its replayable counterpart. These
+emit the distinct DACS-5 v0.4 settlement-verified discriminators and never
+reinterpret the released `derivationVersion: "1"` type. The caller must supply
+independent bundle, SettlementEvidence, Agreement, role/binding, finality and
+SB-1..SB-3 authority. Any rejected or unavailable presented evidence excludes
+the whole job without assigning fresh fault. See the
+[settlement-verified reputation guide](./docs/settlement-verified-reputation.md)
+for the authority contract and replay boundary.
 
 ### Normative artifact references
 

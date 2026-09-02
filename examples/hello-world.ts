@@ -19,6 +19,7 @@
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
  *   PAY_TOKEN          ERC-20 contract address advertised by the x402 paywall
+ *   PAY_ASSET          DACS asset id for the advertised token (e.g. usdc)
  *   SELLER_EVM         seller EVM address that x402 pays
  *   DACS_STATE_DIR     durable private state directory for wallet journals
  *

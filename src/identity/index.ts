@@ -17,6 +17,7 @@ export {
 
 export {
   isCanonicalClaimReference,
+  isRegisteredClaimReferenceScheme,
   parseCanonicalClaimReference,
   requireCanonicalClaimReference,
   sameCanonicalClaimIdentity,
