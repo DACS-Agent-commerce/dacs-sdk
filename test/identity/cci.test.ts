@@ -194,13 +194,13 @@ describe("parseCciRecord — ud + pqc claim families", () => {
     },
   };
 
-  test("a DNS domain identity emits the canonical domain: ref (legacy alias still resolves)", () => {
+  test("a DNS domain identity emits the canonical domain: ref without unauthenticated alias folding", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     const dom = rec.web2.find((c) => c.platform === "domain");
     expect(dom?.ref).toBe("domain:alice.example");
     expect(dom?.proof).toBe("https://alice.example/.well-known/demos-cci.txt");
-    // The legacy web2:domain: form remains a permanent read-path alias.
-    expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(true);
+    expect(cciClaimHasProof(rec, "domain:alice.example")).toBe(true);
+    expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(false);
   });
 
   test("unstoppable domains parse into registered cci-ud claims (network + proof surfaced)", () => {
@@ -277,7 +277,7 @@ describe("parseClaimRef (reverse-lookup decomposition)", () => {
   });
 });
 
-describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", () => {
+describe("canonical domain: claim ref (strict unauthenticated CCI boundary)", () => {
   // A live GCR web2 payload keyed by platform, wrapped in the deployed envelope.
   const gcr = (web2: Record<string, unknown>) => ({
     result: 200,
@@ -315,7 +315,7 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
     expect(byPlatform["github"]).toBe("web2:github:alice-dev");
   });
 
-  test("T2: legacy web2:domain: query resolves against a canonical store", () => {
+  test("T2: bare CCI lookup does not fold a historical alias", () => {
     const rec = parseCciRecord(
       PRIMARY,
       gcr({
@@ -324,21 +324,19 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
         ],
       }),
     );
-    expect(cciHasClaim(rec, "web2:domain:alice.example")).toBe(true);
-    expect(cciClaimProof(rec, "web2:domain:alice.example")).toBe(
-      "https://alice.example/.well-known/demos-cci.txt",
-    );
+    expect(cciHasClaim(rec, "web2:domain:alice.example")).toBe(false);
+    expect(cciClaimProof(rec, "web2:domain:alice.example")).toBeUndefined();
   });
 
-  test("T3: canonical domain: query resolves against a historical web2:domain: record", () => {
+  test("T3: a historical record cannot cross the bare lookup boundary", () => {
     const rec = recordWithWeb2Ref("alice.example", "web2:domain:alice.example");
-    expect(cciHasClaim(rec, "domain:alice.example")).toBe(true);
+    expect(cciHasClaim(rec, "domain:alice.example")).toBe(false);
   });
 
-  test("T4: parseClaimRef maps domain: and the web2:domain: alias to the same shape", () => {
+  test("T4: parseClaimRef accepts only the current canonical domain form", () => {
     const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
     expect(parseClaimRef("domain:alice.example")).toEqual(shape);
-    expect(parseClaimRef("web2:domain:alice.example")).toEqual(shape);
+    expect(parseClaimRef("web2:domain:alice.example")).toBeNull();
   });
 
   test("T5: case-variant domain handles collapse to one canonical claim", () => {
@@ -358,10 +356,11 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
     expect(dom?.handle).toBe("Bücher.example");
   });
 
-  test("T7: legacy and unicode queries resolve against a punycode store (IDNA fold)", () => {
+  test("T7: signed-style queries must already use exact punycode spelling", () => {
     const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "Bücher.example" }] }));
-    expect(cciHasClaim(rec, "web2:domain:Bücher.example")).toBe(true);
-    expect(cciHasClaim(rec, "domain:Bücher.example")).toBe(true);
+    expect(cciHasClaim(rec, "domain:xn--bcher-kva.example")).toBe(true);
+    expect(cciHasClaim(rec, "web2:domain:Bücher.example")).toBe(false);
+    expect(cciHasClaim(rec, "domain:Bücher.example")).toBe(false);
   });
 
   test("T8: unresolvable domain hosts never collide or false-match", () => {
@@ -474,14 +473,18 @@ describe("domain host validation / reject-list (canonicalDomainHost)", () => {
     expect(domRef("alice.example")).toBe("domain:alice.example");
     expect(domRef("Alice.Example")).toBe("domain:alice.example");
     expect(domRef("Bücher.example")).toBe("domain:xn--bcher-kva.example");
+    expect(domRef("alice。example")).toBe("domain:alice.example");
+    expect(domRef("Ａgent.example")).toBeNull();
   });
 
-  test("R6: parseClaimRef matches the domain scheme case-insensitively", () => {
+  test("R6: parseClaimRef rejects non-canonical domain scheme spelling", () => {
     const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
-    expect(parseClaimRef("Domain:alice.example")).toEqual(shape);
-    expect(parseClaimRef("DOMAIN:alice.example")).toEqual(shape);
-    // and the canonical lower-case form still parses (unchanged)
+    expect(parseClaimRef("Domain:alice.example")).toBeNull();
+    expect(parseClaimRef("DOMAIN:alice.example")).toBeNull();
     expect(parseClaimRef("domain:alice.example")).toEqual(shape);
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    expect(cciHasClaim(rec, "Domain:alice.example")).toBe(false);
+    expect(cciHasClaim(rec, "DOMAIN:alice.example")).toBe(false);
   });
 
   test("R7: trailing-dot forms emit no claim and never false-match the bare host", () => {
@@ -533,10 +536,10 @@ describe("domain host validation / reject-list (canonicalDomainHost)", () => {
     }
   });
 
-  test("R10: a whitespace-padded query resolves symmetrically (fold trims like emit)", () => {
+  test("R10: a whitespace-padded query is rejected rather than repaired", () => {
     const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
-    expect(cciHasClaim(recA, "domain: alice.example ")).toBe(true);
-    expect(cciHasClaim(recA, "web2:domain: alice.example ")).toBe(true);
+    expect(cciHasClaim(recA, "domain: alice.example ")).toBe(false);
+    expect(cciHasClaim(recA, "web2:domain: alice.example ")).toBe(false);
   });
 
   test("R11: a mapped terminal ideographic dot is rejected at MATCH time, not just emit", () => {
