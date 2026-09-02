@@ -16,7 +16,7 @@ const seed = Uint8Array.from(Buffer.alloc(32, 5));
 const priv = privateKeyFromSeed(seed);
 const sign: Signer = (b) => ed25519Sign(b, priv);
 const sellerDid = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
-const buyerDid = "did:demos:agent:buyer";
+const buyerDid = "did:demos:buyer";
 const buyerIdentity: IdentityBundle = {
   bundleVersion: "1",
   presentedBy: buyerDid,
