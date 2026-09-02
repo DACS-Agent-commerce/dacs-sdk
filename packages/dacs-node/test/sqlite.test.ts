@@ -2331,7 +2331,7 @@ describe("DACS Node SQLite durability foundation", () => {
       .toMatchObject({ status: "ok", record: { bindingHash } });
   });
 
-  it("keeps x402 and native DEM orders isolated in one live actor database", async () => {
+  it("atomically binds each live job identity to exactly one rail profile", async () => {
     const database = await open(join(temporaryRoot(), "buyer.sqlite"), {
       mode: "live-demos",
       profile: DACS_NODE_LIVE_PROFILE,
@@ -2341,7 +2341,8 @@ describe("DACS Node SQLite durability foundation", () => {
     const x402Store = database.createLiveCoordinatorStore("buyer");
     const payDemStore = database.createPayDemCoordinatorStore("buyer");
     const x402 = liveOrder();
-    const payDem = payDemOrder();
+    const conflictingPayDem = payDemOrder();
+    const independentPayDem = payDemOrder(OTHER_JOB_ID);
 
     expect(await x402Store.create({
       role: "buyer",
@@ -2350,18 +2351,56 @@ describe("DACS Node SQLite durability foundation", () => {
     })).toMatchObject({ status: "created", record: { protocol: LIVE_PROTOCOL } });
     expect(await payDemStore.create({
       role: "buyer",
-      order: payDem,
-      ...payDemOrderBinding(payDem),
+      order: conflictingPayDem,
+      ...payDemOrderBinding(conflictingPayDem),
+    })).toEqual({ status: "conflict" });
+    expect(await payDemStore.create({
+      role: "buyer",
+      order: independentPayDem,
+      ...payDemOrderBinding(independentPayDem),
     })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
 
     expect(await x402Store.load("buyer", JOB_ID)).toMatchObject({
       status: "ok",
       record: { protocol: LIVE_PROTOCOL },
     });
-    expect(await payDemStore.load("buyer", JOB_ID)).toMatchObject({
+    expect(await payDemStore.load("buyer", JOB_ID)).toEqual({ status: "missing" });
+    expect(await payDemStore.load("buyer", OTHER_JOB_ID)).toMatchObject({
       status: "ok",
       record: { protocol: PAY_DEM_PROTOCOL },
     });
+  });
+
+  it("converges competing cross-rail creates on one durable winner", async () => {
+    const database = await open(join(temporaryRoot(), "buyer-race.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const x402 = liveOrder();
+    const payDem = payDemOrder();
+    const [x402Result, payDemResult] = await Promise.all([
+      database.createLiveCoordinatorStore("buyer").create({
+        role: "buyer",
+        order: x402,
+        ...liveOrderBinding(x402),
+      }),
+      database.createPayDemCoordinatorStore("buyer").create({
+        role: "buyer",
+        order: payDem,
+        ...payDemOrderBinding(payDem),
+      }),
+    ]);
+
+    expect([x402Result.status, payDemResult.status].sort())
+      .toEqual(["conflict", "created"]);
+    const [retainedX402, retainedPayDem] = await Promise.all([
+      database.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID),
+      database.createPayDemCoordinatorStore("buyer").load("buyer", JOB_ID),
+    ]);
+    expect([retainedX402.status, retainedPayDem.status].sort())
+      .toEqual(["missing", "ok"]);
   });
 
   it("migrates a v6 x402 order before enabling the native DEM namespace", async () => {
@@ -2398,7 +2437,7 @@ describe("DACS Node SQLite durability foundation", () => {
       .toHaveLength(1);
     expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
-    const payDem = payDemOrder();
+    const payDem = payDemOrder(OTHER_JOB_ID);
     expect(await migrated.createPayDemCoordinatorStore("buyer").create({
       role: "buyer",
       order: payDem,

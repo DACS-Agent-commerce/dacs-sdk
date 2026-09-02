@@ -24,10 +24,7 @@ type SellerGraph = Readonly<DacsSellerLiveCommerceGraphV1>;
 type BuyerPayDemGraph = Readonly<DacsBuyerPayDemLiveCommerceGraphV1>;
 type SellerPayDemGraph = Readonly<DacsSellerPayDemLiveCommerceGraphV1>;
 type PayloadValidationInput = Parameters<DacsHttpPayloadValidatorV1>[0];
-type InvalidPayloadValidation = Exclude<
-  DacsHttpPayloadValidationV1,
-  Readonly<{ status: "valid" }>
->;
+type Rail = "x402" | "pay-dem";
 
 export type DacsMultirailLiveCommerceGraphOptionsV1 = Readonly<
   | { role: "buyer"; x402: BuyerGraph; payDem: BuyerPayDemGraph }
@@ -91,52 +88,60 @@ function availability(
   });
 }
 
-async function select(
+/**
+ * Admit a message when either rail can parse it. Shared handshake messages
+ * deliberately validate under both profiles, so this transport-level gate
+ * cannot choose their rail. The retained coordinator identity does that in
+ * `handleMessage` before any rail handler runs.
+ */
+async function admit(
   input: Readonly<PayloadValidationInput>,
   x402: BuyerGraph | SellerGraph,
   payDem: BuyerPayDemGraph | SellerPayDemGraph,
-): Promise<Readonly<
-  | { status: "selected"; profile: "x402" | "pay-dem" }
-  | { status: "invalid"; validation: InvalidPayloadValidation }
->> {
+): Promise<DacsHttpPayloadValidationV1> {
   const [x402Result, payDemResult] = await Promise.all([
     x402.validatePayload(input),
     payDem.validatePayload(input),
   ]);
-  if (x402Result.status === "authentication-failure" ||
-      payDemResult.status === "authentication-failure") {
-    return Object.freeze({
-      status: "invalid" as const,
-      validation: Object.freeze({
-        status: "authentication-failure" as const,
-        reasonCode: "multirail-message-validation-unavailable",
-      }),
-    });
+  if (x402Result.status === "valid" || payDemResult.status === "valid") {
+    return Object.freeze({ status: "valid" as const });
   }
-  const x402Valid = x402Result.status === "valid";
-  const payDemValid = payDemResult.status === "valid";
-  if (x402Valid !== payDemValid) {
-    return Object.freeze({
-      status: "selected" as const,
-      profile: x402Valid ? "x402" as const : "pay-dem" as const,
-    });
-  }
-  if (x402Valid) {
-    return Object.freeze({
-      status: "invalid" as const,
-      validation: Object.freeze({
-        status: "authentication-failure" as const,
-        reasonCode: "multirail-message-profile-ambiguous",
-      }),
-    });
-  }
+  const unavailable = x402Result.status === "authentication-failure" ||
+    payDemResult.status === "authentication-failure";
   return Object.freeze({
-    status: "invalid" as const,
-    validation: Object.freeze({
-      status: "invalid" as const,
-      reasonCode: "multirail-message-profile-incompatible",
-    }),
+    status: unavailable ? "authentication-failure" as const : "invalid" as const,
+    reasonCode: unavailable
+      ? "multirail-message-validation-unavailable"
+      : "multirail-message-profile-incompatible",
   });
+}
+
+/** Resolve the one retained rail identity without payload-based fallback. */
+async function retainedRail(
+  role: "buyer" | "seller",
+  jobId: string,
+  database: Readonly<DacsLiveRoleInboundOperationContextV1>["database"],
+): Promise<Rail | undefined> {
+  const [x402, payDem] = await Promise.all([
+    database.createLiveCoordinatorStore(role).load(role, jobId),
+    database.createPayDemCoordinatorStore(role).load(role, jobId),
+  ]);
+  const x402Owned = x402.status === "ok";
+  const payDemOwned = payDem.status === "ok";
+  if ((x402.status !== "ok" && x402.status !== "missing") ||
+      (payDem.status !== "ok" && payDem.status !== "missing") ||
+      (x402Owned && payDemOwned)) {
+    throw new DacsMultirailCommerceGraphError("multirail-job-identity-conflict");
+  }
+  return x402Owned ? "x402" : payDemOwned ? "pay-dem" : undefined;
+}
+
+/** A first session-init declares the profile that its durable order will own. */
+function initPayloadRail(input: Readonly<PayloadValidationInput>): Rail | undefined {
+  const payload = input.payload as
+    { order?: { protocol?: { phase?: unknown } } } | null | undefined;
+  const phase = payload?.order?.protocol?.phase;
+  return phase === "pay-x402" ? "x402" : phase === "pay-dem" ? "pay-dem" : undefined;
 }
 
 function validationInput(
@@ -159,8 +164,10 @@ function validationInput(
 
 /**
  * Join two independently closed rail graphs without introducing fallback.
- * Every authenticated message must select exactly one graph from its payload
- * and retained binding; zero or two matches fail closed before a handler runs.
+ * Existing jobs route by their durable coordinator profile. Only session-init,
+ * before a coordinator exists, routes from the order's declared phase. The
+ * selected rail revalidates the payload and no sibling rail is ever used as a
+ * fallback.
  */
 export function createDacsMultirailLiveCommerceGraphV1(
   options: DacsMultirailLiveCommerceGraphOptionsV1,
@@ -178,10 +185,7 @@ export function createDacsMultirailLiveCommerceGraphV1(
   const payDem = options.payDem;
   const validatePayload: DacsHttpPayloadValidatorV1 = async (input) => {
     try {
-      const selected = await select(input, x402, payDem);
-      return selected.status === "selected"
-        ? Object.freeze({ status: "valid" as const })
-        : selected.validation;
+      return await admit(input, x402, payDem);
     } catch {
       return Object.freeze({
         status: "authentication-failure" as const,
@@ -189,33 +193,64 @@ export function createDacsMultirailLiveCommerceGraphV1(
       });
     }
   };
+  const rejected = (reasonCode: string): DacsHttpInboundDispositionV1 =>
+    Object.freeze({ disposition: "rejected" as const, reasonCode });
   const handleMessage = async (
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1> => {
     if (context.role !== role) {
-      return Object.freeze({
-        disposition: "rejected" as const,
-        reasonCode: "multirail-message-context-role-mismatch",
-      });
+      return rejected("multirail-message-context-role-mismatch");
     }
-    let selected: Awaited<ReturnType<typeof select>>;
+    let input: Readonly<PayloadValidationInput>;
     try {
-      selected = await select(validationInput(authenticated), x402, payDem);
+      input = validationInput(authenticated);
+    } catch (error) {
+      return rejected(error instanceof DacsMultirailCommerceGraphError
+        ? error.reasonCode
+        : "multirail-message-type-incompatible");
+    }
+    let profile: Rail | undefined;
+    try {
+      profile = await retainedRail(role, input.jobId, context.database);
+    } catch (error) {
+      if (error instanceof DacsMultirailCommerceGraphError) {
+        return rejected(error.reasonCode);
+      }
+      throw new DacsMultirailCommerceGraphError(
+        "multirail-message-validation-unavailable",
+      );
+    }
+    if (profile === undefined) {
+      if (input.type !== "session-init") {
+        return rejected("multirail-message-profile-unresolved");
+      }
+      profile = initPayloadRail(input);
+      if (profile === undefined) {
+        return rejected("multirail-message-profile-incompatible");
+      }
+    }
+    const chosen = profile === "x402" ? x402 : payDem;
+    let validation: DacsHttpPayloadValidationV1;
+    try {
+      validation = await chosen.validatePayload(input);
     } catch {
       throw new DacsMultirailCommerceGraphError(
         "multirail-message-validation-unavailable",
       );
     }
-    if (selected.status !== "selected") {
-      return Object.freeze({
-        disposition: "rejected" as const,
-        reasonCode: selected.validation.reasonCode,
-      });
+    if (validation.status === "authentication-failure") {
+      // The HTTP inbox converts thrown handler failures into retained pending
+      // work. Never durably reject a valid message for a temporary verifier or
+      // store outage on the rail that owns it.
+      throw new DacsMultirailCommerceGraphError(
+        "multirail-message-validation-unavailable",
+      );
     }
-    return selected.profile === "x402"
-      ? x402.handleMessage(authenticated, context)
-      : payDem.handleMessage(authenticated, context);
+    if (validation.status !== "valid") {
+      return rejected(validation.reasonCode ?? "multirail-message-profile-incompatible");
+    }
+    return chosen.handleMessage(authenticated, context);
   };
   return Object.freeze({
     role,
