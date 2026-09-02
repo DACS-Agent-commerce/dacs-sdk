@@ -140,21 +140,21 @@ reachability:
 
 ### Why the pure surface is unaffected
 
-`@kynesyslabs/demosdk` is loaded from two places: `src/substrate/DemosAdapter.ts`
-(the only static, non-type import in `src/`), and `src/rails/payD402.ts`, which
-performs LAZY dynamic imports (`@kynesyslabs/demosdk/websdk`, `…/d402/client`)
-inside `createPayD402Rail` — behind the `acknowledgeExperimental: true` gate, so
-neither executes at module load. `viem` is loaded only by the settlement rails
+The Demos adapter and native DEM rail use the dependency-minimal
+`@kynesyslabs/demos-native` peer, whose production audit and physical/lock SBOM
+gates are clean. The legacy multichain `@kynesyslabs/demosdk` package is loaded
+only by `src/rails/payD402.ts`, which performs lazy dynamic imports inside
+`createPayD402Rail` behind the `acknowledgeExperimental: true` gate. `viem` is
+loaded only by the settlement rails
 (`src/rails/evmErc20.ts` and `src/rails/x402.ts` via `viem/accounts`, both
 lazily; the `x402` use touches no `ws` code path).
 The top-level barrel and the pure surfaces — `canonical`, `crypto`, `artifacts`,
 `identity`, `negotiate`, and all of **verify** — never load either. A verifier /
-marketplace / reputation consumer using the pure surface does not execute any of
-the vulnerable code, even though `npm install` places the packages on disk. The
-demosdk subtrees run only for an app that builds the Demos on-chain adapter and
-exercises the specific chain feature above; the `viem`/`ws` subtree runs only for
-an app settling via the evm-erc20 rail, and even then only if it selects viem's
-WebSocket transport — an app already running a full chain stack with these deps.
+marketplace / reputation consumer using the pure surface neither installs nor
+executes an optional live peer. The legacy demosdk subtree runs only for an app
+that explicitly installs and creates the experimental D402 rail; the `viem`/`ws`
+subtree runs only for an app settling via the evm-erc20 rail, and even then only
+if it selects viem's WebSocket transport.
 
 ## Audit policy
 
@@ -164,8 +164,8 @@ WebSocket transport — an app already running a full chain stack with these dep
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
-  `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
-  advisories can land against an unchanged tree.
+  Demos-client bump **and** at least once per release cycle, since new advisories
+  can land against an unchanged tree.
 
 ## In-process signing keys
 
@@ -185,21 +185,18 @@ npm installs optional deps by default — and ordinary `peerDependencies` are al
 auto-installed by npm 7+. The two mechanisms that actually keep the tree out of a
 pure-surface install are:
 
-1. **Split package** — move `DemosAdapter` and its `@kynesyslabs/demosdk` dependency
-   into a separate package (e.g. `@kynesyslabs/dacs-substrate`). The core package
-   then has zero chain dependencies; adapter consumers install the substrate package
-   explicitly.
-2. **Optional peer** — declare demosdk as
-   `peerDependencies: { "@kynesyslabs/demosdk": "^4" }` **plus**
-   `peerDependenciesMeta: { "@kynesyslabs/demosdk": { "optional": true } }` (npm does
-   NOT auto-install an optional peer), guard the substrate subpath's runtime
-   `import()` to throw a clear "install @kynesyslabs/demosdk" error when absent, and
-   update + test the build/runtime contract.
+1. **Split the upstream runtime** — `@kynesyslabs/demos-native` contains only the
+   Ed25519, native DEM, Storage Program, identity-read and DAHR surface used by
+   DACS. It excludes the unrelated multichain/PQC/bridge/TLSNotary graph and is
+   verified as an independent packed consumer.
+2. **Optional peers** — both Demos clients and the x402/viem clients are optional
+   peers, so npm does not auto-install them for pure consumers. Constructors
+   fail with an actionable install message when their required peer is absent.
 
-This SDK implements option 2: Demos, x402, and viem are optional peers, retained
-as development dependencies for build/test coverage, and their live constructors
-emit an explicit install message when a peer is absent. Package smoke tests cover
-the dependency-free root import and production audit contract.
+The SDK combines both mechanisms. Normal native DEM and x402 agents install the
+narrow client; only experimental D402 consumers install the legacy monolith.
+Package smoke tests cover the dependency-free root import and the live-peer
+declaration boundary.
 
 ## Reporting a vulnerability
 

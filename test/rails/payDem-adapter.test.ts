@@ -22,7 +22,7 @@ const sdk = vi.hoisted(() => ({
   waitForNonce: vi.fn(),
 }));
 
-vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+vi.mock("@kynesyslabs/demos-native", () => ({
   Demos: class MockDemos {
     readonly tx = { confirm: sdk.confirm };
     readonly broadcast = sdk.broadcast;

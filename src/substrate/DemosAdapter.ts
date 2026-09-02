@@ -1,9 +1,9 @@
-import { Demos } from "@kynesyslabs/demosdk/websdk";
+import { Demos } from "@kynesyslabs/demos-native";
 import {
   StorageProgram,
   type StorageProgramListItem,
-} from "@kynesyslabs/demosdk/storage";
-import { Identities } from "@kynesyslabs/demosdk/abstraction";
+} from "@kynesyslabs/demos-native/storage";
+import { Identities } from "@kynesyslabs/demos-native/identity-read";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -69,9 +69,9 @@ import type {
  */
 const ANCHOR_SALT = "";
 const DEFAULT_ANCHOR_TIMEOUT_MS = 120_000;
-// 500ms matches demosdk's own broadcastAndWait default and halves the whole-
+// 500ms preserves the established client polling cadence and halves the whole-
 // second rounding waste on every inclusion/nonce/read-back poll without
-// hammering the node any harder than the underlying SDK already does.
+// increasing the prior node request rate.
 const DEFAULT_ANCHOR_POLL_MS = 500;
 const AMBIGUOUS_WRITE_RECOVERY_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
@@ -255,11 +255,11 @@ interface QueuedWrite<T> {
 }
 
 /**
- * Peer-independent public view of the underlying demosdk client.
+ * Peer-independent public view of the underlying Demos native client.
  *
  * `raw` is an integration escape hatch, not a second stable SDK surface. Keep
  * the commonly used account/network calls typed here while leaving provider-
- * specific namespaces open. Consumers that need demosdk-specific result types
+ * specific namespaces open. Consumers that need provider-specific result types
  * can narrow the returned values after importing those types explicitly.
  */
 export interface DemosRawClient {
@@ -292,8 +292,7 @@ export interface DemosRawClient {
   getBlockByNumber(blockNumber: number): Promise<unknown>;
   getTxByHash(txHash?: string): Promise<unknown>;
   nodeCall(message: unknown, args?: Record<string, unknown>): Promise<unknown>;
-  broadcastAndWait(...args: unknown[]): Promise<unknown>;
-  // demosdk namespaces are intentionally open-ended. `any` is confined to
+  // Demos native namespaces are intentionally open-ended. `any` is confined to
   // this explicitly unstable escape hatch so the stable DACS API remains
   // peer-independent without pretending to own demosdk's method signatures.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -480,7 +479,7 @@ function serializeSignedTransaction(value: unknown): string {
 }
 
 /**
- * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.
+ * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demos-native`.
  *
  * T1 scaffold status: `connect` / `getAddress` are wired to the real SDK so the
  * package provably reaches a Demos RPC. The substrate operations (`anchor`,

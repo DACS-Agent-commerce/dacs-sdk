@@ -9,9 +9,7 @@ Standard wins — open an issue rather than diverging.
 
 ## Prerequisites
 
-- **Node 20.19 or 22.12** (the two versions CI runs). Avoid Node ≥ 24: a
-  transitive dependency (`avsc`, via `@kynesyslabs/demosdk`) breaks on it with
-  `buffer.SlowBuffer is not a constructor`.
+- **Node 20.19 or 22.12** (the two versions CI gates).
 - npm (the repo ships a `package-lock.json`; use `npm ci`).
 
 ## Setup

@@ -16,12 +16,12 @@ even when the balances are small.
 
 ## 1. Node version (required)
 
-demosdk's ESM packaging + `avsc` break on Node ≥ 24 (`buffer.SlowBuffer is not a
-constructor`). Use **Node 20 or 22** (the versions CI runs). Select it with your
-version manager, then run through the local binary:
+Use **Node 20.19+ or 22.12+** (the versions CI gates). The one-click Demos path
+uses `@kynesyslabs/demos-native` and requires no loader hook. Select a CI-tested
+version with your version manager, then run through the local binary:
 
 ```bash
-nvm use 20            # or: nvm use 22 — anything on 20.19+/22.12+, not >=24
+nvm use 20            # or: nvm use 22 — anything on 20.19+/22.12+
 node --version        # confirm you are on 20 or 22 before spending funds
 npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```

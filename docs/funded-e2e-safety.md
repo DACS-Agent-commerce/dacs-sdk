@@ -86,16 +86,15 @@ reuse. Only an authoritative `null` proof for the exact tuple may authorize one
 new submission under a held intent; non-observation or an ambiguous transaction
 must never do so.
 
-Hash-first observation has a finite wait even when demosdk's broadcast promise
-or a status call never settles. A pending JavaScript promise alone does not keep
-Node alive, but demosdk 4.0.16 does not expose cancellation or a request timeout
-for the underlying Axios broadcast, status, or nonce reads. An active socket may
-outlive the SDK result and keep the process open. The operator may terminate
-that process after preserving the durable records; termination never authorizes
-a rerun. One SDK broadcast invocation may also contain demosdk's internal
-retries of the same signed transaction on selected transport errors. Those
-attempts retain one hash and nonce; the SDK does not invoke broadcast again
-after ambiguity.
+Hash-first observation has a finite wait even when the Demos native client's
+broadcast promise or a status call never settles. A pending JavaScript promise
+alone does not keep Node alive, but the current fetch calls do not attach an
+AbortSignal deadline. An active socket may outlive the SDK result and keep the
+process open. The operator may terminate that process after preserving the
+durable records; termination never authorizes a rerun. One SDK broadcast call
+may contain bounded transport or HTTP 502/503/504 retries of the same signed
+transaction. Those attempts retain one hash and nonce; the DACS rail does not
+invoke broadcast again after ambiguity.
 
 All persisted inputs, including operation, run id and marker details, must be
 public reconciliation facts. Never pass private keys, mnemonics, credentials,

@@ -18,7 +18,7 @@ Layering / dependency direction (important — it drives every structural choice
 ```
 DACS-Standard      spec + §14 conformance vectors          ← source of truth
       ▲
-dacs-sdk           the library; depends on @kynesyslabs/demosdk; tested against the vectors
+dacs-sdk           the library; optional narrow Demos client; tested against the vectors
       ▲
 agent-commerce-demo   refactors to import dacs-sdk → becomes the worked example
 ```
@@ -27,9 +27,9 @@ agent-commerce-demo   refactors to import dacs-sdk → becomes the worked exampl
 
 ## 1. Architecture decisions (locked)
 
-1. **Standalone repo, not a module inside `demosdk`.** DACS is a layer *above* the substrate (it consumes `demosdk`), and the standard is deliberately substrate-agnostic — embedding it in the Demos SDK would invert the dependency and contradict the spec's portability stance. → New repo **`DACS-Agent-commerce/dacs-sdk`**.
-2. **Depends on `@kynesyslabs/demosdk`** for all substrate calls (SR-2/3/4/5). A Demos dev installs `dacs-sdk` and demosdk comes transitively.
-3. **One substrate-adapter seam, one implementation.** Define a thin `SubstrateAdapter` interface (anchor / proxy-fetch / channel / settle) with a single `DemosAdapter` wrapping demosdk. Demos is the only adapter today — do **not** build speculative multi-substrate machinery (the interface is cheap; the second adapter is YAGNI).
+1. **Standalone repo, not a module inside the Demos SDK.** DACS is a layer *above* the substrate, and the standard is deliberately substrate-agnostic — embedding it below that boundary would invert the dependency and contradict the spec's portability stance. → New repo **`DACS-Agent-commerce/dacs-sdk`**.
+2. **Uses `@kynesyslabs/demos-native`** for the DACS-required native DEM, Storage Program, identity-read and DAHR calls. The full `@kynesyslabs/demosdk` is retained only for the experimental D402 rail; both are optional peers.
+3. **One substrate-adapter seam, one implementation.** Define a thin `SubstrateAdapter` interface (anchor / proxy-fetch / channel / settle) with a single `DemosAdapter` wrapping the narrow client. Demos is the only adapter today — do **not** build speculative multi-substrate machinery (the interface is cheap; the second adapter is YAGNI).
 4. **Consumes the §14 conformance vectors from `DACS-Standard`** (git submodule, or fetch in CI) as the test oracle — so the SDK is provably conformant and the dependency points SDK → spec.
 5. **Steward registries are owned by this team** (the dev works for KyneSys, holds the PA-2 key). Publishing recipes/rails is in scope here, with the key-custody discipline in §6.
 
@@ -56,12 +56,12 @@ Global done-for-every-task: unit tests pass; the 5 `DACS-Standard` validators st
 ### Phase 1 — Carve the library out of the demo
 
 **T1 · Scaffold `dacs-sdk` and the substrate seam**
-- *What:* create the repo; define the `SubstrateAdapter` interface + `DemosAdapter` (wrapping demosdk); wire the §14 vectors in (submodule or CI fetch); set up build + CI.
+- *What:* create the repo; define the `SubstrateAdapter` interface + `DemosAdapter` (wrapping the Demos native client); wire the §14 vectors in (submodule or CI fetch); set up build + CI.
 - *Done when:* empty package builds, connects to a Demos RPC through `DemosAdapter`, and the (currently failing/empty) conformance harness runs in CI.
 
 **T2 · Move the foundation in (canonical form + signing + anchoring)**
 - *What:* extract canonical-form (JCS + NFC + CD-1 decimals), content-hash + domain-separated signing, and the SR-2 anchoring wrapper into the library. These are used by everything.
-- *From the demo:* the signing/canonical helpers + the demosdk anchoring calls; `config.ts`, `multi-rpc.ts`, `idempotency.ts`.
+- *From the demo:* the signing/canonical helpers + the Demos anchoring calls; `config.ts`, `multi-rpc.ts`, `idempotency.ts`.
 - *Done when:* these have their own unit tests, no demo-specific imports, and **pass the §14 canonical-form / signing / CD-1 vectors** (this is the precision-critical, highest-risk part — the vectors are what de-risk it).
 
 **T3 · Move the artifact model in**
@@ -162,4 +162,6 @@ Because the demo already works, **Phases 1–2 get you a usable *internal* SDK q
 - **Spec (source of truth):** `DACS-Agent-commerce/DACS-Standard` @ `spec-compression` — `spec/CORE.md` + `spec/DACS-1..5-*.md`; start at `PRIMER.md`.
 - **Conformance vectors:** `DACS-Standard/conformance/` (§14, 186 golden cases) + the 5 `scripts/validate_*.py`.
 - **Extraction source:** `agent-commerce-demo/packages/agent-runner/src` — notably `payment.ts` (x402), `identity*.ts`, `commitment.ts`, `negotiation/`, `state.ts`, `execution.ts`, `config.ts`, `multi-rpc.ts`, `idempotency.ts`.
-- **Substrate:** `@kynesyslabs/demosdk` — SR-2 (Storage Programs), SR-3 (DAHR / `web2`), SR-4 (L2PS), SR-5 (bridge / Liquidity Tanks).
+- **Substrate:** `@kynesyslabs/demos-native` — DACS-used SR-2 Storage Programs,
+  identity reads and SR-3 DAHR. The experimental D402 rail separately retains
+  `@kynesyslabs/demosdk`.

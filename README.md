@@ -12,7 +12,10 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
 
-- **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
+- **Optionally integrates with** `@kynesyslabs/demos-native` for native DEM,
+  Storage Program, identity-read and DAHR primitives behind a thin substrate
+  adapter seam. The full `@kynesyslabs/demosdk` remains optional only for the
+  experimental D402 rail.
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 
 ## Layering
@@ -588,14 +591,13 @@ configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
-starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
-requests used by broadcast, status, and nonce reads have no cancellation or
-request timeout. An open transport socket may therefore keep a Node process
-alive after the rail has returned an unresolved result. Terminating that process
-does not make the marked attempt retryable: retain the marker and checkpoint and
-reconcile read-only from another process. demosdk may internally retry the same
-signed transaction on selected transport errors inside that one SDK broadcast
-invocation; every such attempt retains the same canonical hash and nonce.
+starts a second SDK broadcast. The narrow Demos client uses bounded retries only
+for transport failures and HTTP 502/503/504 responses; every attempt carries the
+same signed transaction, canonical hash and nonce. Its fetch calls currently
+have no AbortSignal deadline, so an open transport socket may outlive the rail's
+unresolved result. Terminating that process does not make the marked attempt
+retryable: retain the marker and checkpoint and reconcile read-only from another
+process.
 
 Run the funded test only with the complete guarded environment described above:
 
@@ -917,11 +919,11 @@ rejected by the current verifier.
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be
-used without pulling in `demosdk`:
+used without pulling in either Demos client:
 
-| Import | Needs `demosdk` | Use for |
+| Import | Needs a Demos peer | Use for |
 | --- | --- | --- |
-| `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
+| `@kynesyslabs/dacs` | optional (`createAgent` needs `demos-native`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, provider-injected AP2 plus its optional Stripe/Demos reference adapter, Solana SPL, cross-chain HTLC, and liquidity-tank safety cores |
@@ -950,15 +952,16 @@ evidence anchoring catches up independently. See
 ordering, recovery, and post-settlement failure contract.
 
 The Demos adapter and live rail clients are optional peers: install
-`@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
-`@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
-verifier, canonical, and injected rail-core consumers do not install those
-integration trees. CI installs the packed tarball in an external strict
-NodeNext TypeScript project twice: once with every optional peer omitted, and
-again with the live peers present. Both passes keep `skipLibCheck` disabled.
-The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
-graph from leaking into consumers; applications can explicitly narrow the
-unstable `raw` escape hatch when they intentionally depend on demosdk types.
+`@kynesyslabs/demos-native` for `createAgent` and pay-DEM;
+`@kynesyslabs/demosdk` is additionally required only for `createPayD402Rail`.
+Install `@x402/core`, `@x402/evm`, `@x402/fetch`, plus `viem` for the
+corresponding live rails. Pure artifact, verifier, canonical, and injected
+rail-core consumers do not install those integration trees. CI installs the
+packed tarball in an external strict NodeNext TypeScript project twice: once
+with every optional peer omitted, and again with the live peers present. Both
+passes keep `skipLibCheck` disabled. The SDK-owned `DemosRawClient` boundary
+prevents provider declarations from leaking into consumers; applications can
+explicitly narrow the unstable `raw` escape hatch when needed.
 
 ## Package artifacts
 

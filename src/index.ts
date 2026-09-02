@@ -271,8 +271,8 @@ export {
 
 // Types only — the `DemosAdapter` *value* lives on the
 // "@kynesyslabs/dacs/substrate" subpath so this top-level barrel stays free of
-// an eager @kynesyslabs/demosdk load (its ESM packaging breaks plain-Node-ESM
-// consumers of the pure/verify surface). createAgent lazy-loads it when needed.
+// an eager @kynesyslabs/demos-native load. createAgent lazy-loads the optional
+// chain client only when it is needed.
 export type {
   DemosAdapterConfig,
   DemosWriteEvidence,

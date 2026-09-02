@@ -29,11 +29,11 @@ usable in installs where optional dependencies or lifecycle scripts are
 disabled. Live hosts must install the package's optional SQLite dependency;
 the live doctor will fail closed when that adapter is unavailable.
 
-`@kynesyslabs/dacs-node/demos-loader` is the live host's bounded Node import
-hook for `@kynesyslabs/demosdk@4.0.16`. It resolves only that release's one
-published extensionless `demoswork/operations/` directory import. Generated
-compiled services use this hook instead of shipping a general TypeScript/esbuild
-transformer in production; all unrelated resolution failures remain unchanged.
+`@kynesyslabs/dacs-node/demos-loader` remains a bounded compatibility hook for
+applications that explicitly use `@kynesyslabs/demosdk@4.0.16` (for example the
+experimental D402 rail). Generated native DEM and x402 services use
+`@kynesyslabs/demos-native` and run as ordinary compiled Node ESM without a
+loader or source transformer.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
 authority, SDK version, and Standard revision. The SDK and Standard revisions

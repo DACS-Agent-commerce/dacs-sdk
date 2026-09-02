@@ -29,7 +29,7 @@ export interface DemosAdapterConfig {
  * SubstrateAdapter — the single seam between dacs-sdk and the underlying
  * substrate. DACS is substrate-agnostic by design; the SDK speaks only to this
  * interface, and one concrete implementation (DemosAdapter) wraps
- * `@kynesyslabs/demosdk`. Do not add speculative multi-substrate machinery —
+ * `@kynesyslabs/demos-native`. Do not add speculative multi-substrate machinery —
  * the interface is the abstraction; the second adapter is YAGNI
  * (IMPLEMENTATION.md §1.3).
  *

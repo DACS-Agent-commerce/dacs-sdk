@@ -1091,7 +1091,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS,
   );
 
-  const { Demos } = await import("@kynesyslabs/demosdk/websdk");
+  const { Demos } = await import("@kynesyslabs/demos-native");
   const demos = new Demos();
   // Capture the complete Demos authority before its first asynchronous call.
   // This supports ordinary class instances while rejecting accessors/proxies

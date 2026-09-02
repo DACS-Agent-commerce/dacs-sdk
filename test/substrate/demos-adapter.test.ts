@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { StorageProgram } from "@kynesyslabs/demosdk/storage";
-import { Identities } from "@kynesyslabs/demosdk/abstraction";
+import { StorageProgram } from "@kynesyslabs/demos-native/storage";
+import { Identities } from "@kynesyslabs/demos-native/identity-read";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
@@ -581,10 +581,6 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw.tx, "confirm").mockImplementation(
       async (payload: unknown) => payload as never,
     );
-    vi.spyOn(adapter.raw, "broadcastAndWait").mockResolvedValue({
-      broadcast: { response: { hash: "tx-create" } },
-      status: { state: "included", blockNumber: 42 },
-    } as never);
     const progress: Array<{ state: string; timings: { elapsedMs: number } }> = [];
 
     await expect(

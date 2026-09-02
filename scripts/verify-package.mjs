@@ -107,6 +107,7 @@ function packageTargets(manifest) {
 
 async function assertPureSubpaths(extractedRoot) {
   const forbidden = [
+    "@kynesyslabs/demos-native",
     "@kynesyslabs/demosdk",
     "@x402/evm",
     "@x402/fetch",
@@ -218,6 +219,7 @@ try {
   await mkdir(bunCache);
   run("bun", ["install", "--ignore-scripts", "--cache-dir", bunCache], { cwd: consumer });
   const optionalPeers = [
+    "@kynesyslabs/demos-native",
     "@kynesyslabs/demosdk",
     "@x402/evm",
     "@x402/fetch",

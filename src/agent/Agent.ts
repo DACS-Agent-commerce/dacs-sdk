@@ -684,11 +684,11 @@ export async function createAgent(
   config: AgentConfig,
 ): Promise<Agent<DemosBackedAdapter>> {
   // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
-  // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
-  // the pure/verify surface. demosdk loads only when an agent is actually built.
+  // @kynesyslabs/demos-native. The peer loads only when an agent is built, so
+  // pure verification consumers do not install or initialize a chain client.
   const { DemosAdapter } = await import("../substrate/index.js").catch(() => {
     throw new Error(
-      "createAgent requires the optional peer @kynesyslabs/demosdk; install it to use the Demos adapter",
+      "createAgent requires the optional peer @kynesyslabs/demos-native; install it to use the Demos adapter",
     );
   });
   const adapter = new DemosAdapter({

@@ -137,6 +137,7 @@
     "breakingConfigurationChanges": []
   },
   "peerDependencies": {
+    "@kynesyslabs/demos-native": "^0.1.0-alpha.0",
     "@kynesyslabs/demosdk": "^4.0.16",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
@@ -144,6 +145,7 @@
     "viem": "^2.55.19"
   },
   "peerDependenciesMeta": {
+    "@kynesyslabs/demos-native": { "optional": true },
     "@kynesyslabs/demosdk": { "optional": true },
     "@x402/core": { "optional": true },
     "@x402/evm": { "optional": true },
@@ -151,6 +153,7 @@
     "viem": { "optional": true }
   },
   "devDependencies": {
+    "@kynesyslabs/demos-native": "^0.1.0-alpha.0",
     "@kynesyslabs/demosdk": "^4.0.16",
     "@types/node": "^20",
     "@x402/core": "^2.15.0",

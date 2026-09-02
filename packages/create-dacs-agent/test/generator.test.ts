@@ -245,7 +245,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demos-native": "0.1.0-alpha.0",
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
@@ -277,11 +277,13 @@ describe("create-dacs-agent", () => {
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
-        expect(command).toContain(
-          "node --import @kynesyslabs/dacs-node/demos-loader",
-        );
+        expect(command).toContain("node ");
+        expect(command).not.toContain("--import");
       }
     }
+    expect(packageSource.dependencies).not.toHaveProperty(
+      "@kynesyslabs/demosdk",
+    );
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
     expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
@@ -320,15 +322,14 @@ describe("create-dacs-agent", () => {
     expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
-    expect(dockerfile).toContain(
-      'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
-    );
+    expect(dockerfile).toContain('CMD ["node", "dist/src/service.js"]');
     expect(dockerfile).not.toContain("COPY . .");
     const combined = (await Promise.all(
       (await filesBelow(target)).map((file) => readFile(join(target, file), "utf8")),
     )).join("\n");
     expect(combined).not.toContain("git+");
     expect(combined).not.toContain("../../src/");
+    expect(combined).not.toContain("demos-loader");
     expect(JSON.stringify(packageSource)).not.toContain("file:");
     expect(combined).not.toContain("reviewed-live-adapter-not-configured");
     expect(combined).toContain("resolveDacsX402ExistingListingV1");
@@ -420,7 +421,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demos-native": "0.1.0-alpha.0",
       "better-sqlite3": "12.6.2",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");
