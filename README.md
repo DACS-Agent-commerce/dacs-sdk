@@ -31,13 +31,16 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 ## What's implemented
 
-All five lifecycle stages run end to end:
+The modern role-separated fixed-price coordinators cover all five lifecycle
+stages. The older `Agent.runSession()` convenience method remains a
+settlement-only compatibility API; it does not claim fulfilment or audit
+completion.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -286,6 +289,11 @@ const session = await buyer.runSession(resolved, {
   // the §4.1 guard compares against it, not the Price.asset symbol.
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
+
+// Legacy compatibility only: payment settlement is not commerce completion.
+if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
+  throw new Error("unexpected legacy session result");
+}
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callbacks above) every normative vet closure and
@@ -703,6 +711,18 @@ SB-1..SB-3 authority. Any rejected or unavailable presented evidence excludes
 the whole job without assigning fresh fault. See the
 [settlement-verified reputation guide](./docs/settlement-verified-reputation.md)
 for the authority contract and replay boundary.
+
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
 
 ### Normative artifact references
 

@@ -84,6 +84,24 @@ function signedIdentityBundle(
 
 const buyerIdentity = signedIdentityBundle(buyerDid, buyerPriv);
 
+function verifyBuyerSignedIdentityPresentation({
+  bundle,
+  signedBytes: bytes,
+}: {
+  bundle: IdentityBundle;
+  signedBytes: Uint8Array;
+}): boolean {
+  if (bundle.presentation.kind !== "per-claim") return false;
+  const proof = bundle.presentation.signatures.find(
+    (candidate) => candidate.ref === bundle.presentedBy,
+  );
+  return !!proof && ed25519Verify(
+    bytes,
+    Uint8Array.from(Buffer.from(proof.signature, "base64url")),
+    publicKeyFromRaw(buyerPublicKey),
+  );
+}
+
 /** In-memory adapter — just the surface buildAgent's runSession path touches. */
 function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
@@ -545,6 +563,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
       },
     });
+    expect(res.profile).toBe("legacy-mvp-settlement-only");
+    expect(res.commerceComplete).toBe(false);
     expect(res.outcome).toBe("completed");
     expect(settled).toBe(true);
 
@@ -675,7 +695,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
 
@@ -698,7 +718,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid },
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
       listingValidationDeps: listingValidationDeps(),
     });
 
@@ -716,7 +736,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const unsupportedAgent = buildAgent(unsupported.adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: foreignBuyer },
+      identity: {
+        agentId: foreignBuyer,
+        bundle: signedIdentityBundle(foreignBuyer, buyerPriv),
+        verifyPresentation: verifyBuyerSignedIdentityPresentation,
+      },
       listingValidationDeps: listingValidationDeps(),
     });
     await expect(unsupportedAgent.runSession(unsupportedRef, {
@@ -733,7 +757,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const supportedAgent = buildAgent(supported.adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: foreignBuyer },
+      identity: {
+        agentId: foreignBuyer,
+        bundle: signedIdentityBundle(foreignBuyer, buyerPriv),
+        verifyPresentation: verifyBuyerSignedIdentityPresentation,
+      },
       resolveIdentitySigningPublicKey: resolver,
       listingValidationDeps: listingValidationDeps(),
     });
@@ -759,7 +787,13 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: nativeBuyer },
+      identity: {
+        agentId: nativeBuyer,
+        bundle: signedIdentityBundle(nativeBuyer, buyerPriv),
+        // Isolate the producer-notation gate: authentication is not the
+        // behavior under test here.
+        verifyPresentation: () => true,
+      },
       resolveIdentitySigningPublicKey: resolver,
       listingValidationDeps: listingValidationDeps(),
     });

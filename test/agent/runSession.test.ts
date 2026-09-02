@@ -275,6 +275,8 @@ function listingPinFor(listing: Listing): ListingPin {
 describe("runSession orchestration (T4)", () => {
   test("happy path anchors agreement+evidence+bundle and completes", async () => {
     const res = await runSessionCore("stor-listing", TERMS, makeDeps());
+    expect(res.profile).toBe("legacy-mvp-settlement-only");
+    expect(res.commerceComplete).toBe(false);
     expect(res.outcome).toBe("completed");
     expect(res.jobId).toBe("job-1");
     expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
