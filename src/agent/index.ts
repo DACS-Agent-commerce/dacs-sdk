@@ -1,4 +1,7 @@
 export {
+  isDacsPublicAddressV1,
+} from "./publicAddress.js";
+export {
   createAgent,
   buildAgent,
   type Agent,

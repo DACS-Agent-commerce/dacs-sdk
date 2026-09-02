@@ -103,6 +103,8 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
       ...(options.recoverDisclosure === undefined
         ? {} : { recoverDisclosure: options.recoverDisclosure }),
       ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      ...(options.maxBodyBytes === undefined
+        ? {} : { maxResponseBytes: options.maxBodyBytes }),
       ...(options.effectLeaseDurationMs === undefined
         ? {} : { effectLeaseDurationMs: options.effectLeaseDurationMs }),
       ...(options.settlementLeaseDurationMs === undefined
