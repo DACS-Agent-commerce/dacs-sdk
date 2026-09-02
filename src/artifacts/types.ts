@@ -633,8 +633,15 @@ export type ChainTxRef =
       providerRef: string;
       protocolVersion: string;
       receiptAttestation?: AttestationRef;
-      /** Native SR-3 transaction authenticating the receipt, when the binding has one. */
-      receiptTransactionRef?: { kind: string; value: string };
+    }
+  | {
+      /** Current AP2 shape for an SR-3 binding with an authoritative native transaction. */
+      kind: "ap2-sr3";
+      mandateId: string;
+      providerRef: string;
+      protocolVersion: string;
+      receiptAttestation: AttestationRef;
+      receiptTransactionRef: { kind: string; value: string };
     }
   | {
       kind: "x402";

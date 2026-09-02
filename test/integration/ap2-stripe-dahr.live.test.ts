@@ -26,7 +26,7 @@ import {
 const OFFICIAL_AP2_COMMIT = "e1ea56db72a6385bce3e5c1112b3a56ce60acb43";
 const DEMOS_RPC = "https://node2.demos.sh";
 const FAUCET_URL = "https://faucetbackend.demos.sh/api/request";
-const DEFAULT_JOB_ID = "01K4AP2PAY000000000000000";
+const DEFAULT_JOB_ID = "01K4AP2PAY0000000000000000";
 const JOB_ID = process.env.DACS_AP2_LIVE_JOB_ID?.trim() || DEFAULT_JOB_ID;
 const PHASE_INDEX = 2;
 const RAIL_ID = "ap2:stripe-paymentintents";
@@ -67,8 +67,8 @@ const requiredEnv = [
 ] as const;
 const missing = requiredEnv.filter((name) => !process.env[name]);
 const ready = missing.length === 0;
-if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(JOB_ID)) {
-  throw new Error("DACS_AP2_LIVE_JOB_ID is not a safe DACS job identifier");
+if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(JOB_ID)) {
+  throw new Error("DACS_AP2_LIVE_JOB_ID must be a canonical 26-character ULID");
 }
 const helperPath = fileURLToPath(
   new URL("./helpers/ap2-official-reference.py", import.meta.url),
@@ -276,20 +276,24 @@ describe("LIVE AP2 → Stripe → DAHR → Demos reference path", () => {
     });
     expect(progress.status).toBe("settled");
     if (progress.status !== "settled") throw new Error("AP2 capture is still pending");
-    const txRef: ChainTxRef = {
-      kind: "ap2",
-      mandateId: progress.settlement.mandateId,
-      providerRef: progress.settlement.providerRef,
-      protocolVersion: progress.settlement.protocolVersion,
-      receiptAttestation: structuredClone(progress.settlement.receiptAttestation),
-      ...(progress.settlement.receiptTransactionRef === undefined
-        ? {}
-        : {
-            receiptTransactionRef: structuredClone(
-              progress.settlement.receiptTransactionRef,
-            ),
-          }),
-    };
+    const txRef: ChainTxRef = progress.settlement.receiptTransactionRef === undefined
+      ? {
+          kind: "ap2",
+          mandateId: progress.settlement.mandateId,
+          providerRef: progress.settlement.providerRef,
+          protocolVersion: progress.settlement.protocolVersion,
+          receiptAttestation: structuredClone(progress.settlement.receiptAttestation),
+        }
+      : {
+          kind: "ap2-sr3",
+          mandateId: progress.settlement.mandateId,
+          providerRef: progress.settlement.providerRef,
+          protocolVersion: progress.settlement.protocolVersion,
+          receiptAttestation: structuredClone(progress.settlement.receiptAttestation),
+          receiptTransactionRef: structuredClone(
+            progress.settlement.receiptTransactionRef,
+          ),
+        };
 
     const unsignedEvidence = {
       evidenceVersion: "1" as const,

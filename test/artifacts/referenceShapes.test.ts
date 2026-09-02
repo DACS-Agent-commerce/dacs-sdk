@@ -64,3 +64,45 @@ describe.skipIf(!haveVector)(
     });
   },
 );
+
+describe("DACS-4 v0.8 minor-safe AP2 reference arms", () => {
+  const attestation = {
+    anchor: {
+      kind: "https",
+      locator: "https://provider.example/payment/pi_reference",
+    },
+    contentHash: "a".repeat(64),
+  };
+
+  it("keeps the legacy ap2 arm frozen", () => {
+    expect(isChainTxRef({
+      kind: "ap2",
+      mandateId: "mandate-1",
+      providerRef: "pi_reference",
+      protocolVersion: "0.2",
+      receiptAttestation: attestation,
+    })).toBe(true);
+    expect(isChainTxRef({
+      kind: "ap2",
+      mandateId: "mandate-1",
+      providerRef: "pi_reference",
+      protocolVersion: "0.2",
+      receiptAttestation: attestation,
+      receiptTransactionRef: { kind: "demos-web2-request", value: "tx-1" },
+    })).toBe(false);
+  });
+
+  it("requires both references on the distinct ap2-sr3 arm", () => {
+    const current = {
+      kind: "ap2-sr3",
+      mandateId: "mandate-1",
+      providerRef: "pi_reference",
+      protocolVersion: "0.2",
+      receiptAttestation: attestation,
+      receiptTransactionRef: { kind: "demos-web2-request", value: "tx-1" },
+    };
+    expect(isChainTxRef(current)).toBe(true);
+    expect(isChainTxRef({ ...current, receiptAttestation: undefined })).toBe(false);
+    expect(isChainTxRef({ ...current, receiptTransactionRef: undefined })).toBe(false);
+  });
+});

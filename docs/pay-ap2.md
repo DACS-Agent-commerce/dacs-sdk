@@ -74,7 +74,8 @@ the transaction binding, lease generation, provider reference and terminal
 settlement before later calls can resume. Its generation fence prevents an
 expired worker from submitting or recording a provider effect.
 
-The resulting settlement separates two references:
+When the binding exposes a native transaction, the resulting settlement uses
+the Standard's distinct `ap2-sr3` arm and separates two references:
 
 - `receiptAttestation.anchor` is the HTTPS provider-status resource whose raw
   response bytes match `contentHash`;

@@ -457,7 +457,8 @@ binding and provider reference before receipt lookup, so a restart reconciles th
 same PaymentIntent and cannot silently create a second payment. A DAHR result is
 not returned until its transaction has authenticated canonical inclusion, which
 also prevents the following evidence write from racing the same Demos nonce.
-The emitted AP2 transaction reference keeps these two locations distinct:
+When the binding exposes a native transaction, the emitted reference uses the
+Standard's distinct `ap2-sr3` arm and keeps these two locations distinct:
 `receiptAttestation.anchor` is the fetchable provider-status URL whose exact
 response bytes match `contentHash`, while `receiptTransactionRef` is the native
 `demos-web2-request` transaction authenticating that hash. The DAHR transaction
@@ -468,7 +469,7 @@ The opt-in live test is
 `test/integration/ap2-stripe-dahr.live.test.ts`. It requires an isolated Demos
 wallet, durable state directory, the official AP2 Python runtime, the two Stripe
 test credentials, and `DACS_AP2_LIVE_CONFIRM=1`. `DACS_AP2_LIVE_JOB_ID` can select
-a fresh safe job identifier. The committed default test suite never contacts
+a fresh canonical 26-character ULID. The committed default test suite never contacts
 Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
