@@ -1261,6 +1261,92 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
     expect(verifierCalls).toBe(2);
     expect(evidenceContextCalls).toBe(2);
+
+    const suffixAlias = `did:ethr:${sellerHex}`;
+    const { signature: _originalEvidenceSignature, ...evidenceBody } = evidence;
+    const aliasedEvidence = await signComponentArtifact(
+      evidenceBody,
+      ARTIFACT_SEPARATORS.SettlementEvidence,
+      {
+        algorithm: "ed25519",
+        signer: suffixAlias,
+        sign: (bytes) => ed25519Sign(bytes, sellerPriv),
+      },
+    );
+    const aliasedEvidenceRef = {
+      anchor: {
+        kind: "storage-program" as const,
+        locator: "stor:aliased-settlement-evidence",
+      },
+      contentHash: contentHash(stripSignature(aliasedEvidence)),
+    };
+    store.set(
+      aliasedEvidenceRef.anchor.locator,
+      aliasedEvidence as unknown as Record<string, unknown>,
+    );
+    const aliasedUnsigned = {
+      ...unsigned,
+      settlementEvidence: [aliasedEvidenceRef],
+    };
+    const aliasedSignedScope: Record<string, unknown> = { ...aliasedUnsigned };
+    delete aliasedSignedScope.anchoredByRole;
+    const aliasedPayload = signedBytes(
+      ARTIFACT_SEPARATORS.FaultAttestationBundle,
+      contentHash(aliasedSignedScope),
+    );
+    store.set("stor:aliased-bundle", {
+      ...aliasedUnsigned,
+      signatures: [
+        {
+          party: normativeBuyerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(aliasedPayload, buyerPriv))
+            .toString("base64url"),
+        },
+        {
+          party: sellerDid,
+          algorithm: "ed25519",
+          value: Buffer.from(ed25519Sign(aliasedPayload, sellerPriv))
+            .toString("base64url"),
+        },
+      ],
+    });
+    let aliasKeyResolutions = 0;
+    const aliasAgent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: normativeBuyerDid },
+      resolveIdentitySigningPublicKey: async (claim) => {
+        if (claim !== suffixAlias) return null;
+        aliasKeyResolutions += 1;
+        return aliasKeyResolutions === 1 ? sellerPublicKey : null;
+      },
+      verifyCompositeRecord: async (record) => ({
+        status: "valid",
+        record: structuredClone(record),
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      resolveSettlementEvidenceContext: async () => ({
+        orchestrator: suffixAlias,
+        rail: {
+          railId: "x402:default",
+          railType: "x402",
+          asset: "USDC",
+          handler: "pay-x402",
+          network: "eip155:84532",
+        },
+      }),
+    });
+    const aliasVerdict = await aliasAgent.verifyBundle("stor:aliased-bundle");
+    // Suffix-key aliases are rejected before the external resolver is invoked.
+    expect(aliasKeyResolutions).toBe(0);
+    expect(aliasVerdict.ok).toBe(false);
+    expect(
+      aliasVerdict.refs.find((entry) => entry.kind === "dacs-4-evidence"),
+    ).toMatchObject({ verdict: "signature-unresolved" });
   });
 
   test("public verifyBundle owner-resolves a normative pre-commit abort Listing", async () => {

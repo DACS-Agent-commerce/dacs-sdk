@@ -1,4 +1,6 @@
 export {
+  DEMOS_CCI_RESPONSE_LIMITS,
+  assertDemosCciResponseBounds,
   parseCciRecord,
   parseClaimRef,
   cciClaimRefs,
@@ -12,8 +14,39 @@ export {
   type CciWalletClaim,
   type CciUdClaim,
   type CciPqcClaim,
+  type CciNomisClaim,
+  type CciHumanPassportClaim,
+  type CciEthosClaim,
+  type CciTlsnClaim,
   type ParsedClaimRef,
 } from "./cci.js";
+
+export {
+  authenticateDemosCciRecord,
+  classifyCciTlsnProof,
+  getAuthenticatedCciProvenance,
+  isAuthenticatedCciRecord,
+  projectCciSupplementarySignals,
+  type AuthenticateDemosCciDeps,
+  type AuthenticateDemosCciInput,
+  type AuthenticateDemosCciProviderClaimInput,
+  type AuthenticateDemosCciResult,
+  type AuthenticatedCciRecord,
+  type CciSignalOmission,
+  type CciSignalOmissionReason,
+  type CciSupplementaryFreshnessPolicy,
+  type CciSupplementarySignalProjection,
+  type CciTlsnDisposition,
+  type CciTlsnSessionContext,
+  type ClassifyCciTlsnDeps,
+  type DemosCciProvenance,
+  type DemosCciProviderClaim,
+  type DemosCciProviderClaimAuthentication,
+  type DemosCciResolutionAuthentication,
+  type NativeCciTlsnBinding,
+  type NativeCciTlsnAuthentication,
+  type VerifyNativeCciTlsnInput,
+} from "./demosCci.js";
 
 export {
   isCanonicalClaimReference,
@@ -24,6 +57,26 @@ export {
   type CanonicalClaimReferenceParts,
   type ClaimReferenceSchemeStatus,
 } from "./claimReference.js";
+export {
+  canonicalizeNativeDomainHostname,
+  domainClaimReferenceFromNativeHostname,
+  isCanonicalDomainHostname,
+} from "./domainHost.js";
+export {
+  readAuthenticatedDomainClaims,
+  verifyDemosGcrDomainClaims,
+  type AuthenticatedDomainArtifactDeps,
+  type AuthenticatedDomainClaimRead,
+  type DemosGcrDomainMetadata,
+  type DemosGcrDomainVerification,
+  type DemosGcrResolution,
+  type DomainArtifactAuthentication,
+  type DomainArtifactProfile,
+  type DomainClaimArtifactLike,
+  type DomainClaimDiagnostic,
+  type ReportedDemosGcrResultTimes,
+  type VerifyDemosGcrDomainDeps,
+} from "./domainClaimVerification.js";
 export { identityBundleHash } from "./bundle.js";
 export {
   canonicalDemosAgentPublicKey,
