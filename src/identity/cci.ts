@@ -15,8 +15,10 @@
  * nesting; anything not modelled stays available on `raw`.
  */
 
-import { domainToASCII } from "node:url";
-import { isIP } from "node:net";
+import {
+  canonicalizeNativeDomainHostname,
+  isCanonicalDomainHostname,
+} from "./domainHost.js";
 
 /** Claim families beyond the primary key. */
 export type CciClaimKind = "web2" | "wallet" | "ud" | "pqc";
@@ -136,11 +138,11 @@ function dedupeByRef<T extends { ref: string }>(claims: T[]): T[] {
 }
 
 /** Pull a web2 handle out of an entry, which may be a bare string or an object. */
-function web2Handle(entry: unknown): string {
-  if (typeof entry === "string") return entry.trim();
+function web2Handle(entry: unknown, trim = true): string {
+  if (typeof entry === "string") return trim ? entry.trim() : entry;
   if (isObj(entry)) {
     const v = entry["username"] ?? entry["handle"] ?? entry["userId"];
-    if (typeof v === "string") return v.trim();
+    if (typeof v === "string") return trim ? v.trim() : v;
   }
   return "";
 }
@@ -156,42 +158,9 @@ function claimProof(entry: unknown): string | undefined {
   return typeof p === "string" && p.trim() !== "" ? p.trim() : undefined;
 }
 
-/**
- * Validate a DNS hostname AND canonicalise it for the DACS `domain:` claim ref.
- * Returns `""` for anything that is not a bare public hostname — both call sites
- * treat `""` as "skip": the emit path drops the entry, the alias fold returns
- * the original ref unchanged (fail-closed, operator-approved).
- *
- * Validation runs on the RAW input, BEFORE domainToASCII, because domainToASCII
- * is a URL host PARSER, not a validator: it silently STRIPS a path / query /
- * fragment / userinfo and rewrites IP forms, so once it returns you can no
- * longer tell what it discarded (e.g. `alice.example/path` → `alice.example`,
- * `0xc0.0x00.0x02.0x01` → `192.0.2.1`) — distinct inputs would collapse to the
- * same ref and false-match. So we reject the raw input if it carries any URL
- * structure (`/ \ ? # @ :`), a `%` (a host never legally contains one, and
- * `%2e`/`%61` decode to `.`/`a` — a live bypass of this very check), whitespace,
- * or an ASCII control char, or is empty. Then we IDNA-encode (domainToASCII
- * lower-cases + punycodes) and reject the RESULT if it is empty, an IP literal —
- * an output-side `isIP` test catches every alternate IPv4 spelling with one
- * check, since domainToASCII normalises them all to a dotted quad (IPv6 forms
- * never reach here: they carry `:` and are rejected raw) — or ends in a trailing
- * dot (checked output-side so a terminal ideographic/fullwidth dot that maps to
- * "." is caught too). Trailing dots complete DACS-Standard #275's enumerated
- * reject-list: ports, paths, credentials, queries, fragments, IP literals,
- * trailing dots. Single-label hosts, empty labels (`a..b`), and leading/trailing
- * hyphens remain accepted-as-distinct: domainToASCII preserves each, so they
- * never collapse into a false-match — whether to normalise them is a
- * Standard-side question, not a security one.
- */
+/** Native GCR ingestion helper; signed-artifact readers never call this path. */
 function canonicalDomainHost(handle: string): string {
-  // Raw-input reject: URL structure, `%` (percent-encoding), whitespace,
-  // C0 controls / DEL, or empty.
-  if (handle === "" || /[/\\?#@:%\s\u0000-\u001f\u007f]/.test(handle)) return "";
-  const host = domainToASCII(handle).trim();
-  if (!host) return "";
-  if (isIP(host) !== 0) return ""; // IPv4 (any spelling) — IPv6 already rejected raw
-  if (host.endsWith(".")) return ""; // trailing dot (incl. mapped ideographic/fullwidth) — #275
-  return host;
+  return canonicalizeNativeDomainHostname(handle) ?? "";
 }
 
 function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
@@ -202,7 +171,10 @@ function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
     for (const [platform, entries] of Object.entries(web2)) {
       const list = Array.isArray(entries) ? entries : [entries];
       for (const entry of list) {
-        const handle = web2Handle(entry);
+        const handle = web2Handle(
+          entry,
+          platform.toLowerCase() !== "domain",
+        );
         if (!handle) continue;
         const proof = claimProof(entry);
         // A DNS `domain` identity emits the canonical DACS `domain:<host>` ref
@@ -234,7 +206,11 @@ function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
   const socials = payload["linkedSocials"];
   if (isObj(socials)) {
     for (const [platform, value] of Object.entries(socials)) {
-      const handle = typeof value === "string" ? value.trim() : "";
+      const handle = typeof value === "string"
+        ? platform.toLowerCase() === "domain"
+          ? value
+          : value.trim()
+        : "";
       if (!handle) continue;
       // Same domain-canonicalisation as the primary GCR shape above (case-insensitive key).
       let ref: string;
@@ -382,19 +358,21 @@ export type ParsedClaimRef =
  *   `domain:<host>`            → web2 claim (platform "domain")
  *   `web2:<platform>:<handle>` → web2 claim
  *   `xm:<chainType>:<address>` → wallet claim
- * `web2:domain:<host>` remains accepted as a permanent historical alias for
- * `domain:<host>` (the same web2/"domain" claim).
+ * Historical `web2:domain:<host>` references deliberately return null here.
+ * They may only be folded by `readAuthenticatedDomainClaims`, after the
+ * enclosing artifact's original bytes/hash/signature have authenticated.
  * (The primary claim / DID isn't a linked-claim ref and returns null.)
  */
 export function parseClaimRef(ref: string): ParsedClaimRef | null {
   const web2 = /^web2:([^:]+):(.+)$/.exec(ref);
-  if (web2) return { kind: "web2", platform: web2[1]!, handle: web2[2]! };
-  // Canonical DACS domain ref → the same web2/"domain" shape. `web2:domain:<h>`
-  // above stays a permanent historical alias for the identical claim. Ordered
-  // after the `web2:` arm so no ref can match both. Scheme matched
-  // case-insensitively to agree with canonicalizeDomainAlias (read path).
-  const domain = /^domain:(.+)$/i.exec(ref);
-  if (domain) return { kind: "web2", platform: "domain", handle: domain[1]! };
+  if (web2) {
+    if (web2[1] === "domain") return null;
+    return { kind: "web2", platform: web2[1]!, handle: web2[2]! };
+  }
+  const domain = /^domain:(.+)$/.exec(ref);
+  if (domain && isCanonicalDomainHostname(domain[1]!)) {
+    return { kind: "web2", platform: "domain", handle: domain[1]! };
+  }
   const xm = /^xm:([^:]+):(.+)$/.exec(ref);
   if (xm) return { kind: "wallet", chainType: xm[1]!, address: xm[2]! };
   return null;
@@ -405,47 +383,32 @@ export function cciClaimRefs(record: CciRecord): string[] {
   return [record.primaryClaim, ...record.claims.map((c) => c.ref)];
 }
 
-/**
- * Normalise a claim ref for MATCHING ONLY: fold BOTH the legacy
- * `web2:domain:<host>` alias AND the canonical `domain:<host>` form to
- * `domain:<idna-host>`, IDNA-normalising the host via {@link canonicalDomainHost}
- * so the match path canonicalises to the SAME depth as the write path (which
- * also IDNA-encodes) — otherwise a stored `domain:xn--bcher-kva.example` would
- * never match a signed `web2:domain:Bücher.example` or a unicode
- * `domain:Bücher.example` requirement. ASCII hosts are unaffected. The prefix is
- * matched case-insensitively; every other ref (xm: / cci-ud: / cci-pqc: / DIDs /
- * unknown) is returned unchanged. If the host cannot be IDNA-resolved
- * (canonicalDomainHost returns ""), return the ORIGINAL ref UNCHANGED — never a
- * bare `domain:`, so two distinct unresolvable refs can't collapse and
- * false-match. WHY: the historical signed artifact is not the CCI record
- * (re-derived from the raw GCR on every call) but the requirement string — a
- * steward-signed recipe's params.requiredClaim (see vetCore.ts cci-claim) or a
- * presented IdentityBundle's claims[].ref. Those may carry the legacy alias and
- * MUST keep resolving. We normalise at compare time only; we never rewrite or
- * re-hash a stored or signed value.
- */
-function canonicalizeDomainAlias(ref: string): string {
-  const m = /^(?:web2:domain|domain):(.+)$/i.exec(ref);
-  if (!m) return ref;
-  // Trim to match web2Handle (emit path), so both paths canonicalise identically.
-  const host = canonicalDomainHost(m[1]!.trim());
-  return host ? `domain:${host}` : ref;
+function canonicalDomainRef(ref: string): string | null {
+  if (!ref.startsWith("domain:")) return null;
+  const hostname = ref.slice("domain:".length);
+  return isCanonicalDomainHostname(hostname) ? ref : null;
 }
 
 /**
  * Does the record assert `ref`? Matches the primary claim or any linked claim.
- * Web2 and UD refs match case-insensitively (handles/domains aren't
- * case-sensitive); wallet / pqc / primary refs match exactly.
+ * Current `domain:` refs must already use exact DCR-1 spelling. Historical
+ * `web2:domain:` aliases are intentionally not interpreted by this unauthenticated
+ * convenience API; use `readAuthenticatedDomainClaims` for signed artifacts.
+ * Other Web2 and UD refs match case-insensitively; wallet / pqc / primary refs
+ * match exactly.
  */
 export function cciHasClaim(record: CciRecord, ref: string): boolean {
   if (ref === record.primaryClaim) return true;
-  // Fold the legacy web2:domain: alias into canonical domain: on BOTH the query
-  // and the stored ref, web2/ud branch only (compare-time only, see
-  // canonicalizeDomainAlias). wallet / pqc keep matching exactly.
-  const lower = canonicalizeDomainAlias(ref).toLowerCase();
+  const requestedDomain = canonicalDomainRef(ref);
+  if (/^(?:domain|web2:domain):/i.test(ref)) {
+    return requestedDomain !== null && record.claims.some(
+      (claim) => canonicalDomainRef(claim.ref) === requestedDomain,
+    );
+  }
+  const lower = ref.toLowerCase();
   return record.claims.some((c) =>
     c.kind === "web2" || c.kind === "ud"
-      ? canonicalizeDomainAlias(c.ref).toLowerCase() === lower
+      ? c.ref.toLowerCase() === lower
       : c.ref === ref,
   );
 }
@@ -458,12 +421,24 @@ export function cciHasClaim(record: CciRecord, ref: string): boolean {
  * proof was attested by the node, not merely asserted.
  */
 export function cciClaimProof(record: CciRecord, ref: string): string | undefined {
-  // Same compare-time alias normalisation as cciHasClaim (web2/ud branch only).
-  const lower = canonicalizeDomainAlias(ref).toLowerCase();
+  const requestedDomain = canonicalDomainRef(ref);
+  if (/^(?:domain|web2:domain):/i.test(ref)) {
+    if (requestedDomain === null) return undefined;
+    for (const claim of record.claims) {
+      if (
+        (claim.kind === "web2" || claim.kind === "ud") &&
+        canonicalDomainRef(claim.ref) === requestedDomain
+      ) {
+        return claim.proof;
+      }
+    }
+    return undefined;
+  }
+  const lower = ref.toLowerCase();
   for (const c of record.claims) {
     if (
       (c.kind === "web2" || c.kind === "ud") &&
-      canonicalizeDomainAlias(c.ref).toLowerCase() === lower
+      c.ref.toLowerCase() === lower
     ) {
       return c.proof;
     }

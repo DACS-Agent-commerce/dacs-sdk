@@ -38,6 +38,16 @@ import {
 } from "../../src/agent/bundleConsistency.js";
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
+import {
+  dacs5BundleOutcomeForTerminalState,
+  isDacs5SessionTransitionAllowed,
+} from "../../src/agent/sessionSemantics.js";
+import {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+} from "../../src/agent/vetSemantics.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
@@ -61,6 +71,8 @@ import {
 import type {
   AnyAttestationBundle,
   AttestationBundle,
+  VerificationDecision,
+  VerifyResult,
 } from "../../src/artifacts/types.js";
 import {
   isAttestationRef,
@@ -271,6 +283,30 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     evidence: unknown,
     context: Parameters<typeof verifySettlementEvidence>[1] = {},
   ) => verifySettlementEvidence(evidence, context, {});
+  const verifyResult = (
+    decision: VerificationDecision = "pass",
+    method: VerifyResult["method"] = "self-signed",
+    scheme = "key",
+  ): VerifyResult => ({
+    resultVersion: "1",
+    scheme,
+    identifier: "a".repeat(64),
+    recipeVersion: 1,
+    method,
+    decision,
+    reason: decision,
+    attestation: {
+      anchor: { kind: "storage-program", locator: "stor-conformance-result" },
+      contentHash: "b".repeat(64),
+    },
+    fetchedAt: 1,
+    verifiedAt: 2,
+    signature: {
+      algorithm: "ed25519",
+      signer: `key:${"c".repeat(64)}`,
+      value: Buffer.alloc(64).toString("base64url"),
+    },
+  });
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
     evidence.phase = "pay-cross-chain-htlc";
@@ -530,6 +566,72 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "cf4-dacs1-listing-address": (want) => {
       expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3)).toBe(want);
     },
+
+    // vet — §7.5.1 decisions/method binding, §7.6.1 retry policy and §7.8.2
+    // terminal counterparty-malformed attribution.
+    "vet-cm4-classify": (want) => {
+      expect(
+        ["pass", "fail", "indeterminate", "error"].map((decision) =>
+          classifyVerificationDecision(decision),
+        ),
+      ).toEqual(want.classified);
+      expect(want.unknown).toBe("throws");
+      expect(() => classifyVerificationDecision("unknown")).toThrow();
+    },
+    "vet-cm5-method-contract": (want) => {
+      const result = verifyResult();
+      expect(isVerifyResultForMethod(result, "self-signed")).toBe(want.match);
+      expect(isVerifyResultForMethod(result, "tlsnotary")).toBe(want.mismatch);
+    },
+    "vet-cm1-input-shape": (want) => {
+      const result = verifyResult();
+      const { method: _method, ...noMethod } = result;
+      const { decision: _decision, ...noDecision } = result;
+      expect(isVerifyResultForMethod(noMethod, "self-signed")).toBe(want.noMethod);
+      expect(isVerifyResultForMethod(noDecision, "self-signed")).toBe(want.noDecision);
+      expect(
+        isVerifyResultForMethod({ ...result, decision: "unknown" }, "self-signed"),
+      ).toBe(want.badDecision);
+      expect(isVerifyResultForMethod(result, "self-signed")).toBe(want.wellFormed);
+    },
+    "vet-vpr1-transient-retry": (want) => {
+      expect(shouldRetryVerification("error", 2, { retryClass: "transient" }))
+        .toBe(want);
+    },
+    "vet-vpr1-budget-exhausted": (want) => {
+      expect(shouldRetryVerification("error", 3, { retryClass: "transient" }))
+        .toBe(want);
+    },
+    "vet-vpr3-permanent-noretry": (want) => {
+      expect(shouldRetryVerification("error", 0, { retryClass: "permanent" }))
+        .toBe(want);
+    },
+    "vet-vpr4-indeterminate-noretry": (want) => {
+      expect(
+        shouldRetryVerification("indeterminate", 0, { retryClass: "transient" }),
+      ).toBe(want);
+    },
+    "vet-vpr4-indeterminate-flag-retry": (want) => {
+      expect(shouldRetryVerification("indeterminate", 0, {
+        retryClass: "transient",
+        retryOnIndeterminate: true,
+      })).toBe(want);
+    },
+    "vet-terminal-noretry": (want) => {
+      expect({
+        pass: shouldRetryVerification("pass", 0, { retryClass: "transient" }),
+        fail: shouldRetryVerification("fail", 0, { retryClass: "transient" }),
+      }).toEqual(want);
+    },
+    "vet-counterparty-malformed-attribution": (want) => {
+      expect({
+        decision: "error",
+        errorClass: vetPhaseFailureClass(
+          "error",
+          "counterparty-malformed-presentation",
+        ),
+      }).toEqual(want);
+    },
     "cf4-dacs2-composite-address": (want) => {
       expect(
         compositeVerificationAddress(
@@ -560,6 +662,106 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs5-rating-address": (want) => {
       expect(ratingAddress("job-abc", "cci-xm:evm:mainnet:0x1234")).toBe(want);
+    },
+
+    // DACS-5 §10.3.1 exact state machine and terminal-outcome projection.
+    "verify-st-draft-vet-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("draft", "vet-pending")).toBe(want);
+    },
+    "verify-st-vet-abort-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("vet-pending", "aborted-by-self"))
+        .toBe(want);
+    },
+    "verify-st-settle-final-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("settle-completed", "audit-pending"))
+        .toBe(want);
+    },
+    "verify-st-paused-resume-legal": (want) => {
+      expect(
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "settle-pending",
+          { pausedFrom: "settle-pending" },
+        ),
+      ).toBe(want);
+    },
+    "verify-st-negotiate-after-commit-illegal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("commit-completed", "negotiate-pending"))
+        .toBe(want);
+    },
+    "verify-st-terminal-forward-illegal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("finalised", "rate-pending")).toBe(want);
+    },
+    "verify-st-paused-final-illegal": (want) => {
+      expect(
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "finalised",
+          { pausedFrom: "audit-pending" },
+        ),
+      ).toBe(want);
+    },
+    "verify-st-settle-asymmetric-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("settle-pending", "settle-asymmetric"))
+        .toBe(want);
+    },
+    "verify-st-asymmetric-resolve-legal": (want) => {
+      expect([
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "settle-completed"),
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "settle-failed"),
+      ]).toEqual(want);
+    },
+    "verify-st-asymmetric-pause-resume-legal": (want) => {
+      const context = { pausedFrom: "settle-asymmetric" as const };
+      expect([
+        isDacs5SessionTransitionAllowed(
+          "settle-asymmetric",
+          "substrate-failure-paused",
+          context,
+        ),
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "settle-asymmetric",
+          context,
+        ),
+      ]).toEqual(want);
+    },
+    "verify-st-asymmetric-nonterminal": (want) => {
+      expect([
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "finalised"),
+        dacs5BundleOutcomeForTerminalState("settle-asymmetric"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-finalised": (want) => {
+      expect(dacs5BundleOutcomeForTerminalState("finalised")).toBe(want);
+    },
+    "verify-outcome-permanent-transient": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("vet-failed", "permanent"),
+        dacs5BundleOutcomeForTerminalState("commit-failed", "transient"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-counterparty-atomicity": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("negotiate-failed", "counterparty"),
+        dacs5BundleOutcomeForTerminalState("settle-failed", "settlement-atomicity"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-failed-substrate": (want) => {
+      expect(dacs5BundleOutcomeForTerminalState("failed-substrate", "substrate"))
+        .toBe(want);
+    },
+    "verify-outcome-aborts": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("aborted-by-self"),
+        dacs5BundleOutcomeForTerminalState("aborted-by-other"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-invalid-null": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("audit-pending"),
+        dacs5BundleOutcomeForTerminalState("settle-failed", "substrate"),
+      ]).toEqual(want);
     },
 
     // Exact normative artifact-reference shapes — DACS-2 §7.5.2 / DACS-4 §9.3.
@@ -1244,7 +1446,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   const TODO_AREA_REASON: Record<string, string> = {
     dacs1:
       "no exported §6.3.2/§6.3.3 requirement-matching, freshness-gate, control-gate (#170) or §6.3.4 listing-conformance surface",
-    vet: "§7.5.1/§7.6.1/§7.7.1 classification, retry and aggregation predicates are internal to the exported vetCore/runSessionCore orchestration, not independently exported",
+    vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
       "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
     governance: "no GOV-1..3 governance surface in the SDK",
@@ -1313,11 +1515,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The parent has 80 non-vacuous SDK runners; four
-    // additional canonical address vectors raise that coverage to 84.
+    // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
+    // DACS-5 state/outcome and DACS-2 Vet semantics raise coverage to 111.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(84);
+    expect(Object.keys(RUNNERS)).toHaveLength(111);
     expect(manifest.cases).toHaveLength(236);
   });
 

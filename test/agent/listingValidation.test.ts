@@ -111,6 +111,50 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
     });
   });
 
+  it("admits one pay-alternative slot only after every full ref resolves", () => {
+    const dem = { railId: "demos-native:DEM", railVersion: 1 };
+    const x402 = {
+      railId: "x402:default",
+      railVersion: 1,
+      parameters: { resource: "https://seller.example/pay" },
+    };
+    expect(
+      resolveListingRails({
+        trustPhase: "PA-2",
+        payPhases: [
+          { kind: "pay-alternative", alternatives: [dem, x402] },
+        ],
+        acceptedRails: [dem, x402],
+        registry: {
+          state: "verified-finalized",
+          entries: [
+            { railId: dem.railId, latestVersion: 1, versions: [1] },
+            { railId: x402.railId, latestVersion: 1, versions: [1] },
+          ],
+          definitions: [
+            {
+              railId: dem.railId,
+              railVersion: 1,
+              phaseHandler: "pay-dem",
+              state: "verified-finalized",
+            },
+            {
+              railId: x402.railId,
+              railVersion: 1,
+              phaseHandler: "pay-x402",
+              state: "verified-finalized",
+            },
+          ],
+        },
+        supportedPaymentHandlers: ["pay-dem", "pay-x402"],
+      }),
+    ).toEqual({
+      disposition: "verified",
+      reason: "verified",
+      authorityBasis: "pa2",
+    });
+  });
+
 });
 
 describe("DACS-1 §6.3.4 RB-1..RB-6", () => {
