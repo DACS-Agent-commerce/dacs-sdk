@@ -43,11 +43,48 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+Domain ClaimReferences use a strict trust boundary. Native Demos
+`web2.domain` records may be converted to the current lower-case ASCII
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
+signed current `domain:` reference is never repaired during reading. Historical
+`web2:domain:` aliases are available only through
+`readAuthenticatedDomainClaims()`, which authenticates the original artifact
+before deriving a separate, deduplicated semantic claim set. For persistent GCR
+evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
+transaction/finality, writer, validation-profile, freshness and presentation-
+control inputs; it never treats copied bundle metadata as authority.
+
+The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
+filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
+content only and fails closed on malformed input; see the
+[ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
+injection contract.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
 same exclusive lease and generation-fencing guarantees. Read-only agents may
 omit it.
+
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef`, `parseDemosAgentClaimReference`,
+`demosAgentPublicKey`, and `isDemosAgentClaimRef` from either
+`@kynesyslabs/dacs` or
+`@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
+profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
+case variation in the leading `did` scheme and preserve unknown canonical
+parameters for forwarding; the typed parse result exposes the parameter-free
+CF-3 identity separately. Signed-artifact authorization uses exact CF-2 bytes
+and never performs that read-time repair. Foreign DIDs, mixed-case
+`demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
+address notation are never intrinsically decoded as Demos signature authority
+or aliased to the registered profile. `Agent.resolveIdentity()` retains
+bare/`0x` native-address lookup as an explicit convenience but returns the
+canonical Demos DID, so aliases never leak into a `CciRecord` or reputation key.
+Non-intrinsic writer identities require
+`AgentConfig.resolveIdentitySigningPublicKey` and are bound to the connected
+adapter's actual key before signing.
 
 ## Public API
 
@@ -270,6 +307,22 @@ durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
+When the rail is selected through `settleFromRail`, supply these dependencies
+under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
+`settlementStore`, and `reconcile`. The bridge adds the exact
+`(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
+amount to every prepared-transfer record, allowing the journal and durable
+settlement log to authenticate the same PC-7 effect. `reconcile` receives that
+`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
+when authoritative observation proves no transfer for that tuple landed. A
+non-final observation must throw. Cached durable success is reauthenticated
+after every process restart before reuse; missing or contradictory recovery
+fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+the two values must match rather than silently defaulting or dropping the
+configured discriminator. The compatibility defaults remain process-local and
+must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
@@ -462,6 +515,22 @@ Exit codes are stable:
 - `4`: unexpected doctor internal error.
 - `5`: required checks are still blocked/incomplete.
 
+### Canonical JSON compatibility
+
+The canonical API follows RFC 8785 plus DACS CF-1 as clarified in
+DACS-Standard `4df6294b8d1cfc047af456d3d5ce84cd9b3b9983`: string values are
+NFC-normalised, while object member names are preserved and sorted by their
+original UTF-16 code units. Canonically equivalent NFC/NFD names are distinct
+signed members; the SDK does not merge or rename them.
+
+SDK versions before this repair incorrectly normalised member names. A
+historical artifact affected by that behavior must retain its original bytes
+and producer/release provenance and be handled through an explicitly selected
+legacy verification/quarantine policy. Current hashing and signing never
+silently rewrite, re-hash, or re-sign those bytes as a current artifact; a
+signature that only verifies under the old non-conforming transformation is
+rejected by the current verifier.
+
 ## Imports
 
 The package ships ESM with subpath exports so the substrate-free surface can be
@@ -478,6 +547,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified
@@ -485,6 +555,9 @@ registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
+
+The optional signed `pay-alternative` Listing profile is documented in
+[the alternative-payment projection guide](./docs/alternative-payment-projection.md).
 
 Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
 and compose it with the authenticated seller spine. It settles or reconciles

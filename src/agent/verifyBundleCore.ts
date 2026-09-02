@@ -17,6 +17,10 @@ import {
   verifyComponentSignature,
   type ComponentSignatureVerification,
 } from "../artifacts/signatures.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import type {
   AgreementSignature,
   AnyAttestationBundle,
@@ -156,6 +160,17 @@ export interface BundleEvidenceVerificationResult {
   authorizedSigner: string | null;
 }
 
+export interface AlternativePaymentBundleVerificationInput {
+  bundle: AnyAttestationBundle;
+  listing: Record<string, unknown>;
+  agreement: Record<string, unknown>;
+}
+
+export interface AlternativePaymentBundleVerificationResult {
+  decision: "pass" | "fail" | "error" | "indeterminate";
+  reason?: string;
+}
+
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
@@ -212,6 +227,15 @@ export interface VerifyBundleDeps {
     context: BundleEvidenceVerificationContext,
   ) => Promise<BundleEvidenceVerificationResult>;
   /**
+   * Required before evidence interpretation when the authenticated Listing
+   * contains `pay-alternative`. Compose the SDK APR listing, signed projection,
+   * replacement, and audit gates here; a caller-supplied projected step is not
+   * sufficient authority.
+   */
+  verifyAlternativePaymentProjection?: (
+    input: Readonly<AlternativePaymentBundleVerificationInput>,
+  ) => Promise<AlternativePaymentBundleVerificationResult>;
+  /**
    * Required whenever `vetRecords` is non-empty. This must run the strict
    * DACS-2 verifier with the session's exact bundle/requirement expectations.
    */
@@ -220,6 +244,9 @@ export interface VerifyBundleDeps {
     bundle: Readonly<ReadableAttestationBundle>,
   ) => Promise<StrictCompositeVerification>;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object" || seen.has(value as object)) {
@@ -418,6 +445,11 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
   const resolvePublicKey = ownDependency(deps, "resolvePublicKey", true);
   const verify = ownDependency(deps, "verify", true);
   const verifyEvidence = ownDependency(deps, "verifyEvidence", false);
+  const verifyAlternativePaymentProjection = ownDependency(
+    deps,
+    "verifyAlternativePaymentProjection",
+    false,
+  );
   const verifyCompositeRecord = ownDependency(
     deps,
     "verifyCompositeRecord",
@@ -447,6 +479,7 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     ["resolveListingRef", resolveListingRef],
     ["resolveRef", resolveRef],
     ["verifyEvidence", verifyEvidence],
+    ["verifyAlternativePaymentProjection", verifyAlternativePaymentProjection],
     ["verifyCompositeRecord", verifyCompositeRecord],
   ] as const) {
     if (
@@ -502,6 +535,16 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
       : {
           verifyEvidence: bindMethod(
             verifyEvidence as NonNullable<VerifyBundleDeps["verifyEvidence"]>,
+            deps,
+          ),
+        }),
+    ...(verifyAlternativePaymentProjection === undefined
+      ? {}
+      : {
+          verifyAlternativePaymentProjection: bindMethod(
+            verifyAlternativePaymentProjection as NonNullable<
+              VerifyBundleDeps["verifyAlternativePaymentProjection"]
+            >,
             deps,
           ),
         }),
@@ -719,12 +762,19 @@ async function authenticateComponentReference(
       if (!authorizedSigners) {
         throw new Error("artifact signer authorization could not be resolved");
       }
-      return authorizedSigners.has(signature.signer);
+      return parseCanonicalClaimReference(signature.signer) !== null &&
+        [...authorizedSigners].some((claim) =>
+          sameCanonicalClaimIdentity(claim, signature.signer)
+        );
     },
-    resolvePublicKey: async (signature) =>
-      signature.algorithm === "ed25519"
-        ? deps.resolvePublicKey(signature.signer)
-        : null,
+    resolvePublicKey: async (signature) => {
+      const signer = parseCanonicalClaimReference(signature.signer);
+      return signature.algorithm === "ed25519" && signer
+        ? deps.resolvePublicKey(
+            `${signer.identity.scheme}:${signer.identity.identifier}`,
+          )
+        : null;
+    },
     verify: async ({ signedBytes: message, signature, publicKey }) => {
       if (signature.algorithm !== "ed25519" || publicKey.length !== 32) {
         throw new Error("unsupported algorithm or malformed resolved key");
@@ -848,15 +898,31 @@ async function authenticateAgreementReference(
   }
 
   const signatures = artifact.signatures as AgreementSignature[];
-  const required = new Set([claims.buyer, claims.seller]);
+  const required = [claims.buyer, claims.seller];
   const seen = new Set<string>();
+  const authenticatedSigners: string[] = [];
   for (const signature of signatures) {
-    if (!required.has(signature.party) || seen.has(signature.party)) {
+    const parsed = parseCanonicalClaimReference(signature.party);
+    const identity = parsed
+      ? `${parsed.identity.scheme}:${parsed.identity.identifier}`
+      : null;
+    if (
+      !identity ||
+      !required.some((claim) =>
+        sameCanonicalClaimIdentity(claim, signature.party)
+      ) ||
+      seen.has(identity)
+    ) {
       return { verdict: "invalid", reason: "agreement-signer-not-authorized" };
     }
-    seen.add(signature.party);
+    seen.add(identity);
+    authenticatedSigners.push(signature.party);
   }
-  const missing = [...required].filter((party) => !seen.has(party));
+  const missing = required.filter((party) => {
+    const parsed = parseCanonicalClaimReference(party);
+    return parsed === null ||
+      !seen.has(`${parsed.identity.scheme}:${parsed.identity.identifier}`);
+  });
   if (missing.length > 0) {
     return {
       verdict: "missing",
@@ -880,7 +946,10 @@ async function authenticateAgreementReference(
     }
     let key: Uint8Array | null;
     try {
-      key = await deps.resolvePublicKey(signature.party);
+      const parsed = parseCanonicalClaimReference(signature.party)!;
+      key = await deps.resolvePublicKey(
+        `${parsed.identity.scheme}:${parsed.identity.identifier}`,
+      );
     } catch {
       return { verdict: "unresolved", reason: "agreement-signer-key-resolution-failed" };
     }
@@ -912,7 +981,7 @@ async function authenticateAgreementReference(
       return { verdict: "unresolved", reason: "agreement-signature-verification-error" };
     }
   }
-  return { verdict: "valid", signers: [...seen] };
+  return { verdict: "valid", signers: authenticatedSigners };
 }
 
 function bundlePartySignerClaims(
@@ -959,7 +1028,6 @@ const CO_SIGNATURE_REQUIRED_OUTCOMES = new Set([
 const ABORT_OUTCOMES = new Set(["aborted-by-self", "aborted-by-other"]);
 
 interface ValidatedBundleParties {
-  claims: Set<string>;
   byRole: Map<"buyer" | "seller" | "orchestrator", string>;
   hasRequiredRoles: boolean;
 }
@@ -968,7 +1036,7 @@ function validatedBundleParties(
   bundle: AnyAttestationBundle,
 ): ValidatedBundleParties | null {
   const byRole = new Map<"buyer" | "seller" | "orchestrator", string>();
-  const claims = new Set<string>();
+  const seenClaims: string[] = [];
   for (const party of bundle.parties) {
     if (
       party.role !== "buyer" &&
@@ -980,15 +1048,17 @@ function validatedBundleParties(
     if (
       party.primaryClaim.length === 0 ||
       byRole.has(party.role) ||
-      claims.has(party.primaryClaim)
+      seenClaims.some((claim) =>
+        sameCanonicalClaimIdentity(claim, party.primaryClaim) ||
+        claim === party.primaryClaim
+      )
     ) {
       return null;
     }
     byRole.set(party.role, party.primaryClaim);
-    claims.add(party.primaryClaim);
+    seenClaims.push(party.primaryClaim);
   }
   return {
-    claims,
     byRole,
     hasRequiredRoles: byRole.has("buyer") && byRole.has("seller"),
   };
@@ -1031,9 +1101,15 @@ function agreementIsCoherentWithBundle(
       agreementBuyers.length === 1 &&
       agreementSellers.length === 1 &&
       bundleSellers.length === 1 &&
-      agreementBuyers[0]!.primaryClaim === bundleBuyers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementBuyers[0]!.primaryClaim,
+        bundleBuyers[0]!.primaryClaim,
+      ) &&
       agreementBuyers[0]!.bundleHash === bundleBuyers[0]!.bundleHash &&
-      agreementSellers[0]!.primaryClaim === bundleSellers[0]!.primaryClaim &&
+      sameCanonicalClaimIdentity(
+        agreementSellers[0]!.primaryClaim,
+        bundleSellers[0]!.primaryClaim,
+      ) &&
       agreementSellers[0]!.bundleHash === bundleSellers[0]!.bundleHash
     );
   }
@@ -1047,14 +1123,14 @@ function agreementIsCoherentWithBundle(
     return (
       isLegacyMvpAgreementDocument(scope) &&
       scope.jobId === bundle.jobId &&
-      scope.buyer === bundleBuyers[0]!.primaryClaim
+      sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim)
     );
   }
   return (
     isLegacyMvpAgreementDocument(scope) &&
     scope.jobId === bundle.jobId &&
-    scope.buyer === bundleBuyers[0]!.primaryClaim &&
-    scope.seller === bundleSellers[0]!.primaryClaim
+    sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim) &&
+    sameCanonicalClaimIdentity(scope.seller, bundleSellers[0]!.primaryClaim)
   );
 }
 
@@ -1099,9 +1175,58 @@ function requiredSignatureClaims(
     agreementClaim(agreement, "seller") ?? seller ?? "role:seller",
   ];
   const orchestrator = parties.byRole.get("orchestrator");
-  if (orchestrator && orchestrator !== buyer && orchestrator !== seller) claims.push(orchestrator);
+  if (
+    orchestrator &&
+    !sameCanonicalClaimIdentity(orchestrator, buyer) &&
+    !sameCanonicalClaimIdentity(orchestrator, seller)
+  ) {
+    claims.push(orchestrator);
+  }
   if (anchorClaim) claims.push(anchorClaim);
-  return [...new Set(claims)];
+  return claims.filter(
+    (claim, index) =>
+      claims.findIndex((candidate) =>
+        sameCanonicalClaimIdentity(candidate, claim)
+      ) === index,
+  );
+}
+
+function bundleClaimReferencesAreCanonical(
+  bundle: Readonly<ReadableAttestationBundle>,
+): boolean {
+  const parties: unknown = bundle.parties;
+  const signatures: unknown = bundle.signatures;
+  if (!Array.isArray(parties) || parties.some((party) =>
+    party === null || typeof party !== "object" ||
+    typeof (party as { primaryClaim?: unknown }).primaryClaim !== "string"
+  ) || (signatures !== undefined &&
+    (!Array.isArray(signatures) || signatures.some((signature) =>
+      signature === null || typeof signature !== "object" ||
+      typeof (signature as { party?: unknown }).party !== "string"
+    )))) return false;
+  const references = [
+    ...parties.map(
+      (party) => (party as { primaryClaim: string }).primaryClaim,
+    ),
+    ...(signatures ?? []).map(
+      (signature) => (signature as { party: string }).party,
+    ),
+    ...[
+      bundle.agreementRef,
+      ...bundle.settlementEvidence,
+      ...bundle.vetRecords,
+      ...bundle.phaseSummary.map((phase) => phase.attestationRef),
+      ...(bundle.amendments ?? []),
+      ...(bundle.ratingRefs ?? []),
+    ].flatMap((ref) =>
+      ref && isAttestationRef(ref) && ref.signer !== undefined
+        ? [ref.signer]
+        : []
+    ),
+  ];
+  return references.every(
+    (reference) => parseCanonicalClaimReference(reference) !== null,
+  );
 }
 
 export async function verifyBundleCore(
@@ -1135,6 +1260,7 @@ export async function verifyBundleCore(
     };
   }
   const bundle = raw as ReadableAttestationBundle;
+  const canonicalBundleClaims = bundleClaimReferencesAreCanonical(bundle);
   const parties = isNormativeGraph
     ? validatedBundleParties(bundle as AnyAttestationBundle)
     : null;
@@ -1184,45 +1310,61 @@ export async function verifyBundleCore(
   );
 
   const sigs = Array.isArray(raw["signatures"])
-    ? (raw["signatures"] as Array<{ party?: unknown; value?: unknown }>)
+    ? (raw["signatures"] as Array<{
+        party?: unknown;
+        algorithm?: unknown;
+        value?: unknown;
+      }>)
     : [];
 
   const signatures: SignatureCheck[] = [];
   const seenSignatureClaims = new Set<string>();
   for (const s of sigs) {
     const party = typeof s.party === "string" ? s.party : "";
+    const parsedParty = parseCanonicalClaimReference(party);
+    const canonicalParty = parsedParty !== null;
+    const canonicalPartyIdentity = parsedParty
+      ? `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`
+      : null;
+    const authorizedParty = parsedParty !== null && bundle.parties.some(
+      (candidate) =>
+        sameCanonicalClaimIdentity(candidate.primaryClaim, party),
+    );
+    const encodedSignature = typeof s.value === "string" ? s.value : "";
+    const signatureBytes = isCanonicalBase64Url(encodedSignature)
+      ? Uint8Array.from(Buffer.from(encodedSignature, "base64url"))
+      : null;
     let verdict: SignatureVerdict;
-    const algorithm = (s as { algorithm?: unknown }).algorithm;
-    const value = s.value;
-    if (
-      parties &&
-      (!parties.claims.has(party) ||
-        algorithm !== "ed25519" ||
-        typeof value !== "string" ||
-        !/^[A-Za-z0-9_-]+$/.test(value) ||
-        seenSignatureClaims.has(party))
+    if (!canonicalParty) {
+      verdict = "unverified";
+    } else if (
+      !authorizedParty ||
+      s.algorithm !== "ed25519" ||
+      signatureBytes === null ||
+      signatureBytes.length !== 64 ||
+      seenSignatureClaims.has(canonicalPartyIdentity!)
     ) {
+      // §10.4.1 / CORE §B.7: every carried signature must name a session
+      // party, dispatch by its declared algorithm, and use exact SIG-6 bytes.
+      // Unsupported algorithms are never reinterpreted as Ed25519.
       verdict = "invalid";
     } else {
-      if (parties) seenSignatureClaims.add(party);
-      const resolvedKey = await deps.resolvePublicKey(party);
-      const sigBytes = Uint8Array.from(
-        Buffer.from(typeof value === "string" ? value : "", "base64url"),
-      );
+      seenSignatureClaims.add(canonicalPartyIdentity!);
+      // Resolve once. The branch above deliberately avoids exposing an
+      // unauthorized or algorithm-confused signature to caller callbacks.
+      const resolvedKey = await deps.resolvePublicKey(canonicalPartyIdentity!);
       if (!resolvedKey) {
         verdict = "unverified";
       } else if (
         !(resolvedKey instanceof Uint8Array) ||
-        resolvedKey.length !== 32 ||
-        (parties && sigBytes.length !== 64)
+        resolvedKey.length !== 32
       ) {
-        // Malformed resolved keys are errors; malformed normative signatures
-        // are invalid authorization rather than an indeterminate key lookup.
-        verdict = resolvedKey.length !== 32 ? "error" : "invalid";
+        // Malformed resolved key — can't evaluate; ERROR, not a false FAIL.
+        verdict = "error";
       } else {
         const verified = await deps.verify(
           Uint8Array.from(message),
-          Uint8Array.from(sigBytes),
+          Uint8Array.from(signatureBytes),
           Uint8Array.from(resolvedKey),
         );
         verdict = verified === true ? "valid" : "invalid";
@@ -1234,6 +1376,8 @@ export async function verifyBundleCore(
   // ── Referenced-artifact integrity ──────────────────────────────────────────
   const refs: RefCheck[] = [];
   let agreementArtifact: Record<string, unknown> | null = null;
+  let agreementReferenceVerified = false;
+  let prefetchedNormativeListing: Record<string, unknown> | null | undefined;
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
@@ -1347,6 +1491,7 @@ export async function verifyBundleCore(
       agreement.check.verdict = "incoherent";
     }
     refs.push(agreement.check);
+    agreementReferenceVerified = agreement.check.verdict === "ok";
     agreementArtifact =
       agreement.value &&
       ![
@@ -1357,6 +1502,107 @@ export async function verifyBundleCore(
       ].includes(agreement.check.verdict)
         ? agreement.value
         : null;
+  }
+
+  // APR-7 runs before any SettlementEvidence callback. Resolve and authenticate
+  // the signed Listing now, then require the SDK-composed projection verifier
+  // whenever that exact Listing contains the listing-only placeholder.
+  if (isNormativeGraph && deps.resolveListingRef) {
+    prefetchedNormativeListing = snapshotDependencyRecord(
+      await deps.resolveListingRef(
+        structuredClone(bundle.listingRef),
+        structuredClone(bundle.parties),
+      ),
+      `resolved Listing ${bundle.listingRef.listingId}`,
+    );
+    let earlyListingCheck = checkArtifact(
+      "dacs-1-listing",
+      String(bundle.listingRef.listingId),
+      bundle.listingRef.contentHash,
+      isNormativeListingScope,
+      prefetchedNormativeListing,
+    );
+    if (earlyListingCheck.verdict === "ok" && prefetchedNormativeListing) {
+      const scope = stripSignature(prefetchedNormativeListing) as Record<
+        string,
+        unknown
+      >;
+      const publisher = isListingDraft(scope)
+        ? scope.seller.identity.presentedBy
+        : null;
+      earlyListingCheck = attachSignatureCheck(
+        earlyListingCheck,
+        await authenticateComponentReference(
+          prefetchedNormativeListing,
+          ARTIFACT_SEPARATORS.Listing,
+          publisher ? new Set([publisher]) : null,
+          deps,
+        ),
+      );
+      const containsAlternative =
+        earlyListingCheck.verdict === "ok" &&
+        isListingDraft(scope) &&
+        scope.pipeline.some((phase) => phase.kind === "pay-alternative");
+      if (containsAlternative) {
+        let aprDecision: AlternativePaymentBundleVerificationResult = {
+          decision: "indeterminate",
+          reason: "alternative-payment projection verifier unavailable",
+        };
+        if (
+          agreementReferenceVerified &&
+          agreementArtifact &&
+          deps.verifyAlternativePaymentProjection
+        ) {
+          try {
+            const rawDecision = await deps.verifyAlternativePaymentProjection(
+              deepFreezeSnapshot({
+                bundle: structuredClone(bundle as AnyAttestationBundle),
+                listing: structuredClone(prefetchedNormativeListing),
+                agreement: structuredClone(agreementArtifact),
+              }),
+            );
+            const capturedDecision = snapshotCanonicalJsonRead(
+              rawDecision,
+              "alternative-payment bundle verification result",
+            );
+            if (
+              isRecord(capturedDecision) &&
+              ["pass", "fail", "error", "indeterminate"].includes(
+                capturedDecision.decision as string,
+              ) &&
+              (capturedDecision.reason === undefined ||
+                typeof capturedDecision.reason === "string")
+            ) {
+              aprDecision = capturedDecision as AlternativePaymentBundleVerificationResult;
+            }
+          } catch {
+            // Keep the indeterminate default. Evidence callbacks remain inert.
+          }
+        }
+        if (aprDecision.decision !== "pass") {
+          return {
+            ok: false,
+            reason:
+              aprDecision.reason ??
+              `alternative-payment projection ${aprDecision.decision}`,
+            fullyVerified: false,
+            signatures,
+            refs: [
+              ...refs,
+              {
+                kind: "dacs-4-alternative-projection",
+                id: bundle.jobId,
+                verdict:
+                  aprDecision.decision === "fail"
+                    ? "invalid-binding"
+                    : "unresolved",
+              },
+            ],
+            bundle: structuredClone(bundle),
+          };
+        }
+      }
+    }
   }
   for (const ev of bundle.settlementEvidence) {
     const evidence = await checkReadableRef(
@@ -1436,7 +1682,10 @@ export async function verifyBundleCore(
             composite.value as unknown as CompositeVerificationRecord;
           const boundParty = bundle.parties.find(
             (party) =>
-              party.primaryClaim === candidate.evaluatedParty &&
+              sameCanonicalClaimIdentity(
+                party.primaryClaim,
+                candidate.evaluatedParty,
+              ) &&
               party.bundleHash === candidate.bundleHash,
           );
           if (candidate.jobId !== bundle.jobId || !boundParty) {
@@ -1510,16 +1759,16 @@ export async function verifyBundleCore(
     if (checked.check.verdict === "ok" && checked.value) {
       const scope = stripSignature(checked.value) as Record<string, unknown>;
       const rater = bundle.parties.find(
-        (party) => party.primaryClaim === scope.rater,
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.rater),
       );
       const target = bundle.parties.find(
-        (party) => party.primaryClaim === scope.target,
+        (party) => sameCanonicalClaimIdentity(party.primaryClaim, scope.target),
       );
       if (
         scope.jobId !== bundle.jobId ||
         !rater ||
         !target ||
-        rater.primaryClaim === target.primaryClaim ||
+        sameCanonicalClaimIdentity(rater.primaryClaim, target.primaryClaim) ||
         target.role !== scope.targetRole ||
         (target.role !== "buyer" && target.role !== "seller")
       ) {
@@ -1555,13 +1804,16 @@ export async function verifyBundleCore(
     : Boolean(legacyListingAddr || deps.resolveRef);
   let listing: Record<string, unknown> | null = null;
   if (listingPinCoherent && isNormativeGraph && deps.resolveListingRef) {
-    listing = snapshotDependencyRecord(
-      await deps.resolveListingRef(
-        structuredClone(bundle.listingRef),
-        structuredClone(bundle.parties),
-      ),
-      `resolved Listing ${bundle.listingRef.listingId}`,
-    );
+    listing =
+      prefetchedNormativeListing !== undefined
+        ? prefetchedNormativeListing
+        : snapshotDependencyRecord(
+            await deps.resolveListingRef(
+              structuredClone(bundle.listingRef),
+              structuredClone(bundle.parties),
+            ),
+            `resolved Listing ${bundle.listingRef.listingId}`,
+          );
   } else if (listingPinCoherent && legacyListingAddr) {
     listing = snapshotDependencyRecord(
       await deps.readArtifact(legacyListingAddr),
@@ -1647,17 +1899,22 @@ export async function verifyBundleCore(
   const anyInvalid = signatures.some((c) => c.verdict === "invalid");
   const anyError = signatures.some((c) => c.verdict === "error");
   const anyValid = signatures.some((c) => c.verdict === "valid");
-  const validSignatureClaims = new Set(
-    signatures.filter((c) => c.verdict === "valid").map((c) => c.party),
-  );
+  const validSignatureClaims = signatures
+    .filter((c) => c.verdict === "valid")
+    .map((c) => c.party);
   const missingRequiredSignatures = requiredSignatureClaims(
     bundle,
     agreementArtifact,
     parties,
     signatures.length,
-  ).filter((claim) => !validSignatureClaims.has(claim));
-  const sigOk = anyValid && !anyInvalid && !anyError;
+  ).filter((claim) =>
+    !validSignatureClaims.some((candidate) =>
+      sameCanonicalClaimIdentity(candidate, claim)
+    )
+  );
+  const sigOk = canonicalBundleClaims && anyValid && !anyInvalid && !anyError;
   const fullyVerified =
+    canonicalBundleClaims &&
     signatures.length > 0 &&
     signatures.every((c) => c.verdict === "valid") &&
     missingRequiredSignatures.length === 0 &&
@@ -1674,6 +1931,8 @@ export async function verifyBundleCore(
     reason:
       signatures.length === 0
         ? "bundle has no signatures"
+        : !canonicalBundleClaims
+          ? "bundle contains a non-canonical ClaimReference"
         : anyInvalid
           ? "one or more signatures failed verification"
           : anyError

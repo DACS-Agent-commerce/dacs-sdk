@@ -32,6 +32,8 @@ export {
   type RefVerdict,
   type BundleEvidenceVerificationContext,
   type BundleEvidenceVerificationResult,
+  type AlternativePaymentBundleVerificationInput,
+  type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,
@@ -182,12 +184,14 @@ export {
 export {
   evaluateParserSpec,
   defaultParserEngine,
+  defaultParserEngineCapabilities,
   successExpr,
   predicateExpr,
   type ParserSpec,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
+  type ParserEngineCapabilities,
   type ParserEvalContext,
   type ParserEvaluation,
   type ParserDecision,
