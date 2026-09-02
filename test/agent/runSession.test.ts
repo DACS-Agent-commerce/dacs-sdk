@@ -28,7 +28,7 @@ import type {
 } from "../../src/agent/vetCore.js";
 
 const LISTING = {
-  agentId: "did:demos:agent:alice",
+  agentId: "did:demos:alice",
   serviceId: "svc-1",
   name: "Market Data",
   description: "d",
@@ -45,7 +45,9 @@ const TERMS: SessionTerms = {
   deliveryFormat: "application/json",
 };
 
-const BUYER_ID = "did:demos:agent:bob";
+// Generic Demos DIDs are valid claim references. The reserved
+// did:demos:agent:<hex-ed25519-key> form must never use a human label.
+const BUYER_ID = "did:demos:bob";
 const BUYER_IDENTITY: IdentityBundle = {
   bundleVersion: "1",
   presentedBy: BUYER_ID,
@@ -185,13 +187,13 @@ function normativeDpaListing(): Listing {
     seller: {
       identity: {
         bundleVersion: "1",
-        presentedBy: "did:demos:agent:alice",
+        presentedBy: "did:demos:alice",
         presentedAt: 1_770_000_000_000,
-        claims: [{ ref: "did:demos:agent:alice" }],
+        claims: [{ ref: "did:demos:alice" }],
         presentation: {
           kind: "per-claim",
           signatures: [
-            { ref: "did:demos:agent:alice", signature: "presentation" },
+            { ref: "did:demos:alice", signature: "presentation" },
           ],
         },
       },
@@ -225,7 +227,7 @@ function normativeDpaListing(): Listing {
     validity: { notBefore: 1_770_000_000_000 },
     signature: {
       algorithm: "ed25519",
-      signer: "did:demos:agent:alice",
+      signer: "did:demos:alice",
       value: "AQ",
     },
   };
@@ -482,7 +484,7 @@ describe("runSession orchestration (T4)", () => {
     const deps = makeDeps({
       sign: async (artifact) => ({
         ...artifact,
-        buyer: "did:demos:agent:attacker",
+        buyer: "did:demos:attacker",
         signature: "sig",
       }),
     });
@@ -826,8 +828,8 @@ describe("runSession orchestration (T4)", () => {
 
   test("refuses to pay presentedBy when a different carried claim signed", async () => {
     const normative = normativeDpaListing();
-    normative.seller.identity.claims.push({ ref: "did:demos:agent:signer" });
-    normative.signature.signer = "did:demos:agent:signer";
+    normative.seller.identity.claims.push({ ref: "did:demos:signer" });
+    normative.signature.signer = "did:demos:signer";
     let settles = 0;
 
     await expect(
@@ -1254,7 +1256,7 @@ describe("runSession orchestration (T4)", () => {
     );
     expect(res.outcome).toBe("completed");
     expect(res.vetRef).toBe(
-      "stor-dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7F:did%3Ademos%3Aagent%3Aalice",
+      "stor-dacs2:composite:01J8ME0SXKQ4T9V2RC5HJ6WX7F:did%3Ademos%3Aalice",
     );
     expect(settleCalls).toBe(1);
     // Spec bundle: vet record + settlement evidence are content-addressed refs,
@@ -1264,8 +1266,8 @@ describe("runSession orchestration (T4)", () => {
     expect(bundle.outcome).toBe("completed");
     expect(bundle.vetRecords).toHaveLength(1);
     expect(bundle.settlementEvidence).toHaveLength(1);
-    expect(bundle.parties[0].primaryClaim).toBe("did:demos:agent:bob");
-    expect(bundle.signatures[0].party).toBe("did:demos:agent:bob");
+    expect(bundle.parties[0].primaryClaim).toBe("did:demos:bob");
+    expect(bundle.signatures[0].party).toBe("did:demos:bob");
   });
 
   test("rejects a non-wire Vet production before snapshot normalisation", async () => {
@@ -1879,8 +1881,8 @@ describe("runSession orchestration (T4)", () => {
     store.set("stor-dacs3:agreement:job-AGREEMENT-ONLY", {
       jobId: "job-AGREEMENT-ONLY",
       pattern: "negotiate-fixed-price",
-      buyer: "did:demos:agent:bob",
-      seller: "did:demos:agent:alice",
+      buyer: "did:demos:bob",
+      seller: "did:demos:alice",
       listingRef: "stor-expiring-listing",
       dacsSdkExpectedSettlementPayee: "0xalice",
       dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,
@@ -2274,8 +2276,8 @@ describe("runSession orchestration (T4)", () => {
     store.set("stor-dacs3:agreement:job-WRONG", {
       jobId: "job-WRONG",
       pattern: "negotiate-fixed-price",
-      buyer: "did:demos:agent:bob",
-      seller: "did:demos:agent:alice",
+      buyer: "did:demos:bob",
+      seller: "did:demos:alice",
       listingRef: "stor-another-listing",
       dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,
       price: TERMS.price,
@@ -2501,13 +2503,13 @@ describe("runSession orchestration (T4)", () => {
       verifyListing: async (raw) => {
         expect(Object.isFrozen(raw)).toBe(true);
         expect(Object.isFrozen(raw.supportedPaymentRails)).toBe(true);
-        mutableListing.agentId = "did:demos:agent:attacker";
+        mutableListing.agentId = "did:demos:attacker";
         mutableListing.supportedPaymentRails.splice(
           0,
           mutableListing.supportedPaymentRails.length,
           "pay-attacker",
         );
-        expect(Reflect.set(raw, "agentId", "did:demos:agent:attacker")).toBe(
+        expect(Reflect.set(raw, "agentId", "did:demos:attacker")).toBe(
           false,
         );
         return true;
@@ -2537,7 +2539,7 @@ describe("runSession orchestration (T4)", () => {
     deps.settle = async function (request) {
       originalSettleCalls += 1;
       expect(this).toBe(deps);
-      expect(this.buyerId).toBe("did:demos:agent:attacker");
+      expect(this.buyerId).toBe("did:demos:attacker");
       return {
         ok: true,
         txHash: "0xdeps",
@@ -2548,7 +2550,7 @@ describe("runSession orchestration (T4)", () => {
     };
     deps.readListing = async function () {
       expect(this).toBe(deps);
-      deps.buyerId = "did:demos:agent:attacker";
+      deps.buyerId = "did:demos:attacker";
       deps.settle = async () => {
         swappedSettleCalls += 1;
         throw new Error("swapped settle must not run");
@@ -2579,7 +2581,7 @@ describe("runSession orchestration (T4)", () => {
     });
     const res = await runSessionCore("stor-listing", TERMS, deps);
     expect(res.outcome).toBe("completed");
-    expect(seenSeller).toBe("did:demos:agent:alice");
+    expect(seenSeller).toBe("did:demos:alice");
   });
 
   test("resume with an INDETERMINATE evidence lookup aborts — never re-settles (#70 double-pay)", async () => {
@@ -2590,8 +2592,8 @@ describe("runSession orchestration (T4)", () => {
     const agreement = {
       jobId: "job-DP",
       pattern: "negotiate-fixed-price",
-      buyer: "did:demos:agent:bob",
-      seller: "did:demos:agent:alice",
+      buyer: "did:demos:bob",
+      seller: "did:demos:alice",
       listingRef: "stor-listing",
       dacsSdkExpectedSettlementPayee: "0xalice",
       dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,

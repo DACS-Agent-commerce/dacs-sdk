@@ -127,6 +127,8 @@ function fakeAdapter(
 
   const adapter = {
     getAddress: () => owner,
+    getPublicKey: async () =>
+      Uint8Array.from(rawPublicKey(publicKeyFromSeed(seed))),
     sign: async (bytes: Uint8Array) => ed25519Sign(bytes, privateKey),
     async scanOwnAnchorsByNamePrefix(prefix: string) {
       state.scans += 1;
@@ -212,7 +214,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     });
 
     await expect(agent.publishListing(LISTING)).rejects.toThrow(
-      /self-certifying Demos claim for the connected wallet/,
+      /does not match the connected adapter signing key/,
     );
     expect(state.scans).toBe(0);
     expect(state.creates).toBe(0);
@@ -246,10 +248,53 @@ describe("Agent.publishListing binding publication (#54)", () => {
             },
           },
         }),
-      ).rejects.toThrow(/self-certifying Demos claim/);
+      ).rejects.toThrow(
+        /unsupported identity method|CORE B\.1 CF-2|native demos:0x address notation/,
+      );
       expect(state.scans).toBe(0);
       expect(state.creates).toBe(0);
     }
+  });
+
+  test("rejects a resolver-backed foreign DID before creating a Demos publication", async () => {
+    const foreignSeller = "did:example:seller";
+    const { adapter, state } = fakeAdapter();
+    const bindings = createInMemoryBindingStore();
+    const agent = buildAgent(adapter, {
+      demosRpc: "mem",
+      wallet: "secret",
+      ...PUBLICATION_CAPABILITIES,
+      bindings: { index: bindings, publisher: bindings },
+      // A portable lower-level Listing may use a resolver-backed identity, but
+      // this high-level Agent writes a Demos owner-bound logical slot.
+      resolveIdentitySigningPublicKey: (claim: string) =>
+        claim === foreignSeller ? Uint8Array.from(SELLER_PUBLIC_KEY) : null,
+    });
+    const foreignListing: ListingDraft = {
+      ...LISTING,
+      seller: {
+        ...LISTING.seller,
+        identity: {
+          ...LISTING.seller.identity,
+          presentedBy: foreignSeller,
+          claims: [{ ref: foreignSeller }],
+          presentation: {
+            kind: "per-claim",
+            signatures: [{
+              ref: foreignSeller,
+              signature: "identity-presentation",
+            }],
+          },
+        },
+      },
+    };
+
+    await expect(agent.publishListing(foreignListing)).rejects.toThrow(
+      /unsupported identity method for native Demos publication/i,
+    );
+    expect(state.scans).toBe(0);
+    expect(state.creates).toBe(0);
+    expect(bindings.snapshot()).toEqual([]);
   });
 
   test("anchors once and automatically publishes the exact logical-to-native binding", async () => {

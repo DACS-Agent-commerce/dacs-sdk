@@ -53,6 +53,8 @@ export {
   type EvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {

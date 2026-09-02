@@ -373,7 +373,7 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
         ...agreementInput(value, session),
         buyer: {
           ...buyer,
-          identityBundle: identity("did:demos:agent:substitute"),
+          identityBundle: identity("did:demos:substitute"),
         },
       }),
     ).toThrow(/parties differ/);

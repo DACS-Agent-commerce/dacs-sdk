@@ -174,6 +174,42 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.observedTransactionalVolume).toEqual([]);
   });
 
+  test("keys and matches reputation by parameter-free CF-3 identity", () => {
+    const qualifiedParty = `${PARTY}?jurisdiction=GB`;
+    const qualifiedBundle = bundle(
+      "qualified",
+      "completed",
+      1100,
+      "buyer",
+      [
+        {
+          role: "buyer",
+          bundleHash: "h",
+          primaryClaim: `${PARTY}?jurisdiction=US`,
+        },
+        { role: "seller", bundleHash: "h", primaryClaim: CP },
+      ],
+    );
+    expect(deriveReputation(
+      qualifiedParty,
+      [qualifiedBundle],
+      WINDOW,
+      TRUSTED_WITH_ABSENCE,
+    )).toMatchObject({
+      partyPrimaryClaim: PARTY,
+      bundleCount: 1,
+    });
+  });
+
+  test("rejects a non-canonical reputation key", () => {
+    expect(() => deriveReputation(
+      `DID:demos:buyer`,
+      [],
+      WINDOW,
+      TRUSTED_WITH_ABSENCE,
+    )).toThrow(/partyPrimaryClaim.*CF-2/);
+  });
+
   test("per-jobId reconciliation: two copies of one job count once (self perspective)", () => {
     const r = deriveReputation(
       PARTY,

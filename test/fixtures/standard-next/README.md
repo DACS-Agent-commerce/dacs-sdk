@@ -21,6 +21,8 @@ ahead of the repository-wide conformance pin.
   `ce43b226e358e15cb126b4b7d53b8638648c14ca55250eb57e6db68e451ba13f`.
   Its historical raw-digest/hex signature conflict with current §8.5.1/SIG-6
   and Demos L2PS is tracked upstream in DACS-Standard#349.
+- `demos-agent-claim-reference.json` — commit
+  `81ded2b49851d8fa17399e3fdade9e36e33a4ff7`; DACS-1 §6.3.1; CORE §B.1.
 
 Do not edit a fixture locally. Replace it from a named Standard commit and
 update this provenance note.

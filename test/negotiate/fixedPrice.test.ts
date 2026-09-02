@@ -567,10 +567,31 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
 
     const wrongSeller = input();
     wrongSeller.seller = {
-      identityBundle: identity("did:demos:agent:substitute"),
+      identityBundle: identity("did:demos:substitute"),
       vetRecordRef: vetRef("stor:wrong-seller-vet"),
     };
     expect(() => deriveFixedPriceAgreement(wrongSeller)).toThrow(/does not match/);
+  });
+
+  test("matches agreement parties by parameter-free CF-3 identity", () => {
+    const equivalentSeller = input();
+    equivalentSeller.seller = {
+      identityBundle: identity(`${SELLER}?jurisdiction=GB`),
+      vetRecordRef: vetRef("stor:qualified-seller-vet"),
+    };
+    expect(deriveFixedPriceAgreement(equivalentSeller).parties)
+      .toContainEqual(expect.objectContaining({
+        role: "seller",
+        primaryClaim: `${SELLER}?jurisdiction=GB`,
+      }));
+
+    const samePartyTwice = input();
+    samePartyTwice.buyer = {
+      identityBundle: identity(`${SELLER}?role=buyer`),
+      vetRecordRef: vetRef("stor:alias-buyer-vet"),
+    };
+    expect(() => deriveFixedPriceAgreement(samePartyTwice))
+      .toThrow(/buyer and seller primary claims must be distinct/);
   });
 
   test("enforces exact payee-bound pipeline coverage", () => {

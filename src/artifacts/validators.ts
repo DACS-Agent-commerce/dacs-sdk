@@ -48,7 +48,10 @@ import {
   isCanonicalBase64Url,
   isComponentSignature,
 } from "./signatures.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
@@ -400,7 +403,9 @@ export function isIdentityBundle(v: unknown): v is IdentityBundle {
   }
   // DACS-1 §6.3.2 BP-3: presentedBy resolves to one carried claim.
   return v.claims.some(
-    (claim) => isObj(claim) && claim.ref === v.presentedBy,
+    (claim) =>
+      isObj(claim) &&
+      sameCanonicalClaimIdentity(claim.ref, v.presentedBy),
   );
 }
 
@@ -927,7 +932,7 @@ export function isListing(v: unknown): v is Listing {
     return false;
   }
   return v.seller.identity.claims.some(
-    (claim) => claim.ref === v.signature.signer,
+    (claim) => sameCanonicalClaimIdentity(claim.ref, v.signature.signer),
   ); // §6.3.4 ListingSignature signer authorization.
 }
 
@@ -1359,16 +1364,20 @@ const hasAgreementCommon = (
   if (buyer.length !== 1 || seller.length !== 1) return false;
   const buyerClaim = buyer[0]!.primaryClaim;
   const sellerClaim = seller[0]!.primaryClaim;
-  if (buyerClaim === sellerClaim) return false;
-  const required = new Set([buyerClaim, sellerClaim]);
-  const signers = new Set<string>(
-    (v.signatures as Array<Record<string, unknown>>).map(
-      (signature) => signature.party as string,
-    ),
+  if (sameCanonicalClaimIdentity(buyerClaim, sellerClaim)) return false;
+  const required = [buyerClaim, sellerClaim];
+  const signers = (v.signatures as Array<Record<string, unknown>>).map(
+    (signature) => signature.party as string,
   );
   if (
-    signers.size !== required.size ||
-    [...signers].some((claim) => !required.has(claim))
+    required.some((claim) =>
+      signers.filter((signer) =>
+        sameCanonicalClaimIdentity(signer, claim)
+      ).length !== 1
+    ) ||
+    signers.some((signer) => !required.some((claim) =>
+      sameCanonicalClaimIdentity(signer, claim)
+    ))
   ) {
     return false;
   }
@@ -1792,7 +1801,10 @@ function isFaultBundleParties(v: unknown): boolean {
   if (typeof orchestrator === "string") {
     const buyer = parties.find((party) => party.role === "buyer")?.primaryClaim;
     const seller = parties.find((party) => party.role === "seller")?.primaryClaim;
-    if (orchestrator === buyer || orchestrator === seller) return false;
+    if (
+      sameCanonicalClaimIdentity(orchestrator, buyer) ||
+      sameCanonicalClaimIdentity(orchestrator, seller)
+    ) return false;
   }
   return true;
 }
