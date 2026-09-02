@@ -27,6 +27,7 @@ import {
   identityBundleHash,
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   compositeVerificationAddress,
   isFinalizedVetAnchorReceipt,
@@ -245,6 +246,7 @@ function captureInput(source: Readonly<PrepareVetTerminalBundleInput>): PrepareV
       !isFinalizedVetAnchorReceipt(input.production?.anchorReceipt)) {
     throw new DacsError("Vet terminal input is malformed");
   }
+  requireCanonicalJobId(input.jobId, "Vet terminal jobId");
   const roles = input.parties.map((party) => party.role);
   if (roles[0] !== "buyer" || roles[1] !== "seller" || new Set(roles).size !== 2 ||
       input.parties.some((party) => Object.keys(party).length !== 2 ||

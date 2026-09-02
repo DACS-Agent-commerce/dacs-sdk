@@ -20,6 +20,7 @@ import {
 } from "../../src/agent/vetTerminalBundle.js";
 
 const STARTED_AT = 1_788_000_000_000;
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = `demos:agent:${"11".repeat(32)}`;
 const SELLER = `demos:agent:${"22".repeat(32)}`;
 const SIGNATURE = Buffer.alloc(64, 7).toString("base64url");
@@ -44,10 +45,10 @@ function production(
   decision: CompositeVerificationRecord["overallDecision"],
 ): VetProduction {
   const seller = identity("seller");
-  const logicalAddress = compositeVerificationAddress("vet-terminal-job-254", SELLER);
+  const logicalAddress = compositeVerificationAddress(JOB_ID, SELLER);
   const record: CompositeVerificationRecord = {
     recordVersion: "1",
-    jobId: "vet-terminal-job-254",
+    jobId: JOB_ID,
     evaluatedParty: SELLER,
     bundleHash: identityBundleHash(seller),
     requirementHash: "33".repeat(32),
@@ -98,7 +99,7 @@ function input(
   decision: CompositeVerificationRecord["overallDecision"] = "fail",
 ): PrepareVetTerminalBundleInput {
   return {
-    jobId: "vet-terminal-job-254",
+    jobId: JOB_ID,
     listingRef: {
       listingId: "vet-terminal-listing",
       version: 1,
@@ -250,6 +251,19 @@ describe("terminal Vet bundle preparation", () => {
     );
   });
 
+  test("rejects a non-canonical job id before authenticating terminal authority", async () => {
+    const candidate = input();
+    candidate.jobId = "legacy-job";
+    let authenticatorCalls = 0;
+    await expect(prepareVetTerminalBundle(candidate, {
+      authenticateProduction: async () => {
+        authenticatorCalls += 1;
+        return { status: "valid" };
+      },
+    })).rejects.toThrow(/canonical uppercase ULID/);
+    expect(authenticatorCalls).toBe(0);
+  });
+
   test("rejects accessors before invoking application-controlled code", async () => {
     const candidate = input() as unknown as Record<string, unknown>;
     let getterCalls = 0;
@@ -257,7 +271,7 @@ describe("terminal Vet bundle preparation", () => {
       enumerable: true,
       get() {
         getterCalls += 1;
-        return "vet-terminal-job-254";
+        return JOB_ID;
       },
     });
     let authenticatorCalls = 0;
