@@ -29,6 +29,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   signArtifact,
+  signedBytes,
   verifyArtifact,
   type DomainSeparator,
 } from "../../src/crypto/index.js";
@@ -79,6 +80,10 @@ import {
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
+import {
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "../../src/identity/index.js";
 import type {
   AnyAttestationBundle,
   AgreementArtifact,
@@ -1388,6 +1393,19 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(rejected).toBe(want);
     },
 
+    // dacs1 — exact SIWD Resources binding (§6.3.2). The Standard publishes
+    // the primitive bundle-hash input and all derived bytes in the manifest.
+    "dacs1-siwd-resource-binding": (want) => {
+      const bytes = signedBytes("dacs-bundle-presentation:v1:", want.bundleHash);
+      const resource = siwdBundleResource(want.bundleHash);
+      expect(Buffer.from(bytes).toString("utf8")).toBe(want.signedBytes);
+      expect(resource).toBe(want.resource);
+      expect(Buffer.from(resource.slice("dacs:".length), "hex").toString("utf8")).toBe(
+        want.decoded,
+      );
+      expect(siwdResourcesBindBundleHash([resource], want.bundleHash)).toBe(true);
+    },
+
     // dacs1 — identityTier derivation (§6.3.2.1 IT-1..IT-3), via
     // src/identity/tier.ts. Fixture-backed where golden.identityTier ships a
     // fixture; the fixture-less IT-3 cases construct the bundle the summary
@@ -2350,7 +2368,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     // guards raise it to 146.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(151);
+    expect(Object.keys(RUNNERS)).toHaveLength(152);
     expect(manifest.cases).toHaveLength(236);
   });
 

@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle } from "../../src/artifacts/types.js";
-import { identityBundleHash } from "../../src/identity/index.js";
+import {
+  identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "../../src/identity/index.js";
 
 const bundle = (): IdentityBundle => ({
   bundleVersion: "1",
@@ -72,5 +76,58 @@ describe("identityBundleHash — DACS-1 §6.3.2", () => {
     extended.futureBinding = { mode: "strict" };
 
     expect(identityBundleHash(extended)).not.toBe(identityBundleHash(original));
+  });
+});
+
+describe("SIWD bundle-resource binding — DACS-1 §6.3.2", () => {
+  const hash = "6d7c726a881c38fe307d01439051f5e197702da21d072265a6f4e7d1e1a9f128";
+  const resource =
+    "dacs:646163732d62756e646c652d70726573656e746174696f6e3a76313a36643763373236613838316333386665333037643031343339303531663565313937373032646132316430373232363561366634653764316531613966313238";
+
+  it("encodes the complete domain-separated bytes as exact lowercase hex", () => {
+    expect(siwdBundleResource(hash)).toBe(resource);
+    expect(Buffer.from(resource.slice("dacs:".length), "hex").toString("utf8")).toBe(
+      `dacs-bundle-presentation:v1:${hash}`,
+    );
+  });
+
+  it("accepts exact membership in an authenticated parsed Resources list", () => {
+    expect(siwdResourcesBindBundleHash([
+      "https://service.example/order/1",
+      resource,
+    ], hash)).toBe(true);
+  });
+
+  it.each([
+    ["missing resource", ["https://service.example/order/1"]],
+    ["bare hex", [resource.slice("dacs:".length)]],
+    ["uppercase hex", [resource.toUpperCase()]],
+    ["alternate URI", [`dacs://${resource.slice("dacs:".length)}`]],
+    ["non-string member", [resource, 1]],
+    ["sparse list", Object.assign(new Array(2), { 1: resource })],
+  ])("rejects %s", (_label, resources) => {
+    expect(siwdResourcesBindBundleHash(resources, hash)).toBe(false);
+  });
+
+  it("rejects malformed hashes and accessor-backed or hostile inputs", () => {
+    expect(() => siwdBundleResource(hash.toUpperCase())).toThrow(/lowercase SHA-256/);
+    expect(siwdResourcesBindBundleHash([resource], hash.toUpperCase())).toBe(false);
+
+    let accessed = false;
+    const accessor = [resource];
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      get() {
+        accessed = true;
+        return resource;
+      },
+    });
+    expect(siwdResourcesBindBundleHash(accessor, hash)).toBe(false);
+    expect(accessed).toBe(false);
+
+    const target = [resource];
+    const revoked = Proxy.revocable(target, {});
+    revoked.revoke();
+    expect(siwdResourcesBindBundleHash(revoked.proxy, hash)).toBe(false);
   });
 });

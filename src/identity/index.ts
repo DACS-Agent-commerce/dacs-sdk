@@ -69,7 +69,11 @@ export {
   type ReportedDemosGcrResultTimes,
   type VerifyDemosGcrDomainDeps,
 } from "./domainClaimVerification.js";
-export { identityBundleHash } from "./bundle.js";
+export {
+  identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "./bundle.js";
 export {
   canonicalDemosAgentPublicKey,
   demosAgentClaimRef,

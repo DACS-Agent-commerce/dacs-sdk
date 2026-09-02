@@ -356,6 +356,8 @@ export {
   isAuthenticatedCciRecord,
   projectCciSupplementarySignals,
   identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
   isCanonicalClaimReference,
   isRegisteredClaimReferenceScheme,
   isDemosAgentClaimRef,
