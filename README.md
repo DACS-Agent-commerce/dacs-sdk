@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price and RFQ negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2**, **Solana SPL**, **cross-chain HTLC**, and **liquidity-tank safety-core** settlement · one delivery type · attestation bundle + reputation. Bundled live provider/wallet/bridge integrations and dispute execution (DACS-X) remain deferred. Transport-neutral sealed-envelope and durable RFQ/L2PS cores are available separately.
+Self-declared identity (+ one verified claim) · fixed-price and RFQ negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2**, **Solana SPL**, **cross-chain HTLC**, and **liquidity-tank safety-core** settlement · one delivery type · attestation bundle + reputation. AP2 additionally has an optional Stripe test-mode + Demos reference adapter that is never enabled implicitly. Other bundled live provider/wallet/bridge integrations and dispute execution (DACS-X) remain deferred. Transport-neutral sealed-envelope and durable RFQ/L2PS cores are available separately.
 
 ## What's implemented
 
@@ -41,7 +41,7 @@ completion.
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `advanceCrossChainHtlc` · `advanceLiquidityTankSettlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `advanceCrossChainHtlc` · `advanceLiquidityTankSettlement` · `settleFromRail` | registry-selected buyer rails, optional AP2 provider/reference settlement, plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
@@ -683,6 +683,71 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
+### AP2 reference integration (optional)
+
+`advanceAp2Settlement` implements DACS-4 AP2-1..AP2-7 without pretending that
+the TypeScript SDK is itself a complete AP2 SD-JWT verifier. Supply an
+`Ap2MandateVerifier` backed by the official AP2 implementation; it must verify
+the separate CheckoutMandate and PaymentMandate chains, every delegation, the
+merchant checkout JWS, audience, nonce, constraints, and expiry before returning
+the narrow checkout and payment projections.
+
+```ts
+import {
+  advanceAp2Settlement,
+  createFsAp2BindingStore,
+  createStripeAp2Integration,
+} from "@kynesyslabs/dacs/rails";
+
+const store = await createFsAp2BindingStore({
+  dir: `${dacsStateDir}/ap2-settlements`,
+});
+const stripe = createStripeAp2Integration({
+  createCredential: stripePaymentIntentCreateRestrictedKey,
+  statusCredential: stripePaymentIntentReadRestrictedKey,
+  payeeId: stripeAccountId,
+  currencyMinorUnits: 2,
+  substrate: agent.adapter,
+});
+
+const progress = await advanceAp2Settlement({
+  jobId,
+  phaseIndex,
+  agreementHash,
+  protocolVersion: "0.2",
+  expected: { payee: stripeAccountId, amount: "0.5", currency: "USD" },
+  checkoutMandate: checkoutPresentation,
+  paymentMandate: paymentPresentation,
+  owner: workerId,
+  verifier: officialAp2Verifier,
+  provider: stripe.provider,
+  store,
+});
+```
+
+Use two distinct Stripe **restricted** test keys: the create key may create and
+confirm PaymentIntents; the status key must be read-only. Standard `sk_` keys,
+shared keys, and live restricted keys without explicit `allowLive: true` are
+rejected. The status key crosses DAHR through its transient Bearer channel and is
+removed from the anchored request headers. The durable store records the AP2-7
+binding and provider reference before receipt lookup, so a restart reconciles the
+same PaymentIntent and cannot silently create a second payment. A DAHR result is
+not returned until its transaction has authenticated canonical inclusion, which
+also prevents the following evidence write from racing the same Demos nonce.
+The emitted AP2 transaction reference keeps these two locations distinct:
+`receiptAttestation.anchor` is the fetchable provider-status URL whose exact
+response bytes match `contentHash`, while `receiptTransactionRef` is the native
+`demos-web2-request` transaction authenticating that hash. The DAHR transaction
+hash is never mislabeled as a Storage Program locator, and the raw Stripe body
+(which can include provider secrets) is never published as public DACS content.
+
+The opt-in live test is
+`test/integration/ap2-stripe-dahr.live.test.ts`. It requires an isolated Demos
+wallet, durable state directory, the official AP2 Python runtime, the two Stripe
+test credentials, and `DACS_AP2_LIVE_CONFIRM=1`. `DACS_AP2_LIVE_JOB_ID` can select
+a fresh safe job identifier. The committed default test suite never contacts
+Stripe, DAHR, the faucet, or Demos.
+
 ### Sealed-envelope procurement
 
 `runSealedEnvelopeCore` supports both the backwards-compatible
@@ -853,7 +918,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and provider-injected AP2, Solana SPL, cross-chain HTLC, and liquidity-tank safety cores |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, provider-injected AP2 plus its optional Stripe/Demos reference adapter, Solana SPL, cross-chain HTLC, and liquidity-tank safety cores |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |

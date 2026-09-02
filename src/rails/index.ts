@@ -155,6 +155,7 @@ export {
   type Ap2MandateVerifier,
   type Ap2SettlementIntent,
   type Ap2ReceiptAttestation,
+  type Ap2ReceiptTransactionRef,
   type Ap2CapturedSettlement,
   type Ap2BindingLease,
   type Ap2BindingClaim,
@@ -239,6 +240,16 @@ export {
   type LiquidityTankProgress,
   type AdvanceLiquidityTankInput,
 } from "./liquidityTank.js";
+export {
+  createFsAp2BindingStore,
+  type FsAp2BindingStoreOptions,
+} from "./ap2SettlementFs.js";
+export {
+  createStripeAp2Integration,
+  assertStripeAp2CredentialsAreSplit,
+  stripeAp2ProviderStatusUrl,
+  type StripeAp2IntegrationOptions,
+} from "./ap2Stripe.js";
 export {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementKey,
