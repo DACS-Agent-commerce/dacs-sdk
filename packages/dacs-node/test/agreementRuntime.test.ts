@@ -19,6 +19,7 @@ import {
   createDacsBuyerAgreementTrackV1,
   createDacsSellerAgreementTrackV1,
 } from "../src/agreementRuntime.js";
+import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
@@ -58,7 +59,7 @@ function operation(role: "buyer" | "seller", track = "agreement") {
         seller: SELLER,
         protocol: {
           commerceProfile: "dacs-sdk:fixed-price-x402:v1",
-          standardRevision: "965df755aba4ff392f1fb37a93d287242b177ba4",
+          standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
           phase: "pay-x402",
           orchestratorTopology: "seller-as-phase-orchestrator-v1",
           orchestrator: SELLER,

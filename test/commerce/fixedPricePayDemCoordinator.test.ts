@@ -17,6 +17,7 @@ import {
   type FixedPricePayDemTrackOperation,
   type FixedPriceX402CoordinatorRole,
 } from "../../src/commerce/index.js";
+import { DACS_STANDARD_PIN } from "../../src/version.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:buyer";
@@ -80,6 +81,10 @@ const success = (track: string): FixedPricePayDemTrackOperation =>
   };
 
 describe("fixed-price pay-dem coordinator", () => {
+  it("pins native DEM to the SDK's exact reviewed Standard revision", () => {
+    expect(FIXED_PRICE_PAY_DEM_STANDARD_REVISION).toBe(DACS_STANDARD_PIN);
+  });
+
   it("captures only the native DEM registry and handler binding", () => {
     expect(captureFixedPricePayDemProtocolBinding(PROTOCOL)).toEqual(PROTOCOL);
     expect(fixedPricePayDemProtocolBindingHash(PROTOCOL)).toMatch(/^[0-9a-f]{64}$/);
