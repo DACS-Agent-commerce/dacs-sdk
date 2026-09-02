@@ -184,7 +184,26 @@ do
     node scripts/publish-exact-local-registry.mjs "$package" "$host_registry"
 done
 
-for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; do
+# Until @kynesyslabs/demos-native is published, release rehearsals may inject
+# the exact upstream-reviewed tarball into the isolated registry. Generated
+# consumers still install only by registry name and version; no file or Git
+# dependency is permitted in their manifest or lockfile.
+if [ -n "${DACS_NATIVE_PACKAGE_TARBALL-}" ]; then
+  if [ ! -f "$DACS_NATIVE_PACKAGE_TARBALL" ]; then
+    echo "DACS native package tarball does not exist: $DACS_NATIVE_PACKAGE_TARBALL" >&2
+    exit 2
+  fi
+  DACS_LOCAL_REGISTRY_TOKEN="$auth_token" \
+    node scripts/publish-exact-local-registry.mjs \
+      "$DACS_NATIVE_PACKAGE_TARBALL" "$host_registry"
+fi
+
+for package_name in \
+  @kynesyslabs/dacs \
+  @kynesyslabs/dacs-node \
+  @kynesyslabs/demos-native \
+  create-dacs-agent
+do
   observed=$(npm view "$package_name@$version" version --registry "$host_registry")
   test "$observed" = "$version"
 done
@@ -251,7 +270,7 @@ const violations = [];
 for (const name of [
   "@kynesyslabs/dacs",
   "@kynesyslabs/dacs-node",
-  "@kynesyslabs/demosdk",
+  "@kynesyslabs/demos-native",
   "@x402/core",
   "@x402/evm",
   "@x402/fetch",
@@ -284,6 +303,7 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
 for (const name of [
   "node_modules/@kynesyslabs/dacs",
   "node_modules/@kynesyslabs/dacs-node",
+  "node_modules/@kynesyslabs/demos-native",
 ]) {
   const resolved = lock.packages?.[name]?.resolved;
   if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
@@ -342,21 +362,27 @@ typescript_present=false
 if docker run --rm --entrypoint test "$runtime_image" -d node_modules/typescript; then
   typescript_present=true
 fi
+demosdk_present=false
+if docker run --rm --entrypoint test "$runtime_image" -d node_modules/@kynesyslabs/demosdk; then
+  demosdk_present=true
+fi
 rubic_present=false
 if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
   rubic_present=true
 fi
 runtime_imports_passed=false
 if docker run --rm --entrypoint sh "$runtime_image" -ceu '
-  node --import @kynesyslabs/dacs-node/demos-loader --input-type=module -e "
+  node --input-type=module -e "
     Promise.all([
       import(\"@kynesyslabs/dacs\"),
       import(\"@kynesyslabs/dacs-node\"),
-      import(\"@kynesyslabs/dacs-node/sqlite\")
-    ]).then(([core, host, sqlite]) => {
+      import(\"@kynesyslabs/dacs-node/sqlite\"),
+      import(\"@kynesyslabs/demos-native\")
+    ]).then(([core, host, sqlite, native]) => {
       if (typeof core.createAgent !== \"function\") process.exit(1);
       if (typeof host.runDacsLiveDoctorV1 !== \"function\") process.exit(1);
       if (typeof sqlite.openDacsNodeSqliteDatabase !== \"function\") process.exit(1);
+      if (typeof native.Demos !== \"function\") process.exit(1);
     });
   "
 '; then
@@ -366,6 +392,7 @@ fi
 IMAGE_USER="$image_user" \
 RUNTIME_UID="$runtime_uid" \
 TYPESCRIPT_PRESENT="$typescript_present" \
+DEMOSDK_PRESENT="$demosdk_present" \
 RUBIC_PRESENT="$rubic_present" \
 RUNTIME_IMPORTS_PASSED="$runtime_imports_passed" \
   node - "$artifact_stage/runtime-image-policy.json" <<'NODE'
@@ -377,12 +404,13 @@ const policy = {
   observedUid: process.env.RUNTIME_UID,
   runtimeImportsPassed: process.env.RUNTIME_IMPORTS_PASSED === "true",
   typescriptPresent: process.env.TYPESCRIPT_PRESENT === "true",
+  demosSdkPresent: process.env.DEMOSDK_PRESENT === "true",
   rubicSdkPresent: process.env.RUBIC_PRESENT === "true",
 };
 policy.functionalPassed = policy.observedUser === policy.expectedUser &&
   policy.observedUid === "10001" && policy.runtimeImportsPassed;
 policy.productionDependencyPolicyPassed = !policy.typescriptPresent &&
-  !policy.rubicSdkPresent;
+  !policy.demosSdkPresent && !policy.rubicSdkPresent;
 fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + "\n");
 NODE
 
@@ -453,7 +481,8 @@ const summary = {
   },
   audit: audit.metadata.vulnerabilities,
   securityGate: {
-    productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
+    productionPublicationBlockedBy:
+      "kynesyslabs/sdks#124 merge and @kynesyslabs/demos-native publication",
     passed: dependencyPolicy.passed &&
       runtimeImagePolicy.productionDependencyPolicyPassed &&
       engineStrictExitCode === 0 &&
@@ -490,7 +519,7 @@ if [ "$functional_passed" != "true" ]; then
   exit 1
 fi
 if [ "$security_passed" != "true" ]; then
-  echo "functional registry/container rehearsal passed, but the #191 security gate remains blocked: $output_dir" >&2
+  echo "functional registry/container rehearsal passed, but the security gate failed: $output_dir" >&2
   exit 3
 fi
 echo "registry/container acceptance passed: $output_dir"
