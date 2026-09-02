@@ -43,6 +43,17 @@ All five lifecycle stages run end to end:
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
+Domain ClaimReferences use a strict trust boundary. Native Demos
+`web2.domain` records may be converted to the current lower-case ASCII
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
+signed current `domain:` reference is never repaired during reading. Historical
+`web2:domain:` aliases are available only through
+`readAuthenticatedDomainClaims()`, which authenticates the original artifact
+before deriving a separate, deduplicated semantic claim set. For persistent GCR
+evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
+transaction/finality, writer, validation-profile, freshness and presentation-
+control inputs; it never treats copied bundle metadata as authority.
+
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
@@ -284,6 +295,22 @@ durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
+When the rail is selected through `settleFromRail`, supply these dependencies
+under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
+`settlementStore`, and `reconcile`. The bridge adds the exact
+`(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
+amount to every prepared-transfer record, allowing the journal and durable
+settlement log to authenticate the same PC-7 effect. `reconcile` receives that
+`PayDemSettlementRecoveryContext` and must return either an exact
+`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
+when authoritative observation proves no transfer for that tuple landed. A
+non-final observation must throw. Cached durable success is reauthenticated
+after every process restart before reuse; missing or contradictory recovery
+fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+the two values must match rather than silently defaulting or dropping the
+configured discriminator. The compatibility defaults remain process-local and
+must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
@@ -515,6 +542,9 @@ registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
+
+The optional signed `pay-alternative` Listing profile is documented in
+[the alternative-payment projection guide](./docs/alternative-payment-projection.md).
 
 Sellers use `createX402Paywall` as the framework-neutral HTTP protocol adapter
 and compose it with the authenticated seller spine. It settles or reconciles
