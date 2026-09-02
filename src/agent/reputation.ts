@@ -1,4 +1,8 @@
 import type { AnyAttestationBundle } from "../artifacts/types.js";
+import {
+  parseCanonicalClaimReference,
+  requireCanonicalClaimReference,
+} from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 
 /**
@@ -37,9 +41,21 @@ export function computeReputation(
   primaryClaim: string,
   bundles: AnyAttestationBundle[],
 ): Reputation {
+  const subject = requireCanonicalClaimReference(
+    primaryClaim,
+    "Reputation primaryClaim",
+  ).identity;
+  const canonicalIdentity = `${subject.scheme}:${subject.identifier}`;
   const mineByJob = new Map<string, AnyAttestationBundle[]>();
   for (const bundle of bundles) {
-    if (!bundle.parties.some((party) => party.primaryClaim === primaryClaim)) {
+    if (
+      !bundle.parties.some((party) => {
+        const parsed = parseCanonicalClaimReference(party.primaryClaim);
+        return parsed !== null &&
+          parsed.identity.scheme === subject.scheme &&
+          parsed.identity.identifier === subject.identifier;
+      })
+    ) {
       continue;
     }
     const copies = mineByJob.get(bundle.jobId) ?? [];
@@ -76,7 +92,7 @@ export function computeReputation(
   }
 
   return {
-    primaryClaim,
+    primaryClaim: canonicalIdentity,
     totalAgreements,
     completed,
     avgRating: null,

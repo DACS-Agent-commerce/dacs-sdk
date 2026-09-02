@@ -27,7 +27,9 @@ import {
 } from "../../src/crypto/index.js";
 import { DacsError, SubstrateError } from "../../src/errors.js";
 
-const SELLER = "did:demos:agent:seller";
+// Generic resolver-backed Demos DID. The self-certifying `demos:agent`
+// profile is reserved for an exact 32-byte lowercase key.
+const SELLER = "did:demos:seller";
 const priv = privateKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 7)));
 const sign = (bytes: Uint8Array) => ed25519Sign(bytes, priv);
 

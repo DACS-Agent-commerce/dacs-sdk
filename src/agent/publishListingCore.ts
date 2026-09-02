@@ -488,7 +488,14 @@ export async function publishListingCore(
         ...authority,
         payPhases: listing.pipeline
           .filter((phase) => phase.kind.startsWith("pay-"))
-          .map((phase) => ({ kind: phase.kind, rail: phase.parameters?.rail })),
+          .map((phase) =>
+            phase.kind === "pay-alternative"
+              ? {
+                  kind: phase.kind,
+                  alternatives: phase.parameters?.alternatives,
+                }
+              : { kind: phase.kind, rail: phase.parameters?.rail },
+          ),
         acceptedRails: listing.acceptedRails ?? [],
       });
     } catch (error) {
