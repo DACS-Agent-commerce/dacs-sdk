@@ -1,80 +1,120 @@
 /**
  * CCI (Cross-Context Identity) — the DACS-1 Identify layer.
  *
- * A Demos identity is more than the wallet key: the ed25519 public key is the
- * *primary claim* (the DID root), and the on-chain GCR binds *linked claims* to
- * it — Web2 handles (X / GitHub / Discord / Telegram) and cross-chain wallets
- * ("<chainType>:<address>"). The SDK used to see only the primary key; this
- * module resolves the whole record so an agent can be identified/vetted by any
- * of its claims.
- *
- * `parseCciRecord` is pure over the substrate's raw identity payload (so it's
- * unit-tested without a node); the DemosAdapter feeds it what the GCR routine
- * returns. It reads the confirmed shape the Demos identity graph exposes
- * (`linkedSocials` + `linkedWallets`) and is tolerant of the RPC envelope
- * nesting; anything not modelled stays available on `raw`.
+ * Demos stores eight production identity contexts in GCRMain.identities. This
+ * module owns a stable JSON snapshot of a `getIdentities` response and projects
+ * every context into canonical DACS-1 ClaimReferences. Entries that cannot be
+ * represented without inventing an identifier are retained only in `raw`.
  */
 
+import { snapshotWireJsonRead } from "../canonical/snapshot.js";
+import { isCanonicalClaimReference } from "./claimReference.js";
 import {
   canonicalizeNativeDomainHostname,
   isCanonicalDomainHostname,
 } from "./domainHost.js";
 
 /** Claim families beyond the primary key. */
-export type CciClaimKind = "web2" | "wallet" | "ud" | "pqc";
+export type CciClaimKind =
+  | "web2"
+  | "wallet"
+  | "ud"
+  | "pqc"
+  | "nomis"
+  | "humanpassport"
+  | "ethos"
+  | "tlsn";
 
-/** A linked Web2 handle (X / GitHub / Discord / Telegram / a DNS `domain` / …). */
+/** A linked Web2 handle (X / GitHub / Discord / Telegram / a DNS domain). */
 export interface CciWeb2Claim {
   kind: "web2";
-  /** Platform, e.g. "twitter" | "github" | "discord" | "telegram" | "domain". */
-  platform: string;
-  /** The claimed handle/username. */
+  platform: "twitter" | "github" | "discord" | "telegram" | "domain";
   handle: string;
-  /**
-   * Canonical claim ref: `web2:<platform>:<handle>` — except a DNS `domain`
-   * identity, which emits the canonical DACS form `domain:<lowercase-idna-host>`.
-   */
+  /** `cci-web2:<platform>:<handle>`, or `domain:<hostname>` for DNS identities. */
   ref: string;
-  /**
-   * The proof the node verified before writing this claim (a `/.well-known`
-   * URL or a proof hash), when the GCR carries one. Its presence is evidence
-   * the binding was attested; absent for legacy/flat entries.
-   */
+  /** Proof commitment carried by GCR, when present. */
   proof?: string;
 }
 
-/** A linked cross-chain wallet (an XM identity). */
+/** A linked cross-chain wallet (the Demos `xm` context). */
 export interface CciWalletClaim {
   kind: "wallet";
-  /** Chain family, e.g. "evm" | "solana" | "ton" | "near". */
   chainType: string;
-  /** The on-chain address. */
+  subchain: string;
   address: string;
-  /** Canonical claim ref: `xm:<chainType>:<address>`. */
+  /** Canonical `cci-xm:<chain>:<subchain>:<address>` reference. */
   ref: string;
 }
 
-/** A linked Unstoppable Domain (a `ud` identity). */
+/** A linked Unstoppable Domain. */
 export interface CciUdClaim {
   kind: "ud";
-  /** The UD domain, e.g. "alice.crypto". */
   domain: string;
-  /** The registry network the domain lives on, when known (e.g. "polygon"). */
   network?: string;
-  /** Canonical claim ref: `cci-ud:<domain>` (DACS-1 §6.3 scheme registry). */
   ref: string;
-  /** Ownership proof/signature evidence, when the GCR carries one. */
   proof?: string;
 }
 
-/** A linked post-quantum public key (a `pqc` identity). */
+/** A linked post-quantum public key. */
 export interface CciPqcClaim {
   kind: "pqc";
-  /** PQC scheme, e.g. "falcon" | "ml-dsa". */
-  algorithm: string;
-  /** The PQC public key / address. */
+  algorithm: "falcon" | "ml-dsa";
   address: string;
-  /** Canonical claim ref: `cci-pqc:<algorithm>:<address>` (DACS-1 §6.3 scheme registry). */
+  ref: string;
+}
+
+/** A Nomis wallet-score subject validated by the native GCR routine. */
+export interface CciNomisClaim {
+  kind: "nomis";
+  chain: string;
+  subchain: string;
+  address: string;
+  score: number;
+  scoreType: number;
+  mintedScore?: number | null;
+  /** Milliseconds since Unix epoch derived from `lastSyncedAt`. */
+  observedAt: number;
+  ref: string;
+}
+
+/** A Human Passport proof-of-personhood identity validated by GCR. */
+export interface CciHumanPassportClaim {
+  kind: "humanpassport";
+  /** Demos persists the verified EVM address as this context's unique id. */
+  id: string;
+  address: string;
+  score: number;
+  passingScore: boolean;
+  threshold?: number;
+  stamps: string[];
+  verificationMethod: "api" | "onchain";
+  chainId?: number;
+  observedAt: number;
+  expiresAt: number | null;
+  ref: string;
+}
+
+/** An Ethos profile and score validated by the native GCR routine. */
+export interface CciEthosClaim {
+  kind: "ethos";
+  id: string;
+  profileId: number;
+  chain: string;
+  subchain: string;
+  address: string;
+  score: number;
+  observedAt: number;
+  ref: string;
+}
+
+/** A TLSNotary proof commitment already verified by the Demos GCR routine. */
+export interface CciTlsnClaim {
+  kind: "tlsn";
+  context: "github" | "discord" | "telegram";
+  username: string;
+  userId: string;
+  proofHash: string;
+  observedAt?: number;
   ref: string;
 }
 
@@ -82,119 +122,148 @@ export type CciClaim =
   | CciWeb2Claim
   | CciWalletClaim
   | CciUdClaim
-  | CciPqcClaim;
+  | CciPqcClaim
+  | CciNomisClaim
+  | CciHumanPassportClaim
+  | CciEthosClaim
+  | CciTlsnClaim;
 
 /** A resolved cross-context identity record for a subject. */
 export interface CciRecord {
-  /** The subject's primary claim — the Demos ed25519 public-key hex / DID root. */
   primaryClaim: string;
-  /** Linked Web2 handles (includes DNS `domain` identities). */
   web2: CciWeb2Claim[];
-  /** Linked cross-chain wallets. */
   wallets: CciWalletClaim[];
-  /** Linked Unstoppable Domains. */
   ud: CciUdClaim[];
-  /** Linked post-quantum public keys. */
   pqc: CciPqcClaim[];
-  /** All linked claims (web2 ++ wallets ++ ud ++ pqc), for convenience. */
+  nomis: CciNomisClaim[];
+  humanPassport: CciHumanPassportClaim[];
+  ethos: CciEthosClaim[];
+  tlsn: CciTlsnClaim[];
   claims: CciClaim[];
-  /** The raw substrate payload, for anything not yet modelled. */
+  /** Owned, stable JSON snapshot of the substrate response. */
   raw: unknown;
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === "object" && !Array.isArray(v);
+const WEB2_PLATFORMS = new Set([
+  "twitter",
+  "github",
+  "discord",
+  "telegram",
+  "domain",
+]);
+const TLSN_CONTEXTS = new Set(["github", "discord", "telegram"]);
+const HEX_32 = /^[0-9a-f]{64}$/;
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
-/**
- * The GCR identity graph can arrive wrapped in RPC envelopes (`{ result, response:
- * {...} }`, `{ response: { response: {...} } }`, `{ data: {...} }`, …). Walk a few
- * known wrappers to find the object that actually carries the identity fields.
- * The deployed testnet graph is keyed `xm` / `web2` / `ud` / `pqc`; the older
- * `linkedSocials` / `linkedWallets` shape is also recognised.
- */
+const isObj = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const nonBlank = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+const safeNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) &&
+  Math.abs(value) <= Number.MAX_SAFE_INTEGER
+    ? value
+    : undefined;
+const nonNegativeSafeNumber = (value: unknown): number | undefined => {
+  const number = safeNumber(value);
+  return number !== undefined && number >= 0 ? number : undefined;
+};
+const nonNegativeSafeInteger = (value: unknown): number | undefined => {
+  const number = nonNegativeSafeNumber(value);
+  return number !== undefined && Number.isSafeInteger(number) ? number : undefined;
+};
+const epochMilliseconds = (value: unknown): number | undefined => {
+  if (typeof value === "number") return nonNegativeSafeInteger(value);
+  if (
+    typeof value !== "string" ||
+    value.trim() !== value ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  ) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+function canonicalRef(value: string): string | undefined {
+  return isCanonicalClaimReference(value) ? value : undefined;
+}
+
+/** Locate the GCR identities object inside the supported RPC envelopes. */
 function unwrapIdentityPayload(raw: unknown): Record<string, unknown> {
-  let cur: unknown = raw;
-  for (let i = 0; i < 6 && isObj(cur); i++) {
-    const o = cur as Record<string, unknown>;
+  let current: unknown = raw;
+  for (let depth = 0; depth < 6 && isObj(current); depth += 1) {
+    const object = current;
     if (
-      "xm" in o ||
-      "web2" in o ||
-      "ud" in o ||
-      "pqc" in o ||
-      "linkedWallets" in o ||
-      "linkedSocials" in o
-    )
-      return o;
-    if (isObj(o.response)) cur = o.response;
-    else if (isObj(o.data)) cur = o.data;
+      Object.prototype.hasOwnProperty.call(object, "result") &&
+      object.result !== 200
+    ) {
+      return {};
+    }
+    if (
+      "xm" in object ||
+      "web2" in object ||
+      "ud" in object ||
+      "pqc" in object ||
+      "nomis" in object ||
+      "humanpassport" in object ||
+      "ethos" in object ||
+      "tlsn" in object ||
+      "linkedWallets" in object ||
+      "linkedSocials" in object
+    ) {
+      return object;
+    }
+    if (isObj(object.response)) current = object.response;
+    else if (isObj(object.data)) current = object.data;
     else break;
   }
-  return isObj(cur) ? cur : {};
+  return isObj(current) ? current : {};
 }
 
 function dedupeByRef<T extends { ref: string }>(claims: T[]): T[] {
   const seen = new Set<string>();
-  return claims.filter((c) => (seen.has(c.ref) ? false : (seen.add(c.ref), true)));
+  return claims.filter((claim) => {
+    if (seen.has(claim.ref)) return false;
+    seen.add(claim.ref);
+    return true;
+  });
 }
 
-/** Pull a web2 handle out of an entry, which may be a bare string or an object. */
 function web2Handle(entry: unknown, trim = true): string {
   if (typeof entry === "string") return trim ? entry.trim() : entry;
-  if (isObj(entry)) {
-    const v = entry["username"] ?? entry["handle"] ?? entry["userId"];
-    if (typeof v === "string") return trim ? v.trim() : v;
-  }
-  return "";
+  if (!isObj(entry)) return "";
+  const value = entry.username ?? entry.handle ?? entry.userId;
+  return typeof value === "string" ? (trim ? value.trim() : value) : "";
 }
 
-/** The proof URL / hash / signature the node attested, if the entry carries one. */
 function claimProof(entry: unknown): string | undefined {
   if (!isObj(entry)) return undefined;
-  const p =
-    entry["proof"] ??
-    entry["proofUrl"] ??
-    entry["proofHash"] ??
-    entry["signature"];
-  return typeof p === "string" && p.trim() !== "" ? p.trim() : undefined;
-}
-
-/** Native GCR ingestion helper; signed-artifact readers never call this path. */
-function canonicalDomainHost(handle: string): string {
-  return canonicalizeNativeDomainHostname(handle) ?? "";
+  const proof = entry.proofUrl ?? entry.proofHash ?? entry.signature ?? entry.proof;
+  return typeof proof === "string" && proof.trim() !== "" ? proof.trim() : undefined;
 }
 
 function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
-  const out: CciWeb2Claim[] = [];
-  // Primary: the live GCR shape — `web2.<platform>[]` of proof objects.
-  const web2 = payload["web2"];
+  const claims: CciWeb2Claim[] = [];
+  const web2 = payload.web2;
   if (isObj(web2)) {
-    for (const [platform, entries] of Object.entries(web2)) {
-      const list = Array.isArray(entries) ? entries : [entries];
-      for (const entry of list) {
-        const handle = web2Handle(
-          entry,
-          platform.toLowerCase() !== "domain",
-        );
+    for (const [sourcePlatform, entries] of Object.entries(web2)) {
+      const platform = sourcePlatform.toLowerCase();
+      if (!WEB2_PLATFORMS.has(platform)) continue;
+      for (const entry of Array.isArray(entries) ? entries : [entries]) {
+        const handle = web2Handle(entry, platform !== "domain");
         if (!handle) continue;
+        const ref = platform === "domain"
+          ? (() => {
+              const host = canonicalizeNativeDomainHostname(handle);
+              return host ? `domain:${host}` : undefined;
+            })()
+          : canonicalRef(`cci-web2:${platform}:${handle}`);
+        if (!ref) continue;
         const proof = claimProof(entry);
-        // A DNS `domain` identity emits the canonical DACS `domain:<host>` ref
-        // (IDNA/lower-cased host); every other platform keeps the historical
-        // `web2:<platform>:<handle>` form. This mirrors the UD precedent below
-        // (`cci-ud:${domain.toLowerCase()}`, see CF-2): only `ref` is
-        // canonicalised — the `handle` field keeps its original casing.
-        let ref: string;
-        // The GCR platform-key casing is not under our control ("Domain"/"DOMAIN"
-        // occur), so canonical emission must not depend on it — match case-insensitively.
-        if (platform.toLowerCase() === "domain") {
-          const host = canonicalDomainHost(handle);
-          if (!host) continue; // "" ⇒ not a resolvable hostname → skip (fail-closed)
-          ref = `domain:${host}`;
-        } else {
-          ref = `web2:${platform}:${handle}`;
-        }
-        out.push({
+        claims.push({
           kind: "web2",
-          platform,
+          platform: platform as CciWeb2Claim["platform"],
           handle,
           ref,
           ...(proof ? { proof } : {}),
@@ -202,185 +271,390 @@ function parseWeb2(payload: Record<string, unknown>): CciWeb2Claim[] {
       }
     }
   }
-  // Fallback: the older flat `linkedSocials: { platform: "handle" }` shape.
-  const socials = payload["linkedSocials"];
-  if (isObj(socials)) {
-    for (const [platform, value] of Object.entries(socials)) {
-      const handle = typeof value === "string"
-        ? platform.toLowerCase() === "domain"
-          ? value
-          : value.trim()
-        : "";
+
+  const linkedSocials = payload.linkedSocials;
+  if (isObj(linkedSocials)) {
+    for (const [sourcePlatform, value] of Object.entries(linkedSocials)) {
+      const platform = sourcePlatform.toLowerCase();
+      if (!WEB2_PLATFORMS.has(platform) || typeof value !== "string") continue;
+      const handle = platform === "domain" ? value : value.trim();
       if (!handle) continue;
-      // Same domain-canonicalisation as the primary GCR shape above (case-insensitive key).
-      let ref: string;
-      if (platform.toLowerCase() === "domain") {
-        const host = canonicalDomainHost(handle);
-        if (!host) continue; // "" ⇒ not a resolvable hostname → skip (fail-closed)
-        ref = `domain:${host}`;
-      } else {
-        ref = `web2:${platform}:${handle}`;
-      }
-      out.push({ kind: "web2", platform, handle, ref });
+      const ref = platform === "domain"
+        ? (() => {
+            const host = canonicalizeNativeDomainHostname(handle);
+            return host ? `domain:${host}` : undefined;
+          })()
+        : canonicalRef(`cci-web2:${platform}:${handle}`);
+      if (!ref) continue;
+      claims.push({
+        kind: "web2",
+        platform: platform as CciWeb2Claim["platform"],
+        handle,
+        ref,
+      });
     }
   }
-  return dedupeByRef(out);
+  return dedupeByRef(claims);
 }
 
-/** Extract an address from an xm identity link (object with `.address`, or a bare string). */
-function xmAddress(link: unknown): string {
-  if (typeof link === "string") return link;
-  if (isObj(link) && typeof link["address"] === "string") return link["address"];
-  return "";
+function addressFrom(entry: unknown): string | undefined {
+  if (typeof entry === "string") return nonBlank(entry);
+  return isObj(entry) ? nonBlank(entry.address) : undefined;
 }
 
 function parseWallets(payload: Record<string, unknown>): CciWalletClaim[] {
-  const out: CciWalletClaim[] = [];
-  // Primary: the live GCR shape — `xm.<chainType>.<network>[].address`.
-  const xm = payload["xm"];
-  if (isObj(xm)) {
-    for (const [chainType, networks] of Object.entries(xm)) {
-      if (!isObj(networks)) continue;
-      for (const links of Object.values(networks)) {
-        const list = Array.isArray(links) ? links : [links];
-        for (const link of list) {
-          const address = xmAddress(link);
+  const claims: CciWalletClaim[] = [];
+  if (isObj(payload.xm)) {
+    for (const [chainType, subchains] of Object.entries(payload.xm)) {
+      if (!isObj(subchains) || !nonBlank(chainType)) continue;
+      for (const [subchain, entries] of Object.entries(subchains)) {
+        if (!nonBlank(subchain)) continue;
+        for (const entry of Array.isArray(entries) ? entries : [entries]) {
+          const address = addressFrom(entry);
           if (!address) continue;
-          out.push({
-            kind: "wallet",
-            chainType,
-            address,
-            ref: `xm:${chainType}:${address}`,
-          });
+          const ref = canonicalRef(`cci-xm:${chainType}:${subchain}:${address}`);
+          if (!ref) continue;
+          claims.push({ kind: "wallet", chainType, subchain, address, ref });
         }
       }
     }
   }
-  // Fallback: the older `linkedWallets: "<chainType>:<address>"[]` shape.
-  const linked = payload["linkedWallets"];
-  if (Array.isArray(linked)) {
-    for (const entry of linked) {
+
+  // The historical flattened shape is usable only when it carries all three
+  // DACS coordinates. A two-component `chain:address` value has no canonical
+  // subchain and is deliberately retained only in `raw`.
+  if (Array.isArray(payload.linkedWallets)) {
+    for (const entry of payload.linkedWallets) {
       if (typeof entry !== "string") continue;
-      const idx = entry.indexOf(":");
-      if (idx <= 0) continue;
-      const chainType = entry.slice(0, idx);
-      const address = entry.slice(idx + 1);
-      if (!address) continue;
-      out.push({
-        kind: "wallet",
-        chainType,
-        address,
-        ref: `xm:${chainType}:${address}`,
-      });
+      const first = entry.indexOf(":");
+      const second = entry.indexOf(":", first + 1);
+      if (first <= 0 || second <= first + 1 || second === entry.length - 1) continue;
+      const chainType = entry.slice(0, first);
+      const subchain = entry.slice(first + 1, second);
+      const address = entry.slice(second + 1);
+      const ref = canonicalRef(`cci-xm:${chainType}:${subchain}:${address}`);
+      if (ref) claims.push({ kind: "wallet", chainType, subchain, address, ref });
     }
   }
-  return dedupeByRef(out);
+  return dedupeByRef(claims);
 }
 
-/** Flatten a GCR family field that may be an array or an object-of-lists. */
-function familyEntries(field: unknown): unknown[] {
+function flatEntries(field: unknown): unknown[] {
   if (Array.isArray(field)) return field;
-  if (isObj(field)) return Object.values(field).flatMap((v) => (Array.isArray(v) ? v : [v]));
-  return [];
+  if (!isObj(field)) return [];
+  return Object.values(field).flatMap((value) =>
+    Array.isArray(value) ? value : [value],
+  );
 }
 
 function parseUd(payload: Record<string, unknown>): CciUdClaim[] {
-  const out: CciUdClaim[] = [];
-  for (const entry of familyEntries(payload["ud"])) {
+  const claims: CciUdClaim[] = [];
+  for (const entry of flatEntries(payload.ud)) {
     if (!isObj(entry)) continue;
-    const domain = typeof entry["domain"] === "string" ? entry["domain"].trim() : "";
+    const domain = nonBlank(entry.domain);
     if (!domain) continue;
-    const network = typeof entry["network"] === "string" ? entry["network"] : undefined;
+    const ref = canonicalRef(`cci-ud:${domain.toLowerCase()}`);
+    if (!ref) continue;
+    const network = nonBlank(entry.network);
     const proof = claimProof(entry);
-    out.push({
+    claims.push({
       kind: "ud",
       domain,
       ...(network ? { network } : {}),
-      // CF-2: UD domains are case-insensitive, so the canonical ref lower-cases
-      // the domain (the display `domain` field keeps the original casing).
-      ref: `cci-ud:${domain.toLowerCase()}`,
+      ref,
       ...(proof ? { proof } : {}),
     });
   }
-  return dedupeByRef(out);
+  return dedupeByRef(claims);
 }
 
 function parsePqc(payload: Record<string, unknown>): CciPqcClaim[] {
-  const out: CciPqcClaim[] = [];
-  for (const entry of familyEntries(payload["pqc"])) {
-    if (!isObj(entry)) continue;
-    const algorithm = typeof entry["algorithm"] === "string" ? entry["algorithm"].trim() : "";
-    const address = typeof entry["address"] === "string" ? entry["address"].trim() : "";
-    if (!algorithm || !address) continue;
-    out.push({
-      kind: "pqc",
-      algorithm,
-      address,
-      // CF-2: the algorithm is a lower-case enum; the public key is
-      // case-significant, so it is NOT normalised (an exact-match identifier).
-      ref: `cci-pqc:${algorithm.toLowerCase()}:${address}`,
-    });
+  const claims: CciPqcClaim[] = [];
+  const add = (algorithmValue: unknown, entry: unknown): void => {
+    const algorithm = nonBlank(algorithmValue)?.toLowerCase();
+    const address = addressFrom(entry);
+    if ((algorithm !== "falcon" && algorithm !== "ml-dsa") || !address) return;
+    const ref = canonicalRef(`cci-pqc:${algorithm}:${address}`);
+    if (!ref) return;
+    claims.push({ kind: "pqc", algorithm, address, ref });
+  };
+
+  if (Array.isArray(payload.pqc)) {
+    for (const entry of payload.pqc) {
+      add(isObj(entry) ? entry.algorithm : undefined, entry);
+    }
+  } else if (isObj(payload.pqc)) {
+    for (const [algorithm, entries] of Object.entries(payload.pqc)) {
+      for (const entry of Array.isArray(entries) ? entries : [entries]) {
+        add(algorithm, entry);
+      }
+    }
   }
-  return dedupeByRef(out);
+  return dedupeByRef(claims);
 }
 
-/**
- * Parse a raw GCR identity payload into a structured {@link CciRecord}.
- * `primaryClaim` is the subject's canonical claim (the ed25519 pubkey hex / DID
- * the caller resolved) — it's carried through as the record's root.
- */
+function forEachNestedIdentity(
+  field: unknown,
+  visit: (chain: string, subchain: string, entry: unknown) => void,
+): void {
+  if (!isObj(field)) return;
+  for (const [chain, subchains] of Object.entries(field)) {
+    if (!isObj(subchains) || !nonBlank(chain)) continue;
+    for (const [subchain, entries] of Object.entries(subchains)) {
+      if (!nonBlank(subchain)) continue;
+      for (const entry of Array.isArray(entries) ? entries : [entries]) {
+        visit(chain, subchain, entry);
+      }
+    }
+  }
+}
+
+function parseNomis(payload: Record<string, unknown>): CciNomisClaim[] {
+  const claims: CciNomisClaim[] = [];
+  forEachNestedIdentity(payload.nomis, (chain, subchain, entry) => {
+    if (!isObj(entry)) return;
+    const address = nonBlank(entry.address);
+    const score = nonNegativeSafeNumber(entry.score);
+    const scoreType = nonNegativeSafeInteger(entry.scoreType);
+    const observedAt = epochMilliseconds(entry.lastSyncedAt);
+    if (!address || score === undefined || scoreType === undefined || observedAt === undefined) {
+      return;
+    }
+    const minted = entry.mintedScore;
+    const mintedScore = minted === null ? null : nonNegativeSafeNumber(minted);
+    if (minted !== undefined && mintedScore === undefined) return;
+    const ref = canonicalRef(`cci-nomis:${address}`);
+    if (!ref) return;
+    claims.push({
+      kind: "nomis",
+      chain,
+      subchain,
+      address,
+      score,
+      scoreType,
+      ...(minted !== undefined ? { mintedScore } : {}),
+      observedAt,
+      ref,
+    });
+  });
+  return dedupeByRef(claims);
+}
+
+function parseHumanPassport(
+  payload: Record<string, unknown>,
+): CciHumanPassportClaim[] {
+  const claims: CciHumanPassportClaim[] = [];
+  for (const entry of flatEntries(payload.humanpassport)) {
+    if (!isObj(entry)) continue;
+    const addressValue = nonBlank(entry.address);
+    const address = addressValue && EVM_ADDRESS.test(addressValue)
+      ? addressValue.toLowerCase()
+      : undefined;
+    const score = nonNegativeSafeNumber(entry.score);
+    const observedAt = epochMilliseconds(entry.verifiedAt);
+    const method = entry.verificationMethod;
+    const stamps = entry.stamps;
+    const expiresAt = entry.expiresAt === null
+      ? null
+      : epochMilliseconds(entry.expiresAt);
+    if (
+      !address ||
+      score === undefined ||
+      typeof entry.passingScore !== "boolean" ||
+      observedAt === undefined ||
+      (method !== "api" && method !== "onchain") ||
+      !Array.isArray(stamps) ||
+      !stamps.every((stamp) => typeof stamp === "string" && stamp.trim() !== "") ||
+      expiresAt === undefined
+    ) {
+      continue;
+    }
+    const threshold = nonNegativeSafeNumber(entry.threshold);
+    if (entry.threshold !== undefined && threshold === undefined) continue;
+    const chainId = nonNegativeSafeInteger(entry.chainId);
+    if (entry.chainId !== undefined && chainId === undefined) continue;
+    const ref = canonicalRef(`cci-humanpassport:${address}`);
+    if (!ref) continue;
+    claims.push({
+      kind: "humanpassport",
+      id: address,
+      address,
+      score,
+      passingScore: entry.passingScore,
+      ...(threshold !== undefined ? { threshold } : {}),
+      stamps: [...stamps],
+      verificationMethod: method,
+      ...(chainId !== undefined ? { chainId } : {}),
+      observedAt,
+      expiresAt,
+      ref,
+    });
+  }
+  return dedupeByRef(claims);
+}
+
+function parseEthos(payload: Record<string, unknown>): CciEthosClaim[] {
+  const claims: CciEthosClaim[] = [];
+  forEachNestedIdentity(payload.ethos, (chain, subchain, entry) => {
+    if (!isObj(entry)) return;
+    const address = nonBlank(entry.address);
+    const score = nonNegativeSafeNumber(entry.score);
+    const profileId = nonNegativeSafeInteger(entry.profileId);
+    const observedAt = epochMilliseconds(entry.lastSyncedAt);
+    // DACS-1 identifies this scheme by Ethos profile id. Older GCR records
+    // without one cannot be made canonical by substituting a wallet address.
+    if (!address || score === undefined || profileId === undefined || observedAt === undefined) {
+      return;
+    }
+    const id = String(profileId);
+    const ref = canonicalRef(`cci-ethos:${id}`);
+    if (!ref) return;
+    claims.push({
+      kind: "ethos",
+      id,
+      profileId,
+      chain,
+      subchain,
+      address,
+      score,
+      observedAt,
+      ref,
+    });
+  });
+  return dedupeByRef(claims);
+}
+
+function parseTlsn(payload: Record<string, unknown>): CciTlsnClaim[] {
+  const claims: CciTlsnClaim[] = [];
+  const add = (
+    contextValue: unknown,
+    entry: unknown,
+    dedicatedContext = false,
+  ): void => {
+    const context = nonBlank(contextValue)?.toLowerCase();
+    if (!context || !TLSN_CONTEXTS.has(context) || !isObj(entry)) return;
+    if (!dedicatedContext && entry.proofType !== "tlsn") return;
+    const username = nonBlank(entry.username);
+    const userIdValue = entry.userId;
+    const userId = typeof userIdValue === "string"
+      ? nonBlank(userIdValue)
+      : typeof userIdValue === "number" && Number.isSafeInteger(userIdValue)
+        ? String(userIdValue)
+        : undefined;
+    const proofHash = nonBlank(entry.proofHash)?.toLowerCase();
+    if (!username || !userId || !proofHash || !HEX_32.test(proofHash)) return;
+    const observedAt = epochMilliseconds(entry.timestamp);
+    const ref = canonicalRef(`cci-tlsn:${proofHash}`);
+    if (!ref) return;
+    claims.push({
+      kind: "tlsn",
+      context: context as CciTlsnClaim["context"],
+      username,
+      userId,
+      proofHash,
+      ...(observedAt !== undefined ? { observedAt } : {}),
+      ref,
+    });
+  };
+
+  // Current Demos nodes persist TLSN-verified identities inside web2 buckets.
+  if (isObj(payload.web2)) {
+    for (const [context, entries] of Object.entries(payload.web2)) {
+      for (const entry of Array.isArray(entries) ? entries : [entries]) {
+        add(context, entry);
+      }
+    }
+  }
+  // Also accept the dedicated context shape if a later node exposes it.
+  if (isObj(payload.tlsn)) {
+    for (const [context, entries] of Object.entries(payload.tlsn)) {
+      for (const entry of Array.isArray(entries) ? entries : [entries]) {
+        add(context, entry, true);
+      }
+    }
+  } else if (Array.isArray(payload.tlsn)) {
+    for (const entry of payload.tlsn) {
+      add(isObj(entry) ? entry.context : undefined, entry, true);
+    }
+  }
+  return dedupeByRef(claims);
+}
+
+/** Parse and own a raw Demos GCR identity response. */
 export function parseCciRecord(primaryClaim: string, raw: unknown): CciRecord {
-  const payload = unwrapIdentityPayload(raw);
+  const ownedRaw = snapshotWireJsonRead(raw, "Demos GCR identity response");
+  const payload = unwrapIdentityPayload(ownedRaw);
   const web2 = parseWeb2(payload);
   const wallets = parseWallets(payload);
   const ud = parseUd(payload);
   const pqc = parsePqc(payload);
+  const nomis = parseNomis(payload);
+  const humanPassport = parseHumanPassport(payload);
+  const ethos = parseEthos(payload);
+  const tlsn = parseTlsn(payload);
   return {
     primaryClaim,
     web2,
     wallets,
     ud,
     pqc,
-    claims: [...web2, ...wallets, ...ud, ...pqc],
-    raw,
+    nomis,
+    humanPassport,
+    ethos,
+    tlsn,
+    claims: [
+      ...web2,
+      ...wallets,
+      ...ud,
+      ...pqc,
+      ...nomis,
+      ...humanPassport,
+      ...ethos,
+      ...tlsn,
+    ],
+    raw: ownedRaw,
   };
 }
 
-/** A claim ref decomposed into its addressable parts (for reverse lookup). */
+/** A claim ref decomposed into the coordinates supported by Demos reverse lookup. */
 export type ParsedClaimRef =
-  | { kind: "web2"; platform: string; handle: string }
-  | { kind: "wallet"; chainType: string; address: string };
+  | { kind: "web2"; platform: CciWeb2Claim["platform"]; handle: string }
+  | {
+      kind: "wallet";
+      chainType: string;
+      subchain: string;
+      address: string;
+    };
 
-/**
- * Parse a canonical claim ref back into its parts, or null if it isn't a
- * reverse-resolvable linked-claim ref. Inverse of the `ref` fields produced by
- * {@link parseCciRecord}:
- *   `domain:<host>`            → web2 claim (platform "domain")
- *   `web2:<platform>:<handle>` → web2 claim
- *   `xm:<chainType>:<address>` → wallet claim
- * Historical `web2:domain:<host>` references deliberately return null here.
- * They may only be folded by `readAuthenticatedDomainClaims`, after the
- * enclosing artifact's original bytes/hash/signature have authenticated.
- * (The primary claim / DID isn't a linked-claim ref and returns null.)
- */
+/** Parse only canonical linked refs that the current Demos SDK can reverse-resolve. */
 export function parseClaimRef(ref: string): ParsedClaimRef | null {
-  const web2 = /^web2:([^:]+):(.+)$/.exec(ref);
-  if (web2) {
-    if (web2[1] === "domain") return null;
-    return { kind: "web2", platform: web2[1]!, handle: web2[2]! };
+  const web2 = /^cci-web2:(twitter|github|discord|telegram):(.+)$/.exec(ref);
+  if (web2 && isCanonicalClaimReference(ref)) {
+    return {
+      kind: "web2",
+      platform: web2[1] as Exclude<CciWeb2Claim["platform"], "domain">,
+      handle: web2[2]!,
+    };
   }
   const domain = /^domain:(.+)$/.exec(ref);
   if (domain && isCanonicalDomainHostname(domain[1]!)) {
     return { kind: "web2", platform: "domain", handle: domain[1]! };
   }
-  const xm = /^xm:([^:]+):(.+)$/.exec(ref);
-  if (xm) return { kind: "wallet", chainType: xm[1]!, address: xm[2]! };
+  const wallet = /^cci-xm:([^:]+):([^:]+):(.+)$/.exec(ref);
+  if (wallet && isCanonicalClaimReference(ref)) {
+    return {
+      kind: "wallet",
+      chainType: wallet[1]!,
+      subchain: wallet[2]!,
+      address: wallet[3]!,
+    };
+  }
   return null;
 }
 
 /** Every claim ref for a record, primary first. */
 export function cciClaimRefs(record: CciRecord): string[] {
-  return [record.primaryClaim, ...record.claims.map((c) => c.ref)];
+  return [record.primaryClaim, ...record.claims.map((claim) => claim.ref)];
 }
 
 function canonicalDomainRef(ref: string): string | null {
@@ -389,64 +663,49 @@ function canonicalDomainRef(ref: string): string | null {
   return isCanonicalDomainHostname(hostname) ? ref : null;
 }
 
-/**
- * Does the record assert `ref`? Matches the primary claim or any linked claim.
- * Current `domain:` refs must already use exact DCR-1 spelling. Historical
- * `web2:domain:` aliases are intentionally not interpreted by this unauthenticated
- * convenience API; use `readAuthenticatedDomainClaims` for signed artifacts.
- * Other Web2 and UD refs match case-insensitively; wallet / pqc / primary refs
- * match exactly.
- */
+/** Does the record assert the exact canonical ref? */
 export function cciHasClaim(record: CciRecord, ref: string): boolean {
   if (ref === record.primaryClaim) return true;
   const requestedDomain = canonicalDomainRef(ref);
-  if (/^(?:domain|web2:domain):/i.test(ref)) {
+  if (/^(?:domain|(?:cci-)?web2:domain):/i.test(ref)) {
     return requestedDomain !== null && record.claims.some(
       (claim) => canonicalDomainRef(claim.ref) === requestedDomain,
     );
   }
   const lower = ref.toLowerCase();
-  return record.claims.some((c) =>
-    c.kind === "web2" || c.kind === "ud"
-      ? c.ref.toLowerCase() === lower
-      : c.ref === ref,
+  return record.claims.some((claim) =>
+    claim.kind === "web2" || claim.kind === "ud"
+      ? claim.ref.toLowerCase() === lower
+      : claim.ref === ref,
   );
 }
 
-/**
- * The attested proof carried by the claim `ref`, or undefined if the record
- * holds no such claim or the claim carries no proof. Only proof-bearing
- * families (web2 / ud) can return a value; the primary claim is self-evident
- * (undefined). A stricter vet can require this to be present — a claim with a
- * proof was attested by the node, not merely asserted.
- */
+/** Return a stored proof commitment for proof-bearing CCI families. */
 export function cciClaimProof(record: CciRecord, ref: string): string | undefined {
   const requestedDomain = canonicalDomainRef(ref);
-  if (/^(?:domain|web2:domain):/i.test(ref)) {
+  if (/^(?:domain|(?:cci-)?web2:domain):/i.test(ref)) {
     if (requestedDomain === null) return undefined;
-    for (const claim of record.claims) {
-      if (
-        (claim.kind === "web2" || claim.kind === "ud") &&
-        canonicalDomainRef(claim.ref) === requestedDomain
-      ) {
-        return claim.proof;
-      }
-    }
-    return undefined;
+    const claim = record.claims.find(
+      (candidate) => canonicalDomainRef(candidate.ref) === requestedDomain,
+    );
+    return claim?.kind === "web2" || claim?.kind === "ud"
+      ? claim.proof
+      : undefined;
   }
   const lower = ref.toLowerCase();
-  for (const c of record.claims) {
+  for (const claim of record.claims) {
     if (
-      (c.kind === "web2" || c.kind === "ud") &&
-      c.ref.toLowerCase() === lower
+      (claim.kind === "web2" || claim.kind === "ud") &&
+      claim.ref.toLowerCase() === lower
     ) {
-      return c.proof;
+      return claim.proof;
     }
+    if (claim.kind === "tlsn" && claim.ref === ref) return claim.proofHash;
   }
   return undefined;
 }
 
-/** Does the record assert `ref` AND carry an attested proof for it? */
+/** Does the record assert `ref` and carry a native proof commitment for it? */
 export function cciClaimHasProof(record: CciRecord, ref: string): boolean {
   return cciClaimProof(record, ref) !== undefined;
 }
