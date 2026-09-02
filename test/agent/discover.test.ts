@@ -13,7 +13,7 @@ import {
 } from "../../src/crypto/index.js";
 
 const LISTING = {
-  agentId: "did:demos:agent:alice",
+  agentId: "did:demos:alice",
   serviceId: "svc",
   name: "Market Data",
   description: "d",
@@ -27,7 +27,7 @@ const LISTING = {
 const store: Record<string, Record<string, unknown>> = {
   "ref:1": LISTING,
   "ref:2": { not: "a listing" },
-  "ref:3": { ...LISTING, agentId: "did:demos:agent:bob" },
+  "ref:3": { ...LISTING, agentId: "did:demos:bob" },
 };
 const read = async (ref: string) => store[ref] ?? null;
 
@@ -43,7 +43,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       found[0]!.compatibility === "legacy-mvp"
         ? found[0]!.listing.agentId
         : undefined,
-    ).toBe("did:demos:agent:alice");
+    ).toBe("did:demos:alice");
     // returned listing is the signed scope (signature omitted)
     expect("signature" in found[0]!.listing).toBe(false);
   });
@@ -125,13 +125,13 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       seller: {
         identity: {
           bundleVersion: "1",
-          presentedBy: "did:demos:agent:seller",
+          presentedBy: "did:demos:seller",
           presentedAt: 1,
-          claims: [{ ref: "did:demos:agent:seller" }],
+          claims: [{ ref: "did:demos:seller" }],
           presentation: {
             kind: "per-claim",
             signatures: [{
-              ref: "did:demos:agent:seller",
+              ref: "did:demos:seller",
               signature: "presentation",
             }],
           },
@@ -161,7 +161,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       validity: { notBefore: 0 },
       signature: {
         algorithm: "ed25519",
-        signer: "did:demos:agent:seller",
+        signer: "did:demos:seller",
         value: "AA",
       },
     } as unknown as Record<string, unknown>;
@@ -204,6 +204,28 @@ describe("discoverListings signature verification (#41)", () => {
         ? found[0]!.listing.agentId
         : undefined,
     ).toBe(ALICE.did);
+  });
+
+  test("the default resolver preserves canonical Demos parameters", async () => {
+    const parameterized = `${ALICE.did}?a=left%3Aright&unknown=value`;
+    const signed = await signedBy(parameterized, ALICE.priv);
+    const found = await discoverListings(["a"], async () => signed, deps);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.compatibility === "legacy-mvp"
+      ? found[0].listing.agentId
+      : null).toBe(parameterized);
+  });
+
+  test.each([
+    (key: string) => `did:ethr:${key}`,
+    (key: string) => key,
+    (key: string) => `0x${key}`,
+    (key: string) => `demos:0x${key}`,
+    (key: string) => `DID:demos:agent:${key}`,
+  ])("the default resolver never suffix-decodes a non-canonical signer", async (alias) => {
+    const signed = await signedBy(alias(ALICE.hex), ALICE.priv);
+    await expect(discoverListings(["a"], async () => signed, deps))
+      .resolves.toEqual([]);
   });
 
   test("WRONG KEY — signed by someone other than the advertised seller is dropped", async () => {
