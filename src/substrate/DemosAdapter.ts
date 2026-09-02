@@ -4019,22 +4019,25 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const identities = new Identities();
-    if (parsed.kind === "web2" && parsed.platform === "domain") {
-      throw new Error(
-        "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+    let accounts: Array<{ pubkey?: unknown }> | null | undefined;
+    if (parsed.kind === "web2") {
+      if (parsed.platform === "domain") {
+        throw new Error(
+          "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+        );
+      }
+      accounts = await identities.getDemosIdsByWeb2Identity(
+        this.demos,
+        parsed.platform,
+        parsed.handle,
+      );
+    } else {
+      accounts = await identities.getDemosIdsByWeb3Identity(
+        this.demos,
+        `${parsed.chainType}.${parsed.subchain}`,
+        parsed.address,
       );
     }
-    const accounts = parsed.kind === "web2"
-      ? await identities.getDemosIdsByWeb2Identity(
-          this.demos,
-          parsed.platform,
-          parsed.handle,
-        )
-      : await identities.getDemosIdsByWeb3Identity(
-          this.demos,
-          `${parsed.chainType}.${parsed.subchain}`,
-          parsed.address,
-        );
     return (accounts ?? [])
       .map((a: { pubkey?: unknown }) => a.pubkey)
       .filter((p: unknown): p is string => typeof p === "string");
