@@ -954,6 +954,12 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         `party Vet attempt ${index} claim, requirement and recipe schemes differ`,
       );
     }
+    if (scheme === "cci-tlsn") {
+      throw new DacsError(
+        `party Vet attempt ${index} cannot re-verify a native cci-tlsn claim ` +
+        "through an external verification recipe",
+      );
+    }
     if (!identityBundle.claims.some((claim) =>
       sameCanonicalClaimIdentity(claim.ref, attempt.claimSubject)
     )) {

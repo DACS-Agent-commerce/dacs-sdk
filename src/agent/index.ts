@@ -6,6 +6,8 @@ export {
   buildAgent,
   type Agent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
@@ -70,11 +72,13 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
   type ReputationWindow,
   type SessionOutcome,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,
@@ -325,6 +329,15 @@ export {
   type TerminalPhaseAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+export {
+  prepareVetTerminalBundle,
+  type PrepareVetTerminalBundleDeps,
+  type PrepareVetTerminalBundleInput,
+  type PreparedVetTerminalBundle,
+  type VetFailureTerminalSessionRecord,
+  type VetProductionAuthentication,
+  type VetTerminalSessionParty,
+} from "./vetTerminalBundle.js";
 export {
   advanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus,

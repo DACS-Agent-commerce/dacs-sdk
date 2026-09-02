@@ -36,6 +36,7 @@ import {
   bundleConsistency,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
+import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
 import {
@@ -48,6 +49,10 @@ import {
   shouldRetryVerification,
   vetPhaseFailureClass,
 } from "../../src/agent/vetSemantics.js";
+import {
+  validateListingArtifact,
+  type ListingValidationDeps,
+} from "../../src/agent/listingValidation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
@@ -71,6 +76,8 @@ import {
 import type {
   AnyAttestationBundle,
   AttestationBundle,
+  IdentityBundle,
+  Listing,
   VerificationDecision,
   VerifyResult,
 } from "../../src/artifacts/types.js";
@@ -78,6 +85,11 @@ import {
   isAttestationRef,
   isChainTxRef,
 } from "../../src/artifacts/index.js";
+import {
+  assessRegistryGovernanceDisclosure,
+  classifyRecipeAnchoringPhase,
+  evaluatePinnedRecipeGovernance,
+} from "../../src/registry/governance.js";
 import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/artifacts/legacyMvp.js";
 
 /**
@@ -243,6 +255,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       computedAt: number;
       partyPrimaryClaim: string;
       bundles: AttestationBundle[];
+      seeds: Record<string, string>;
     };
   const deriveCurrentRep = (bundles: AnyAttestationBundle[]) => {
     const fx = repFixture();
@@ -306,6 +319,43 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       signer: `key:${"c".repeat(64)}`,
       value: Buffer.alloc(64).toString("base64url"),
     },
+  });
+  const listingFixture = (): Listing => {
+    const source = read(
+      "conformance/vectors/security/listing-preserve-unknown-v0.1.json",
+    ) as unknown as {
+      fixtures: { "listing-with-inert-extension": { listing: Listing } };
+    };
+    return structuredClone(
+      source.fixtures["listing-with-inert-extension"].listing,
+    );
+  };
+  const listingDeps = (nowMs: number): ListingValidationDeps => ({
+    nowMs: () => nowMs,
+    verifyListingSignature: () => true,
+    revocation: {
+      surfaces: [{
+        kind: "well-known",
+        status: "active",
+        integrity: "verified",
+      }],
+      readMarker: async () => null,
+      verifyMarkerSignature: () => true,
+    },
+    verifyIdentityPresentation: (_input: {
+      bundle: Readonly<IdentityBundle>;
+      signedBytes: Uint8Array;
+    }) => true,
+    loadRailResolution: () => ({
+      trustPhase: "PA-2",
+      registry: {
+        state: "verified-finalized",
+        entries: [],
+        definitions: [],
+      },
+    }),
+    resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+    verifySellerControl: () => true,
   });
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
@@ -540,11 +590,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const pub = hex(golden.signing.publicKeyHex);
       expect(verifyArtifact("dacs-bundle:v1:", golden.signing.doc, sig, pub)).toBe(want);
     },
-    // DIVERGENCE (it.fails below): the golden pins a closed registry of
-    // exactly 24 separators (§B.7); the SDK's SIGNATURE_DOMAIN_SEPARATORS
-    // carries 18 — it deliberately excludes the composite-payload separators
-    // (session-binding, auto-accept-*) and lacks bundle-binding,
-    // fault-bundle-pointer and finality-commitment. Tracked in #86.
+    // The oracle pins a closed registry of 28 separators and the SDK exposes the same
+    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
+    // below. The only remaining it.fails divergence is canonical-number handling.
     "sig-registry-closed": (want) => {
       expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(want.count);
       expect([...SIGNATURE_DOMAIN_SEPARATORS].sort()).toEqual(want.separators);
@@ -565,6 +613,50 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs1-listing-address": (want) => {
       expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3)).toBe(want);
+    },
+    "dacs1-listing-intake-ok": async (want) => {
+      const listing = listingFixture();
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notBefore),
+      );
+      expect(result).toMatchObject({
+        disposition: "verified",
+        step: 9,
+        railResolution: { disposition: "verified", reason: "not-applicable" },
+      });
+      expect(result.disposition === "verified").toBe(want);
+    },
+    "dacs1-listing-pay-no-rails-fail": async (want) => {
+      const listing = listingFixture();
+      listing.pipeline.splice(2, 0, {
+        kind: "pay-x402",
+        parameters: { rail: "x402:default" },
+      });
+      delete listing.acceptedRails;
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notBefore),
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        step: 8,
+        reason: "missing-accepted-rails",
+      });
+      expect({ ok: false, failedAt: "accepted-rails-conditional" }).toEqual(want);
+    },
+    "dacs1-listing-expired-fail": async (want) => {
+      const listing = listingFixture();
+      const result = await validateListingArtifact(
+        listing as unknown as Record<string, unknown>,
+        listingDeps(listing.validity.notAfter! + 1),
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        step: 3,
+        reason: "outside-validity-window",
+      });
+      expect({ ok: false, failedAt: "validity-window" }).toEqual(want);
     },
 
     // vet — §7.5.1 decisions/method binding, §7.6.1 retry policy and §7.8.2
@@ -909,6 +1001,111 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         failedAt: want.failedAt,
         reason: want.reason,
       });
+    },
+
+    // governance — DACS-2 §7.4.4 GOV-1..GOV-3. These primitive vectors
+    // exercise the shipped fail-closed phase/disclosure policy directly.
+    "gov-gov2-classify": (want) => {
+      let unknownRejected = false;
+      try {
+        classifyRecipeAnchoringPhase("future-phase");
+      } catch {
+        unknownRejected = true;
+      }
+      expect([
+        classifyRecipeAnchoringPhase("in-code").phase,
+        classifyRecipeAnchoringPhase("single-signer").phase,
+        classifyRecipeAnchoringPhase("multisig").phase,
+        unknownRejected,
+      ]).toEqual(want);
+    },
+    "gov-gov2-incode-not-anchored": (want) => {
+      expect([
+        classifyRecipeAnchoringPhase("in-code").canonicallyAnchored,
+        classifyRecipeAnchoringPhase("single-signer").canonicallyAnchored,
+        classifyRecipeAnchoringPhase("multisig").canonicallyAnchored,
+      ]).toEqual(want);
+    },
+    "gov-gov1-discloses-key": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:steward-v1",
+        actualPhase: "single-signer",
+        represents: "single-steward",
+      })).toMatchObject(want);
+    },
+    "gov-gov1-missing-key": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        actualPhase: "single-signer",
+        represents: "single-steward",
+      }).ok).toBe(want);
+    },
+    "gov-gov1-misrepresent-constituted": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:steward-v1",
+        actualPhase: "single-signer",
+        represents: "constituted-body",
+      }).ok).toBe(want);
+    },
+    "gov-gov1-constituted-ok-at-multisig": (want) => {
+      expect(assessRegistryGovernanceDisclosure({
+        authoritativeSigningKey: "key:body-v1",
+        actualPhase: "multisig",
+        represents: "constituted-body",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-pintime-governs": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: want.recipeVersion,
+        pinnedPhase: "single-signer",
+        minimumPhase: "single-signer",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-incode-pin-not-anchored": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 1,
+        pinnedPhase: "in-code",
+        minimumPhase: "in-code",
+      })).toMatchObject(want);
+    },
+    "gov-gov3-below-trust-floor": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 3,
+        pinnedPhase: "single-signer",
+        minimumPhase: "multisig",
+      }).ok).toBe(want);
+    },
+    "gov-gov3-meets-trust-floor": (want) => {
+      expect(evaluatePinnedRecipeGovernance({
+        recipeVersion: 4,
+        pinnedPhase: "multisig",
+        minimumPhase: "multisig",
+      }).ok).toBe(want);
+    },
+    "gov-gov3-unknown-phase-rejected": (want) => {
+      let rejected = false;
+      try {
+        evaluatePinnedRecipeGovernance({
+          recipeVersion: 3,
+          pinnedPhase: "unknown" as "single-signer",
+          minimumPhase: "in-code",
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(want);
+    },
+    "gov-gov1-unknown-phase-rejected": (want) => {
+      let rejected = false;
+      try {
+        assessRegistryGovernanceDisclosure({
+          authoritativeSigningKey: "key:steward-v1",
+          actualPhase: "unknown" as "single-signer",
+          represents: "single-steward",
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(want);
     },
 
     // dacs1 — identityTier derivation (§6.3.2.1 IT-1..IT-3), via
@@ -1415,6 +1612,130 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(bundleDecision(await runBundle(buyer, fx.seeds))).toBe(want.buyerDecision);
       expect(bundleDecision(await runBundle(seller, fx.seeds))).toBe(want.sellerDecision);
     },
+    "verify-reputation-single-signed-non-abort-dropped": async (want) => {
+      const fx = repFixture();
+      const completed = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COMPLETED"
+        )!,
+      );
+      const invalidCounterparty = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COUNTERPARTY"
+        )!,
+      );
+      // anchoredByRole is outside the signed scope, so the retained seller
+      // signature remains cryptographically valid. The copy must nevertheless
+      // be dropped: failed-counterparty is not eligible for the §10.11
+      // single-signed-abort exception.
+      invalidCounterparty.anchoredByRole = "seller";
+      invalidCounterparty.signatures = invalidCounterparty.signatures.filter(
+        (signature) => signature.party === "did:demos:seller",
+      );
+      const keys = keysFromSeeds(fx.seeds);
+      const verifier = {
+        resolvePublicKey: async (did: string) => keys[did] ?? null,
+        verify: verifySig,
+      };
+      const completedValidity = await verifyBundleCopy(
+        completed as unknown as Record<string, unknown>,
+        "buyer",
+        verifier,
+      );
+      const invalidValidity = await verifyBundleCopy(
+        invalidCounterparty as unknown as Record<string, unknown>,
+        "seller",
+        verifier,
+      );
+      expect(completedValidity.valid).toBe(true);
+      expect(invalidValidity.valid ? "pass" : "fail").toBe(
+        want.verifyBundleDecision,
+      );
+
+      // deriveReputation's validation gate is synchronous, so pass only the
+      // exact copy that the async cryptographic gate accepted above.
+      const validated = new Set<AnyAttestationBundle>([completed]);
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [completed, invalidCounterparty],
+        {
+          windowStart: fx.windowStart,
+          windowEnd: fx.windowEnd,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          isValid: (bundle) => validated.has(bundle),
+          copyAbsence: () => "absent",
+        },
+      );
+      expect(derived.bundleCount).toBe(want.bundleCount);
+      expect(derived.metrics.completionRate).toBe(want.completionRate);
+      expect(derived.metrics.counterpartyFaultRate).toBe(
+        want.counterpartyFaultRate,
+      );
+      expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
+        want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
+      );
+    },
+    "verify-reputation-divergence-excluded": async (want) => {
+      const fx = repFixture();
+      const completed = structuredClone(
+        fx.bundles.find((bundle) =>
+          bundle.jobId === "DACS-VERIFY-L3-REP-COMPLETED"
+        )!,
+      );
+      const divergentBuyer = read(golden.bundle.fixture) as unknown as AttestationBundle;
+      const divergentSeller = read(
+        golden.bundle.divergentSellerFixture,
+      ) as unknown as AttestationBundle;
+      const keys = keysFromSeeds(golden.bundle.seeds);
+      const verifier = {
+        resolvePublicKey: async (did: string) => keys[did] ?? null,
+        verify: verifySig,
+      };
+      const validated = new Set<AnyAttestationBundle>();
+      expect((await verifyBundleCopy(
+        completed as unknown as Record<string, unknown>,
+        "buyer",
+        verifier,
+      )).valid).toBe(true);
+      validated.add(completed);
+      for (const [bundle, role] of [
+        [divergentBuyer, "buyer"],
+        [divergentSeller, "seller"],
+      ] as const) {
+        const validity = await verifyBundleCopy(
+          bundle as unknown as Record<string, unknown>,
+          role,
+          verifier,
+        );
+        expect(validity.valid).toBe(true);
+        validated.add(bundle);
+      }
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [completed, divergentBuyer, divergentSeller],
+        {
+          windowStart: 0,
+          windowEnd: Number.MAX_SAFE_INTEGER,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          isValid: (bundle) => validated.has(bundle),
+          copyAbsence: () => "absent",
+        },
+      );
+      expect(derived.bundleCount).toBe(want.bundleCount);
+      expect(derived.metrics.completionRate).toBe(want.completionRate);
+      expect(derived.metrics.counterpartyFaultRate).toBe(
+        want.counterpartyFaultRate,
+      );
+      expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
+        want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
+      );
+    },
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
       // authoritative-absence context is excluded from every metric.
@@ -1445,11 +1766,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Why un-runnable cases are todo, per area (with per-case overrides).
   const TODO_AREA_REASON: Record<string, string> = {
     dacs1:
-      "no exported §6.3.2/§6.3.3 requirement-matching, freshness-gate, control-gate (#170) or §6.3.4 listing-conformance surface",
+      "remaining §6.3.2/§6.3.3 requirement-matching, freshness, and control-gate inputs lack an independently exported policy surface",
     vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
       "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
-    governance: "no GOV-1..3 governance surface in the SDK",
+    governance: "all current GOV-1..3 goldens replay through the exported governance policy surface",
     dispute:
       "no DACS-X §11.2.1 dispute verifier in the SDK; vector inputs are constructed in dacs-verify run.ts, not shipped",
     disclosure:
@@ -1516,16 +1837,18 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
 
   it("does not silently demote replayed cases back to todo", () => {
     // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome and DACS-2 Vet semantics raise coverage to 111.
+    // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
+    // coverage to 128.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(111);
+    expect(Object.keys(RUNNERS)).toHaveLength(128);
     expect(manifest.cases).toHaveLength(236);
   });
 
-  it("#86 plus payload attestation: the SDK exposes all 25 separators", () => {
+  it("#86 plus payload attestation: the SDK exposes all 28 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
-    // reconciled the SDK to the closed §B.7 set, so it is now a passing case.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(25);
+    // reconciled the SDK to the closed §B.7 set (25). The 662be1d pin adds the
+    // evidence-bound fault bundle, its pointer, and prior-payment disposition.
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(28);
   });
 });

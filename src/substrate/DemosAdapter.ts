@@ -18,6 +18,7 @@ import {
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
+  assertDemosCciResponseBounds,
   parseClaimRef,
   parseDemosAgentClaimReference,
 } from "../identity/index.js";
@@ -3400,7 +3401,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
    * Resolves by address: a ref that is (or contains) an address returns its
-   * identity graph (keyed `xm` / `web2` / `ud` / `pqc`; parseCciRecord reads it).
+   * identity graph (all eight production GCR contexts; parseCciRecord reads it).
    * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
    * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
    * findSubjectsByClaim below.
@@ -3425,6 +3426,10 @@ export class DemosAdapter implements SubstrateAdapter {
       "getIdentities",
       ref,
     );
+    // The demosdk has already decoded the RPC response at this boundary. Bound
+    // it before returning it to any higher-level caller; Agent parsing applies
+    // the same check again before retaining a snapshot.
+    assertDemosCciResponseBounds(raw);
     return { ref, boundTo: ref, raw };
   }
 
@@ -3443,18 +3448,22 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const identities = new Identities();
-    const accounts =
-      parsed.kind === "web2"
-        ? await identities.getDemosIdsByWeb2Identity(
-            this.demos,
-            parsed.platform as "twitter" | "github" | "discord" | "telegram",
-            parsed.handle,
-          )
-        : await identities.getDemosIdsByWeb3Identity(
-            this.demos,
-            parsed.chainType as `${string}.${string}`,
-            parsed.address,
-          );
+    if (parsed.kind === "web2" && parsed.platform === "domain") {
+      throw new Error(
+        "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+      );
+    }
+    const accounts = parsed.kind === "web2"
+      ? await identities.getDemosIdsByWeb2Identity(
+          this.demos,
+          parsed.platform,
+          parsed.handle,
+        )
+      : await identities.getDemosIdsByWeb3Identity(
+          this.demos,
+          `${parsed.chainType}.${parsed.subchain}`,
+          parsed.address,
+        );
     return (accounts ?? [])
       .map((a: { pubkey?: unknown }) => a.pubkey)
       .filter((p: unknown): p is string => typeof p === "string");

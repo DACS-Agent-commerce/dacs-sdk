@@ -39,6 +39,19 @@ export {
   type HistoricalRecipeResolution,
 } from "./recipeSelection.js";
 export { settleFromRail, type RailDispatchOptions } from "./dispatch.js";
+export {
+  RECIPE_ANCHORING_PHASES,
+  classifyRecipeAnchoringPhase,
+  assessRegistryGovernanceDisclosure,
+  evaluatePinnedRecipeGovernance,
+  type RecipeAnchoringPhase,
+  type RecipeAnchoringPhaseClassification,
+  type RegistryGovernanceRepresentation,
+  type RegistryGovernanceDisclosureInput,
+  type RegistryGovernanceDisclosureDecision,
+  type PinnedRecipeGovernanceInput,
+  type PinnedRecipeGovernanceDecision,
+} from "./governance.js";
 export type {
   AssetSpec,
   Availability,
