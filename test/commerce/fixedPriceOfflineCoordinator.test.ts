@@ -145,7 +145,7 @@ describe("fixed-price offline coordinator", () => {
     expect(documentation).toContain("not resumable or upgradeable as live sessions");
   });
 
-  it("preserves the hardened live x402 binding hash across profile generalisation", () => {
+  it("binds the live x402 profile to the repaired exact Standard revision", () => {
     expect(fixedPriceX402OrderBindingHash({
       jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       buyer: "did:example:buyer",
@@ -165,7 +165,8 @@ describe("fixed-price offline coordinator", () => {
     // here so an accidental pin or protocol change fails loudly.
     //   965df755 -> 0c58b9d65f67e8c36e8379db8d80af074470e2834f40a148fce609461ecad17c
     //   662be1d  -> a81bbc35634f8ec64b62fc820835ce498f2a976316e323cd962481b10bc0a77a
-    })).toBe("a81bbc35634f8ec64b62fc820835ce498f2a976316e323cd962481b10bc0a77a");
+    //   f2e9662  -> 57133d65062083c6a5bc7242c664835588a03a1492d6cf15431bdbc201ae0e90
+    })).toBe("57133d65062083c6a5bc7242c664835588a03a1492d6cf15431bdbc201ae0e90");
   });
 
   it("runs the shared role-separated lifecycle and combines only verified actor state", async () => {

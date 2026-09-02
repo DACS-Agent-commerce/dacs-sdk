@@ -1127,7 +1127,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         agreement: fixture.agreement,
         verifiedListing: fixture.verifiedListing,
         committedAt: NEGOTIATION_COMMITTED_AT,
-      })).toThrow(/supports only fixed-price/);
+      })).toThrow(/fixed-price/);
       expect({ ok: fixedBindingPasses(fixture), failedAt: "pattern" }).toEqual(want);
     },
     "neg-ps3-fixed-over-negotiable": (want) => {

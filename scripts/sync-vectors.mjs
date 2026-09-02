@@ -17,15 +17,15 @@ const REPO =
 // Pinned for reproducible conformance runs. The pin is the SDK's test oracle,
 // so moving it changes what "conformant" means — bump deliberately, in a
 // change that re-runs the suite and reconciles any drift.
-// Currently: DACS-Standard `next` @ 2026-09-01 (662be1d, merge of #335). This adds the
-// three B.7 separators the registry below was missing (evidence-bound fault bundle,
-// its pointer, prior-payment disposition). The presence-only / APR / domain-GCR sets that
-// landed in the same window are candidate security corpora, not MANIFEST cases; this
-// harness has no runners for them and does not test them.
-// Previous pin: 965df755 (2026-08-11); before that c2ecd9f, 625df63 and 9a77966 (234 cases).
-// See #5-#7, #137, and Standard #315.
+// Currently: DACS-Standard PR #362 exact head, repairing the CORE §B.2
+// signature-omitted VerifyResult reference hashes in the signed DACS-1 v0.7 /
+// DACS-2 v0.6 38-case presence-only corpus.
+// Previous pin: 662be1d (adopted DACS-Standard PR #335 merge).
+// That prior pin also added the B.7 evidence-bound bundle, pointer and
+// prior-payment-disposition separators used by the integrated security stack.
+// See SDK #147, Standard #359/#362, and SDK #263.
 const REF =
-  process.env.DACS_STANDARD_REF || "662be1d4899a2cadf327fe2d5523e93a80334e5f";
+  process.env.DACS_STANDARD_REF || "f2e96627d9f5251cb32c69a31f44b35cda613b64";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });
