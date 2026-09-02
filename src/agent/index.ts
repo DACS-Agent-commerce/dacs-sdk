@@ -69,11 +69,13 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
   type ReputationWindow,
   type SessionOutcome,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,

@@ -86,6 +86,8 @@
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/pay-cross-chain-htlc.md",
+    "docs/pay-solana-spl.md",
+    "docs/pay-ap2.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
   ],
