@@ -89,6 +89,7 @@
     "docs/settlement-verified-reputation.md",
     "docs/pay-ap2.md",
     "docs/pay-solana-spl.md",
+    "docs/pay-cross-chain-htlc.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
   ],

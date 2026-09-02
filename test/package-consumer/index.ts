@@ -52,6 +52,10 @@ import {
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
   type SolanaSplSettlementStore,
+  advanceCrossChainHtlc,
+  deriveHtlcPreimage,
+  type CrossChainHtlcAdapter,
+  type CrossChainHtlcStore,
 } from "@kynesyslabs/dacs/rails";
 
 const config: DemosAdapterConfig = { rpc: "https://example.invalid" };
@@ -124,6 +128,8 @@ const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
+const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
+const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -138,6 +144,8 @@ declare const ap2Verifier: Ap2MandateVerifier;
 declare const ap2Provider: Ap2ProviderAdapter;
 declare const solanaAdapter: SolanaSplAdapter;
 declare const solanaStore: SolanaSplSettlementStore;
+declare const htlcAdapter: CrossChainHtlcAdapter;
+declare const htlcStore: CrossChainHtlcStore;
 
 void config;
 void verifier;
@@ -183,3 +191,7 @@ void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;
 void solanaStore;
+void htlcAdvance;
+void htlcPreimage;
+void htlcAdapter;
+void htlcStore;
