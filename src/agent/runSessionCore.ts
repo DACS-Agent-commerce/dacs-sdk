@@ -410,11 +410,16 @@ export interface VetFinalityAuthenticationRequest {
 }
 
 /**
- * Deterministic anchor names for a session's artifacts, keyed by jobId. The
- * address derived from each name IS the session's storage slot for that phase —
- * shared between runSessionCore (write/resume) and verifyBundle (dereference).
+ * Address grammar emitted by the quarantined pre-#308 buyer-only session
+ * producer. These names exist for deterministic resume and legacy reads only;
+ * they are not the current normative DACS addressing contract.
+ *
+ * New code uses the typed producers exported beside each current protocol
+ * component, including `compositeVerificationAddress`,
+ * `fixedPriceAgreementLogicalAddress`, payment phase addresses, and
+ * `bundleAddress`.
  */
-export const sessionAnchorName = {
+export const legacyMvpSessionAnchorName = Object.freeze({
   vet: (jobId: string, evaluatedParty?: string) =>
     evaluatedParty
       ? `dacs2:composite:${encodeAddressSegment(jobId)}:${encodeAddressSegment(evaluatedParty)}`
@@ -422,7 +427,14 @@ export const sessionAnchorName = {
   agreement: (jobId: string) => `dacs3:agreement:${jobId}`,
   evidence: (jobId: string) => `dacs4:evidence:${jobId}`,
   bundle: (jobId: string) => `dacs5:bundle:${jobId}`,
-};
+});
+
+/**
+ * @deprecated Deep-import compatibility alias. Public barrels intentionally
+ * expose only `legacyMvpSessionAnchorName`, whose name cannot be mistaken for
+ * the normative address scheme.
+ */
+export const sessionAnchorName = legacyMvpSessionAnchorName;
 
 /** Result of a resume-time semantic check on an already-anchored artifact. */
 type Match = { ok: boolean; reason?: string };
@@ -3388,7 +3400,7 @@ export async function runSessionCore(
   let recoveredAgreement: AnchorLookup | undefined;
   let recoveredEvidence: AnchorLookup | undefined;
   if (!listingExpired && resumeJobId !== undefined) {
-    const agreementName = sessionAnchorName.agreement(jobId);
+    const agreementName = legacyMvpSessionAnchorName.agreement(jobId);
     const priorAgreement = await recoveryLookup(agreementName, "admission");
     if (priorAgreement.status === "present") {
       const agreementMatch = matchAgreement(stripSignature(priorAgreement.value));
@@ -3413,7 +3425,7 @@ export async function runSessionCore(
     }
   }
   if (listingExpired) {
-    const agreementName = sessionAnchorName.agreement(jobId);
+    const agreementName = legacyMvpSessionAnchorName.agreement(jobId);
     recoveredAgreement = await recoveryLookup(agreementName, "admission");
     if (recoveredAgreement.status === "absent") {
       throw new CounterpartyError(
@@ -3439,7 +3451,7 @@ export async function runSessionCore(
       );
     }
 
-    const evidenceName = sessionAnchorName.evidence(jobId);
+    const evidenceName = legacyMvpSessionAnchorName.evidence(jobId);
     recoveredEvidence = await recoveryLookup(evidenceName, "payment");
     if (recoveredEvidence.status === "absent") {
       throw new CounterpartyError(
@@ -3522,7 +3534,7 @@ export async function runSessionCore(
   // Vet or settlement on an explicit resume, rather than discovering a stale
   // job/listing pairing only after payment evidence has been processed.
   if (requestedResumeJobId !== undefined) {
-    const bundleName = sessionAnchorName.bundle(jobId);
+    const bundleName = legacyMvpSessionAnchorName.bundle(jobId);
     let resumedBundle: AnchorLookup;
     try {
       resumedBundle = snapshotAnchorLookup(
@@ -3681,7 +3693,7 @@ export async function runSessionCore(
       }
       return authenticated;
     };
-    const vetName = sessionAnchorName.vet(jobId, listingView.sellerClaim);
+    const vetName = legacyMvpSessionAnchorName.vet(jobId, listingView.sellerClaim);
     let durable = snapshotAnchorLookup(
       await runtime.resolveAnchor(vetName),
       `Vet lookup for ${vetName}`,
@@ -3785,7 +3797,7 @@ export async function runSessionCore(
 
   // Negotiate (fixed-price): accept the listed terms.
   const { ref: agreementRef, value: agreementValue } = await anchorOnce(
-    sessionAnchorName.agreement(jobId),
+    legacyMvpSessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
       const agreement: AgreementDocument & {
@@ -4168,7 +4180,7 @@ export async function runSessionCore(
     value: evidenceValue,
     existing: evidenceExisting,
   } = await anchorOnce(
-    sessionAnchorName.evidence(jobId),
+    legacyMvpSessionAnchorName.evidence(jobId),
     matchSettlementEvidence,
     async () => {
       // Reconcile across a crash (#52): if a prior run already PAID — recorded a
@@ -4495,7 +4507,7 @@ export async function runSessionCore(
   });
 
   const { ref: bundleRef } = await anchorOnce(
-    sessionAnchorName.bundle(jobId),
+    legacyMvpSessionAnchorName.bundle(jobId),
     (v) => {
       if (!isAttestationBundle(v))
         return { ok: false, reason: "not an attestation bundle" };

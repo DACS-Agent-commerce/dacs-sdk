@@ -55,7 +55,7 @@ import type {
 } from "../substrate/SubstrateAdapter.js";
 import {
   runSessionCore,
-  sessionAnchorName,
+  legacyMvpSessionAnchorName,
   type SessionDeps,
   type SessionResult,
   type SessionTerms,
@@ -866,11 +866,11 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         }
         const name =
           kind === "dacs-3-agreement"
-            ? sessionAnchorName.agreement(jobId)
+            ? legacyMvpSessionAnchorName.agreement(jobId)
             : kind === "dacs-4-evidence"
-              ? sessionAnchorName.evidence(jobId)
+              ? legacyMvpSessionAnchorName.evidence(jobId)
               : kind === "dacs-2-verifyresult"
-                ? sessionAnchorName.vet(jobId)
+                ? legacyMvpSessionAnchorName.vet(jobId)
                 : null;
         if (!name) return null;
         const buyer = parties.find((party) => party.role === "buyer");
