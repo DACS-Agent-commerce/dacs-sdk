@@ -220,6 +220,8 @@ export {
   cciClaimRefs,
   cciHasClaim,
   identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
   requireCanonicalClaimReference,
