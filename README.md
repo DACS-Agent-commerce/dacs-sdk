@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a bundled live Solana wallet/RPC integration, AP2, and dispute execution (DACS-X) remain deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, bundled live AP2 and Solana wallet/RPC integrations, and dispute execution (DACS-X) remain deferred.
 
 ## What's implemented
 
@@ -38,7 +38,7 @@ All five lifecycle stages run end to end:
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` | fixed-price |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
@@ -273,6 +273,14 @@ const session = await buyer.runSession(resolved, {
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
+
+`Agent.getReputation()` is the normal untrusted-input path and fully verifies
+each referenced bundle before scoring it. Lower-level consumers that already
+hold candidate bundle objects must use `deriveReputationWithValidation()` when
+their cryptographic verifier is asynchronous. The pure `deriveReputation()`
+helper accepts only a synchronous primitive-boolean predicate over copies that
+were authenticated upstream; a Promise-valued predicate is rejected rather
+than treated as truthy.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
@@ -590,7 +598,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected Solana SPL safety core |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected AP2 and Solana SPL safety cores |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
