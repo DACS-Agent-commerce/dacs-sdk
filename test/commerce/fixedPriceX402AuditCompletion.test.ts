@@ -508,6 +508,18 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     }, fx.deps)).rejects.toThrow(/changed an order party/);
   });
 
+  it("rejects a non-canonical job id before granting audit-complete authority", async () => {
+    const fx = await fixture();
+    await expect(verifyCompletedTwoSidedSession({
+      jobId: "legacy-job",
+      buyer: BUYER.did,
+      seller: SELLER.did,
+      sellerClosure: fx.input.sellerClosure,
+      copies: fx.input.copies,
+    }, fx.deps)).rejects.toThrow(/canonical uppercase ULID/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
   it("uses the pinned v0.3 perspective-pair rule instead of coarse track outcomes", () => {
     const vectors = JSON.parse(readFileSync(new URL(
       "../../vendor/DACS-Standard/conformance/vectors/security/fault-bundle-perspective-pair-v0.3.json",

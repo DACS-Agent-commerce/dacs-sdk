@@ -20,6 +20,7 @@ import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,
 } from "../identity/claimReference.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   verifyBundleCopy,
   type BundleCopyDeps,
@@ -364,10 +365,6 @@ function captureCompletedInput(value: unknown): CompletedTwoSidedSessionInput {
   );
   if (!isRecord(retained) ||
       !exactKeys(retained, ["jobId", "buyer", "seller", "sellerClosure", "copies"]) ||
-      typeof retained.jobId !== "string" || retained.jobId.length === 0 ||
-      retained.jobId.trim() !== retained.jobId ||
-      retained.jobId.normalize("NFC") !== retained.jobId ||
-      /[\u0000-\u001f\u007f]/.test(retained.jobId) ||
       !isCanonicalClaimReference(retained.buyer) ||
       !isCanonicalClaimReference(retained.seller) ||
       sameCanonicalClaimIdentity(retained.buyer, retained.seller) ||
@@ -376,6 +373,7 @@ function captureCompletedInput(value: unknown): CompletedTwoSidedSessionInput {
       !isRecord(retained.copies) || !exactKeys(retained.copies, ["buyer", "seller"])) {
     throw new DacsError("completed two-sided session input is malformed");
   }
+  requireCanonicalJobId(retained.jobId, "completed two-sided session jobId");
   for (const role of ["buyer", "seller"] as const) {
     const copy = retained.copies[role];
     if (!isRecord(copy) || !exactKeys(
