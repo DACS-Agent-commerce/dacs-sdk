@@ -166,7 +166,12 @@ if (
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({ evmPrivateKey });
+const rail = await createX402Rail({
+  evmPrivateKey,
+  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
+  // Use the exact positive value from the authenticated rail descriptor.
+  finalityBlocks: 1,
+});
 // Passing the authenticated result (not only `resolved.ref`) pins the selected
 // content hash across runSession's pre-payment re-read.
 const session = await buyer.runSession(resolved, {
