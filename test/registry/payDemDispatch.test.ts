@@ -94,7 +94,7 @@ function x402Definition(): UnsignedRailDefinition {
       resourceBaseUrl: "https://seller.example",
     },
     phaseHandler: "pay-x402",
-    parameters: { authorization: "eip-3009" },
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
     availability: "live",
     governance: demDefinition().governance,
   };
@@ -619,7 +619,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     })).rejects.toThrow(/resolveRail \(RAV-R5\)/);
   });
 
-  test("captures x402 fetch before the first dispatch await", async () => {
+  test("captures x402 fetch and finality rpc before the first dispatch await", async () => {
     const firstFetch = vi.fn(async () => new Response("first")) as unknown as typeof fetch;
     const secondFetch = vi.fn(async () => new Response("second")) as unknown as typeof fetch;
     mocks.createX402Rail.mockResolvedValue({});
@@ -633,15 +633,19 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         recipient: "0x2222222222222222222222222222222222222222",
       },
       fetchImpl: firstFetch,
+      rpcUrl: "https://rpc.example",
     };
 
     const pending = settleFromRail(descriptor, options);
     options.fetchImpl = secondFetch;
+    options.rpcUrl = "https://attacker.example";
     await pending;
-    const capturedFetch = mocks.createX402Rail.mock.calls[0]![0].fetchImpl!;
+    const capturedOptions = mocks.createX402Rail.mock.calls[0]![0];
+    const capturedFetch = capturedOptions.fetchImpl!;
     await capturedFetch("https://seller.example/pay");
     expect(firstFetch).toHaveBeenCalledTimes(1);
     expect(secondFetch).not.toHaveBeenCalled();
+    expect(capturedOptions.rpcUrl).toBe("https://rpc.example");
   });
 
   test("captures the availability authority before awaiting its decision", async () => {
@@ -789,6 +793,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       expectedPhase: "pay-x402",
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
+        rpcUrl: "https://rpc.example",
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",
