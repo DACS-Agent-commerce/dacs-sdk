@@ -81,6 +81,7 @@
     "dist",
     "README.md",
     "docs/parser-engine.md",
+    "docs/alternative-payment-projection.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/x402-seller-paywall.md",

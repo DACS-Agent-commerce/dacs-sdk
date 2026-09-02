@@ -32,6 +32,8 @@ export {
   type RefVerdict,
   type BundleEvidenceVerificationContext,
   type BundleEvidenceVerificationResult,
+  type AlternativePaymentBundleVerificationInput,
+  type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
   bundleConsistency,
@@ -71,6 +73,13 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
 } from "./reputationDerivation.js";
+export {
+  isDacs5SessionTransitionAllowed,
+  dacs5BundleOutcomeForTerminalState,
+  type Dacs5SessionState,
+  type Dacs5ResumableSessionState,
+  type Dacs5SessionTransitionContext,
+} from "./sessionSemantics.js";
 export {
   discoverListings,
   verifyReadableListingArtifact,

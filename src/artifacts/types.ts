@@ -210,6 +210,14 @@ export interface PaymentRailRef {
   parameters?: Record<string, unknown>;
 }
 
+/** DACS-4 §9.9.1 listing-only projection instruction (APR-1). */
+export interface AlternativePaymentPhase {
+  kind: "pay-alternative";
+  parameters: {
+    alternatives: PaymentRailRef[];
+  };
+}
+
 /** DACS-1 §6.3.4 substrate capabilities a Listing can require. */
 export type SubstrateRequirement = "SR-1" | "SR-2" | "SR-3" | "SR-4" | "SR-5";
 
@@ -537,6 +545,8 @@ export interface AgreementTerms {
 
 export interface PayeeBoundAgreementTerms extends AgreementTerms {
   payoutBindings: PayoutBinding[];
+  /** Signed APR-6 authority for an explicitly claimed fresh-job replacement. */
+  priorPaymentDispositionRef?: AttestationRef;
 }
 
 /** Exact legacy agreement artifact selected by `commit-agreement` (DACS-3 §8.5). */
@@ -746,6 +756,25 @@ export interface ComponentSignature {
   value: string;
 }
 
+/** DACS-4 §9.9.1 signed cross-job payment-closure carrier (APR-6). */
+export interface PriorPaymentDisposition {
+  priorPaymentDispositionVersion: "1";
+  dispositionId: string;
+  priorJobId: string;
+  replacementJobId: string;
+  priorAgreementRef: AttestationRef;
+  priorSelection: PaymentRailRef;
+  priorPhaseIndex: number;
+  disposition:
+    | "closed-before-authorization"
+    | "authorization-pending"
+    | "settlement-indeterminate"
+    | "closed-cannot-settle";
+  reconciliationEvidenceRefs?: AttestationRef[];
+  observedAt: number;
+  signature: ComponentSignature;
+}
+
 /** Historical DACS-3 v0.1-v0.3 commitment. New producers MUST NOT emit it. */
 export interface CommitmentRecord {
   dacsVersion: "1";
@@ -853,6 +882,7 @@ export type PhaseType =
   | "negotiate-sealed-envelope-procurement"
   | "commit-agreement"
   | "commit-payee-bound-agreement"
+  | AlternativePaymentPhase["kind"]
   | PaymentPhaseType
   | DeliveryPhaseType
   | "rate";

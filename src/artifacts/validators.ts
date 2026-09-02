@@ -230,12 +230,15 @@ const PHASE_TYPES = [
   "pay-ap2",
   "pay-x402",
   "pay-dem",
+  "pay-alternative",
   "deliver-storage-program",
   "deliver-entitlement",
   "deliver-attested-payload",
   "rate",
 ] as const;
-const PAYMENT_PHASES = PHASE_TYPES.filter((phase) => phase.startsWith("pay-"));
+const PAYMENT_PHASES = PHASE_TYPES.filter(
+  (phase) => phase.startsWith("pay-") && phase !== "pay-alternative",
+);
 const DELIVERY_PHASES = PHASE_TYPES.filter((phase) => phase.startsWith("deliver-"));
 const COMPONENT_SIGNATURE_ALGORITHMS = [
   "ed25519",
@@ -620,6 +623,14 @@ export function isPhaseStep(v: unknown): v is PhaseStep {
     );
   }
   if (!isObj(v.parameters)) return false;
+  if (v.kind === "pay-alternative") {
+    return (
+      hasExactWireKeys(v.parameters, ["alternatives"]) &&
+      Array.isArray(v.parameters.alternatives) &&
+      v.parameters.alternatives.length >= 2 &&
+      v.parameters.alternatives.every(isPaymentRailRef)
+    );
+  }
   if (v.kind.startsWith("pay-")) {
     return isStr(v.parameters.rail) && v.parameters.rail.length > 0;
   }
@@ -743,9 +754,39 @@ function pipelineIsCoherent(
   }
   if (!includeRailBinding) return true;
 
-  const payPhases = pipeline.filter((phase) => phase.kind.startsWith("pay-"));
+  const alternativePhases = pipeline.filter(
+    (phase) => phase.kind === "pay-alternative",
+  );
+  const payPhases = pipeline.filter(
+    (phase) => phase.kind.startsWith("pay-") && phase.kind !== "pay-alternative",
+  );
   const rails = listing.acceptedRails as PaymentRailRef[] | undefined;
-  if (payPhases.length > 0) {
+  if (alternativePhases.length > 0) {
+    if (
+      alternativePhases.length !== 1 ||
+      payPhases.length !== 0 ||
+      !rails ||
+      rails.length === 0
+    ) {
+      return false;
+    }
+    const alternatives = alternativePhases[0]!.parameters?.alternatives;
+    if (!Array.isArray(alternatives) || alternatives.length < 2) return false;
+    try {
+      const acceptedCanonical = rails.map((rail) => canonicalize(rail));
+      const alternativeCanonical = alternatives.map((rail) => canonicalize(rail));
+      if (
+        new Set(alternativeCanonical).size !== alternativeCanonical.length ||
+        alternativeCanonical.some(
+          (entry) => acceptedCanonical.filter((value) => value === entry).length !== 1,
+        )
+      ) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  } else if (payPhases.length > 0) {
     if (!rails || rails.length === 0) return false; // DACS-1 §6.3.4 step 8.
     if (
       !payPhases.every((phase) =>
@@ -1291,6 +1332,8 @@ const hasAgreementCommon = (
         !/^(0|[1-9][0-9]*)$/.test(terms.meteredQuantity.quantity) ||
         !isNonEmptyStr(terms.meteredQuantity.unit))) ||
     (terms.rail !== undefined && !isPaymentRailRef(terms.rail)) ||
+    (terms.priorPaymentDispositionRef !== undefined &&
+      (!payeeBound || !isAttestationRef(terms.priorPaymentDispositionRef))) ||
     !isSafeUint(terms.deadline) ||
     (terms.priceAnchor !== undefined && !isPriceAnchor(terms.priceAnchor)) ||
     (terms.feeSchedule !== undefined &&
