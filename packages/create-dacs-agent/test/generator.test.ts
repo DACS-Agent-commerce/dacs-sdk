@@ -252,7 +252,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dacs).toEqual({
       generatorVersion: "0.1.0-alpha.0",
       releaseMetadataVersion: 1,
-      standardRevision: "965df755aba4ff392f1fb37a93d287242b177ba4",
+      standardRevision: "662be1d4899a2cadf327fe2d5523e93a80334e5f",
       configSchemaVersion: 1,
       sqliteSchemaVersion: 7,
       supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
