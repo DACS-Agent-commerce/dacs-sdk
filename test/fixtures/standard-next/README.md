@@ -8,6 +8,8 @@ ahead of the repository-wide conformance pin.
 - `listing-rail-registry-resolution-v0.4.json` — DACS-1 §6.3.4 LRR-1..LRR-6;
   DACS-4 §9.4.3; commit
   `c2ecd9fa658776f5511f2414d7b4c3e23b847463`.
+- `demos-agent-claim-reference.json` — DACS-1 §6.3.1 and CORE §B.1; commit
+  `81ded2b49851d8fa17399e3fdade9e36e33a4ff7`.
 - `domain-claim-gcr-v0.4.json` — DACS-1 DCR-1..DCR-8 and DACS-2
   DGCR-1..DGCR-6; commit
   `5c175d148932c8a3635e54a15f1db2f31f67a500` (Standard PR #346),

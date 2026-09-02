@@ -49,3 +49,11 @@ export {
   siwdBundleResource,
   siwdResourcesBindBundleHash,
 } from "./bundle.js";
+export {
+  canonicalDemosAgentPublicKey,
+  demosAgentClaimRef,
+  demosAgentPublicKey,
+  isDemosAgentClaimRef,
+  parseDemosAgentClaimReference,
+  type ParsedDemosAgentClaimReference,
+} from "./demos.js";
