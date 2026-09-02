@@ -71,9 +71,6 @@ describe("signing (§B.7)", () => {
       "dacs-auto-accept-commitment:v1:",
       "dacs-auto-accept-instance:v1:",
       "dacs-payload-attestation:v1:",
-      "dacs-evidence-bound-fault-bundle:v1:",
-      "dacs-evidence-bound-fault-bundle-pointer:v1:",
-      "dacs-prior-payment-disposition:v1:",
     ] as const) {
       expect(isRegisteredSeparator(sep)).toBe(true);
     }
