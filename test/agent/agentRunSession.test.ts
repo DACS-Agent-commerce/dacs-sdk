@@ -1483,10 +1483,10 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     });
     const aliasVerdict = await aliasAgent.verifyBundle("stor:aliased-bundle");
-    // The current ClaimReference parser now rejects this non-canonical
-    // did:ethr suffix alias before consulting an external key resolver. The
+    // The later authenticated evidence/bundle binding gates reject this
+    // untrusted suffix alias before consulting an external key resolver. The
     // earlier #213 branch reached the resolver once for authority and once for
-    // crypto; fail-closed-at-parse is the stronger, equivalent outcome.
+    // crypto; failing closed before resolution is the stronger outcome.
     expect(aliasKeyResolutions).toBe(0);
     expect(aliasVerdict.ok).toBe(false);
     expect(
