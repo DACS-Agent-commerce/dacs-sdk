@@ -228,6 +228,49 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     ).resolves.toBeNull();
   });
 
+  it("matches Listing identities by CF-3 while preserving each signed CF-2 reference", async () => {
+    const signerSeed = Uint8Array.from(Buffer.alloc(32, 43));
+    const signerKey = rawPublicKey(publicKeyFromSeed(signerSeed));
+    const signer = `did:demos:agent:${Buffer.from(signerKey).toString("hex")}`;
+    const qualifiedPresenter = `${signer}?role=seller`;
+    const draft = stripSignature(
+      fixture() as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft;
+    draft.seller.identity = {
+      bundleVersion: "1",
+      // CF-2 keeps this qualifier inside the signed artifact. CF-3 excludes it
+      // only when resolving the primary identity against the carried claim.
+      presentedBy: qualifiedPresenter,
+      presentedAt: draft.seller.identity.presentedAt,
+      claims: [{ ref: signer }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: signer, signature: "signer-presentation" }],
+      },
+    };
+    const signed = await signComponentArtifact(
+      draft,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        algorithm: "ed25519",
+        signer,
+        sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(signerSeed)),
+      },
+    );
+
+    expect(isListing(signed)).toBe(true);
+    await expect(
+      verifyReadableListingArtifact(
+        signed as unknown as Record<string, unknown>,
+        {
+          verify,
+          nowMs: () => 1_790_000_000_000,
+          resolvePublicKey: (claim) => (claim === signer ? signerKey : null),
+        },
+      ),
+    ).resolves.toMatchObject({ compatibility: "normative" });
+  });
+
   it("preserves an inert unknown field in the signed scope", async () => {
     const listing = fixture() as Listing & {
       futureOptionalMetadata: { displayTier: string };
