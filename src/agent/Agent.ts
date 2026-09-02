@@ -5,6 +5,7 @@ import type {
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
   CompositeVerificationRecord,
+  IdentityBundle,
   ListingDraft,
   ListingPin,
 } from "../artifacts/types.js";
@@ -39,14 +40,22 @@ import {
 } from "../discovery/index.js";
 import { DacsError } from "../errors.js";
 import {
+  authenticateDemosCciRecord,
   canonicalDemosAgentPublicKey,
+  classifyCciTlsnProof,
   demosAgentClaimRef,
+  isCanonicalClaimReference,
   parseCanonicalClaimReference,
+  parseCciRecord,
   parseDemosAgentClaimReference,
   requireCanonicalClaimReference,
   sameCanonicalClaimIdentity,
-  parseCciRecord,
+  type AuthenticateDemosCciDeps,
+  type AuthenticateDemosCciResult,
   type CciRecord,
+  type CciTlsnDisposition,
+  type CciTlsnSessionContext,
+  type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
 import type {
@@ -171,6 +180,83 @@ function stableAgentMethod<T>(
     throw new DacsError(`${label} must be a stable function`);
   }
   return Function.prototype.bind.call(candidate, source) as T;
+}
+
+interface CapturedAgentDemosCciConfig {
+  authenticateResolution: AuthenticateDemosCciDeps["authenticateResolution"];
+  authenticateProviderClaim?: AuthenticateDemosCciDeps["authenticateProviderClaim"];
+  verifyIdentityPresentation?: ClassifyCciTlsnDeps["verifyIdentityPresentation"];
+  verifyNativeTlsn?: ClassifyCciTlsnDeps["verifyNativeTlsn"];
+  nowMs?: () => number;
+}
+
+function captureAgentDemosCciConfig(
+  value: unknown,
+): Readonly<CapturedAgentDemosCciConfig> | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) {
+    throw new DacsError("AgentConfig.demosCci must be stable data");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const keys = Reflect.ownKeys(value);
+  const allowed = new Set<PropertyKey>([
+    "authenticateResolution",
+    "authenticateProviderClaim",
+    "verifyIdentityPresentation",
+    "verifyNativeTlsn",
+    "nowMs",
+  ]);
+  if ((prototype !== Object.prototype && prototype !== null) ||
+      !keys.includes("authenticateResolution") ||
+      keys.some((key) => !allowed.has(key))) {
+    throw new DacsError("AgentConfig.demosCci has an invalid capability shape");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const capture = <T>(key: string, optional = false): T | undefined => {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined && optional) return undefined;
+    if (!descriptor?.enumerable || !("value" in descriptor) ||
+        typeof descriptor.value !== "function" || nodeTypes.isProxy(descriptor.value)) {
+      throw new DacsError(`AgentConfig.demosCci.${key} must be a stable function`);
+    }
+    return Function.prototype.bind.call(descriptor.value, value) as T;
+  };
+  const authenticateResolution = capture<
+    AuthenticateDemosCciDeps["authenticateResolution"]
+  >("authenticateResolution")!;
+  const authenticateProviderClaim = capture<
+    NonNullable<AuthenticateDemosCciDeps["authenticateProviderClaim"]>
+  >("authenticateProviderClaim", true);
+  const verifyIdentityPresentation = capture<
+    ClassifyCciTlsnDeps["verifyIdentityPresentation"]
+  >("verifyIdentityPresentation", true);
+  const verifyNativeTlsn = capture<ClassifyCciTlsnDeps["verifyNativeTlsn"]>(
+    "verifyNativeTlsn",
+    true,
+  );
+  const nowMs = capture<() => number>("nowMs", true);
+  const nativeCapabilityCount = [
+    verifyIdentityPresentation,
+    verifyNativeTlsn,
+    nowMs,
+  ].filter((entry) => entry !== undefined).length;
+  if (nativeCapabilityCount !== 0 && nativeCapabilityCount !== 3) {
+    throw new DacsError(
+      "AgentConfig.demosCci native TLSN verifiers and clock must be configured together",
+    );
+  }
+  return Object.freeze({
+    authenticateResolution,
+    ...(authenticateProviderClaim === undefined ? {} : { authenticateProviderClaim }),
+    ...(verifyIdentityPresentation === undefined
+      ? {}
+      : {
+          verifyIdentityPresentation,
+          verifyNativeTlsn: verifyNativeTlsn!,
+          nowMs: nowMs!,
+        }),
+  });
 }
 
 /** Own the low-level reader policy once; the SDK retains the algorithm. */
@@ -404,6 +490,14 @@ export interface AgentConfig {
   resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
 
   /**
+   * Optional Demos CCI trust capabilities. Authenticated identity resolution
+   * requires `authenticateResolution`; provider scores additionally require
+   * `authenticateProviderClaim`. Native TLSN qualification is exposed only
+   * when both TLSN verification capabilities and a trusted clock are configured.
+   */
+  demosCci?: AgentDemosCciConfig;
+
+  /**
    * Published logical→native binding authority used by listing writes and their
    * consumer-index readback. `publishListing` refuses to anchor unless this is
    * configured: a physical write without its independently readable binding
@@ -411,6 +505,20 @@ export interface AgentConfig {
    * typed logical reads and owner-scoped enumeration require only `index`.
    */
   bindings?: AgentBindingConfig;
+}
+
+export interface AgentDemosCciConfig extends AuthenticateDemosCciDeps {
+  verifyIdentityPresentation?: ClassifyCciTlsnDeps["verifyIdentityPresentation"];
+  verifyNativeTlsn?: ClassifyCciTlsnDeps["verifyNativeTlsn"];
+  /** Trusted wall clock used for current-session freshness evaluation. */
+  nowMs?: () => number;
+}
+
+export interface AgentNativeCciTlsnInput {
+  subject: string;
+  bundle: IdentityBundle;
+  proofHash: string;
+  context: Omit<CciTlsnSessionContext, "evaluatedAt">;
 }
 
 export interface AgentSettlementEvidenceContextInput {
@@ -578,8 +686,8 @@ export interface Agent<
   readonly adapter: TAdapter;
   /**
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
-   * primary claim plus the linked Web2 handles and cross-chain wallets bound to
-   * it in the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
+   * primary claim plus all eight production Demos CCI contexts bound to it in
+   * the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
    * primary key; other canonical claim refs are passed through (reverse
    * resolution is a substrate follow-up). Lookup conveniences are never
    * retained: the returned `primaryClaim` is a canonical parameter-free CF-3
@@ -587,8 +695,22 @@ export interface Agent<
    */
   resolveIdentity(subject: string): Promise<CciRecord>;
   /**
+   * Resolve and authenticate the exact Demos GCR response through the
+   * construction-time `AgentConfig.demosCci` trust capabilities.
+   */
+  resolveAuthenticatedIdentity(subject: string): Promise<AuthenticateDemosCciResult>;
+  /**
+   * Resolve authenticated CCI state and qualify one native TLSN commitment for
+   * an exact current Vet job/session. This never routes a registered native
+   * commitment through the external `tlsnotary` recipe.
+   */
+  qualifyNativeCciTlsn(
+    input: Readonly<AgentNativeCciTlsnInput>,
+  ): Promise<CciTlsnDisposition>;
+  /**
    * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
-   * `findByClaim("web2:twitter:alice")` or `findByClaim("xm:evm:0x…")` returns
+   * `findByClaim("cci-web2:twitter:alice")` or
+   * `findByClaim("cci-xm:evm:mainnet:0x…")` returns
    * the matching primary claims (Demos pubkeys), usually one, or [] if none.
    */
   findByClaim(claimRef: string): Promise<string[]>;
@@ -645,6 +767,12 @@ export interface Agent<
 export async function createAgent(
   config: AgentConfig,
 ): Promise<Agent<DemosBackedAdapter>> {
+  // Capture CCI trust authority before the adapter import/connect awaits. A
+  // caller cannot replace verifier methods while connection establishment is
+  // in flight and thereby change the authority retained by the Agent.
+  const retainedDemosCci = captureAgentDemosCciConfig(
+    stableAgentData(config, "demosCci", "AgentConfig.demosCci"),
+  );
   // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
   // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
   // the pure/verify surface. demosdk loads only when an agent is actually built.
@@ -661,7 +789,14 @@ export async function createAgent(
       : { writeJournal: config.demosWriteJournal }),
   });
   await adapter.connect();
-  return buildAgent(adapter, config);
+  const retainedConfig = Object.create(config) as AgentConfig;
+  Object.defineProperty(retainedConfig, "demosCci", {
+    value: retainedDemosCci,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  });
+  return buildAgent(adapter, retainedConfig);
 }
 
 /**
@@ -817,6 +952,41 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.resolveSettlementEvidenceContext",
     true,
   );
+  const demosCci = captureAgentDemosCciConfig(
+    stableAgentData(config, "demosCci", "AgentConfig.demosCci"),
+  );
+  const resolveDemosCciRaw = async (
+    subject: string,
+  ): Promise<Readonly<{ primaryClaim: string; raw: unknown }>> => {
+    const lookup = demosIdentityLookup(subject);
+    const resolved = await adapter.resolveIdentity(lookup.address);
+    return Object.freeze({
+      primaryClaim: lookup.primaryClaim,
+      raw: resolved.raw,
+    });
+  };
+  const resolveAuthenticatedDemosCci = async (
+    subject: string,
+  ): Promise<AuthenticateDemosCciResult> => {
+    if (!demosCci) {
+      throw new DacsError(
+        "resolveAuthenticatedIdentity requires AgentConfig.demosCci",
+      );
+    }
+    if (!isCanonicalClaimReference(subject)) {
+      return Object.freeze({
+        status: "error" as const,
+        reason: "CCI subject is malformed",
+      });
+    }
+    const resolved = await resolveDemosCciRaw(subject);
+    return authenticateDemosCciRecord(resolved.primaryClaim, resolved.raw, {
+      authenticateResolution: demosCci.authenticateResolution,
+      ...(demosCci.authenticateProviderClaim === undefined
+        ? {}
+        : { authenticateProviderClaim: demosCci.authenticateProviderClaim }),
+    });
+  };
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -974,9 +1144,79 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // The GCR routine resolves by Demos address (the ed25519 pubkey hex).
       // Accept a Demos DID / 0x-prefixed / bare-hex key as explicit lookup
       // conveniences, but never retain those caller aliases in protocol data.
-      const lookup = demosIdentityLookup(subject);
-      const resolved = await adapter.resolveIdentity(lookup.address);
-      return parseCciRecord(lookup.primaryClaim, resolved.raw);
+      const resolved = await resolveDemosCciRaw(subject);
+      return parseCciRecord(resolved.primaryClaim, resolved.raw);
+    },
+
+    async resolveAuthenticatedIdentity(
+      subject: string,
+    ): Promise<AuthenticateDemosCciResult> {
+      return resolveAuthenticatedDemosCci(subject);
+    },
+
+    async qualifyNativeCciTlsn(
+      input: Readonly<AgentNativeCciTlsnInput>,
+    ): Promise<CciTlsnDisposition> {
+      if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
+          !demosCci.nowMs) {
+        throw new DacsError(
+          "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
+        );
+      }
+      let captured: AgentNativeCciTlsnInput;
+      try {
+        captured = snapshotCanonicalJson(
+          input,
+          "Agent native CCI TLSN request",
+        ) as unknown as AgentNativeCciTlsnInput;
+      } catch {
+        return Object.freeze({
+          status: "invalid",
+          reason: "CCI TLSN request is malformed",
+        });
+      }
+      if (Reflect.ownKeys(captured).length !== 4 ||
+          !["subject", "bundle", "proofHash", "context"].every((key) =>
+            Object.prototype.hasOwnProperty.call(captured, key)) ||
+          captured.context === null || typeof captured.context !== "object" ||
+          Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
+        return Object.freeze({
+          status: "invalid",
+          reason: "CCI TLSN request is malformed",
+        });
+      }
+      const resolution = await resolveAuthenticatedDemosCci(captured.subject);
+      if (resolution.status !== "authenticated") {
+        return Object.freeze({
+          status: resolution.status,
+          reason: resolution.reason,
+        });
+      }
+      let evaluatedAt: number;
+      try {
+        evaluatedAt = demosCci.nowMs();
+      } catch {
+        return Object.freeze({
+          status: "indeterminate",
+          reason: "CCI TLSN evaluation clock was unavailable",
+        });
+      }
+      if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
+        return Object.freeze({
+          status: "error",
+          reason: "CCI TLSN evaluation clock was malformed",
+        });
+      }
+      return classifyCciTlsnProof(
+        resolution.record,
+        captured.bundle,
+        captured.proofHash,
+        { ...captured.context, evaluatedAt },
+        {
+          verifyIdentityPresentation: demosCci.verifyIdentityPresentation,
+          verifyNativeTlsn: demosCci.verifyNativeTlsn,
+        },
+      );
     },
 
     async findByClaim(claimRef: string): Promise<string[]> {
