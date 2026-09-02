@@ -74,6 +74,17 @@ hash/nonce recovery record after process loss. Cross-process at-most-once use
 must wrap it with `payDemSettle` and a durable `SettlementIdempotencyStore`, and
 read-only reconciliation needs an application-owned durable journal or
 equivalent rail record. The default settlement store is process-local.
+The `settleFromRail` convenience path exposes these dependencies through its
+`payDem` options. Calls made through `payDemSettle` also attach the exact rail,
+job, phase index, derived settlement key, network, payer, payee and OS amount to
+the prepared-transfer checkpoint. Operators must authenticate that complete
+tuple in the same durable authority as the settlement intent before using it for
+recovery. The reconciliation callback receives that immutable tuple and repeats
+the chain-observed OS amount in its result; a missing, non-final or contradictory
+observation must throw. After restart, even a cached success is reconciled before
+reuse. Only an authoritative `null` proof for the exact tuple may authorize one
+new submission under a held intent; non-observation or an ambiguous transaction
+must never do so.
 
 Hash-first observation has a finite wait even when demosdk's broadcast promise
 or a status call never settles. A pending JavaScript promise alone does not keep
