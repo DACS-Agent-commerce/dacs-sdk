@@ -148,6 +148,16 @@ export {
   type AdvanceSolanaSplSettlementInput,
 } from "./solanaSpl.js";
 export {
+  ERC20_TRANSFER_EVENT_TOPIC,
+  verifyEvmTransferFinality,
+  type EvmCanonicalBlock,
+  type EvmTransferFinalityClient,
+  type EvmTransferFinalityObservation,
+  type EvmTransferFinalityRequest,
+  type EvmTransferLog,
+  type EvmTransferReceipt,
+} from "./evmTransferFinality.js";
+export {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementKey,
   createX402BuyerSettlementIntent,
