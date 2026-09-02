@@ -3890,15 +3890,16 @@ function compose(options: LiveProjectTemplateOptions): string {
     .replaceAll("      - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro", draftVolumes)
     .replace("DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}",
       `DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-${options.rails === "pay-dem" ? "DEM" : "USDC"}}`);
-  if (options.rails !== "pay-dem") return configured;
+  if (options.rails === "both") return configured;
+  const unrelated = options.rails === "pay-dem"
+    ? [
+        "DACS_BUYER_EVM_SECRET_FILE", "DACS_SELLER_EVM_SECRET_FILE",
+        "DACS_SELLER_EVM_PAYEE", "DACS_X402_", "DACS_EVM_",
+        "DACS_FIXED_PRICE_AMOUNT", "DACS_MAX_EVM_",
+      ]
+    : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
   return configured.split("\n").filter((line) =>
-    !line.includes("DACS_BUYER_EVM_SECRET_FILE") &&
-    !line.includes("DACS_SELLER_EVM_SECRET_FILE") &&
-    !line.includes("DACS_EVM_RPC_URL") &&
-    !line.includes("DACS_SELLER_EVM_PAYEE") &&
-    !line.includes("DACS_X402_FACILITATOR_URL") &&
-    !line.includes("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK") &&
-    !line.includes("DACS_MAX_EVM_NETWORK_FEE_ETH")
+    !unrelated.some((name) => line.includes(name))
   ).join("\n");
 }
 
@@ -3950,15 +3951,16 @@ DACS_FUNDED_DOCTOR_DATA_ROOT=./data/funded-doctor
       ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json"
       : "DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json";
   const configured = template.replace("DACS_LISTING_DRAFT_FILE=./listing-draft.json", draftLines);
-  if (options.rails !== "pay-dem") return configured;
+  if (options.rails === "both") return configured;
+  const unrelated = options.rails === "pay-dem"
+    ? [
+        "DACS_BUYER_EVM_SECRET_FILE=", "DACS_SELLER_EVM_SECRET_FILE=",
+        "DACS_SELLER_EVM_PAYEE=", "DACS_X402_", "DACS_EVM_",
+        "DACS_FIXED_PRICE_AMOUNT=", "DACS_MAX_EVM_",
+      ]
+    : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
   return configured.split("\n").filter((line) =>
-    !line.startsWith("DACS_BUYER_EVM_SECRET_FILE=") &&
-    !line.startsWith("DACS_SELLER_EVM_SECRET_FILE=") &&
-    !line.startsWith("DACS_EVM_RPC_URL=") &&
-    !line.startsWith("DACS_SELLER_EVM_PAYEE=") &&
-    !line.startsWith("DACS_X402_FACILITATOR_URL=") &&
-    !line.startsWith("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK=") &&
-    !line.startsWith("DACS_MAX_EVM_NETWORK_FEE_ETH=")
+    !unrelated.some((name) => line.startsWith(name))
   ).join("\n");
 }
 

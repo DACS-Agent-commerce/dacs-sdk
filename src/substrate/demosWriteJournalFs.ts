@@ -23,7 +23,10 @@ import {
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const DEFAULT_LOCK_STALE_MS = 30_000;
-const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+// A write lease intentionally spans Demos confirmation and authenticated
+// native readback (normally up to 120 seconds). Contenders must queue beyond
+// that safety boundary instead of failing during an ordinary consensus wait.
+const DEFAULT_LOCK_TIMEOUT_MS = 10 * 60_000;
 const LOCK_RETRY_MS = 10;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +46,7 @@ export interface FsDemosWriteJournalOptions {
    */
   dir: string;
   lockStaleMs?: number;
+  /** Maximum queue wait; defaults to ten minutes, not the write lease TTL. */
   lockTimeoutMs?: number;
 }
 

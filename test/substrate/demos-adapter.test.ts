@@ -563,7 +563,7 @@ describe("DemosAdapter", () => {
       makeAdapter(sharedJournal),
       makeAdapter(sharedJournal),
     ];
-    const owner = "0xWriter";
+    const owner = "ab".repeat(32);
     const name = "listing-v1";
     const address = StorageProgram.deriveStorageAddress(owner, name, 1, "");
     let winner: Record<string, unknown> | null = null;

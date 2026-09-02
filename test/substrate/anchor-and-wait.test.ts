@@ -4,6 +4,7 @@ import {
   AnchorWaitError,
   DemosAdapter,
   createInMemoryDemosWriteJournal,
+  demosSignedTransactionProofHash,
   demosWriteEvidenceToAnchorReceipt,
   type AnchorAttemptReceipt,
   type DemosWriteJournalRecord,
@@ -87,6 +88,47 @@ function pendingNativeTransfer(
       settlementKey: "pay-dem:job:0",
     },
     updatedAt: Date.now(),
+  };
+}
+
+function pendingAnchorWrite(
+  generation: number,
+  wallet: string,
+  txRef: string,
+  nonce: number,
+  logicalName: string,
+  nativeAddress: string,
+  data: Record<string, unknown>,
+): { record: DemosWriteJournalRecord; payload: Record<string, unknown> } {
+  const programName = logicalToStorageProgramName(logicalName);
+  const payload = {
+    operation: "CREATE_STORAGE_PROGRAM",
+    programName,
+    storageAddress: nativeAddress,
+    encoding: "json",
+    data,
+  };
+  const signed = signedStorageTransaction(wallet, txRef, payload, nonce);
+  const signedTransaction = canonicalize(signed);
+  return {
+    payload,
+    record: {
+      writeId: `write-${txRef}`,
+      generation,
+      kind: "mutable",
+      operation: "create",
+      stage: "broadcast-intent",
+      logicalName,
+      programName,
+      owner: wallet,
+      nativeAddress,
+      valueHash: sha256Hex(canonicalize(data)),
+      nonce,
+      txRef,
+      signedTransaction,
+      signedTransactionHash: demosSignedTransactionProofHash(signed),
+      updatedAt: Date.now(),
+    },
   };
 }
 
@@ -293,6 +335,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       content: { timestamp: 120, ordered_transactions: [txRef] },
       validation_data: { signatures: ["validator-test-signature"] },
     });
+    raw.getAddressNonce.mockResolvedValue(9);
 
     await adapter.reconcileNativeTransferJournal(lease, 1_000);
     expect(lease.snapshot.records).toMatchObject([
@@ -317,6 +360,62 @@ describe("DemosAdapter.anchorAndWait", () => {
       expect.anything(),
       { nonce: 10 },
     );
+  });
+
+  it("authenticates a pending anchor before a native transfer can reuse its nonce", async () => {
+    const { adapter, raw, wallet, recordSignedPayload } = await makeAdapter();
+    const txRef = "78".repeat(32);
+    const logicalName = "dacs4:payment-evidence:nonce-fence";
+    const nativeAddress = "storage:pending-anchor";
+    const data = { evidenceVersion: "1", value: "pending" };
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    const pending = pendingAnchorWrite(
+      lease.generation,
+      wallet,
+      txRef,
+      8,
+      logicalName,
+      nativeAddress,
+      data,
+    );
+    await lease.put(pending.record);
+    recordSignedPayload(txRef, pending.payload, 8);
+    raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 46 });
+    raw.getTxByHash.mockResolvedValue({
+      ...signedStorageTransaction(wallet, txRef, pending.payload, 8),
+      status: "confirmed",
+      blockNumber: 46,
+    });
+    raw.getBlockByNumber.mockResolvedValue({
+      number: 46,
+      hash: "block-46",
+      status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [txRef] },
+      validation_data: { signatures: ["validator-test-signature"] },
+    });
+    raw.getAddressNonce
+      .mockResolvedValueOnce(7)
+      .mockResolvedValue(8);
+
+    await adapter.reconcileWalletJournal(lease, 1_000);
+
+    expect(lease.snapshot.records).toMatchObject([{
+      txRef,
+      nonce: 8,
+      stage: "native-visible",
+      blockNumber: 46,
+      blockHash: "block-46",
+      nativeRead: {
+        owner: wallet,
+        programName: pending.record.programName,
+        valueHash: pending.record.valueHash,
+      },
+    }]);
+    expect(raw.getAddressNonce).toHaveBeenCalledTimes(2);
+    await lease.release();
   });
 
   it("refuses to close a native transfer whose canonical amount changed", async () => {

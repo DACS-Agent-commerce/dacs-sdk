@@ -122,6 +122,7 @@ describe("complete role-owned live runtime", () => {
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
+      reconcileWalletJournal: vi.fn(async () => undefined),
       reconcileNativeTransferJournal: vi.fn(async () => undefined),
     };
   }
