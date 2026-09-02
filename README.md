@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, sealed-bid auctions, RFQ, private channels, AP2, and dispute (DACS-X) are deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a complete live RFQ/L2PS phase handler, AP2, and dispute (DACS-X) are deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
@@ -37,7 +37,7 @@ All five lifecycle stages run end to end:
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` | fixed-price |
+| **Negotiate** | `runSession({ terms })` · `createDurableRfqLifecycleClient` · `createDemosL2psRfqTransport` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; durable buyer/seller RFQ with Demos L2PS adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -66,6 +66,25 @@ filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
+
+The RFQ stack performs authenticated channel admission,
+durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
+restart-safe state transitions, exact accepted-term agreement derivation,
+role-separated replay-safe transport outboxes, detached buyer/seller
+co-signatures, finalized SR-2 commitment, complete private-transcript
+reverification, fail-closed Listing disclosure policy, and Demos-compatible
+AES-GCM L2PS packet transport with outbound and inbound history recovery. It
+does not invent the still-undefined DACS signature or encrypted-transcript
+publication wires, and clean construction of demosdk's messaging peer awaits a
+focused public demosdk export; see the
+[RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
+and the upstream dependencies.
+
+`createFsDurableRfqLifecycleStore()` provides the single-host production
+restart boundary for one RFQ role: keyed record authentication, strict local
+permissions, synchronized atomic writes, cross-process locking, and monotonic
+compare-and-swap validation. Buyer and seller require separate directories and
+separate integrity keys; the in-memory RFQ store remains test-only.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives

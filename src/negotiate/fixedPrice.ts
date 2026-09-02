@@ -698,11 +698,11 @@ async function collectAgreementSignature(
   };
 }
 
-/** Collect the exact buyer + seller DACS-3 §8.5.1 signatures. */
-export async function signFixedPriceAgreement(
+async function signAgreementArtifactForPattern(
   callerDraft: UnsignedAgreementArtifact,
   buyerSigner: AgreementSigner,
   sellerSigner: AgreementSigner,
+  expectedPattern?: AgreementArtifact["derivedFromPattern"],
 ): Promise<AgreementArtifact> {
   // Capture both option bags and preserve method-style `this` before the first
   // access to callerDraft. A draft accessor must not be able to switch signer
@@ -711,6 +711,14 @@ export async function signFixedPriceAgreement(
   const capturedSellerSigner = captureAgreementSigner(sellerSigner, "seller");
   const draft = snapshotCanonicalJson(callerDraft, "unsigned agreement draft");
   requireCanonicalJobId(draft.jobId, "agreement jobId");
+  if (
+    expectedPattern !== undefined &&
+    draft.derivedFromPattern !== expectedPattern
+  ) {
+    throw new DacsError(
+      `agreement draft is not derived from ${expectedPattern}`,
+    );
+  }
   if (
     Object.prototype.hasOwnProperty.call(draft, "signatures") ||
     Object.prototype.hasOwnProperty.call(draft, "signature")
@@ -764,4 +772,31 @@ export async function signFixedPriceAgreement(
     throw new DacsError("signed agreement failed exact DACS-3 §8.5 validation");
   }
   return signed;
+}
+
+/** Collect the exact buyer + seller DACS-3 §8.5.1 signatures. */
+export async function signAgreementArtifact(
+  callerDraft: UnsignedAgreementArtifact,
+  buyerSigner: AgreementSigner,
+  sellerSigner: AgreementSigner,
+): Promise<AgreementArtifact> {
+  return signAgreementArtifactForPattern(
+    callerDraft,
+    buyerSigner,
+    sellerSigner,
+  );
+}
+
+/** Fixed-price convenience wrapper retaining the pattern-specific guard. */
+export async function signFixedPriceAgreement(
+  callerDraft: UnsignedAgreementArtifact,
+  buyerSigner: AgreementSigner,
+  sellerSigner: AgreementSigner,
+): Promise<AgreementArtifact> {
+  return signAgreementArtifactForPattern(
+    callerDraft,
+    buyerSigner,
+    sellerSigner,
+    "fixed-price",
+  );
 }

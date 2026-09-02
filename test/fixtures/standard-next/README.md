@@ -16,6 +16,11 @@ ahead of the repository-wide conformance pin.
   DACS-3/DACS-5 projection consumers; Standard PR #344, commit
   `332ba4d620930cc22b79fffa3f74440ebf0df5ca`; file SHA-256
   `73be437c15210ae57c0ad62a8e02fc70f37bface5da15cf207f9b88964aa5ca3`.
+- `channel-message-replay-v0.1.json` — DACS-3 §8.3.3 and CH-6;
+  commit `332ba4d620930cc22b79fffa3f74440ebf0df5ca`; file SHA-256
+  `ce43b226e358e15cb126b4b7d53b8638648c14ca55250eb57e6db68e451ba13f`.
+  Its historical raw-digest/hex signature conflict with current §8.5.1/SIG-6
+  and Demos L2PS is tracked upstream in DACS-Standard#349.
 
 Do not edit a fixture locally. Replace it from a named Standard commit and
 update this provenance note.
