@@ -11,7 +11,10 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
-import { parseClaimRef } from "../identity/index.js";
+import {
+  assertDemosCciResponseBounds,
+  parseClaimRef,
+} from "../identity/index.js";
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
@@ -3044,6 +3047,10 @@ export class DemosAdapter implements SubstrateAdapter {
       "getIdentities",
       ref,
     );
+    // The demosdk has already decoded the RPC response at this boundary. Bound
+    // it before returning it to any higher-level caller; Agent parsing applies
+    // the same check again before retaining a snapshot.
+    assertDemosCciResponseBounds(raw);
     return { ref, boundTo: ref, raw };
   }
 

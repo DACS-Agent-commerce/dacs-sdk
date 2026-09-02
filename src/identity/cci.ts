@@ -7,7 +7,11 @@
  * represented without inventing an identifier are retained only in `raw`.
  */
 
+import { types as nodeTypes } from "node:util";
+
+import { canonicalize } from "../canonical/index.js";
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
+import { DacsError } from "../errors.js";
 import { isCanonicalClaimReference } from "./claimReference.js";
 import {
   canonicalizeNativeDomainHostname,
@@ -63,7 +67,7 @@ export interface CciPqcClaim {
   ref: string;
 }
 
-/** A Nomis wallet-score subject validated by the native GCR routine. */
+/** A Nomis wallet-score subject reported by native GCR storage. */
 export interface CciNomisClaim {
   kind: "nomis";
   chain: string;
@@ -77,7 +81,7 @@ export interface CciNomisClaim {
   ref: string;
 }
 
-/** A Human Passport proof-of-personhood identity validated by GCR. */
+/** A Human Passport proof-of-personhood identity reported by GCR storage. */
 export interface CciHumanPassportClaim {
   kind: "humanpassport";
   /** Demos persists the verified EVM address as this context's unique id. */
@@ -94,7 +98,7 @@ export interface CciHumanPassportClaim {
   ref: string;
 }
 
-/** An Ethos profile and score validated by the native GCR routine. */
+/** An Ethos profile and score reported by native GCR storage. */
 export interface CciEthosClaim {
   kind: "ethos";
   id: string;
@@ -107,7 +111,7 @@ export interface CciEthosClaim {
   ref: string;
 }
 
-/** A TLSNotary proof commitment already verified by the Demos GCR routine. */
+/** A TLSNotary proof commitment reported by Demos GCR storage. */
 export interface CciTlsnClaim {
   kind: "tlsn";
   context: "github" | "discord" | "telegram";
@@ -154,6 +158,138 @@ const WEB2_PLATFORMS = new Set([
 const TLSN_CONTEXTS = new Set(["github", "discord", "telegram"]);
 const HEX_32 = /^[0-9a-f]{64}$/;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/** Fixed resource ceilings for one untrusted Demos `getIdentities` response. */
+export const DEMOS_CCI_RESPONSE_LIMITS = Object.freeze({
+  maxEncodedBytes: 2 * 1024 * 1024,
+  maxDepth: 32,
+  maxNodes: 20_000,
+  maxArrayLength: 4_096,
+  maxObjectKeys: 1_024,
+  maxStringBytes: 512 * 1024,
+});
+
+function cciLimitError(limit: keyof typeof DEMOS_CCI_RESPONSE_LIMITS): never {
+  throw new DacsError(`Demos GCR identity response exceeds ${limit}`);
+}
+
+/**
+ * Bound the already-decoded RPC value before the generic wire snapshot clones
+ * it. This cannot replace a transport byte ceiling, but it prevents an active
+ * object, deep tree, or broad collection from making the SDK perform an
+ * unbounded clone/traversal after JSON decoding.
+ */
+export function assertDemosCciResponseBounds(root: unknown): void {
+  const stack: Array<{
+    value: unknown;
+    depth: number;
+    ancestors: readonly object[];
+  }> = [{ value: root, depth: 0, ancestors: [] }];
+  let scheduledNodes = 1;
+  let encodedUpperBound = 0;
+
+  const addBytes = (bytes: number): void => {
+    encodedUpperBound += bytes;
+    if (encodedUpperBound > DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes) {
+      cciLimitError("maxEncodedBytes");
+    }
+  };
+  const schedule = (
+    value: unknown,
+    depth: number,
+    ancestors: readonly object[],
+  ): void => {
+    scheduledNodes += 1;
+    if (scheduledNodes > DEMOS_CCI_RESPONSE_LIMITS.maxNodes) {
+      cciLimitError("maxNodes");
+    }
+    stack.push({ value, depth, ancestors });
+  };
+
+  while (stack.length > 0) {
+    const { value, depth, ancestors } = stack.pop()!;
+    if (depth > DEMOS_CCI_RESPONSE_LIMITS.maxDepth) cciLimitError("maxDepth");
+
+    if (value === null || typeof value === "boolean") {
+      addBytes(5);
+      continue;
+    }
+    if (typeof value === "string") {
+      const stringBytes = Buffer.byteLength(value, "utf8");
+      if (value.length > DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes ||
+          stringBytes > DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes) {
+        cciLimitError("maxStringBytes");
+      }
+      // JSON.stringify is bounded here by maxStringBytes and gives the exact
+      // wire contribution for escapes rather than an unexpectedly strict
+      // conservative estimate.
+      addBytes(Buffer.byteLength(JSON.stringify(value), "utf8"));
+      continue;
+    }
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || Object.is(value, -0)) {
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      }
+      addBytes(32);
+      continue;
+    }
+    if (typeof value !== "object" || nodeTypes.isProxy(value) || ancestors.includes(value)) {
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+    }
+    const childAncestors = [...ancestors, value];
+    const prototype = Object.getPrototypeOf(value);
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) {
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+    }
+
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype || value.length > DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength) {
+        if (value.length > DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength) {
+          cciLimitError("maxArrayLength");
+        }
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      }
+      const keys = ownKeys.filter((key) => key !== "length") as string[];
+      if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      addBytes((keys.length * 2) + 2);
+      for (const key of keys) {
+        const descriptor = descriptors[key];
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+        }
+        schedule(descriptor.value, depth + 1, childAncestors);
+      }
+      continue;
+    }
+
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+    }
+    if (ownKeys.length > DEMOS_CCI_RESPONSE_LIMITS.maxObjectKeys) {
+      cciLimitError("maxObjectKeys");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    addBytes((ownKeys.length * 2) + 2);
+    for (const key of ownKeys as string[]) {
+      const keyBytes = Buffer.byteLength(key, "utf8");
+      if (key.length > DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes ||
+          keyBytes > DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes) {
+        cciLimitError("maxStringBytes");
+      }
+      addBytes(Buffer.byteLength(JSON.stringify(key), "utf8") + 1);
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !("value" in descriptor) ||
+          descriptor.value === undefined) {
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      }
+      schedule(descriptor.value, depth + 1, childAncestors);
+    }
+  }
+}
 
 const isObj = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -222,12 +358,43 @@ function unwrapIdentityPayload(raw: unknown): Record<string, unknown> {
 }
 
 function dedupeByRef<T extends { ref: string }>(claims: T[]): T[] {
-  const seen = new Set<string>();
-  return claims.filter((claim) => {
-    if (seen.has(claim.ref)) return false;
-    seen.add(claim.ref);
-    return true;
-  });
+  const retained: T[] = [];
+  const seen = new Map<string, {
+    comparable: string;
+    encoded: string;
+    index: number;
+  }>();
+  for (const claim of claims) {
+    const encoded = canonicalize(claim as unknown as Record<string, unknown>);
+    const possibleDomain = claim as unknown as Partial<CciWeb2Claim>;
+    const comparable = canonicalize(
+      possibleDomain.kind === "web2" && possibleDomain.platform === "domain" &&
+          typeof possibleDomain.handle === "string"
+        ? {
+            ...claim,
+            handle: canonicalizeNativeDomainHostname(possibleDomain.handle) ??
+              possibleDomain.handle,
+          }
+        : claim as unknown as Record<string, unknown>,
+    );
+    const prior = seen.get(claim.ref);
+    if (prior === undefined) {
+      const index = retained.push(claim) - 1;
+      seen.set(claim.ref, { comparable, encoded, index });
+      continue;
+    }
+    if (prior.comparable !== comparable) {
+      throw new DacsError(`Demos GCR identity response contains conflicting claim ${claim.ref}`);
+    }
+    // Semantically equivalent alternate source spellings (notably domain
+    // case/Unicode forms) resolve deterministically rather than by RPC order.
+    if (encoded < prior.encoded) {
+      retained[prior.index] = claim;
+      seen.set(claim.ref, { comparable, encoded, index: prior.index });
+    }
+  }
+  return retained.sort((left, right) =>
+    left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0);
 }
 
 function web2Handle(entry: unknown, trim = true): string {
@@ -413,7 +580,12 @@ function parseNomis(payload: Record<string, unknown>): CciNomisClaim[] {
   const claims: CciNomisClaim[] = [];
   forEachNestedIdentity(payload.nomis, (chain, subchain, entry) => {
     if (!isObj(entry)) return;
-    const address = nonBlank(entry.address);
+    const addressValue = nonBlank(entry.address);
+    const address = chain.toLowerCase() === "evm"
+      ? addressValue && EVM_ADDRESS.test(addressValue)
+        ? addressValue.toLowerCase()
+        : undefined
+      : addressValue;
     const score = nonNegativeSafeNumber(entry.score);
     const scoreType = nonNegativeSafeInteger(entry.scoreType);
     const observedAt = epochMilliseconds(entry.lastSyncedAt);
@@ -497,7 +669,12 @@ function parseEthos(payload: Record<string, unknown>): CciEthosClaim[] {
   const claims: CciEthosClaim[] = [];
   forEachNestedIdentity(payload.ethos, (chain, subchain, entry) => {
     if (!isObj(entry)) return;
-    const address = nonBlank(entry.address);
+    const addressValue = nonBlank(entry.address);
+    const address = chain.toLowerCase() === "evm"
+      ? addressValue && EVM_ADDRESS.test(addressValue)
+        ? addressValue.toLowerCase()
+        : undefined
+      : addressValue;
     const score = nonNegativeSafeNumber(entry.score);
     const profileId = nonNegativeSafeInteger(entry.profileId);
     const observedAt = epochMilliseconds(entry.lastSyncedAt);
@@ -582,6 +759,7 @@ function parseTlsn(payload: Record<string, unknown>): CciTlsnClaim[] {
 
 /** Parse and own a raw Demos GCR identity response. */
 export function parseCciRecord(primaryClaim: string, raw: unknown): CciRecord {
+  assertDemosCciResponseBounds(raw);
   const ownedRaw = snapshotWireJsonRead(raw, "Demos GCR identity response");
   const payload = unwrapIdentityPayload(ownedRaw);
   const web2 = parseWeb2(payload);

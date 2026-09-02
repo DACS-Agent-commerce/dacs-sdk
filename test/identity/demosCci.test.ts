@@ -8,8 +8,10 @@ import {
   isAuthenticatedCciRecord,
   projectCciSupplementarySignals,
   type AuthenticatedCciRecord,
+  type VerifyNativeCciTlsnInput,
 } from "../../src/identity/demosCci.js";
 import {
+  DEMOS_CCI_RESPONSE_LIMITS,
   cciClaimHasProof,
   parseCciRecord,
 } from "../../src/identity/cci.js";
@@ -18,6 +20,8 @@ const PRIMARY =
   "did:demos:agent:1111111111111111111111111111111111111111111111111111111111111111";
 const PROOF_HASH = "ab".repeat(32);
 const HP_ADDRESS = `0x${"22".repeat(20)}`;
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+const SESSION_NONCE = "vet-session-0123456789abcdef";
 
 const GCR = {
   result: 200,
@@ -87,8 +91,8 @@ describe("full Demos CCI context projection", () => {
       ref: `cci-xm:evm:base-sepolia:0x${"11".repeat(20)}`,
     });
     expect(record.web2.map((claim) => claim.ref)).toEqual([
-      "cci-web2:twitter:alice",
       "cci-web2:github:alice-dev",
+      "cci-web2:twitter:alice",
     ]);
     expect(record.ud[0]?.ref).toBe("cci-ud:alice.crypto");
     expect(record.pqc.map((claim) => claim.ref)).toEqual([
@@ -186,6 +190,165 @@ describe("full Demos CCI context projection", () => {
     expect(() => parseCciRecord(PRIMARY, raw)).toThrow(/stable wire JSON/);
     expect(getter).not.toHaveBeenCalled();
   });
+
+  test("rejects conflicting canonical refs instead of selecting by RPC order", () => {
+    const nomisConflict = structuredClone(GCR);
+    nomisConflict.response.nomis.evm.mainnet.push({
+      ...nomisConflict.response.nomis.evm.mainnet[0]!,
+      score: 99,
+    });
+    expect(() => parseCciRecord(PRIMARY, nomisConflict)).toThrow(
+      /conflicting claim cci-nomis/,
+    );
+    nomisConflict.response.nomis.evm.mainnet.reverse();
+    expect(() => parseCciRecord(PRIMARY, nomisConflict)).toThrow(
+      /conflicting claim cci-nomis/,
+    );
+
+    const web2Conflict = structuredClone(GCR);
+    web2Conflict.response.web2.twitter.push({
+      ...web2Conflict.response.web2.twitter[0]!,
+      proofHash: "ef".repeat(32),
+    });
+    expect(() => parseCciRecord(PRIMARY, web2Conflict)).toThrow(
+      /conflicting claim cci-web2/,
+    );
+
+    const udConflict = structuredClone(GCR);
+    udConflict.response.ud.push({
+      ...udConflict.response.ud[0]!,
+      network: "ethereum",
+    });
+    expect(() => parseCciRecord(PRIMARY, udConflict)).toThrow(
+      /conflicting claim cci-ud/,
+    );
+
+    const passportConflict = structuredClone(GCR);
+    passportConflict.response.humanpassport.push({
+      ...passportConflict.response.humanpassport[0]!,
+      score: 99,
+    });
+    expect(() => parseCciRecord(PRIMARY, passportConflict)).toThrow(
+      /conflicting claim cci-humanpassport/,
+    );
+
+    const ethosConflict = structuredClone(GCR);
+    ethosConflict.response.ethos.evm.mainnet.push({
+      ...ethosConflict.response.ethos.evm.mainnet[0]!,
+      score: 99,
+    });
+    expect(() => parseCciRecord(PRIMARY, ethosConflict)).toThrow(
+      /conflicting claim cci-ethos/,
+    );
+
+    const tlsnConflict = structuredClone(GCR);
+    tlsnConflict.response.web2.github.push({
+      ...tlsnConflict.response.web2.github[0]!,
+      username: "different-account",
+    });
+    expect(() => parseCciRecord(PRIMARY, tlsnConflict)).toThrow(
+      /conflicting claim cci-tlsn/,
+    );
+  });
+
+  test("collapses exact duplicates deterministically in every CCI context", () => {
+    const exactDuplicate = structuredClone(GCR);
+    exactDuplicate.response.xm.evm["base-sepolia"].push(
+      structuredClone(exactDuplicate.response.xm.evm["base-sepolia"][0]!),
+    );
+    exactDuplicate.response.web2.twitter.push(
+      structuredClone(exactDuplicate.response.web2.twitter[0]!),
+    );
+    exactDuplicate.response.web2.github.push(
+      structuredClone(exactDuplicate.response.web2.github[0]!),
+    );
+    exactDuplicate.response.ud.push(
+      structuredClone(exactDuplicate.response.ud[0]!),
+    );
+    exactDuplicate.response.pqc.falcon.push(
+      structuredClone(exactDuplicate.response.pqc.falcon[0]!),
+    );
+    exactDuplicate.response.nomis.evm.mainnet.push(
+      structuredClone(exactDuplicate.response.nomis.evm.mainnet[0]!),
+    );
+    exactDuplicate.response.humanpassport.push(
+      structuredClone(exactDuplicate.response.humanpassport[0]!),
+    );
+    exactDuplicate.response.ethos.evm.mainnet.push(
+      structuredClone(exactDuplicate.response.ethos.evm.mainnet[0]!),
+    );
+    const record = parseCciRecord(PRIMARY, exactDuplicate);
+    expect({
+      wallets: record.wallets.length,
+      web2: record.web2.length,
+      ud: record.ud.length,
+      pqc: record.pqc.length,
+      nomis: record.nomis.length,
+      humanPassport: record.humanPassport.length,
+      ethos: record.ethos.length,
+      tlsn: record.tlsn.length,
+    }).toEqual({
+      wallets: 1,
+      web2: 2,
+      ud: 1,
+      pqc: 2,
+      nomis: 1,
+      humanPassport: 1,
+      ethos: 1,
+      tlsn: 1,
+    });
+
+    const permuted = structuredClone(exactDuplicate);
+    permuted.response.web2 = {
+      github: permuted.response.web2.github.reverse(),
+      twitter: permuted.response.web2.twitter.reverse(),
+    };
+    permuted.response.xm.evm["base-sepolia"].reverse();
+    permuted.response.ud.reverse();
+    permuted.response.pqc.falcon.reverse();
+    permuted.response.nomis.evm.mainnet.reverse();
+    permuted.response.humanpassport.reverse();
+    permuted.response.ethos.evm.mainnet.reverse();
+    expect(parseCciRecord(PRIMARY, permuted).claims).toEqual(record.claims);
+  });
+
+  test("bounds broad, deep, and oversized GCR responses before snapshotting", () => {
+    expect(() => parseCciRecord(PRIMARY, {
+      response: {
+        web2: {
+          github: new Array(DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength + 1).fill("alice"),
+        },
+      },
+    })).toThrow(/maxArrayLength/);
+
+    let deep: Record<string, unknown> = {};
+    for (let index = 0; index <= DEMOS_CCI_RESPONSE_LIMITS.maxDepth; index += 1) {
+      deep = { response: deep };
+    }
+    expect(() => parseCciRecord(PRIMARY, deep)).toThrow(/maxDepth/);
+
+    expect(() => parseCciRecord(PRIMARY, {
+      response: { ignored: "x".repeat(DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes + 1) },
+    })).toThrow(/maxStringBytes/);
+
+    expect(() => parseCciRecord(PRIMARY, {
+      response: Object.fromEntries(
+        Array.from(
+          { length: DEMOS_CCI_RESPONSE_LIMITS.maxObjectKeys + 1 },
+          (_, index) => [`key-${index}`, true],
+        ),
+      ),
+    })).toThrow(/maxObjectKeys/);
+
+    expect(() => parseCciRecord(PRIMARY, {
+      response: {
+        ignored: Array.from(
+          { length: 5 },
+          () => new Array(DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength).fill(true),
+        ),
+      },
+    })).toThrow(/maxNodes/);
+  });
 });
 
 describe("authenticated CCI reputation projection", () => {
@@ -203,6 +366,17 @@ describe("authenticated CCI reputation projection", () => {
           evidence: { blockNumber: 123 },
         };
       },
+      authenticateProviderClaim: ({ subject, claim }) => {
+        expect(subject).toBe(PRIMARY);
+        expect(Object.isFrozen(claim)).toBe(true);
+        return {
+          status: "verified",
+          subject,
+          claimRef: claim.ref,
+          verifiedAt: 1_700_000_035_000,
+          authority: `provider-verifier:${claim.kind}`,
+        };
+      },
     });
   }
 
@@ -212,6 +386,7 @@ describe("authenticated CCI reputation projection", () => {
     if (result.status !== "authenticated") return;
 
     expect(isAuthenticatedCciRecord(result.record)).toBe(true);
+    expect(result.record.raw).toBeNull();
     expect(getAuthenticatedCciProvenance(result.record)).toEqual({
       subject: PRIMARY,
       observedAt: 1_700_000_040_000,
@@ -253,6 +428,28 @@ describe("authenticated CCI reputation projection", () => {
     expect(projection.signals.every((signal) => signal.attestation === undefined)).toBe(true);
   });
 
+  test("does not promote GCR inclusion into provider-semantic trust", async () => {
+    const result = await authenticateDemosCciRecord(PRIMARY, GCR, {
+      authenticateResolution: () => ({
+        status: "authenticated",
+        subject: PRIMARY,
+        observedAt: 1_700_000_040_000,
+        authority: "demos-testnet:validator-set:42",
+      }),
+    });
+    if (result.status !== "authenticated") throw new Error("authentication failed");
+    const projection = projectCciSupplementarySignals(result.record, {
+      evaluatedAt: 1_700_000_050_000,
+      maxAgeSec: { nomis: 60, humanPassport: 60, ethos: 60 },
+    });
+    expect(projection.signals).toEqual([]);
+    expect(projection.omitted).toEqual([
+      { ref: `cci-nomis:0x${"33".repeat(20)}`, reason: "provider-unverified" },
+      { ref: `cci-humanpassport:${HP_ADDRESS}`, reason: "provider-unverified" },
+      { ref: "cci-ethos:9876", reason: "provider-unverified" },
+    ]);
+  });
+
   test("omits stale, expired, and non-passing values with explicit reasons", async () => {
     const raw = structuredClone(GCR);
     raw.response.humanpassport[0]!.passingScore = false;
@@ -263,6 +460,13 @@ describe("authenticated CCI reputation projection", () => {
         subject: PRIMARY,
         observedAt: 1_700_000_040_000,
         authority: "demos-testnet:validator-set:42",
+      }),
+      authenticateProviderClaim: ({ subject, claim }) => ({
+        status: "verified",
+        subject,
+        claimRef: claim.ref,
+        verifiedAt: 1_700_000_035_000,
+        authority: "provider-verifier:test",
       }),
     });
     if (result.status !== "authenticated") throw new Error("authentication failed");
@@ -331,6 +535,7 @@ describe("native CCI TLSN disposition", () => {
       bundleVersion: "1",
       presentedBy: PRIMARY,
       presentedAt: 1_700_000_050_000,
+      sessionNonce: SESSION_NONCE,
       claims: [{ ref: PRIMARY }, { ref: `cci-tlsn:${PROOF_HASH}` }],
       presentation: {
         kind: "per-claim",
@@ -339,14 +544,43 @@ describe("native CCI TLSN disposition", () => {
     };
 
     const verifyIdentityPresentation = vi.fn(() => true);
+    const verifyNativeTlsn = vi.fn((input: VerifyNativeCciTlsnInput) => ({
+      status: "verified" as const,
+      verifiedAt: 1_700_000_050_000,
+      authority: "native-tlsn:testnet",
+      binding: {
+        subject: input.subject,
+        jobId: input.jobId,
+        sessionNonce: input.sessionNonce,
+        expectedServer: input.expectedServer,
+        bundleHash: input.bundleHash,
+        proofHash: input.proofHash,
+        resolutionObservedAt: input.resolution.observedAt,
+      },
+      evidence: { transcript: PROOF_HASH },
+    }));
+    const context = {
+      jobId: JOB_ID,
+      expectedPresenter: PRIMARY,
+      sessionNonce: SESSION_NONCE,
+      expectedServer: "github.com",
+      evaluatedAt: 1_700_000_050_000,
+      maxResolutionAgeSec: 60,
+      maxProofAgeSec: 60,
+      maxPresentationAgeSec: 60,
+    };
     await expect(classifyCciTlsnProof(
       result.record,
       bundle,
       PROOF_HASH,
-      { verifyIdentityPresentation },
+      context,
+      { verifyIdentityPresentation, verifyNativeTlsn },
     )).resolves.toMatchObject({
       status: "native-cci",
       claim: { ref: `cci-tlsn:${PROOF_HASH}` },
+      jobId: JOB_ID,
+      sessionNonce: SESSION_NONCE,
+      verification: { authority: "native-tlsn:testnet" },
     });
     expect(verifyIdentityPresentation).toHaveBeenCalledWith(expect.objectContaining({
       bundle,
@@ -356,19 +590,93 @@ describe("native CCI TLSN disposition", () => {
       result.record,
       { ...bundle, claims: [{ ref: PRIMARY }] },
       PROOF_HASH,
-      { verifyIdentityPresentation: () => true },
+      context,
+      { verifyIdentityPresentation: () => true, verifyNativeTlsn },
+    )).resolves.toEqual({
+      status: "invalid",
+      reason: "registered TLSN commitment was not presented in the signed IdentityBundle",
+    });
+    const sessionProofHash = "ef".repeat(32);
+    await expect(classifyCciTlsnProof(
+      result.record,
+      {
+        ...bundle,
+        claims: [{ ref: PRIMARY }, { ref: `cci-tlsn:${sessionProofHash}` }],
+      },
+      sessionProofHash,
+      context,
+      { verifyIdentityPresentation: () => true, verifyNativeTlsn },
     )).resolves.toEqual({
       status: "external-required",
-      reason: "registered TLSN commitment was not presented in the signed IdentityBundle",
+      reason: "TLSN proof is not registered in the authenticated CCI record",
     });
     await expect(classifyCciTlsnProof(
       result.record,
       bundle,
       PROOF_HASH,
-      { verifyIdentityPresentation: () => false },
+      context,
+      { verifyIdentityPresentation: () => false, verifyNativeTlsn },
     )).resolves.toEqual({
       status: "invalid",
       reason: "IdentityBundle presentation is not authenticated",
+    });
+    expect(verifyNativeTlsn).toHaveBeenCalledWith(expect.objectContaining({
+      subject: PRIMARY,
+      jobId: JOB_ID,
+      sessionNonce: SESSION_NONCE,
+      expectedServer: "github.com",
+      proofHash: PROOF_HASH,
+      bundleHash: expect.any(String),
+    }));
+
+    await expect(classifyCciTlsnProof(
+      result.record,
+      { ...bundle, sessionNonce: "old-session-nonce" },
+      PROOF_HASH,
+      context,
+      { verifyIdentityPresentation, verifyNativeTlsn },
+    )).resolves.toEqual({
+      status: "invalid",
+      reason: "IdentityBundle session nonce does not match the active Vet session",
+    });
+
+    const wrongBindingVerifier = vi.fn((input: VerifyNativeCciTlsnInput) => ({
+      status: "verified" as const,
+      verifiedAt: 1_700_000_050_000,
+      authority: "native-tlsn:testnet",
+      binding: {
+        subject: input.subject,
+        jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+        sessionNonce: input.sessionNonce,
+        expectedServer: input.expectedServer,
+        bundleHash: input.bundleHash,
+        proofHash: input.proofHash,
+        resolutionObservedAt: input.resolution.observedAt,
+      },
+    }));
+    await expect(classifyCciTlsnProof(
+      result.record,
+      bundle,
+      PROOF_HASH,
+      context,
+      {
+        verifyIdentityPresentation: () => true,
+        verifyNativeTlsn: wrongBindingVerifier,
+      },
+    )).resolves.toEqual({
+      status: "error",
+      reason: "native TLSN authentication is malformed",
+    });
+
+    await expect(classifyCciTlsnProof(
+      result.record,
+      bundle,
+      PROOF_HASH,
+      { ...context, jobId: "legacy-job" },
+      { verifyIdentityPresentation, verifyNativeTlsn },
+    )).resolves.toEqual({
+      status: "invalid",
+      reason: "CCI TLSN request is malformed",
     });
   });
 });
