@@ -58,6 +58,32 @@ export function decodeAddressSegment(segment: string): string {
   return segment.replace(/%(3A|3F|26|3D|25)/gi, (_, hex: string) => DECODE[hex.toUpperCase()]!);
 }
 
+function requireStructuralSegment(value: string, label: string): void {
+  if (
+    value.length === 0 ||
+    value.normalize("NFC") !== value ||
+    /[:?&=%\s\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new DacsError(`${label} must be a non-empty canonical structural segment`);
+  }
+}
+
+function requireVariableSegment(value: string, label: string): void {
+  if (
+    value.length === 0 ||
+    value.normalize("NFC") !== value ||
+    /[\s\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new DacsError(`${label} must be non-empty canonical text`);
+  }
+}
+
+function requireSafeInteger(value: number, label: string, minimum: number): void {
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new DacsError(`${label} must be a safe integer >= ${minimum}: ${value}`);
+  }
+}
+
 /**
  * Assemble a DACS-1 listing logical address (§6.3.4 CF-4):
  * `dacs1:<sellerPrimaryClaim>:<listingId>:v<version>` with the claim and
@@ -78,6 +104,48 @@ export function listingAddress(
     throw new DacsError(`listing address version must be a non-negative integer: ${version}`);
   }
   return `dacs1:${encodeAddressSegment(sellerPrimaryClaim)}:${encodeAddressSegment(listingId)}:${v}`;
+}
+
+/** DACS-2 CM-2 VerifyResult address with the identifier encoded per CF-4. */
+export function attestationAddress(
+  jobId: string,
+  scheme: string,
+  identifier: string,
+  recipeVersion: number,
+): string {
+  requireStructuralSegment(jobId, "attestation address jobId");
+  if (!/^[a-z][a-z0-9-]*$/.test(scheme)) {
+    throw new DacsError("attestation address scheme must be a canonical lowercase token");
+  }
+  requireVariableSegment(identifier, "attestation address identifier");
+  requireSafeInteger(recipeVersion, "attestation address recipeVersion", 1);
+  return `dacs2:${jobId}:${scheme}:${encodeAddressSegment(identifier)}:v${recipeVersion}`;
+}
+
+/** DACS-4 PC-2 SettlementEvidence address with the rail id encoded per CF-4. */
+export function paymentEvidenceAddress(
+  jobId: string,
+  railId: string,
+  phaseIndex: number,
+  resolved = false,
+): string {
+  requireStructuralSegment(jobId, "payment evidence address jobId");
+  requireVariableSegment(railId, "payment evidence address railId");
+  requireSafeInteger(phaseIndex, "payment evidence address phaseIndex", 0);
+  if (typeof resolved !== "boolean") {
+    throw new DacsError("payment evidence address resolved flag must be boolean");
+  }
+  return (
+    `dacs4:payment:${jobId}:${encodeAddressSegment(railId)}:${phaseIndex}` +
+    (resolved ? ":resolved" : "")
+  );
+}
+
+/** DACS-5 §10.6.1 RatingRecord address with the rater encoded per CF-4. */
+export function ratingAddress(jobId: string, rater: string): string {
+  requireStructuralSegment(jobId, "rating address jobId");
+  requireVariableSegment(rater, "rating address rater");
+  return `dacs5:rating:${jobId}:${encodeAddressSegment(rater)}`;
 }
 
 /**

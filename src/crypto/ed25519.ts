@@ -18,11 +18,21 @@ export function privateKeyFromSeed(seed: Uint8Array): KeyObject {
   if (seed.length !== 32) {
     throw new DacsError(`ed25519 seed must be 32 bytes, got ${seed.length}`);
   }
-  return createPrivateKey({
-    key: Buffer.concat([PKCS8_PREFIX, Buffer.from(seed)]),
-    format: "der",
-    type: "pkcs8",
-  });
+  const encoded = Buffer.alloc(PKCS8_PREFIX.length + seed.byteLength);
+  PKCS8_PREFIX.copy(encoded);
+  Buffer.from(seed.buffer, seed.byteOffset, seed.byteLength).copy(
+    encoded,
+    PKCS8_PREFIX.length,
+  );
+  try {
+    return createPrivateKey({
+      key: encoded,
+      format: "der",
+      type: "pkcs8",
+    });
+  } finally {
+    encoded.fill(0);
+  }
 }
 
 /** Derive the public key from a 32-byte seed. */

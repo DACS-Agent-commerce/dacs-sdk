@@ -99,6 +99,91 @@ beforeEach(() => {
 });
 
 describe("createPayDemRail nonce coordination", () => {
+  it("preserves signed and confirmed wire key order through broadcast", async () => {
+    const signed = {
+      content: {
+        type: "native",
+        from: WALLET,
+        to: RECIPIENT,
+        amount: "1",
+        data: [
+          "native",
+          { nativeOperation: "send", args: [RECIPIENT, "1"] },
+        ],
+        nonce: 7,
+        gcr_edits: [{
+          type: "balance",
+          operation: "subtract",
+          isRollback: false,
+          account: WALLET,
+          txhash: TX_HASH,
+          amount: "1000000000",
+        }],
+      },
+      signature: { type: "ed25519", data: "00" },
+      hash: TX_HASH,
+      status: "pending",
+      blockNumber: 0,
+    };
+    sdk.transfer.mockResolvedValue(signed);
+    let confirmedEnvelope: object | undefined;
+    sdk.confirm.mockImplementation(async (received) => {
+      expect(received).not.toBe(signed);
+      expect(received.content).not.toBe(signed.content);
+      expect(Object.keys(received)).toEqual([
+        "content",
+        "signature",
+        "hash",
+        "status",
+        "blockNumber",
+      ]);
+      expect(Object.keys(received.content.gcr_edits[0])).toEqual([
+        "type",
+        "operation",
+        "isRollback",
+        "account",
+        "txhash",
+        "amount",
+      ]);
+      confirmedEnvelope = {
+        response: {
+          data: {
+            transaction: received,
+            custom_charges: null,
+          },
+          message: "valid",
+        },
+        result: true,
+      };
+      return confirmedEnvelope;
+    });
+    sdk.broadcast.mockImplementation(async (received) => {
+      expect(received).not.toBe(confirmedEnvelope);
+      expect(Object.keys(received)).toEqual(["response", "result"]);
+      expect(Object.keys(received.response)).toEqual(["data", "message"]);
+      expect(Object.keys(received.response.data.transaction.content.gcr_edits[0]))
+        .toEqual([
+          "type",
+          "operation",
+          "isRollback",
+          "account",
+          "txhash",
+          "amount",
+        ]);
+      return { response: { hash: TX_HASH } };
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(sdk.confirm).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("does not complete an included settlement until its nonce is readable", async () => {
     const nonceVisible = deferred<void>();
     sdk.waitForNonce.mockReturnValue(nonceVisible.promise);
