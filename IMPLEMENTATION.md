@@ -41,7 +41,7 @@ agent-commerce-demo   refactors to import dacs-sdk → becomes the worked exampl
 
 **In:** self-declared identity (+ one real verified claim), fixed-price negotiation, **x402** settlement (the reference-backed rail), one delivery type, attestation bundle + basic reputation.
 
-**Out (deferred — each is opt-in later, mostly via the registries):** cross-chain HTLC/tank settlement, sealed-envelope auctions, RFQ, L2PS private channels, AP2 (not reference-backed), encrypted/private deliverables, ERC-8004 publication, DACS-X dispute.
+**Out of the default MVP (opt-in later, mostly via the registries):** cross-chain HTLC/tank settlement, sealed-envelope auctions, RFQ, L2PS private channels, encrypted/private deliverables, ERC-8004 publication, DACS-X dispute. AP2 is now an optional reference-backed integration rather than part of this default x402 acceptance path: the SDK verifies an upstream AP2 capability, provides durable AP2-5/AP2-6/AP2-7 settlement recovery and a Stripe-test/DAHR/Demos reference adapter, but never enables a provider rail implicitly.
 
 **MVP acceptance test (definition of done):**
 > A buyer agent discovers a seller's anchored fixed-price listing → vets the seller (self-signed + one real verified claim) → accepts + commits the agreement → settles via **x402 on Base** → receives the deliverable → both anchor a two-sided **attestation bundle** that independently verifies → **reputation is derivable** from it — and the relevant **§14 conformance vectors pass** in CI.

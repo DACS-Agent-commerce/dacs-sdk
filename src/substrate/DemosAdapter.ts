@@ -4,6 +4,7 @@ import {
   type StorageProgramListItem,
 } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
+import { types as nodeTypes } from "node:util";
 
 import {
   canonicalize,
@@ -65,6 +66,8 @@ const DEFAULT_ANCHOR_POLL_MS = 500;
 const AMBIGUOUS_WRITE_RECOVERY_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
+const DAHR_INCLUSION_TIMEOUT_MS = 120_000;
+const DAHR_INCLUSION_POLL_MS = 500;
 const STORAGE_SEARCH_PAGE_SIZE = 100;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -241,6 +244,39 @@ function httpStatus(error: unknown): number | undefined {
   return isRecord(response) && typeof response.status === "number"
     ? response.status
     : undefined;
+}
+
+function dahrRequestOptions(headers: Record<string, string> | undefined): {
+  headers: Record<string, string>;
+  authorization?: string;
+} {
+  if (headers === undefined) return { headers: {} };
+  if (headers === null || typeof headers !== "object" || Array.isArray(headers) ||
+      nodeTypes.isProxy(headers)) {
+    throw new DacsError("DAHR request headers must be stable string data");
+  }
+  const forwarded: Record<string, string> = {};
+  let bearer: string | undefined;
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(headers))) {
+    if (!descriptor.enumerable || !("value" in descriptor) ||
+        typeof descriptor.value !== "string") {
+      throw new DacsError("DAHR request headers must be stable string data");
+    }
+    if (key.toLowerCase() === "authorization") {
+      if (bearer !== undefined) throw new DacsError("DAHR request has duplicate authorization");
+      const match = descriptor.value.match(/^Bearer ([^\s]+)$/);
+      if (!match) {
+        throw new DacsError("Demos DAHR supports only a canonical Bearer authorization");
+      }
+      bearer = match[1]!;
+    } else {
+      forwarded[key] = descriptor.value;
+    }
+  }
+  return {
+    headers: forwarded,
+    ...(bearer === undefined ? {} : { authorization: bearer }),
+  };
 }
 
 function isDefinitiveBroadcastRejection(value: unknown): boolean {
@@ -2997,34 +3033,121 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
+  private async waitForAuthenticatedDahrInclusion(txRef: string): Promise<void> {
+    const ctx = this.newContext(
+      `dahr:${txRef}`,
+      DAHR_INCLUSION_TIMEOUT_MS,
+      DAHR_INCLUSION_POLL_MS,
+    );
+    ctx.receipt.txRef = txRef;
+    ctx.receipt.state = "accepted";
+    ctx.receipt.completion = "accepted";
+    ctx.receipt.timings.acceptedAt = Date.now();
+
+    const terminal = await this.waitForTerminal(txRef, ctx);
+    if (terminal === "failed") {
+      throw new SubstrateError(`DAHR anchor transaction ${txRef} failed on chain`);
+    }
+    const transaction = ctx.canonicalTransaction;
+    const blockNumber = ctx.receipt.blockNumber;
+    if (
+      !transaction ||
+      transaction.hash !== txRef ||
+      transaction.status !== "confirmed" ||
+      !Number.isSafeInteger(blockNumber) ||
+      blockNumber! < 0
+    ) {
+      throw new SubstrateError(
+        `DAHR anchor transaction ${txRef} lacks authenticated canonical inclusion`,
+      );
+    }
+    const observed = await this.waitFor(
+      ctx,
+      this.demos.getBlockByNumber(blockNumber!),
+      "DAHR canonical block authentication",
+    ) as unknown;
+    const block = isRecord(observed) && isRecord(observed.response)
+      ? observed.response
+      : observed;
+    const content = isRecord(block) && isRecord(block.content)
+      ? block.content
+      : undefined;
+    const orderedTransactions = Array.isArray(content?.ordered_transactions)
+      ? content.ordered_transactions
+      : [];
+    if (
+      !isRecord(block) ||
+      block.status !== "confirmed" ||
+      block.number !== blockNumber ||
+      block.validation_data === undefined ||
+      !orderedTransactions.includes(txRef)
+    ) {
+      throw new SubstrateError(
+        `Demos block ${String(blockNumber)} does not authenticate DAHR transaction ${txRef}`,
+      );
+    }
+  }
+
   /**
-   * SR-3 — consensus-backed proxy fetch via DAHR. Validators perform the HTTPS
-   * fetch and co-sign an anchoring tx over (url, time, body hash); the body is
-   * returned inline and `anchorTxRef` is the on-chain commitment.
+   * SR-3 — consensus-backed proxy fetch via DAHR. The body is returned inline;
+   * one included `web2Request` transaction commits to the request and response
+   * hash, and `anchorTxRef` identifies that on-chain commitment. This does not
+   * claim a validator body-signature stronger than the current Demos binding.
    */
   async proxyFetch(req: ProxyFetchRequest): Promise<ProxyFetchResult> {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const dahr = await (this.demos as any).web2.createDahr();
-    try {
-      const result = await dahr.startProxy({
-        url: req.url,
-        method: req.method ?? "GET",
-        options: { headers: req.headers ?? {} },
-      });
-      return {
-        body: String(result?.body ?? result?.data ?? ""),
-        status: Number(result?.status ?? 0),
-        responseHash: String(result?.responseHash ?? ""),
-        anchorTxRef: result?.txHash,
-        fetchedAt: Number(result?.timestamp ?? Date.now()),
-      };
-    } finally {
-      if (typeof dahr?.stopProxy === "function") {
-        await dahr.stopProxy().catch(() => {});
-      }
-    }
+    const key = this.walletQueueKey();
+    return queueWalletWrite(
+      key,
+      (turn) => turn,
+      () => this.withWriteLease<ProxyFetchResult>(async () => {
+        const result = (async (): Promise<ProxyFetchResult> => {
+          const dahr = await (this.demos as any).web2.createDahr();
+          try {
+            // The Demos node's production DAHR layer overwrites Authorization
+            // with `Bearer ${options.authorization}`. Passing the secret in raw
+            // headers both becomes `Bearer undefined` and places it in the
+            // anchored request. Split it into the SDK's transient authorization
+            // channel instead.
+            const requestOptions = dahrRequestOptions(req.headers);
+            const response = await dahr.startProxy({
+              url: req.url,
+              method: req.method ?? "GET",
+              options: requestOptions,
+            });
+            const txRef = typeof response?.txHash === "string" &&
+                response.txHash.length > 0
+              ? response.txHash
+              : undefined;
+            if (txRef) await this.waitForAuthenticatedDahrInclusion(txRef);
+            return {
+              body: String(response?.body ?? response?.data ?? ""),
+              status: Number(response?.status ?? 0),
+              responseHash: String(response?.responseHash ?? ""),
+              ...(txRef === undefined ? {} : { anchorTxRef: txRef }),
+              fetchedAt: Number(response?.timestamp ?? Date.now()),
+            };
+          } finally {
+            if (typeof dahr?.stopProxy === "function") {
+              await dahr.stopProxy().catch(() => {});
+            }
+          }
+        })();
+        return {
+          result,
+          // DAHR is a wallet transaction. Retain both the in-process wallet
+          // lane and the durable cross-process lease until the canonical tx is
+          // included (or definitively fails), so the next write cannot sign the
+          // same account nonce against a stale node view.
+          safe: result.then(
+            () => undefined,
+            () => undefined,
+          ),
+        };
+      }),
+    );
   }
 
   /**

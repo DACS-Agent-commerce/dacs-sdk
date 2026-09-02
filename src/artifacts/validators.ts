@@ -1683,12 +1683,18 @@ export function isChainTxRef(v: unknown): v is ChainTxRef {
           "providerRef",
           "protocolVersion",
           "receiptAttestation",
+          "receiptTransactionRef",
         ]) &&
         isNonEmptyStr(v.mandateId) &&
         isNonEmptyStr(v.providerRef) &&
         isNonEmptyStr(v.protocolVersion) &&
         (v.receiptAttestation === undefined ||
-          isAttestationRef(v.receiptAttestation))
+          isAttestationRef(v.receiptAttestation)) &&
+        (v.receiptTransactionRef === undefined ||
+          (isObj(v.receiptTransactionRef) &&
+           hasOnlyKeys(v.receiptTransactionRef, ["kind", "value"]) &&
+           isNonEmptyStr(v.receiptTransactionRef.kind) &&
+           isNonEmptyStr(v.receiptTransactionRef.value)))
       );
     case "x402":
       return (
