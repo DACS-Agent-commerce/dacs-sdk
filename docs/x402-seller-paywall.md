@@ -1,8 +1,9 @@
 # Seller x402 paywall
 
 Normative source audited: DACS Standard `next` at
-`662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the immutable
-revision pinned by the fixed-price coordinator.
+`f2e96627d9f5251cb32c69a31f44b35cda613b64` (DACS-4 v0.6 and Standard
+PR #362's conformance correction), the immutable revision pinned by the
+fixed-price coordinator.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
 independent seller lifecycle. It does not start a server or select a framework.

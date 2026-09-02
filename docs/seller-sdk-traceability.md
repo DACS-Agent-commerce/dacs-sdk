@@ -1,11 +1,12 @@
 # Seller SDK traceability
 
-This audit uses the DACS Standard [`next` branch at commit
-`662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f)
-as the current normative source.
+This audit uses the DACS Standard [PR #362 head at commit
+`f2e96627d9f5251cb32c69a31f44b35cda613b64`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/f2e96627d9f5251cb32c69a31f44b35cda613b64)
+as the exact reviewed normative source. That correction is based on current
+`next` commit `662be1d4899a2cadf327fe2d5523e93a80334e5f`.
 The SDK conformance runner remains reproducibly pinned by
 `scripts/sync-vectors.mjs` to [Standard commit
-`662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f).
+`f2e96627d9f5251cb32c69a31f44b35cda613b64`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/f2e96627d9f5251cb32c69a31f44b35cda613b64).
 
 This document describes only public DACS behavior. The SDK core must not depend
 on a private service, deployment, transport, repository, or URL.

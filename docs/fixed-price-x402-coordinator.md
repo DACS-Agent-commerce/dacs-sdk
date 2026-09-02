@@ -6,11 +6,10 @@ HTTP service, invent DACS artifacts, or replace the authoritative session and
 write journals used by those operations.
 
 The supported artifact/conformance revision is
-`662be1d4899a2cadf327fe2d5523e93a80334e5f`, the immutable revision pinned by
-`scripts/sync-vectors.mjs`. The implementation was also checked against DACS
-Standard `next` at `81ded2b49851d8fa17399e3fdade9e36e33a4ff7` on 15 August
-2026. A later Standard revision is not accepted merely because a peer supplies
-its hash: supporting it requires an explicit SDK update and conformance run.
+`f2e96627d9f5251cb32c69a31f44b35cda613b64`, the immutable Standard PR #362
+revision pinned by `scripts/sync-vectors.mjs`. A later Standard revision is not
+accepted merely because a peer supplies its hash: supporting it requires an
+explicit SDK update and conformance run.
 
 ## Trust and authority boundaries
 
