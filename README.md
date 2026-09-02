@@ -36,6 +36,12 @@ stages. The older `Agent.runSession()` convenience method remains a
 settlement-only compatibility API; it does not claim fulfilment or audit
 completion.
 
+The exported `SignedArtifact`, `buildSignedArtifact()` and
+`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
+surfaces used by that quarantined path and historical readers. New producers
+and readers must use `ComponentSignedArtifact`,
+`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
+
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
