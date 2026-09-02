@@ -56,6 +56,10 @@ import {
   deriveHtlcPreimage,
   type CrossChainHtlcAdapter,
   type CrossChainHtlcStore,
+  advanceLiquidityTankSettlement,
+  createLiquidityTankIntent,
+  type LiquidityTankAdapter,
+  type LiquidityTankStore,
 } from "@kynesyslabs/dacs/rails";
 
 const config: DemosAdapterConfig = { rpc: "https://example.invalid" };
@@ -130,6 +134,8 @@ const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlem
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
 const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
+const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
+const tankIntent: typeof createLiquidityTankIntent = createLiquidityTankIntent;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -146,6 +152,8 @@ declare const solanaAdapter: SolanaSplAdapter;
 declare const solanaStore: SolanaSplSettlementStore;
 declare const htlcAdapter: CrossChainHtlcAdapter;
 declare const htlcStore: CrossChainHtlcStore;
+declare const tankAdapter: LiquidityTankAdapter;
+declare const tankStore: LiquidityTankStore;
 
 void config;
 void verifier;
@@ -195,3 +203,7 @@ void htlcAdvance;
 void htlcPreimage;
 void htlcAdapter;
 void htlcStore;
+void tankAdvance;
+void tankIntent;
+void tankAdapter;
+void tankStore;
