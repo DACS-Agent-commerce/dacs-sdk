@@ -78,3 +78,11 @@ export {
   type VerifyDemosGcrDomainDeps,
 } from "./domainClaimVerification.js";
 export { identityBundleHash } from "./bundle.js";
+export {
+  canonicalDemosAgentPublicKey,
+  demosAgentClaimRef,
+  demosAgentPublicKey,
+  isDemosAgentClaimRef,
+  parseDemosAgentClaimReference,
+  type ParsedDemosAgentClaimReference,
+} from "./demos.js";

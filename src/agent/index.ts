@@ -83,6 +83,15 @@ export {
   type Dacs5SessionTransitionContext,
 } from "./sessionSemantics.js";
 export {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+  type VerificationRetryPolicy,
+  type VetPhaseFailureCause,
+  type VetPhaseFailureClass,
+} from "./vetSemantics.js";
+export {
   discoverListings,
   verifyReadableListingArtifact,
   type DiscoverDeps,

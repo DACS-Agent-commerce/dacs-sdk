@@ -22,7 +22,10 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
-import { identityBundleHash } from "../identity/index.js";
+import {
+  identityBundleHash,
+  sameCanonicalClaimIdentity,
+} from "../identity/index.js";
 import {
   isDurableSessionRecipePin,
   type DurableSessionRecipePin,
@@ -675,7 +678,7 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
   );
   if (
     !isIdentityBundle(identityBundle) ||
-    identityBundle.presentedBy !== evaluatedParty
+    !sameCanonicalClaimIdentity(identityBundle.presentedBy, evaluatedParty)
   ) {
     throw new DacsError(
       "party Vet pin scope requires the evaluated party's exact IdentityBundle",
@@ -751,7 +754,9 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
       !claimRequirement ||
       !claimRequirement.verificationRequired ||
       claimRequirement.scheme !== scheme ||
-      !identityBundle.claims.some((claim) => claim.ref === attempt.claimSubject)
+      !identityBundle.claims.some((claim) =>
+        sameCanonicalClaimIdentity(claim.ref, attempt.claimSubject)
+      )
     ) {
       throw new DacsError(
         `party Vet pin-scope attempt ${index} does not bind its exact claim path`,
@@ -822,7 +827,7 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   if (!isIdentityBundle(identityBundle)) {
     throw new DacsError("party Vet requires an exact current IdentityBundle");
   }
-  if (identityBundle.presentedBy !== evaluatedParty) {
+  if (!sameCanonicalClaimIdentity(identityBundle.presentedBy, evaluatedParty)) {
     throw new DacsError("party Vet evaluatedParty must equal IdentityBundle.presentedBy");
   }
   const requirement = snapshot(source.requirement, "party Vet BundleRequirement");
@@ -955,7 +960,9 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         "through an external verification recipe",
       );
     }
-    if (!identityBundle.claims.some((claim) => claim.ref === attempt.claimSubject)) {
+    if (!identityBundle.claims.some((claim) =>
+      sameCanonicalClaimIdentity(claim.ref, attempt.claimSubject)
+    )) {
       throw new DacsError(
         `party Vet attempt ${index} subject is not carried by the IdentityBundle`,
       );
