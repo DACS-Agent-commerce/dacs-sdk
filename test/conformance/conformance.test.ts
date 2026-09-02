@@ -38,6 +38,10 @@ import {
 } from "../../src/agent/bundleConsistency.js";
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { deriveReputation } from "../../src/agent/reputationDerivation.js";
+import {
+  dacs5BundleOutcomeForTerminalState,
+  isDacs5SessionTransitionAllowed,
+} from "../../src/agent/sessionSemantics.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
@@ -560,6 +564,106 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
     "cf4-dacs5-rating-address": (want) => {
       expect(ratingAddress("job-abc", "cci-xm:evm:mainnet:0x1234")).toBe(want);
+    },
+
+    // DACS-5 §10.3.1 exact state machine and terminal-outcome projection.
+    "verify-st-draft-vet-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("draft", "vet-pending")).toBe(want);
+    },
+    "verify-st-vet-abort-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("vet-pending", "aborted-by-self"))
+        .toBe(want);
+    },
+    "verify-st-settle-final-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("settle-completed", "audit-pending"))
+        .toBe(want);
+    },
+    "verify-st-paused-resume-legal": (want) => {
+      expect(
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "settle-pending",
+          { pausedFrom: "settle-pending" },
+        ),
+      ).toBe(want);
+    },
+    "verify-st-negotiate-after-commit-illegal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("commit-completed", "negotiate-pending"))
+        .toBe(want);
+    },
+    "verify-st-terminal-forward-illegal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("finalised", "rate-pending")).toBe(want);
+    },
+    "verify-st-paused-final-illegal": (want) => {
+      expect(
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "finalised",
+          { pausedFrom: "audit-pending" },
+        ),
+      ).toBe(want);
+    },
+    "verify-st-settle-asymmetric-legal": (want) => {
+      expect(isDacs5SessionTransitionAllowed("settle-pending", "settle-asymmetric"))
+        .toBe(want);
+    },
+    "verify-st-asymmetric-resolve-legal": (want) => {
+      expect([
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "settle-completed"),
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "settle-failed"),
+      ]).toEqual(want);
+    },
+    "verify-st-asymmetric-pause-resume-legal": (want) => {
+      const context = { pausedFrom: "settle-asymmetric" as const };
+      expect([
+        isDacs5SessionTransitionAllowed(
+          "settle-asymmetric",
+          "substrate-failure-paused",
+          context,
+        ),
+        isDacs5SessionTransitionAllowed(
+          "substrate-failure-paused",
+          "settle-asymmetric",
+          context,
+        ),
+      ]).toEqual(want);
+    },
+    "verify-st-asymmetric-nonterminal": (want) => {
+      expect([
+        isDacs5SessionTransitionAllowed("settle-asymmetric", "finalised"),
+        dacs5BundleOutcomeForTerminalState("settle-asymmetric"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-finalised": (want) => {
+      expect(dacs5BundleOutcomeForTerminalState("finalised")).toBe(want);
+    },
+    "verify-outcome-permanent-transient": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("vet-failed", "permanent"),
+        dacs5BundleOutcomeForTerminalState("commit-failed", "transient"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-counterparty-atomicity": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("negotiate-failed", "counterparty"),
+        dacs5BundleOutcomeForTerminalState("settle-failed", "settlement-atomicity"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-failed-substrate": (want) => {
+      expect(dacs5BundleOutcomeForTerminalState("failed-substrate", "substrate"))
+        .toBe(want);
+    },
+    "verify-outcome-aborts": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("aborted-by-self"),
+        dacs5BundleOutcomeForTerminalState("aborted-by-other"),
+      ]).toEqual(want);
+    },
+    "verify-outcome-invalid-null": (want) => {
+      expect([
+        dacs5BundleOutcomeForTerminalState("audit-pending"),
+        dacs5BundleOutcomeForTerminalState("settle-failed", "substrate"),
+      ]).toEqual(want);
     },
 
     // Exact normative artifact-reference shapes — DACS-2 §7.5.2 / DACS-4 §9.3.
@@ -1313,11 +1417,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The parent has 80 non-vacuous SDK runners; four
-    // additional canonical address vectors raise that coverage to 84.
+    // This pin has 236 cases. The parent has 84 non-vacuous SDK runners; the
+    // DACS-5 state-machine/outcome surface raises that coverage to 101.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(84);
+    expect(Object.keys(RUNNERS)).toHaveLength(101);
     expect(manifest.cases).toHaveLength(236);
   });
 
