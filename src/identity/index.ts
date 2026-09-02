@@ -24,4 +24,24 @@ export {
   type CanonicalClaimReferenceParts,
   type ClaimReferenceSchemeStatus,
 } from "./claimReference.js";
+export {
+  canonicalizeNativeDomainHostname,
+  domainClaimReferenceFromNativeHostname,
+  isCanonicalDomainHostname,
+} from "./domainHost.js";
+export {
+  readAuthenticatedDomainClaims,
+  verifyDemosGcrDomainClaims,
+  type AuthenticatedDomainArtifactDeps,
+  type AuthenticatedDomainClaimRead,
+  type DemosGcrDomainMetadata,
+  type DemosGcrDomainVerification,
+  type DemosGcrResolution,
+  type DomainArtifactAuthentication,
+  type DomainArtifactProfile,
+  type DomainClaimArtifactLike,
+  type DomainClaimDiagnostic,
+  type ReportedDemosGcrResultTimes,
+  type VerifyDemosGcrDomainDeps,
+} from "./domainClaimVerification.js";
 export { identityBundleHash } from "./bundle.js";
