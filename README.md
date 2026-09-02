@@ -200,7 +200,12 @@ if (
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({ evmPrivateKey });
+const rail = await createX402Rail({
+  evmPrivateKey,
+  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
+  // Use the exact positive value from the authenticated rail descriptor.
+  finalityBlocks: 1,
+});
 // Passing the authenticated result (not only `resolved.ref`) pins the selected
 // content hash across runSession's pre-payment re-read.
 const session = await buyer.runSession(resolved, {
@@ -485,6 +490,16 @@ copy gets the matching role-relative `outcome` and signs under
 `AttestationBundle` records, and consistency/reputation reconciliation supports
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
+
+`prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
+coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
+recursive production authenticator, and creates DACS-5 `vet-failed` terminal
+authority only for an authenticated objective `fail`. A passing record remains
+non-terminal; `indeterminate`, verifier `error`, an unresolved closure, or a
+thrown authentication dependency cannot blame the counterparty. The returned
+authority contains no signing capability and is intended for the existing
+role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
+co-signed; single-signature suppression is available only for an honest abort.
 
 ### Normative artifact references
 

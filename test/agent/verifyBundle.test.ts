@@ -822,6 +822,110 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("legacy runSession graph resolves only its exactly pinned normative Listing", async () => {
+    const { listing } = await buildArtifacts();
+    const listingPin = {
+      listingId: listing.listingId,
+      version: listing.listingVersion,
+      contentHash: contentHash(listing),
+    };
+    const agreement: Record<string, unknown> = {
+      jobId: JOB_ID,
+      pattern: "negotiate-fixed-price",
+      buyer: buyerDid,
+      seller: sellerDid,
+      listingRef: LISTING_ADDR,
+      dacsSdkListingPin: structuredClone(listingPin),
+      price: {
+        amount: "1",
+        asset: "USDC",
+        decimals: 6,
+        rail: "x402:default",
+      },
+      delivery: {
+        phase: "deliver-attested-payload",
+        format: "application/json",
+      },
+      expiresAt: "2026-08-21T12:00:00.000Z",
+    };
+    const body: Record<string, unknown> = {
+      bundleVersion: "1",
+      jobId: JOB_ID,
+      outcome: "completed",
+      anchoredByRole: "buyer",
+      listingRef: structuredClone(listingPin),
+      agreementRef: {
+        kind: "dacs-3-agreement",
+        id: "agreement-transitional",
+        contentHash: contentHash(agreement),
+      },
+      parties: [
+        { role: "buyer", bundleHash: h("c"), primaryClaim: buyerDid },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1780000000000,
+    };
+    const resign = async (): Promise<Record<string, unknown>> => {
+      const scope = structuredClone(body);
+      delete scope.anchoredByRole;
+      const message = signedBytes(
+        ARTIFACT_SEPARATORS.AttestationBundle,
+        contentHash(scope),
+      );
+      return {
+        ...structuredClone(body),
+        signatures: [
+          {
+            party: buyerDid,
+            algorithm: "ed25519",
+            value: Buffer.from(await signBuyer(message)).toString("base64url"),
+          },
+          {
+            party: sellerDid,
+            algorithm: "ed25519",
+            value: Buffer.from(await signSeller(message)).toString("base64url"),
+          },
+        ],
+      };
+    };
+    let bundle = await resign();
+    const verifyGraph = () =>
+      verifyBundleCore("transitional-bundle", {
+        readArtifact: async (ref) =>
+          ref === LISTING_ADDR ? listing : bundle,
+        resolveRef: async (kind) =>
+          kind === "dacs-3-agreement" ? agreement : null,
+        resolvePublicKey: async (did) => resolveFromDid(did),
+        verify,
+      });
+
+    const accepted = await verifyGraph();
+    expect(accepted.ok).toBe(false);
+    expect(
+      accepted.refs.find((ref) => ref.kind === "dacs-3-agreement"),
+    ).toMatchObject({
+      verdict: "signature-missing",
+      signature: { verdict: "missing" },
+    });
+    expect(
+      accepted.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("ok");
+
+    delete agreement.dacsSdkListingPin;
+    (body.agreementRef as { contentHash: string }).contentHash =
+      contentHash(agreement);
+    bundle = await resign();
+    const unpinned = await verifyGraph();
+    expect(unpinned.ok).toBe(false);
+    expect(
+      unpinned.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("invalid-shape");
+  });
+
   test("snapshots the signed bundle before any asynchronous callback", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     fx.bundle.vetRecords = [

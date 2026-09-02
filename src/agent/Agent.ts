@@ -336,18 +336,6 @@ function normalizedDemosPublicKey(value: string): string | null {
   return match?.[1]?.toLowerCase() ?? null;
 }
 
-/**
- * Resolve a self-certifying Demos signer claim to its raw Ed25519 public key.
- * Resolver-backed aliases remain unverified until an authenticated resolver is
- * supplied; they are never guessed or rewritten here.
- */
-function publicKeyFromDid(did: string): Uint8Array | null {
-  const parsed = parseDemosAgentClaimReference(did);
-  if (parsed) return Uint8Array.from(parsed.publicKey);
-  const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
-}
-
 /** Resolve only explicit identity-lookup conveniences, never signed claims. */
 function demosIdentityLookup(subject: string): Readonly<{
   address: string;
@@ -1099,7 +1087,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             attestationRef: context.evidenceRef,
           },
           {
-            resolvePublicKey: async (signer) => publicKeyFromDid(signer),
+            resolvePublicKey: resolveCanonicalSigningKeyForRead,
             verify: ed25519RawVerify,
           },
         );
