@@ -1,7 +1,10 @@
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
