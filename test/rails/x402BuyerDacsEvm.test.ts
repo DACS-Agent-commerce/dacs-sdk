@@ -175,7 +175,11 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
     });
     const result = await prepareX402BuyerSettlement(
       { authority: authority() },
-      { client, fetchImpl: challengeFetch(challenge([wireRequirements])).fetchImpl },
+      {
+        client,
+        fetchImpl: challengeFetch(challenge([wireRequirements])).fetchImpl,
+        transportPolicy: { mode: "insecure-test" },
+      },
     );
     expect(result.disposition).toBe("prepared");
     if (result.disposition === "prepared") {

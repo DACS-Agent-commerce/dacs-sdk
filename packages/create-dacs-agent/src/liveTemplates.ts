@@ -496,6 +496,7 @@ import {
   VERSION,
   createViemX402BuyerEvmReadClient,
   resolveRail,
+  type WalletSpendStatusV1,
 } from "@kynesyslabs/dacs";
 import { canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
@@ -1034,9 +1035,10 @@ function baseProbes(
     })();
     return fundingTask;
   };
-  const walletSpendTasks: Partial<Record<GeneratedRailProfile,
-    Promise<Awaited<ReturnType<Awaited<ReturnType<
-      typeof createDacsWalletSpendAuthorityV1>>["inspect"]>>>>> = {};
+  const walletSpendTasks: Partial<Record<
+    GeneratedRailProfile,
+    Promise<Readonly<WalletSpendStatusV1>>
+  >> = {};
   const selectedWalletSpendStatus = (profile: GeneratedRailProfile) => {
     if (actors === undefined) throw new Error("wallet spend actor unavailable");
     const integrityKeyFilePath = configuredWalletSpendIntegrityKeyPath();
