@@ -1,7 +1,5 @@
-import { isIP } from "node:net";
-import { domainToASCII } from "node:url";
-
 import { DacsError } from "../errors.js";
+import { isCanonicalDomainHostname } from "./domainHost.js";
 
 /** CORE B.1 CF-3 identity. Parameters deliberately do not participate. */
 export interface CanonicalClaimIdentity {
@@ -76,25 +74,6 @@ function hasNonEmptyComponents(identifier: string, count: number): boolean {
   return start < identifier.length;
 }
 
-function canonicalDomainIdentifier(identifier: string): boolean {
-  let ascii: string;
-  try {
-    ascii = domainToASCII(identifier);
-  } catch {
-    return false;
-  }
-  if (identifier.length > 253 || identifier.endsWith(".") ||
-      isIP(identifier) !== 0 || ascii !== identifier) {
-    return false;
-  }
-  const labels = identifier.split(".");
-  return labels.every((label) =>
-    label.length >= 1 &&
-    label.length <= 63 &&
-    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
-  );
-}
-
 function canonicalRegisteredIdentifier(
   scheme: string,
   identifier: string,
@@ -107,7 +86,13 @@ function canonicalRegisteredIdentifier(
           !/^[a-z0-9]+$/.test(identifier.slice(0, methodSeparator))) {
         return false;
       }
-      if (identifier.slice(0, methodSeparator) === "demos") {
+      // DACS-1 §6.3.1 registers the self-certifying *agent* profile without
+      // claiming that every other DID under the Demos method has that shape.
+      // Historical Standard vectors use ordinary resolver-backed Demos DIDs
+      // such as `did:demos:buyer`; those remain canonical generic DIDs. Once a
+      // value opts into `demos:agent:`, however, the profile's exact lower-case
+      // 32-byte key rule applies and malformed lookalikes must fail closed.
+      if (identifier.startsWith("demos:agent:")) {
         return /^demos:agent:[0-9a-f]{64}$/.test(identifier);
       }
       return identifier.slice(methodSeparator + 1).length > 0;
@@ -116,7 +101,7 @@ function canonicalRegisteredIdentifier(
       // DACS-1 DCR-2 deliberately excludes URL query syntax from the
       // hostname-only profile, even though other ClaimReference schemes may
       // carry advisory parameters.
-      return !hasParameters && canonicalDomainIdentifier(identifier);
+      return !hasParameters && isCanonicalDomainHostname(identifier);
     case "key":
       return /^[0-9a-f]+$/.test(identifier);
     case "erc8004": {

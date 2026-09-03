@@ -6,7 +6,7 @@ HTTP service, invent DACS artifacts, or replace the authoritative session and
 write journals used by those operations.
 
 The supported artifact/conformance revision is
-`965df755aba4ff392f1fb37a93d287242b177ba4`, the immutable revision pinned by
+`662be1d4899a2cadf327fe2d5523e93a80334e5f`, the immutable revision pinned by
 `scripts/sync-vectors.mjs`. The implementation was also checked against DACS
 Standard `next` at `81ded2b49851d8fa17399e3fdade9e36e33a4ff7` on 15 August
 2026. A later Standard revision is not accepted merely because a peer supplies
