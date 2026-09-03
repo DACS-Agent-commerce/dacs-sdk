@@ -23,6 +23,7 @@ import {
   finalizeFixedPriceAgreementContributions,
   generateCanonicalJobId,
   identityBundleHash,
+  paymentEvidenceAddress,
   privateKeyFromSeed,
   publicKeyFromRaw,
   publicKeyFromSeed,
@@ -42,6 +43,7 @@ import {
   type AnchoredFinalityCommitment,
   type AttestationRef,
   type BundleVerification,
+  type ChainTxRef,
   type CommitmentSignatureVerifier,
   type ComponentSignature,
   type CompositeBundleRequirement,
@@ -421,11 +423,12 @@ class SimulationArtifactStore {
     fileName: string,
     type: string,
     value: Record<string, unknown>,
-    options: { hash?: string; signer?: string } = {},
+    options: { hash?: string; locator?: string; signer?: string } = {},
   ): Promise<AttestationRef> {
     const snapshot = structuredClone(value);
     const hash = options.hash ?? contentHash(snapshot);
-    const locator = `x-simulation-internal:${this.#runId}:${fileName}`;
+    const locator = options.locator ??
+      `x-simulation-internal:${this.#runId}:${fileName}`;
     await this.#writeFixture(fileName, type, snapshot, hash);
     this.#records.set(locator, { type, hash, locator, value: snapshot });
     this.#reportArtifacts.push({
@@ -1114,6 +1117,11 @@ function signSettlementEvidence(
   } as SettlementEvidence;
 }
 
+function settlementEvidenceScopeHash(evidence: SettlementEvidence): string {
+  const { signature: _signature, ...scope } = evidence;
+  return contentHash(asRecord(scope));
+}
+
 function signSimulationProviderFixture(
   verifier: RoleIdentity,
   agreement: AgreementArtifact,
@@ -1246,7 +1254,15 @@ async function settleAndDeliver(
     "dacs-4-payment-evidence",
     "SettlementEvidence:pay-ap2",
     asRecord(paymentEvidence),
-    { signer: seller.claim },
+    {
+      hash: settlementEvidenceScopeHash(paymentEvidence),
+      locator: paymentEvidenceAddress(
+        context.jobId,
+        RAIL.railId,
+        PAYMENT_PHASE_INDEX,
+      ),
+      signer: seller.claim,
+    },
   );
 
   const deliverable = {
@@ -1281,7 +1297,10 @@ async function settleAndDeliver(
     "dacs-4-delivery-evidence",
     "SettlementEvidence:deliver-storage-program",
     asRecord(deliveryEvidence),
-    { signer: seller.claim },
+    {
+      hash: settlementEvidenceScopeHash(deliveryEvidence),
+      signer: seller.claim,
+    },
   );
   return {
     paymentEvidence,
@@ -1319,7 +1338,14 @@ async function verifyEvidence(
             asset: "USD",
             handler: "pay-ap2",
           },
-          result: { ok: true },
+          paymentAddress: {
+            railId: RAIL.railId,
+            phaseIndex: PAYMENT_PHASE_INDEX,
+          },
+          result: {
+            ok: true,
+            txRefs: evidence["paymentTxRefs"] as readonly ChainTxRef[],
+          },
         }
       : {
           orchestrator: seller.claim,
@@ -1726,7 +1752,9 @@ async function executeOfflineVerifierSimulation({
   ) {
     throw new Error(
       `simulation DACS-4 verifier exercise failed: payment=${paymentVerification.decision}, ` +
-        `delivery=${deliveryVerification.decision}`,
+        `delivery=${deliveryVerification.decision}; payment-reasons=${
+          paymentVerification.reasons.join(" | ")
+        }; delivery-reasons=${deliveryVerification.reasons.join(" | ")}`,
     );
   }
 

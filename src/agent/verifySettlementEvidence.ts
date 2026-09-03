@@ -459,10 +459,15 @@ async function evaluateSettlementEvidence(
       reasons.push("authenticated evidence context requires the exact phase result");
     }
     if (isPayment) {
+      const requiresCanonicalNetwork =
+        isObj(ctx.rail) && isStr(ctx.rail.railType) &&
+        new Set(["evm-erc20", "solana-spl", "x402", "demos-native"])
+          .has(ctx.rail.railType);
       if (!isObj(ctx.rail) || !isStr(ctx.rail.railId) || ctx.rail.railId.length === 0 ||
           !isStr(ctx.rail.railType) || ctx.rail.railType.length === 0 ||
           !isStr(ctx.rail.asset) || ctx.rail.asset.length === 0 ||
-          !isStr(ctx.rail.network) || ctx.rail.network.length === 0 ||
+          (requiresCanonicalNetwork &&
+            (!isStr(ctx.rail.network) || ctx.rail.network.length === 0)) ||
           !isStr(ctx.rail.handler) || ctx.rail.handler.length === 0) {
         sawError = true;
         reasons.push("authenticated payment evidence context requires the exact pinned rail");
