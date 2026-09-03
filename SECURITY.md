@@ -160,7 +160,11 @@ WebSocket transport — an app already running a full chain stack with these dep
 
 - **Direct dependencies** are the only ones this repo can fix directly; a new
   direct dependency with an open critical/high advisory is not added. CI **fails**
-  on any direct high/critical advisory (see below).
+  on any direct high/critical advisory (see below). The blocking gate submits
+  exact installed versions to npm's bulk advisory endpoint, validates and bounds
+  the response, retries transient failures, and fails closed if no authenticated
+  registry result can be obtained. It does not fall back to the retired quick
+  audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
