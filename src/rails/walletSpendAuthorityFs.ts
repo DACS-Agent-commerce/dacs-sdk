@@ -67,6 +67,17 @@ interface CapturedFsOptionsV1 {
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
+function nestedErrorCode(value: unknown): string | undefined {
+  let current = value;
+  for (let depth = 0; depth < 4 && current !== null &&
+      typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string") return candidate.code;
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
 function safePositive(value: unknown, fallback: number, label: string): number {
   const result = value === undefined ? fallback : value;
   if (!Number.isSafeInteger(result) || (result as number) <= 0) {
@@ -305,6 +316,7 @@ export async function createFsWalletSpendStateStoreV1(
     scope: string,
     recordPath: string,
     markerPath: string,
+    repairMarker = true,
   ): Promise<Readonly<WalletSpendStateV1> | null> {
     const marked = await markerPresent(scope, markerPath);
     if (!await exists(recordPath)) {
@@ -326,7 +338,7 @@ export async function createFsWalletSpendStateStoreV1(
     if (!equalMac(value.mac, authenticate(body))) {
       throw new DacsError("wallet spend state is unauthenticated");
     }
-    if (!marked) {
+    if (!marked && repairMarker) {
       const markerBody = { markerVersion: STORE_FORMAT_VERSION, scope };
       await atomicWrite(markerPath, JSON.stringify({
         ...markerBody,
@@ -363,8 +375,10 @@ export async function createFsWalletSpendStateStoreV1(
       createdAt: Date.now(),
     };
     while (true) {
+      let created = false;
       try {
         await mkdir(path, { mode: DIRECTORY_MODE });
+        created = true;
         await atomicWrite(join(path, "owner.json"), JSON.stringify(owner));
         await syncDirectory(locksDirectory);
         return async () => {
@@ -381,7 +395,12 @@ export async function createFsWalletSpendStateStoreV1(
           await syncDirectory(locksDirectory);
         };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (created) {
+          await rm(path, { recursive: true, force: true });
+          await syncDirectory(locksDirectory);
+          throw error;
+        }
+        if (nestedErrorCode(error) !== "EEXIST") throw error;
       }
 
       const lockOwnerPath = join(path, "owner.json");
@@ -393,7 +412,10 @@ export async function createFsWalletSpendStateStoreV1(
         lockAge = Date.now() - metadata.mtimeMs;
         observed = await readBoundedJson(lockOwnerPath, "wallet spend lock owner");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        // A contender can see the freshly-created lock directory before its
+        // owner file is atomically installed, or the owner can release between
+        // stat and read. Both are ordinary lock races, not corrupt state.
+        if (nestedErrorCode(error) !== "ENOENT") throw error;
       }
       if (lockAge >= options.lockStaleMs) {
         if (!plainObject(observed) || typeof observed.pid !== "number" ||
@@ -411,7 +433,7 @@ export async function createFsWalletSpendStateStoreV1(
             await syncDirectory(locksDirectory);
             continue;
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            if (nestedErrorCode(error) !== "ENOENT") throw error;
           }
         }
       }
@@ -423,6 +445,10 @@ export async function createFsWalletSpendStateStoreV1(
   }
 
   const store: WalletSpendStateStore = {
+    async read(scope: string): Promise<Readonly<WalletSpendStateV1> | null> {
+      const { record, marker } = paths(scope);
+      return readState(scope, record, marker, false);
+    },
     async transact<T>(
       scope: string,
       operation: (
