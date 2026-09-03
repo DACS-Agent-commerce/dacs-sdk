@@ -163,8 +163,10 @@ WebSocket transport — an app already running a full chain stack with these dep
   on any direct high/critical advisory (see below). The blocking gate submits
   exact installed versions to npm's bulk advisory endpoint, validates and bounds
   the response, retries transient failures, and fails closed if no authenticated
-  registry result can be obtained. It does not fall back to the retired quick
-  audit endpoint.
+  result can be obtained. If npm's bulk service is unavailable, CI queries OSV
+  with the same exact npm package/version pairs and conservatively blocks every
+  match regardless of severity; both services must fail before the gate fails
+  closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
 - **Refresh cadence:** re-run the snapshot command and update this file on a

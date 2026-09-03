@@ -8,7 +8,9 @@ const {
   collectAuditVersions,
   decodeAuditResponse,
   requestBulkAdvisories,
+  requestOsvAdvisories,
   validateAdvisories,
+  validateOsvResults,
   violationsAtThreshold,
 } = await import(auditModulePath);
 
@@ -97,6 +99,40 @@ describe("npm bulk advisory gate", () => {
     expect(violationsAtThreshold(advisories, "none")).toEqual([]);
   });
 
+  it("treats every OSV exact-version fallback match as blocking", () => {
+    const advisories = validateOsvResults(
+      {
+        results: [
+          { vulns: [{ id: "GHSA-test-0001" }] },
+          { vulns: [{ id: "GHSA-test-0001" }] },
+          {},
+        ],
+      },
+      [
+        { packageName: "direct", version: "1.0.0" },
+        { packageName: "direct", version: "1.0.1" },
+        { packageName: "safe", version: "2.0.0" },
+      ],
+    );
+    expect(advisories).toHaveLength(1);
+    expect(advisories[0]).toMatchObject({
+      packageName: "direct",
+      id: "GHSA-test-0001",
+      severity: "unknown",
+    });
+    expect(violationsAtThreshold(advisories, "critical")).toEqual(advisories);
+    expect(violationsAtThreshold(advisories, "none")).toEqual([]);
+  });
+
+  it("fails closed when OSV omits an exact-version result", () => {
+    expect(() =>
+      validateOsvResults(
+        { results: [] },
+        [{ packageName: "direct", version: "1.0.0" }],
+      ),
+    ).toThrow(/does not match/);
+  });
+
   it("retries transient failures and accepts a gzip-magic response", async () => {
     const fetchImpl = vi
       .fn()
@@ -150,5 +186,28 @@ describe("npm bulk advisory gate", () => {
         },
       ),
     ).rejects.toThrow(/exceeded 4 bytes/);
+  });
+
+  it("queries OSV with exact npm package versions", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          results: [{ vulns: [{ id: "GHSA-test-0002" }] }, {}],
+        }),
+        { status: 200 },
+      ),
+    );
+    const advisories = await requestOsvAdvisories(
+      { direct: ["1.0.0", "1.0.1"] },
+      { attempts: 1, timeoutMs: 1_000, fetchImpl },
+    );
+    expect(advisories).toHaveLength(1);
+    const request = fetchImpl.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      queries: [
+        { package: { ecosystem: "npm", name: "direct" }, version: "1.0.0" },
+        { package: { ecosystem: "npm", name: "direct" }, version: "1.0.1" },
+      ],
+    });
   });
 });

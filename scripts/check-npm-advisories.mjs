@@ -7,9 +7,10 @@ import { pathToFileURL } from "node:url";
 
 const SEVERITIES = ["info", "low", "moderate", "high", "critical"];
 const DEFAULT_REGISTRY = "https://registry.npmjs.org/";
+const OSV_BATCH_ENDPOINT = "https://api.osv.dev/v1/querybatch";
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_ATTEMPTS = 3;
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_ATTEMPTS = 2;
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -204,6 +205,51 @@ export function validateAdvisories(payload, requestedPackages) {
   return advisories;
 }
 
+function exactVersionQueries(versions) {
+  return Object.entries(versions).flatMap(([packageName, packageVersions]) =>
+    packageVersions.map((version) => ({ packageName, version })),
+  );
+}
+
+export function validateOsvResults(payload, queries) {
+  if (!isObject(payload) || !Array.isArray(payload.results)) {
+    throw new Error("OSV response must contain a results array");
+  }
+  if (payload.results.length !== queries.length) {
+    throw new Error("OSV response count does not match the exact-version query count");
+  }
+  const deduplicated = new Map();
+  for (let index = 0; index < queries.length; index += 1) {
+    const query = queries[index];
+    const result = payload.results[index];
+    if (!isObject(query) || !isObject(result)) {
+      throw new Error("OSV returned an invalid exact-version result");
+    }
+    if (result.vulns === undefined) continue;
+    if (!Array.isArray(result.vulns)) {
+      throw new Error(`OSV returned invalid vulnerabilities for ${query.packageName}`);
+    }
+    for (const vulnerability of result.vulns) {
+      if (!isObject(vulnerability) || typeof vulnerability.id !== "string" || !vulnerability.id) {
+        throw new Error(`OSV returned a vulnerability without an id for ${query.packageName}`);
+      }
+      const key = `${query.packageName}\u0000${vulnerability.id}`;
+      deduplicated.set(key, {
+        packageName: query.packageName,
+        id: vulnerability.id,
+        // Querybatch returns compact identifiers rather than a scoring record.
+        // Treat every exact-version match as blocking on fallback; this is
+        // stricter than guessing a severity or silently dropping the finding.
+        severity: "unknown",
+        title: `OSV exact-version match ${vulnerability.id}`,
+        url: `https://osv.dev/vulnerability/${encodeURIComponent(vulnerability.id)}`,
+        vulnerableVersions: query.version,
+      });
+    }
+  }
+  return [...deduplicated.values()];
+}
+
 async function readBoundedBody(response, maximumBytes) {
   if (!response.body) return new Uint8Array();
   const chunks = [];
@@ -307,8 +353,70 @@ export async function requestBulkAdvisories(
   );
 }
 
+export async function requestOsvAdvisories(
+  versions,
+  {
+    attempts = DEFAULT_ATTEMPTS,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    maximumResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    fetchImpl = globalThis.fetch,
+  } = {},
+) {
+  if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable");
+  const queries = exactVersionQueries(versions);
+  if (queries.length === 0) return [];
+  if (queries.length > 1_000) {
+    throw new Error("OSV fallback supports at most 1000 exact package/version queries");
+  }
+  const body = JSON.stringify({
+    queries: queries.map(({ packageName, version }) => ({
+      package: { ecosystem: "npm", name: packageName },
+      version,
+    })),
+  });
+  let finalError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(OSV_BATCH_ENDPOINT, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "dacs-sdk-ci-audit/1",
+        },
+        body,
+      });
+      if (!response.ok) {
+        throw new Error(`OSV querybatch endpoint returned HTTP ${response.status}`);
+      }
+      const bytes = await readBoundedBody(response, maximumResponseBytes);
+      const payload = decodeAuditResponse(bytes, maximumResponseBytes);
+      return validateOsvResults(payload, queries);
+    } catch (error) {
+      finalError = error;
+      if (attempt < attempts) {
+        process.stderr.write(
+          `OSV audit attempt ${attempt}/${attempts} failed; retrying: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+        await sleep(250 * attempt);
+      }
+    }
+  }
+  throw new Error(
+    `OSV exact-version audit failed after ${attempts} attempts: ${
+      finalError instanceof Error ? finalError.message : String(finalError)
+    }`,
+  );
+}
+
 function countsFor(advisories) {
-  const counts = Object.fromEntries(SEVERITIES.map((severity) => [severity, 0]));
+  const counts = Object.fromEntries(
+    [...SEVERITIES, "unknown"].map((severity) => [severity, 0]),
+  );
   for (const advisory of advisories) counts[advisory.severity] += 1;
   counts.total = advisories.length;
   return counts;
@@ -319,7 +427,9 @@ export function violationsAtThreshold(advisories, threshold) {
   const thresholdIndex = SEVERITIES.indexOf(threshold);
   if (thresholdIndex < 0) throw new Error(`unsupported audit threshold: ${threshold}`);
   return advisories.filter(
-    (advisory) => SEVERITIES.indexOf(advisory.severity) >= thresholdIndex,
+    (advisory) =>
+      advisory.severity === "unknown" ||
+      SEVERITIES.indexOf(advisory.severity) >= thresholdIndex,
   );
 }
 
@@ -367,13 +477,13 @@ function parseArguments(argumentsList) {
 
 function markdownSummary(report) {
   return [
-    `### npm bulk advisory audit (${report.scope})`,
+    `### dependency advisory audit (${report.scope})`,
     "",
-    `Audited **${report.packagesAudited}** exact package/version sets through the npm bulk advisory endpoint.`,
+    `Audited **${report.packagesAudited}** exact package/version sets using **${report.source}**.`,
     "",
     "| severity | advisories |",
     "| --- | ---: |",
-    ...SEVERITIES.slice().reverse().map(
+    ...["unknown", ...SEVERITIES.slice().reverse()].map(
       (severity) => `| ${severity} | ${report.counts[severity]} |`,
     ),
     "",
@@ -389,10 +499,31 @@ export async function runAudit(options) {
     scope: options.scope,
     omit: options.omit,
   });
-  const payload = await requestBulkAdvisories(versions, { registry: options.registry });
-  const advisories = validateAdvisories(payload, versions);
+  let advisories;
+  let source = "npm-bulk";
+  try {
+    const payload = await requestBulkAdvisories(versions, { registry: options.registry });
+    advisories = validateAdvisories(payload, versions);
+  } catch (npmError) {
+    process.stderr.write(
+      `npm bulk advisory service unavailable; using stricter OSV exact-version fallback: ${
+        npmError instanceof Error ? npmError.message : String(npmError)
+      }\n`,
+    );
+    source = "osv-exact-version-fallback";
+    try {
+      advisories = await requestOsvAdvisories(versions);
+    } catch (osvError) {
+      throw new Error(
+        `both advisory services failed (npm: ${
+          npmError instanceof Error ? npmError.message : String(npmError)
+        }; OSV: ${osvError instanceof Error ? osvError.message : String(osvError)})`,
+      );
+    }
+  }
   const violations = violationsAtThreshold(advisories, options.threshold);
   return {
+    source,
     scope: options.scope,
     threshold: options.threshold,
     packagesAudited: Object.keys(versions).length,
