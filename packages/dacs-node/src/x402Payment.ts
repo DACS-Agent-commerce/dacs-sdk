@@ -1,6 +1,10 @@
 import {
   advanceX402BuyerSettlement,
   assertX402BuyerSettlementIntent,
+  type WalletSpendAuthorityV1,
+  type WalletSpendPermitV1,
+  type WalletSpendReservationV1,
+  type WalletSpendSettlementObservationV1,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
   type X402BuyerAuthorizationProvider,
@@ -41,6 +45,10 @@ export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> {
   settlementStore: X402BuyerSettlementStore;
   authorizationProvider: X402BuyerAuthorizationProvider<TObservation>;
   transport: X402BuyerPaidRequestTransport;
+  /** Mandatory wallet/chain-wide authority for this unattended buyer. */
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
+  /** Authenticated rail finality depth bound into the wallet reservation. */
+  finalityBlocks: number;
   /**
    * Prepare and sign the exact x402 bearer. It runs only when no authenticated
    * SQLite effect intent exists; restart recovery reuses those exact bytes.
@@ -121,9 +129,53 @@ function referenceFromSettlement(settlement: Readonly<X402BuyerCapturedSettlemen
     `${settlement.signedEvent.settlementTxHash}:${settlement.signedEvent.logIndex}`;
 }
 
+function walletReservation(
+  payment: Readonly<DacsX402BuyerPaymentInputV1>,
+  finalityBlocks: number,
+): Readonly<WalletSpendReservationV1> {
+  const intent = payment.intent;
+  return Object.freeze({
+    reservationVersion: "1",
+    reservationId: `x402:${intent.settlementKey}`,
+    jobId: intent.jobId,
+    phaseIndex: intent.phaseIndex,
+    phase: "pay-x402",
+    agreementHash: intent.agreementHash,
+    settlementBindingHash: intent.bindingHash,
+    railId: intent.railId,
+    railDefinitionHash: intent.railDescriptorHash,
+    wallet: intent.payer.toLowerCase(),
+    chainId: intent.network,
+    payee: intent.payee.toLowerCase(),
+    finality: Object.freeze({ model: "confirmation-depth", finalityBlocks }),
+    debits: Object.freeze([Object.freeze({
+      asset: intent.asset.toLowerCase(),
+      purpose: "service" as const,
+      expectedAmount: intent.amount,
+      maximumAmount: intent.amount,
+    })]),
+  });
+}
+
+function walletSettlement(
+  payment: Readonly<DacsX402BuyerPaymentInputV1>,
+  settlement: Readonly<X402BuyerCapturedSettlement>,
+): Readonly<WalletSpendSettlementObservationV1> {
+  return Object.freeze({
+    disposition: "settled",
+    evidenceHash: settlement.authenticationHash,
+    debits: Object.freeze([Object.freeze({
+      asset: payment.intent.asset.toLowerCase(),
+      purpose: "service" as const,
+      amount: payment.intent.amount,
+    })]),
+  });
+}
+
 function combinedFence(
   inner: Readonly<X402BuyerEffectFence>,
   outer: Readonly<DacsLiveEffectFenceV1>,
+  wallet?: Readonly<WalletSpendPermitV1>,
 ): Readonly<X402BuyerEffectFence> {
   return Object.freeze({
     owner: inner.owner,
@@ -134,6 +186,7 @@ function combinedFence(
     async assertCurrent() {
       await outer.assertCurrent();
       await inner.assertCurrent();
+      await wallet?.assertCurrent();
     },
   });
 }
@@ -169,6 +222,10 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       typeof options.authorizationProvider.lookup !== "function" ||
       typeof options.authorizationProvider.authenticate !== "function" ||
       !options.transport || typeof options.transport.submitRetained !== "function" ||
+      !options.walletSpendAuthority ||
+      typeof options.walletSpendAuthority.reserve !== "function" ||
+      typeof options.walletSpendAuthority.reconcile !== "function" ||
+      !Number.isSafeInteger(options.finalityBlocks) || options.finalityBlocks <= 0 ||
       typeof options.prepareIntent !== "function" ||
       typeof options.authorizePreparedIntent !== "function") {
     throw new TypeError("x402 buyer payment track options are invalid");
@@ -182,6 +239,8 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
   const settlementStore = options.settlementStore;
   const provider = options.authorizationProvider;
   const transport = options.transport;
+  const walletSpendAuthority = options.walletSpendAuthority;
+  const finalityBlocks = options.finalityBlocks;
   const settlementLeaseDurationMs = options.settlementLeaseDurationMs ?? 30_000;
   if (!Number.isSafeInteger(settlementLeaseDurationMs) ||
       settlementLeaseDurationMs <= 0 || settlementLeaseDurationMs > 600_000) {
@@ -344,16 +403,30 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       );
       await fence.assertCurrent();
       if (recovered.disposition === "settled-same") {
-        return persistAuthenticatedSettlement(
+        const persisted = await persistAuthenticatedSettlement(
           paymentInput,
           recovered.settlement,
           outerFence,
         );
+        if (persisted.status === "completed") {
+          await walletSpendAuthority.reconcile(
+            walletReservation(paymentInput, finalityBlocks),
+            walletSettlement(paymentInput, recovered.settlement),
+          );
+        }
+        return persisted;
       }
       if (recovered.disposition === "unused") {
         if (!HASH_RE.test(recovered.authenticationHash)) {
           return { status: "indeterminate", reasonCode: "x402-absence-proof-invalid" };
         }
+        await walletSpendAuthority.reconcile(
+          walletReservation(paymentInput, finalityBlocks),
+          Object.freeze({
+            disposition: "terminal-absent",
+            evidenceHash: recovered.authenticationHash,
+          }),
+        );
         return { status: "absent", absenceProofHash: recovered.authenticationHash };
       }
       if (recovered.disposition === "used-different" ||
@@ -386,8 +459,19 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           paymentInput.intent.jobId !== invocation.fence.jobId) {
         return control("operator-action", "x402-payment-binding-mismatch");
       }
+      const reservation = walletReservation(paymentInput, finalityBlocks);
+      const claim = await walletSpendAuthority.reserve(reservation);
+      if (claim.status !== "reserved") {
+        return control(
+          claim.status === "held" || claim.status === "settled"
+            ? "indeterminate" : "operator-action",
+          claim.status === "denied"
+            ? `wallet-spend-${claim.reason}`
+            : `wallet-spend-${claim.status}`,
+        );
+      }
       const wrap = (fence: Readonly<X402BuyerEffectFence>) =>
-        combinedFence(fence, invocation.fence);
+        combinedFence(fence, invocation.fence, claim.permit);
       const progress = await advanceX402BuyerSettlement({
         intent: paymentInput.intent,
         owner: `${workerId}-${invocation.fence.generation}`,
@@ -401,8 +485,10 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
             provider.authenticate(intent, lookup, candidate, wrap(fence)),
         },
         transport: {
-          submitRetained: (intent, fence) =>
-            transport.submitRetained(intent, wrap(fence)),
+          submitRetained: async (intent, fence) => {
+            await claim.permit.beginEffect();
+            return transport.submitRetained(intent, wrap(fence));
+          },
         },
         now: () => database.readTime(),
         leaseDurationMs: settlementLeaseDurationMs,

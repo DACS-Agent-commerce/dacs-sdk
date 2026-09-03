@@ -25,6 +25,10 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import {
+  createAccountingTestWalletSpendAuthorityV1,
+  createPermissiveTestWalletSpendAuthorityV1,
+} from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:pay-dem-buyer";
@@ -151,10 +155,17 @@ describe("native DEM buyer payment track", () => {
           finality: { model: "bft-final" },
           blockNumber: 42,
           txRefKind: "demos",
+          networkFeeOs: "1000000000",
         };
       },
     };
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+    });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
       database,
       workerId: "buyer-dem-worker",
       rail,
@@ -186,6 +197,11 @@ describe("native DEM buyer payment track", () => {
     expect(events).toEqual(["journal-committed", "broadcast", "notice-queued"]);
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 1,
+      assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
+    });
   });
 
   it("reconciles after notice queue failure without settling again", async () => {
@@ -215,10 +231,12 @@ describe("native DEM buyer payment track", () => {
           finality: { model: "bft-final" },
           blockNumber: 43,
           txRefKind: "demos",
+          networkFeeOs: "1000000000",
         };
       },
     };
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: first,
       workerId: "buyer-dem-before-restart",
       rail: firstRail,
@@ -259,10 +277,12 @@ describe("native DEM buyer payment track", () => {
         blockNumber: 43,
         txRefKind: "demos" as const,
         amountOs: AUTHORITY.amountOs,
+        networkFeeOs: "1000000000",
       },
     }));
     const publishNotice = vi.fn();
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: restarted,
       workerId: "buyer-dem-after-restart",
       rail: { address: PAYER, settle },
@@ -297,6 +317,7 @@ describe("native DEM buyer payment track", () => {
         finality: { model: "bft-final" },
         blockNumber: 43,
         txRefKind: "demos",
+        networkFeeOs: "1000000000",
       } }),
     }));
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)

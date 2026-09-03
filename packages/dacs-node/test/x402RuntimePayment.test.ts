@@ -33,6 +33,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { createPermissiveTestWalletSpendAuthorityV1 } from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
@@ -248,6 +249,7 @@ describe("buyer runtime x402 payment composition", () => {
       },
     }) as unknown as DacsLiveRoleOperationContextV1;
     const track = createDacsX402BuyerRuntimePaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       minimumConfirmations: 1,
@@ -298,6 +300,7 @@ describe("buyer runtime x402 payment composition", () => {
     expect(challengeClient.createPaymentPayload).not.toHaveBeenCalled();
 
     const controlledTrack = createDacsX402BuyerRuntimePaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       minimumConfirmations: 1,

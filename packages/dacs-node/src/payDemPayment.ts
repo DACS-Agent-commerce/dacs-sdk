@@ -1,10 +1,15 @@
 import {
+  combineWalletSpendEffectFenceV1,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
   type PayDemReconciledSettlement,
   type PayDemSettlementRecoveryContext,
   type SettleResult,
+  type SettlementEffectFence,
+  type WalletSpendAuthorityV1,
+  type WalletSpendReservationV1,
+  type WalletSpendSettlementObservationV1,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
@@ -86,6 +91,8 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
   database: DacsNodeSqliteDatabase;
   workerId: string;
   rail: Readonly<PayDemRail>;
+  /** Mandatory wallet/chain-wide authority for every unattended native debit. */
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   resolveAuthority(input: Readonly<{
     operation: Readonly<FixedPricePayDemTrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
@@ -253,6 +260,79 @@ function recoveryContext(
   });
 }
 
+function walletReservation(
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+): Readonly<WalletSpendReservationV1> {
+  const maximumFee = BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs);
+  return Object.freeze({
+    reservationVersion: "1",
+    reservationId: `pay-dem:${payment.settlementKey}`,
+    jobId: payment.jobId,
+    phaseIndex: payment.phaseIndex,
+    phase: "pay-dem",
+    agreementHash: payment.agreementHash,
+    settlementBindingHash: payment.orderLocalBindingHash,
+    railId: payment.railId,
+    railDefinitionHash: payment.railDescriptorHash,
+    wallet: payment.payer,
+    chainId: payment.network,
+    payee: payment.payee,
+    finality: Object.freeze({ model: "bft-final" }),
+    debits: Object.freeze([
+      Object.freeze({
+        asset: "DEM",
+        purpose: "service" as const,
+        expectedAmount: payment.amountOs,
+        maximumAmount: payment.amountOs,
+      }),
+      ...(maximumFee === 0n ? [] : [Object.freeze({
+          asset: "DEM",
+          purpose: "network-fee" as const,
+          expectedAmount: "0",
+          maximumAmount: maximumFee.toString(),
+        })]),
+    ]),
+  });
+}
+
+function walletSettlement(
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  settlement: Readonly<SettleResult>,
+): Readonly<WalletSpendSettlementObservationV1> {
+  if (settlement.networkFeeOs === undefined) {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-network-fee-accounting-missing");
+  }
+  return Object.freeze({
+    disposition: "settled",
+    // The recovery authenticator needs the canonical transaction identifier so
+    // it can independently re-read the finalized transfer. The reservation and
+    // exact debit tuple remain bound by the authority's durable state.
+    evidenceHash: settlement.txHash,
+    debits: Object.freeze([
+      Object.freeze({ asset: "DEM", purpose: "service" as const,
+        amount: payment.amountOs }),
+      ...(BigInt(payment.maxTotalDebitOs) === BigInt(payment.amountOs)
+        ? []
+        : [Object.freeze({ asset: "DEM", purpose: "network-fee" as const,
+            amount: settlement.networkFeeOs })]),
+    ]),
+  });
+}
+
+function settlementFence(
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  fence: Readonly<DacsLiveEffectFenceV1>,
+): Readonly<SettlementEffectFence> {
+  return Object.freeze({
+    settlementKey: payment.settlementKey,
+    bindingHash: payment.orderLocalBindingHash,
+    owner: fence.effectId,
+    generation: fence.generation,
+    effectIdentity: fence.effectId,
+    assertCurrent: () => fence.assertCurrent(),
+  });
+}
+
 function capturePrepared(
   value: unknown,
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
@@ -260,7 +340,7 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ], ["denomination"]) || typeof value.txHash !== "string" ||
+  ], ["denomination", "confirmedTotalDebitOs"]) || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
@@ -269,6 +349,11 @@ function capturePrepared(
         value.denomination !== "dem") ||
       value.network !== payment.network ||
       value.maxTotalDebitOs !== payment.maxTotalDebitOs ||
+      (value.confirmedTotalDebitOs !== undefined &&
+        (typeof value.confirmedTotalDebitOs !== "string" ||
+          !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
+          BigInt(value.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
+          BigInt(value.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs))) ||
       canonicalize(value.recovery) !== canonicalize(recoveryContext(payment))) {
     throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-transfer-invalid");
   }
@@ -281,13 +366,17 @@ function captureSettlement(
 ): Readonly<SettleResult> {
   if (!plainObject(value) || !exactKeys(value, [
     "ok", "txHash", "chainId", "payer", "payee", "finality",
-    "blockNumber", "txRefKind",
+    "blockNumber", "txRefKind", "networkFeeOs",
   ]) || value.ok !== true || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) || value.chainId !== payment.network ||
       canonicalAddress(value.payer) !== payment.payer ||
       canonicalAddress(value.payee) !== payment.payee ||
       !plainObject(value.finality) || !exactKeys(value.finality, ["model"]) ||
       value.finality.model !== "bft-final" ||
+      typeof value.networkFeeOs !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
+      BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
+        BigInt(payment.maxTotalDebitOs) ||
       !Number.isSafeInteger(value.blockNumber) || (value.blockNumber as number) < 0 ||
       value.txRefKind !== "demos") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-settlement-invalid");
@@ -447,6 +536,9 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   if (!plainObject(options) || !text(options.workerId) ||
       !plainObject(options.rail) || typeof options.rail.settle !== "function" ||
       canonicalAddress(options.rail.address) === null ||
+      !plainObject(options.walletSpendAuthority) ||
+      typeof options.walletSpendAuthority.reserve !== "function" ||
+      typeof options.walletSpendAuthority.reconcile !== "function" ||
       typeof options.resolveAuthority !== "function" ||
       typeof options.reconcile !== "function" ||
       typeof options.publishNotice !== "function" ||
@@ -456,6 +548,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   }
   const database = options.database;
   const rail = options.rail;
+  const walletSpendAuthority = options.walletSpendAuthority;
 
   return createDacsLiveEffectTrackV1<
     DacsPayDemBuyerPaymentInputV1,
@@ -490,8 +583,23 @@ export function createDacsPayDemBuyerPaymentTrackV1(
       async execute({ input, fence }) {
         const payment = capturePaymentInput(input);
         await fence.assertCurrent();
+        const reservation = walletReservation(payment);
+        const claim = await walletSpendAuthority.reserve(reservation);
+        if (claim.status !== "reserved") {
+          if (claim.status === "held" || claim.status === "settled") {
+            return control("wallet-spend-reconciliation-required");
+          }
+          return Object.freeze({
+            effectControlVersion: "1" as const,
+            status: "operator-action" as const,
+            reasonCode: claim.status === "denied"
+              ? `wallet-spend-${claim.reason}`
+              : `wallet-spend-${claim.status}`,
+          });
+        }
         let settlement: Readonly<SettleResult>;
         try {
+          await claim.permit.beginEffect();
           const raw = await rail.settle({
             recipient: payment.payee,
             amount: payment.amountOs,
@@ -503,8 +611,12 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
             },
             assertCurrentBeforeBroadcast: () => fence.assertCurrent(),
-          });
+          }, combineWalletSpendEffectFenceV1(
+            settlementFence(payment, fence),
+            claim.permit,
+          ));
           settlement = captureSettlement(raw, payment);
+          await claim.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
             notice: createDacsPayDemPaymentNoticeV1(payment, settlement),
             fence,
@@ -531,8 +643,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           fence,
         });
         const captured = captureChainReconciliation(reconciled, payment);
+        const reservation = walletReservation(payment);
         if (captured.status === "completed") {
           try {
+            await walletSpendAuthority.reconcile(
+              reservation,
+              walletSettlement(payment, captured.result.settlement),
+            );
             await options.publishNotice({
               notice: createDacsPayDemPaymentNoticeV1(
                 payment,
@@ -546,6 +663,12 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               reasonCode: "pay-dem-payment-notice-pending",
             });
           }
+        }
+        if (captured.status === "absent") {
+          await walletSpendAuthority.reconcile(reservation, Object.freeze({
+            disposition: "terminal-absent",
+            evidenceHash: captured.absenceProofHash,
+          }));
         }
         return captured;
       },

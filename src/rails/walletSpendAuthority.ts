@@ -132,6 +132,8 @@ export interface WalletSpendStateV1 {
 }
 
 export interface WalletSpendStateStore {
+  /** Optional authenticated read path used by status/doctor without a write. */
+  read?(scope: string): Promise<Readonly<WalletSpendStateV1> | null>;
   /**
    * Serialize one wallet/chain policy transaction. Implementations used across
    * processes MUST hold an exclusive, crash-recoverable lock until `operation`
@@ -790,6 +792,12 @@ export function createInMemoryWalletSpendStateStore(): WalletSpendStateStore {
   const states = new Map<string, WalletSpendStateV1>();
   const tails = new Map<string, Promise<void>>();
   const store: WalletSpendStateStore = {
+    async read(scope: string): Promise<Readonly<WalletSpendStateV1> | null> {
+      const prior = tails.get(scope);
+      if (prior !== undefined) await prior.catch(() => undefined);
+      const current = states.get(scope);
+      return current === undefined ? null : structuredClone(current);
+    },
     async transact<T>(
       scope: string,
       operation: (
@@ -890,6 +898,18 @@ export function createWalletSpendAuthorityV1(
     "transact",
     "wallet spend state transaction",
   );
+  const readProperty = stableProperty(
+    store,
+    "read",
+    "wallet spend state read",
+  );
+  const read = !readProperty.found || readProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<WalletSpendStateStore["read"]>>(
+        store,
+        "read",
+        "wallet spend state read",
+      );
 
   const update = <T>(
     operation: (state: WalletSpendStateV1, timestamp: number) => Readonly<{
@@ -1109,9 +1129,10 @@ export function createWalletSpendAuthorityV1(
           } };
         }
         if (existing.stage === "released") {
-          return { state, value: {
-            status: "released", bindingHash: binding, evidenceHash: existing.evidenceHash!,
-          } };
+          // An authenticated absence proves the prior effect did not debit the
+          // wallet. The same immutable authorization may therefore obtain a
+          // fresh generation; a settled row remains permanently terminal.
+          return { state, value: null };
         }
         return { state, value: {
           status: "held", bindingHash: binding, stage: existing.stage,
@@ -1173,16 +1194,13 @@ export function createWalletSpendAuthorityV1(
               status: "settled", bindingHash: binding, evidenceHash: existing.evidenceHash!,
             } as const };
           }
-          if (existing.stage === "released") {
+          if (existing.stage !== "released") {
             return { state, value: {
-              status: "released", bindingHash: binding, evidenceHash: existing.evidenceHash!,
+              status: "held", bindingHash: binding, stage: existing.stage,
             } as const };
           }
-          return { state, value: {
-            status: "held", bindingHash: binding, stage: existing.stage,
-          } as const };
         }
-        if (state.reservations.length >= policy.maximumRetainedReservations) {
+        if (!existing && state.reservations.length >= policy.maximumRetainedReservations) {
           return { state, value: { status: "denied", reason: "retention-limit" } as const };
         }
         const activeRows = state.reservations.filter(active);
@@ -1264,7 +1282,10 @@ export function createWalletSpendAuthorityV1(
           state: {
             ...state,
             generation,
-            reservations: [...state.reservations, row],
+            reservations: existing
+              ? state.reservations.map((candidate) =>
+                  candidate.reservationId === reservation.reservationId ? row : candidate)
+              : [...state.reservations, row],
           },
           value: { status: "reserved", generation } as const,
         };
@@ -1335,7 +1356,7 @@ export function createWalletSpendAuthorityV1(
           balances.set(asset, null);
         }
       }));
-      return update((state, timestamp) => {
+      const project = (state: WalletSpendStateV1, timestamp: number) => {
         const activeRows = state.reservations.filter(active);
         const assets = policy.assets.map((assetPolicy) => {
           const reserved = sumFor(activeRows.map((row) =>
@@ -1389,9 +1410,7 @@ export function createWalletSpendAuthorityV1(
             availableHeadroom: headroom?.toString() ?? null,
           });
         });
-        return {
-          state,
-          value: Object.freeze({
+        return Object.freeze({
             policyId: policy.policyId,
             policyHash,
             wallet: policy.wallet,
@@ -1404,9 +1423,18 @@ export function createWalletSpendAuthorityV1(
               .filter((row) => (row.leaseExpiresAt ?? 0) < timestamp)
               .map(({ reservationId }) => reservationId)),
             assets: Object.freeze(assets),
-          }),
-        };
-      });
+          });
+      };
+      if (read !== undefined) {
+        const timestamp = safeInteger(now(), "wallet spend clock");
+        const state = captureState(await read(scope), policy, policyHash);
+        state.rollingEvents = recentEvents(state, policy, timestamp);
+        return project(state, timestamp);
+      }
+      return update((state, timestamp) => ({
+        state,
+        value: project(state, timestamp),
+      }));
     },
   };
   return Object.freeze(authority);

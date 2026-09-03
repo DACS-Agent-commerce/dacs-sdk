@@ -11,6 +11,7 @@ import {
   type X402BuyerPaymentRequirements,
   type X402BuyerPreparationAuthority,
   type X402BuyerSettlementIntent,
+  type WalletSpendAuthorityV1,
 } from "@kynesyslabs/dacs";
 
 import {
@@ -21,9 +22,6 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
-import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
-import { DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 } from
-  "./buyerReceivedRuntime.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -50,6 +48,7 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
     retained: Readonly<DacsLiveOrderInputV1>;
     intent: Readonly<X402BuyerSettlementIntent>;
   }>): Promise<boolean> | boolean;
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
   /** Defaults to the locked-down public HTTPS transport when omitted. */
@@ -192,7 +191,10 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       options.authorizationSearchFromBlock < 0 ||
       typeof options.resolvePreparation !== "function" ||
       typeof options.authorizeIntent !== "function" ||
-      typeof options.authorizePreparedIntent !== "function") {
+      typeof options.authorizePreparedIntent !== "function" ||
+      !plainObject(options.walletSpendAuthority) ||
+      typeof options.walletSpendAuthority.reserve !== "function" ||
+      typeof options.walletSpendAuthority.reconcile !== "function") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
   const context = options.context;
@@ -202,12 +204,12 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       commerceStores.x402Settlement === undefined) {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
-  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({
-    maxBytes: options.maxResponseBytes ??
-      DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
-  });
+  const fetchImpl = options.fetchImpl;
+  const testTransport = fetchImpl === undefined
+    ? {}
+    : { fetchImpl, transportPolicy: { mode: "insecure-test" as const } };
   const recoverDisclosure = options.recoverDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery({ fetchImpl });
+    createX402BuyerRetainedDisclosureRecovery(testTransport);
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
@@ -217,7 +219,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
     recoverDisclosure,
   });
-  const transport = createX402BuyerPaidRequestTransport({ fetchImpl });
+  const transport = createX402BuyerPaidRequestTransport(testTransport);
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
@@ -225,6 +227,8 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     settlementStore: commerceStores.x402Settlement,
     authorizationProvider,
     transport,
+    walletSpendAuthority: options.walletSpendAuthority,
+    finalityBlocks: options.minimumConfirmations,
     async prepareIntent(operation) {
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
@@ -261,7 +265,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           ? {} : { challengeHeaders: preparation.challengeHeaders }),
       }, {
         client,
-        fetchImpl,
+        ...testTransport,
       });
       if (result.disposition === "prepared") return result.intent;
       throw new DacsLiveEffectInputControlError(

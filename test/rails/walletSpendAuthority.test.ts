@@ -462,6 +462,29 @@ describe("wallet-wide spend authority (#291)", () => {
     })).toBe("released");
   });
 
+  test("a terminal absence permits the same immutable authorization to retry", async () => {
+    const clock = { value: 1_000 };
+    const wallet = authority({
+      currentTime: clock,
+      selectedPolicy: policy({ maximumRetainedReservations: 1 }),
+    });
+    const item = reservation("retry-after-authenticated-absence");
+    const first = await wallet.reserve(item);
+    if (first.status !== "reserved") throw new Error("expected first reservation");
+    await first.permit.beginEffect();
+    clock.value = 1_101;
+    expect(await wallet.reconcile(item, {
+      disposition: "terminal-absent",
+      evidenceHash: HASH_C,
+    })).toBe("released");
+
+    const retried = await wallet.reserve(item);
+    expect(retried.status).toBe("reserved");
+    if (retried.status !== "reserved") throw new Error("expected retried reservation");
+    expect(retried.permit.generation).toBeGreaterThan(first.permit.generation);
+    expect((await wallet.inspect()).retainedReservations).toBe(1);
+  });
+
   test("the execution adapter fences the rail and retains a thrown effect as ambiguous", async () => {
     const first = authority({});
     const calls: string[] = [];
@@ -607,6 +630,25 @@ describe("authenticated filesystem wallet spend store", () => {
     dirs.push(dir);
     return dir;
   }
+
+  test("status inspection is authenticated and does not initialize state", async () => {
+    const dir = await fixture();
+    const store = await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY });
+    const wallet = createWalletSpendAuthorityV1(policy(), {
+      store,
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "doctor",
+      now: () => 1_000,
+    });
+    await expect(wallet.inspect()).resolves.toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 0,
+      operatorActionReservations: [],
+    });
+    expect(await readdir(join(dir, "records"))).toEqual([]);
+    expect(await readdir(join(dir, "markers"))).toEqual([]);
+  });
 
   test("survives restart and serializes separate store instances", async () => {
     const dir = await fixture();

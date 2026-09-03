@@ -30,6 +30,10 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import {
+  createAccountingTestWalletSpendAuthorityV1,
+  createPermissiveTestWalletSpendAuthorityV1,
+} from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
@@ -267,7 +271,14 @@ describe("coordinator x402 buyer payment track", () => {
       disposition: "response" as const,
       disclosure: disclosure(),
     }));
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER.toLowerCase(),
+      chainId: "eip155:84532",
+      asset: ASSET.toLowerCase(),
+    });
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority,
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -300,6 +311,11 @@ describe("coordinator x402 buyer payment track", () => {
       "payment",
       "dacs-fixed-price-x402:v1:buyer:payment:test",
     )).toMatchObject({ intent: { paymentHeader: retained.paymentHeader } });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 1,
+      assets: [{ cumulativeSettledDebit: "1000" }],
+    });
   });
 
   it("recovers an ambiguous paid response from chain without submitting again", async () => {
@@ -315,6 +331,8 @@ describe("coordinator x402 buyer payment track", () => {
       { disposition: "settled-same", settlement: captured(retained) },
     ]);
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -365,6 +383,8 @@ describe("coordinator x402 buyer payment track", () => {
       recordOutcome,
     };
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -427,6 +447,8 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,

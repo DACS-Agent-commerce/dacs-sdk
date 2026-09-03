@@ -248,7 +248,11 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
     if (observation.status === "included") {
       if (observation.txHash !== prepared.txHash ||
           observation.payer !== payment.payer || observation.payee !== payment.payee ||
-          observation.amountOs !== payment.amountOs) {
+          observation.amountOs !== payment.amountOs ||
+          prepared.confirmedTotalDebitOs === undefined ||
+          !INTEGER_RE.test(prepared.confirmedTotalDebitOs) ||
+          BigInt(prepared.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
+          BigInt(prepared.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs)) {
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "pay-dem-chain-observation-conflict" });
       }
@@ -264,6 +268,9 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
           blockNumber: observation.blockNumber,
           txRefKind: "demos" as const,
           amountOs: observation.amountOs,
+          networkFeeOs: (
+            BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
+          ).toString(),
         }),
       });
     }
