@@ -363,9 +363,11 @@ settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
 when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Cached durable success is reauthenticated
-after every process restart before reuse; missing or contradictory recovery
-fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+non-final observation must throw. Even authoritative absence does not revoke a
+possibly-live old process or signed transaction and therefore does not authorize
+an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
+after every process restart before reuse; missing, absent, or contradictory
+recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and

@@ -1,4 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { sha256Hex } from "../canonical/index.js";
 import { CounterpartyError } from "../errors.js";
 import type {
   PaymentPayloadResult,
@@ -8,6 +9,8 @@ import type {
 import {
   createIdempotencyStore,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
@@ -206,6 +209,7 @@ export interface X402SettleCoreDeps {
 export async function x402SettleCore(
   params: X402SettleParams,
   deps: X402SettleCoreDeps,
+  effectFence?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
@@ -310,6 +314,9 @@ export async function x402SettleCore(
   )) {
     headers.set(k, v);
   }
+  // Signing is reversible; sending the retained authorization is not. Refuse
+  // a recovery generation that expired or was superseded while signing.
+  await effectFence?.assertCurrent();
   const final = await fetchImpl(paywallUrl, {
     ...requestInit,
     headers,
@@ -405,8 +412,13 @@ export interface X402RailConfig {
 export interface X402Rail {
   /** The buyer's EVM address derived from the configured key. */
   readonly address: string;
+  /** Signed descriptor finality policy retained in the idempotency binding. */
+  readonly finalityBlocks: number;
   /** Settle one session's payment via the x402 402-dance. */
-  settle(params: Omit<X402SettleParams, "finalityBlocks">): Promise<SettleResult>;
+  settle(
+    params: Omit<X402SettleParams, "finalityBlocks">,
+    effectFence?: Readonly<SettlementEffectFence>,
+  ): Promise<SettleResult>;
 }
 
 /** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
@@ -531,7 +543,8 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 
   return {
     address: account.address,
-    settle: async (params) => {
+    finalityBlocks,
+    settle: async (params, effectFence) => {
       const paywallUrl = params.paywallUrl;
       const network = params.network;
       const recipientEvm = params.recipientEvm;
@@ -635,7 +648,7 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
         },
         authenticateTransfer: async (request) =>
           verifyEvmTransferFinality(request, await finalityClient(request.chainId)),
-      });
+      }, effectFence);
     },
   };
 }
@@ -670,8 +683,13 @@ export function x402Settle(
   const asset = paywall.asset;
   const configuredPhaseIndex = paywall.phaseIndex;
   const reconcile = opts.reconcile;
+  const payerAddress = rail.address;
+  const finalityBlocks = rail.finalityBlocks;
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
+    throw new CounterpartyError("x402 rail must expose its positive finality policy");
+  }
   return (req) => {
-    const { amount, expectedPayee, jobId, rail: railId } = req;
+    const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
         `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
@@ -686,7 +704,25 @@ export function x402Settle(
     // `requireSessionBinding` path throw whenever the paywall omitted it, even
     // though the session carried a phase.)
     const phaseIndex = req.phaseIndex ?? configuredPhaseIndex ?? 0;
-    const submit = () =>
+    const binding = Object.freeze({
+      bindingVersion: "1",
+      railId,
+      jobId,
+      phaseIndex,
+      phase,
+      amount,
+      agreementAsset,
+      settlementAsset: asset,
+      payer: payerAddress,
+      payee: recipientEvm,
+      network,
+      finality: Object.freeze({ model: "block-depth", finalityBlocks }),
+      effectIdentity: `0x${sha256Hex(
+        `dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
+      )}`,
+      resource: paywallUrl,
+    }) satisfies Readonly<SettlementBinding>;
+    const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
       rail.settle({
         paywallUrl,
         network,
@@ -695,14 +731,16 @@ export function x402Settle(
         asset,
         jobId,
         phaseIndex,
-      });
+      }, effectFence);
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
-    // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
-    // absent it, an unresolved intent fails closed instead of resubmitting.
+    // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
+    // replay only when `reconcile` returns an authorization bound to this exact
+    // deterministic EIP-3009 nonce; absence alone still fails closed.
     return store.once(
       settlementKey(railId, jobId, phaseIndex),
+      binding,
       submit,
       reconcile,
     );
