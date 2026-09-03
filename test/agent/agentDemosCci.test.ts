@@ -110,6 +110,7 @@ describe("Agent authenticated Demos CCI", () => {
       status: "native-cci",
       jobId: JOB_ID,
       sessionNonce: SESSION_NONCE,
+      evaluatedAt: EVALUATED_AT,
       verification: {
         authority: "native-tlsn:testnet",
         binding: {

@@ -83,7 +83,14 @@ import {
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
-import type { VetProduction } from "./vetCore.js";
+import {
+  partyVetWithNativeCciTlsnCore,
+  type PartyVetDeps,
+  type PartyVetNativeCciTlsnQualifierInput,
+  type PartyVetWithNativeCciTlsnProduction,
+  type PartyVetWithNativeCciTlsnRequest,
+  type VetProduction,
+} from "./vetCore.js";
 import {
   publishListingCore,
   type PublishListingResult,
@@ -96,7 +103,10 @@ import {
 import {
   listingDraftClaimReferencesArePublishable,
 } from "./listingClaimReferences.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import {
   computeReputation,
   type Reputation,
@@ -738,6 +748,15 @@ export interface Agent<
     input: Readonly<AgentNativeCciTlsnInput>,
   ): Promise<CciTlsnDisposition>;
   /**
+   * Qualify native CCI TLSN commitments as mandatory active-session gates,
+   * retain their exact provenance in the durable signed CVR, and execute the
+   * ordinary party Vet producer without external TLSNotary recipe confusion.
+   */
+  partyVetWithNativeCciTlsn<TKey>(
+    input: Readonly<PartyVetWithNativeCciTlsnRequest>,
+    deps: PartyVetDeps<TKey>,
+  ): Promise<PartyVetWithNativeCciTlsnProduction>;
+  /**
    * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
    * `findByClaim("cci-web2:twitter:alice")` or
    * `findByClaim("cci-xm:evm:mainnet:0x…")` returns
@@ -1062,6 +1081,141 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         : { authenticateProviderClaim: demosCci.authenticateProviderClaim }),
     });
   };
+  const qualifyDemosCciTlsn = async (
+    input: Readonly<AgentNativeCciTlsnInput>,
+  ): Promise<CciTlsnDisposition> => {
+    if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
+        !demosCci.nowMs) {
+      throw new DacsError(
+        "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
+      );
+    }
+    let captured: AgentNativeCciTlsnInput;
+    try {
+      captured = snapshotCanonicalJson(
+        input,
+        "Agent native CCI TLSN request",
+      ) as unknown as AgentNativeCciTlsnInput;
+    } catch {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    if (Reflect.ownKeys(captured).length !== 4 ||
+        !["subject", "bundle", "proofHash", "context"].every((key) =>
+          Object.prototype.hasOwnProperty.call(captured, key)) ||
+        captured.context === null || typeof captured.context !== "object" ||
+        Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    let evaluatedAt: number;
+    try {
+      evaluatedAt = demosCci.nowMs();
+    } catch {
+      return Object.freeze({
+        status: "indeterminate",
+        reason: "CCI TLSN evaluation clock was unavailable",
+      });
+    }
+    if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
+      return Object.freeze({
+        status: "error",
+        reason: "CCI TLSN evaluation clock was malformed",
+      });
+    }
+    return qualifyCapturedDemosCciTlsn(captured, evaluatedAt);
+  };
+  const qualifyCapturedDemosCciTlsn = async (
+    captured: Readonly<AgentNativeCciTlsnInput>,
+    evaluatedAt: number,
+  ): Promise<CciTlsnDisposition> => {
+    const verifyIdentityPresentation = demosCci?.verifyIdentityPresentation;
+    const verifyNativeTlsn = demosCci?.verifyNativeTlsn;
+    if (!verifyIdentityPresentation || !verifyNativeTlsn) {
+      throw new DacsError(
+        "native CCI TLSN qualification requires configured Demos verifiers",
+      );
+    }
+    const resolution = await resolveAuthenticatedDemosCci(captured.subject);
+    if (resolution.status !== "authenticated") {
+      return Object.freeze({
+        status: resolution.status,
+        reason: resolution.reason,
+      });
+    }
+    return classifyCciTlsnProof(
+      resolution.record,
+      captured.bundle,
+      captured.proofHash,
+      { ...captured.context, evaluatedAt },
+      {
+        verifyIdentityPresentation,
+        verifyNativeTlsn,
+      },
+    );
+  };
+  const qualifyPartyDemosCciTlsn = async (
+    input: Readonly<PartyVetNativeCciTlsnQualifierInput>,
+  ): Promise<CciTlsnDisposition> => {
+    if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn) {
+      throw new DacsError(
+        "partyVetWithNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers",
+      );
+    }
+    let captured: PartyVetNativeCciTlsnQualifierInput;
+    try {
+      captured = snapshotCanonicalJsonRead(
+        input,
+        "Agent party Vet native CCI TLSN request",
+      ) as unknown as PartyVetNativeCciTlsnQualifierInput;
+    } catch {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    const contextKeys = [
+      "jobId",
+      "expectedPresenter",
+      "sessionNonce",
+      "expectedServer",
+      "evaluatedAt",
+      "maxResolutionAgeSec",
+      "maxProofAgeSec",
+      "maxPresentationAgeSec",
+    ];
+    if (
+      Reflect.ownKeys(captured).length !== 4 ||
+      !["subject", "bundle", "proofHash", "context"].every((key) =>
+        Object.prototype.hasOwnProperty.call(captured, key)) ||
+      captured.context === null ||
+      typeof captured.context !== "object" ||
+      Reflect.ownKeys(captured.context).length !== contextKeys.length ||
+      !contextKeys.every((key) =>
+        Object.prototype.hasOwnProperty.call(captured.context, key)) ||
+      !Number.isSafeInteger(captured.context.evaluatedAt) ||
+      captured.context.evaluatedAt < 0
+    ) {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    const { evaluatedAt, ...context } = captured.context;
+    return qualifyCapturedDemosCciTlsn(
+      {
+        subject: captured.subject,
+        bundle: captured.bundle,
+        proofHash: captured.proofHash,
+        context,
+      },
+      evaluatedAt,
+    );
+  };
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -1291,65 +1445,17 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async qualifyNativeCciTlsn(
       input: Readonly<AgentNativeCciTlsnInput>,
     ): Promise<CciTlsnDisposition> {
-      if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
-          !demosCci.nowMs) {
-        throw new DacsError(
-          "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
-        );
-      }
-      let captured: AgentNativeCciTlsnInput;
-      try {
-        captured = snapshotCanonicalJson(
-          input,
-          "Agent native CCI TLSN request",
-        ) as unknown as AgentNativeCciTlsnInput;
-      } catch {
-        return Object.freeze({
-          status: "invalid",
-          reason: "CCI TLSN request is malformed",
-        });
-      }
-      if (Reflect.ownKeys(captured).length !== 4 ||
-          !["subject", "bundle", "proofHash", "context"].every((key) =>
-            Object.prototype.hasOwnProperty.call(captured, key)) ||
-          captured.context === null || typeof captured.context !== "object" ||
-          Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
-        return Object.freeze({
-          status: "invalid",
-          reason: "CCI TLSN request is malformed",
-        });
-      }
-      const resolution = await resolveAuthenticatedDemosCci(captured.subject);
-      if (resolution.status !== "authenticated") {
-        return Object.freeze({
-          status: resolution.status,
-          reason: resolution.reason,
-        });
-      }
-      let evaluatedAt: number;
-      try {
-        evaluatedAt = demosCci.nowMs();
-      } catch {
-        return Object.freeze({
-          status: "indeterminate",
-          reason: "CCI TLSN evaluation clock was unavailable",
-        });
-      }
-      if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
-        return Object.freeze({
-          status: "error",
-          reason: "CCI TLSN evaluation clock was malformed",
-        });
-      }
-      return classifyCciTlsnProof(
-        resolution.record,
-        captured.bundle,
-        captured.proofHash,
-        { ...captured.context, evaluatedAt },
-        {
-          verifyIdentityPresentation: demosCci.verifyIdentityPresentation,
-          verifyNativeTlsn: demosCci.verifyNativeTlsn,
-        },
+      return qualifyDemosCciTlsn(input);
+    },
+
+    async partyVetWithNativeCciTlsn<TKey>(
+      input: Readonly<PartyVetWithNativeCciTlsnRequest>,
+      deps: PartyVetDeps<TKey>,
+    ): Promise<PartyVetWithNativeCciTlsnProduction> {
+      return partyVetWithNativeCciTlsnCore(
+        input,
+        deps,
+        qualifyPartyDemosCciTlsn,
       );
     },
 
