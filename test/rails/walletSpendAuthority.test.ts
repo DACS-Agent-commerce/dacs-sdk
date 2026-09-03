@@ -698,10 +698,11 @@ describe("authenticated filesystem wallet spend store", () => {
         "test/fixtures/wallet-spend-child.test.ts",
         "--pool=forks",
         "--maxWorkers=1",
+        "--testTimeout=60000",
         "--reporter=dot",
       ], {
         cwd: process.cwd(),
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
           DACS_WALLET_SPEND_CHILD: "1",
@@ -713,10 +714,16 @@ describe("authenticated filesystem wallet spend store", () => {
           DACS_WALLET_SPEND_KEY: key,
         },
       });
-      return { child, ready, output };
+      const diagnostics: Buffer[] = [];
+      child.stdout.on("data", (chunk) => diagnostics.push(Buffer.from(chunk)));
+      child.stderr.on("data", (chunk) => diagnostics.push(Buffer.from(chunk)));
+      return { child, ready, output, diagnostics };
     });
     try {
-      const deadline = Date.now() + 10_000;
+      // These are real, separately bootstrapped Vitest processes. A busy CI
+      // runner can spend well over ten seconds compiling unrelated workers;
+      // that scheduling delay is not a wallet-lock failure.
+      const deadline = Date.now() + 30_000;
       for (const { ready } of children) {
         while (true) {
           try {
@@ -730,11 +737,14 @@ describe("authenticated filesystem wallet spend store", () => {
         }
       }
       await writeFile(start, "go", { mode: 0o600 });
-      await Promise.all(children.map(({ child }) => new Promise<void>((resolve, reject) => {
+      await Promise.all(children.map(({ child, diagnostics }) => new Promise<void>((resolve, reject) => {
         child.once("error", reject);
         child.once("exit", (code) => code === 0
           ? resolve()
-          : reject(new Error(`wallet spend child exited ${String(code)}`)));
+          : reject(new Error(
+              `wallet spend child exited ${String(code)}\n` +
+                Buffer.concat(diagnostics).toString("utf8"),
+            )));
       })));
       const outcomes = await Promise.all(children.map(async ({ output }) =>
         JSON.parse(await readFile(output, "utf8")) as { status: string; reason?: string }));
@@ -746,7 +756,7 @@ describe("authenticated filesystem wallet spend store", () => {
     } finally {
       for (const { child } of children) child.kill("SIGKILL");
     }
-  }, 20_000);
+  }, 90_000);
 
   test("detects wrong keys, tampering, state deletion, and unsafe permissions", async () => {
     const dir = await fixture();
