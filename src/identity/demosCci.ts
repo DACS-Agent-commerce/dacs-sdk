@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import type {
   IdentityBundle,
   SupplementarySignal,
@@ -6,7 +8,12 @@ import { isIdentityBundle } from "../artifacts/validators.js";
 import { signedBytes } from "../crypto/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { sameCanonicalClaimIdentity } from "./claimReference.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "./claimReference.js";
+import { isCanonicalDomainHostname } from "./domainHost.js";
 import { identityBundleHash } from "./bundle.js";
 import {
   parseCciRecord,
@@ -37,6 +44,33 @@ export interface AuthenticateDemosCciInput {
   raw: unknown;
 }
 
+export type DemosCciProviderClaim = Extract<
+  CciClaim,
+  { kind: "nomis" | "humanpassport" | "ethos" }
+>;
+
+export interface AuthenticateDemosCciProviderClaimInput {
+  subject: string;
+  /** The authenticated parsed projection; unrelated raw RPC fields are removed. */
+  record: Readonly<CciRecord>;
+  /** One exact frozen provider claim extracted from that record. */
+  claim: Readonly<DemosCciProviderClaim>;
+}
+
+export type DemosCciProviderClaimAuthentication =
+  | Readonly<{
+      status: "verified";
+      subject: string;
+      claimRef: string;
+      verifiedAt: number;
+      authority: string;
+      evidence?: Record<string, unknown>;
+    }>
+  | Readonly<{
+      status: "invalid" | "indeterminate" | "error";
+      reason: string;
+    }>;
+
 export interface AuthenticateDemosCciDeps {
   /**
    * Authenticate the exact captured GCR response, its subject binding, and the
@@ -48,6 +82,17 @@ export interface AuthenticateDemosCciDeps {
   ) =>
     | Promise<DemosCciResolutionAuthentication>
     | DemosCciResolutionAuthentication;
+  /**
+   * Independently authenticate provider semantics and subject/control binding
+   * for each Nomis, Human Passport, and Ethos claim. GCR inclusion alone does
+   * not establish those semantics. Without this capability the record remains
+   * usable for presence, but provider scores cannot enter Vet signals.
+   */
+  authenticateProviderClaim?: (
+    input: Readonly<AuthenticateDemosCciProviderClaimInput>,
+  ) =>
+    | Promise<DemosCciProviderClaimAuthentication>
+    | DemosCciProviderClaimAuthentication;
 }
 
 declare const authenticatedCciRecordBrand: unique symbol;
@@ -63,10 +108,12 @@ export type AuthenticateDemosCciResult =
     }
   | { status: "invalid" | "indeterminate" | "error"; reason: string };
 
-const authenticatedCciRecords = new WeakMap<
-  object,
-  Readonly<DemosCciProvenance>
->();
+interface AuthenticatedCciState {
+  provenance: Readonly<DemosCciProvenance>;
+  providerClaims: ReadonlyMap<string, DemosCciProviderClaimAuthentication>;
+}
+
+const authenticatedCciRecords = new WeakMap<object, AuthenticatedCciState>();
 const INERT_CCI_RECEIVER = Object.freeze(Object.create(null)) as object;
 
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
@@ -84,6 +131,59 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 const isSafeTime = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    !nodeTypes.isProxy(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function ownDataFunction<T extends (...args: never[]) => unknown>(
+  source: object,
+  key: string,
+  optional = false,
+): T | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (descriptor === undefined && optional) return undefined;
+  if (!descriptor?.enumerable || !("value" in descriptor) ||
+      typeof descriptor.value !== "function" || nodeTypes.isProxy(descriptor.value)) {
+    throw new TypeError(`${key} must be an own non-Proxy data function`);
+  }
+  return descriptor.value as T;
+}
+
+function providerAuthentication(
+  value: unknown,
+  subject: string,
+  claimRef: string,
+  resolutionObservedAt: number,
+): DemosCciProviderClaimAuthentication {
+  const retained = snapshotCanonicalJsonRead(value, "Demos CCI provider authentication");
+  if (!isPlainRecord(retained) || typeof retained.status !== "string") {
+    return Object.freeze({ status: "error", reason: "provider authentication is malformed" });
+  }
+  const keys = Reflect.ownKeys(retained);
+  if (retained.status === "verified") {
+    if (!keys.every((key) =>
+      key === "status" || key === "subject" || key === "claimRef" ||
+      key === "verifiedAt" || key === "authority" || key === "evidence") ||
+        keys.length !== (retained.evidence === undefined ? 5 : 6) ||
+        retained.subject !== subject || retained.claimRef !== claimRef ||
+        !isSafeTime(retained.verifiedAt) || retained.verifiedAt > resolutionObservedAt ||
+        typeof retained.authority !== "string" || retained.authority.length === 0 ||
+        retained.authority.trim() !== retained.authority ||
+        (retained.evidence !== undefined && !isPlainRecord(retained.evidence))) {
+      return Object.freeze({ status: "error", reason: "provider authentication is malformed" });
+    }
+    return deepFreeze(retained as unknown as DemosCciProviderClaimAuthentication);
+  }
+  if ((retained.status === "invalid" || retained.status === "indeterminate" ||
+      retained.status === "error") && keys.length === 2 && keys.includes("reason") &&
+      typeof retained.reason === "string" && retained.reason.trim().length > 0) {
+    return Object.freeze({ status: retained.status, reason: retained.reason });
+  }
+  return Object.freeze({ status: "error", reason: "provider authentication is malformed" });
+}
+
 function malformedAuthentication(reason: string): AuthenticateDemosCciResult {
   return Object.freeze({ status: "error", reason });
 }
@@ -98,34 +198,38 @@ export async function authenticateDemosCciRecord(
     typeof subject !== "string" ||
     subject === "" ||
     subject.trim() !== subject ||
-    subject.normalize("NFC") !== subject
+    subject.normalize("NFC") !== subject ||
+    !isCanonicalClaimReference(subject)
   ) {
     return malformedAuthentication("CCI subject is malformed");
   }
   let authenticateResolution: AuthenticateDemosCciDeps["authenticateResolution"];
+  let authenticateProviderClaim:
+    | AuthenticateDemosCciDeps["authenticateProviderClaim"]
+    | undefined;
   try {
     if (
-      deps === null ||
-      typeof deps !== "object" ||
-      Array.isArray(deps) ||
+      !isPlainRecord(deps) ||
       (Object.getPrototypeOf(deps) !== Object.prototype &&
         Object.getPrototypeOf(deps) !== null)
     ) {
       throw new TypeError("dependencies must be a plain record");
     }
     const keys = Reflect.ownKeys(deps);
-    const descriptor = Object.getOwnPropertyDescriptor(deps, "authenticateResolution");
     if (
-      keys.length !== 1 ||
-      keys[0] !== "authenticateResolution" ||
-      !descriptor ||
-      descriptor.enumerable !== true ||
-      !("value" in descriptor) ||
-      typeof descriptor.value !== "function"
+      !keys.includes("authenticateResolution") ||
+      !keys.every((key) =>
+        key === "authenticateResolution" || key === "authenticateProviderClaim")
     ) {
-      throw new TypeError("authenticator must be an own data function");
+      throw new TypeError("authentication dependencies contain unknown fields");
     }
-    authenticateResolution = descriptor.value as AuthenticateDemosCciDeps["authenticateResolution"];
+    authenticateResolution = ownDataFunction<AuthenticateDemosCciDeps["authenticateResolution"]>(
+      deps,
+      "authenticateResolution",
+    )!;
+    authenticateProviderClaim = ownDataFunction<
+      NonNullable<AuthenticateDemosCciDeps["authenticateProviderClaim"]>
+    >(deps, "authenticateProviderClaim", true);
   } catch {
     return malformedAuthentication("CCI resolution authenticator is unavailable");
   }
@@ -216,10 +320,52 @@ export async function authenticateDemosCciRecord(
       ? { evidence: authentication.evidence }
       : {}),
   });
-  authenticatedCciRecords.set(record, provenance);
+  // Resolution authentication receives the exact raw response. Once that
+  // capability has bound it into retained provenance, do not keep unrelated
+  // RPC fields alive in the trust-bearing record.
+  const authenticatedRecord = deepFreeze({
+    ...record,
+    raw: null,
+  });
+  const providerClaims = new Map<string, DemosCciProviderClaimAuthentication>();
+  for (const claim of [
+    ...authenticatedRecord.nomis,
+    ...authenticatedRecord.humanPassport,
+    ...authenticatedRecord.ethos,
+  ]) {
+    if (!authenticateProviderClaim) continue;
+    let disposition: DemosCciProviderClaimAuthentication;
+    try {
+      const returned = await Reflect.apply(
+        authenticateProviderClaim,
+        INERT_CCI_RECEIVER,
+        [deepFreeze({ subject, record: authenticatedRecord, claim })],
+      );
+      disposition = providerAuthentication(
+        returned,
+        subject,
+        claim.ref,
+        provenance.observedAt,
+      );
+      if (disposition.status === "verified" &&
+          disposition.verifiedAt < claim.observedAt) {
+        disposition = Object.freeze({
+          status: "error",
+          reason: "provider authentication predates the claimed observation",
+        });
+      }
+    } catch {
+      disposition = Object.freeze({
+        status: "error",
+        reason: "provider authentication was unavailable",
+      });
+    }
+    providerClaims.set(claim.ref, disposition);
+  }
+  authenticatedCciRecords.set(authenticatedRecord, { provenance, providerClaims });
   return Object.freeze({
     status: "authenticated",
-    record: record as AuthenticatedCciRecord,
+    record: authenticatedRecord as AuthenticatedCciRecord,
     provenance,
   });
 }
@@ -237,7 +383,7 @@ export function getAuthenticatedCciProvenance(
   value: unknown,
 ): Readonly<DemosCciProvenance> | null {
   return value !== null && typeof value === "object"
-    ? authenticatedCciRecords.get(value) ?? null
+    ? authenticatedCciRecords.get(value)?.provenance ?? null
     : null;
 }
 
@@ -252,6 +398,10 @@ export interface CciSupplementaryFreshnessPolicy {
 }
 
 export type CciSignalOmissionReason =
+  | "provider-unverified"
+  | "provider-invalid"
+  | "provider-indeterminate"
+  | "provider-error"
   | "source-after-resolution"
   | "source-in-future"
   | "stale"
@@ -303,8 +453,9 @@ export function projectCciSupplementarySignals(
   record: AuthenticatedCciRecord,
   policy: CciSupplementaryFreshnessPolicy,
 ): CciSupplementarySignalProjection {
-  const provenance = getAuthenticatedCciProvenance(record);
-  if (!provenance) {
+  const authenticated = authenticatedCciRecords.get(record);
+  const provenance = authenticated?.provenance;
+  if (!authenticated || !provenance) {
     throw new DacsError("CCI supplementary signals require an authenticated GCR record");
   }
   let capturedPolicy: CciSupplementaryFreshnessPolicy;
@@ -353,6 +504,18 @@ export function projectCciSupplementarySignals(
     source: "cci-nomis" | "cci-humanpassport" | "cci-ethos",
     maxAgeMs: number,
   ): void => {
+    const provider = authenticated.providerClaims.get(claim.ref);
+    if (!provider || provider.status !== "verified") {
+      const reason: CciSignalOmissionReason = !provider
+        ? "provider-unverified"
+        : provider.status === "invalid"
+          ? "provider-invalid"
+          : provider.status === "indeterminate"
+            ? "provider-indeterminate"
+            : "provider-error";
+      omitted.push({ ref: claim.ref, reason });
+      return;
+    }
     const reason = freshnessOmission(
       claim.observedAt,
       provenance.observedAt,
@@ -394,9 +557,64 @@ export type CciTlsnDisposition =
   | {
       status: "native-cci";
       claim: Readonly<Extract<CciClaim, { kind: "tlsn" }>>;
+      jobId: string;
+      sessionNonce: string;
+      bundleHash: string;
+      verification: Readonly<{
+        verifiedAt: number;
+        authority: string;
+        binding: Readonly<NativeCciTlsnBinding>;
+        evidence?: Record<string, unknown>;
+      }>;
     }
   | { status: "external-required"; reason: string }
-  | { status: "invalid"; reason: string };
+  | { status: "invalid" | "indeterminate" | "error"; reason: string };
+
+export interface CciTlsnSessionContext {
+  jobId: string;
+  expectedPresenter: string;
+  sessionNonce: string;
+  expectedServer: string;
+  evaluatedAt: number;
+  maxResolutionAgeSec: number;
+  maxProofAgeSec: number;
+  maxPresentationAgeSec: number;
+}
+
+export interface VerifyNativeCciTlsnInput {
+  subject: string;
+  jobId: string;
+  sessionNonce: string;
+  expectedServer: string;
+  bundleHash: string;
+  proofHash: string;
+  evaluatedAt: number;
+  claim: Readonly<Extract<CciClaim, { kind: "tlsn" }>>;
+  resolution: Readonly<DemosCciProvenance>;
+}
+
+export interface NativeCciTlsnBinding {
+  subject: string;
+  jobId: string;
+  sessionNonce: string;
+  expectedServer: string;
+  bundleHash: string;
+  proofHash: string;
+  resolutionObservedAt: number;
+}
+
+export type NativeCciTlsnAuthentication =
+  | Readonly<{
+      status: "verified";
+      verifiedAt: number;
+      authority: string;
+      binding: Readonly<NativeCciTlsnBinding>;
+      evidence?: Record<string, unknown>;
+    }>
+  | Readonly<{
+      status: "invalid" | "indeterminate" | "error";
+      reason: string;
+    }>;
 
 export interface ClassifyCciTlsnDeps {
   /** Authenticate BP-4 over the exact captured bundle hash. */
@@ -404,6 +622,97 @@ export interface ClassifyCciTlsnDeps {
     bundle: Readonly<IdentityBundle>;
     signedBytes: Uint8Array;
   }>) => Promise<boolean> | boolean;
+  /**
+   * Verify native TLSN evidence against every exact active-session coordinate.
+   * GCR inclusion and an IdentityBundle presentation are insufficient alone.
+   */
+  verifyNativeTlsn(
+    input: Readonly<VerifyNativeCciTlsnInput>,
+  ): Promise<NativeCciTlsnAuthentication> | NativeCciTlsnAuthentication;
+}
+
+function nativeTlsnBindingMatches(
+  value: unknown,
+  expected: Readonly<NativeCciTlsnBinding>,
+): value is Record<string, unknown> {
+  if (!isPlainRecord(value) || Reflect.ownKeys(value).length !== 7) return false;
+  return Object.entries(expected).every(([key, expectedValue]) =>
+    value[key] === expectedValue);
+}
+
+function captureTlsnContext(value: unknown): CciTlsnSessionContext {
+  const retained = snapshotCanonicalJsonRead(value, "CCI TLSN session context");
+  if (!isPlainRecord(retained) || Reflect.ownKeys(retained).length !== 8 ||
+      !["jobId", "expectedPresenter", "sessionNonce", "evaluatedAt",
+        "expectedServer", "maxResolutionAgeSec", "maxProofAgeSec",
+        "maxPresentationAgeSec"]
+        .every((key) => Object.prototype.hasOwnProperty.call(retained, key)) ||
+      !isCanonicalClaimReference(retained.expectedPresenter) ||
+      !isCanonicalDomainHostname(retained.expectedServer) ||
+      typeof retained.sessionNonce !== "string" || retained.sessionNonce.length === 0 ||
+      retained.sessionNonce.length > 256 ||
+      retained.sessionNonce.trim() !== retained.sessionNonce ||
+      retained.sessionNonce.normalize("NFC") !== retained.sessionNonce ||
+      /[\u0000-\u001f\u007f]/.test(retained.sessionNonce) ||
+      !isSafeTime(retained.evaluatedAt)) {
+    throw new DacsError("CCI TLSN session context is malformed");
+  }
+  requireCanonicalJobId(retained.jobId, "CCI TLSN jobId");
+  maxAgeMilliseconds(retained.maxResolutionAgeSec, "CCI resolution maxAgeSec");
+  maxAgeMilliseconds(retained.maxProofAgeSec, "CCI TLSN proof maxAgeSec");
+  maxAgeMilliseconds(retained.maxPresentationAgeSec, "IdentityBundle maxAgeSec");
+  return retained as unknown as CciTlsnSessionContext;
+}
+
+function captureTlsnDeps(value: unknown): Required<ClassifyCciTlsnDeps> {
+  if (!isPlainRecord(value)) throw new DacsError("CCI TLSN verifiers are malformed");
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 2 || !keys.includes("verifyIdentityPresentation") ||
+      !keys.includes("verifyNativeTlsn")) {
+    throw new DacsError("CCI TLSN verifiers are malformed");
+  }
+  return Object.freeze({
+    verifyIdentityPresentation: ownDataFunction<
+      ClassifyCciTlsnDeps["verifyIdentityPresentation"]
+    >(value, "verifyIdentityPresentation")!,
+    verifyNativeTlsn: ownDataFunction<ClassifyCciTlsnDeps["verifyNativeTlsn"]>(
+      value,
+      "verifyNativeTlsn",
+    )!,
+  });
+}
+
+function nativeTlsnAuthentication(
+  value: unknown,
+  expectedBinding: Readonly<NativeCciTlsnBinding>,
+  minimumVerifiedAt: number,
+  evaluatedAt: number,
+): NativeCciTlsnAuthentication {
+  const retained = snapshotCanonicalJsonRead(value, "native CCI TLSN authentication");
+  if (!isPlainRecord(retained) || typeof retained.status !== "string") {
+    return Object.freeze({ status: "error", reason: "native TLSN authentication is malformed" });
+  }
+  const keys = Reflect.ownKeys(retained);
+  if (retained.status === "verified") {
+    if (!keys.every((key) =>
+      key === "status" || key === "verifiedAt" || key === "authority" ||
+      key === "binding" || key === "evidence") ||
+        keys.length !== (retained.evidence === undefined ? 4 : 5) ||
+        !isSafeTime(retained.verifiedAt) || retained.verifiedAt < minimumVerifiedAt ||
+        retained.verifiedAt > evaluatedAt || typeof retained.authority !== "string" ||
+        retained.authority.length === 0 || retained.authority.trim() !== retained.authority ||
+        !nativeTlsnBindingMatches(retained.binding, expectedBinding) ||
+        (retained.evidence !== undefined && !isPlainRecord(retained.evidence))) {
+      return Object.freeze({ status: "error", reason: "native TLSN authentication is malformed" });
+    }
+    return deepFreeze(retained as unknown as NativeCciTlsnAuthentication);
+  }
+  if ((retained.status === "invalid" || retained.status === "indeterminate" ||
+      retained.status === "error") && keys.length === 2 && keys.includes("reason") &&
+      typeof retained.reason === "string" && retained.reason.trim().length > 0) {
+    return Object.freeze({ status: retained.status, reason: retained.reason });
+  }
+  return Object.freeze({ status: "error", reason: "native TLSN authentication is malformed" });
 }
 
 /**
@@ -414,52 +723,75 @@ export async function classifyCciTlsnProof(
   record: AuthenticatedCciRecord,
   bundle: Readonly<IdentityBundle>,
   proofHash: string,
+  context: Readonly<CciTlsnSessionContext>,
   deps: ClassifyCciTlsnDeps,
 ): Promise<CciTlsnDisposition> {
-  if (!isAuthenticatedCciRecord(record)) {
+  const authenticated = authenticatedCciRecords.get(record);
+  if (!authenticated) {
     return Object.freeze({ status: "invalid", reason: "CCI record is unauthenticated" });
   }
+  let capturedContext: CciTlsnSessionContext;
   let capturedBundle: IdentityBundle;
+  let capturedDeps: Required<ClassifyCciTlsnDeps>;
   try {
+    capturedContext = captureTlsnContext(context);
     capturedBundle = snapshotCanonicalJsonRead(bundle, "CCI TLSN IdentityBundle");
+    capturedDeps = captureTlsnDeps(deps);
   } catch {
-    return Object.freeze({ status: "invalid", reason: "IdentityBundle is malformed" });
+    return Object.freeze({ status: "invalid", reason: "CCI TLSN request is malformed" });
   }
   if (!isIdentityBundle(capturedBundle)) {
     return Object.freeze({ status: "invalid", reason: "IdentityBundle is malformed" });
   }
-  let verifyPresentation: ClassifyCciTlsnDeps["verifyIdentityPresentation"];
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(deps, "verifyIdentityPresentation");
-    if (
-      deps === null ||
-      typeof deps !== "object" ||
-      Reflect.ownKeys(deps).length !== 1 ||
-      !descriptor ||
-      descriptor.enumerable !== true ||
-      !("value" in descriptor) ||
-      typeof descriptor.value !== "function"
-    ) {
-      throw new TypeError("presentation verifier is malformed");
-    }
-    verifyPresentation = descriptor.value as ClassifyCciTlsnDeps["verifyIdentityPresentation"];
-  } catch {
+  if (!sameCanonicalClaimIdentity(capturedContext.expectedPresenter, record.primaryClaim) ||
+      !sameCanonicalClaimIdentity(capturedBundle.presentedBy, record.primaryClaim)) {
     return Object.freeze({
       status: "invalid",
-      reason: "IdentityBundle presentation verifier is unavailable",
+      reason: "IdentityBundle presenter does not match the authenticated CCI subject",
     });
   }
+  if (capturedBundle.sessionNonce !== capturedContext.sessionNonce) {
+    return Object.freeze({
+      status: "invalid",
+      reason: "IdentityBundle session nonce does not match the active Vet session",
+    });
+  }
+  const resolutionAt = authenticated.provenance.observedAt;
+  const resolutionMaxAge = maxAgeMilliseconds(
+    capturedContext.maxResolutionAgeSec,
+    "CCI resolution maxAgeSec",
+  );
+  const presentationMaxAge = maxAgeMilliseconds(
+    capturedContext.maxPresentationAgeSec,
+    "IdentityBundle maxAgeSec",
+  );
+  if (resolutionAt > capturedContext.evaluatedAt ||
+      capturedContext.evaluatedAt - resolutionAt > resolutionMaxAge) {
+    return Object.freeze({
+      status: "invalid",
+      reason: "authenticated CCI resolution is not current for the active Vet session",
+    });
+  }
+  if (!isSafeTime(capturedBundle.presentedAt) ||
+      capturedBundle.presentedAt > capturedContext.evaluatedAt ||
+      capturedContext.evaluatedAt - capturedBundle.presentedAt > presentationMaxAge) {
+    return Object.freeze({
+      status: "invalid",
+      reason: "IdentityBundle presentation is not current for the active Vet session",
+    });
+  }
+  if (typeof proofHash !== "string" || !/^[0-9a-f]{64}$/.test(proofHash)) {
+    return Object.freeze({ status: "invalid", reason: "TLSN proof hash is malformed" });
+  }
+  const bundleHash = identityBundleHash(capturedBundle);
   let presentationValid = false;
   try {
     presentationValid = await Reflect.apply(
-      verifyPresentation,
+      capturedDeps.verifyIdentityPresentation,
       INERT_CCI_RECEIVER,
       [deepFreeze({
         bundle: capturedBundle,
-        signedBytes: signedBytes(
-          "dacs-bundle-presentation:v1:",
-          identityBundleHash(capturedBundle),
-        ),
+        signedBytes: signedBytes("dacs-bundle-presentation:v1:", bundleHash),
       })],
     ) === true;
   } catch {
@@ -471,26 +803,91 @@ export async function classifyCciTlsnProof(
       reason: "IdentityBundle presentation is not authenticated",
     });
   }
-  if (!sameCanonicalClaimIdentity(capturedBundle.presentedBy, record.primaryClaim)) {
-    return Object.freeze({
-      status: "invalid",
-      reason: "IdentityBundle presenter does not match the authenticated CCI subject",
-    });
-  }
-  const normalizedHash = typeof proofHash === "string" ? proofHash.toLowerCase() : "";
-  if (!/^[0-9a-f]{64}$/.test(normalizedHash)) {
-    return Object.freeze({ status: "invalid", reason: "TLSN proof hash is malformed" });
-  }
-  const ref = `cci-tlsn:${normalizedHash}`;
+  const ref = `cci-tlsn:${proofHash}`;
   const claim = record.tlsn.find((candidate) => candidate.ref === ref);
   const presented = capturedBundle.claims.some((candidate) => candidate.ref === ref);
-  if (claim && presented) {
-    return Object.freeze({ status: "native-cci", claim });
+  if (!claim) {
+    return Object.freeze({
+      status: "external-required",
+      reason: "TLSN proof is not registered in the authenticated CCI record",
+    });
   }
-  return Object.freeze({
-    status: "external-required",
-    reason: claim
-      ? "registered TLSN commitment was not presented in the signed IdentityBundle"
-      : "TLSN proof is not registered in the authenticated CCI record",
+  if (!presented) {
+    return Object.freeze({
+      status: "invalid",
+      reason: "registered TLSN commitment was not presented in the signed IdentityBundle",
+    });
+  }
+  const proofMaxAge = maxAgeMilliseconds(
+    capturedContext.maxProofAgeSec,
+    "CCI TLSN proof maxAgeSec",
+  );
+  if (!isSafeTime(claim.observedAt) || claim.observedAt > resolutionAt ||
+      claim.observedAt > capturedContext.evaluatedAt ||
+      capturedBundle.presentedAt < claim.observedAt ||
+      capturedContext.evaluatedAt - claim.observedAt > proofMaxAge) {
+    return Object.freeze({
+      status: "invalid",
+      reason: "registered TLSN commitment is not current for the active Vet session",
+    });
+  }
+  let nativeAuthentication: NativeCciTlsnAuthentication;
+  try {
+    const binding = deepFreeze({
+      subject: record.primaryClaim,
+      jobId: capturedContext.jobId,
+      sessionNonce: capturedContext.sessionNonce,
+      expectedServer: capturedContext.expectedServer,
+      bundleHash,
+      proofHash,
+      resolutionObservedAt: authenticated.provenance.observedAt,
+    });
+    const returned = await Reflect.apply(
+      capturedDeps.verifyNativeTlsn,
+      INERT_CCI_RECEIVER,
+      [deepFreeze({
+        subject: record.primaryClaim,
+        jobId: capturedContext.jobId,
+        sessionNonce: capturedContext.sessionNonce,
+        expectedServer: capturedContext.expectedServer,
+        bundleHash,
+        proofHash,
+        evaluatedAt: capturedContext.evaluatedAt,
+        claim,
+        resolution: authenticated.provenance,
+      })],
+    );
+    nativeAuthentication = nativeTlsnAuthentication(
+      returned,
+      binding,
+      Math.max(claim.observedAt, capturedBundle.presentedAt, resolutionAt),
+      capturedContext.evaluatedAt,
+    );
+  } catch {
+    return Object.freeze({
+      status: "indeterminate",
+      reason: "native TLSN authentication was unavailable",
+    });
+  }
+  if (nativeAuthentication.status !== "verified") {
+    return Object.freeze({
+      status: nativeAuthentication.status,
+      reason: nativeAuthentication.reason,
+    });
+  }
+  return deepFreeze({
+    status: "native-cci" as const,
+    claim,
+    jobId: capturedContext.jobId,
+    sessionNonce: capturedContext.sessionNonce,
+    bundleHash,
+    verification: {
+      verifiedAt: nativeAuthentication.verifiedAt,
+      authority: nativeAuthentication.authority,
+      binding: nativeAuthentication.binding,
+      ...(nativeAuthentication.evidence !== undefined
+        ? { evidence: nativeAuthentication.evidence }
+        : {}),
+    },
   });
 }

@@ -33,9 +33,9 @@ describe("parseCciRecord (DACS-1 CCI resolution)", () => {
   test("parses web2 socials into claims, skipping empty handles", () => {
     const rec = parseCciRecord(PRIMARY, GRAPH);
     expect(rec.web2.map((c) => c.ref)).toEqual([
-      "cci-web2:twitter:alice",
       "cci-web2:github:alice-dev",
       "cci-web2:telegram:alice_tg",
+      "cci-web2:twitter:alice",
     ]);
     // discord was empty → dropped.
     expect(rec.web2.some((c) => c.platform === "discord")).toBe(false);
@@ -158,8 +158,8 @@ describe("parseCciRecord — live GCR shape (R1: xm/web2 nested)", () => {
   test("reads web2 handles from web2.<platform>[].username", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     expect(rec.web2.map((c) => c.ref)).toEqual([
-      "cci-web2:twitter:alice",
       "cci-web2:github:alice-dev",
+      "cci-web2:twitter:alice",
     ]);
   });
 

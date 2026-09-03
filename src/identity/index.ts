@@ -1,4 +1,6 @@
 export {
+  DEMOS_CCI_RESPONSE_LIMITS,
+  assertDemosCciResponseBounds,
   parseCciRecord,
   parseClaimRef,
   cciClaimRefs,
@@ -27,6 +29,7 @@ export {
   projectCciSupplementarySignals,
   type AuthenticateDemosCciDeps,
   type AuthenticateDemosCciInput,
+  type AuthenticateDemosCciProviderClaimInput,
   type AuthenticateDemosCciResult,
   type AuthenticatedCciRecord,
   type CciSignalOmission,
@@ -34,9 +37,15 @@ export {
   type CciSupplementaryFreshnessPolicy,
   type CciSupplementarySignalProjection,
   type CciTlsnDisposition,
+  type CciTlsnSessionContext,
   type ClassifyCciTlsnDeps,
   type DemosCciProvenance,
+  type DemosCciProviderClaim,
+  type DemosCciProviderClaimAuthentication,
   type DemosCciResolutionAuthentication,
+  type NativeCciTlsnBinding,
+  type NativeCciTlsnAuthentication,
+  type VerifyNativeCciTlsnInput,
 } from "./demosCci.js";
 
 export {

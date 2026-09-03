@@ -6,6 +6,8 @@ export {
   buildAgent,
   type Agent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
