@@ -13,13 +13,15 @@ import {
   type SolanaSplSettlementStore,
 } from "../../src/rails/solanaSpl.js";
 
-const PAYER = "2".repeat(32);
-const PAYEE = "3".repeat(32);
-const MINT = "4".repeat(32);
-const PAYER_TOKEN = "5".repeat(32);
-const PAYEE_ATA = "6".repeat(32);
-const SIGNATURE_1 = "7".repeat(88);
-const SIGNATURE_2 = "8".repeat(88);
+// Fixed-width values with canonical Base58 leading-zero encoding. These decode
+// to exactly 32-byte public keys and 64-byte transaction signatures.
+const PAYER = "1".repeat(32);
+const PAYEE = `${"1".repeat(31)}2`;
+const MINT = `${"1".repeat(31)}3`;
+const PAYER_TOKEN = `${"1".repeat(31)}4`;
+const PAYEE_ATA = `${"1".repeat(31)}5`;
+const SIGNATURE_1 = "1".repeat(64);
+const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
 
 function authority(
@@ -146,6 +148,8 @@ describe("createSolanaSplSettlementIntent", () => {
     ["bad decimals", { tokenDecimals: 256 }],
     ["wrong asset kind", { assetKind: "erc20" }],
     ["legacy address", { payer: "not_base58_0" }],
+    ["wrong public-key width", { payer: "2".repeat(32) }],
+    ["oversized public-key width", { payer: "1".repeat(33) }],
   ])("rejects %s before adapter access", (_name, override) => {
     expect(() => createSolanaSplSettlementIntent(authority(override as never))).toThrow();
   });
@@ -157,6 +161,37 @@ describe("createSolanaSplSettlementIntent", () => {
 });
 
 describe("advanceSolanaSplSettlement", () => {
+  test.each([
+    ["short decoded value", "2".repeat(64)],
+    ["65-byte decoded value", "1".repeat(65)],
+  ])("rejects a %s before persistence", async (_name, invalidSignature) => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn();
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt) {
+          return {
+            attemptVersion: "1",
+            attempt,
+            authorityHash: plan.intent.bindingHash,
+            signature: invalidSignature,
+            signedTransactionBase64: Buffer.from("signed-wire", "utf8").toString("base64"),
+            lastValidBlockHeight: 10_001,
+            transferInstructionIndex: 1,
+            preparedAt: 1_788_000_000_001,
+          };
+        },
+        broadcastRetained,
+      }),
+    }));
+
+    expect(result).toMatchObject({ status: "indeterminate" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("returns current solana-instruction coordinates only after exact commitment", async () => {
     const sequence: string[] = [];
     const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => {

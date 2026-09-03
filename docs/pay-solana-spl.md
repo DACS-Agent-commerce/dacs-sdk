@@ -17,7 +17,9 @@ The core:
 - persists the complete signed transaction before any broadcast;
 - reconciles the retained signature before rebroadcast or replacement;
 - permits a replacement signature only after authenticated blockhash expiry;
-- generation-fences every wallet/RPC effect across worker takeover; and
+- checks the durable generation fence before and after each wallet/RPC call,
+  while requiring adapters to recheck the supplied fence immediately before
+  each authority-bearing side effect; and
 - emits `solana-instruction` coordinates only after the exact transfer reaches
   the selected commitment level.
 
