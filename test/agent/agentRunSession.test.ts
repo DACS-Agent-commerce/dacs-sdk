@@ -1088,6 +1088,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
         },
         attestationRef: evidenceRef,
+        paymentAddress: {
+          railId: "x402:default",
+          phaseIndex: 0,
+        },
+        result: { ok: true, txRefs: evidence.paymentTxRefs },
       },
       {
         resolvePublicKey: async () => sellerPublicKey,

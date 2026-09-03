@@ -1150,6 +1150,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             ...(paymentAddress === undefined ? {} : { paymentAddress }),
             result: {
               ...resolvedContext.result,
+              // The exact signed phaseSummary entry, not the host resolver,
+              // decides whether this handler result succeeded.
+              ok: exactPhase.outcome === "ok",
               ...(exactPaymentTxRefs !== undefined
                 ? { txRefs: exactPaymentTxRefs as readonly ChainTxRef[] }
                 : {}),
