@@ -922,6 +922,105 @@ export interface PresenceAwareVerifiedEvidence {
   ref?: VerifyResultRef;
 }
 
+/**
+ * Authenticated time evidence needed to apply the DACS-1 verified-claim
+ * freshness window without resolving or trusting a presenter-supplied clock.
+ */
+export interface VerifiedClaimFreshnessInput {
+  /** Acceptance/evaluation time in Unix milliseconds. */
+  evaluatedAt: number;
+  /** Authority time from the authenticated VerifyResult. */
+  verifiedAt?: number;
+  /** Optional authority upper bound from the authenticated VerifyResult. */
+  validUntil?: number;
+  /** Exact pinned recipe default, used only when validUntil is absent. */
+  defaultMaxAgeSec?: number;
+  /** Optional presenter clamp; it can narrow but never widen authority time. */
+  presenterExpiresAt?: number;
+  /** Optional listing clamp in seconds. */
+  requirementMaxAgeSec?: number;
+}
+
+/**
+ * Pure DACS-1 §6.3.2/PCR-4 effective-window classifier. Inputs are already
+ * authenticated by the caller; malformed or unavailable authority time fails
+ * closed and configuration/clock errors remain distinguishable as `error`.
+ */
+export function classifyVerifiedClaimFreshness(
+  input: Readonly<VerifiedClaimFreshnessInput>,
+): VerificationDecision {
+  if (!isSafeUint(input.evaluatedAt)) return "error";
+  if (
+    input.requirementMaxAgeSec !== undefined &&
+    !isSafeUint(input.requirementMaxAgeSec)
+  ) {
+    return "error";
+  }
+  if (
+    input.defaultMaxAgeSec !== undefined &&
+    !isSafeUint(input.defaultMaxAgeSec)
+  ) {
+    return "error";
+  }
+  if (!isSafeUint(input.verifiedAt)) return "fail";
+  if (
+    input.validUntil !== undefined &&
+    (!isSafeUint(input.validUntil) || input.validUntil < input.verifiedAt)
+  ) {
+    return "fail";
+  }
+  if (
+    input.presenterExpiresAt !== undefined &&
+    !isSafeUint(input.presenterExpiresAt)
+  ) {
+    return "fail";
+  }
+
+  let authorityExpiry = input.validUntil;
+  if (authorityExpiry === undefined) {
+    if (input.defaultMaxAgeSec === undefined) return "fail";
+    authorityExpiry = addSeconds(input.verifiedAt, input.defaultMaxAgeSec) ??
+      undefined;
+    if (authorityExpiry === undefined) return "fail";
+  }
+  const effectiveExpiry = input.presenterExpiresAt === undefined
+    ? authorityExpiry
+    : Math.min(authorityExpiry, input.presenterExpiresAt);
+  if (input.evaluatedAt > effectiveExpiry) return "fail";
+
+  if (input.requirementMaxAgeSec !== undefined) {
+    const requirementExpiry = addSeconds(
+      input.verifiedAt,
+      input.requirementMaxAgeSec,
+    );
+    if (requirementExpiry === null || input.evaluatedAt > requirementExpiry) {
+      return "fail";
+    }
+  }
+  return "pass";
+}
+
+function strongestDecision(
+  decisions: readonly VerificationDecision[],
+): VerificationDecision {
+  if (decisions.includes("pass")) return "pass";
+  if (decisions.includes("fail") || decisions.length === 0) return "fail";
+  if (decisions.includes("error")) return "error";
+  return "indeterminate";
+}
+
+function combineConjunctiveDecisions(
+  left: VerificationDecision,
+  right: VerificationDecision,
+): VerificationDecision {
+  if (left === "fail" || right === "fail") return "fail";
+  if (left === "error" || right === "error") return "error";
+  if (left === "indeterminate" || right === "indeterminate") {
+    return "indeterminate";
+  }
+  return "pass";
+}
+
 export interface PresenceAwareAggregationInput {
   bundle: IdentityBundle;
   requirement: CompositeBundleRequirement;
@@ -975,13 +1074,16 @@ export function aggregatePresenceAwareCompositeVerification(
   const presented = presentedMatches[0]!;
   const controlled = parsedPresented.identity.scheme === "key" ||
     input.presentedClaimControlled === true;
-  const verifiedSelector = presented.verifiedBy !== undefined &&
-    input.verified.some((entry) =>
-      entry.decision === "pass" &&
-      entry.ref !== undefined &&
-      sameCanonicalClaimIdentity(entry.claimRef, presented.ref) &&
-      exactRef(entry.ref, presented.verifiedBy!)
-    );
+  const exactVerifiedDecisions = presented.verifiedBy === undefined
+    ? []
+    : input.verified
+      .filter((entry) =>
+        entry.ref !== undefined &&
+        sameCanonicalClaimIdentity(entry.claimRef, presented.ref) &&
+        exactRef(entry.ref, presented.verifiedBy!)
+      )
+      .map((entry) => entry.decision);
+  const verifiedSelector = strongestDecision(exactVerifiedDecisions);
   const presencePassesExact = (member: CompositeClaimRequirement): boolean =>
     member.scheme === selector &&
     member.verificationRequired === false &&
@@ -1034,8 +1136,12 @@ export function aggregatePresenceAwareCompositeVerification(
       presenceSelector = false;
     }
   }
-  if (!controlled || (!verifiedSelector && !presenceSelector)) decision = "fail";
-  return decision;
+  const selectorDecision: VerificationDecision = !controlled
+    ? "fail"
+    : presenceSelector || verifiedSelector === "pass"
+      ? "pass"
+      : verifiedSelector;
+  return combineConjunctiveDecisions(decision, selectorDecision);
 }
 
 function invalid(
@@ -1100,15 +1206,17 @@ async function exactPresenceSelectorAuthorized<TKey>(
   entries: readonly MixedVerificationEntry[],
   evaluatedAt: number,
   deps: VerifyCompositeVerificationDeps<TKey>,
-): Promise<boolean> {
+): Promise<VerificationDecision> {
   const selector = requirement.primaryClaimSelector;
-  if (selector === undefined) return true;
+  if (selector === undefined) return "pass";
   const parsedPresented = parseCanonicalClaimReference(bundle.presentedBy);
-  if (!parsedPresented || parsedPresented.identity.scheme !== selector) return false;
+  if (!parsedPresented || parsedPresented.identity.scheme !== selector) {
+    return "fail";
+  }
   const presentedMatches = bundle.claims.filter((claim) =>
     sameCanonicalClaimIdentity(claim.ref, bundle.presentedBy)
   );
-  if (presentedMatches.length !== 1) return false;
+  if (presentedMatches.length !== 1) return "fail";
   const presented = presentedMatches[0]!;
   let controlled = parsedPresented.identity.scheme === "key";
   if (!controlled && deps.isPresentedClaimControlled) {
@@ -1119,13 +1227,17 @@ async function exactPresenceSelectorAuthorized<TKey>(
     }
   }
 
-  const verifiedSelector = presented.verifiedBy !== undefined && entries.some((entry) =>
-    entry.expected !== undefined &&
-    entry.result !== undefined &&
-    entry.effectiveDecision === "pass" &&
-    exactRef(entry.expected.ref, presented.verifiedBy!) &&
-    entry.result.scheme === parsedPresented.identity.scheme &&
-    entry.result.identifier === parsedPresented.identity.identifier
+  const verifiedSelector = strongestDecision(
+    presented.verifiedBy === undefined
+      ? []
+      : entries
+        .filter((entry) =>
+          entry.expected !== undefined &&
+          exactRef(entry.expected.ref, presented.verifiedBy!) &&
+          entry.expected.scheme === parsedPresented.identity.scheme &&
+          entry.expected.identifier === parsedPresented.identity.identifier
+        )
+        .map((entry) => entry.effectiveDecision),
   );
 
   const presencePassesExact = (member: CompositeClaimRequirement): boolean =>
@@ -1161,7 +1273,9 @@ async function exactPresenceSelectorAuthorized<TKey>(
     );
     if (!exactPresenceInGroup && !passingOtherScheme) presenceSelector = false;
   }
-  return controlled && (verifiedSelector || presenceSelector);
+  if (!controlled) return "fail";
+  if (presenceSelector || verifiedSelector === "pass") return "pass";
+  return verifiedSelector;
 }
 
 async function resolveResult<TKey>(
@@ -1716,17 +1830,15 @@ export async function verifyCompositeVerificationRecord<TKey>(
     mixedEntries,
     expectedSnapshot.requirement,
   );
-  if (
-    presenceBundle &&
-    !(await exactPresenceSelectorAuthorized(
+  if (presenceBundle) {
+    const selectorDecision = await exactPresenceSelectorAuthorized(
       presenceBundle,
       expectedSnapshot.requirement,
       mixedEntries,
       acceptanceTime,
       capturedDeps,
-    ))
-  ) {
-    aggregated = "fail";
+    );
+    aggregated = combineConjunctiveDecisions(aggregated, selectorDecision);
   }
   if (!DECISIONS.includes(record.overallDecision) || record.overallDecision !== aggregated) {
     return invalid(

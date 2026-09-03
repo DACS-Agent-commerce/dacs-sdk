@@ -1482,7 +1482,9 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(adapter.anchorWriteOnce(
       "budgeted-failed-immutable",
       { value: 1 },
-      { timeoutMs: 20, pollMs: 1, feeBudget },
+      // The mocked terminal response is immediate; leave enough wall-clock
+      // headroom for a busy parallel test worker to observe it.
+      { timeoutMs: 250, pollMs: 1, feeBudget },
     )).rejects.toThrow(/terminal state failed/);
     await expect(adapter.anchorWriteOnce(
       "budgeted-failed-immutable",

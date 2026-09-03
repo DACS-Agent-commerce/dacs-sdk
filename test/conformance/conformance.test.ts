@@ -59,7 +59,15 @@ import {
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
-import { compositeVerificationAddress } from "../../src/agent/index.js";
+import {
+  aggregateCompositeVerification,
+  aggregatePresenceAwareCompositeVerification,
+  classifyVerifiedClaimFreshness,
+  compositeVerificationAddress,
+  type CompositeBundleRequirement,
+  type CompositeClaimRequirement,
+  type PresenceAwareVerifiedEvidence,
+} from "../../src/agent/index.js";
 import {
   assignSealedEnvelopeRoles,
   buildSealedAgreement,
@@ -92,10 +100,12 @@ import type {
   Listing,
   VerificationDecision,
   VerifyResult,
+  VerifyResultRef,
 } from "../../src/artifacts/types.js";
 import {
   isAttestationRef,
   isChainTxRef,
+  isIdentityBundle,
 } from "../../src/artifacts/index.js";
 import {
   assessRegistryGovernanceDisclosure,
@@ -117,8 +127,8 @@ import type { LegacyMvpAgreementDocument as AgreementDocument } from "../../src/
  * SDK does not export yet, likewise stay visible as reasoned todos — never as
  * vacuous assertions.
  *
- * Known divergences are pinned with `it.fails` (the vector expectation is
- * asserted and expected to fail against today's SDK) so a fix flips them loudly.
+ * Known divergences, if any, are pinned with `it.fails` so a fix flips them
+ * loudly rather than being silently converted to a todo.
  */
 
 const VENDOR = join(
@@ -332,6 +342,81 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       signer: `key:${"c".repeat(64)}`,
       value: Buffer.alloc(64).toString("base64url"),
     },
+  });
+  const REQUIREMENT_NOW = 1_900_000_000_000;
+  const REQUIREMENT_CONTROLLER = `key:${"f".repeat(64)}`;
+  const requirementRef = (locator: string): VerifyResultRef => ({
+    anchor: { kind: "storage-program", locator },
+    contentHash: sha256Hex(`conformance:${locator}`),
+    recipeVersion: 1,
+  });
+  const requirementMember = (
+    scheme: string,
+    verificationRequired = true,
+    extra: Partial<CompositeClaimRequirement> = {},
+  ): CompositeClaimRequirement => ({
+    scheme,
+    verificationRequired,
+    ...extra,
+  });
+  const bundleRequirement = (
+    required: CompositeClaimRequirement[],
+    extra: Partial<CompositeBundleRequirement> = {},
+  ): CompositeBundleRequirement => ({
+    requirementVersion: "1",
+    required,
+    ...extra,
+  });
+  const requirementBundle = (
+    claims: IdentityBundle["claims"],
+    presentedBy = claims[0]!.ref,
+  ): IdentityBundle => ({
+    bundleVersion: "1",
+    presentedBy,
+    presentedAt: REQUIREMENT_NOW,
+    claims,
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: REQUIREMENT_CONTROLLER, signature: "authenticated-upstream" }],
+    },
+  });
+  const evidence = (
+    requirement: CompositeClaimRequirement,
+    claimRef: string,
+    decision: VerificationDecision,
+    ref?: VerifyResultRef,
+  ): PresenceAwareVerifiedEvidence => ({
+    requirement,
+    claimRef,
+    decision,
+    ...(ref ? { ref } : {}),
+  });
+  const evaluateRequirement = (
+    bundle: IdentityBundle,
+    requirement: CompositeBundleRequirement,
+    verified: PresenceAwareVerifiedEvidence[] = [],
+    presentedClaimControlled?: boolean,
+  ): VerificationDecision => aggregatePresenceAwareCompositeVerification({
+    bundle,
+    requirement,
+    evaluatedAt: REQUIREMENT_NOW,
+    verified,
+    ...(presentedClaimControlled === undefined
+      ? {}
+      : { presentedClaimControlled }),
+  });
+  const matched = (...args: Parameters<typeof evaluateRequirement>): boolean =>
+    evaluateRequirement(...args) === "pass";
+  const aggregationShape = (
+    decision: VerificationDecision,
+    errorClass?: "permanent" | "transient" | "counterparty",
+  ) => ({
+    decision,
+    ...(decision === "fail"
+      ? { errorClass: "permanent" as const }
+      : decision === "error" && errorClass
+        ? { errorClass }
+        : {}),
   });
   const listingFixture = (): Listing => {
     const source = read(
@@ -679,10 +764,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "canon-int": (want) => {
       expect(canonicalize(9007199254740991)).toBe(want);
     },
-    "canon-noninteger-throws": (want) => {
-      expect(want).toBe("throws");
-      expect(() => canonicalize(1.5)).toThrow();
-    },
     "canon-without-signature": (want) => {
       expect(canonicalSignedScope({ a: 1, signature: "sig" })).toBe(want);
     },
@@ -748,8 +829,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(verifyArtifact("dacs-bundle:v1:", golden.signing.doc, sig, pub)).toBe(want);
     },
     // The oracle pins a closed registry of 28 separators and the SDK exposes the same
-    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
-    // below. The only remaining it.fails divergence is canonical-number handling.
+    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set.
     "sig-registry-closed": (want) => {
       expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(want.count);
       expect([...SIGNATURE_DOMAIN_SEPARATORS].sort()).toEqual(want.separators);
@@ -880,6 +960,374 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           "counterparty-malformed-presentation",
         ),
       }).toEqual(want);
+    },
+
+    // DACS-1/Vet matching goldens. These replay the reference verifier's
+    // constructed inputs through the SDK's authenticated-evidence policy
+    // boundary; resolution, signature, and hash authentication are covered by
+    // the strict CVR and presence-only corpora.
+    "dacs1-cci-lei-defect": (want) => {
+      const result = verifyResult("pass", "self-signed", "cci-lei");
+      expect(aggregateCompositeVerification(
+        [result],
+        bundleRequirement([requirementMember("lei")]),
+      ) === "pass").toBe(want);
+    },
+    "dacs1-cci-lei-named-matches": (want) => {
+      const result = verifyResult("pass", "self-signed", "cci-lei");
+      expect(aggregateCompositeVerification(
+        [result],
+        bundleRequirement([requirementMember("cci-lei")]),
+      ) === "pass").toBe(want);
+    },
+    "dacs1-tier-laundering-guard": (want) => {
+      const selected = "lei:984500ABCDEF12345678";
+      const other = "lei:529900T8BM49AABBCC11";
+      const otherRef = requirementRef("stor-other-lei-pass");
+      const member = requirementMember("lei");
+      expect(matched(
+        requirementBundle([
+          { ref: selected, issuedAt: REQUIREMENT_NOW - 1_000 },
+          { ref: other, issuedAt: REQUIREMENT_NOW - 1_000, verifiedBy: otherRef },
+        ], selected),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, other, "pass", otherRef)],
+        true,
+      )).toBe(want);
+    },
+    "vet-control-existence-only-lei-supporting-context": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-registry-pass");
+      const member = requirementMember("lei");
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member]),
+        [evidence(member, claimRef, "pass", ref)],
+      )).toBe(want);
+    },
+    "vet-control-existence-only-lei-presentedby-reject": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-registry-pass");
+      const member = requirementMember("lei");
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, claimRef, "pass", ref)],
+        false,
+      )).toBe(want);
+    },
+    "vet-control-existence-only-lei-reputation-key-reject": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-registry-reputation-pass");
+      const member = requirementMember("lei");
+      // Reputation uses the same exact controlled-presentedBy boundary as MA-3.
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, claimRef, "pass", ref)],
+        false,
+      )).toBe(want);
+    },
+    "vet-control-existence-method-forged-holderbinding-reject": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-registry-forged-holder-binding");
+      const member = requirementMember("lei");
+      // The authenticated method verifier, not arbitrary result data, supplies
+      // presentedClaimControlled; an existence-only method therefore stays false.
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, claimRef, "pass", ref)],
+        false,
+      )).toBe(want);
+    },
+    "vet-control-key-presentation-accept": (want) => {
+      const claimRef = `key:${"1".repeat(64)}`;
+      const member = requirementMember("key", false);
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, issuedAt: REQUIREMENT_NOW - 1_000 }]),
+        bundleRequirement([member], { primaryClaimSelector: "key" }),
+      )).toBe(want);
+    },
+    "vet-control-key-malformed-scope-reject-no-throw": (want) => {
+      const claimRef = `key:${"2".repeat(64)}`;
+      const malformed = {
+        ...requirementBundle([{ ref: claimRef, issuedAt: REQUIREMENT_NOW - 1_000 }]),
+        presentedAt: Number.MAX_SAFE_INTEGER + 1,
+      };
+      let throws = false;
+      let decision: VerificationDecision = "fail";
+      try {
+        if (isIdentityBundle(malformed)) {
+          const member = requirementMember("key", false);
+          decision = evaluateRequirement(
+            malformed,
+            bundleRequirement([member], { primaryClaimSelector: "key" }),
+          );
+        }
+      } catch {
+        throws = true;
+        decision = "error";
+      }
+      expect({ decision, throws }).toEqual(want);
+    },
+    "vet-control-key-unresolvable-binding-indeterminate": (want) => {
+      const claimRef = `key:${"3".repeat(64)}`;
+      const ref = requirementRef("stor-unresolvable-key-binding");
+      const member = requirementMember("key");
+      expect(evaluateRequirement(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member], { primaryClaimSelector: "key" }),
+        [evidence(member, claimRef, "indeterminate", ref)],
+      )).toBe(want);
+    },
+    "vet-control-key-stale-reject": (want) => {
+      const claimRef = `key:${"4".repeat(64)}`;
+      const member = requirementMember("key", false);
+      expect(evaluateRequirement(
+        requirementBundle([{
+          ref: claimRef,
+          issuedAt: REQUIREMENT_NOW - 2_000,
+          expiresAt: REQUIREMENT_NOW - 1,
+        }]),
+        bundleRequirement([member], { primaryClaimSelector: "key" }),
+      )).toBe(want);
+    },
+    "vet-control-key-verified-selector-laundering-reject": (want) => {
+      const selected = `key:${"5".repeat(64)}`;
+      const other = `key:${"6".repeat(64)}`;
+      const ref = requirementRef("stor-other-key-pass");
+      const member = requirementMember("key");
+      expect(evaluateRequirement(
+        requirementBundle([
+          { ref: selected, issuedAt: REQUIREMENT_NOW - 1_000 },
+          { ref: other, issuedAt: REQUIREMENT_NOW - 1_000, verifiedBy: ref },
+        ], selected),
+        bundleRequirement([member], { primaryClaimSelector: "key" }),
+        [evidence(member, other, "pass", ref)],
+      )).toBe(want);
+    },
+    "dacs1-freshness-fail-closed": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const other = "lei:529900T8BM49AABBCC11";
+      const member = requirementMember("lei", true, { recipeVersion: 1 });
+      const maxAgeMember = requirementMember("lei", true, {
+        recipeVersion: 1,
+        maxAge: 60,
+      });
+      const absentRef = requirementRef("stor-unavailable-time");
+      const expiredRef = requirementRef("stor-expired-wrapper");
+      const freshRef = requirementRef("stor-fresh-authority-time");
+      const oldRef = requirementRef("stor-old-authority-time");
+      const staleSelectedRef = requirementRef("stor-stale-selected");
+      const freshOtherRef = requirementRef("stor-fresh-other");
+      const expiry = REQUIREMENT_NOW + 60_000;
+      const expiredDecision = classifyVerifiedClaimFreshness({
+        evaluatedAt: REQUIREMENT_NOW,
+        verifiedAt: REQUIREMENT_NOW - 1_000,
+        validUntil: expiry,
+        presenterExpiresAt: REQUIREMENT_NOW - 1,
+      });
+      const freshDecision = classifyVerifiedClaimFreshness({
+        evaluatedAt: REQUIREMENT_NOW,
+        verifiedAt: REQUIREMENT_NOW - 1_000,
+        validUntil: expiry,
+        presenterExpiresAt: expiry,
+      });
+      const maxAgeDecision = classifyVerifiedClaimFreshness({
+        evaluatedAt: REQUIREMENT_NOW,
+        verifiedAt: REQUIREMENT_NOW - 120_000,
+        validUntil: expiry,
+        requirementMaxAgeSec: 60,
+      });
+      expect({
+        absentBoth: matched(
+          requirementBundle([{ ref: claimRef, verifiedBy: absentRef }]),
+          bundleRequirement([member]),
+        ),
+        expired: matched(
+          requirementBundle([{
+            ref: claimRef,
+            verifiedBy: expiredRef,
+            expiresAt: REQUIREMENT_NOW - 1,
+          }]),
+          bundleRequirement([member]),
+          [evidence(member, claimRef, expiredDecision, expiredRef)],
+        ),
+        expiresOnly: matched(
+          requirementBundle([{
+            ref: claimRef,
+            verifiedBy: freshRef,
+            expiresAt: expiry,
+          }]),
+          bundleRequirement([member]),
+          [evidence(member, claimRef, freshDecision, freshRef)],
+        ),
+        expiresOnlyMaxAge: matched(
+          requirementBundle([{
+            ref: claimRef,
+            verifiedBy: oldRef,
+            expiresAt: expiry,
+          }]),
+          bundleRequirement([maxAgeMember]),
+          [evidence(maxAgeMember, claimRef, maxAgeDecision, oldRef)],
+        ),
+        stalePresentedByPrimary: matched(
+          requirementBundle([
+            {
+              ref: claimRef,
+              verifiedBy: staleSelectedRef,
+              expiresAt: REQUIREMENT_NOW - 1,
+            },
+            { ref: other, verifiedBy: freshOtherRef },
+          ], claimRef),
+          bundleRequirement([maxAgeMember], { primaryClaimSelector: "lei" }),
+          [
+            evidence(maxAgeMember, claimRef, "fail", staleSelectedRef),
+            evidence(maxAgeMember, other, "pass", freshOtherRef),
+          ],
+          true,
+        ),
+      }).toEqual(want);
+    },
+    "vet-ma1-required-missing": (want) => {
+      expect(matched(
+        requirementBundle([{ ref: "did:demos:unrelated" }]),
+        bundleRequirement([requirementMember("lei")]),
+      )).toBe(want);
+    },
+    "vet-ma1-oneof": (want) => {
+      const finra = "finra-crd:12345";
+      const ref = requirementRef("stor-finra-pass");
+      const leiMember = requirementMember("lei");
+      const finraMember = requirementMember("finra-crd");
+      const requirement = bundleRequirement([], {
+        oneOf: [[leiMember, finraMember]],
+      });
+      expect({
+        satisfied: matched(
+          requirementBundle([{ ref: finra, verifiedBy: ref }]),
+          requirement,
+          [evidence(finraMember, finra, "pass", ref)],
+        ),
+        unsatisfied: matched(
+          requirementBundle([{ ref: "did:demos:unrelated" }]),
+          requirement,
+        ),
+      }).toEqual(want);
+    },
+    "vet-ma2-scheme-mismatch": (want) => {
+      const lei = "lei:984500ABCDEF12345678";
+      const did = "did:demos:presented";
+      const ref = requirementRef("stor-lei-pass");
+      const member = requirementMember("lei");
+      expect(matched(
+        requirementBundle([{ ref: lei, verifiedBy: ref }, { ref: did }], did),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, lei, "pass", ref)],
+        true,
+      )).toBe(want);
+    },
+    "vet-ma3-unverified-reject": (want) => {
+      const selected = "lei:984500ABCDEF12345678";
+      const other = "lei:529900T8BM49AABBCC11";
+      const selectedRef = requirementRef("stor-selected-fail");
+      const otherRef = requirementRef("stor-other-pass");
+      const member = requirementMember("lei");
+      expect(matched(
+        requirementBundle([
+          { ref: selected, verifiedBy: selectedRef },
+          { ref: other, verifiedBy: otherRef },
+        ], selected),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [
+          evidence(member, selected, "fail", selectedRef),
+          evidence(member, other, "pass", otherRef),
+        ],
+        true,
+      )).toBe(want);
+    },
+    "vet-ma3-resolution-vs-presence": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-present-but-failing");
+      const presenceMember = requirementMember("lei", false);
+      const verifiedMember = requirementMember("lei");
+      const bundle = requirementBundle([{ ref: claimRef, verifiedBy: ref }]);
+      expect({
+        dacs1Presence: matched(
+          bundle,
+          bundleRequirement([presenceMember]),
+        ),
+        vetResolved: matched(
+          bundle,
+          bundleRequirement([verifiedMember], { primaryClaimSelector: "lei" }),
+          [evidence(verifiedMember, claimRef, "fail", ref)],
+          true,
+        ),
+      }).toEqual(want);
+    },
+    "vet-ma3-verified-accept": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-vlei-pass");
+      const member = requirementMember("lei");
+      expect(matched(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member], { primaryClaimSelector: "lei" }),
+        [evidence(member, claimRef, "pass", ref)],
+        true,
+      )).toBe(want);
+    },
+    "vet-findclaim-decision": (want) => {
+      const claimRef = "lei:984500ABCDEF12345678";
+      const ref = requirementRef("stor-indeterminate");
+      const member = requirementMember("lei");
+      expect(matched(
+        requirementBundle([{ ref: claimRef, verifiedBy: ref }]),
+        bundleRequirement([member]),
+        [evidence(member, claimRef, "indeterminate", ref)],
+      )).toBe(want);
+    },
+    "vet-freshness-fail-closed": (want) => {
+      // Vet applies the same independently authenticated effective-window
+      // classifier; the DACS-1 runner above exercises every vector branch.
+      const runner = RUNNERS["dacs1-freshness-fail-closed"]!;
+      runner(want);
+    },
+    "vet-oneof-error-over-fail": (want) => {
+      const decision = aggregateCompositeVerification(
+        [
+          verifyResult("fail", "self-signed", "lei"),
+          verifyResult("error", "self-signed", "domain"),
+        ],
+        bundleRequirement([], {
+          oneOf: [[requirementMember("lei"), requirementMember("domain")]],
+        }),
+      );
+      expect(aggregationShape(decision, "transient")).toEqual(want);
+    },
+    "vet-oneof-indeterminate-over-fail": (want) => {
+      const decision = aggregateCompositeVerification(
+        [
+          verifyResult("fail", "self-signed", "lei"),
+          verifyResult("indeterminate", "self-signed", "domain"),
+        ],
+        bundleRequirement([], {
+          oneOf: [[requirementMember("lei"), requirementMember("domain")]],
+        }),
+      );
+      expect(aggregationShape(decision)).toEqual(want);
+    },
+    "vet-cross-accumulator-fail-over-error": (want) => {
+      const decision = aggregateCompositeVerification(
+        [
+          verifyResult("fail", "self-signed", "lei"),
+          verifyResult("error", "self-signed", "domain"),
+        ],
+        bundleRequirement([requirementMember("lei")], {
+          oneOf: [[requirementMember("domain")]],
+        }),
+      );
+      expect(aggregationShape(decision, "transient")).toEqual(want);
     },
     "cf4-dacs2-composite-address": (want) => {
       expect(
@@ -2287,11 +2735,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
 
   // Divergences: assert the vector expectation but expect the test to FAIL
   // against today's SDK (it.fails flips loudly when the divergence is fixed).
-  const DIVERGENT = new Set<string>([
-    // The pinned oracle still rejects fractional JSON numbers even though
-    // RFC 8785 and CORE B.2 admit finite values within the magnitude bound.
-    "canon-noninteger-throws",
-  ]);
+  const DIVERGENT = new Set<string>();
 
   it("preserves fractional canonicalization independently of the stale oracle", () => {
     expect(canonicalize(1.5)).toBe("1.5");
@@ -2300,8 +2744,8 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   // Why un-runnable cases are todo, per area (with per-case overrides).
   const TODO_AREA_REASON: Record<string, string> = {
     dacs1:
-      "remaining §6.3.2/§6.3.3 requirement-matching, freshness, and control-gate inputs lack an independently exported policy surface",
-    vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
+      "all adopted DACS-1 requirement-matching, freshness, and control-gate goldens replay through exported SDK policy surfaces",
+    vet: "all adopted DACS-2 matching, freshness, and aggregation goldens replay through exported SDK policy surfaces",
     negotiate:
       "all current DACS-3 negotiation goldens replay through exported SDK surfaces",
     governance: "all current GOV-1..3 goldens replay through the exported governance policy surface",
@@ -2362,14 +2806,10 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
-    // coverage to 128; two-sided lookup and externally bound role/signature
-    // guards raise it to 146.
-    // deleting a runner must fail loudly instead of quietly
-    // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(152);
-    expect(manifest.cases).toHaveLength(236);
+    // The adopted pin has 235 cases and 175 non-vacuous SDK runners. Deleting
+    // a runner must fail loudly instead of quietly converting the case to todo.
+    expect(Object.keys(RUNNERS)).toHaveLength(175);
+    expect(manifest.cases).toHaveLength(235);
   });
 
   it("the SDK exposes the current closed set of 28 separators", () => {

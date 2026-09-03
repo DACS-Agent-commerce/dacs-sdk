@@ -608,7 +608,9 @@ describe("DemosAdapter", () => {
 
     await expect(
       adapter.anchorWriteOnce(name, value, {
-        timeoutMs: 20,
+        // Keep this comfortably above event-loop stalls from parallel Vitest
+        // workers. Every network operation in this test remains mocked.
+        timeoutMs: 250,
         pollMs: 0,
         metadata: { logicalAddress: "dacs1:seller:svc:v1" },
         onProgress: (receipt) => progress.push({

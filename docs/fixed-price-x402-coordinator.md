@@ -6,7 +6,7 @@ HTTP service, invent DACS artifacts, or replace the authoritative session and
 write journals used by those operations.
 
 The supported artifact/conformance revision is
-`f2e96627d9f5251cb32c69a31f44b35cda613b64`, the immutable Standard PR #362
+`741057bf26509ca2701ee78171e6049b1bc665b4`, the immutable adopted Standard
 revision pinned by `scripts/sync-vectors.mjs`. A later Standard revision is not
 accepted merely because a peer supplies its hash: supporting it requires an
 explicit SDK update and conformance run.

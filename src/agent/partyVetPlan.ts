@@ -1400,29 +1400,42 @@ function plannedEntryDecision(
     : "fail";
 }
 
-function planSelectorAuthorized(
+function strongestSelectorDecision(
+  decisions: readonly VerificationDecision[],
+): VerificationDecision {
+  if (decisions.includes("pass")) return "pass";
+  if (decisions.includes("fail") || decisions.length === 0) return "fail";
+  if (decisions.includes("error")) return "error";
+  return "indeterminate";
+}
+
+function planSelectorDecision(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
-): boolean {
+): VerificationDecision {
   const selector = plan.requirement.primaryClaimSelector;
-  if (selector === undefined) return true;
+  if (selector === undefined) return "pass";
   const presented = parseCanonicalClaimReference(plan.identityBundle.presentedBy);
-  if (!presented || presented.identity.scheme !== selector) return false;
+  if (!presented || presented.identity.scheme !== selector) return "fail";
   const exactClaims = plan.identityBundle.claims.filter((claim) =>
     sameCanonicalClaimIdentity(claim.ref, plan.identityBundle.presentedBy)
   );
-  if (exactClaims.length !== 1) return false;
+  if (exactClaims.length !== 1) return "fail";
   // BP-4 was authenticated before plan creation. The current closed profile
   // recognises its exact self-authenticating key as independent control.
   const controlled = presented.identity.scheme === "key" ||
     plan.presentedClaimControlled === true;
-  const verifiedSelector = plan.attempts.some((attempt) => {
-    const outcome = completed.get(attempt.attemptId);
-    return sameCanonicalClaimIdentity(
-      attempt.claimSubject,
-      plan.identityBundle.presentedBy,
-    ) && effectiveAttemptDecision(attempt, outcome) === "pass";
-  });
+  const verifiedSelector = strongestSelectorDecision(
+    plan.attempts
+      .filter((attempt) => sameCanonicalClaimIdentity(
+        attempt.claimSubject,
+        plan.identityBundle.presentedBy,
+      ))
+      .map((attempt) =>
+        effectiveAttemptDecision(attempt, completed.get(attempt.attemptId)) ??
+          "fail"
+      ),
+  );
   const presencePassesExact = (
     entry: Readonly<PartyVetPlannedRequirement>,
   ): boolean =>
@@ -1463,7 +1476,9 @@ function planSelectorAuthorized(
     );
     if (!exactPresenceInGroup && !passingOtherScheme) presenceSelector = false;
   }
-  return controlled && (verifiedSelector || presenceSelector);
+  if (!controlled) return "fail";
+  if (presenceSelector || verifiedSelector === "pass") return "pass";
+  return verifiedSelector;
 }
 
 function aggregateComplete(
@@ -1527,7 +1542,14 @@ function aggregateComplete(
     }
   }
 
-  if (!planSelectorAuthorized(plan, completed)) failures.push("primaryClaimSelector");
+  const selectorDecision = planSelectorDecision(plan, completed);
+  if (selectorDecision === "fail") {
+    failures.push("primaryClaimSelector");
+  } else if (selectorDecision === "error") {
+    errors.push("primaryClaimSelector");
+  } else if (selectorDecision === "indeterminate") {
+    indeterminates.push("primaryClaimSelector");
+  }
   if (failures.length > 0) return "fail";
   if (errors.length > 0) return "error";
   if (indeterminates.length > 0) return "indeterminate";

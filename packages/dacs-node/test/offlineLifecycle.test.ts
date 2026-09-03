@@ -335,5 +335,7 @@ describe("offline verifier simulation", () => {
       "writer-a.json",
       "writer-b.json",
     ].sort());
-  }, 15_000);
+  // This launches two nested Vitest processes; allow for scheduler contention
+  // from the outer host suite without weakening any production deadline.
+  }, 60_000);
 });

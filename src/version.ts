@@ -6,4 +6,4 @@ export const DACS_MVP_TARGET = "0.1" as const;
 
 /** Exact DACS-Standard revision used by the vendored conformance oracle. */
 export const DACS_STANDARD_PIN =
-  "f2e96627d9f5251cb32c69a31f44b35cda613b64" as const;
+  "741057bf26509ca2701ee78171e6049b1bc665b4" as const;

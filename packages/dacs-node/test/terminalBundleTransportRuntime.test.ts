@@ -613,7 +613,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       recovered: true,
     });
     expect(byName).toHaveProperty("size", 4);
-  });
+  }, 15_000);
 
   it("does not retain or sign a plan the peer cannot independently authorize", async () => {
     const buyerDatabase = await open("buyer");

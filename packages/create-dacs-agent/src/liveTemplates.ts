@@ -13,7 +13,7 @@ export interface LiveProjectTemplateOptions {
 
 const SDK_VERSION = "0.1.0-alpha.0";
 const BETTER_SQLITE_VERSION = "12.6.2";
-const STANDARD_REVISION = "f2e96627d9f5251cb32c69a31f44b35cda613b64";
+const STANDARD_REVISION = "741057bf26509ca2701ee78171e6049b1bc665b4";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 7;
 

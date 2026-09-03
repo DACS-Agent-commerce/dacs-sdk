@@ -385,6 +385,32 @@ export async function createDacsX402BuyerEvmChallengeClient(
     }
     return selected;
   }).register(authority.network, scheme);
+  // @x402/core 2.24 added default spend controls after the SDK's 2.15 peer
+  // floor. Keep those controls enabled when available, but derive their sole
+  // asset and atomic cap from the already-authenticated DACS authority. The
+  // exact selector and signing callback below remain the final fail-closed
+  // boundary; this merely prevents a dependency default from rejecting the
+  // authority's non-default token before those checks can run.
+  const configurableCore = coreClient as unknown as {
+    setSpendControls?: (controls: {
+      maxAmountPerPayment: false;
+      allowedAssets: Array<{
+        network: string;
+        asset: string;
+        maxAmountPerPayment: string;
+      }>;
+    }) => unknown;
+  };
+  if (typeof configurableCore.setSpendControls === "function") {
+    configurableCore.setSpendControls({
+      maxAmountPerPayment: false,
+      allowedAssets: [{
+        network: authority.network,
+        asset: expected.asset,
+        maxAmountPerPayment: expected.amount,
+      }],
+    });
+  }
   coreClient.onBeforePaymentCreation(async ({
     paymentRequired,
     selectedRequirements,
