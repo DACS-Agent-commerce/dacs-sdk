@@ -3844,6 +3844,7 @@ async function settleAndRecover(input: {
     prepareX402BuyerSettlement({ authority }, {
       client,
       fetchImpl: input.preflight.host.fetchImpl,
+      transportPolicy: { mode: "insecure-test" },
     })
   );
   requireCondition(prepared.disposition === "prepared", "buyer-preparation-failed");
@@ -3906,6 +3907,7 @@ async function settleAndRecover(input: {
   let buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
   const productionTransport = createX402BuyerPaidRequestTransport({
     fetchImpl: input.preflight.host.fetchImpl,
+    transportPolicy: { mode: "insecure-test" },
   });
   let buyerTransportSubmissions = 0;
   let buyerNow = Date.now();

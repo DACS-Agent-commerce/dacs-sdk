@@ -363,9 +363,11 @@ settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
 when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Cached durable success is reauthenticated
-after every process restart before reuse; missing or contradictory recovery
-fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+non-final observation must throw. Even authoritative absence does not revoke a
+possibly-live old process or signed transaction and therefore does not authorize
+an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
+after every process restart before reuse; missing, absent, or contradictory
+recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
@@ -622,6 +624,12 @@ the retained payer authorization before durable fulfilment, while PC-7 payment-
 evidence anchoring catches up independently. See
 [the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
 ordering, recovery, and post-settlement failure contract.
+
+Funded unattended buyers should place every rail behind the shared
+[wallet-wide spend authority](./docs/wallet-spend-authority.md). It durably
+enforces balance reserve, fee, rate, rolling, cumulative, counterparty,
+concurrency and approval limits across jobs, rails and processes; ambiguous
+effects remain charged until rail-authenticated reconciliation.
 
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,

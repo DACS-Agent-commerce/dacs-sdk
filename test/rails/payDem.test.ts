@@ -13,8 +13,12 @@ import {
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  settlementBindingHash,
+  settlementKey,
+  type SettlementBinding,
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
+import { baseUnits } from "../../src/canonical/index.js";
 
 const RECIPIENT = "d4".repeat(32);
 const PAYER = "c3".repeat(32);
@@ -68,6 +72,27 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.txRefKind).toBe("demos");
     expect(res.blockNumber).toBe(4242);
     expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+  });
+
+  test("checks the recovery generation immediately before native transfer", async () => {
+    const client = fakeClient();
+    let fenceChecks = 0;
+    await expect(payDemSettleCore(
+      params(),
+      client,
+      {
+        owner: "worker",
+        generation: 2,
+        settlementKey: "demos-native:DEM:job:0",
+        bindingHash: "a".repeat(64),
+        async assertCurrent() {
+          fenceChecks += 1;
+          throw new Error("stale effect generation");
+        },
+      },
+    )).rejects.toThrow(/stale effect generation/);
+    expect(fenceChecks).toBe(1);
+    expect(client.sent).toBeUndefined();
   });
 
   test("amount is parsed as an integer OS bigint (no floats)", async () => {
@@ -362,6 +387,36 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     phaseIndex: 0,
     ...over,
   });
+  const bindingFor = (
+    request: ReturnType<typeof req>,
+  ): Readonly<SettlementBinding> => Object.freeze({
+    bindingVersion: "1",
+    railId: request.rail as string,
+    jobId: request.jobId as string,
+    phaseIndex: request.phaseIndex as number,
+    phase: request.phase as string,
+    amount: baseUnits(request.amount as string, 9),
+    agreementAsset: request.asset as string,
+    settlementAsset: "DEM",
+    payer: PAYER,
+    payee: SELLER_HEX,
+    network: "demos",
+    finality: Object.freeze({ model: "bft-final" }),
+  });
+  const seedExpiredIntent = async (
+    log: SettlementLog,
+    request: ReturnType<typeof req>,
+  ) => log.claimIntent({
+    key: settlementKey(
+      request.rail as string,
+      request.jobId as string,
+      request.phaseIndex as number,
+    ),
+    bindingHash: settlementBindingHash(bindingFor(request)),
+    owner: "crashed-test-owner",
+    now: 0,
+    leaseDurationMs: 1,
+  });
 
   test("converts the agreement's DECIMAL DEM to integer OS base units (×10^9)", async () => {
     const client = fakeClient();
@@ -390,6 +445,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     };
     const settle = payDemSettle(rail, { network: "demos" });
     const first = await settle(req());
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.finality)).toBe(true);
+    expect(() => {
+      (first.finality as { model: string }).model = "mutated";
+    }).toThrow();
     const second = await settle(req());
     expect(transfers).toBe(1);
     expect(second).toEqual(first);
@@ -450,27 +510,27 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("durably recovers intent → journal → ambiguity → restart under the same exact tuple", async () => {
-    const outcomes = new Map<string, SettleResult>();
-    const intents = new Set<string>();
+    const backing = createInMemorySettlementLog();
     const lifecycle: string[] = [];
     const log: SettlementLog = {
-      async getOutcome(key) {
-        lifecycle.push(`load:${key}`);
-        return outcomes.get(key);
+      async claimIntent(input) {
+        lifecycle.push(`intent:${input.key}`);
+        return backing.claimIntent(input);
       },
-      async putOutcome(key, result) {
-        lifecycle.push(`outcome:${key}`);
-        outcomes.set(key, result);
+      isCurrent(input) {
+        return backing.isCurrent(input);
       },
-      async claimIntent(key) {
-        lifecycle.push(`intent:${key}`);
-        if (intents.has(key)) return "held";
-        intents.add(key);
-        return "claimed";
+      grantRecovery(input) {
+        lifecycle.push(`grant:${input.key}`);
+        return backing.grantRecovery(input);
       },
-      async releaseIntent(key) {
-        lifecycle.push(`release:${key}`);
-        intents.delete(key);
+      async putOutcome(input) {
+        lifecycle.push(`outcome:${input.key}`);
+        return backing.putOutcome(input);
+      },
+      async releaseIntent(input) {
+        lifecycle.push(`release:${input.key}`);
+        return backing.releaseIntent(input);
       },
     };
     const contexts: unknown[] = [];
@@ -496,7 +556,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       phaseIndex: 3,
       amount: "1.25",
     });
-    const firstStore = createIdempotencyStore(log);
+    let now = 0;
+    const firstStore = createIdempotencyStore(log, {
+      owner: "first-process",
+      leaseDurationMs: 10,
+      now: () => now,
+    });
     await expect(payDemSettle(firstRail, { network: "demos" }, {
       store: firstStore,
     })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
@@ -518,7 +583,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       txRefKind: "demos",
       amountOs: context.amountOs,
     }));
-    const restartedStore = createIdempotencyStore(log);
+    now = 11;
+    const restartedStore = createIdempotencyStore(log, {
+      owner: "restarted-process",
+      leaseDurationMs: 10_000,
+      now: () => now,
+    });
     const recovered = await payDemSettle(restartedRail, { network: "demos" }, {
       store: restartedStore,
       reconcile,
@@ -556,7 +626,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
 
   test("a non-final reconciliation cannot authorize rebroadcast", async () => {
     const log = createInMemorySettlementLog();
-    await log.claimIntent("demos-native:DEM:job-ambiguous:1");
+    const request = req({
+      rail: "demos-native:DEM",
+      jobId: "job-ambiguous",
+      phaseIndex: 1,
+    });
+    await seedExpiredIntent(log, request);
     const rail: PayDemRail = {
       address: PAYER,
       settle: vi.fn(async () => {
@@ -575,11 +650,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
-    })(req({
-      rail: "demos-native:DEM",
-      jobId: "job-ambiguous",
-      phaseIndex: 1,
-    }))).rejects.toThrow(/only null proof-of-absence may authorize resubmission/);
+    })(request)).rejects.toThrow(/definitive finalized result/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
 
@@ -599,7 +670,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   ) => {
     const key = "demos-native:DEM:job-malicious:2";
     const log = createInMemorySettlementLog();
-    await log.claimIntent(key);
+    const request = req({
+      rail: "demos-native:DEM",
+      jobId: "job-malicious",
+      phaseIndex: 2,
+    });
+    await seedExpiredIntent(log, request);
     const rail: PayDemRail = {
       address: PAYER,
       settle: vi.fn(async () => {
@@ -622,27 +698,29 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
-    })(req({
-      rail: "demos-native:DEM",
-      jobId: "job-malicious",
-      phaseIndex: 2,
-    }))).rejects.toThrow(pattern);
+    })(request)).rejects.toThrow(pattern);
     expect(rail.settle).not.toHaveBeenCalled();
   });
 
-  test("a cached success is reauthenticated after restart against amount and tx identity", async () => {
+  test("a cached success cannot be reused under changed amount terms", async () => {
     const log = createInMemorySettlementLog();
     const key = "demos-native:DEM:job-cached:5";
-    await log.putOutcome(key, {
-      ok: true,
-      txHash: TX_HASH,
-      chainId: "demos",
-      payer: PAYER,
-      payee: SELLER_HEX,
-      finality: { model: "bft-final" },
-      blockNumber: 7,
-      txRefKind: "demos",
+    const originalRequest = req({
+      rail: "demos-native:DEM",
+      jobId: "job-cached",
+      phaseIndex: 5,
+      amount: "1",
     });
+    await createIdempotencyStore(log).once(key, bindingFor(originalRequest), async () => ({
+        ok: true,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        finality: { model: "bft-final" },
+        blockNumber: 7,
+        txRefKind: "demos",
+      }));
     const rail: PayDemRail = {
       address: PAYER,
       settle: vi.fn(async () => {
@@ -669,10 +747,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       jobId: "job-cached",
       phaseIndex: 5,
       amount: "2",
-    }))).rejects.toThrow(/does not match the authoritative reconciled transaction/);
-    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
-      amountOs: "2000000000",
-    }));
+    }))).rejects.toThrow(/different terms/);
+    expect(reconcile).not.toHaveBeenCalled();
     expect(rail.settle).not.toHaveBeenCalled();
   });
 
@@ -743,6 +819,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     class ClassStore {
       async once(
         _key: string,
+        _binding: Readonly<SettlementBinding>,
         submit: () => Promise<SettleResult>,
       ): Promise<SettleResult> {
         return submit();
