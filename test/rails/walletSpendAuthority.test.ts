@@ -650,6 +650,34 @@ describe("authenticated filesystem wallet spend store", () => {
     expect(await readdir(join(dir, "markers"))).toEqual([]);
   });
 
+  test("status inspection does not repair a missing initialization marker", async () => {
+    const dir = await fixture();
+    const initial = createWalletSpendAuthorityV1(policy(), {
+      store: await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "service",
+      now: () => 1_000,
+    });
+    expect((await initial.reserve(reservation("one"))).status).toBe("reserved");
+    const [marker] = await readdir(join(dir, "markers"));
+    if (marker === undefined) throw new Error("expected initialization marker");
+    await unlink(join(dir, "markers", marker));
+
+    const doctor = createWalletSpendAuthorityV1(policy(), {
+      store: await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => false,
+      owner: "doctor",
+      now: () => 1_000,
+    });
+    await expect(doctor.inspect()).resolves.toMatchObject({
+      activeEffects: 1,
+      retainedReservations: 1,
+    });
+    expect(await readdir(join(dir, "markers"))).toEqual([]);
+  });
+
   test("survives restart and serializes separate store instances", async () => {
     const dir = await fixture();
     const firstStore = await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY });
