@@ -281,6 +281,20 @@ function uint(value: string, label: string): bigint {
   return BigInt(value);
 }
 
+function positiveSafeInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new DacsError(`pay-solana-spl: ${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function clockValue(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new DacsError("pay-solana-spl: clock must return a non-negative safe integer");
+  }
+  return value;
+}
+
 export function solanaSplSettlementKey(input: {
   jobId: string;
   railId: string;
@@ -289,10 +303,11 @@ export function solanaSplSettlementKey(input: {
   if (!Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
     throw new DacsError("pay-solana-spl: phaseIndex must be a non-negative safe integer");
   }
-  return sha256Hex(
-    `dacs-solana-spl-settlement:v1:${requireString(input.jobId, "jobId").normalize("NFC")}:` +
-      `${requireString(input.railId, "railId").normalize("NFC")}:${input.phaseIndex}`,
-  );
+  return sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
+    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    phaseIndex: input.phaseIndex,
+    railId: requireString(input.railId, "railId").normalize("NFC"),
+  })}`);
 }
 
 export function createSolanaSplSettlementIntent(
@@ -430,6 +445,50 @@ function createAttempt(
   });
 }
 
+function captureRetainedAttempts(
+  values: readonly Readonly<SolanaSplSignedAttempt>[],
+  intent: Readonly<SolanaSplSettlementIntent>,
+): readonly Readonly<SolanaSplSignedAttempt>[] {
+  if (!Array.isArray(values)) {
+    throw new DacsError("pay-solana-spl: retained attempts must be an array");
+  }
+  const signatures = new Set<string>();
+  return Object.freeze(values.map((value, index) => {
+    const { attemptHash, ...unsigned } = value;
+    const captured = createAttempt(unsigned, index + 1, intent);
+    if (captured.attemptHash !== attemptHash) {
+      throw new DacsError("pay-solana-spl: retained attempt integrity mismatch");
+    }
+    if (signatures.has(captured.signature)) {
+      throw new DacsError("pay-solana-spl: retained signature is duplicated");
+    }
+    signatures.add(captured.signature);
+    return captured;
+  }));
+}
+
+function storedSettlementMatchesIntent(
+  settlement: Readonly<SolanaSplSettlementResult>,
+  intent: Readonly<SolanaSplSettlementIntent>,
+): boolean {
+  try {
+    return settlement.txRef.kind === "solana-instruction" &&
+      settlement.txRef.cluster === intent.cluster &&
+      requireBase58(settlement.txRef.signature, "stored signature", 64, 100).length > 0 &&
+      Number.isSafeInteger(settlement.txRef.instructionIndex) &&
+      settlement.txRef.instructionIndex >= 0 &&
+      settlement.paymentAmount.amount === intent.amount &&
+      settlement.paymentAmount.currency === intent.assetSymbol &&
+      settlement.settlementFinality.model === "commitment-level" &&
+      settlement.settlementFinality.finalityCommitmentLevel === intent.commitmentLevel &&
+      Number.isSafeInteger(settlement.settlementFinality.finalityObservedAt) &&
+      settlement.settlementFinality.finalityObservedAt >= 0 &&
+      HASH_RE.test(settlement.authenticationHash);
+  } catch {
+    return false;
+  }
+}
+
 function settlementFrom(
   intent: Readonly<SolanaSplSettlementIntent>,
   attempt: Readonly<SolanaSplSignedAttempt>,
@@ -479,21 +538,77 @@ export async function advanceSolanaSplSettlement(
   const store = input.store;
   const adapter = input.adapter;
   const now = input.now ?? Date.now;
-  const owner = requireString(input.owner, "owner");
-  const claimed = await store.claim({
-    intent,
-    owner,
-    now: now(),
-    leaseDurationMs: input.leaseDurationMs ?? DEFAULT_LEASE_MS,
-  });
+  let owner: string;
+  let leaseDurationMs: number;
+  try {
+    owner = requireString(input.owner, "owner");
+    leaseDurationMs = positiveSafeInteger(
+      input.leaseDurationMs ?? DEFAULT_LEASE_MS,
+      "leaseDurationMs",
+    );
+  } catch (error) {
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: error instanceof Error ? error.message : "solana-spl-runtime-policy-invalid",
+    };
+  }
+  const claimSettlement = store.claim.bind(store);
+  const isCurrentSettlement = store.isCurrent.bind(store);
+  const recordAttempt = store.recordAttempt.bind(store);
+  const markAttemptExpired = store.markAttemptExpired.bind(store);
+  const recordSettlement = store.recordSettlement.bind(store);
+  const runPreflight = adapter.preflight.bind(adapter);
+  const prepareSignedTransfer = adapter.prepareSignedTransfer.bind(adapter);
+  const broadcastRetained = adapter.broadcastRetained.bind(adapter);
+  const reconcileTransfer = adapter.reconcile.bind(adapter);
+  const readNow = (): number => clockValue(now());
+  let claimed: SolanaSplStoreClaim;
+  let claimNow: number;
+  try {
+    claimNow = readNow();
+    claimed = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-unavailable" };
+  }
+  if ("intent" in claimed) {
+    try {
+      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
+        return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" };
+      }
+    } catch {
+      return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" };
+    }
+  }
   if (claimed.status === "waiting") {
     return { status: "waiting", reason: "solana-spl-settlement-held" };
   }
   if (claimed.status === "settled") {
-    return { status: "settled", settlement: claimed.settlement };
+    return storedSettlementMatchesIntent(claimed.settlement, intent)
+      ? { status: "settled", settlement: claimed.settlement }
+      : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
   }
   if (claimed.status !== "acquired") {
     return { status: "failed", errorClass: "permanent", reason: claimed.reason };
+  }
+  if (claimed.lease.owner !== owner ||
+      !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
+      !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-lease-invalid" };
+  }
+  let attempts: readonly Readonly<SolanaSplSignedAttempt>[];
+  let expiredSignatures: readonly string[];
+  try {
+    attempts = captureRetainedAttempts(claimed.attempts, intent);
+    if (!Array.isArray(claimed.expiredSignatures) ||
+        new Set(claimed.expiredSignatures).size !== claimed.expiredSignatures.length ||
+        claimed.expiredSignatures.some((signature) =>
+          !attempts.some((attempt) => attempt.signature === signature))) {
+      throw new DacsError("pay-solana-spl: retained expiry set is invalid");
+    }
+    expiredSignatures = Object.freeze([...claimed.expiredSignatures]);
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-retained-state-corrupt" };
   }
   const fence: SolanaSplEffectFence = Object.freeze({
     settlementKey: intent.settlementKey,
@@ -501,12 +616,12 @@ export async function advanceSolanaSplSettlement(
     owner: claimed.lease.owner,
     generation: claimed.lease.generation,
     assertCurrent: async () => {
-      if (!await store.isCurrent({
+      if (!await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: claimed.lease.owner,
         generation: claimed.lease.generation,
-        now: now(),
+        now: readNow(),
       })) throw new DacsError("pay-solana-spl: stale effect fence");
     },
   });
@@ -516,7 +631,17 @@ export async function advanceSolanaSplSettlement(
   ): Promise<SolanaSplReconciliation> => {
     try {
       await fence.assertCurrent();
-      return await adapter.reconcile(intent, attempt, fence);
+      const result = await reconcileTransfer(intent, attempt, fence);
+      await fence.assertCurrent();
+      if ((result.disposition === "absent-valid" ||
+          result.disposition === "absent-expired") &&
+          !HASH_RE.test(result.authenticationHash)) {
+        return {
+          disposition: "indeterminate",
+          reason: "solana-spl-absence-proof-invalid",
+        };
+      }
+      return result;
     } catch {
       return { disposition: "indeterminate", reason: "solana-spl-reconciliation-unavailable" };
     }
@@ -530,14 +655,19 @@ export async function advanceSolanaSplSettlement(
       if (!settlement) {
         return { status: "failed", errorClass: "permanent", reason: "solana-spl-settled-instruction-mismatch" };
       }
-      const write = await store.recordSettlement({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        signature: attempt.signature,
-        settlement,
-      });
+      let write: SolanaSplStoreWrite;
+      try {
+        write = await recordSettlement({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          signature: attempt.signature,
+          settlement,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
+      }
       return write.status === "recorded" || write.status === "existing"
         ? { status: "settled", settlement }
         : { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
@@ -550,15 +680,19 @@ export async function advanceSolanaSplSettlement(
     return null;
   };
 
-  let latest = claimed.attempts.at(-1);
-  if (latest && !claimed.expiredSignatures.includes(latest.signature)) {
+  let latest = attempts.at(-1);
+  if (latest && !expiredSignatures.includes(latest.signature)) {
     let state = await reconcile(latest);
     const terminal = await finalize(latest, state);
     if (terminal) return terminal;
     if (state.disposition === "absent-valid") {
+      if (!HASH_RE.test(state.authenticationHash)) {
+        return { status: "indeterminate", reason: "solana-spl-absence-proof-invalid" };
+      }
       try {
         await fence.assertCurrent();
-        await adapter.broadcastRetained(latest, fence);
+        await broadcastRetained(latest, fence);
+        await fence.assertCurrent();
       } catch {
         return { status: "indeterminate", reason: "solana-spl-rebroadcast-unavailable" };
       }
@@ -575,14 +709,19 @@ export async function advanceSolanaSplSettlement(
       if (!HASH_RE.test(state.authenticationHash)) {
         return { status: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
       }
-      const marked = await store.markAttemptExpired({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        signature: latest.signature,
-        authenticationHash: state.authenticationHash,
-      });
+      let marked: SolanaSplStoreWrite;
+      try {
+        marked = await markAttemptExpired({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          signature: latest.signature,
+          authenticationHash: state.authenticationHash,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
+      }
       if (marked.status !== "recorded" && marked.status !== "existing") {
         return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
       }
@@ -593,41 +732,48 @@ export async function advanceSolanaSplSettlement(
   let preflight: Readonly<SolanaSplPreflight>;
   try {
     await fence.assertCurrent();
-    preflight = await adapter.preflight(intent, fence);
+    preflight = await runPreflight(intent, fence);
   } catch {
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
   const plan = validatePreflight(intent, preflight);
   if ("status" in plan) return plan;
 
-  const attemptNumber = claimed.attempts.length + 1;
+  const attemptNumber = attempts.length + 1;
   let attempt: Readonly<SolanaSplSignedAttempt>;
   try {
     await fence.assertCurrent();
     attempt = createAttempt(
-      await adapter.prepareSignedTransfer(plan, attemptNumber, fence),
+      await prepareSignedTransfer(plan, attemptNumber, fence),
       attemptNumber,
       intent,
     );
+    await fence.assertCurrent();
   } catch (error) {
     return {
       status: "indeterminate",
       reason: error instanceof Error ? error.message : "solana-spl-preparation-unavailable",
     };
   }
-  const retained = await store.recordAttempt({
-    settlementKey: intent.settlementKey,
-    bindingHash: intent.bindingHash,
-    owner: fence.owner,
-    generation: fence.generation,
-    attempt,
-  });
+  let retained: SolanaSplStoreWrite;
+  try {
+    retained = await recordAttempt({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      owner: fence.owner,
+      generation: fence.generation,
+      attempt,
+    });
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" };
+  }
   if (retained.status !== "recorded" && retained.status !== "existing") {
     return { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" };
   }
   try {
     await fence.assertCurrent();
-    await adapter.broadcastRetained(attempt, fence);
+    await broadcastRetained(attempt, fence);
+    await fence.assertCurrent();
   } catch {
     return { status: "indeterminate", reason: "solana-spl-broadcast-unavailable" };
   }

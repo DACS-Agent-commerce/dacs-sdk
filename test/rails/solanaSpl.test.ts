@@ -4,11 +4,13 @@ import {
   advanceSolanaSplSettlement,
   createInMemorySolanaSplSettlementStore,
   createSolanaSplSettlementIntent,
+  solanaSplSettlementKey,
   type AdvanceSolanaSplSettlementInput,
   type SolanaSplAdapter,
   type SolanaSplObservedTransfer,
   type SolanaSplPreflight,
   type SolanaSplSettlementAuthority,
+  type SolanaSplSettlementStore,
 } from "../../src/rails/solanaSpl.js";
 
 const PAYER = "2".repeat(32);
@@ -146,6 +148,11 @@ describe("createSolanaSplSettlementIntent", () => {
     ["legacy address", { payer: "not_base58_0" }],
   ])("rejects %s before adapter access", (_name, override) => {
     expect(() => createSolanaSplSettlementIntent(authority(override as never))).toThrow();
+  });
+
+  test("uses an unambiguous structured settlement-key preimage", () => {
+    expect(solanaSplSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
+      .not.toBe(solanaSplSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
   });
 });
 
@@ -358,5 +365,83 @@ describe("advanceSolanaSplSettlement", () => {
     release();
     await expect(first).resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid lease duration %s before durable or chain effects",
+    async (leaseDurationMs) => {
+      const base = createInMemorySolanaSplSettlementStore();
+      const claim = vi.fn(base.claim);
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      await expect(advanceSolanaSplSettlement(input({
+        leaseDurationMs,
+        store: { ...base, claim },
+        adapter: adapter({ prepareSignedTransfer }),
+      }))).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects corrupted retained wire bytes before reconciliation or rebroadcast", async () => {
+    let clock = 1_000;
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length === 0) return claim;
+        return {
+          ...claim,
+          attempts: claim.attempts.map((attempt) => ({
+            ...attempt,
+            signedTransactionBase64: Buffer.from("substituted-wire").toString("base64"),
+          })),
+        };
+      },
+    };
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => ({
+      disposition: "indeterminate" as const,
+      reason: "rpc-unavailable",
+    }));
+    const shared = input({
+      store,
+      adapter: adapter({ broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-retained-state-corrupt",
+    });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not rebroadcast on an unauthenticated absent-valid observation", async () => {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => {
+      reconciliations += 1;
+      return reconciliations === 1
+        ? { disposition: "indeterminate" as const, reason: "rpc-unavailable" }
+        : { disposition: "absent-valid" as const, authenticationHash: "not-a-hash" };
+    });
+    const shared = input({
+      adapter: adapter({ broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-absence-proof-invalid",
+    });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
 });
