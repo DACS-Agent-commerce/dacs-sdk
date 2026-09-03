@@ -1304,6 +1304,7 @@ async function verifyEvidence(
   seller: RoleIdentity,
   resolveKey: (claim: string) => Promise<Uint8Array | null>,
   expectedDeliveryLocator: string,
+  attestationRef: Readonly<AttestationRef>,
 ) {
   return verifySettlementEvidence(
     evidence,
@@ -1311,6 +1312,7 @@ async function verifyEvidence(
       ? {
           orchestrator: seller.claim,
           agreement: { amount: "1", currency: "USD" },
+          attestationRef,
           rail: {
             railId: RAIL.railId,
             railType: "ap2",
@@ -1321,6 +1323,8 @@ async function verifyEvidence(
         }
       : {
           orchestrator: seller.claim,
+          agreement: { amount: "1", currency: "USD" },
+          attestationRef,
           expectedAnchorLocator: expectedDeliveryLocator,
           result: { ok: true },
         },
@@ -1442,6 +1446,7 @@ async function buildAndVerifyBundles(
           seller,
           resolveKey,
           deliveryEvidence.deliverableAnchor!.locator,
+          evidence["phase"] === "pay-ap2" ? paymentRef : deliveryRef,
         )),
         authorizedSigner: seller.claim,
       }),
@@ -1705,12 +1710,14 @@ async function executeOfflineVerifierSimulation({
       seller,
       resolveKey,
       dacs4.result.deliveryEvidence.deliverableAnchor!.locator,
+      dacs4.result.paymentRef,
     ),
     verifyEvidence(
       asRecord(dacs4.result.deliveryEvidence),
       seller,
       resolveKey,
       dacs4.result.deliveryEvidence.deliverableAnchor!.locator,
+      dacs4.result.deliveryRef,
     ),
   ]);
   if (
