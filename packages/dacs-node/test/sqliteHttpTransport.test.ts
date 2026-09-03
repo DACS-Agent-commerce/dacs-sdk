@@ -1,10 +1,15 @@
+import { spawn } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   canonicalize,
@@ -67,6 +72,7 @@ async function envelope(
   sender: "buyer" | "seller",
   nonceByte: number,
   now = Date.now(),
+  label = "durable-http-test",
 ): Promise<Readonly<DacsHttpEnvelopeV1>> {
   const fromBuyer = sender === "buyer";
   return createDacsHttpEnvelopeV1({
@@ -79,7 +85,7 @@ async function envelope(
     nonce: nonce(nonceByte),
     payload: fromBuyer
       ? {
-          proposal: { jobId: JOB_ID, label: "durable-http-test" },
+          proposal: { jobId: JOB_ID, label },
           transportIdentity: { sender: BUYER, audience: SELLER },
         } as never
       : { accepted: true, responseVersion: "durable-http-test" } as never,
@@ -109,6 +115,76 @@ async function authenticate(
   });
   if (result.status !== "authenticated") throw new Error(result.reasonCode);
   return result;
+}
+
+type QuotaWriterResult = Readonly<{
+  status: "fulfilled" | "rejected";
+  result?: string;
+  reasonCode?: string;
+}>;
+
+function startQuotaWriter(input: Readonly<{
+  databasePath: string;
+  readyPath: string;
+  goPath: string;
+  resultPath: string;
+  nonceByte: number;
+  label: string;
+}>): Readonly<{ completion: Promise<QuotaWriterResult>; stop(): void }> {
+  const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+  const child = spawn(process.execPath, [
+    join(packageRoot, "../../node_modules/vitest/vitest.mjs"),
+    "run",
+    "test/fixtures/httpQuotaWriter.test.ts",
+    "--config",
+    "vitest.config.ts",
+    "--pool=forks",
+    "--maxWorkers=1",
+    "--reporter=dot",
+  ], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      DACS_HTTP_QUOTA_DATABASE: input.databasePath,
+      DACS_HTTP_QUOTA_READY: input.readyPath,
+      DACS_HTTP_QUOTA_GO: input.goPath,
+      DACS_HTTP_QUOTA_RESULT: input.resultPath,
+      DACS_HTTP_QUOTA_NONCE: String(input.nonceByte),
+      DACS_HTTP_QUOTA_LABEL: input.label,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const completion = new Promise<QuotaWriterResult>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) {
+        resolve(JSON.parse(readFileSync(input.resultPath, "utf8")) as QuotaWriterResult);
+      } else {
+        reject(new Error(
+          `HTTP quota writer failed: code=${String(code)} signal=${String(signal)} ${stderr}`,
+        ));
+      }
+    });
+  });
+  return Object.freeze({
+    completion,
+    stop: () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    },
+  });
+}
+
+async function waitForFiles(paths: readonly string[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!paths.every((path) => existsSync(path))) {
+    if (Date.now() >= deadline) throw new Error("HTTP quota writers did not reach their barrier");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 describe("SQLite authenticated HTTP inbox/outbox", () => {
@@ -490,7 +566,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     expect(await store.load(signed.envelopeId)).toEqual(before);
   });
 
-  it("extends acknowledgement retention from receipt time and preserves it across restart", async () => {
+  it("keeps equivalent acknowledgement replay O(1) across receipt times and restart", async () => {
     const databasePath = join(root(), "buyer.sqlite");
     const configuredRetentionMs = DACS_HTTP_MINIMUM_RETENTION_MS + 60_000;
     let database = await open(databasePath, BUYER, "buyer");
@@ -557,11 +633,11 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       envelopeHash: put.record.envelopeHash,
       acknowledgement: replayedAcknowledgement,
     })).toMatchObject({
-      status: "recorded",
+      status: "existing",
       record: {
         acknowledgementRetentionMs: configuredRetentionMs,
-        retainUntil: replayedReceivedAt + configuredRetentionMs,
-        revision: 3,
+        retainUntil,
+        revision: 2,
       },
     });
     expect(await store.acknowledge({
@@ -572,13 +648,13 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       status: "existing",
       record: {
         acknowledgementRetentionMs: configuredRetentionMs,
-        retainUntil: replayedReceivedAt + configuredRetentionMs,
-        revision: 3,
+        retainUntil,
+        revision: 2,
       },
     });
   });
 
-  it("upgrades acknowledgement retention under a longer option and keeps it after a shorter restart", async () => {
+  it("requires an explicit job transition to extend acknowledgement retention", async () => {
     const databasePath = join(root(), "buyer.sqlite");
     const longerRetentionMs = DACS_HTTP_MINIMUM_RETENTION_MS + 120_000;
     let database = await open(databasePath, BUYER, "buyer");
@@ -626,13 +702,17 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       envelopeHash: put.record.envelopeHash,
       acknowledgement,
     })).toMatchObject({
-      status: "recorded",
+      status: "existing",
       record: {
-        acknowledgementRetentionMs: longerRetentionMs,
-        retainUntil: receivedAt + longerRetentionMs,
-        revision: 3,
+        acknowledgementRetentionMs: DACS_HTTP_MINIMUM_RETENTION_MS,
+        retainUntil: receivedAt + DACS_HTTP_MINIMUM_RETENTION_MS,
+        revision: 2,
       },
     });
+    expect(await store.extendRetention({
+      jobId: JOB_ID,
+      retainUntil: receivedAt + longerRetentionMs,
+    })).toEqual({ status: "extended", count: 1 });
 
     database.checkpoint();
     close(database);
@@ -645,7 +725,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     })).toMatchObject({
       status: "existing",
       record: {
-        acknowledgementRetentionMs: longerRetentionMs,
+        acknowledgementRetentionMs: DACS_HTTP_MINIMUM_RETENTION_MS,
         retainUntil: receivedAt + longerRetentionMs,
         revision: 3,
       },
@@ -948,8 +1028,8 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     const database = await open(databasePath);
     const store = database.createHttpInboxStore();
     const now = await store.readTime();
-    const first = await envelope("buyer", 6, now);
-    const second = await envelope("buyer", 7, now);
+    const first = await envelope("buyer", 6, now, "pagination-first");
+    const second = await envelope("buyer", 7, now, "pagination-second");
     const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
     for (const signed of [first, second]) {
       await store.reserve({
@@ -978,6 +1058,497 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     });
   });
 
+  it("collapses fresh-nonce semantic replay without consuming another row", async () => {
+    const database = await open(join(root(), "seller.sqlite"));
+    const store = database.createHttpInboxStore();
+    const now = await store.readTime();
+    const first = await envelope("buyer", 61, now, "same-semantic-action");
+    const replay = await envelope("buyer", 62, now, "same-semantic-action");
+    expect(first.envelopeId).not.toBe(replay.envelopeId);
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    const created = await store.reserve({
+      authenticated: await authenticate(first, SELLER, now),
+      retainUntil,
+    });
+    expect(created).toMatchObject({ status: "reserved" });
+    const before = await store.diagnostics();
+    const repeated = await store.reserve({
+      authenticated: await authenticate(replay, SELLER, now),
+      retainUntil,
+    });
+    expect(repeated).toMatchObject({
+      status: "pending",
+      replay: "semantic",
+      receivedEnvelopeId: replay.envelopeId,
+      record: { authenticated: { envelope: { envelopeId: first.envelopeId } } },
+    });
+    expect(await store.diagnostics()).toMatchObject({
+      global: {
+        retainedRows: before.global.retainedRows,
+        retainedBytes: before.global.retainedBytes,
+        reservedRows: before.global.reservedRows,
+        reservedBytes: before.global.reservedBytes,
+      },
+      rejectedAdmissions: 0,
+    });
+  });
+
+  it("durably rejects quota overflow and adopts the bound policy after restart", async () => {
+    const databasePath = join(root(), "seller.sqlite");
+    let database = await open(databasePath);
+    let store = database.createHttpInboxStore({
+      limits: { global: { maxRows: 3, maxBytes: 10_000_000 } },
+    });
+    const now = await store.readTime();
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    const first = await envelope("buyer", 63, now, "quota-first");
+    const firstAuthentication = await authenticate(first, SELLER, now);
+    await store.reserve({
+      authenticated: firstAuthentication,
+      retainUntil,
+    });
+    const second = await envelope("buyer", 64, now, "quota-second");
+    await expect(store.reserve({
+      authenticated: await authenticate(second, SELLER, now),
+      retainUntil,
+    })).rejects.toMatchObject({ reasonCode: "http-store-quota-exceeded" });
+    expect(await store.diagnostics()).toMatchObject({
+      pressure: "full",
+      global: { retainedRows: 2, reservedRows: 1, maxRows: 3 },
+      rejectedAdmissions: 1,
+      lastRejection: { dimension: "global", dimensionKey: "all" },
+    });
+    await expect(store.recordDisposition({
+      sender: BUYER,
+      audience: SELLER,
+      envelopeId: first.envelopeId,
+      authenticationHash: firstAuthentication.authenticationHash,
+      disposition: "accepted",
+    })).resolves.toMatchObject({ status: "recorded", record: { revision: 2 } });
+    expect(await store.diagnostics()).toMatchObject({
+      global: { retainedRows: 3, reservedRows: 0, maxRows: 3 },
+    });
+
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath);
+    store = database.createHttpInboxStore();
+    expect(await store.diagnostics()).toMatchObject({
+      pressure: "full",
+      global: { retainedRows: 3, reservedRows: 0, maxRows: 3 },
+      rejectedAdmissions: 1,
+    });
+    expect(() => database.createHttpOutboxStore({
+      limits: { global: { maxRows: 4, maxBytes: 10_000_000 } },
+    })).toThrow(expect.objectContaining({ reasonCode: "http-store-policy-mismatch" }));
+  });
+
+  it("enforces peer, job, and message-type quotas independently", async () => {
+    const cases = [
+      {
+        name: "peer",
+        limits: { perPeer: { maxRows: 3, maxBytes: 10_000_000 } },
+      },
+      {
+        name: "job",
+        limits: { perJob: { maxRows: 3, maxBytes: 10_000_000 } },
+      },
+      {
+        name: "message-type",
+        limits: { perMessageType: { maxRows: 3, maxBytes: 10_000_000 } },
+      },
+    ] as const;
+    for (const [index, item] of cases.entries()) {
+      const database = await open(join(root(), `${item.name}.sqlite`));
+      const store = database.createHttpInboxStore({ limits: item.limits });
+      const now = await store.readTime();
+      const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+      for (let message = 0; message < 2; message += 1) {
+        const signed = await envelope(
+          "buyer",
+          90 + (index * 2) + message,
+          now,
+          `${item.name}-${message}`,
+        );
+        const operation = store.reserve({
+          authenticated: await authenticate(signed, SELLER, now),
+          retainUntil,
+        });
+        if (message === 0) await expect(operation).resolves.toMatchObject({ status: "reserved" });
+        else await expect(operation).rejects.toMatchObject({
+          reasonCode: "http-store-quota-exceeded",
+        });
+      }
+      expect(await store.diagnostics()).toMatchObject({
+        rejectedAdmissions: 1,
+        lastRejection: { dimension: item.name },
+      });
+    }
+  });
+
+  it("enforces canonical-byte quotas before allocating transport state", async () => {
+    const database = await open(join(root(), "bytes.sqlite"));
+    const store = database.createHttpInboxStore({
+      limits: { global: { maxRows: 100, maxBytes: 1 } },
+    });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 108, now, "byte-pressure");
+    await expect(store.reserve({
+      authenticated: await authenticate(signed, SELLER, now),
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    })).rejects.toMatchObject({ reasonCode: "http-store-quota-exceeded" });
+    expect(await store.diagnostics()).toMatchObject({
+      global: {
+        retainedRows: 0,
+        retainedBytes: 0,
+        reservedRows: 0,
+        reservedBytes: 0,
+        maxBytes: 1,
+      },
+      rejectedAdmissions: 1,
+      lastRejection: { dimension: "global" },
+    });
+  });
+
+  it("reserves exact byte headroom for a terminal disposition", async () => {
+    const baseline = await open(join(root(), "baseline.sqlite"));
+    const baselineStore = baseline.createHttpInboxStore();
+    const now = await baselineStore.readTime();
+    const signed = await envelope("buyer", 109, now, "byte-headroom");
+    const authenticated = await authenticate(signed, SELLER, now);
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    await baselineStore.reserve({ authenticated, retainUntil });
+    const baselineUsage = (await baselineStore.diagnostics()).global;
+    const exactMaximum = baselineUsage.retainedBytes + baselineUsage.reservedBytes;
+
+    const constrained = await open(join(root(), "constrained.sqlite"));
+    const store = constrained.createHttpInboxStore({
+      limits: { global: { maxRows: 3, maxBytes: exactMaximum } },
+    });
+    await expect(store.reserve({ authenticated, retainUntil })).resolves.toMatchObject({
+      status: "reserved",
+    });
+    await expect(store.recordDisposition({
+      sender: BUYER,
+      audience: SELLER,
+      envelopeId: signed.envelopeId,
+      authenticationHash: authenticated.authenticationHash,
+      disposition: "accepted",
+    })).resolves.toMatchObject({ status: "recorded" });
+    expect(await store.diagnostics()).toMatchObject({
+      global: {
+        retainedRows: 3,
+        reservedRows: 0,
+        reservedBytes: 0,
+        maxRows: 3,
+        maxBytes: exactMaximum,
+      },
+    });
+  });
+
+  it("keeps quota admission atomic across contending processes", async () => {
+    const directory = root();
+    const databasePath = join(directory, "seller.sqlite");
+    const database = await open(databasePath);
+    const limits = { global: { maxRows: 3, maxBytes: 10_000_000 } } as const;
+    database.createHttpInboxStore({ limits });
+    database.checkpoint();
+    close(database);
+    const goPath = join(directory, "go");
+    const writers = [
+      startQuotaWriter({
+        databasePath,
+        readyPath: join(directory, "ready-a"),
+        goPath,
+        resultPath: join(directory, "result-a.json"),
+        nonceByte: 111,
+        label: "contended-first",
+      }),
+      startQuotaWriter({
+        databasePath,
+        readyPath: join(directory, "ready-b"),
+        goPath,
+        resultPath: join(directory, "result-b.json"),
+        nonceByte: 112,
+        label: "contended-second",
+      }),
+    ];
+    let results: QuotaWriterResult[];
+    try {
+      await waitForFiles([
+        join(directory, "ready-a"),
+        join(directory, "ready-b"),
+      ], 15_000);
+      writeFileSync(goPath, "go", { encoding: "utf8", flag: "wx" });
+      results = await Promise.all(writers.map((writer) => writer.completion));
+    } finally {
+      for (const writer of writers) writer.stop();
+    }
+    expect(results!.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(results!.find((result) => result.status === "rejected")).toMatchObject({
+      reasonCode: "http-store-quota-exceeded",
+    });
+    const reopened = await open(databasePath);
+    const store = reopened.createHttpInboxStore();
+    expect(await store.diagnostics()).toMatchObject({
+      global: { retainedRows: 2, reservedRows: 1 },
+      rejectedAdmissions: 1,
+    });
+  }, 30_000);
+
+  it("reserves the final revision for ACK or operator action", async () => {
+    const database = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const store = database.createHttpOutboxStore({
+      limits: { maxRevisionsPerMessage: 3 },
+    });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 114, now, "revision-headroom");
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const claim = await store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "revision-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected outbox lease");
+    await expect(store.recordSendFailure({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      lease: claim.lease,
+      reasonCode: "response-ambiguous",
+    })).rejects.toMatchObject({ reasonCode: "http-store-revision-limit" });
+    await expect(store.requireOperatorAction({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      lease: claim.lease,
+      reasonCode: "revision-capacity-exhausted",
+    })).resolves.toMatchObject({
+      status: "recorded",
+      record: { state: "operator-action", revision: 3 },
+    });
+    expect(await store.diagnostics()).toMatchObject({
+      operatorActionRecords: 1,
+      global: { reservedRows: 0, reservedBytes: 0 },
+      rejectedAdmissions: 1,
+      lastRejection: { dimension: "revision" },
+    });
+  });
+
+  it("bounds lease-owner data before it can consume retained quota", async () => {
+    const database = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 115, now, "bounded-lease-owner");
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    await expect(store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "x".repeat(257),
+      leaseDurationMs: 10_000,
+    })).resolves.toEqual({ status: "stale" });
+    await expect(store.load(signed.envelopeId)).resolves.toMatchObject({
+      state: "pending",
+      revision: 1,
+    });
+  });
+
+  it("translates SQLite disk exhaustion into a stable fail-closed result", async () => {
+    const database = await open(join(root(), "seller.sqlite"));
+    const store = database.createHttpInboxStore();
+    const connection = (database as unknown as {
+      database: BetterSqlite3.Database;
+    }).database;
+    const pageCount = connection.pragma("page_count", { simple: true }) as number;
+    connection.pragma(`max_page_count = ${pageCount}`);
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 113, now, "x".repeat(200_000));
+    await expect(store.reserve({
+      authenticated: await authenticate(signed, SELLER, now),
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    })).rejects.toMatchObject({ reasonCode: "http-store-disk-full" });
+    expect(await store.diagnostics()).toMatchObject({
+      global: { retainedRows: 0, retainedBytes: 0, reservedRows: 0, reservedBytes: 0 },
+      rejectedAdmissions: 1,
+      lastRejection: { dimension: "disk", dimensionKey: "database" },
+    });
+  });
+
+  it("purges only elapsed terminal records in bounded crash-resumable pages", async () => {
+    const databasePath = join(root(), "seller.sqlite");
+    let database = await open(databasePath);
+    let store = database.createHttpInboxStore({ limits: { purgeBatchSize: 1 } });
+    const now = await store.readTime();
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    const signed: Readonly<DacsHttpEnvelopeV1>[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const message = await envelope("buyer", 70 + index, now, `purge-${index}`);
+      signed.push(message);
+      const authenticated = await authenticate(message, SELLER, now);
+      await store.reserve({ authenticated, retainUntil });
+      await store.recordDisposition({
+        sender: BUYER,
+        audience: SELLER,
+        envelopeId: message.envelopeId,
+        authenticationHash: authenticated.authenticationHash,
+        disposition: "accepted",
+      });
+    }
+    expect(await store.purge()).toMatchObject({
+      examined: 1,
+      purgedRecords: 0,
+      nextCursor: expect.any(String),
+    });
+    advanceStoreClock(databasePath, retainUntil + 1);
+    const firstPage = await store.purge();
+    database.checkpoint();
+    close(database);
+    database = await open(databasePath);
+    store = database.createHttpInboxStore();
+    const pages = [firstPage, await store.purge(), await store.purge()];
+    expect(pages.map((page) => page.purgedRecords)).toEqual([1, 1, 1]);
+    expect((await store.purge()).purgedRecords).toBe(0);
+    for (const message of signed) {
+      await expect(store.load({
+        sender: BUYER,
+        audience: SELLER,
+        envelopeId: message.envelopeId,
+      })).resolves.toBeUndefined();
+    }
+    expect(await store.diagnostics()).toMatchObject({
+      global: { retainedRows: 0, retainedBytes: 0, reservedRows: 0, reservedBytes: 0 },
+      purgedRecords: 3,
+      purgedRows: 9,
+    });
+  });
+
+  it("bounds expiry work and never purges operator-action records", async () => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore({
+      limits: { expiryBatchSize: 1, purgeBatchSize: 1 },
+    });
+    const now = await store.readTime();
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    for (let index = 0; index < 3; index += 1) {
+      await store.put({
+        envelope: await envelope("buyer", 80 + index, now, `expiry-${index}`),
+        retainUntil,
+      });
+    }
+    advanceStoreClock(databasePath, now + 300_000);
+    await store.listRunnable({ limit: 10 });
+    expect(await store.diagnostics()).toMatchObject({ operatorActionRecords: 1 });
+    await store.listRunnable({ limit: 10 });
+    expect(await store.diagnostics()).toMatchObject({ operatorActionRecords: 2 });
+    await store.listRunnable({ limit: 10 });
+    expect(await store.diagnostics()).toMatchObject({ operatorActionRecords: 3 });
+    advanceStoreClock(databasePath, retainUntil + 1);
+    expect(await store.purge()).toMatchObject({ purgedRecords: 0 });
+    expect(await store.diagnostics()).toMatchObject({
+      operatorActionRecords: 3,
+      global: { retainedRows: 9, reservedRows: 0 },
+    });
+  });
+
+  it("uses bounded physical indexes for lifecycle scans", async () => {
+    const database = await open(join(root(), "seller.sqlite"));
+    const connection = (database as unknown as {
+      database: BetterSqlite3.Database;
+    }).database;
+    const detail = (sql: string, ...parameters: unknown[]): string =>
+      (connection.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters) as {
+        detail: string;
+      }[]).map((row) => row.detail).join("\n");
+    expect(detail(`
+      SELECT * FROM dacs_http_inbox
+      WHERE (envelope_id, sender, audience) > (?, ?, ?) AND state = 'disposed'
+      ORDER BY envelope_id, sender, audience LIMIT ?
+    `, "", "", "", 64)).toContain("dacs_http_inbox_page_idx");
+    expect(detail(`
+      SELECT * FROM dacs_http_outbox
+      WHERE envelope_id > ? AND state = 'acknowledged'
+      ORDER BY envelope_id LIMIT ?
+    `, "", 64)).toContain("dacs_http_outbox_page_idx");
+    expect(detail(`
+      SELECT * FROM dacs_http_outbox INDEXED BY dacs_http_outbox_active_scan_idx
+      WHERE envelope_id > ? AND state IN ('pending', 'sending')
+      ORDER BY envelope_id LIMIT ?
+    `, "", 64)).toContain("dacs_http_outbox_active_scan_idx");
+  });
+
+  it("rejects proxied lifecycle inputs without invoking caller getters", async () => {
+    const database = await open(join(root(), "seller.sqlite"));
+    const store = database.createHttpInboxStore();
+    let invoked = false;
+    const hostile = new Proxy({ limit: 1 }, {
+      get() {
+        invoked = true;
+        throw new Error("caller code must not run");
+      },
+    });
+    await expect(store.list(hostile)).rejects.toMatchObject({
+      reasonCode: "http-store-input-malformed",
+    });
+    expect(invoked).toBe(false);
+  });
+
+  it("retains and rejects own __proto__ members at every captured depth", async () => {
+    const database = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const store = database.createHttpOutboxStore();
+    const topLevel = Object.create(null) as Record<string, unknown>;
+    Object.defineProperties(topLevel, {
+      limit: { value: 1, enumerable: true },
+    });
+    Object.defineProperty(topLevel, "__proto__", { value: null, enumerable: true });
+    await expect(store.list(topLevel as never)).rejects.toMatchObject({
+      reasonCode: "http-store-input-malformed",
+    });
+
+    const nestedLease = Object.create(null) as Record<string, unknown>;
+    Object.defineProperties(nestedLease, {
+      owner: { value: "worker", enumerable: true },
+      generation: { value: 1, enumerable: true },
+      expiresAt: { value: 1, enumerable: true },
+    });
+    Object.defineProperty(nestedLease, "__proto__", { value: null, enumerable: true });
+    await expect(store.isCurrent({
+      envelopeId: "a".repeat(64),
+      envelopeHash: "b".repeat(64),
+      lease: nestedLease as never,
+    })).resolves.toBe(false);
+  });
+
+  it("fails closed when durable usage accounting is altered", async () => {
+    const databasePath = join(root(), "seller.sqlite");
+    const database = await open(databasePath);
+    const store = database.createHttpInboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 110, now, "usage-integrity");
+    await store.reserve({
+      authenticated: await authenticate(signed, SELLER, now),
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS,
+    });
+    database.checkpoint();
+    close(database);
+    const raw = new BetterSqlite3(databasePath);
+    raw.prepare(`
+      UPDATE dacs_http_usage SET retained_rows = retained_rows + 1
+      WHERE dimension = 'global' AND dimension_key = 'all'
+    `).run();
+    raw.close();
+    await expect(open(databasePath)).rejects.toMatchObject({
+      reasonCode: "http-store-usage-corrupt",
+    });
+  });
+
   it("backs up and migrates an authenticated v5 database before adding transport state", async () => {
     const directory = root();
     const databasePath = join(directory, "legacy-v5.sqlite");
@@ -986,12 +1557,15 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     close(database);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;
       DROP TABLE dacs_http_outbox;
       DROP TABLE dacs_http_clock;
-      DELETE FROM dacs_migrations WHERE version = 6;
+      DELETE FROM dacs_migrations WHERE version >= 6;
       UPDATE dacs_store_metadata SET schema_version = 5 WHERE singleton = 1;
       PRAGMA user_version = 5;
     `);
@@ -1003,5 +1577,55 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       .toHaveLength(1);
     expect(migrated.createHttpInboxStore()).toBeDefined();
     expect(migrated.createHttpOutboxStore()).toBeDefined();
+  });
+
+  it("backs up and migrates an authenticated v6 transport database", async () => {
+    const directory = root();
+    const databasePath = join(directory, "legacy-v6.sqlite");
+    let database = await open(databasePath);
+    let store = database.createHttpInboxStore();
+    const now = await store.readTime();
+    const original = await envelope("buyer", 120, now, "legacy-v6-semantic");
+    await store.reserve({
+      authenticated: await authenticate(original, SELLER, now),
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    database.checkpoint();
+    close(database);
+    const raw = new BetterSqlite3(databasePath);
+    raw.exec(`
+      DROP INDEX dacs_http_inbox_semantic_idx;
+      DROP INDEX dacs_http_outbox_semantic_idx;
+      DROP INDEX dacs_http_inbox_retention_idx;
+      DROP INDEX dacs_http_outbox_retention_idx;
+      DROP INDEX dacs_http_outbox_active_scan_idx;
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
+      ALTER TABLE dacs_http_inbox DROP COLUMN semantic_key;
+      ALTER TABLE dacs_http_outbox DROP COLUMN semantic_key;
+      DELETE FROM dacs_migrations WHERE version = 7;
+      UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
+      PRAGMA user_version = 6;
+    `);
+    raw.close();
+
+    database = await open(databasePath);
+    expect(database.diagnostics().schemaVersion).toBe(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    expect(readdirSync(directory).filter((name) => name.includes(".backup-v6-")))
+      .toHaveLength(1);
+    store = database.createHttpInboxStore();
+    expect(await store.diagnostics()).toMatchObject({
+      global: { retainedRows: 2, reservedRows: 1 },
+      rejectedAdmissions: 0,
+    });
+    const replay = await envelope("buyer", 121, now, "legacy-v6-semantic");
+    await expect(store.reserve({
+      authenticated: await authenticate(replay, SELLER, now),
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    })).resolves.toMatchObject({
+      status: "pending",
+      record: { authenticated: { envelope: { envelopeId: original.envelopeId } } },
+    });
   });
 });
