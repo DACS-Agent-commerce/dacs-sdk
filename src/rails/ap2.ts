@@ -441,6 +441,20 @@ function requireString(value: string, label: string): string {
   return value;
 }
 
+function requirePositiveSafeInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new DacsError(`pay-ap2: ${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function requireClockValue(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new DacsError("pay-ap2: clock must return a non-negative safe integer");
+  }
+  return value;
+}
+
 function intentFrom(input: {
   jobId: string;
   phaseIndex: number;
@@ -496,6 +510,25 @@ function snapshotArtifact<T>(value: Readonly<T>, label: string): Readonly<T> {
   }
 }
 
+function settlementMatchesIntent(
+  settlement: Readonly<Ap2CapturedSettlement>,
+  intent: Readonly<Ap2SettlementIntent>,
+): boolean {
+  try {
+    const amount = assertPositiveAmount(settlement.amount);
+    return typeof settlement.providerRef === "string" && settlement.providerRef.length > 0 &&
+      settlement.mandateId === intent.mandateId &&
+      settlement.protocolVersion === intent.protocolVersion &&
+      settlement.payee === intent.payee &&
+      amount === intent.amount &&
+      settlement.currency === intent.currency &&
+      validAttestation(settlement.receiptAttestation) &&
+      Number.isSafeInteger(settlement.capturedAt) && settlement.capturedAt >= 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Restart-safe AP2 settlement. Ambiguous submission never authorizes a fresh
  * charge: recovery reuses the AP2-6 key, while the provider must deduplicate it.
@@ -507,17 +540,41 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
   const verifier = input.verifier;
   const store = input.store;
   const now = input.now ?? Date.now;
-  const leaseDurationMs = input.leaseDurationMs ?? DEFAULT_LEASE_MS;
+  let leaseDurationMs: number;
+  let owner: string;
+  try {
+    leaseDurationMs = requirePositiveSafeInteger(
+      input.leaseDurationMs ?? DEFAULT_LEASE_MS,
+      "leaseDurationMs",
+    );
+    owner = requireString(input.owner, "owner");
+  } catch (error) {
+    return {
+      status: "failed",
+      reason: error instanceof Error ? error.message : "ap2-runtime-policy-invalid",
+    };
+  }
+  const verifyCheckoutMandate = verifier.verifyCheckoutMandate.bind(verifier);
+  const verifyPaymentMandate = verifier.verifyPaymentMandate.bind(verifier);
+  const submitProviderPayment = provider.submit.bind(provider);
+  const readAttestedStatus = provider.readAttestedStatus.bind(provider);
+  const claimBinding = store.claim.bind(store);
+  const isCurrentBinding = store.isCurrent.bind(store);
+  const recordProviderRef = store.recordProviderRef.bind(store);
+  const recordSettlement = store.recordSettlement.bind(store);
+  const recordFailure = store.recordFailure.bind(store);
+  const capabilities = Object.freeze({ ...provider.capabilities });
+  const readNow = (): number => requireClockValue(now());
   const authority = Object.freeze({
     jobId: input.jobId,
     phaseIndex: input.phaseIndex,
     agreementHash: input.agreementHash,
     protocolVersion: input.protocolVersion,
     expected: Object.freeze({ ...input.expected }),
-    owner: input.owner,
+    owner,
   });
 
-  if (ap2RegistrationEligibility(provider.capabilities) !== "pass") {
+  if (ap2RegistrationEligibility(capabilities) !== "pass") {
     return { status: "failed", reason: "ap2-provider-registration-ineligible" };
   }
 
@@ -529,8 +586,8 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     checkoutArtifact = snapshotArtifact(input.checkoutMandate, "CheckoutMandate");
     paymentArtifact = snapshotArtifact(input.paymentMandate, "PaymentMandate");
     [checkout, payment] = await Promise.all([
-      verifier.verifyCheckoutMandate(checkoutArtifact),
-      verifier.verifyPaymentMandate(paymentArtifact),
+      verifyCheckoutMandate(checkoutArtifact),
+      verifyPaymentMandate(paymentArtifact),
     ]);
   } catch {
     return { status: "indeterminate", reason: "ap2-mandate-verification-unavailable" };
@@ -580,23 +637,46 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     };
   }
 
-  const claimed = await store.claim({
-    intent,
-    owner: requireString(authority.owner, "owner"),
-    now: now(),
-    leaseDurationMs,
-  });
+  let claimed: Ap2BindingClaim;
+  let claimNow: number;
+  try {
+    claimNow = readNow();
+    claimed = await claimBinding({ intent, owner: authority.owner, now: claimNow, leaseDurationMs });
+  } catch {
+    return { status: "indeterminate", reason: "ap2-binding-store-unavailable" };
+  }
+  if ("intent" in claimed) {
+    try {
+      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
+        return { status: "failed", reason: "ap2-binding-store-intent-mismatch" };
+      }
+    } catch {
+      return { status: "failed", reason: "ap2-binding-store-intent-invalid" };
+    }
+  }
   if (claimed.status === "waiting") {
     return { status: "waiting", reason: "ap2-binding-held" };
   }
   if (claimed.status === "settled") {
-    return { status: "settled", settlement: claimed.settlement };
+    try {
+      const settlement = snapshotArtifact(claimed.settlement, "stored settlement");
+      return settlementMatchesIntent(settlement, intent)
+        ? { status: "settled", settlement }
+        : { status: "failed", reason: "ap2-binding-store-settlement-mismatch" };
+    } catch {
+      return { status: "failed", reason: "ap2-binding-store-settlement-invalid" };
+    }
   }
   if (claimed.status === "failed") {
     return { status: "failed", reason: claimed.reason };
   }
   if (claimed.status !== "acquired") {
     return { status: "failed", reason: claimed.reason };
+  }
+  if (claimed.lease.owner !== authority.owner ||
+      !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
+      !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
+    return { status: "failed", reason: "ap2-binding-store-lease-invalid" };
   }
 
   const fence: Ap2EffectFence = Object.freeze({
@@ -606,12 +686,12 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     generation: claimed.lease.generation,
     idempotencyKey: intent.idempotencyKey,
     assertCurrent: async () => {
-      if (!await store.isCurrent({
+      if (!await isCurrentBinding({
         transactionId: intent.transactionId,
         bindingHash: intent.bindingHash,
         owner: claimed.lease.owner,
         generation: claimed.lease.generation,
-        now: now(),
+        now: readNow(),
       })) {
         throw new DacsError("pay-ap2: stale effect fence");
       }
@@ -627,7 +707,7 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     }
     let submitted: Ap2ProviderSubmission;
     try {
-      submitted = await provider.submit({
+      submitted = await submitProviderPayment({
         intent,
         checkoutMandate: checkoutArtifact,
         paymentMandate: paymentArtifact,
@@ -641,29 +721,48 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     } catch {
       return { status: "indeterminate", reason: "ap2-provider-submission-unavailable" };
     }
+    try {
+      await fence.assertCurrent();
+    } catch {
+      return { status: "indeterminate", reason: "ap2-effect-fence-stale" };
+    }
     if (submitted.disposition === "indeterminate") {
       return { status: "indeterminate", reason: submitted.reason };
     }
     if (submitted.disposition === "declined") {
-      const write = await store.recordFailure({
-        transactionId: intent.transactionId,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        reason: submitted.reason,
-      });
+      let write: Ap2BindingWrite;
+      try {
+        write = await recordFailure({
+          transactionId: intent.transactionId,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          reason: submitted.reason,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "ap2-failure-persistence-uncertain" };
+      }
       return write.status === "recorded" || write.status === "existing"
         ? { status: "failed", reason: submitted.reason }
         : { status: "indeterminate", reason: "ap2-failure-persistence-uncertain" };
     }
-    providerRef = requireString(submitted.providerRef, "providerRef");
-    const persisted = await store.recordProviderRef({
-      transactionId: intent.transactionId,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      providerRef,
-    });
+    try {
+      providerRef = requireString(submitted.providerRef, "providerRef");
+    } catch {
+      return { status: "indeterminate", reason: "ap2-provider-reference-invalid" };
+    }
+    let persisted: Ap2BindingWrite;
+    try {
+      persisted = await recordProviderRef({
+        transactionId: intent.transactionId,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        providerRef,
+      });
+    } catch {
+      return { status: "indeterminate", reason: "ap2-provider-reference-persistence-uncertain" };
+    }
     if (persisted.status !== "recorded" && persisted.status !== "existing") {
       return { status: "indeterminate", reason: "ap2-provider-reference-persistence-uncertain" };
     }
@@ -676,9 +775,14 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
   }
   let status: Ap2AttestedProviderStatus;
   try {
-    status = await provider.readAttestedStatus({ intent, providerRef, fence });
+    status = await readAttestedStatus({ intent, providerRef, fence });
   } catch {
     return { status: "indeterminate", reason: "ap2-attested-status-unavailable" };
+  }
+  try {
+    await fence.assertCurrent();
+  } catch {
+    return { status: "indeterminate", reason: "ap2-effect-fence-stale" };
   }
   if (status.disposition === "pending") {
     return { status: "waiting", reason: status.reason };
@@ -687,13 +791,18 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     return { status: "indeterminate", reason: status.reason };
   }
   if (status.disposition === "terminal-not-captured") {
-    const write = await store.recordFailure({
-      transactionId: intent.transactionId,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      reason: status.reason,
-    });
+    let write: Ap2BindingWrite;
+    try {
+      write = await recordFailure({
+        transactionId: intent.transactionId,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        reason: status.reason,
+      });
+    } catch {
+      return { status: "indeterminate", reason: "ap2-failure-persistence-uncertain" };
+    }
     return write.status === "recorded" || write.status === "existing"
       ? { status: "failed", reason: status.reason }
       : { status: "indeterminate", reason: "ap2-failure-persistence-uncertain" };
@@ -710,6 +819,7 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     status.payee !== intent.payee ||
     statusAmount !== intent.amount ||
     status.currency !== intent.currency ||
+    status.metadata === null || typeof status.metadata !== "object" ||
     status.metadata.dacs_job_id !== intent.jobId ||
     status.metadata.dacs_agreement_hash !== intent.agreementHash ||
     !validAttestation(status.receiptAttestation) ||
@@ -729,13 +839,18 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     currency: intent.currency,
     capturedAt: status.capturedAt,
   });
-  const recorded = await store.recordSettlement({
-    transactionId: intent.transactionId,
-    bindingHash: intent.bindingHash,
-    owner: fence.owner,
-    generation: fence.generation,
-    settlement,
-  });
+  let recorded: Ap2BindingWrite;
+  try {
+    recorded = await recordSettlement({
+      transactionId: intent.transactionId,
+      bindingHash: intent.bindingHash,
+      owner: fence.owner,
+      generation: fence.generation,
+      settlement,
+    });
+  } catch {
+    return { status: "indeterminate", reason: "ap2-settlement-persistence-uncertain" };
+  }
   return recorded.status === "recorded" || recorded.status === "existing"
     ? { status: "settled", settlement }
     : { status: "indeterminate", reason: "ap2-settlement-persistence-uncertain" };
