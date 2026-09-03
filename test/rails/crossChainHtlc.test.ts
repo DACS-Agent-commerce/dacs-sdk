@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   advanceCrossChainHtlc,
+  crossChainHtlcSettlementKey,
   createCrossChainHtlcIntent,
   createInMemoryCrossChainHtlcStore,
   deriveHtlcPreimage,
@@ -270,6 +271,36 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     expect(result).toMatchObject({ status: "failed", errorClass: "permanent" });
     expect(h.prepareAction).not.toHaveBeenCalled();
   });
+
+  test("uses an unambiguous structured settlement-key preimage", () => {
+    expect(crossChainHtlcSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
+      .not.toBe(crossChainHtlcSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
+  });
+
+  test("snapshots authority and salt before invoking hashlock callbacks", () => {
+    const mutableAuthority = authority();
+    const mutableSalt = Uint8Array.from(SALT);
+    const baseline = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    let calls = 0;
+    const mutatingHashlocks = {
+      deriveHashlock(args: { chainId: number; preimage: Uint8Array }) {
+        calls += 1;
+        if (calls === 1) {
+          mutableAuthority.payeeSourceAddress = "substituted-payee";
+          mutableSalt[0] = 9;
+        }
+        return hashlocks.deriveHashlock(args);
+      },
+    };
+    const captured = createCrossChainHtlcIntent(
+      mutableAuthority,
+      mutableSalt,
+      mutatingHashlocks,
+    );
+    expect(captured.intent.payeeSourceAddress).toBe("payee-source");
+    expect(captured.intent.buyerSaltHash).toBe(baseline.intent.buyerSaltHash);
+    expect(captured.intent.preimageHash).toBe(baseline.intent.preimageHash);
+  });
 });
 
 describe("advanceCrossChainHtlc", () => {
@@ -470,5 +501,92 @@ describe("advanceCrossChainHtlc", () => {
     release();
     await expect(first).resolves.toMatchObject({ status: "waiting" });
     expect(h.adapter.prepareAction).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid lease duration %s before durable or chain effects",
+    async (leaseDurationMs) => {
+      const base = createInMemoryCrossChainHtlcStore();
+      const claim = vi.fn(base.claim);
+      const h = harness();
+      await expect(advanceCrossChainHtlc(runner({
+        leaseDurationMs,
+        store: { ...base, claim },
+        adapter: h.adapter,
+      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects malformed authenticated lock expiry before the next effect", async () => {
+    const h = harness({ sourceExpiry: Number.NaN });
+    const run = runner({ adapter: h.adapter });
+    await expect(advanceCrossChainHtlc(run.shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-lock-effect-uncertain",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock"]);
+  });
+
+  test("does not accept source-claim finality observed after the source deadline", async () => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100 });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.setObservedAt(1_600_000);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    });
+  });
+
+  test("does not classify mismatched refund evidence as refunded", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_200_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "refund-destination" });
+    const refund = h.actions["destination-refund"];
+    if (!refund || refund.state !== "final") throw new Error("expected final refund fixture");
+    h.actions["destination-refund"] = {
+      ...refund,
+      txRef: { ...refund.txRef, contractAddress: "substituted-contract" },
+    };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+  });
+
+  test("captures the payer reveal decision before adapter callbacks can mutate it", async () => {
+    let activeInput!: AdvanceCrossChainHtlcInput;
+    const mutatingHashlocks = {
+      deriveHashlock(args: { chainId: number; preimage: Uint8Array }) {
+        activeInput.authorizeDestinationClaim = true;
+        return hashlocks.deriveHashlock(args);
+      },
+    };
+    const h = harness();
+    const run = runner({
+      adapter: h.adapter,
+      hashlocks: mutatingHashlocks,
+      authorizeDestinationClaim: false,
+    });
+    activeInput = run.shared;
+    await advanceCrossChainHtlc(activeInput);
+    activeInput = { ...run.nextOwner(), authorizeDestinationClaim: false };
+    await advanceCrossChainHtlc(activeInput);
+    activeInput = { ...run.nextOwner(), authorizeDestinationClaim: false };
+    await expect(advanceCrossChainHtlc(activeInput)).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-not-authorized",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock"]);
   });
 });

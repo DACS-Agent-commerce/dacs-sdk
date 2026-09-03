@@ -4,20 +4,24 @@ import {
   advanceSolanaSplSettlement,
   createInMemorySolanaSplSettlementStore,
   createSolanaSplSettlementIntent,
+  solanaSplSettlementKey,
   type AdvanceSolanaSplSettlementInput,
   type SolanaSplAdapter,
   type SolanaSplObservedTransfer,
   type SolanaSplPreflight,
   type SolanaSplSettlementAuthority,
+  type SolanaSplSettlementStore,
 } from "../../src/rails/solanaSpl.js";
 
-const PAYER = "2".repeat(32);
-const PAYEE = "3".repeat(32);
-const MINT = "4".repeat(32);
-const PAYER_TOKEN = "5".repeat(32);
-const PAYEE_ATA = "6".repeat(32);
-const SIGNATURE_1 = "7".repeat(88);
-const SIGNATURE_2 = "8".repeat(88);
+// Fixed-width values with canonical Base58 leading-zero encoding. These decode
+// to exactly 32-byte public keys and 64-byte transaction signatures.
+const PAYER = "1".repeat(32);
+const PAYEE = `${"1".repeat(31)}2`;
+const MINT = `${"1".repeat(31)}3`;
+const PAYER_TOKEN = `${"1".repeat(31)}4`;
+const PAYEE_ATA = `${"1".repeat(31)}5`;
+const SIGNATURE_1 = "1".repeat(64);
+const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
 
 function authority(
@@ -144,12 +148,50 @@ describe("createSolanaSplSettlementIntent", () => {
     ["bad decimals", { tokenDecimals: 256 }],
     ["wrong asset kind", { assetKind: "erc20" }],
     ["legacy address", { payer: "not_base58_0" }],
+    ["wrong public-key width", { payer: "2".repeat(32) }],
+    ["oversized public-key width", { payer: "1".repeat(33) }],
   ])("rejects %s before adapter access", (_name, override) => {
     expect(() => createSolanaSplSettlementIntent(authority(override as never))).toThrow();
+  });
+
+  test("uses an unambiguous structured settlement-key preimage", () => {
+    expect(solanaSplSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
+      .not.toBe(solanaSplSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
   });
 });
 
 describe("advanceSolanaSplSettlement", () => {
+  test.each([
+    ["short decoded value", "2".repeat(64)],
+    ["65-byte decoded value", "1".repeat(65)],
+  ])("rejects a %s before persistence", async (_name, invalidSignature) => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn();
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt) {
+          return {
+            attemptVersion: "1",
+            attempt,
+            authorityHash: plan.intent.bindingHash,
+            signature: invalidSignature,
+            signedTransactionBase64: Buffer.from("signed-wire", "utf8").toString("base64"),
+            lastValidBlockHeight: 10_001,
+            transferInstructionIndex: 1,
+            preparedAt: 1_788_000_000_001,
+          };
+        },
+        broadcastRetained,
+      }),
+    }));
+
+    expect(result).toMatchObject({ status: "indeterminate" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("returns current solana-instruction coordinates only after exact commitment", async () => {
     const sequence: string[] = [];
     const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => {
@@ -358,5 +400,83 @@ describe("advanceSolanaSplSettlement", () => {
     release();
     await expect(first).resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid lease duration %s before durable or chain effects",
+    async (leaseDurationMs) => {
+      const base = createInMemorySolanaSplSettlementStore();
+      const claim = vi.fn(base.claim);
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      await expect(advanceSolanaSplSettlement(input({
+        leaseDurationMs,
+        store: { ...base, claim },
+        adapter: adapter({ prepareSignedTransfer }),
+      }))).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects corrupted retained wire bytes before reconciliation or rebroadcast", async () => {
+    let clock = 1_000;
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length === 0) return claim;
+        return {
+          ...claim,
+          attempts: claim.attempts.map((attempt) => ({
+            ...attempt,
+            signedTransactionBase64: Buffer.from("substituted-wire").toString("base64"),
+          })),
+        };
+      },
+    };
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => ({
+      disposition: "indeterminate" as const,
+      reason: "rpc-unavailable",
+    }));
+    const shared = input({
+      store,
+      adapter: adapter({ broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-retained-state-corrupt",
+    });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not rebroadcast on an unauthenticated absent-valid observation", async () => {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => {
+      reconciliations += 1;
+      return reconciliations === 1
+        ? { disposition: "indeterminate" as const, reason: "rpc-unavailable" }
+        : { disposition: "absent-valid" as const, authenticationHash: "not-a-hash" };
+    });
+    const shared = input({
+      adapter: adapter({ broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-absence-proof-invalid",
+    });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
 });

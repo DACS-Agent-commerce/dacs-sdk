@@ -363,9 +363,10 @@ export function deriveHtlcPreimage(input: {
   if (!HASH_RE.test(input.agreementHash)) {
     throw new DacsError("pay-cross-chain-htlc: agreementHash must be 32-byte lower-case hex");
   }
+  const buyerSalt = secretCopy(input.buyerSalt);
   return new Uint8Array(hkdfSync(
     "sha256",
-    input.buyerSalt,
+    buyerSalt,
     Buffer.from(requireString(input.jobId, "jobId").normalize("NFC"), "utf8"),
     Buffer.from(input.agreementHash, "utf8"),
     32,
@@ -378,17 +379,24 @@ export function crossChainHtlcSettlementKey(input: {
   phaseIndex: number;
 }): string {
   const phaseIndex = requireUInt(input.phaseIndex, "phaseIndex");
-  return sha256Hex(
-    `dacs-cross-chain-htlc:v1:${requireString(input.jobId, "jobId").normalize("NFC")}:` +
-      `${requireString(input.railId, "railId").normalize("NFC")}:${phaseIndex}`,
-  );
+  return sha256Hex(`dacs-cross-chain-htlc:v1:${canonicalize({
+    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    phaseIndex,
+    railId: requireString(input.railId, "railId").normalize("NFC"),
+  })}`);
 }
 
 export function createCrossChainHtlcIntent(
-  authority: Readonly<CrossChainHtlcAuthority>,
+  inputAuthority: Readonly<CrossChainHtlcAuthority>,
   buyerSalt: Uint8Array,
   deriver: HtlcHashlockDeriver,
 ): Readonly<{ intent: Readonly<CrossChainHtlcIntent>; secrets: Readonly<CrossChainHtlcSecrets> }> {
+  const authority = Object.freeze({ ...inputAuthority });
+  if (!(buyerSalt instanceof Uint8Array)) {
+    throw new DacsError("pay-cross-chain-htlc: buyerSalt must be bytes");
+  }
+  const capturedBuyerSalt = secretCopy(buyerSalt);
+  const deriveHashlock = deriver.deriveHashlock.bind(deriver);
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "htlc") {
     throw new DacsError("pay-cross-chain-htlc: selected rail is not a cross-chain HTLC");
@@ -429,19 +437,19 @@ export function createCrossChainHtlcIntent(
   const sourceAmountBaseUnits = baseUnits(amount, sourceTokenDecimals);
   const destinationAmountBaseUnits = baseUnits(amount, destinationTokenDecimals);
   const preimage = deriveHtlcPreimage({
-    buyerSalt,
+    buyerSalt: capturedBuyerSalt,
     jobId: authority.jobId,
     agreementHash: authority.agreementHash,
   });
   const sourceHashlock = requireString(
-    deriver.deriveHashlock({ chainId: sourceChainId, preimage: secretCopy(preimage) }),
+    deriveHashlock({ chainId: sourceChainId, preimage: secretCopy(preimage) }),
     "sourceHashlock",
   );
   const destinationHashlock = requireString(
-    deriver.deriveHashlock({ chainId: destinationChainId, preimage: secretCopy(preimage) }),
+    deriveHashlock({ chainId: destinationChainId, preimage: secretCopy(preimage) }),
     "destinationHashlock",
   );
-  const buyerSaltHash = sha256Hex(buyerSalt);
+  const buyerSaltHash = sha256Hex(capturedBuyerSalt);
   const preimageHash = sha256Hex(preimage);
   const unsigned = {
     intentVersion: "1" as const,
@@ -486,7 +494,7 @@ export function createCrossChainHtlcIntent(
   return Object.freeze({
     intent,
     secrets: Object.freeze({
-      buyerSalt: secretCopy(buyerSalt),
+      buyerSalt: secretCopy(capturedBuyerSalt),
       buyerSaltHash,
       preimage: secretCopy(preimage),
       preimageHash,
@@ -613,21 +621,136 @@ function collectRefs(
   return Object.freeze(refs);
 }
 
-function validateSnapshot(snapshot: Readonly<HtlcLedgerSnapshot>): void {
+function captureRevealCheckpoint(
+  value: Readonly<HtlcRevealCheckpoint>,
+  prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+): Readonly<HtlcRevealCheckpoint> {
+  const destinationClaim = prepared.get("destination-claim");
+  if (!destinationClaim || !sameRef(value.revealTxRef, destinationClaim.txRef) ||
+      !HASH_RE.test(value.authenticationHash)) {
+    throw new DacsError("pay-cross-chain-htlc: retained reveal checkpoint is invalid");
+  }
+  requireUInt(value.sourceExpiry, "retained reveal sourceExpiry", true);
+  requireUInt(value.finalityObservedAt, "retained reveal finalityObservedAt");
+  return Object.freeze({
+    revealTxRef: Object.freeze({ ...value.revealTxRef }),
+    sourceExpiry: value.sourceExpiry,
+    finalityObservedAt: value.finalityObservedAt,
+    authenticationHash: value.authenticationHash,
+  });
+}
+
+function validateSnapshot(
+  snapshot: Readonly<HtlcLedgerSnapshot>,
+  prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+): void {
   requireUInt(snapshot.observedAt, "snapshot observedAt");
   if (!HASH_RE.test(snapshot.authenticationHash)) {
     throw new DacsError("pay-cross-chain-htlc: ledger snapshot is unauthenticated");
   }
-  for (const observed of Object.values(snapshot.actions)) {
-    if (observed && !HASH_RE.test(observed.authenticationHash)) {
+  if (snapshot.actions === null || typeof snapshot.actions !== "object" ||
+      Array.isArray(snapshot.actions)) {
+    throw new DacsError("pay-cross-chain-htlc: ledger actions are invalid");
+  }
+  const knownActions = new Set<HtlcAction>([
+    "source-lock",
+    "destination-lock",
+    "destination-claim",
+    "source-claim",
+    "source-refund",
+    "destination-refund",
+  ]);
+  for (const [key, observed] of Object.entries(snapshot.actions)) {
+    if (!knownActions.has(key as HtlcAction) || observed === null ||
+        typeof observed !== "object" || !HASH_RE.test(observed.authenticationHash)) {
       throw new DacsError("pay-cross-chain-htlc: action observation is unauthenticated");
     }
+    const action = key as HtlcAction;
+    if (observed.state === "absent") continue;
+    const retained = prepared.get(action);
+    if (!retained || !sameRef(observed.txRef, retained.txRef)) {
+      throw new DacsError(`pay-cross-chain-htlc: ${action} observation is not retained`);
+    }
+    if (observed.state === "pending" || observed.state === "failed") {
+      if (observed.reason !== undefined && typeof observed.reason !== "string") {
+        throw new DacsError(`pay-cross-chain-htlc: ${action} reason is invalid`);
+      }
+      continue;
+    }
+    if (observed.state !== "final") {
+      throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
+    }
+    requireUInt(observed.finalityObservedAt, `${action} finalityObservedAt`);
+    if (action === "source-lock" || action === "destination-lock") {
+      const includedAt = requireUInt(observed.includedAt, `${action} includedAt`);
+      const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
+      if (expiresAt * 1_000 <= includedAt) {
+        throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
+      }
+    }
+    if (action === "destination-claim" &&
+        typeof observed.revealedPreimageHex !== "string") {
+      throw new DacsError("pay-cross-chain-htlc: final destination claim omits the preimage");
+    }
+  }
+}
+
+function storedSettlementMatchesIntent(
+  settlement: Readonly<CrossChainHtlcSettlement>,
+  intent: Readonly<CrossChainHtlcIntent>,
+): boolean {
+  try {
+    if (!Array.isArray(settlement.txRefs) || settlement.txRefs.length !== 4) return false;
+    const expected = [
+      { kind: "htlc-lock", chainId: intent.sourceChainId, contract: intent.sourceContractAddress },
+      { kind: "htlc-lock", chainId: intent.destinationChainId, contract: intent.destinationContractAddress },
+      { kind: "htlc-reveal", chainId: intent.destinationChainId, contract: intent.destinationContractAddress },
+      { kind: "htlc-claim", chainId: intent.sourceChainId, contract: intent.sourceContractAddress },
+    ] as const;
+    const refsMatch = settlement.txRefs.every((ref, index) =>
+      ref.kind === expected[index]!.kind &&
+      ref.chainId === expected[index]!.chainId &&
+      ref.contractAddress === expected[index]!.contract &&
+      requireString(txHashOf(ref), "stored settlement txHash").length > 0);
+    return refsMatch && settlement.paymentAmount.amount === intent.amount &&
+      settlement.paymentAmount.currency === intent.currency &&
+      settlement.settlementFinality.model === "htlc-reveal" &&
+      Number.isSafeInteger(settlement.settlementFinality.finalityObservedAt) &&
+      settlement.settlementFinality.finalityObservedAt >= 0 &&
+      HASH_RE.test(settlement.authenticationHash);
+  } catch {
+    return false;
   }
 }
 
 export async function advanceCrossChainHtlc(
   input: Readonly<AdvanceCrossChainHtlcInput>,
 ): Promise<CrossChainHtlcProgress> {
+  const authorizeDestinationClaim = input.authorizeDestinationClaim === true;
+  const store = input.store;
+  const adapter = input.adapter;
+  const claimSettlement = store.claim.bind(store);
+  const isCurrentSettlement = store.isCurrent.bind(store);
+  const recordPrepared = store.recordPrepared.bind(store);
+  const recordRevealFinal = store.recordRevealFinal.bind(store);
+  const recordSettlement = store.recordSettlement.bind(store);
+  const observeLedger = adapter.observe.bind(adapter);
+  const prepareAction = adapter.prepareAction.bind(adapter);
+  const broadcastRetained = adapter.broadcastRetained.bind(adapter);
+  const now = input.now ?? Date.now;
+  let owner: string;
+  let leaseDurationMs: number;
+  try {
+    owner = requireString(input.owner, "owner");
+    leaseDurationMs = requireUInt(
+      input.leaseDurationMs ?? DEFAULT_LEASE_MS,
+      "leaseDurationMs",
+      true,
+    );
+  } catch (error) {
+    return { status: "failed", errorClass: "permanent", reason: String(error) };
+  }
+  const readNow = (): number => requireUInt(now(), "clock");
   let created: Readonly<{
     intent: Readonly<CrossChainHtlcIntent>;
     secrets: Readonly<CrossChainHtlcSecrets>;
@@ -642,24 +765,46 @@ export async function advanceCrossChainHtlc(
     };
   }
   const { intent, secrets } = created;
-  const now = input.now ?? Date.now;
-  let owner: string;
+  let claimed: HtlcStoreClaim;
+  let claimNow: number;
   try {
-    owner = requireString(input.owner, "owner");
-  } catch (error) {
-    return { status: "failed", errorClass: "permanent", reason: String(error) };
+    claimNow = readNow();
+    claimed = await claimSettlement({
+      intent,
+      secrets: Object.freeze({
+        ...secrets,
+        buyerSalt: secretCopy(secrets.buyerSalt),
+        preimage: secretCopy(secrets.preimage),
+      }),
+      owner,
+      now: claimNow,
+      leaseDurationMs,
+    });
+  } catch {
+    return { status: "indeterminate", reason: "htlc-settlement-store-unavailable" };
   }
-  const claimed = await input.store.claim({
-    intent,
-    secrets,
-    owner,
-    now: now(),
-    leaseDurationMs: input.leaseDurationMs ?? DEFAULT_LEASE_MS,
-  });
+  if ("intent" in claimed) {
+    try {
+      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
+        return { status: "indeterminate", reason: "htlc-settlement-store-intent-mismatch" };
+      }
+    } catch {
+      return { status: "indeterminate", reason: "htlc-settlement-store-intent-invalid" };
+    }
+  }
   if (claimed.status === "waiting") return { status: "waiting", reason: "htlc-settlement-held" };
-  if (claimed.status === "settled") return { status: "settled", settlement: claimed.settlement };
+  if (claimed.status === "settled") {
+    return storedSettlementMatchesIntent(claimed.settlement, intent)
+      ? { status: "settled", settlement: claimed.settlement }
+      : { status: "indeterminate", reason: "htlc-stored-settlement-mismatch" };
+  }
   if (claimed.status !== "acquired") {
     return { status: "failed", errorClass: "permanent", reason: claimed.reason };
+  }
+  if (claimed.lease.owner !== owner ||
+      !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
+      !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
+    return { status: "indeterminate", reason: "htlc-settlement-store-lease-invalid" };
   }
   const fence: Readonly<HtlcEffectFence> = Object.freeze({
     settlementKey: intent.settlementKey,
@@ -667,12 +812,12 @@ export async function advanceCrossChainHtlc(
     owner: claimed.lease.owner,
     generation: claimed.lease.generation,
     assertCurrent: async () => {
-      if (!await input.store.isCurrent({
+      if (!await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: claimed.lease.owner,
         generation: claimed.lease.generation,
-        now: now(),
+        now: readNow(),
       })) throw new DacsError("pay-cross-chain-htlc: stale effect fence");
     },
   });
@@ -694,11 +839,27 @@ export async function advanceCrossChainHtlc(
     };
   }
   const prepared = new Map(retainedActions.map((item) => [item.action, item] as const));
+  if (prepared.size !== retainedActions.length) {
+    return { status: "failed", errorClass: "permanent", reason: "htlc-retained-action-duplicate" };
+  }
+  let retainedCheckpoint: Readonly<HtlcRevealCheckpoint> | undefined;
+  try {
+    retainedCheckpoint = claimed.revealCheckpoint === undefined
+      ? undefined
+      : captureRevealCheckpoint(claimed.revealCheckpoint, prepared);
+  } catch (error) {
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: error instanceof Error ? error.message : "htlc-reveal-checkpoint-corrupt",
+    };
+  }
   const observe = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     try {
       await fence.assertCurrent();
-      const snapshot = await input.adapter.observe(intent, fence);
-      validateSnapshot(snapshot);
+      const snapshot = await observeLedger(intent, fence);
+      await fence.assertCurrent();
+      validateSnapshot(snapshot, prepared);
       return snapshot;
     } catch {
       return null;
@@ -712,7 +873,7 @@ export async function advanceCrossChainHtlc(
     if (!retained) {
       try {
         await fence.assertCurrent();
-        retained = validatePrepared(await input.adapter.prepareAction({
+        retained = validatePrepared(await prepareAction({
           intent,
           action,
           actor: actorFor(action),
@@ -721,22 +882,29 @@ export async function advanceCrossChainHtlc(
             : undefined,
           ...expiries,
         }, fence), intent, action);
+        await fence.assertCurrent();
       } catch {
         return null;
       }
-      const recorded = await input.store.recordPrepared({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        prepared: retained,
-      });
+      let recorded: HtlcStoreWrite;
+      try {
+        recorded = await recordPrepared({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          prepared: retained,
+        });
+      } catch {
+        return null;
+      }
       if (recorded.status !== "recorded" && recorded.status !== "existing") return null;
       prepared.set(action, retained);
     }
     try {
       await fence.assertCurrent();
-      await input.adapter.broadcastRetained(retained, fence);
+      await broadcastRetained(retained, fence);
+      await fence.assertCurrent();
     } catch {
       return null;
     }
@@ -766,20 +934,32 @@ export async function advanceCrossChainHtlc(
         destinationClaim.revealedPreimageHex !== Buffer.from(secrets.preimage).toString("hex")) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-invalid" };
     }
-    if (!claimed.revealCheckpoint) {
+    if (sourceClaim.finalityObservedAt > sourceLock.expiresAt * 1_000) {
+      return {
+        status: "failed",
+        errorClass: "settlement-atomicity",
+        reason: "dest-revealed-source-unclaimed-expired",
+      };
+    }
+    if (!retainedCheckpoint) {
       const checkpoint: Readonly<HtlcRevealCheckpoint> = Object.freeze({
         revealTxRef: destinationClaim.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
         sourceExpiry: sourceLock.expiresAt,
         finalityObservedAt: destinationClaim.finalityObservedAt,
         authenticationHash: destinationClaim.authenticationHash,
       });
-      const checkpointed = await input.store.recordRevealFinal({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        checkpoint,
-      });
+      let checkpointed: HtlcStoreWrite;
+      try {
+        checkpointed = await recordRevealFinal({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          checkpoint,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "htlc-reveal-checkpoint-persistence-uncertain" };
+      }
       if (checkpointed.status !== "recorded" && checkpointed.status !== "existing") {
         return { status: "indeterminate", reason: "htlc-reveal-checkpoint-persistence-uncertain" };
       }
@@ -798,19 +978,24 @@ export async function advanceCrossChainHtlc(
       }),
       authenticationHash: snapshot.authenticationHash,
     });
-    const stored = await input.store.recordSettlement({
-      settlementKey: intent.settlementKey,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      settlement,
-    });
+    let stored: HtlcStoreWrite;
+    try {
+      stored = await recordSettlement({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        settlement,
+      });
+    } catch {
+      return { status: "indeterminate", reason: "htlc-settlement-persistence-uncertain" };
+    }
     return stored.status === "recorded" || stored.status === "existing"
       ? { status: "settled", settlement }
       : { status: "indeterminate", reason: "htlc-settlement-persistence-uncertain" };
   }
 
-  let checkpoint = claimed.revealCheckpoint;
+  let checkpoint = retainedCheckpoint;
   if (destinationClaim) {
     if (!sourceLock || !destinationLock || sourceLock.expiresAt === undefined ||
         destinationLock.expiresAt === undefined) {
@@ -819,6 +1004,12 @@ export async function advanceCrossChainHtlc(
     if (destinationClaim.revealedPreimageHex !== Buffer.from(secrets.preimage).toString("hex")) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-mismatch" };
     }
+    if (checkpoint && (checkpoint.sourceExpiry !== sourceLock.expiresAt ||
+        checkpoint.finalityObservedAt !== destinationClaim.finalityObservedAt ||
+        checkpoint.authenticationHash !== destinationClaim.authenticationHash ||
+        !sameRef(checkpoint.revealTxRef, destinationClaim.txRef))) {
+      return { status: "failed", errorClass: "permanent", reason: "htlc-reveal-checkpoint-conflict" };
+    }
     if (!checkpoint) {
       checkpoint = Object.freeze({
         revealTxRef: destinationClaim.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
@@ -826,13 +1017,18 @@ export async function advanceCrossChainHtlc(
         finalityObservedAt: destinationClaim.finalityObservedAt,
         authenticationHash: destinationClaim.authenticationHash,
       });
-      const stored = await input.store.recordRevealFinal({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        checkpoint,
-      });
+      let stored: HtlcStoreWrite;
+      try {
+        stored = await recordRevealFinal({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          checkpoint,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "htlc-reveal-checkpoint-persistence-uncertain" };
+      }
       if (stored.status !== "recorded" && stored.status !== "existing") {
         return { status: "indeterminate", reason: "htlc-reveal-checkpoint-persistence-uncertain" };
       }
@@ -840,7 +1036,7 @@ export async function advanceCrossChainHtlc(
   }
 
   if (checkpoint) {
-    if (now() >= checkpoint.sourceExpiry * 1_000) {
+    if (readNow() >= checkpoint.sourceExpiry * 1_000) {
       return {
         status: "failed",
         errorClass: "settlement-atomicity",
@@ -858,19 +1054,31 @@ export async function advanceCrossChainHtlc(
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
       if (sourceClaim && sourceLock && destinationLock && destinationClaim) {
+        if (sourceClaim.finalityObservedAt > checkpoint.sourceExpiry * 1_000) {
+          return {
+            status: "failed",
+            errorClass: "settlement-atomicity",
+            reason: "dest-revealed-source-unclaimed-expired",
+          };
+        }
         const settlement = Object.freeze({
           txRefs: Object.freeze([sourceLock.txRef, destinationLock.txRef, destinationClaim.txRef, sourceClaim.txRef]),
           paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
           settlementFinality: Object.freeze({ model: "htlc-reveal" as const, finalityObservedAt: sourceClaim.finalityObservedAt }),
           authenticationHash: snapshot.authenticationHash,
         });
-        const stored = await input.store.recordSettlement({
-          settlementKey: intent.settlementKey,
-          bindingHash: intent.bindingHash,
-          owner: fence.owner,
-          generation: fence.generation,
-          settlement,
-        });
+        let stored: HtlcStoreWrite;
+        try {
+          stored = await recordSettlement({
+            settlementKey: intent.settlementKey,
+            bindingHash: intent.bindingHash,
+            owner: fence.owner,
+            generation: fence.generation,
+            settlement,
+          });
+        } catch {
+          return { status: "indeterminate", reason: "htlc-settlement-persistence-uncertain" };
+        }
         return stored.status === "recorded" || stored.status === "existing"
           ? { status: "settled", settlement }
           : { status: "indeterminate", reason: "htlc-settlement-persistence-uncertain" };
@@ -903,7 +1111,7 @@ export async function advanceCrossChainHtlc(
   }
 
   if (!destinationLock) {
-    if (now() >= sourceLock.expiresAt * 1_000) {
+    if (readNow() >= sourceLock.expiresAt * 1_000) {
       const refund = snapshot.actions["source-refund"];
       if (!refund || refund.state === "absent") {
         const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
@@ -947,7 +1155,7 @@ export async function advanceCrossChainHtlc(
     return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
   }
 
-  if (now() >= destinationLock.expiresAt * 1_000) {
+  if (readNow() >= destinationLock.expiresAt * 1_000) {
     const pendingClaim = snapshot.actions["destination-claim"];
     if (pendingClaim?.state === "pending") {
       return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
@@ -960,7 +1168,7 @@ export async function advanceCrossChainHtlc(
         ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
         : { status: "indeterminate", reason: "htlc-destination-refund-effect-uncertain" };
     }
-    if (now() >= sourceLock.expiresAt * 1_000 && (!sourceRefund || sourceRefund.state === "absent")) {
+    if (readNow() >= sourceLock.expiresAt * 1_000 && (!sourceRefund || sourceRefund.state === "absent")) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
       return advanced
         ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
@@ -974,7 +1182,7 @@ export async function advanceCrossChainHtlc(
     };
   }
 
-  if (!input.authorizeDestinationClaim) {
+  if (!authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
   }
   const claimState = snapshot.actions["destination-claim"];

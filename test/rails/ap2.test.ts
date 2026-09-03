@@ -404,4 +404,55 @@ describe("advanceAp2Settlement", () => {
     });
     expect(submit).not.toHaveBeenCalled();
   });
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid lease duration %s before store or provider effects",
+    async (leaseDurationMs) => {
+      const submit = vi.fn(provider().submit);
+      const claim = vi.fn(createInMemoryAp2BindingStore().claim);
+      await expect(advanceAp2Settlement(input({
+        leaseDurationMs,
+        provider: provider({ submit }),
+        store: { ...createInMemoryAp2BindingStore(), claim },
+      }))).resolves.toMatchObject({ status: "failed" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+    },
+  );
+
+  test("captures the provider authority before mandate callbacks can swap it", async () => {
+    const originalSubmit = vi.fn(provider().submit);
+    const swappedSubmit = vi.fn(provider().submit);
+    const mutableProvider = provider({ submit: originalSubmit });
+    const mutableVerifier = verifier();
+    mutableVerifier.verifyCheckoutMandate = async (artifact) => {
+      mutableProvider.submit = swappedSubmit;
+      return verifier().verifyCheckoutMandate(artifact);
+    };
+
+    await expect(advanceAp2Settlement(input({
+      provider: mutableProvider,
+      verifier: mutableVerifier,
+    }))).resolves.toMatchObject({ status: "settled" });
+    expect(originalSubmit).toHaveBeenCalledTimes(1);
+    expect(swappedSubmit).not.toHaveBeenCalled();
+  });
+
+  test("does not persist a provider result after its effect lease expires", async () => {
+    let clock = 1_000;
+    const submit = vi.fn(async () => {
+      clock = 1_101;
+      return { disposition: "accepted" as const, providerRef: "provider-1" };
+    });
+    const readAttestedStatus = vi.fn(provider().readAttestedStatus);
+    await expect(advanceAp2Settlement(input({
+      now: () => clock,
+      provider: provider({ submit, readAttestedStatus }),
+    }))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "ap2-effect-fence-stale",
+    });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(readAttestedStatus).not.toHaveBeenCalled();
+  });
 });
