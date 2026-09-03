@@ -621,8 +621,17 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
       }
 
       // ExactEvmScheme handles any eip155 chain; the wildcard keeps one client
-      // usable across base / base-sepolia / future EVM networks.
-      const core = new x402Client().register("eip155:*", scheme);
+      // usable across base / base-sepolia / future EVM networks. The DACS rail
+      // has already authenticated the exact network, token and amount, so
+      // discard every challenge option outside that exact spending tuple.
+      const core = new x402Client()
+        .register("eip155:*", scheme)
+        .registerPolicy((_version, candidates) => candidates.filter((candidate) =>
+          candidate.network === network &&
+          typeof candidate.asset === "string" &&
+          candidate.asset.toLowerCase() === asset.toLowerCase() &&
+          typeof candidate.amount === "string" &&
+          sameAmount(candidate.amount, amount)));
       const client = new x402HTTPClient(core) as unknown as X402ClientLike;
       return x402SettleCore({
         paywallUrl,

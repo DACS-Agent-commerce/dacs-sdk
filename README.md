@@ -631,7 +631,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
-| `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
+| `@kynesyslabs/dacs/commerce` | no | x402 coordination, payment-evidence handshake, and experimental UCP composition |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
@@ -643,6 +643,13 @@ registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)
 for the store, authentication, reconciliation and terminal-failure contracts.
+
+The experimental UCP profile composes a verified DACS RFQ agreement with the
+official UCP Checkout/Order flow and the existing x402 rail. It adds merchant
+identity, exact checkout/payment binding, completion approval, independently
+observed finality, and hash-only order evidence without replacing the
+merchant's UCP system. See [the UCP + x402 MVP guide](./docs/ucp-x402-mvp.md)
+for scope, merchant effort, trust boundaries, and standards work still needed.
 
 The optional signed `pay-alternative` Listing profile is documented in
 [the alternative-payment projection guide](./docs/alternative-payment-projection.md).
