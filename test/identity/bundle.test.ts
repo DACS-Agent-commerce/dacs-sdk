@@ -129,5 +129,20 @@ describe("SIWD bundle-resource binding — DACS-1 §6.3.2", () => {
     const revoked = Proxy.revocable(target, {});
     revoked.revoke();
     expect(siwdResourcesBindBundleHash(revoked.proxy, hash)).toBe(false);
+
+    const forged = new Proxy(["wrong"], {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === "0") {
+          return {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: resource,
+          };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    expect(siwdResourcesBindBundleHash(forged, hash)).toBe(false);
   });
 });
