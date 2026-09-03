@@ -250,6 +250,40 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.completionRate).toBe(0);
   });
 
+  test("passes the parameter-free identity to the independent role resolver", () => {
+    const qualifiedParty = `${PARTY}?jurisdiction=GB`;
+    const qualifiedBundle = bundle(
+      "qualified-role",
+      "completed",
+      1100,
+      "buyer",
+      [
+        {
+          role: "buyer",
+          bundleHash: "h",
+          primaryClaim: `${PARTY}?jurisdiction=US`,
+        },
+        { role: "seller", bundleHash: "h", primaryClaim: CP },
+      ],
+    );
+    const resolved: string[] = [];
+
+    const r = deriveReputation(qualifiedParty, [qualifiedBundle], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: ({ partyPrimaryClaim }) => {
+        resolved.push(partyPrimaryClaim);
+        return partyPrimaryClaim === PARTY ? "buyer" : undefined;
+      },
+      copyAbsence: () => "absent",
+    });
+
+    expect(resolved).toEqual([PARTY]);
+    expect(r).toMatchObject({
+      partyPrimaryClaim: PARTY,
+      bundleCount: 1,
+    });
+  });
+
   test("does not score Promise-like, unresolved, or thrown role results", () => {
     const candidate = bundle("a", "completed", 1100);
     const promised = deriveReputation(PARTY, [candidate], WINDOW, {
