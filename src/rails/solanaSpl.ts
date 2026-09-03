@@ -10,6 +10,8 @@ const DEFAULT_LEASE_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const UINT_RE = /^(0|[1-9][0-9]*)$/;
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
+const BASE58_ALPHABET =
+  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 export type SolanaCluster = "mainnet" | "devnet" | "testnet";
 export type SolanaCommitmentLevel = "processed" | "confirmed" | "finalized";
@@ -274,6 +276,34 @@ function requireBase58(
   return parsed;
 }
 
+function requireBase58Bytes(
+  value: unknown,
+  label: string,
+  expectedBytes: number,
+): string {
+  // Canonical Base58 encodes each leading zero byte as one leading `1`.
+  // Bound the attacker-controlled input before BigInt accumulation: 32-byte
+  // Solana public keys need at most 44 digits and 64-byte signatures at most 88.
+  const maxLength = expectedBytes === 32 ? 44 : expectedBytes === 64 ? 88 : 128;
+  const parsed = requireBase58(value, label, expectedBytes, maxLength);
+  let decoded = 0n;
+  for (const character of parsed) {
+    decoded = decoded * 58n + BigInt(BASE58_ALPHABET.indexOf(character));
+  }
+  let nonZeroBytes = 0;
+  for (let cursor = decoded; cursor > 0n; cursor >>= 8n) nonZeroBytes += 1;
+  let leadingZeroBytes = 0;
+  while (leadingZeroBytes < parsed.length && parsed[leadingZeroBytes] === "1") {
+    leadingZeroBytes += 1;
+  }
+  if (leadingZeroBytes + nonZeroBytes !== expectedBytes) {
+    throw new DacsError(
+      `pay-solana-spl: ${label} must decode to exactly ${expectedBytes} bytes`,
+    );
+  }
+  return parsed;
+}
+
 function uint(value: string, label: string): bigint {
   if (!UINT_RE.test(value)) {
     throw new DacsError(`pay-solana-spl: ${label} must be canonical unsigned decimal`);
@@ -346,9 +376,9 @@ export function createSolanaSplSettlementIntent(
     assetKind: authority.assetKind,
     cluster: authority.cluster,
     commitmentLevel,
-    payer: requireBase58(authority.payer, "payer", 32, 44),
-    payee: requireBase58(authority.payee, "payee", 32, 44),
-    mint: requireBase58(authority.mint, "mint", 32, 44),
+    payer: requireBase58Bytes(authority.payer, "payer", 32),
+    payee: requireBase58Bytes(authority.payee, "payee", 32),
+    mint: requireBase58Bytes(authority.mint, "mint", 32),
     assetSymbol: requireString(authority.assetSymbol, "assetSymbol"),
     amount,
     amountBaseUnits,
@@ -366,8 +396,8 @@ function validatePreflight(
   preflight: Readonly<SolanaSplPreflight>,
 ): SolanaSplTransferPlan | SolanaSplProgress {
   try {
-    requireBase58(preflight.payerTokenAccount, "payerTokenAccount", 32, 44);
-    requireBase58(preflight.payeeAta, "payeeAta", 32, 44);
+    requireBase58Bytes(preflight.payerTokenAccount, "payerTokenAccount", 32);
+    requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
     const tokenBalance = uint(preflight.payerTokenBalanceBaseUnits, "payerTokenBalanceBaseUnits");
     const nativeBalance = uint(preflight.payerNativeBalanceLamports, "payerNativeBalanceLamports");
     const networkFee = uint(preflight.networkFeeLamports, "networkFeeLamports");
@@ -418,7 +448,7 @@ function createAttempt(
       value.authorityHash !== intent.bindingHash) {
     throw new DacsError("pay-solana-spl: prepared transaction authority mismatch");
   }
-  requireBase58(value.signature, "signature", 64, 100);
+  requireBase58Bytes(value.signature, "signature", 64);
   if (typeof value.signedTransactionBase64 !== "string" ||
       value.signedTransactionBase64.length === 0) {
     throw new DacsError("pay-solana-spl: signed transaction bytes are required");
@@ -474,7 +504,7 @@ function storedSettlementMatchesIntent(
   try {
     return settlement.txRef.kind === "solana-instruction" &&
       settlement.txRef.cluster === intent.cluster &&
-      requireBase58(settlement.txRef.signature, "stored signature", 64, 100).length > 0 &&
+      requireBase58Bytes(settlement.txRef.signature, "stored signature", 64).length > 0 &&
       Number.isSafeInteger(settlement.txRef.instructionIndex) &&
       settlement.txRef.instructionIndex >= 0 &&
       settlement.paymentAmount.amount === intent.amount &&
