@@ -59,7 +59,7 @@ import {
   commitFixedPriceAgreement,
   compositeVerificationAddress,
   contentHash,
-  createAgent,
+  createUnsafeManualAgent,
   createDacsX402BuyerEvmChallengeClient,
   createFixedPriceAgreementSigningPlan,
   createFsDemosWriteJournal,
@@ -976,8 +976,8 @@ async function startLocalPaywallHost(
 interface Preflight {
   env: LiveEnv;
   jobId: string;
-  seller: Awaited<ReturnType<typeof createAgent>>;
-  buyer: Awaited<ReturnType<typeof createAgent>>;
+  seller: Awaited<ReturnType<typeof createUnsafeManualAgent>>;
+  buyer: Awaited<ReturnType<typeof createUnsafeManualAgent>>;
   evm: PublicClient;
   evmVerificationClients: readonly PublicClient[];
   evmReader: X402BuyerEvmReadClient;
@@ -1029,7 +1029,7 @@ async function runNoWritePreflight(env: LiveEnv, funded = false): Promise<Prefli
   });
   const [seller, buyer] = await diagnosticStep("preflight-agent-connect", () =>
     Promise.all([
-      createAgent({
+      createUnsafeManualAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.SELLER_WALLET,
       demosWriteJournal: sellerWriteJournal,
@@ -1037,7 +1037,7 @@ async function runNoWritePreflight(env: LiveEnv, funded = false): Promise<Prefli
       bindings: { index: bindings, publisher: bindings },
       loadListingRailResolution: railAuthority,
     }),
-      createAgent({
+      createUnsafeManualAgent({
       demosRpc: env.DEMOS_RPC,
       wallet: env.BUYER_WALLET,
       demosWriteJournal: buyerWriteJournal,

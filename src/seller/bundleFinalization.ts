@@ -43,10 +43,11 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { ed25519Sign, privateKeyFromSeed, signedBytes } from "../crypto/index.js";
+import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
 import {
+  assertNoRawSessionSeed,
   attestationBundleHash,
   bundleSignedScope,
   type SessionParty,
@@ -944,6 +945,7 @@ function paymentAuthorizationEvidenceInput(
 }
 
 function prepareSession(input: FinalizeCompletedSellerBundleInput): PreparedSession {
+  assertNoRawSessionSeed(input.seller.signer, "seller session signer");
   const agreement = snapshot(input.agreement, "seller agreement");
   const fulfilment = snapshot(input.fulfilment, "seller fulfilment");
   const agreementRef = snapshot(input.agreementRef, "agreement reference");
@@ -3399,10 +3401,7 @@ async function constructSignedCopies(
     const raw =
       typeof signer === "function"
         ? await signer(new Uint8Array(payload.signedBytes))
-        : ed25519Sign(
-            payload.signedBytes,
-            signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer,
-          );
+        : ed25519Sign(payload.signedBytes, signer);
     rawSellerSignature = new Uint8Array(raw);
   } catch (error) {
     throw new DacsError("seller bundle signing failed", { cause: error });

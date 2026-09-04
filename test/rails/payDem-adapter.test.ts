@@ -99,6 +99,91 @@ beforeEach(() => {
 });
 
 describe("createPayDemRail nonce coordination", () => {
+  it("preserves signed and confirmed wire key order through broadcast", async () => {
+    const signed = {
+      content: {
+        type: "native",
+        from: WALLET,
+        to: RECIPIENT,
+        amount: "1",
+        data: [
+          "native",
+          { nativeOperation: "send", args: [RECIPIENT, "1"] },
+        ],
+        nonce: 7,
+        gcr_edits: [{
+          type: "balance",
+          operation: "subtract",
+          isRollback: false,
+          account: WALLET,
+          txhash: TX_HASH,
+          amount: "1000000000",
+        }],
+      },
+      signature: { type: "ed25519", data: "00" },
+      hash: TX_HASH,
+      status: "pending",
+      blockNumber: 0,
+    };
+    sdk.transfer.mockResolvedValue(signed);
+    let confirmedEnvelope: object | undefined;
+    sdk.confirm.mockImplementation(async (received) => {
+      expect(received).not.toBe(signed);
+      expect(received.content).not.toBe(signed.content);
+      expect(Object.keys(received)).toEqual([
+        "content",
+        "signature",
+        "hash",
+        "status",
+        "blockNumber",
+      ]);
+      expect(Object.keys(received.content.gcr_edits[0])).toEqual([
+        "type",
+        "operation",
+        "isRollback",
+        "account",
+        "txhash",
+        "amount",
+      ]);
+      confirmedEnvelope = {
+        response: {
+          data: {
+            transaction: received,
+            custom_charges: null,
+          },
+          message: "valid",
+        },
+        result: true,
+      };
+      return confirmedEnvelope;
+    });
+    sdk.broadcast.mockImplementation(async (received) => {
+      expect(received).not.toBe(confirmedEnvelope);
+      expect(Object.keys(received)).toEqual(["response", "result"]);
+      expect(Object.keys(received.response)).toEqual(["data", "message"]);
+      expect(Object.keys(received.response.data.transaction.content.gcr_edits[0]))
+        .toEqual([
+          "type",
+          "operation",
+          "isRollback",
+          "account",
+          "txhash",
+          "amount",
+        ]);
+      return { response: { hash: TX_HASH } };
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(sdk.confirm).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("does not complete an included settlement until its nonce is readable", async () => {
     const nonceVisible = deferred<void>();
     sdk.waitForNonce.mockReturnValue(nonceVisible.promise);
@@ -395,6 +480,46 @@ describe("createPayDemRail nonce coordination", () => {
       },
     })).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
     expect(order).toEqual(["journal", "fence", "broadcast"]);
+  });
+
+  it("keeps the settlement generation and prepared-transfer fences current through broadcast", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+    const effectFence = {
+      owner: "payment-worker",
+      generation: 3,
+      settlementKey: "demos-native:DEM:job-fenced:0",
+      bindingHash: "ab".repeat(32),
+      async assertCurrent() {
+        order.push("generation-fence");
+      },
+    };
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+      assertCurrentBeforeBroadcast: async () => {
+        order.push("prepared-transfer-fence");
+      },
+    }, effectFence)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual([
+      "generation-fence",
+      "journal",
+      "prepared-transfer-fence",
+      "generation-fence",
+      "broadcast",
+    ]);
   });
 
   it("fails before signing when configured and per-settlement journals conflict", async () => {

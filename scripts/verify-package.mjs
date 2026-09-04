@@ -214,7 +214,9 @@ try {
     ].join("\n"),
   );
 
-  run("bun", ["install", "--ignore-scripts"], { cwd: consumer });
+  const bunCache = join(scratch, "bun-cache");
+  await mkdir(bunCache);
+  run("bun", ["install", "--ignore-scripts", "--cache-dir", bunCache], { cwd: consumer });
   const optionalPeers = [
     "@kynesyslabs/demosdk",
     "@x402/evm",
@@ -231,8 +233,6 @@ try {
   }
   const onlineOutput = run("bun", ["run", "index.ts"], { cwd: consumer });
   await rm(join(consumer, "node_modules"), { recursive: true, force: false });
-  const emptyCache = join(scratch, "empty-bun-cache");
-  await mkdir(emptyCache);
   run(
     "bun",
     [
@@ -240,7 +240,7 @@ try {
       "--frozen-lockfile",
       "--ignore-scripts",
       "--cache-dir",
-      emptyCache,
+      bunCache,
       "--registry",
       "http://127.0.0.1:1",
     ],
@@ -284,7 +284,7 @@ try {
       optionalPeersAbsent: optionalPeers,
       onlineInstall: "pass",
       offlineFrozenRematerialization: "pass",
-      offlineConstraint: "empty cache and unreachable loopback registry",
+      offlineConstraint: "isolated populated cache and unreachable loopback registry",
       outputSha256: sha256(onlineOutput),
     },
   };
