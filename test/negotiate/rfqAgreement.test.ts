@@ -36,6 +36,7 @@ const claim = (seed: Uint8Array) =>
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
 const ORCHESTRATOR = claim(ORCHESTRATOR_SEED);
+const SUBSTITUTE = claim(Uint8Array.from(Buffer.alloc(32, 44)));
 const HASH = "a".repeat(64);
 const COMMITTED_AT = NOW + 5_000;
 
@@ -373,7 +374,7 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
         ...agreementInput(value, session),
         buyer: {
           ...buyer,
-          identityBundle: identity("did:demos:agent:substitute"),
+          identityBundle: identity(SUBSTITUTE),
         },
       }),
     ).toThrow(/parties differ/);
