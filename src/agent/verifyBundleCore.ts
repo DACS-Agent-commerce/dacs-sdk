@@ -215,7 +215,7 @@ export interface VerifyBundleDeps {
   verify: Verifier;
   /**
    * Semantic and authority check of a hash-matched SettlementEvidence artifact
-   * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
+   * (DACS-4 §9.7) — wire authenticated `verifySettlementEvidence` (with the caller's
    * agreement/rail/orchestrator context) here. The second argument carries the
    * resolved agreement and exact attestation ref needed to build that context;
    * the result also returns the exact authenticated phase orchestrator used to
