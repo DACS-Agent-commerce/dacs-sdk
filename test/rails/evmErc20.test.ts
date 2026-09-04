@@ -106,6 +106,26 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     });
   });
 
+  test("checks the recovery generation immediately before the token transfer", async () => {
+    const transfer = vi.fn(async () => TX_HASH);
+    const assertCurrent = vi.fn(async () => {
+      throw new Error("stale effect generation");
+    });
+    await expect(evmErc20SettleCore(
+      params,
+      client({ transfer }),
+      {
+        owner: "worker",
+        generation: 2,
+        settlementKey: "evm:job:0",
+        bindingHash: "a".repeat(64),
+        assertCurrent,
+      },
+    )).rejects.toThrow(/stale effect generation/);
+    expect(assertCurrent).toHaveBeenCalledOnce();
+    expect(transfer).not.toHaveBeenCalled();
+  });
+
   test("rejects when the transfer transaction reverted", async () => {
     await expect(evmErc20SettleCore(
       params,
