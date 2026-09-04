@@ -4,7 +4,6 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   readFileSync,
   realpathSync,
   statfsSync,
@@ -14,7 +13,11 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import { sameCanonicalClaimIdentity, VERSION } from "@kynesyslabs/dacs";
+import {
+  preparePrivateStoreDirectory,
+  sameCanonicalClaimIdentity,
+  VERSION,
+} from "@kynesyslabs/dacs";
 import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
@@ -2218,6 +2221,20 @@ function containsSyncDirectory(value: string): boolean {
       /^(?:dropbox|google ?drive|icloud drive|onedrive)(?:[ (\-]|$)/u.test(component));
 }
 
+function normalizeDarwinSystemAlias(value: string): string {
+  if (process.platform !== "darwin") return value;
+  for (const [alias, physical] of [
+    ["/var", "/private/var"],
+    ["/tmp", "/private/tmp"],
+    ["/etc", "/private/etc"],
+  ] as const) {
+    if (value === alias || value.startsWith(`${alias}/`)) {
+      return `${physical}${value.slice(alias.length)}`;
+    }
+  }
+  return value;
+}
+
 function unsafeLocalPathReason(
   path: string,
   kind: "database" | "directory",
@@ -2235,6 +2252,42 @@ function unsafeLocalPathReason(
     return kind === "database"
       ? "database-path-permissions-unsafe"
       : "database-directory-permissions-unsafe";
+  }
+  return undefined;
+}
+
+function unsafeDirectoryChainReason(
+  path: string,
+): DacsNodeSqliteLocationBlockReason | undefined {
+  if (process.platform === "win32" || typeof process.getuid !== "function") {
+    return "filesystem-inspection-failed";
+  }
+  const components: string[] = [];
+  let candidate = path;
+  for (;;) {
+    components.push(candidate);
+    const parent = dirname(candidate);
+    if (parent === candidate) break;
+    candidate = parent;
+  }
+  components.reverse();
+  const uid = process.getuid();
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index]!;
+    const metadata = lstatSync(component);
+    if (metadata.isSymbolicLink()) return "database-path-symlink";
+    if (!metadata.isDirectory()) return "filesystem-inspection-failed";
+    const final = index === components.length - 1;
+    const currentOwner = metadata.uid === uid;
+    const systemOwner = metadata.uid === 0;
+    if ((final && !currentOwner) || (!currentOwner && !systemOwner)) {
+      return "database-directory-owner-mismatch";
+    }
+    if ((metadata.mode & 0o022) !== 0) {
+      const protectedSystemScratch = !final && systemOwner &&
+        (metadata.mode & 0o1000) !== 0;
+      if (!protectedSystemScratch) return "database-directory-permissions-unsafe";
+    }
   }
   return undefined;
 }
@@ -2258,6 +2311,7 @@ export function inspectDacsNodeSqliteLocation(
     };
   }
   const absolutePath = isAbsolute(databasePath) ? databasePath : resolve(databasePath);
+  const inspectionPath = normalizeDarwinSystemAlias(absolutePath);
   if (containsSyncDirectory(absolutePath)) {
     return {
       status: "blocked",
@@ -2266,8 +2320,8 @@ export function inspectDacsNodeSqliteLocation(
     };
   }
   try {
-    if (existsSync(absolutePath)) {
-      const databaseStat = lstatSync(absolutePath);
+    if (existsSync(inspectionPath)) {
+      const databaseStat = lstatSync(inspectionPath);
       if (databaseStat.isSymbolicLink()) {
         return {
           status: "blocked",
@@ -2275,13 +2329,13 @@ export function inspectDacsNodeSqliteLocation(
           reasonCode: "database-path-symlink",
         };
       }
-      const reasonCode = unsafeLocalPathReason(absolutePath, "database");
+      const reasonCode = unsafeLocalPathReason(inspectionPath, "database");
       if (reasonCode !== undefined) {
         return { status: "blocked", databasePath: absolutePath, reasonCode };
       }
     }
-    const existing = nearestExistingPath(dirname(absolutePath));
-    const directoryReason = unsafeLocalPathReason(existing, "directory");
+    const existing = nearestExistingPath(dirname(inspectionPath));
+    const directoryReason = unsafeDirectoryChainReason(existing);
     if (directoryReason !== undefined) {
       return {
         status: "blocked",
@@ -6733,7 +6787,10 @@ export async function openDacsNodeSqliteDatabase(
   const admittedVersion = existedBeforeOpen
     ? validateExistingReadOnly(location.databasePath, options)
     : 0;
-  mkdirSync(dirname(location.databasePath), { recursive: true, mode: 0o700 });
+  await preparePrivateStoreDirectory(
+    dirname(location.databasePath),
+    "dacs-node SQLite database",
+  );
   let database: BetterSqlite3.Database;
   try {
     database = new BetterSqlite3(location.databasePath, {

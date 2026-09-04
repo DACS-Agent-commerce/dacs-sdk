@@ -2782,6 +2782,16 @@ describe("DACS Node SQLite durability foundation", () => {
       status: "blocked",
       reasonCode: "database-path-symlink",
     });
+
+    const physicalParent = join(root, "physical-parent");
+    const linkedParent = join(root, "linked-parent");
+    mkdirSync(physicalParent, { mode: 0o700 });
+    symlinkSync(physicalParent, linkedParent, "dir");
+    expect(inspectDacsNodeSqliteLocation(join(linkedParent, "nested.sqlite")))
+      .toMatchObject({
+        status: "blocked",
+        reasonCode: "database-path-symlink",
+      });
   });
 
   it("rejects unsafe pre-existing POSIX write permissions without repair", async () => {

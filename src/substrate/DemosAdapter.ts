@@ -1,3 +1,4 @@
+import { types as nodeTypes } from "node:util";
 import { Demos } from "@kynesyslabs/demosdk/websdk";
 import {
   StorageProgram,
@@ -56,6 +57,7 @@ import type {
 } from "./SubstrateAdapter.js";
 import type { AnchorHistoryPageFetcher } from "../discovery/scanner.js";
 import type {
+  DemosWriteJournal,
   DemosWriteJournalLease,
   DemosWriteJournalRecord,
   DemosWriteStage,
@@ -101,6 +103,29 @@ function demosNonNegativeInteger(value: unknown): number | undefined {
   }
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function stableAdapterConfigValue(
+  config: object,
+  key: keyof DemosAdapterConfig,
+): unknown {
+  let owner: object | null = config;
+  try {
+    while (owner !== null) {
+      if (nodeTypes.isProxy(owner)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) {
+        if (!("value" in descriptor)) throw new TypeError("accessor property");
+        return descriptor.value;
+      }
+      owner = Object.getPrototypeOf(owner);
+    }
+  } catch (cause) {
+    throw new DacsError(`DemosAdapterConfig.${key} must be stable data`, {
+      cause,
+    });
+  }
+  return undefined;
 }
 
 /** Demos block headers currently expose Unix seconds; CORE timestamps are ms. */
@@ -367,8 +392,10 @@ function serializeSignedTransaction(value: unknown): string {
  * but land in later tasks — see the per-method task refs.
  */
 export class DemosAdapter implements SubstrateAdapter {
-  private readonly demos: Demos;
-  private readonly config: DemosAdapterConfig;
+  readonly #demos: Demos;
+  private readonly config: Readonly<Omit<DemosAdapterConfig, "secret">>;
+  #pendingWalletSecret?: string;
+  #connectionFailed = false;
   private connected = false;
   private chainIdentity?: string;
   private activeWriteLease?: DemosWriteJournalLease;
@@ -645,7 +672,7 @@ export class DemosAdapter implements SubstrateAdapter {
       this.chainIdentity = pinned;
       return pinned;
     }
-    const genesisResult = await this.demos.getBlockByNumber(0) as unknown;
+    const genesisResult = await this.#demos.getBlockByNumber(0) as unknown;
     const genesis = isRecord(genesisResult) && isRecord(genesisResult.response)
       ? genesisResult.response
       : genesisResult;
@@ -663,7 +690,7 @@ export class DemosAdapter implements SubstrateAdapter {
     // Some deployed Demos nodes number their first queryable block as one and
     // return the literal `"error"` for block zero. In that layout, block one's
     // authenticated predecessor is the stable genesis/chain identifier.
-    const firstResult = await this.demos.getBlockByNumber(1) as unknown;
+    const firstResult = await this.#demos.getBlockByNumber(1) as unknown;
     const first = isRecord(firstResult) && isRecord(firstResult.response)
       ? firstResult.response
       : firstResult;
@@ -700,7 +727,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     return this.config.writeJournal.acquire({
       chainIdentity: await this.resolveChainIdentity(),
-      wallet: this.demos.getAddress().toLowerCase(),
+      wallet: this.#demos.getAddress().toLowerCase(),
     });
   }
 
@@ -792,16 +819,38 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   constructor(config: DemosAdapterConfig) {
-    if (!config?.rpc) {
+    if (config === null || typeof config !== "object" || nodeTypes.isProxy(config)) {
+      throw new DacsError("DemosAdapterConfig must be stable data");
+    }
+    const rpc = stableAdapterConfigValue(config, "rpc");
+    const secret = stableAdapterConfigValue(config, "secret");
+    const writeJournal = stableAdapterConfigValue(config, "writeJournal");
+    const chainIdentity = stableAdapterConfigValue(config, "chainIdentity");
+    if (typeof rpc !== "string" || rpc.length === 0) {
       throw new Error("DemosAdapter requires an rpc URL");
     }
-    this.config = config;
-    this.demos = new Demos();
+    if (secret !== undefined && (typeof secret !== "string" || secret.length === 0)) {
+      throw new DacsError(
+        "DemosAdapterConfig.secret must be a non-empty string when supplied",
+      );
+    }
+    if (chainIdentity !== undefined && typeof chainIdentity !== "string") {
+      throw new DacsError("DemosAdapterConfig.chainIdentity must be a string");
+    }
+    this.config = Object.freeze({
+      rpc,
+      ...(writeJournal === undefined
+        ? {}
+        : { writeJournal: writeJournal as DemosWriteJournal }),
+      ...(chainIdentity === undefined ? {} : { chainIdentity }),
+    });
+    this.#pendingWalletSecret = secret;
+    this.#demos = new Demos();
   }
 
   /** Underlying demosdk instance through a peer-independent escape-hatch type. */
   get raw(): DemosRawClient {
-    return this.demos;
+    return this.#demos;
   }
 
   /**
@@ -815,22 +864,39 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    return createDemosHistoryPageFetcher(this.demos, expectedOwner);
+    return createDemosHistoryPageFetcher(this.#demos, expectedOwner);
   }
 
   async connect(): Promise<void> {
-    await this.demos.connect(this.config.rpc);
-    if (this.config.secret) {
-      await this.demos.connectWallet(this.config.secret);
+    if (this.connected) return;
+    if (this.#connectionFailed) {
+      throw new DacsError(
+        "DemosAdapter initialization previously failed; construct a new adapter",
+      );
     }
-    this.connected = true;
+    const walletSecret = this.#pendingWalletSecret;
+    this.#pendingWalletSecret = undefined;
+    try {
+      await this.#demos.connect(this.config.rpc);
+      if (walletSecret !== undefined) {
+        await this.#demos.connectWallet(walletSecret);
+      }
+      this.connected = true;
+    } catch (error) {
+      this.#connectionFailed = true;
+      throw error;
+    } finally {
+      // A failed initialization requires a new adapter. Never retain a wallet
+      // secret indefinitely merely to make a later retry convenient.
+      this.#pendingWalletSecret = undefined;
+    }
   }
 
   getAddress(): string {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    return this.demos.getAddress();
+    return this.#demos.getAddress();
   }
 
   private demosEvidenceMatchesObservations(
@@ -919,9 +985,9 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== evidence.chainIdentity) return false;
 
     const observations = await Promise.all([
-      this.demos.getTxByHash(evidence.transactionRef),
-      this.demos.getBlockByNumber(evidence.blockNumber),
-      this.demos.storagePrograms.read(evidence.nativeAddress),
+      this.#demos.getTxByHash(evidence.transactionRef),
+      this.#demos.getBlockByNumber(evidence.blockNumber),
+      this.#demos.storagePrograms.read(evidence.nativeAddress),
     ]) as unknown[];
     return this.demosEvidenceMatchesObservations(
       evidence,
@@ -943,9 +1009,9 @@ export class DemosAdapter implements SubstrateAdapter {
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
     const observations = await Promise.all([
-      this.demos.getTxByHash(receipt.transactionRef.value),
-      this.demos.getBlockByNumber(blockNumber),
-      this.demos.storagePrograms.read(receipt.nativeAddress),
+      this.#demos.getTxByHash(receipt.transactionRef.value),
+      this.#demos.getBlockByNumber(blockNumber),
+      this.#demos.storagePrograms.read(receipt.nativeAddress),
     ]) as unknown[];
     const transactionResult = observations[0];
     const blockResult = observations[1];
@@ -1026,7 +1092,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
     let nativeObservation: unknown;
     try {
-      nativeObservation = await this.demos.storagePrograms.read(input.nativeAddress);
+      nativeObservation = await this.#demos.storagePrograms.read(input.nativeAddress);
     } catch (error) {
       if (httpStatus(error) === 404) return null;
       throw new SubstrateError("Demos receipt native read failed", { cause: error });
@@ -1070,7 +1136,7 @@ export class DemosAdapter implements SubstrateAdapter {
     let lastFailure: unknown;
     for (const transactionRef of provenanceCandidates) {
       try {
-        const transactionObservation = await this.demos.getTxByHash(transactionRef);
+        const transactionObservation = await this.#demos.getTxByHash(transactionRef);
         const transaction = isRecord(transactionObservation) &&
             isRecord(transactionObservation.response)
           ? transactionObservation.response
@@ -1093,7 +1159,7 @@ export class DemosAdapter implements SubstrateAdapter {
           throw new SubstrateError("Demos receipt transaction lacks write provenance");
         }
 
-        const blockObservation = await this.demos.getBlockByNumber(blockNumber);
+        const blockObservation = await this.#demos.getBlockByNumber(blockNumber);
         const block = isRecord(blockObservation) && isRecord(blockObservation.response)
           ? blockObservation.response : blockObservation;
         const blockContent = isRecord(block) && isRecord(block.content)
@@ -1181,7 +1247,7 @@ export class DemosAdapter implements SubstrateAdapter {
     let firstHash: string | undefined;
     for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
       const start = page * RECEIPT_HISTORY_PAGE_SIZE;
-      const raw = await this.demos.getTransactionHistory(
+      const raw = await this.#demos.getTransactionHistory(
         ownerAddress,
         "storageProgram",
         { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
@@ -1198,7 +1264,7 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       rows.push(...raw);
       if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
-        const lookahead = await this.demos.getTransactionHistory(
+        const lookahead = await this.#demos.getTransactionHistory(
           ownerAddress,
           "storageProgram",
           { start: start + raw.length, limit: 1 },
@@ -1215,7 +1281,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (firstHash === undefined) {
       throw new SubstrateError("Demos receipt native provenance is unavailable");
     }
-    const headCheck = await this.demos.getTransactionHistory(
+    const headCheck = await this.#demos.getTransactionHistory(
       ownerAddress,
       "storageProgram",
       { start: 0, limit: 1 },
@@ -1282,7 +1348,7 @@ export class DemosAdapter implements SubstrateAdapter {
         !sameOptionalJsonObject(latest.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt history does not bind the native value");
     }
-    const fresh = await this.demos.storagePrograms.read(nativeAddress) as unknown;
+    const fresh = await this.#demos.storagePrograms.read(nativeAddress) as unknown;
     if (!isRecord(fresh) || fresh.success !== true ||
         fresh.storageAddress !== nativeAddress ||
         normalizedDemosAddress(fresh.owner) !== owner ||
@@ -1302,7 +1368,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!(bytes instanceof Uint8Array)) {
       throw new SubstrateError("Demos Ed25519 signer input is invalid");
     }
-    const identity = await (this.demos as any).crypto.getIdentity("ed25519") as {
+    const identity = await (this.#demos as any).crypto.getIdentity("ed25519") as {
       privateKey?: unknown;
       publicKey?: unknown;
     };
@@ -1333,7 +1399,7 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   async getPublicKey(): Promise<Uint8Array> {
-    const { publicKey } = await (this.demos as any).crypto.getIdentity(
+    const { publicKey } = await (this.#demos as any).crypto.getIdentity(
       "ed25519",
     );
     return publicKey as Uint8Array;
@@ -1357,7 +1423,8 @@ export class DemosAdapter implements SubstrateAdapter {
    * made every live create fail (#58).
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
-    const chainNext = (await this.demos.getAddressNonce(this.demos.getAddress())) + 1;
+    const chainNext =
+      (await this.#demos.getAddressNonce(this.#demos.getAddress())) + 1;
     void key;
     const confirmed = this.activeWriteLease?.snapshot.records.reduce<number | undefined>(
       (highest, record) =>
@@ -1385,7 +1452,7 @@ export class DemosAdapter implements SubstrateAdapter {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
     return StorageProgram.deriveStorageAddress(
-      this.demos.getAddress(),
+      this.#demos.getAddress(),
       logicalToStorageProgramName(name), // Demos requires colon-free names (§6.3.4)
       await this.nextAnchorNonce(),
       ANCHOR_SALT,
@@ -1398,7 +1465,7 @@ export class DemosAdapter implements SubstrateAdapter {
     name: string,
     data: Record<string, unknown>,
   ) {
-    const owner = this.demos.getAddress();
+    const owner = this.#demos.getAddress();
     const journalBindings = (this.activeWriteLease?.snapshot.records ?? [])
       .filter((record) =>
         record.logicalName === name &&
@@ -1509,8 +1576,8 @@ export class DemosAdapter implements SubstrateAdapter {
         const observations = await this.waitFor(
           ctx,
           Promise.allSettled([
-            this.demos.nodeCall("getTransactionStatus", { hash: txRef }),
-            this.demos.getTxByHash(txRef),
+            this.#demos.nodeCall("getTransactionStatus", { hash: txRef }),
+            this.#demos.getTxByHash(txRef),
           ]),
           "inclusion",
         );
@@ -1639,7 +1706,7 @@ export class DemosAdapter implements SubstrateAdapter {
       try {
         const result = await this.waitFor(
           ctx,
-          this.demos.storagePrograms.read(record.nativeAddress),
+          this.#demos.storagePrograms.read(record.nativeAddress),
           "authenticated native readback",
           () => timeoutFailure(),
         ) as unknown;
@@ -1832,7 +1899,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
     const observed = await this.waitFor(
       ctx,
-      this.demos.getBlockByNumber(blockNumber!),
+      this.#demos.getBlockByNumber(blockNumber!),
       "canonical block authentication",
     ) as unknown;
     const block = isRecord(observed) && isRecord(observed.response)
@@ -2196,7 +2263,7 @@ export class DemosAdapter implements SubstrateAdapter {
         stage: "prepared",
         logicalName: name,
         programName: prepared.programName,
-        owner: this.demos.getAddress(),
+        owner: this.#demos.getAddress(),
         nativeAddress: prepared.address,
         valueHash: exactJsonHash(data),
         nonce: prepared.nonce,
@@ -2214,12 +2281,12 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
 
-    let signed: Awaited<ReturnType<typeof this.demos.storagePrograms.sign>>;
-    let validity: Awaited<ReturnType<typeof this.demos.tx.confirm>>;
+    let signed: Awaited<ReturnType<Demos["storagePrograms"]["sign"]>>;
+    let validity: Awaited<ReturnType<Demos["tx"]["confirm"]>>;
     try {
       signed = await this.waitFor(
         ctx,
-        this.demos.storagePrograms.sign(
+        this.#demos.storagePrograms.sign(
           prepared.payload,
           { nonce: prepared.nonce },
         ),
@@ -2227,7 +2294,7 @@ export class DemosAdapter implements SubstrateAdapter {
       );
       validity = await this.waitFor(
         ctx,
-        this.demos.tx.confirm(signed, this.demos),
+        this.#demos.tx.confirm(signed, this.#demos),
         "confirmation",
       );
     } catch (error) {
@@ -2295,9 +2362,9 @@ export class DemosAdapter implements SubstrateAdapter {
 
     await this.putActiveWrite("broadcast-intent");
     await this.activeWriteLease!.assertCurrent();
-    const broadcastPromise = this.demos.tx.broadcast(
+    const broadcastPromise = this.#demos.tx.broadcast(
       validity,
-      this.demos,
+      this.#demos,
     ) as Promise<unknown>;
 
     // For inclusion/read visibility, the signed hash is the authoritative
@@ -2682,7 +2749,7 @@ export class DemosAdapter implements SubstrateAdapter {
     metadata: Record<string, unknown> | null;
   } | null> {
     try {
-      const result = (await this.demos.storagePrograms.read(address)) as {
+      const result = (await this.#demos.storagePrograms.read(address)) as {
         success?: boolean;
         data?: unknown;
         metadata?: unknown;
@@ -2839,7 +2906,7 @@ export class DemosAdapter implements SubstrateAdapter {
       () => this.withWriteLease<AnchorRef>(async () => {
       const ctx = this.newContext(name, timeoutMs, pollMs, opts);
       await this.reconcilePrevious(key, ctx);
-      const owner = this.demos.getAddress();
+      const owner = this.#demos.getAddress();
       const programName = logicalToStorageProgramName(name);
       const metadataLogicalAddress = typeof metadata?.logicalAddress === "string" &&
           metadata.logicalAddress.length > 0 &&
@@ -2956,12 +3023,12 @@ export class DemosAdapter implements SubstrateAdapter {
       await lease.put(preparedRecord);
       const signed = await this.waitFor(
         ctx,
-        this.demos.storagePrograms.sign(payload, { nonce }),
+        this.#demos.storagePrograms.sign(payload, { nonce }),
         "immutable signing",
       );
       const validity = await this.waitFor(
         ctx,
-        this.demos.tx.confirm(signed, this.demos),
+        this.#demos.tx.confirm(signed, this.#demos),
         "immutable confirmation",
       );
       const signedRecord = signed as unknown as {
@@ -3018,9 +3085,9 @@ export class DemosAdapter implements SubstrateAdapter {
       ctx.receipt.state = "broadcast-unknown";
       await this.putActiveWrite("broadcast-intent");
       await lease.assertCurrent();
-      const broadcastPromise = this.demos.tx.broadcast(
+      const broadcastPromise = this.#demos.tx.broadcast(
         validity,
-        this.demos,
+        this.#demos,
       ) as Promise<unknown>;
 
       let completionFailure: AnchorWaitError | undefined;
@@ -3156,12 +3223,12 @@ export class DemosAdapter implements SubstrateAdapter {
       };
     }
 
-    const owner = this.demos.getAddress().trim().toLowerCase();
+    const owner = this.#demos.getAddress().trim().toLowerCase();
     const anchors: OwnedAnchor[] = [];
     for (const candidate of candidates) {
       if (!candidate.programName.startsWith(programPrefix)) continue;
       try {
-        const result = (await this.demos.storagePrograms.read(
+        const result = (await this.#demos.storagePrograms.read(
           candidate.storageAddress,
         )) as {
           success?: boolean;
@@ -3227,7 +3294,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const journal = this.config.writeJournal;
     if (
       !journal ||
-      this.demos.getAddress().toLowerCase() !== expectedOwner.toLowerCase()
+      this.#demos.getAddress().toLowerCase() !== expectedOwner.toLowerCase()
     ) return null;
 
     let lease = this.activeWriteLease;
@@ -3236,7 +3303,7 @@ export class DemosAdapter implements SubstrateAdapter {
       if (!lease) {
         lease = await journal.acquire({
           chainIdentity: await this.resolveChainIdentity(),
-          wallet: this.demos.getAddress().toLowerCase(),
+          wallet: this.#demos.getAddress().toLowerCase(),
         });
         release = true;
       }
@@ -3254,7 +3321,7 @@ export class DemosAdapter implements SubstrateAdapter {
         };
       }
       const address = addresses[0]!;
-      const native = await this.demos.storagePrograms.read(address) as unknown;
+      const native = await this.#demos.storagePrograms.read(address) as unknown;
       const programName = logicalToStorageProgramName(name);
       if (
         !isRecord(native) ||
@@ -3307,7 +3374,7 @@ export class DemosAdapter implements SubstrateAdapter {
     for (const c of candidates) {
       if (c.programName !== programName) continue; // exactMatch is the node's contract, not ours to assume
       try {
-        const res = (await this.demos.storagePrograms.read(
+        const res = (await this.#demos.storagePrograms.read(
           c.storageAddress,
         )) as {
           success?: boolean;
@@ -3342,7 +3409,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
     try {
-      const res = (await this.demos.storagePrograms.read(address)) as {
+      const res = (await this.#demos.storagePrograms.read(address)) as {
         success?: boolean;
         data?: Record<string, unknown> | null;
         error?: string;
@@ -3377,7 +3444,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
-    const dahr = await (this.demos as any).web2.createDahr();
+    const dahr = await (this.#demos as any).web2.createDahr();
     try {
       const result = await dahr.startProxy({
         url: req.url,
@@ -3422,7 +3489,7 @@ export class DemosAdapter implements SubstrateAdapter {
       };
     }
     const raw = await new Identities().getIdentities(
-      this.demos,
+      this.#demos,
       "getIdentities",
       ref,
     );
@@ -3455,12 +3522,12 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     const accounts = parsed.kind === "web2"
       ? await identities.getDemosIdsByWeb2Identity(
-          this.demos,
+          this.#demos,
           parsed.platform,
           parsed.handle,
         )
       : await identities.getDemosIdsByWeb3Identity(
-          this.demos,
+          this.#demos,
           `${parsed.chainType}.${parsed.subchain}`,
           parsed.address,
         );
