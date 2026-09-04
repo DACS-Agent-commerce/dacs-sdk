@@ -488,6 +488,37 @@ describe("party-scoped multi-claim Vet planning", () => {
     });
   });
 
+  test("matches evaluated parties and carried claim subjects by CF-3 identity", () => {
+    const base = claim("alpha", "alice");
+    const qualified = `${base}?role=buyer`;
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{
+        scheme: "alpha",
+        verificationRequired: true,
+        recipeVersion: 1,
+      }],
+    };
+
+    expect(() => partyVetPinScopeHash({
+      jobId: "job-144-cf3",
+      evaluatedParty: qualified,
+      identityBundle: bundle(base, [base]),
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [{
+        requirementPath: { kind: "required", index: 0 },
+        claimSubject: qualified,
+        classification: "dealSpecific",
+        methodInput: {
+          kind: "self-signed",
+          assertion: qualified,
+          signature: "a".repeat(128),
+        },
+      }],
+    })).not.toThrow();
+  });
+
   test("rejects hostile attempt accessors and recipe/path substitutions", async () => {
     const alpha = claim("alpha", "alice");
     const beta = claim("beta", "alice");
