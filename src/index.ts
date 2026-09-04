@@ -432,7 +432,9 @@ export {
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
   createAgent,
+  createUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
