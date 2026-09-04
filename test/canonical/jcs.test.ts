@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
 
-import { canonicalize, canonicalSignedScope, DacsError } from "../../src/index.js";
+import {
+  canonicalize,
+  canonicalSignedScope,
+  contentHash,
+  DacsError,
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  sha256Hex,
+  signArtifact,
+  signedBytes,
+  verifyArtifact,
+} from "../../src/index.js";
 
 // §7.1 / §7.2 canonicalize vectors (DACS-Standard §14).
 describe("canonicalize (§7.1)", () => {
@@ -34,8 +46,50 @@ describe("canonicalize (§7.1)", () => {
     expect(() => canonicalize(9007199254740993)).toThrow(DacsError); // beyond safe-integer
   });
 
-  it("rejects NFC-normalized key collisions", () => {
-    expect(() => canonicalize({ "e\u0301": 1, "é": 2 })).toThrow(/NFC key collision/);
+  it("preserves canonically equivalent member names as distinct signed data", () => {
+    const value = { "café": 2, "cafe\u0301": 1 };
+    const expected = '{"cafe\u0301":1,"café":2}';
+    expect(canonicalize(value)).toBe(expected);
+    expect(canonicalSignedScope(value)).toBe(expected);
+    expect(contentHash(value)).toBe(
+      "bae9df80a31aff1ecbb9820c3f65bdaa30b3889cc36d80448d602281e6c6546a",
+    );
+  });
+
+  it("normalizes string values but never member names", () => {
+    expect(canonicalize({ "cafe\u0301": "cafe\u0301" })).toBe(
+      '{"cafe\u0301":"café"}',
+    );
+  });
+
+  it("rejects signatures made with the historical member-name rewrite", () => {
+    const seed = Uint8Array.from({ length: 32 }, (_, index) => index);
+    const document = { "cafe\u0301": 1 };
+    const separator = "dacs-rating:v1:" as const;
+    const historicalHash = sha256Hex('{"café":1}');
+    const historicalSignature = ed25519Sign(
+      signedBytes(separator, historicalHash),
+      privateKeyFromSeed(seed),
+    );
+
+    expect(verifyArtifact(
+      separator,
+      document,
+      historicalSignature,
+      publicKeyFromSeed(seed),
+    )).toBe(false);
+    expect(verifyArtifact(
+      separator,
+      document,
+      signArtifact(separator, document, seed),
+      publicKeyFromSeed(seed),
+    )).toBe(true);
+  });
+
+  it("sorts unmodified member names by UTF-16 code units", () => {
+    expect(canonicalize({ "\ue000": 1, "\ud800\udc00": 2 })).toBe(
+      '{"𐀀":2,"":1}',
+    );
   });
 
   it("rejects lone UTF-16 surrogates with a typed error", () => {
@@ -116,15 +170,6 @@ describe("canonicalize (§7.1)", () => {
     );
   });
 
-  it("rejects object keys that collide after NFC normalization", () => {
-    const colliding = Object.fromEntries([
-      ["é", 1],
-      ["e\u0301", 2],
-    ]);
-    expect(() => canonicalize(colliding)).toThrow(
-      /duplicate NFC-normalized keys/,
-    );
-  });
 });
 
 function nestedArrays(depth: number): unknown {

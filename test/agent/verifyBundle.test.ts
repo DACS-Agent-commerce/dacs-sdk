@@ -314,6 +314,49 @@ async function resignAgreement(
   );
 }
 
+async function convertToAlternativePaymentFixture(fx: Fixture): Promise<void> {
+  const listingScope = structuredClone(fx.listing);
+  delete listingScope.signature;
+  listingScope.pipeline = [
+    { kind: "negotiate-fixed-price" },
+    { kind: "commit-agreement" },
+    {
+      kind: "pay-alternative",
+      parameters: {
+        alternatives: [
+          { railId: "x402:default", railVersion: 1 },
+          { railId: "demos-native:DEM", railVersion: 1 },
+        ],
+      },
+    },
+    { kind: "deliver-attested-payload" },
+  ];
+  listingScope.acceptedRails = [
+    { railId: "x402:default", railVersion: 1 },
+    { railId: "demos-native:DEM", railVersion: 1 },
+  ];
+  fx.listing = {
+    ...listingScope,
+    signature: await componentSignature(
+      listingScope,
+      ARTIFACT_SEPARATORS.Listing,
+      sellerDid,
+      signSeller,
+    ),
+  };
+  (fx.agreement.listingRef as Record<string, unknown>).contentHash =
+    contentHash(fx.listing);
+  await resignAgreement(fx);
+  (fx.bundle.listingRef as Record<string, unknown>).contentHash =
+    contentHash(fx.listing);
+  (fx.bundle.agreementRef as Record<string, unknown>).contentHash =
+    contentHash(fx.agreement);
+  await resignFixture(fx, [
+    { party: buyerDid, sign: signBuyer },
+    { party: sellerDid, sign: signSeller },
+  ]);
+}
+
 async function buildLegacyMvpAbortFixture() {
   const listingScope = buildLegacyMvpListing();
   const listing = {
@@ -371,6 +414,7 @@ function depsFor(
     resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
     verifyEvidence?: VerifyBundleDeps["verifyEvidence"] | null;
+    verifyAlternativePaymentProjection?: VerifyBundleDeps["verifyAlternativePaymentProjection"];
     verifyCompositeRecord?: VerifyBundleDeps["verifyCompositeRecord"];
   } = {},
 ): VerifyBundleDeps {
@@ -399,6 +443,12 @@ function depsFor(
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
     ...(verifyEvidence ? { verifyEvidence } : {}),
+    ...(opts.verifyAlternativePaymentProjection
+      ? {
+          verifyAlternativePaymentProjection:
+            opts.verifyAlternativePaymentProjection,
+        }
+      : {}),
     ...(opts.verifyCompositeRecord
       ? { verifyCompositeRecord: opts.verifyCompositeRecord }
       : {}),
@@ -770,6 +820,110 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       result.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
     ).toBe("invalid-shape");
     expect(result.ok).toBe(false);
+  });
+
+  test("legacy runSession graph resolves only its exactly pinned normative Listing", async () => {
+    const { listing } = await buildArtifacts();
+    const listingPin = {
+      listingId: listing.listingId,
+      version: listing.listingVersion,
+      contentHash: contentHash(listing),
+    };
+    const agreement: Record<string, unknown> = {
+      jobId: JOB_ID,
+      pattern: "negotiate-fixed-price",
+      buyer: buyerDid,
+      seller: sellerDid,
+      listingRef: LISTING_ADDR,
+      dacsSdkListingPin: structuredClone(listingPin),
+      price: {
+        amount: "1",
+        asset: "USDC",
+        decimals: 6,
+        rail: "x402:default",
+      },
+      delivery: {
+        phase: "deliver-attested-payload",
+        format: "application/json",
+      },
+      expiresAt: "2026-08-21T12:00:00.000Z",
+    };
+    const body: Record<string, unknown> = {
+      bundleVersion: "1",
+      jobId: JOB_ID,
+      outcome: "completed",
+      anchoredByRole: "buyer",
+      listingRef: structuredClone(listingPin),
+      agreementRef: {
+        kind: "dacs-3-agreement",
+        id: "agreement-transitional",
+        contentHash: contentHash(agreement),
+      },
+      parties: [
+        { role: "buyer", bundleHash: h("c"), primaryClaim: buyerDid },
+      ],
+      phaseSummary: [],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1780000000000,
+    };
+    const resign = async (): Promise<Record<string, unknown>> => {
+      const scope = structuredClone(body);
+      delete scope.anchoredByRole;
+      const message = signedBytes(
+        ARTIFACT_SEPARATORS.AttestationBundle,
+        contentHash(scope),
+      );
+      return {
+        ...structuredClone(body),
+        signatures: [
+          {
+            party: buyerDid,
+            algorithm: "ed25519",
+            value: Buffer.from(await signBuyer(message)).toString("base64url"),
+          },
+          {
+            party: sellerDid,
+            algorithm: "ed25519",
+            value: Buffer.from(await signSeller(message)).toString("base64url"),
+          },
+        ],
+      };
+    };
+    let bundle = await resign();
+    const verifyGraph = () =>
+      verifyBundleCore("transitional-bundle", {
+        readArtifact: async (ref) =>
+          ref === LISTING_ADDR ? listing : bundle,
+        resolveRef: async (kind) =>
+          kind === "dacs-3-agreement" ? agreement : null,
+        resolvePublicKey: async (did) => resolveFromDid(did),
+        verify,
+      });
+
+    const accepted = await verifyGraph();
+    expect(accepted.ok).toBe(false);
+    expect(
+      accepted.refs.find((ref) => ref.kind === "dacs-3-agreement"),
+    ).toMatchObject({
+      verdict: "signature-missing",
+      signature: { verdict: "missing" },
+    });
+    expect(
+      accepted.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("ok");
+
+    delete agreement.dacsSdkListingPin;
+    (body.agreementRef as { contentHash: string }).contentHash =
+      contentHash(agreement);
+    bundle = await resign();
+    const unpinned = await verifyGraph();
+    expect(unpinned.ok).toBe(false);
+    expect(
+      unpinned.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("invalid-shape");
   });
 
   test("snapshots the signed bundle before any asynchronous callback", async () => {
@@ -1367,6 +1521,53 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     );
     expect(res.ok).toBe(true);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
+  });
+
+  test("pay-alternative fails closed before SettlementEvidence interpretation without APR-7", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    await convertToAlternativePaymentFixture(fx);
+    let evidenceCalls = 0;
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        verifyEvidence: async () => {
+          evidenceCalls += 1;
+          return { decision: "pass", authorizedSigner: buyerDid };
+        },
+      }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/projection verifier unavailable/);
+    expect(evidenceCalls).toBe(0);
+    expect(res.refs).toContainEqual({
+      kind: "dacs-4-alternative-projection",
+      id: JOB_ID,
+      verdict: "unresolved",
+    });
+  });
+
+  test("pay-alternative runs APR-7 on exact signed artifacts before evidence", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    await convertToAlternativePaymentFixture(fx);
+    const order: string[] = [];
+    const res = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        verifyAlternativePaymentProjection: async (input) => {
+          order.push("apr");
+          expect(input.listing).toEqual(fx.listing);
+          expect(input.agreement).toEqual(fx.agreement);
+          expect(input.bundle).toEqual(fx.bundle);
+          return { decision: "pass" };
+        },
+        verifyEvidence: async () => {
+          order.push("evidence");
+          return { decision: "pass", authorizedSigner: buyerDid };
+        },
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(order).toEqual(["apr", "evidence"]);
   });
 
   test("missing referenced artifact => not ok", async () => {

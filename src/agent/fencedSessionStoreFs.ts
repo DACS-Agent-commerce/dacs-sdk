@@ -1,17 +1,19 @@
 import {
-  link,
-  mkdir,
-  readFile,
+  lstat,
   readdir,
   rename,
-  stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   assertCheckpointPayloadShape,
   assertSessionPaymentAuthorizationShape,
@@ -75,8 +77,6 @@ import {
  * recovery, so a hard crash cannot wedge the store or expose a replacement gate.
  */
 
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 const LOCK_RETRY_MS = 5;
 const LOCK_MAX_RETRIES = 400; // ~2s of contention before giving up
 
@@ -197,12 +197,16 @@ export async function createFsFencedSessionStore(
       `lockStaleMs must be a positive finite number, got ${lockStaleMs}`,
     );
   }
-  const sessionsDir = join(opts.dir, "sessions");
-  const hashesDir = join(opts.dir, "hashes");
-  const settlementsDir = join(opts.dir, "settlements");
-  const locksDir = join(opts.dir, "locks");
+  const root = await preparePrivateStoreDirectory(
+    opts.dir,
+    "filesystem fenced session store",
+  );
+  const sessionsDir = join(root, "sessions");
+  const hashesDir = join(root, "hashes");
+  const settlementsDir = join(root, "settlements");
+  const locksDir = join(root, "locks");
   for (const d of [sessionsDir, hashesDir, settlementsDir, locksDir]) {
-    await mkdir(d, { recursive: true, mode: DIR_MODE });
+    await preparePrivateStoreDirectory(d, "filesystem fenced session store");
   }
 
   const sessionPath = (jobId: string) => join(sessionsDir, `${safe(jobId)}.json`);
@@ -219,9 +223,11 @@ export async function createFsFencedSessionStore(
     join(locksDir, `${reclaimQuarantinePrefix(jobId)}${randomUUID()}.quarantine`);
 
   async function atomicWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, JSON.stringify(value), { mode: FILE_MODE });
-    await rename(tmp, path);
+    await atomicWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "filesystem fenced session store",
+    );
   }
 
   /**
@@ -230,16 +236,11 @@ export async function createFsFencedSessionStore(
    * binding, and concurrent creators cannot overwrite one another.
    */
   async function exclusiveWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(value), {
-        mode: FILE_MODE,
-        flag: "wx",
-      });
-      await link(tmp, path);
-    } finally {
-      await unlink(tmp).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "filesystem fenced session store",
+    );
   }
 
   async function unlinkIfExists(path: string): Promise<void> {
@@ -253,7 +254,11 @@ export async function createFsFencedSessionStore(
   async function readSession(jobId: string): Promise<SessionLoad> {
     let text: string;
     try {
-      text = await readFile(sessionPath(jobId), "utf8");
+      text = await readPrivateFile(
+        sessionPath(jobId),
+        "utf8",
+        "filesystem fenced session store",
+      );
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
       throw e;
@@ -299,7 +304,11 @@ export async function createFsFencedSessionStore(
 
   async function readLockOwner(lp: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(lp, "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        lp,
+        "utf8",
+        "filesystem fenced session store lock",
+      )) as unknown;
       if (
         typeof parsed === "object" &&
         parsed !== null &&
@@ -341,7 +350,7 @@ export async function createFsFencedSessionStore(
     for (const name of names) {
       const path = join(locksDir, name);
       try {
-        const metadata = await stat(path);
+        const metadata = await lstat(path);
         const owner = await readLockOwner(path);
         if (
           Date.now() - metadata.mtimeMs <= lockStaleMs ||
@@ -364,7 +373,7 @@ export async function createFsFencedSessionStore(
     const rp = reclaimPath(jobId);
     let observed;
     try {
-      observed = await stat(rp);
+      observed = await lstat(rp);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
@@ -384,7 +393,7 @@ export async function createFsFencedSessionStore(
     }
     let moved;
     try {
-      moved = await stat(quarantine);
+      moved = await lstat(quarantine);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
@@ -462,7 +471,7 @@ export async function createFsFencedSessionStore(
     // These observations never authorize deletion; every destructive decision
     // is repeated after acquiring the gate below.
     try {
-      const candidate = await stat(lp);
+      const candidate = await lstat(lp);
       if (Date.now() - candidate.mtimeMs <= lockStaleMs) return;
       const candidateOwner = await readLockOwner(lp);
       if (candidateOwner !== null && processIsAlive(candidateOwner.pid)) return;
@@ -476,7 +485,7 @@ export async function createFsFencedSessionStore(
     try {
       let observed;
       try {
-        observed = await stat(lp);
+        observed = await lstat(lp);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
         throw error;
@@ -487,7 +496,7 @@ export async function createFsFencedSessionStore(
 
       let current;
       try {
-        current = await stat(lp);
+        current = await lstat(lp);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
         throw error;
@@ -549,7 +558,11 @@ export async function createFsFencedSessionStore(
   > => {
     let existing: { jobId?: unknown; kind?: unknown };
     try {
-      existing = JSON.parse(await readFile(hashPath(hash), "utf8")) as {
+      existing = JSON.parse(await readPrivateFile(
+        hashPath(hash),
+        "utf8",
+        "filesystem fenced session store",
+      )) as {
         jobId?: unknown;
         kind?: unknown;
       };
@@ -608,7 +621,11 @@ export async function createFsFencedSessionStore(
     let existing: Record<string, unknown>;
     try {
       existing = JSON.parse(
-        await readFile(settlementPath(settlementId), "utf8"),
+        await readPrivateFile(
+          settlementPath(settlementId),
+          "utf8",
+          "filesystem fenced session store",
+        ),
       ) as Record<string, unknown>;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -698,7 +715,11 @@ export async function createFsFencedSessionStore(
     for (const file of files) {
       let parsed: unknown;
       try {
-        parsed = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as unknown;
+        parsed = JSON.parse(await readPrivateFile(
+          join(sessionsDir, file),
+          "utf8",
+          "filesystem fenced session store",
+        )) as unknown;
       } catch (error) {
         throw new DacsError(
           `session file ${file} cannot be safely inspected for agreement ownership: ${String(error)}`,
@@ -1367,7 +1388,11 @@ export async function createFsFencedSessionStore(
       for (const f of files) {
         let parsed: unknown;
         try {
-          parsed = JSON.parse(await readFile(join(sessionsDir, f), "utf8")) as unknown;
+          parsed = JSON.parse(await readPrivateFile(
+            join(sessionsDir, f),
+            "utf8",
+            "filesystem fenced session store",
+          )) as unknown;
         } catch (error) {
           throw new DacsError(
             `session file ${f} cannot be safely listed: ${String(error)}`,
