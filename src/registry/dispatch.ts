@@ -301,7 +301,8 @@ function captureSettlementStore(
     "pay-dem settlement store once",
   );
   const wrapper: SettlementIdempotencyStore = {
-    once: (key, submit, reconcile) => once(key, submit, reconcile),
+    once: (key, binding, submit, reconcile) =>
+      once(key, binding, submit, reconcile),
   };
   return Object.freeze(wrapper);
 }

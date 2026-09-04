@@ -3,6 +3,8 @@ import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
@@ -47,6 +49,7 @@ export interface EvmTransferClient {
 export async function evmErc20SettleCore(
   params: EvmErc20SettleParams,
   client: EvmTransferClient,
+  effectFence?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
   const network = params.network;
   const tokenAddress = params.tokenAddress;
@@ -75,6 +78,9 @@ export async function evmErc20SettleCore(
     );
   }
 
+  // The generation check belongs beside the wallet call: an expired recovery
+  // worker must not broadcast after a newer process has taken ownership.
+  await effectFence?.assertCurrent();
   const txHash = await transfer({
     token: tokenAddress,
     to: recipientEvm,
@@ -145,7 +151,11 @@ export interface EvmErc20RailConfig {
 
 export interface EvmErc20Rail {
   readonly address: string;
-  settle(params: Omit<EvmErc20SettleParams, "finalityBlocks">): Promise<SettleResult>;
+  readonly finalityBlocks: number;
+  settle(
+    params: Omit<EvmErc20SettleParams, "finalityBlocks">,
+    effectFence?: Readonly<SettlementEffectFence>,
+  ): Promise<SettleResult>;
 }
 
 /**
@@ -222,10 +232,11 @@ export async function createEvmErc20Rail(
 
   return {
     address: account.address,
-    settle: (params) => evmErc20SettleCore({
+    finalityBlocks,
+    settle: (params, effectFence) => evmErc20SettleCore({
       ...params,
       finalityBlocks,
-    }, client),
+    }, client, effectFence),
   };
 }
 
@@ -235,9 +246,11 @@ export async function createEvmErc20Rail(
  * an idempotency store — a concurrent retry or a resume after a settle→anchor
  * crash reconciles the prior submission instead of sending another transfer. The
  * default store is in-process (closes the concurrency + same-process races); pass
- * `store` backed by a durable {@link SettlementLog} for cross-process crash-safety,
- * and `reconcile` to safely resubmit only after a chain query proves no prior
- * transfer landed (otherwise an unresolved intent fails closed).
+ * `store` backed by a durable {@link SettlementLog} for cross-process crash-safety.
+ * Reconciliation may adopt a finalized prior transfer, but a replacement transfer
+ * also requires rail-specific proof that the old effect is terminal or deterministic
+ * external idempotency. The plain ERC-20 rail has neither, so absence remains an
+ * operator-action state rather than authorizing a second transfer.
  */
 export function evmErc20Settle(
   rail: EvmErc20Rail,
@@ -249,23 +262,43 @@ export function evmErc20Settle(
   const network = cfg.network;
   const recipientEvm = cfg.recipientEvm;
   const reconcile = opts.reconcile;
+  const payerAddress = rail.address;
+  const finalityBlocks = rail.finalityBlocks;
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
+    throw new DacsError("evm-erc20 rail must expose its positive finality policy");
+  }
   return (req) => {
-    const { amount, expectedPayee, jobId, rail: railId } = req;
+    const { amount, asset, expectedPayee, jobId, phase, rail: railId } = req;
     const phaseIndex = req.phaseIndex ?? 0;
     if (expectedPayee !== recipientEvm) {
       throw new DacsError(
         `evm-erc20 destination mismatch: request binds ${expectedPayee}, configured rail pays ${recipientEvm}`,
       );
     }
-    const submit = () =>
+    const binding = Object.freeze({
+      bindingVersion: "1",
+      railId,
+      jobId,
+      phaseIndex,
+      phase,
+      amount,
+      agreementAsset: asset,
+      settlementAsset: tokenAddress,
+      payer: payerAddress,
+      payee: recipientEvm,
+      network,
+      finality: Object.freeze({ model: "block-depth", finalityBlocks }),
+    }) satisfies Readonly<SettlementBinding>;
+    const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
       rail.settle({
         network,
         tokenAddress,
         recipientEvm,
         amount,
-      });
+      }, effectFence);
     return store.once(
       settlementKey(railId, jobId, phaseIndex),
+      binding,
       submit,
       reconcile,
     );
