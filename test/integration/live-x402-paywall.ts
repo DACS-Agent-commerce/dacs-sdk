@@ -56,7 +56,20 @@ export async function startLiveX402Paywall(cfg: Config): Promise<RunningPaywall>
       mimeType: "application/json",
     },
   });
-  await resource.initialize();
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await resource.initialize();
+      break;
+    } catch (error) {
+      if (attempt === 3) throw error;
+      console.warn("LIVE x402 retrying read-only facilitator capability lookup", {
+        attempt,
+        name: error instanceof Error ? error.name : "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
 
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -90,6 +103,10 @@ export async function startLiveX402Paywall(cfg: Config): Promise<RunningPaywall>
         { request: context },
       );
       if (!settled.success) {
+        console.error("LIVE x402 facilitator rejected settlement", {
+          errorReason: settled.errorReason,
+          errorMessage: settled.errorMessage,
+        });
         res.writeHead(502, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: settled.errorReason }));
         return;
@@ -100,6 +117,10 @@ export async function startLiveX402Paywall(cfg: Config): Promise<RunningPaywall>
       });
       res.end(JSON.stringify({ ok: true }));
     })().catch((error: unknown) => {
+      console.error("LIVE x402 paywall request failed", {
+        name: error instanceof Error ? error.name : "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
       }

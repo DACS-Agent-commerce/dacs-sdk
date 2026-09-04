@@ -1,6 +1,11 @@
 import { bundleAddress, contentHash, stripSignature } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
+import {
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
 
@@ -101,10 +106,14 @@ function bundleContentHash(bundle: AnyAttestationBundle): string {
 
 export interface DeriveReputationDeps {
   /**
-   * §10.4.1 signature validation — drop copies that fail. Wire verifyBundle here
-   * for full conformance. REQUIRED unless `trustBundles` is set: deriving
-   * reputation from unvalidated bundles is a fail-open trap, so the caller must
-   * make the choice explicit.
+   * Synchronous eligibility predicate for copies that were already fully
+   * authenticated upstream. This MUST return a primitive boolean. Async
+   * cryptographic verification belongs in {@link deriveReputationWithValidation};
+   * passing a Promise here is rejected at runtime so JavaScript/casted callers
+   * cannot accidentally admit `Promise.resolve(false)` as truthy.
+   *
+   * REQUIRED unless `trustBundles` is set: deriving reputation from unvalidated
+   * bundles is a fail-open trap, so the caller must make the choice explicit.
    */
   isValid?: (bundle: AnyAttestationBundle) => boolean;
   /**
@@ -126,6 +135,38 @@ export interface DeriveReputationDeps {
   }) => "absent" | "indeterminate";
 }
 
+export interface DeriveReputationValidationDeps {
+  /**
+   * Fully authenticate one untrusted candidate before it can be inspected or
+   * scored. Production callers should verify the copy's role-address binding,
+   * required signer set, and referenced artifacts. Only the primitive value
+   * `true` admits a copy; false, non-boolean, thrown, and rejected results are
+   * all excluded fail-closed.
+   */
+  validate: (bundle: AnyAttestationBundle) => boolean | Promise<boolean>;
+  /** Authoritative SR-2 absence evidence, with the same contract as the pure scorer. */
+  copyAbsence?: DeriveReputationDeps["copyAbsence"];
+}
+
+function validatedCandidates(
+  bundles: AnyAttestationBundle[],
+  deps: DeriveReputationDeps,
+): AnyAttestationBundle[] {
+  if (deps.trustBundles && !deps.isValid) return bundles;
+  const isValid = deps.isValid;
+  if (!isValid) return [];
+  return bundles.filter((bundle) => {
+    const decision: unknown = isValid(bundle);
+    if (typeof decision !== "boolean") {
+      throw new DacsError(
+        "deriveReputation deps.isValid must return a boolean synchronously; " +
+          "use deriveReputationWithValidation for async cryptographic verification",
+      );
+    }
+    return decision;
+  });
+}
+
 /**
  * Derive a party's windowed reputation (§10.5.1). `bundles` may include both
  * buyer- and seller-anchored copies of a job; they are reconciled per jobId.
@@ -137,24 +178,35 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   const basis = window.windowingBasis ?? "finalisedAt";
+  const parsedParty = requireCanonicalClaimReference(
+    party,
+    "ReputationDerivation partyPrimaryClaim",
+  );
+  const canonicalParty =
+    `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`;
   if (!deps.isValid && !deps.trustBundles) {
     throw new DacsError(
       "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
         "deriving from unvalidated bundles is not a safe default",
     );
   }
-  const isValid = deps.isValid ?? (() => true);
+  // Validate before reading party/window fields. With `trustBundles`, the caller
+  // explicitly attests that this happened upstream; otherwise the synchronous
+  // predicate is enforced as an actual boolean at runtime.
+  const candidates = validatedCandidates(bundles, deps);
 
-  const scoped = bundles.filter(
+  const scoped = candidates.filter(
     (b) =>
-      b.parties.some((p) => p.primaryClaim === party) &&
+      b.parties.some((p) =>
+        sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+      ) &&
       window.windowStart <= b.finalisedAt &&
       b.finalisedAt <= window.windowEnd,
   );
 
   const empty = (): ReputationDerivation => ({
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: 0,
@@ -187,11 +239,13 @@ export function deriveReputation(
   const outcomes: string[] = [];
   const orchestratorFaultJobs = new Set<string>();
   for (const copies of byJob.values()) {
-    const valid = copies
-      .filter((b) => isValid(b))
-      .filter((b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller");
+    const valid = copies.filter(
+      (b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller",
+    );
     if (valid.length === 0) continue;
-    const roleOfParty = valid[0]!.parties.find((p) => p.primaryClaim === party)?.role;
+    const roleOfParty = valid[0]!.parties.find((p) =>
+      sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+    )?.role;
     if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
@@ -256,7 +310,7 @@ export function deriveReputation(
 
   return {
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: reconciled.length,
@@ -273,4 +327,46 @@ export function deriveReputation(
     windowingBasis: basis,
     bundleRefs,
   };
+}
+
+/**
+ * Async fail-closed boundary for untrusted reputation candidates. Validation is
+ * completed for every candidate before the synchronous derivation reads or
+ * scores any admitted copy. This keeps the deterministic scorer pure while
+ * making the cryptographic verification contract truthful for public callers.
+ */
+export async function deriveReputationWithValidation(
+  party: string,
+  bundles: AnyAttestationBundle[],
+  window: ReputationWindow,
+  deps: DeriveReputationValidationDeps,
+): Promise<ReputationDerivation> {
+  if (!deps || typeof deps.validate !== "function") {
+    throw new DacsError(
+      "deriveReputationWithValidation requires deps.validate",
+    );
+  }
+
+  const accepted: AnyAttestationBundle[] = [];
+  for (const bundle of bundles) {
+    try {
+      const decision: unknown = await deps.validate(bundle);
+      if (decision === true) {
+        accepted.push(
+          snapshotCanonicalJsonRead(
+            bundle,
+            "validated reputation bundle",
+          ),
+        );
+      }
+    } catch {
+      // Verification transport errors, rejected Promises, and hostile inputs are
+      // indeterminate, never permission to include the candidate in a score.
+    }
+  }
+
+  return deriveReputation(party, accepted, window, {
+    isValid: () => true,
+    ...(deps.copyAbsence ? { copyAbsence: deps.copyAbsence } : {}),
+  });
 }

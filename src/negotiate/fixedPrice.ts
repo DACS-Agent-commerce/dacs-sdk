@@ -37,6 +37,7 @@ import {
   isListing,
 } from "../artifacts/validators.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { requireCanonicalJobId } from "./jobId.js";
 
 export interface VerifiedListingInput {
@@ -412,10 +413,13 @@ export function deriveFixedPriceAgreement(
   const rail = requireRail(listing, input.selectedRail, paymentIndexes);
   const buyer = agreementParty("buyer", input.buyer);
   const seller = agreementParty("seller", input.seller);
-  if (seller.primaryClaim !== listing.seller.identity.presentedBy) {
+  if (!sameCanonicalClaimIdentity(
+    seller.primaryClaim,
+    listing.seller.identity.presentedBy,
+  )) {
     throw new DacsError("seller bundle primary claim does not match the pinned Listing");
   }
-  if (buyer.primaryClaim === seller.primaryClaim) {
+  if (sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim)) {
     throw new DacsError("buyer and seller primary claims must be distinct");
   }
   const deliverable = listing.offering.deliverable;
