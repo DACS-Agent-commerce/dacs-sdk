@@ -132,6 +132,15 @@ adapter's actual key before signing.
 
 ## Public API
 
+`createAgent()` returns only the high-level DACS operations below. It does not
+expose the connected substrate adapter, raw demosdk client, signing primitive,
+or broadcast/transfer authority. Operator diagnostics and funded conformance
+tests that genuinely need the low-level adapter must opt into the clearly named
+`createUnsafeManualAgent()` escape hatch and must never pass that result to an
+application callback, plugin, or HTTP handler. In-process narrowing prevents
+accidental capability leakage; OS-level buyer/seller signer isolation remains a
+deployment responsibility of the generated role services.
+
 ```ts
 import {
   createAgent,
@@ -522,6 +531,14 @@ thrown authentication dependency cannot blame the counterparty. The returned
 authority contains no signing capability and is intended for the existing
 role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
 co-signed; single-signature suppression is available only for an honest abort.
+
+`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
+§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
+bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
+ignores content returned for another job. Lookup is discovery, not trust: pass
+each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
+that returns its `.valid` boolean to `bundleConsistency` before using the
+resulting two-sided verdict.
 
 ### Normative artifact references
 

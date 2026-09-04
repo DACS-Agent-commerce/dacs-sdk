@@ -1,7 +1,10 @@
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
@@ -38,9 +41,12 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  lookupBundleCopies,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
+  type BundleCopyRead,
+  type BundleCopyReader,
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
