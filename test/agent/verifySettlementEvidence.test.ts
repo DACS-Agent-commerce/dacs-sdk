@@ -549,8 +549,8 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       }),
     });
 
-    await expect(verifySettlementEvidence(ev, context)).resolves.toEqual({
-      decision: "pass",
+    await expect(validateSettlementEvidenceStructure(ev, context)).resolves.toEqual({
+      decision: "valid",
       reasons: [],
     });
   });
