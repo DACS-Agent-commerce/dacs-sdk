@@ -24,8 +24,8 @@ const GRAPH = {
     telegram: "alice_tg",
   },
   linkedWallets: [
-    "evm:0xAbC0000000000000000000000000000000000001",
-    "solana:So1anaAddr11111111111111111111111111111",
+    "evm:mainnet:0xAbC0000000000000000000000000000000000001",
+    "solana:mainnet:So1anaAddr11111111111111111111111111111",
   ],
 };
 
@@ -33,9 +33,9 @@ describe("parseCciRecord (DACS-1 CCI resolution)", () => {
   test("parses web2 socials into claims, skipping empty handles", () => {
     const rec = parseCciRecord(PRIMARY, GRAPH);
     expect(rec.web2.map((c) => c.ref)).toEqual([
-      "web2:twitter:alice",
-      "web2:github:alice-dev",
-      "web2:telegram:alice_tg",
+      "cci-web2:github:alice-dev",
+      "cci-web2:telegram:alice_tg",
+      "cci-web2:twitter:alice",
     ]);
     // discord was empty → dropped.
     expect(rec.web2.some((c) => c.platform === "discord")).toBe(false);
@@ -47,14 +47,16 @@ describe("parseCciRecord (DACS-1 CCI resolution)", () => {
       {
         kind: "wallet",
         chainType: "evm",
+        subchain: "mainnet",
         address: "0xAbC0000000000000000000000000000000000001",
-        ref: "xm:evm:0xAbC0000000000000000000000000000000000001",
+        ref: "cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001",
       },
       {
         kind: "wallet",
         chainType: "solana",
+        subchain: "mainnet",
         address: "So1anaAddr11111111111111111111111111111",
-        ref: "xm:solana:So1anaAddr11111111111111111111111111111",
+        ref: "cci-xm:solana:mainnet:So1anaAddr11111111111111111111111111111",
       },
     ]);
   });
@@ -62,7 +64,8 @@ describe("parseCciRecord (DACS-1 CCI resolution)", () => {
   test("keeps the primary claim and raw payload", () => {
     const rec = parseCciRecord(PRIMARY, GRAPH);
     expect(rec.primaryClaim).toBe(PRIMARY);
-    expect(rec.raw).toBe(GRAPH);
+    expect(rec.raw).toEqual(GRAPH);
+    expect(rec.raw).not.toBe(GRAPH);
     expect(rec.claims).toHaveLength(5); // 3 web2 + 2 wallets
   });
 
@@ -90,8 +93,8 @@ describe("cciClaimRefs / cciHasClaim", () => {
   test("cciClaimRefs lists the primary first, then linked refs", () => {
     const refs = cciClaimRefs(rec);
     expect(refs[0]).toBe(PRIMARY);
-    expect(refs).toContain("web2:twitter:alice");
-    expect(refs).toContain("xm:evm:0xAbC0000000000000000000000000000000000001");
+    expect(refs).toContain("cci-web2:twitter:alice");
+    expect(refs).toContain("cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001");
     expect(refs).toHaveLength(6);
   });
 
@@ -100,22 +103,22 @@ describe("cciClaimRefs / cciHasClaim", () => {
   });
 
   test("matches a web2 claim case-insensitively", () => {
-    expect(cciHasClaim(rec, "web2:twitter:alice")).toBe(true);
-    expect(cciHasClaim(rec, "WEB2:TWITTER:ALICE")).toBe(true);
+    expect(cciHasClaim(rec, "cci-web2:twitter:alice")).toBe(true);
+    expect(cciHasClaim(rec, "CCI-WEB2:TWITTER:ALICE")).toBe(true);
   });
 
   test("matches a wallet claim exactly (address casing preserved)", () => {
     expect(
-      cciHasClaim(rec, "xm:evm:0xAbC0000000000000000000000000000000000001"),
+      cciHasClaim(rec, "cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001"),
     ).toBe(true);
     // A different-cased address is a different claim (no silent normalisation).
     expect(
-      cciHasClaim(rec, "xm:evm:0xabc0000000000000000000000000000000000001"),
+      cciHasClaim(rec, "cci-xm:evm:mainnet:0xabc0000000000000000000000000000000000001"),
     ).toBe(false);
   });
 
   test("rejects an unknown claim", () => {
-    expect(cciHasClaim(rec, "web2:github:someone-else")).toBe(false);
+    expect(cciHasClaim(rec, "cci-web2:github:someone-else")).toBe(false);
   });
 });
 
@@ -147,16 +150,16 @@ describe("parseCciRecord — live GCR shape (R1: xm/web2 nested)", () => {
   test("reads cross-chain wallets from xm.<chain>.<network>[].address", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     expect(rec.wallets.map((w) => w.ref)).toEqual([
-      "xm:evm:0xAbC0000000000000000000000000000000000001",
-      "xm:solana:So1anaAddr11111111111111111111111111111",
+      "cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001",
+      "cci-xm:solana:mainnet:So1anaAddr11111111111111111111111111111",
     ]);
   });
 
   test("reads web2 handles from web2.<platform>[].username", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     expect(rec.web2.map((c) => c.ref)).toEqual([
-      "web2:twitter:alice",
-      "web2:github:alice-dev",
+      "cci-web2:github:alice-dev",
+      "cci-web2:twitter:alice",
     ]);
   });
 
@@ -172,6 +175,16 @@ describe("parseCciRecord — live GCR shape (R1: xm/web2 nested)", () => {
   test("still handles the legacy linkedSocials/linkedWallets shape (fallback)", () => {
     const rec = parseCciRecord(PRIMARY, GRAPH);
     expect(rec.claims).toHaveLength(5);
+  });
+
+  test("does not invent a subchain for ambiguous two-coordinate legacy wallets", () => {
+    const rec = parseCciRecord(PRIMARY, {
+      linkedWallets: ["evm:0xAbC0000000000000000000000000000000000001"],
+    });
+    expect(rec.wallets).toEqual([]);
+    expect(rec.raw).toEqual({
+      linkedWallets: ["evm:0xAbC0000000000000000000000000000000000001"],
+    });
   });
 });
 
@@ -194,13 +207,13 @@ describe("parseCciRecord — ud + pqc claim families", () => {
     },
   };
 
-  test("a DNS domain identity emits the canonical domain: ref (legacy alias still resolves)", () => {
+  test("a DNS domain identity emits the canonical domain: ref without unauthenticated alias folding", () => {
     const rec = parseCciRecord(PRIMARY, LIVE);
     const dom = rec.web2.find((c) => c.platform === "domain");
     expect(dom?.ref).toBe("domain:alice.example");
     expect(dom?.proof).toBe("https://alice.example/.well-known/demos-cci.txt");
-    // The legacy web2:domain: form remains a permanent read-path alias.
-    expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(true);
+    expect(cciClaimHasProof(rec, "domain:alice.example")).toBe(true);
+    expect(cciClaimHasProof(rec, "web2:domain:alice.example")).toBe(false);
   });
 
   test("unstoppable domains parse into registered cci-ud claims (network + proof surfaced)", () => {
@@ -247,7 +260,7 @@ describe("parseCciRecord — ud + pqc claim families", () => {
 
 describe("parseClaimRef (reverse-lookup decomposition)", () => {
   test("parses a web2 ref", () => {
-    expect(parseClaimRef("web2:twitter:alice")).toEqual({
+    expect(parseClaimRef("cci-web2:twitter:alice")).toEqual({
       kind: "web2",
       platform: "twitter",
       handle: "alice",
@@ -255,9 +268,10 @@ describe("parseClaimRef (reverse-lookup decomposition)", () => {
   });
 
   test("parses a wallet ref (address may contain no extra colons)", () => {
-    expect(parseClaimRef("xm:evm:0xAbC0000000000000000000000000000000000001")).toEqual({
+    expect(parseClaimRef("cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001")).toEqual({
       kind: "wallet",
       chainType: "evm",
+      subchain: "mainnet",
       address: "0xAbC0000000000000000000000000000000000001",
     });
   });
@@ -277,7 +291,7 @@ describe("parseClaimRef (reverse-lookup decomposition)", () => {
   });
 });
 
-describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", () => {
+describe("canonical domain: claim ref (strict unauthenticated CCI boundary)", () => {
   // A live GCR web2 payload keyed by platform, wrapped in the deployed envelope.
   const gcr = (web2: Record<string, unknown>) => ({
     result: 200,
@@ -295,6 +309,10 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
       wallets: [],
       ud: [],
       pqc: [],
+      nomis: [],
+      humanPassport: [],
+      ethos: [],
+      tlsn: [],
       claims: [claim],
       raw: {},
     };
@@ -311,11 +329,11 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
     );
     const byPlatform = Object.fromEntries(rec.web2.map((c) => [c.platform, c.ref]));
     expect(byPlatform["domain"]).toBe("domain:alice.example");
-    expect(byPlatform["twitter"]).toBe("web2:twitter:alice");
-    expect(byPlatform["github"]).toBe("web2:github:alice-dev");
+    expect(byPlatform["twitter"]).toBe("cci-web2:twitter:alice");
+    expect(byPlatform["github"]).toBe("cci-web2:github:alice-dev");
   });
 
-  test("T2: legacy web2:domain: query resolves against a canonical store", () => {
+  test("T2: bare CCI lookup does not fold a historical alias", () => {
     const rec = parseCciRecord(
       PRIMARY,
       gcr({
@@ -324,21 +342,19 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
         ],
       }),
     );
-    expect(cciHasClaim(rec, "web2:domain:alice.example")).toBe(true);
-    expect(cciClaimProof(rec, "web2:domain:alice.example")).toBe(
-      "https://alice.example/.well-known/demos-cci.txt",
-    );
+    expect(cciHasClaim(rec, "web2:domain:alice.example")).toBe(false);
+    expect(cciClaimProof(rec, "web2:domain:alice.example")).toBeUndefined();
   });
 
-  test("T3: canonical domain: query resolves against a historical web2:domain: record", () => {
+  test("T3: a historical record cannot cross the bare lookup boundary", () => {
     const rec = recordWithWeb2Ref("alice.example", "web2:domain:alice.example");
-    expect(cciHasClaim(rec, "domain:alice.example")).toBe(true);
+    expect(cciHasClaim(rec, "domain:alice.example")).toBe(false);
   });
 
-  test("T4: parseClaimRef maps domain: and the web2:domain: alias to the same shape", () => {
+  test("T4: parseClaimRef accepts only the current canonical domain form", () => {
     const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
     expect(parseClaimRef("domain:alice.example")).toEqual(shape);
-    expect(parseClaimRef("web2:domain:alice.example")).toEqual(shape);
+    expect(parseClaimRef("web2:domain:alice.example")).toBeNull();
   });
 
   test("T5: case-variant domain handles collapse to one canonical claim", () => {
@@ -358,10 +374,11 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
     expect(dom?.handle).toBe("Bücher.example");
   });
 
-  test("T7: legacy and unicode queries resolve against a punycode store (IDNA fold)", () => {
+  test("T7: signed-style queries must already use exact punycode spelling", () => {
     const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "Bücher.example" }] }));
-    expect(cciHasClaim(rec, "web2:domain:Bücher.example")).toBe(true);
-    expect(cciHasClaim(rec, "domain:Bücher.example")).toBe(true);
+    expect(cciHasClaim(rec, "domain:xn--bcher-kva.example")).toBe(true);
+    expect(cciHasClaim(rec, "web2:domain:Bücher.example")).toBe(false);
+    expect(cciHasClaim(rec, "domain:Bücher.example")).toBe(false);
   });
 
   test("T8: unresolvable domain hosts never collide or false-match", () => {
@@ -382,7 +399,7 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
     expect(rec.claims.some((c) => c.ref.startsWith("domain:"))).toBe(false);
     expect(rec.claims.some((c) => c.ref.startsWith("web2:domain:"))).toBe(false);
     // The sibling twitter claim is unaffected.
-    expect(rec.web2.map((c) => c.ref)).toEqual(["web2:twitter:alice"]);
+    expect(rec.web2.map((c) => c.ref)).toEqual(["cci-web2:twitter:alice"]);
   });
 
   test("T10: parseCciRecord never emits a web2:domain: ref (canonical + legacy shapes)", () => {
@@ -411,8 +428,8 @@ describe("canonical domain: claim ref (emit + permanent web2:domain: alias)", ()
       },
     });
     // wallet: a different-cased address is a different claim.
-    expect(cciHasClaim(rec, "xm:evm:0xabc0000000000000000000000000000000000001")).toBe(false);
-    expect(cciHasClaim(rec, "xm:evm:0xAbC0000000000000000000000000000000000001")).toBe(true);
+    expect(cciHasClaim(rec, "cci-xm:evm:mainnet:0xabc0000000000000000000000000000000000001")).toBe(false);
+    expect(cciHasClaim(rec, "cci-xm:evm:mainnet:0xAbC0000000000000000000000000000000000001")).toBe(true);
     // pqc: the public key is case-significant.
     expect(cciHasClaim(rec, "cci-pqc:falcon:FALCONPK1")).toBe(false);
     expect(cciHasClaim(rec, "cci-pqc:falcon:falconpk1")).toBe(true);
@@ -474,14 +491,18 @@ describe("domain host validation / reject-list (canonicalDomainHost)", () => {
     expect(domRef("alice.example")).toBe("domain:alice.example");
     expect(domRef("Alice.Example")).toBe("domain:alice.example");
     expect(domRef("Bücher.example")).toBe("domain:xn--bcher-kva.example");
+    expect(domRef("alice。example")).toBe("domain:alice.example");
+    expect(domRef("Ａgent.example")).toBeNull();
   });
 
-  test("R6: parseClaimRef matches the domain scheme case-insensitively", () => {
+  test("R6: parseClaimRef rejects non-canonical domain scheme spelling", () => {
     const shape = { kind: "web2", platform: "domain", handle: "alice.example" };
-    expect(parseClaimRef("Domain:alice.example")).toEqual(shape);
-    expect(parseClaimRef("DOMAIN:alice.example")).toEqual(shape);
-    // and the canonical lower-case form still parses (unchanged)
+    expect(parseClaimRef("Domain:alice.example")).toBeNull();
+    expect(parseClaimRef("DOMAIN:alice.example")).toBeNull();
     expect(parseClaimRef("domain:alice.example")).toEqual(shape);
+    const rec = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
+    expect(cciHasClaim(rec, "Domain:alice.example")).toBe(false);
+    expect(cciHasClaim(rec, "DOMAIN:alice.example")).toBe(false);
   });
 
   test("R7: trailing-dot forms emit no claim and never false-match the bare host", () => {
@@ -528,15 +549,15 @@ describe("domain host validation / reject-list (canonicalDomainHost)", () => {
       expect(claim?.ref).toBe("domain:alice.example");
       // No legacy web2:<Key>:… form leaks for a domain-keyed entry.
       expect(rec.claims.some((c) => c.ref.toLowerCase().startsWith("web2:domain:"))).toBe(false);
-      // The stored platform field keeps the original key casing.
-      expect(claim?.platform).toBe(key);
+      // Native ingestion normalises the platform enum for canonical emission.
+      expect(claim?.platform).toBe("domain");
     }
   });
 
-  test("R10: a whitespace-padded query resolves symmetrically (fold trims like emit)", () => {
+  test("R10: a whitespace-padded query is rejected rather than repaired", () => {
     const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
-    expect(cciHasClaim(recA, "domain: alice.example ")).toBe(true);
-    expect(cciHasClaim(recA, "web2:domain: alice.example ")).toBe(true);
+    expect(cciHasClaim(recA, "domain: alice.example ")).toBe(false);
+    expect(cciHasClaim(recA, "web2:domain: alice.example ")).toBe(false);
   });
 
   test("R11: a mapped terminal ideographic dot is rejected at MATCH time, not just emit", () => {

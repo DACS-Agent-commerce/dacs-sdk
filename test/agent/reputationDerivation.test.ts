@@ -174,6 +174,42 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.metrics.observedTransactionalVolume).toEqual([]);
   });
 
+  test("keys and matches reputation by parameter-free CF-3 identity", () => {
+    const qualifiedParty = `${PARTY}?jurisdiction=GB`;
+    const qualifiedBundle = bundle(
+      "qualified",
+      "completed",
+      1100,
+      "buyer",
+      [
+        {
+          role: "buyer",
+          bundleHash: "h",
+          primaryClaim: `${PARTY}?jurisdiction=US`,
+        },
+        { role: "seller", bundleHash: "h", primaryClaim: CP },
+      ],
+    );
+    expect(deriveReputation(
+      qualifiedParty,
+      [qualifiedBundle],
+      WINDOW,
+      TRUSTED_WITH_ABSENCE,
+    )).toMatchObject({
+      partyPrimaryClaim: PARTY,
+      bundleCount: 1,
+    });
+  });
+
+  test("rejects a non-canonical reputation key", () => {
+    expect(() => deriveReputation(
+      `DID:demos:buyer`,
+      [],
+      WINDOW,
+      TRUSTED_WITH_ABSENCE,
+    )).toThrow(/partyPrimaryClaim.*CF-2/);
+  });
+
   test("per-jobId reconciliation: two copies of one job count once (self perspective)", () => {
     const r = deriveReputation(
       PARTY,
@@ -212,6 +248,40 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleCount).toBe(1);
     expect(r.metrics.counterpartyFaultRate).toBe(0);
     expect(r.metrics.completionRate).toBe(0);
+  });
+
+  test("passes the parameter-free identity to the independent role resolver", () => {
+    const qualifiedParty = `${PARTY}?jurisdiction=GB`;
+    const qualifiedBundle = bundle(
+      "qualified-role",
+      "completed",
+      1100,
+      "buyer",
+      [
+        {
+          role: "buyer",
+          bundleHash: "h",
+          primaryClaim: `${PARTY}?jurisdiction=US`,
+        },
+        { role: "seller", bundleHash: "h", primaryClaim: CP },
+      ],
+    );
+    const resolved: string[] = [];
+
+    const r = deriveReputation(qualifiedParty, [qualifiedBundle], WINDOW, {
+      trustBundles: true,
+      resolvePartyRole: ({ partyPrimaryClaim }) => {
+        resolved.push(partyPrimaryClaim);
+        return partyPrimaryClaim === PARTY ? "buyer" : undefined;
+      },
+      copyAbsence: () => "absent",
+    });
+
+    expect(resolved).toEqual([PARTY]);
+    expect(r).toMatchObject({
+      partyPrimaryClaim: PARTY,
+      bundleCount: 1,
+    });
   });
 
   test("does not score Promise-like, unresolved, or thrown role results", () => {

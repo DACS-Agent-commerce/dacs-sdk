@@ -460,15 +460,11 @@ function snapshotJson(
       throw new DacsError(`${label} cannot contain symbols`);
     }
     const result = Object.create(null) as Record<string, X402BuyerJson>;
-    const normalized = new Set<string>();
     for (const [rawKey, descriptor] of Object.entries(descriptors)) {
       if (!descriptor.enumerable || !("value" in descriptor) ||
           descriptor.value === undefined) {
         throw new DacsError(`${label}.${rawKey} must be an enumerable data property`);
       }
-      const key = rawKey.normalize("NFC");
-      if (normalized.has(key)) throw new DacsError(`${label} has an NFC key collision`);
-      normalized.add(key);
       result[rawKey] = snapshotJson(descriptor.value, label, ancestors, depth + 1);
     }
     return result;

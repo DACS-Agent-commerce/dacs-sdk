@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import type {
   AgreementDocument,
   AgreementArtifact,
@@ -44,11 +46,15 @@ import {
   canonicalize,
   stripSignature,
 } from "../canonical/index.js";
+import { isSafeJsonString } from "../canonical/snapshot.js";
 import {
   isCanonicalBase64Url,
   isComponentSignature,
 } from "./signatures.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
@@ -123,26 +129,39 @@ const isExactWireArray = (
 function isExactJsonValue(
   value: unknown,
   seen: WeakSet<object>,
+  depth: number,
 ): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return isSafeJsonString(value);
+  if (typeof value === "number") {
+    return Number.isFinite(value) &&
+      !Object.is(value, -0) &&
+      Math.abs(value) <= Number.MAX_SAFE_INTEGER;
   }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || seen.has(value)) return false;
+  if (
+    typeof value !== "object" ||
+    nodeTypes.isProxy(value) ||
+    seen.has(value) ||
+    depth >= 64
+  ) return false;
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return isExactWireArray(value, (entry) => isExactJsonValue(entry, seen));
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+      return isExactWireArray(
+        value,
+        (entry) => isExactJsonValue(entry, seen, depth + 1),
+      );
     }
     if (!isObj(value)) return false;
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return false;
     const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== "string")) return false;
+    if (
+      keys.some((key) =>
+        typeof key !== "string" || !isSafeJsonString(key)
+      )
+    ) return false;
     return (keys as string[]).every((key) => {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return (
@@ -150,7 +169,7 @@ function isExactJsonValue(
         descriptor.enumerable === true &&
         "value" in descriptor &&
         descriptor.value !== undefined &&
-        isExactJsonValue(descriptor.value, seen)
+        isExactJsonValue(descriptor.value, seen, depth + 1)
       );
     });
   } catch {
@@ -162,11 +181,11 @@ function isExactJsonValue(
   }
 }
 
-/** Exact JSON object tree used by signed generic data/parameter fields. */
+/** Exact canonical JSON object tree used by signed generic data/parameter fields. */
 export function isExactJsonRecord(
   value: unknown,
 ): value is Record<string, unknown> {
-  return isObj(value) && isExactJsonValue(value, new WeakSet<object>());
+  return isObj(value) && isExactJsonValue(value, new WeakSet<object>(), 0);
 }
 const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
 /** CORE §B.1 canonical logical-address spelling for session identifiers. */
@@ -188,6 +207,9 @@ const isCanonicalEvmEventHash = (v: unknown): v is string =>
 const isMinimalUnsignedDecimal = (v: unknown): v is string =>
   isStr(v) && /^(0|[1-9][0-9]*)$/.test(v);
 
+// DACS-3's pinned compatibility vectors still carry the historical prefixed
+// spelling. Keep reader compatibility until DACS-Standard#378 defines the
+// byte-exact cross-stage migration into DACS-5 terminal bundles.
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
 const hasValidOptionalComponentSignature = (
@@ -231,12 +253,15 @@ const PHASE_TYPES = [
   "pay-ap2",
   "pay-x402",
   "pay-dem",
+  "pay-alternative",
   "deliver-storage-program",
   "deliver-entitlement",
   "deliver-attested-payload",
   "rate",
 ] as const;
-const PAYMENT_PHASES = PHASE_TYPES.filter((phase) => phase.startsWith("pay-"));
+const PAYMENT_PHASES = PHASE_TYPES.filter(
+  (phase) => phase.startsWith("pay-") && phase !== "pay-alternative",
+);
 const DELIVERY_PHASES = PHASE_TYPES.filter((phase) => phase.startsWith("deliver-"));
 const COMPONENT_SIGNATURE_ALGORITHMS = [
   "ed25519",
@@ -397,7 +422,9 @@ export function isIdentityBundle(v: unknown): v is IdentityBundle {
   }
   // DACS-1 §6.3.2 BP-3: presentedBy resolves to one carried claim.
   return v.claims.some(
-    (claim) => isObj(claim) && claim.ref === v.presentedBy,
+    (claim) =>
+      isObj(claim) &&
+      sameCanonicalClaimIdentity(claim.ref, v.presentedBy),
   );
 }
 
@@ -588,10 +615,11 @@ export function isDeliverableSpec(v: unknown): v is DeliverableSpec {
 
 export const isPaymentRailRef = (v: unknown): v is PaymentRailRef =>
   isObj(v) &&
+  isExactJsonRecord(v) &&
   isStr(v.railId) &&
   v.railId.length > 0 &&
   (v.railVersion === undefined || isPositiveSafeInt(v.railVersion)) &&
-  (v.parameters === undefined || isObj(v.parameters));
+  (v.parameters === undefined || isExactJsonRecord(v.parameters));
 
 const NO_PARAMETER_PHASES = new Set([
   "vet-credentials",
@@ -619,6 +647,14 @@ export function isPhaseStep(v: unknown): v is PhaseStep {
     );
   }
   if (!isObj(v.parameters)) return false;
+  if (v.kind === "pay-alternative") {
+    return (
+      hasExactWireKeys(v.parameters, ["alternatives"]) &&
+      Array.isArray(v.parameters.alternatives) &&
+      v.parameters.alternatives.length >= 2 &&
+      v.parameters.alternatives.every(isPaymentRailRef)
+    );
+  }
   if (v.kind.startsWith("pay-")) {
     return isStr(v.parameters.rail) && v.parameters.rail.length > 0;
   }
@@ -742,9 +778,39 @@ function pipelineIsCoherent(
   }
   if (!includeRailBinding) return true;
 
-  const payPhases = pipeline.filter((phase) => phase.kind.startsWith("pay-"));
+  const alternativePhases = pipeline.filter(
+    (phase) => phase.kind === "pay-alternative",
+  );
+  const payPhases = pipeline.filter(
+    (phase) => phase.kind.startsWith("pay-") && phase.kind !== "pay-alternative",
+  );
   const rails = listing.acceptedRails as PaymentRailRef[] | undefined;
-  if (payPhases.length > 0) {
+  if (alternativePhases.length > 0) {
+    if (
+      alternativePhases.length !== 1 ||
+      payPhases.length !== 0 ||
+      !rails ||
+      rails.length === 0
+    ) {
+      return false;
+    }
+    const alternatives = alternativePhases[0]!.parameters?.alternatives;
+    if (!Array.isArray(alternatives) || alternatives.length < 2) return false;
+    try {
+      const acceptedCanonical = rails.map((rail) => canonicalize(rail));
+      const alternativeCanonical = alternatives.map((rail) => canonicalize(rail));
+      if (
+        new Set(alternativeCanonical).size !== alternativeCanonical.length ||
+        alternativeCanonical.some(
+          (entry) => acceptedCanonical.filter((value) => value === entry).length !== 1,
+        )
+      ) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  } else if (payPhases.length > 0) {
     if (!rails || rails.length === 0) return false; // DACS-1 §6.3.4 step 8.
     if (
       !payPhases.every((phase) =>
@@ -886,7 +952,7 @@ export function isListing(v: unknown): v is Listing {
     return false;
   }
   return v.seller.identity.claims.some(
-    (claim) => claim.ref === v.signature.signer,
+    (claim) => sameCanonicalClaimIdentity(claim.ref, v.signature.signer),
   ); // §6.3.4 ListingSignature signer authorization.
 }
 
@@ -1290,6 +1356,8 @@ const hasAgreementCommon = (
         !/^(0|[1-9][0-9]*)$/.test(terms.meteredQuantity.quantity) ||
         !isNonEmptyStr(terms.meteredQuantity.unit))) ||
     (terms.rail !== undefined && !isPaymentRailRef(terms.rail)) ||
+    (terms.priorPaymentDispositionRef !== undefined &&
+      (!payeeBound || !isAttestationRef(terms.priorPaymentDispositionRef))) ||
     !isSafeUint(terms.deadline) ||
     (terms.priceAnchor !== undefined && !isPriceAnchor(terms.priceAnchor)) ||
     (terms.feeSchedule !== undefined &&
@@ -1297,7 +1365,7 @@ const hasAgreementCommon = (
         terms.feeSchedule,
         (terms.price as { currency: string }).currency,
       )) ||
-    (terms.additionalTerms !== undefined && !isObj(terms.additionalTerms)) ||
+    (terms.additionalTerms !== undefined && !isExactJsonRecord(terms.additionalTerms)) ||
     !isOneOf(["fixed-price", "rfq", "sealed-envelope"], v.derivedFromPattern) ||
     !isSafeUint(v.generatedAt) ||
     (v.derivedFromChannel !== undefined &&
@@ -1316,16 +1384,20 @@ const hasAgreementCommon = (
   if (buyer.length !== 1 || seller.length !== 1) return false;
   const buyerClaim = buyer[0]!.primaryClaim;
   const sellerClaim = seller[0]!.primaryClaim;
-  if (buyerClaim === sellerClaim) return false;
-  const required = new Set([buyerClaim, sellerClaim]);
-  const signers = new Set<string>(
-    (v.signatures as Array<Record<string, unknown>>).map(
-      (signature) => signature.party as string,
-    ),
+  if (sameCanonicalClaimIdentity(buyerClaim, sellerClaim)) return false;
+  const required = [buyerClaim, sellerClaim];
+  const signers = (v.signatures as Array<Record<string, unknown>>).map(
+    (signature) => signature.party as string,
   );
   if (
-    signers.size !== required.size ||
-    [...signers].some((claim) => !required.has(claim))
+    required.some((claim) =>
+      signers.filter((signer) =>
+        sameCanonicalClaimIdentity(signer, claim)
+      ).length !== 1
+    ) ||
+    signers.some((signer) => !required.some((claim) =>
+      sameCanonicalClaimIdentity(signer, claim)
+    ))
   ) {
     return false;
   }
@@ -1356,6 +1428,7 @@ const hasAgreementCommon = (
 export function isAgreementDocument(v: unknown): v is AgreementDocument {
   return (
     isObj(v) &&
+    isExactJsonRecord(v) &&
     v.agreementVersion === "1" &&
     v.payeeBoundAgreementVersion === undefined &&
     hasAgreementCommon(v, false)
@@ -1367,6 +1440,7 @@ export function isPayeeBoundAgreementDocument(
 ): v is PayeeBoundAgreementDocument {
   return (
     isObj(v) &&
+    isExactJsonRecord(v) &&
     v.payeeBoundAgreementVersion === "1" &&
     v.agreementVersion === undefined &&
     hasAgreementCommon(v, true)
@@ -1749,7 +1823,10 @@ function isFaultBundleParties(v: unknown): boolean {
   if (typeof orchestrator === "string") {
     const buyer = parties.find((party) => party.role === "buyer")?.primaryClaim;
     const seller = parties.find((party) => party.role === "seller")?.primaryClaim;
-    if (orchestrator === buyer || orchestrator === seller) return false;
+    if (
+      sameCanonicalClaimIdentity(orchestrator, buyer) ||
+      sameCanonicalClaimIdentity(orchestrator, seller)
+    ) return false;
   }
   return true;
 }
