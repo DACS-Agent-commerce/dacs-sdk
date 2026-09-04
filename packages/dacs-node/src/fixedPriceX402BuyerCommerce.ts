@@ -249,9 +249,26 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
           return false;
         }
+        const loaded = await context.database.createLiveCoordinatorStore("buyer")
+          .load("buyer", operation.order.jobId);
+        if (
+          loaded.status !== "ok" ||
+          loaded.record.buyer !== context.authority ||
+          loaded.record.seller !== context.peerAuthority
+        ) return false;
+        const agreement = await loadDacsFixedPriceX402BuyerAgreementPublicationV1(
+          context,
+          loaded.record,
+        );
+        const price = agreementPrice(agreement.artifact);
+        if (price === null) return false;
+        const evidenceLogicalAddress =
+          `dacs4:delivery-evidence:${operation.order.jobId}`;
+        const deliverableLogicalAddress =
+          `dacs4:deliverable:${operation.order.jobId}`;
         const evidenceAnchor = await verifyPeerAnchor(
           context,
-          `dacs4:delivery-evidence:${operation.order.jobId}`,
+          evidenceLogicalAddress,
           undefined,
         );
         if (evidenceAnchor === null) return "indeterminate" as const;
@@ -261,20 +278,15 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             evidenceRaw.phase !== "deliver-storage-program" ||
             evidenceRaw.outcome !== "success" ||
             evidenceRaw.signature.signer !== context.peerAuthority ||
+            evidenceRaw.deliverableAnchor.locator !== deliverableLogicalAddress ||
             contentHash(payload as Record<string, unknown>) !==
               evidenceRaw.deliverableContentHash) return false;
-        const agreement = await loadDacsFixedPriceX402BuyerAgreementPublicationV1(
-          context,
-          operation.order,
-        );
-        const price = agreementPrice(agreement.artifact);
-        if (price === null) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
           agreement: price,
           attestationRef: evidenceAnchor.attestationRef,
           result: { ok: true },
-          expectedAnchorLocator: `dacs4:deliverable:${operation.order.jobId}`,
+          expectedAnchorLocator: deliverableLogicalAddress,
         }, verifier());
         if (verification.decision === "indeterminate") return "indeterminate" as const;
         if (verification.decision !== "pass") return false;
