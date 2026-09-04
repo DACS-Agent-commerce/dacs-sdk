@@ -103,6 +103,16 @@ export {
   type FaultCategory,
 } from "./errors.js";
 
+// Shared host-local durability boundary used by every filesystem-backed store
+// (including the companion dacs-node package).
+export {
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  isPathWithinPrivateRoot,
+} from "./filesystem/privateStore.js";
+
 // Foundation (T2): canonical form, decimals, content hashing, domain-separated signing.
 export {
   canonicalize,
