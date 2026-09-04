@@ -38,6 +38,7 @@ import {
   type RailRegistryDefinitionRef,
   type RailRegistryIndexDocument,
   type RailRegistrySelectionProvider,
+  type SettlementBinding,
   type SettleResult,
   type UcpBusinessProfileSnapshot,
   type UcpCheckout,
@@ -441,11 +442,27 @@ async function fixture(overrides: {
   let submits = 0;
   const idem = createIdempotencyStore();
   const settled = settlement();
-  const settle = (request: Parameters<UcpX402MvpDeps["settle"]>[0]) =>
-    idem.once(settlementKey(request.rail, request.jobId, request.phaseIndex ?? 0), async () => {
+  const settle = (request: Parameters<UcpX402MvpDeps["settle"]>[0]) => {
+    const binding: Readonly<SettlementBinding> = Object.freeze({
+      bindingVersion: "1",
+      railId: request.rail,
+      jobId: request.jobId,
+      phaseIndex: request.phaseIndex ?? 0,
+      phase: request.phase,
+      amount: request.amount,
+      agreementAsset: request.asset,
+      settlementAsset: TOKEN,
+      payer: settled.payer,
+      payee: request.expectedPayee,
+      network: settled.chainId,
+      finality: settled.finality!,
+      resource: settled.txRef?.kind === "x402-event" ? settled.txRef.httpResource : undefined,
+    });
+    return idem.once(settlementKey(request.rail, request.jobId, request.phaseIndex ?? 0), binding, async () => {
       submits += 1;
       return settled;
     });
+  };
   const deps: UcpX402MvpDeps = {
     ucp,
     settle,

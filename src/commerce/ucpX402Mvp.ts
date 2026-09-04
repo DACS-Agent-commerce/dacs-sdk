@@ -1132,7 +1132,7 @@ export async function runUcpX402Mvp(
   ) {
     throw new CounterpartyError("UCP Checkout expired before x402 settlement");
   }
-  const settlement = snapshotCanonicalJson(await settle({
+  const settlement = snapshotCanonicalJsonRead(await settle({
     rail: checkoutBinding.payment.railId,
     phase: "pay-x402",
     amount: checkoutBinding.payment.amount,
