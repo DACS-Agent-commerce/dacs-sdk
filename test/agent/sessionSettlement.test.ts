@@ -163,6 +163,20 @@ function signedEvidence(input: {
         }],
     paymentAmount: { amount: input.amount ?? "5", currency: "USDC" },
     observedAt: input.observedAt ?? 1_777_000_000_000,
+    ...(input.resolved
+      ? {
+          supersedesEvidenceRef: {
+            anchor: {
+              kind: "storage-program" as const,
+              locator:
+                `dacs4:payment:${input.jobId ?? "job-settlement-1"}:` +
+                `${encodeAddressSegment(input.railId ?? "rail-x402-base")}:` +
+                `${input.phaseIndex ?? 3}`,
+            },
+            contentHash: "a".repeat(64),
+          },
+        }
+      : {}),
     ...(outcome === "success"
       ? {
           settlementFinality: {

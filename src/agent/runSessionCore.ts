@@ -35,9 +35,11 @@ import {
 } from "./sessionStore.js";
 import type {
   AnyAttestationBundle,
+  ChainTxRef,
   CompositeVerificationRecord,
   ListingPin,
   Price,
+  SettlementEvidence as CurrentSettlementEvidence,
   SettlementFinality,
   SettlementFinalityParameters,
   SettlementFinalityModel,
@@ -52,17 +54,32 @@ import {
   type LegacyMvpAttestationBundle as AttestationBundle,
   type LegacyMvpAttestationRef as AttestationRef,
   type LegacyMvpPhaseSummaryEntry as PhaseSummaryEntry,
-  type LegacyMvpSettlementEvidence as SettlementEvidence,
+  type LegacyMvpSettlementEvidence as LegacySettlementEvidence,
+  type LegacyMvpTxRef,
   isLegacyMvpAttestationBundle as isAttestationBundle,
   isLegacyMvpAgreementDocument as isAgreementDocument,
-  isLegacyMvpSettlementEvidence as isSettlementEvidence,
+  isLegacyMvpSettlementEvidence,
 } from "../artifacts/legacyMvp.js";
 import {
   isCompositeVerificationRecord,
   isAttestationRef,
+  isChainTxRef,
   isExactJsonRecord,
+  isSettlementEvidence as isCurrentSettlementEvidence,
   readListingArtifact,
 } from "../artifacts/validators.js";
+import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
+
+type SessionSettlementEvidence =
+  | LegacySettlementEvidence
+  | CurrentSettlementEvidence;
+
+function isSessionSettlementEvidence(
+  value: unknown,
+): value is SessionSettlementEvidence {
+  return isCurrentSettlementEvidence(value) ||
+    isLegacyMvpSettlementEvidence(value);
+}
 import type { StrictCompositeVerification } from "./compositeVerification.js";
 import {
   isFinalizedVetAnchorReceipt,
@@ -149,6 +166,17 @@ export interface SettleResult {
   blockNumber?: number;
   /** The txRef kind the rail's tx is (e.g. §9.5.9 `demos`); defaults to `payment`. */
   txRefKind?: string;
+  /** Exact DACS-4 transaction/event reference for current rail producers. */
+  txRef?: ChainTxRef;
+  /** Authoritative rail finality observation time, not local wall-clock time. */
+  finalityObservedAt?: number;
+  /** Durable raw x402 settlement-response input used to re-derive its receipt hash. */
+  x402Receipt?: {
+    protocolVersion: "2";
+    headerName: "PAYMENT-RESPONSE";
+    headerValue: string;
+    paymentReceiptHash: string;
+  };
 }
 
 /**
@@ -226,17 +254,18 @@ export interface SessionDeps {
    * still carries only `settle:intent`.
    *
    * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
-   * return the prior definitive result when payment landed, resubmit only after a
-   * rail query proves no payment landed, and throw while state is indeterminate.
+   * return the prior definitive result when payment landed, and throw while state
+   * is absent or indeterminate unless the rail also proves the old effect terminal
+   * or enforces one deterministic external effect identity.
    * `req.priorAttempts` carries the validated ordered transaction history from
    * the SessionStore; a fresh process must reconcile the entire chain before it
    * may return a replacement transaction.
    * It MUST also serialize recovery with a possibly-live original submitter; a
    * non-observation is not proof of absence while that worker can still submit.
-   * The durable #52 `SettlementIdempotencyStore.once(..., reconcile)` wrapper is
-   * the intended implementation when its documented single-writer/leased recovery
-   * precondition is met. Callers may then wire the same wrapper as both `settle`
-   * and `resumeSettlement`.
+   * The generation-fenced `SettlementIdempotencyStore.once(..., reconcile)`
+   * wrapper is the intended implementation with a durable atomic SettlementLog.
+   * Callers may then wire the same wrapper as both `settle` and
+   * `resumeSettlement`.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -470,6 +499,11 @@ interface DurableSettlementOutcomeBase {
   ok: boolean;
   blockNumber?: number;
   txRefKind?: string;
+  /** Canonical JSON encoding preserves the discriminated current reference in the primitive WAL. */
+  txRefJson?: string;
+  finalityObservedAt?: number;
+  x402ReceiptHeaderValue?: string;
+  x402PaymentReceiptHash?: string;
   /** Authenticated recovery provenance when a safe resubmit used a new tx. */
   supersedesTxHash?: string;
   supersedesChainId?: string;
@@ -534,6 +568,72 @@ const isSettlementFinalityModel = (
   value === "htlc-reveal" ||
   value === "liquidity-tank" ||
   value === "bft-final";
+
+function withEvmHexPrefix(value: string): string {
+  return /^0x/i.test(value) ? `0x${value.slice(2)}` : `0x${value}`;
+}
+
+function settlementIdentityFromTxRef(ref: unknown): {
+  txHash: string;
+  chainId: string;
+  kind: string;
+  blockNumber?: number;
+} {
+  if (!isChainTxRef(ref)) {
+    const legacy = ref as {
+      rail?: unknown;
+      txHash?: unknown;
+      kind?: unknown;
+      blockNumber?: unknown;
+    };
+    if (typeof legacy.rail !== "string" || typeof legacy.txHash !== "string" ||
+        typeof legacy.kind !== "string") {
+      throw new CounterpartyError("settlement transaction reference is malformed");
+    }
+    return {
+      txHash: legacy.txHash,
+      chainId: legacy.rail,
+      kind: legacy.kind,
+      ...(typeof legacy.blockNumber === "number"
+        ? { blockNumber: legacy.blockNumber }
+        : {}),
+    };
+  }
+  switch (ref.kind) {
+    case "evm":
+    case "evm-event":
+      return {
+        txHash: withEvmHexPrefix(ref.txHash),
+        chainId: `eip155:${ref.chainId}`,
+        kind: ref.kind,
+      };
+    case "x402-event":
+      return {
+        txHash: withEvmHexPrefix(ref.settlementTxHash),
+        chainId: `eip155:${ref.chainId}`,
+        kind: ref.kind,
+      };
+    case "x402":
+      return {
+        txHash: ref.settlementTxHash
+          ? withEvmHexPrefix(ref.settlementTxHash)
+          : "",
+        chainId: ref.chainId === undefined ? "x402" : `eip155:${ref.chainId}`,
+        kind: ref.kind,
+      };
+    case "demos":
+      return {
+        txHash: ref.txHash,
+        chainId: "demos",
+        kind: ref.kind,
+        ...(ref.blockNumber === undefined ? {} : { blockNumber: ref.blockNumber }),
+      };
+    default:
+      throw new CounterpartyError(
+        `legacy session recovery cannot project ${ref.kind} transaction identity`,
+      );
+  }
+}
 
 function parseSettlementFinalityParameters(
   value: unknown,
@@ -655,6 +755,80 @@ function settlementFinalityFromDurable(
   return parsed;
 }
 
+function settlementTxRefFromDurable(
+  outcome: Pick<DurableSettlementOutcome, "txRefJson">,
+): ChainTxRef | undefined {
+  if (outcome.txRefJson === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(outcome.txRefJson);
+  } catch {
+    throw new CounterpartyError("durable settlement txRef is malformed");
+  }
+  if (!isChainTxRef(parsed) || canonicalize(parsed) !== outcome.txRefJson) {
+    throw new CounterpartyError("durable settlement txRef is non-canonical or malformed");
+  }
+  return parsed;
+}
+
+function durableCurrentFieldsValid(data: Record<string, unknown>): boolean {
+  const txRefJson = data.txRefJson;
+  let txRef: ChainTxRef | undefined;
+  if (txRefJson !== undefined) {
+    if (typeof txRefJson !== "string") return false;
+    try {
+      const parsed = JSON.parse(txRefJson);
+      if (!isChainTxRef(parsed) || canonicalize(parsed) !== txRefJson) return false;
+      txRef = parsed;
+    } catch {
+      return false;
+    }
+  }
+  if (data.finalityObservedAt !== undefined &&
+      (!Number.isSafeInteger(data.finalityObservedAt) ||
+        (data.finalityObservedAt as number) < 0)) return false;
+  if (txRef !== undefined &&
+      (data.finalityObservedAt === undefined || data.finalityModel === undefined)) {
+    return false;
+  }
+  if ((txRef?.kind === "evm-event" || txRef?.kind === "x402-event") &&
+      (data.finalityModel !== "block-depth" ||
+        !Number.isSafeInteger(data.finalityBlocks) ||
+        (data.finalityBlocks as number) <= 0)) return false;
+  if (txRef?.kind === "evm-event") {
+    if (data.txHash !== `0x${txRef.txHash}` ||
+        data.chainId !== `eip155:${txRef.chainId}`) return false;
+  }
+  if (txRef?.kind === "x402-event") {
+    if (data.txHash !== `0x${txRef.settlementTxHash}` ||
+        data.chainId !== `eip155:${txRef.chainId}`) return false;
+  }
+  const receiptValue = data.x402ReceiptHeaderValue;
+  const receiptHash = data.x402PaymentReceiptHash;
+  if ((receiptValue === undefined) !== (receiptHash === undefined)) return false;
+  if (txRef?.kind === "x402-event" && receiptValue === undefined) return false;
+  if (receiptValue !== undefined) {
+    if (typeof receiptValue !== "string" || typeof receiptHash !== "string") return false;
+    const derived = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: { name: "PAYMENT-RESPONSE", value: receiptValue },
+    });
+    if (derived.disposition !== "pass" ||
+        derived.computedPaymentReceiptHash !== receiptHash) return false;
+    if (typeof txRefJson !== "string") return false;
+    const receipt = derived.receipt;
+    if (txRef?.kind !== "x402-event" || txRef.paymentReceiptHash !== receiptHash ||
+        typeof receipt?.transaction !== "string" ||
+        receipt.transaction.toLowerCase() !== `0x${txRef.settlementTxHash}` ||
+        receipt?.network !== `eip155:${txRef.chainId}` ||
+        typeof receipt.payer !== "string" || typeof data.payer !== "string" ||
+        receipt.payer.toLowerCase() !== data.payer.toLowerCase()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function durableSettlementCheckpointData(
   outcome: DurableSettlementOutcome,
 ): Record<string, CheckpointValue> {
@@ -684,6 +858,16 @@ function durableSettlementCheckpointData(
   if (outcome.finalityCommitmentLevel !== undefined) {
     data.finalityCommitmentLevel = outcome.finalityCommitmentLevel;
   }
+  if (outcome.txRefJson !== undefined) data.txRefJson = outcome.txRefJson;
+  if (outcome.finalityObservedAt !== undefined) {
+    data.finalityObservedAt = outcome.finalityObservedAt;
+  }
+  if (outcome.x402ReceiptHeaderValue !== undefined) {
+    data.x402ReceiptHeaderValue = outcome.x402ReceiptHeaderValue;
+  }
+  if (outcome.x402PaymentReceiptHash !== undefined) {
+    data.x402PaymentReceiptHash = outcome.x402PaymentReceiptHash;
+  }
   if (outcome.blockNumber !== undefined) data.blockNumber = outcome.blockNumber;
   if (outcome.txRefKind !== undefined) data.txRefKind = outcome.txRefKind;
   if (outcome.supersedesTxHash !== undefined) {
@@ -698,7 +882,10 @@ function durableSettlementCheckpointData(
 function snapshotSettleResult(value: unknown, label: string): SettleResult {
   let snapshot: unknown;
   try {
-    snapshot = snapshotCanonicalJson(value, label);
+    // Settlement is an asynchronous callback/read boundary. A conforming rail
+    // may return a deeply frozen owned snapshot; accept read-only data
+    // descriptors while retaining the proxy/accessor/exotic-object checks.
+    snapshot = snapshotCanonicalJsonRead(value, label);
   } catch (cause) {
     throw new CounterpartyError(`${label} was not stable canonical JSON`, {
       cause,
@@ -721,6 +908,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     "finality",
     "blockNumber",
     "txRefKind",
+    "txRef",
+    "finalityObservedAt",
+    "x402Receipt",
   ]);
   if (
     Object.keys(result).some((key) => !allowed.has(key)) ||
@@ -747,12 +937,90 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   ) {
     throw new CounterpartyError(`${label} returned a malformed result`);
   }
+  const parsedFinality = parseSettlementFinalityParameters(result.finality);
   if (result.finality !== undefined) {
     if (
       !result.ok ||
-      parseSettlementFinalityParameters(result.finality) === null
+      parsedFinality === null
     ) {
       throw new CounterpartyError(`${label} returned malformed finality`);
+    }
+  }
+  if (
+    (result.finalityObservedAt !== undefined &&
+      (!result.ok || !Number.isSafeInteger(result.finalityObservedAt) ||
+        (result.finalityObservedAt as number) < 0)) ||
+    (result.txRef !== undefined && !result.ok)
+  ) {
+    throw new CounterpartyError(`${label} returned malformed current finality evidence`);
+  }
+  if (result.txRef !== undefined && !isChainTxRef(result.txRef)) {
+    throw new CounterpartyError(`${label} returned malformed txRef`);
+  }
+  if (result.txRef !== undefined && result.finality === undefined) {
+    throw new CounterpartyError(`${label} returned current txRef without finality`);
+  }
+  if (result.txRef !== undefined && result.finalityObservedAt === undefined) {
+    throw new CounterpartyError(`${label} returned current txRef without finality time`);
+  }
+  if ((result.txRef?.kind === "evm-event" ||
+      result.txRef?.kind === "x402-event") &&
+      (parsedFinality?.model !== "block-depth" ||
+        !Number.isSafeInteger(parsedFinality.finalityBlocks) ||
+        (parsedFinality.finalityBlocks ?? 0) <= 0)) {
+    throw new CounterpartyError(
+      `${label} returned current EVM event without positive block-depth finality`,
+    );
+  }
+  if (result.txRef?.kind === "x402-event" && result.x402Receipt === undefined) {
+    throw new CounterpartyError(`${label} returned x402-event without raw receipt`);
+  }
+  if (result.txRef?.kind === "evm-event" &&
+      (result.txHash !== `0x${result.txRef.txHash}` ||
+        result.chainId !== `eip155:${result.txRef.chainId}`)) {
+    throw new CounterpartyError(`${label} returned inconsistent evm-event identity`);
+  }
+  if (result.txRef?.kind === "x402-event" &&
+      (result.txHash !== `0x${result.txRef.settlementTxHash}` ||
+        result.chainId !== `eip155:${result.txRef.chainId}`)) {
+    throw new CounterpartyError(`${label} returned inconsistent x402-event identity`);
+  }
+  if (result.x402Receipt !== undefined) {
+    const receipt = result.x402Receipt;
+    if (
+      receipt === null || typeof receipt !== "object" || Array.isArray(receipt) ||
+      !hasExactKeys(receipt as Record<string, unknown>, [
+        "protocolVersion",
+        "headerName",
+        "headerValue",
+        "paymentReceiptHash",
+      ]) ||
+      (receipt as Record<string, unknown>).protocolVersion !== "2" ||
+      (receipt as Record<string, unknown>).headerName !== "PAYMENT-RESPONSE" ||
+      typeof (receipt as Record<string, unknown>).headerValue !== "string" ||
+      typeof (receipt as Record<string, unknown>).paymentReceiptHash !== "string"
+    ) {
+      throw new CounterpartyError(`${label} returned malformed x402 receipt`);
+    }
+    const parsed = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: {
+        name: "PAYMENT-RESPONSE",
+        value: (receipt as { headerValue: string }).headerValue,
+      },
+    });
+    if (parsed.disposition !== "pass" ||
+        parsed.computedPaymentReceiptHash !==
+          (receipt as { paymentReceiptHash: string }).paymentReceiptHash ||
+        !result.txRef || result.txRef.kind !== "x402-event" ||
+        result.txRef.paymentReceiptHash !== parsed.computedPaymentReceiptHash ||
+        typeof parsed.receipt?.transaction !== "string" ||
+        parsed.receipt.transaction.toLowerCase() !==
+          `0x${result.txRef.settlementTxHash}` ||
+        parsed.receipt?.network !== `eip155:${result.txRef.chainId}` ||
+        typeof parsed.receipt?.payer !== "string" ||
+        parsed.receipt.payer.toLowerCase() !== result.payer.toLowerCase()) {
+      throw new CounterpartyError(`${label} returned unauthenticated x402 receipt`);
     }
   }
   return result as unknown as SettleResult;
@@ -1793,6 +2061,18 @@ function durableSettlementOutcome(
     ...durableFinalityFields(finality),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
+    ...(result.txRef !== undefined
+      ? { txRefJson: canonicalize(result.txRef) }
+      : {}),
+    ...(result.finalityObservedAt !== undefined
+      ? { finalityObservedAt: result.finalityObservedAt }
+      : {}),
+    ...(result.x402Receipt !== undefined
+      ? {
+          x402ReceiptHeaderValue: result.x402Receipt.headerValue,
+          x402PaymentReceiptHash: result.x402Receipt.paymentReceiptHash,
+        }
+      : {}),
     ...(supersedes &&
     (supersedes.txHash !== result.txHash ||
       supersedes.chainId !== result.chainId)
@@ -1820,6 +2100,10 @@ function sameSettlementOutcome(
     left.finalityCommitmentLevel === right.finalityCommitmentLevel &&
     left.blockNumber === right.blockNumber &&
     left.txRefKind === right.txRefKind &&
+    left.txRefJson === right.txRefJson &&
+    left.finalityObservedAt === right.finalityObservedAt &&
+    left.x402ReceiptHeaderValue === right.x402ReceiptHeaderValue &&
+    left.x402PaymentReceiptHash === right.x402PaymentReceiptHash &&
     left.supersedesTxHash === right.supersedesTxHash &&
     left.supersedesChainId === right.supersedesChainId
   );
@@ -1893,6 +2177,10 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
       "finalityModel",
       "finalityBlocks",
       "finalityCommitmentLevel",
+      "txRefJson",
+      "finalityObservedAt",
+      "x402ReceiptHeaderValue",
+      "x402PaymentReceiptHash",
     ].some((key) => Object.prototype.hasOwnProperty.call(data, key));
     if (!ok && carriesFinality) {
       return {
@@ -2007,6 +2295,10 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         payee,
         blockNumber,
         txRefKind,
+        txRefJson,
+        finalityObservedAt,
+        x402ReceiptHeaderValue,
+        x402PaymentReceiptHash,
         supersedesTxHash,
         supersedesChainId,
       } = data;
@@ -2023,6 +2315,10 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "finalityCommitmentLevel",
         "blockNumber",
         "txRefKind",
+        "txRefJson",
+        "finalityObservedAt",
+        "x402ReceiptHeaderValue",
+        "x402PaymentReceiptHash",
         "supersedesTxHash",
         "supersedesChainId",
       ]);
@@ -2041,6 +2337,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           (typeof txRefKind !== "string" ||
             txRefKind.length === 0 ||
             txRefKind.trim() !== txRefKind)) ||
+        !durableCurrentFieldsValid(data) ||
         ((supersedesTxHash === undefined) !==
           (supersedesChainId === undefined)) ||
         (supersedesTxHash !== undefined &&
@@ -2069,6 +2366,14 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ...(typeof txRefKind === "string" ? { txRefKind } : {}),
+          ...(typeof txRefJson === "string" ? { txRefJson } : {}),
+          ...(typeof finalityObservedAt === "number"
+            ? { finalityObservedAt }
+            : {}),
+          ...(typeof x402ReceiptHeaderValue === "string" &&
+          typeof x402PaymentReceiptHash === "string"
+            ? { x402ReceiptHeaderValue, x402PaymentReceiptHash }
+            : {}),
           ...(typeof supersedesTxHash === "string" &&
           typeof supersedesChainId === "string"
             ? { supersedesTxHash, supersedesChainId }
@@ -3005,9 +3310,9 @@ export async function runSessionCore(
   };
 
   const matchSettlementEvidence = (v: Record<string, unknown>): Match => {
-    if (!isSettlementEvidence(v))
+    if (!isSessionSettlementEvidence(v))
       return { ok: false, reason: "not settlement evidence" };
-    const e = v as unknown as SettlementEvidence;
+    const e = v as SessionSettlementEvidence;
     if (e.jobId !== jobId)
       return { ok: false, reason: `jobId ${e.jobId} ≠ ${jobId}` };
     if (e.phase !== paymentEvidencePhase)
@@ -3015,7 +3320,7 @@ export async function runSessionCore(
         ok: false,
         reason: `payment phase ${e.phase} ≠ ${paymentEvidencePhase}`,
       };
-    if (e.phaseIndex !== 0)
+    if ("phaseIndex" in e && e.phaseIndex !== 0)
       return { ok: false, reason: `phaseIndex ${e.phaseIndex} ≠ 0` };
     if (!e.paymentAmount)
       return { ok: false, reason: "settlement evidence has no payment amount" };
@@ -3023,19 +3328,26 @@ export async function runSessionCore(
       return { ok: false, reason: "settled amount mismatch" };
     if (e.paymentAmount.currency !== terms.price.asset)
       return { ok: false, reason: "settled currency mismatch" };
-    if (e.paymentTxRefs.length !== 1) {
+    const paymentTxRefs = e.paymentTxRefs ?? [];
+    if (paymentTxRefs.length !== 1) {
       return {
         ok: false,
-        reason: `legacy MVP settlement evidence must carry exactly one transaction ref (got ${e.paymentTxRefs.length})`,
+        reason: `session settlement evidence must carry exactly one transaction ref (got ${paymentTxRefs.length})`,
       };
     }
     if (e.outcome === "success") {
+      const settlementFinality = e.settlementFinality;
+      if (!settlementFinality) {
+        return { ok: false, reason: "successful evidence has no finality" };
+      }
       if (
-        e.paymentTxRefs.some(
-          (ref) =>
-            ref.rail.trim().length === 0 ||
-            ref.txHash.trim().length === 0 ||
-            ref.kind.trim().length === 0,
+        paymentTxRefs.some(
+          (ref) => {
+            if (isChainTxRef(ref)) return false;
+            return ref.rail.trim().length === 0 ||
+              ref.txHash.trim().length === 0 ||
+              ref.kind.trim().length === 0;
+          },
         )
       ) {
         return {
@@ -3043,14 +3355,14 @@ export async function runSessionCore(
           reason: "successful evidence has an empty transaction-ref component",
         };
       }
-      if (!isSettlementFinalityModel(e.settlementFinality.model)) {
+      if (!isSettlementFinalityModel(settlementFinality.model)) {
         return { ok: false, reason: "unrecognized settlement finality model" };
       }
       if (
-        e.settlementFinality.model === "block-depth" &&
-        e.settlementFinality.finalityBlocks !== undefined &&
-        (!Number.isSafeInteger(e.settlementFinality.finalityBlocks) ||
-          e.settlementFinality.finalityBlocks < 0)
+        settlementFinality.model === "block-depth" &&
+        settlementFinality.finalityBlocks !== undefined &&
+        (!Number.isSafeInteger(settlementFinality.finalityBlocks) ||
+          settlementFinality.finalityBlocks < 0)
       ) {
         return { ok: false, reason: "invalid block-depth finality" };
       }
@@ -3944,14 +4256,11 @@ export async function runSessionCore(
       }
       settledOk = settlement.ok;
       const observedAt = deps.nowMs();
-      // Legacy MVP settlement evidence. The rail's reported chain id +
-      // tx hash become a payment txRef. Finality defaults to the rail's receipt
-      // (§9.7 `provider-receipt`, with no model-specific parameter) but a rail
-      // that knows its own model — e.g. §9.5.9 pay-dem's `bft-final` + block
-      // height — reports it via
-      // `pay.finality` / `pay.blockNumber` / `pay.txRefKind`, so the evidence
-      // asserts the finality model that actually settled, not a hardcoded one
-      // (F7/#22). Issue #81 removes phaseIndex and emits exact ChainTxRef variants.
+      // Current rails that return a discriminated ChainTxRef emit normative
+      // DACS-4 evidence. Historical/custom rails remain inside the explicit
+      // phaseIndex compatibility envelope until they acquire an exact current
+      // transaction identity; both forms remain readable on restart.
+      const currentTxRef = settlementTxRefFromDurable(settlement);
       const evidenceBase = {
         evidenceVersion: "1" as const,
         jobId,
@@ -3959,32 +4268,42 @@ export async function runSessionCore(
         // the independently selected PaymentRailRef.railId and remains the
         // value passed to the rail adapter above.
         phase: paymentEvidencePhase,
-        phaseIndex: 0,
-        paymentTxRefs: [
-          {
-            rail: settlement.chainId,
-            txHash: settlement.txHash,
-            kind: settlement.txRefKind ?? "payment",
-            ...(settlement.blockNumber !== undefined
-              ? { blockNumber: settlement.blockNumber }
-              : {}),
-          },
-        ],
+        paymentTxRefs: [currentTxRef ?? {
+          rail: settlement.chainId,
+          txHash: settlement.txHash,
+          kind: settlement.txRefKind ?? "payment",
+          ...(settlement.blockNumber !== undefined
+            ? { blockNumber: settlement.blockNumber }
+            : {}),
+        }],
         paymentAmount: { amount: terms.price.amount, currency: terms.price.asset },
         observedAt,
       };
-      let evidence: SettlementEvidence;
+      let evidence: Record<string, unknown>;
       if (!settledOk) {
-        evidence = { ...evidenceBase, outcome: "failure" };
+        evidence = currentTxRef
+          ? {
+              ...evidenceBase,
+              outcome: "failure",
+              reason: "settlement rail reported definitive failure",
+            }
+          : { ...evidenceBase, phaseIndex: 0, outcome: "failure" };
       } else {
         const finality = settlementFinalityFromDurable(settlement) ?? {
           model: "provider-receipt" as const,
         };
         const settlementFinality: SettlementFinality = {
           ...finality,
-          finalityObservedAt: observedAt,
+          finalityObservedAt: settlement.finalityObservedAt ?? observedAt,
         };
-        evidence = { ...evidenceBase, outcome: "success", settlementFinality };
+        evidence = currentTxRef
+          ? { ...evidenceBase, outcome: "success", settlementFinality }
+          : {
+              ...evidenceBase,
+              phaseIndex: 0,
+              outcome: "success",
+              settlementFinality,
+            };
       }
       return signSessionArtifact(
         evidence,
@@ -3994,12 +4313,13 @@ export async function runSessionCore(
     deps.buyerId,
     recoveredEvidence,
     ARTIFACT_SEPARATORS.SettlementEvidence,
+    true,
   );
   if (evidenceExisting) {
     // Reused a prior settlement — take the outcome from the anchored evidence.
     const unsignedEvidence = stripSignature(
       evidenceValue,
-    ) as unknown as SettlementEvidence;
+    ) as unknown as SessionSettlementEvidence;
     settledOk = unsignedEvidence.outcome === "success";
 
     if (store) {
@@ -4012,7 +4332,13 @@ export async function runSessionCore(
           `authenticated evidence at ${settlementRef} has no exact buyer ComponentSignature authority`,
         );
       }
-      const tx = unsignedEvidence.paymentTxRefs[0]!;
+      const tx = unsignedEvidence.paymentTxRefs?.[0];
+      if (!tx) {
+        throw new CounterpartyError(
+          `authenticated evidence at ${settlementRef} has no transaction reference`,
+        );
+      }
+      const txIdentity = settlementIdentityFromTxRef(tx);
       const evidenceOutcome: AuthenticatedEvidenceSettlementOutcome = {
         outcomeSource: "authenticated-evidence",
         ...expectedSettlementBinding,
@@ -4021,10 +4347,12 @@ export async function runSessionCore(
           unsignedEvidence as unknown as Record<string, unknown>,
         ),
         evidenceSigner: signature.signer,
-        txHash: tx.txHash,
-        chainId: tx.rail,
-        txRefKind: tx.kind,
-        ...(tx.blockNumber !== undefined ? { blockNumber: tx.blockNumber } : {}),
+        txHash: txIdentity.txHash,
+        chainId: txIdentity.chainId,
+        txRefKind: txIdentity.kind,
+        ...(txIdentity.blockNumber !== undefined
+          ? { blockNumber: txIdentity.blockNumber }
+          : {}),
         ok: settledOk,
       };
 
@@ -4171,9 +4499,9 @@ export async function runSessionCore(
   }
   const evidenceTxRefs = (
     (stripSignature(evidenceValue) as { paymentTxRefs?: unknown }).paymentTxRefs as
-      | Array<{ rail: string; txHash: string }>
+      | Array<LegacyMvpTxRef | ChainTxRef>
       | undefined
-  )?.map((t) => ({ rail: t.rail, txHash: t.txHash, kind: "settlement" }));
+  )?.map((txRef) => structuredClone(txRef));
   phaseSummary.push({
     index: phaseSummary.length,
     kind: "settle",
