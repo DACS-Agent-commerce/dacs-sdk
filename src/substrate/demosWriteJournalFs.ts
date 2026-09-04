@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
+  open,
+  readdir,
   rename,
   rm,
 } from "node:fs/promises";
@@ -234,6 +236,17 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+function nestedErrorCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; depth < 4 && current !== null &&
+      typeof current === "object"; depth += 1) {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 export async function createFsDemosWriteJournal(
   options: FsDemosWriteJournalOptions,
 ): Promise<DemosWriteJournal> {
@@ -262,6 +275,250 @@ export async function createFsDemosWriteJournal(
     "filesystem Demos write journal",
   );
 
+  const localHostname = hostname();
+
+  async function syncDirectory(path: string): Promise<void> {
+    const handle = await open(path, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
+    return left === null
+      ? right === null
+      : right !== null &&
+        left.token === right.token &&
+        left.pid === right.pid &&
+        left.hostname === right.hostname &&
+        left.createdAt === right.createdAt;
+  }
+
+  async function readLockOwner(path: string): Promise<LockOwner | null> {
+    try {
+      const value = JSON.parse(await readPrivateFile(
+        join(path, "owner.json"),
+        "utf8",
+        "filesystem Demos write journal lock",
+      )) as unknown;
+      if (!isObject(value) || !nonEmpty(value.token) ||
+          !Number.isSafeInteger(value.pid) || (value.pid as number) <= 0 ||
+          !nonEmpty(value.hostname) || !nonNegativeInteger(value.createdAt)) {
+        return null;
+      }
+      return {
+        token: value.token,
+        pid: value.pid as number,
+        hostname: value.hostname,
+        createdAt: value.createdAt as number,
+      };
+    } catch (error) {
+      if (nestedErrorCode(error) === "ENOENT" ||
+          error instanceof SyntaxError ||
+          (error instanceof DacsError && (
+            /file changed while it was being (?:opened|read)/u.test(error.message) ||
+            /regular file has 0 hard links/u.test(error.message)
+          ))) {
+        // Missing or malformed JSON is reclaimable only after it is stale.
+        return null;
+      }
+      // Filesystem-admission failures are not evidence that an owner is absent.
+      throw error;
+    }
+  }
+
+  function ownerIsReclaimable(owner: LockOwner | null, age: number): boolean {
+    if (owner === null) return age >= lockStaleMs;
+    // This host-local journal never guesses whether a foreign-host owner died.
+    if (owner.hostname !== localHostname) return false;
+    return !processIsAlive(owner.pid);
+  }
+
+  async function inspectLockDirectory(path: string) {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new DacsError("Demos write journal lock path is unsafe");
+    }
+    return metadata;
+  }
+
+  async function publishCompleteOwnerDirectory(
+    path: string,
+    owner: LockOwner,
+  ): Promise<void> {
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: DIR_MODE });
+      await exclusiveWritePrivateFile(
+        join(candidate, "owner.json"),
+        JSON.stringify(owner),
+        "filesystem Demos write journal lock",
+      );
+      await syncDirectory(candidate);
+      // A valid published lock is non-empty, so rename cannot replace it.
+      await rename(candidate, path);
+      await syncDirectory(locksDir);
+    } finally {
+      await rm(candidate, { recursive: true, force: true });
+    }
+  }
+
+  function mutationGatePath(digest: string): string {
+    return join(locksDir, `${digest}.mutation`);
+  }
+
+  function mutationQuarantinePrefix(digest: string): string {
+    return `${digest}.mutation.`;
+  }
+
+  function lockQuarantinePrefix(digest: string): string {
+    return `${digest}.lock.`;
+  }
+
+  async function activeQuarantines(
+    prefix: string,
+    suffix: string,
+  ): Promise<string[]> {
+    const live: string[] = [];
+    for (const name of (await readdir(locksDir)).filter((candidate) =>
+      candidate.startsWith(prefix) && candidate.endsWith(suffix))) {
+      const path = join(locksDir, name);
+      try {
+        const metadata = await inspectLockDirectory(path);
+        const owner = await readLockOwner(path);
+        if (!ownerIsReclaimable(owner, Date.now() - metadata.mtimeMs)) {
+          live.push(path);
+          continue;
+        }
+        await rm(path, { recursive: true, force: true });
+        await syncDirectory(locksDir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return live;
+  }
+
+  async function quarantineStaleMutationGate(digest: string): Promise<void> {
+    const path = mutationGatePath(digest);
+    let observed;
+    try {
+      observed = await inspectLockDirectory(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const observedOwner = await readLockOwner(path);
+    if (!ownerIsReclaimable(observedOwner, Date.now() - observed.mtimeMs)) return;
+
+    const quarantine = join(
+      locksDir,
+      `${mutationQuarantinePrefix(digest)}${randomUUID()}.quarantine`,
+    );
+    try {
+      await rename(path, quarantine);
+      await syncDirectory(locksDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let moved;
+    try {
+      moved = await inspectLockDirectory(quarantine);
+    } catch (error) {
+      // The displaced owner may have completed and removed its own quarantine.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const movedOwner = await readLockOwner(quarantine);
+    if (moved.dev === observed.dev && moved.ino === observed.ino &&
+        sameOwner(movedOwner, observedOwner) &&
+        ownerIsReclaimable(movedOwner, Date.now() - moved.mtimeMs)) {
+      await rm(quarantine, { recursive: true, force: true });
+      await syncDirectory(locksDir);
+    }
+    // A moved replacement remains authoritative and blocks later publishers.
+  }
+
+  async function releaseMutationGate(digest: string, owner: LockOwner): Promise<void> {
+    const path = mutationGatePath(digest);
+    if (sameOwner(await readLockOwner(path), owner)) {
+      const quarantine = join(
+        locksDir,
+        `${mutationQuarantinePrefix(digest)}${randomUUID()}.quarantine`,
+      );
+      try {
+        await rename(path, quarantine);
+        await syncDirectory(locksDir);
+        if (sameOwner(await readLockOwner(quarantine), owner)) {
+          await rm(quarantine, { recursive: true, force: true });
+          await syncDirectory(locksDir);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+
+    for (const name of (await readdir(locksDir)).filter((candidate) =>
+      candidate.startsWith(mutationQuarantinePrefix(digest)) &&
+      candidate.endsWith(".quarantine"))) {
+      const quarantine = join(locksDir, name);
+      if (sameOwner(await readLockOwner(quarantine), owner)) {
+        await rm(quarantine, { recursive: true, force: true });
+        await syncDirectory(locksDir);
+      }
+    }
+  }
+
+  async function acquireMutationGate(digest: string, owner: LockOwner): Promise<boolean> {
+    if ((await activeQuarantines(
+      mutationQuarantinePrefix(digest),
+      ".quarantine",
+    )).length > 0) return false;
+    try {
+      await publishCompleteOwnerDirectory(mutationGatePath(digest), owner);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+      await quarantineStaleMutationGate(digest);
+      return false;
+    }
+    if ((await activeQuarantines(
+      mutationQuarantinePrefix(digest),
+      ".quarantine",
+    )).length > 0) {
+      await releaseMutationGate(digest, owner);
+      return false;
+    }
+    return true;
+  }
+
+  async function withMutationGate<T>(
+    digest: string,
+    deadline: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const owner: LockOwner = {
+      token: randomUUID(),
+      pid: process.pid,
+      hostname: localHostname,
+      createdAt: Date.now(),
+    };
+    while (!await acquireMutationGate(digest, owner)) {
+      if (Date.now() >= deadline) {
+        throw new DacsError(`timed out acquiring Demos wallet mutation gate ${digest}`);
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+    try {
+      return await operation();
+    } finally {
+      await releaseMutationGate(digest, owner);
+    }
+  }
+
   return {
     async acquire(input) {
       if (!nonEmpty(input.chainIdentity) || !nonEmpty(input.wallet)) {
@@ -276,78 +533,113 @@ export async function createFsDemosWriteJournal(
       const digest = keyDigest(key);
       const statePath = join(statesDir, `${digest}.json`);
       const lockPath = join(locksDir, `${digest}.lock`);
-      const ownerPath = join(lockPath, "owner.json");
       const token = randomUUID();
       const owner: LockOwner = {
         token,
         pid: process.pid,
-        hostname: hostname(),
+        hostname: localHostname,
         createdAt: Date.now(),
       };
       const deadline = Date.now() + lockTimeoutMs;
 
-      for (;;) {
-        try {
-          await mkdir(lockPath, { mode: DIR_MODE });
-          try {
-            await exclusiveWritePrivateFile(
-              ownerPath,
-              JSON.stringify(owner),
-              "filesystem Demos write journal lock",
+      const reclaimStaleLock = async (): Promise<boolean> =>
+        withMutationGate(digest, deadline, async () => {
+          if ((await activeQuarantines(
+            lockQuarantinePrefix(digest),
+            ".stale",
+          )).length > 0) {
+            throw new DacsError(
+              `Demos wallet journal ${digest} has an active quarantined owner`,
             );
+          }
+
+          let observed;
+          try {
+            observed = await inspectLockDirectory(lockPath);
           } catch (error) {
-            await rm(lockPath, { recursive: true, force: true });
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
             throw error;
           }
+          const observedOwner = await readLockOwner(lockPath);
+          if (!ownerIsReclaimable(
+            observedOwner,
+            Date.now() - observed.mtimeMs,
+          )) return false;
+
+          const quarantine = `${lockPath}.${randomUUID()}.stale`;
+          try {
+            await rename(lockPath, quarantine);
+            await syncDirectory(locksDir);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+            throw error;
+          }
+          const moved = await inspectLockDirectory(quarantine);
+          const movedOwner = await readLockOwner(quarantine);
+          if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
+              !sameOwner(movedOwner, observedOwner) ||
+              !ownerIsReclaimable(movedOwner, Date.now() - moved.mtimeMs)) {
+            throw new DacsError(
+              `Demos wallet journal ${digest} changed during stale recovery`,
+            );
+          }
+          await rm(quarantine, { recursive: true, force: true });
+          await syncDirectory(locksDir);
+          return true;
+        });
+
+      const releaseOwnedLock = async (): Promise<void> => {
+        let releasedPath: string | undefined;
+        await withMutationGate(
+          digest,
+          Date.now() + lockTimeoutMs,
+          async () => {
+            if (sameOwner(await readLockOwner(lockPath), owner)) {
+              releasedPath = `${lockPath}.${token}.released`;
+              try {
+                await rename(lockPath, releasedPath);
+                await syncDirectory(locksDir);
+              } catch (error) {
+                releasedPath = undefined;
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+              }
+            }
+          },
+        );
+        if (releasedPath !== undefined) {
+          await rm(releasedPath, { recursive: true, force: true });
+          await syncDirectory(locksDir);
+        }
+      };
+
+      for (;;) {
+        const candidate = `${lockPath}.${randomUUID()}.candidate`;
+        try {
+          await mkdir(candidate, { mode: DIR_MODE });
+          await exclusiveWritePrivateFile(
+            join(candidate, "owner.json"),
+            JSON.stringify(owner),
+            "filesystem Demos write journal lock",
+          );
+          await syncDirectory(candidate);
+          await withMutationGate(digest, deadline, async () => {
+            if ((await activeQuarantines(
+              lockQuarantinePrefix(digest),
+              ".stale",
+            )).length > 0) {
+              throw new DacsError(
+                `Demos wallet journal ${digest} has an active quarantined owner`,
+              );
+            }
+            await rename(candidate, lockPath);
+            await syncDirectory(locksDir);
+          });
           break;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-
-          const lockMetadata = await lstat(lockPath);
-          if (lockMetadata.isSymbolicLink() || !lockMetadata.isDirectory()) {
-            throw new DacsError("Demos write journal lock path is unsafe");
-          }
-
-          let existing: LockOwner | undefined;
-          try {
-            existing = JSON.parse(await readPrivateFile(
-              ownerPath,
-              "utf8",
-              "filesystem Demos write journal lock",
-            )) as LockOwner;
-          } catch {
-            // A creator can briefly expose the directory before owner.json.
-          }
-          let reclaim = false;
-          if (
-            existing &&
-            existing.hostname === hostname() &&
-            !processIsAlive(existing.pid)
-          ) {
-            reclaim = true;
-          } else {
-            try {
-              const age = Date.now() - (await lstat(lockPath)).mtimeMs;
-              // A live process cannot be probed across hosts. Never steal a
-              // well-formed foreign-host lease merely because its mtime is old.
-              // Distributed deployments must share a backend with equivalent
-              // fencing, rather than an eventually stale network-filesystem lock.
-              reclaim = age >= lockStaleMs && !existing;
-            } catch {
-              // The current holder may have released it between observations.
-            }
-          }
-
-          if (reclaim) {
-            const quarantine = `${lockPath}.${randomUUID()}.reclaim`;
-            try {
-              await rename(lockPath, quarantine);
-              await rm(quarantine, { recursive: true, force: true });
-              continue;
-            } catch {
-              // Another contender won the reclaim race.
-            }
-          }
+          await rm(candidate, { recursive: true, force: true }).catch(() => {});
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+          await reclaimStaleLock();
           if (Date.now() >= deadline) {
             throw new DacsError(
               `timed out acquiring Demos wallet journal ${digest}`,
@@ -394,14 +686,9 @@ export async function createFsDemosWriteJournal(
           }
           const [disk, lockText] = await Promise.all([
             readState(),
-            readPrivateFile(
-              ownerPath,
-              "utf8",
-              "filesystem Demos write journal lock",
-            ),
+            readLockOwner(lockPath),
           ]);
-          const lock = JSON.parse(lockText) as LockOwner;
-          if (disk?.generation !== generation || lock.token !== token) {
+          if (disk?.generation !== generation || !sameOwner(lockText, owner)) {
             throw new DacsError(
               `Demos write journal fence ${generation} is no longer current`,
             );
@@ -443,24 +730,11 @@ export async function createFsDemosWriteJournal(
             if (released) return;
             await putTail;
             released = true;
-            try {
-              const currentOwner = JSON.parse(
-                await readPrivateFile(
-                  ownerPath,
-                  "utf8",
-                  "filesystem Demos write journal lock",
-                ),
-              ) as LockOwner;
-              if (currentOwner.token === token) {
-                await rm(lockPath, { recursive: true, force: true });
-              }
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-            }
+            await releaseOwnedLock();
           },
         };
       } catch (error) {
-        await rm(lockPath, { recursive: true, force: true });
+        await releaseOwnedLock();
         throw error;
       }
     },
