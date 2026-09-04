@@ -1,23 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
-  chmod,
   link,
   lstat,
   mkdir,
   open,
-  readFile,
   readdir,
   rename,
   rm,
   stat,
   unlink,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   x402PaywallSettlementKey,
   type X402PaywallSettlementClaim,
@@ -338,26 +341,17 @@ export async function createFsX402PaywallSettlementStore(
   rawOptions: FsX402PaywallSettlementStoreOptions,
 ): Promise<X402PaywallSettlementStore> {
   const options = snapshotOptions(rawOptions);
-  const recordsDir = join(options.dir, "records");
-  const locksDir = join(options.dir, "locks");
+  const root = await preparePrivateStoreDirectory(
+    options.dir,
+    "x402 paywall filesystem store",
+  );
+  const recordsDir = join(root, "records");
+  const locksDir = join(root, "locks");
   const reclaimGatePath = join(locksDir, ".reclaim");
   const reclaimQuarantinePrefix = ".reclaim.";
 
-  async function prepareOwnedDirectory(path: string): Promise<void> {
-    await mkdir(path, { recursive: true, mode: DIR_MODE });
-    const metadata = await lstat(path);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new DacsError("x402 paywall store path is not a safe directory");
-    }
-    try {
-      await chmod(path, DIR_MODE);
-    } catch (error) {
-      if (!unsupportedFilesystemOperation(error)) throw error;
-    }
-  }
-
-  await prepareOwnedDirectory(recordsDir);
-  await prepareOwnedDirectory(locksDir);
+  await preparePrivateStoreDirectory(recordsDir, "x402 paywall filesystem store");
+  await preparePrivateStoreDirectory(locksDir, "x402 paywall filesystem store");
 
   // Hashing the complete, exact key makes every filename a fixed ASCII token;
   // attacker-controlled job IDs can never traverse outside the owned folders.
@@ -380,25 +374,34 @@ export async function createFsX402PaywallSettlementStore(
   }
 
   async function atomicWrite(path: string, value: Readonly<StoredRecord>): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
+    await atomicWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "x402 paywall filesystem store",
+    );
+  }
+
+  async function readOwnedFile(path: string): Promise<string> {
+    const parent = await lstat(dirname(path));
+    if (!parent.isDirectory() || parent.isSymbolicLink()) {
+      throw new DacsError("x402 paywall lock path is unsafe");
+    }
+    const handle = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify(value), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, path);
-      await syncDirectory(recordsDir);
+      const metadata = await handle.stat();
+      if (!metadata.isFile()) throw new DacsError("x402 paywall lock owner is unsafe");
+      return await handle.readFile("utf8");
     } finally {
-      await unlink(temporary).catch(() => {});
+      await handle.close();
     }
   }
 
   async function readLockOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(join(path, "owner.json"), "utf8")) as unknown;
+      const parsed = JSON.parse(await readOwnedFile(join(path, "owner.json"))) as unknown;
       if (isPlainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
           parsed.token.length > 0) {
@@ -427,7 +430,7 @@ export async function createFsX402PaywallSettlementStore(
 
   async function readFileOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      const parsed = JSON.parse(await readOwnedFile(path)) as unknown;
       if (isPlainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
           parsed.token.length > 0) {
@@ -449,7 +452,6 @@ export async function createFsX402PaywallSettlementStore(
       } finally {
         await handle.close();
       }
-      // A hard link publishes complete bytes without an empty-file window.
       await link(temporary, path);
       await syncDirectory(locksDir);
     } finally {
@@ -694,14 +696,7 @@ export async function createFsX402PaywallSettlementStore(
     const path = recordPath(settlementKey);
     let text: string;
     try {
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try {
-        const metadata = await handle.stat();
-        if (!metadata.isFile()) throw new DacsError("x402 paywall record is not a file");
-        text = await handle.readFile("utf8");
-      } finally {
-        await handle.close();
-      }
+      text = await readPrivateFile(path, "utf8", "x402 paywall filesystem store");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "absent" };
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
