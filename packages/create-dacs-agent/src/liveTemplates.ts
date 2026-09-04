@@ -2847,8 +2847,9 @@ export async function checkGeneratedUpgradeV1(
   const storesSafe = storeReports.every((store) => store.safe);
   const migrationSupported = availableMetadata !== undefined && storeReports.every((store) =>
     store.schemaVersion !== null &&
-    availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion) &&
-    store.schemaVersion <= availableMetadata.sqliteSchemaVersion);
+    (store.schemaVersion === availableMetadata.sqliteSchemaVersion ||
+      (store.schemaVersion < availableMetadata.sqliteSchemaVersion &&
+        availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion))));
   const standardChanged = availableMetadata !== undefined &&
     availableMetadata.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION;
   const configChanged = availableMetadata !== undefined &&
