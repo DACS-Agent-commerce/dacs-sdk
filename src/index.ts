@@ -11,6 +11,7 @@
  */
 
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
+export { isDacsPublicAddressV1 } from "./agent/publicAddress.js";
 export * from "./commerce/index.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
@@ -948,10 +949,27 @@ export {
   type X402RailConfig,
   type X402SettleParams,
   type X402SettleCoreDeps,
+  type X402PaidEffectFence,
   type X402ClientLike,
   type X402PaymentRequired,
   type X402PaymentRequirement,
   type X402SettlementResponse,
+  assertDacsPublicHttpsUrlV1,
+  createDacsPublicHttpsFetchV1,
+  requestX402OutboundV1,
+  resolveDacsPublicHostV1,
+  X402OutboundTransportError,
+  type DacsPublicHttpsDependenciesV1,
+  type DacsPublicHttpsFetchOptionsV1,
+  type DacsPublicHttpsGetInitV1,
+  type DacsPublicHttpsGetV1,
+  type DacsPublicHttpsRequestV1,
+  type X402OutboundRequestInput,
+  type X402OutboundResponse,
+  type X402OutboundHeaderInit,
+  type X402PaymentHeaderMode,
+  type X402OutboundTransportMode,
+  type X402OutboundTransportPolicy,
   createX402Paywall,
   x402PaywallCore,
   x402PaywallFulfilmentKey,
