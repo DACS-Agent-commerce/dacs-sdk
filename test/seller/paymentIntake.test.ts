@@ -852,6 +852,29 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
+  it("binds party bundles and the paying key by parameter-free CF-3 identity", async () => {
+    const ctx = makeContext("pay-dem");
+    ctx.buyerBundle = identity(
+      `${BUYER_DEMOS}?jurisdiction=GB`,
+      `${BUYER_DEMOS}?purpose=payment`,
+    );
+    const parties = ctx.agreement.parties as Array<{
+      role: string;
+      bundleHash: string;
+    }>;
+    const buyer = parties.find((party) => party.role === "buyer");
+    if (!buyer) throw new Error("fixture");
+    buyer.bundleHash = identityBundleHash(ctx.buyerBundle);
+    ctx.input.payerPayingKey = `${BUYER_DEMOS}?purpose=payment`;
+    refreshCommitment(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps))
+      .resolves.toMatchObject({
+        disposition: "verified",
+        fulfilment: "claim",
+      });
+  });
+
   it("rejects a contradictory Demos observation before claiming fulfilment", async () => {
     const ctx = makeContext("pay-dem");
     ctx.demosObservation = {
@@ -895,18 +918,33 @@ describe("verifySellerPaymentIntake", () => {
   });
 
   it.each([
-    `cci-xm:demos::0x${"11".repeat(32)}`,
-    `cci-xm:demos:testnet:${"11".repeat(32)}`,
-    `cci-xm:demos:testnet:0x${"11".repeat(31)}`,
-    `cci-xm:evm:testnet:0x${"11".repeat(32)}`,
-  ])("rejects a malformed or foreign pay-DEM seller claim: %s", async (claim) => {
+    [
+      `cci-xm:demos::0x${"11".repeat(32)}`,
+      "unsupported-or-malformed-agreement",
+    ],
+    [
+      `cci-xm:demos:testnet:${"11".repeat(32)}`,
+      "payee-destination-binding-mismatch",
+    ],
+    [
+      `cci-xm:demos:testnet:0x${"11".repeat(31)}`,
+      "payee-destination-binding-mismatch",
+    ],
+    [
+      `cci-xm:evm:testnet:0x${"11".repeat(32)}`,
+      "payee-destination-binding-mismatch",
+    ],
+  ])("rejects a malformed or foreign pay-DEM seller claim: %s", async (
+    claim,
+    reason,
+  ) => {
     const ctx = makeContext("pay-dem");
     rebindDemosSellerClaim(ctx, claim, `0x${"11".repeat(32)}`);
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
       disposition: "rejected",
       fulfilment: "none",
-      reason: "payee-destination-binding-mismatch",
+      reason,
     });
   });
 

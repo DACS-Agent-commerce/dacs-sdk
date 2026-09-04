@@ -29,6 +29,7 @@ import {
   type ListingValidationResult,
   type VerifiedListingAdmission,
 } from "./listingValidation.js";
+import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
 import { type Verifier } from "./signedArtifact.js";
 
 const CANONICAL_DEMOS_AGENT_IDENTIFIER = /^demos:agent:([0-9a-f]{64})$/;
@@ -553,6 +554,15 @@ export async function readListingByLogicalAddress(
       "shape",
       "unsupported-listing-shape",
       "record does not satisfy a supported normative or historical Listing shape",
+      binding.nativeAddress,
+    );
+  }
+  if (!readableListingClaimReferencesAreCanonical(readable)) {
+    return rejected(
+      logicalAddress,
+      "shape",
+      "unsupported-listing-shape",
+      "Listing contains a non-canonical CORE B.1 CF-2 ClaimReference",
       binding.nativeAddress,
     );
   }

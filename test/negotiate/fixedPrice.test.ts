@@ -18,6 +18,7 @@ import {
   generateCanonicalJobId,
   isCanonicalJobId,
   isAgreementDocument,
+  isPaymentRailRef,
   isPayeeBoundAgreementDocument,
   privateKeyFromSeed,
   publicKeyFromSeed,
@@ -567,10 +568,31 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
 
     const wrongSeller = input();
     wrongSeller.seller = {
-      identityBundle: identity("did:demos:agent:substitute"),
+      identityBundle: identity("did:demos:substitute"),
       vetRecordRef: vetRef("stor:wrong-seller-vet"),
     };
     expect(() => deriveFixedPriceAgreement(wrongSeller)).toThrow(/does not match/);
+  });
+
+  test("matches agreement parties by parameter-free CF-3 identity", () => {
+    const equivalentSeller = input();
+    equivalentSeller.seller = {
+      identityBundle: identity(`${SELLER}?jurisdiction=GB`),
+      vetRecordRef: vetRef("stor:qualified-seller-vet"),
+    };
+    expect(deriveFixedPriceAgreement(equivalentSeller).parties)
+      .toContainEqual(expect.objectContaining({
+        role: "seller",
+        primaryClaim: `${SELLER}?jurisdiction=GB`,
+      }));
+
+    const samePartyTwice = input();
+    samePartyTwice.buyer = {
+      identityBundle: identity(`${SELLER}?role=buyer`),
+      vetRecordRef: vetRef("stor:alias-buyer-vet"),
+    };
+    expect(() => deriveFixedPriceAgreement(samePartyTwice))
+      .toThrow(/buyer and seller primary claims must be distinct/);
   });
 
   test("enforces exact payee-bound pipeline coverage", () => {
@@ -929,6 +951,94 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       }),
     ).toBe(false);
     expect(coercions).toBe(0);
+
+    const unstableAdditionalTerms = {
+      poison: undefined,
+    };
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: {
+          ...signed.terms,
+          additionalTerms: unstableAdditionalTerms,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isPaymentRailRef({
+        ...rail,
+        parameters: { network: "eip155:8453", poison: undefined },
+      }),
+    ).toBe(false);
+
+    const cyclicTerms: Record<string, unknown> = {};
+    cyclicTerms.self = cyclicTerms;
+    const sparse = new Array<unknown>(1);
+    let accessorCalls = 0;
+    const accessorTerms = Object.defineProperty({}, "value", {
+      enumerable: true,
+      get() {
+        accessorCalls += 1;
+        return "not-data";
+      },
+    });
+    let proxyCalls = 0;
+    const proxyTerms = new Proxy({}, {
+      ownKeys() {
+        proxyCalls += 1;
+        return [];
+      },
+    });
+    const symbolTerms: Record<string | symbol, unknown> = { visible: true };
+    symbolTerms[Symbol("hidden")] = true;
+    const exoticTerms = Object.create({ inherited: true }) as Record<string, unknown>;
+    exoticTerms.visible = true;
+    const extraPropertyArray = ["item"] as string[] & { hidden?: boolean };
+    extraPropertyArray.hidden = true;
+    const overNested: Record<string, unknown> = {};
+    let nestedCursor = overNested;
+    for (let depth = 0; depth < 70; depth += 1) {
+      const next: Record<string, unknown> = {};
+      nestedCursor.next = next;
+      nestedCursor = next;
+    }
+    for (const additionalTerms of [
+      { negativeZero: -0 },
+      { nonFinite: Number.POSITIVE_INFINITY },
+      { unsafeNumber: Number.MAX_SAFE_INTEGER + 1 },
+      { loneSurrogate: "\ud800" },
+      { unsupported: 1n },
+      { unsupported: () => undefined },
+      { sparse },
+      { extraPropertyArray },
+      cyclicTerms,
+      accessorTerms,
+      proxyTerms,
+      symbolTerms,
+      exoticTerms,
+      overNested,
+    ]) {
+      expect(
+        isAgreementDocument({
+          ...signed,
+          terms: { ...signed.terms, additionalTerms },
+        }),
+      ).toBe(false);
+    }
+    expect(accessorCalls).toBe(0);
+    expect(proxyCalls).toBe(0);
+    const frozenTerms = Object.freeze({
+      tags: Object.freeze(["stable", "read-only"]),
+    });
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: { ...signed.terms, additionalTerms: frozenTerms },
+      }),
+    ).toBe(true);
+    expect(() =>
+      contentHash(signed as unknown as Record<string, unknown>)
+    ).not.toThrow();
 
     let invoked = 0;
     await expect(
