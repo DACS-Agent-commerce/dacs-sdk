@@ -996,7 +996,14 @@ describe("runFulfilmentCore", () => {
       expect(result.bundleContribution.settlementEvidence.anchor.locator).toBe(anchoredLocator);
       expect(await verifySettlementEvidence(
         result.evidence,
-        { orchestrator: SELLER },
+        {
+          orchestrator: SELLER,
+          agreement: { amount: "1", currency: "TEST" },
+          attestationRef: result.evidenceRef,
+          result: { ok: true },
+          expectedAnchorLocator:
+            "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
+        },
         {
           resolvePublicKey: async () => rawPublicKey(publicKeyFromSeed(SELLER_SEED)),
           verify: (bytes, signature, publicKey) =>

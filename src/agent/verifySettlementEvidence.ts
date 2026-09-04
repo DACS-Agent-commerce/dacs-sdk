@@ -1,6 +1,11 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash, stripSignature } from "../canonical/index.js";
+import {
+  canonicalize,
+  contentHash,
+  encodeAddressSegment,
+  stripSignature,
+} from "../canonical/index.js";
 import { canonicalizeDecimal } from "../canonical/decimal.js";
 import {
   snapshotCanonicalJson,
@@ -9,7 +14,7 @@ import {
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type { AttestationRef } from "../artifacts/types.js";
+import type { AttestationRef, ChainTxRef } from "../artifacts/types.js";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import {
   isAttestationRef,
@@ -17,6 +22,10 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 /**
  * SettlementEvidence verifier (DACS-4 §9.7, driven by DACS-5 §14 settlement
@@ -33,9 +42,10 @@ import { type Verifier } from "./signedArtifact.js";
  * error > indeterminate > fail > pass (§7.7 composite discipline).
  *
  * Pure over injected context (the resolved agreement + rail + expected signer)
- * and a key resolver, so it's unit-tested without a node. Checks that need
- * context absent from the call are skipped (can't-evaluate ≠ fail), so a caller
- * that supplies only the record still gets the full structural verdict.
+ * and a key resolver, so it's unit-tested without a node. The authenticated
+ * entry point requires that complete boundary. Shape/context-only inspection is
+ * exposed separately as `validateSettlementEvidenceStructure`, whose distinct
+ * verdict vocabulary cannot be mistaken for cryptographic authorization.
  */
 
 export type EvidenceDecision = "pass" | "fail" | "error" | "indeterminate";
@@ -46,10 +56,36 @@ export interface EvidenceVerification {
   reasons: string[];
 }
 
+export type EvidenceStructureDecision =
+  | "valid"
+  | "invalid"
+  | "incomplete"
+  | "error";
+
+/** Non-authoritative shape/context validation. Never grants settlement trust. */
+export interface EvidenceStructureValidation {
+  decision: EvidenceStructureDecision;
+  reasons: string[];
+}
+
 /** The negotiated agreement price, for the currency / underpayment checks. */
 export interface EvidenceAgreementContext {
   amount?: string;
   currency?: string;
+}
+
+/** Decision-bearing subset of the pinned DACS-4 AssetSpec. */
+export interface EvidenceRailAssetSpecContext {
+  kind: string;
+  chainId?: number;
+  cluster?: string;
+}
+
+/** Decision-bearing subset of the pinned DACS-4 NetworkSpec. */
+export interface EvidenceRailNetworkSpecContext {
+  kind: string;
+  chainId?: number;
+  cluster?: string;
 }
 
 /** The pinned rail, for the phase/rail-coherence checks (§9.4/§9.5). */
@@ -59,12 +95,16 @@ export interface EvidenceRailContext {
   railType?: string;
   /** The rail's settlement asset id/symbol the amount MUST resolve to (PC-5). */
   asset?: string;
+  /** Structured pinned asset fields required for RD-5 kind/chain coherence. */
+  assetSpec?: EvidenceRailAssetSpecContext;
   /**
    * Canonical pinned settlement network: `eip155:<chainId>`,
    * `solana:<mainnet|devnet|testnet>`, or `demos`. When supplied, explicit
    * ChainTxRef network fields MUST match it.
    */
   network?: string;
+  /** Structured pinned network fields required for RD-5 kind/chain coherence. */
+  networkSpec?: EvidenceRailNetworkSpecContext;
   /**
    * The phase handler the rail declares it settles through. MUST be coherent
    * with `railType` (a rail typed evm-erc20 whose handler is pay-solana-spl is
@@ -88,7 +128,22 @@ export interface EvidenceContext {
    * MUST be coherent: `ok: true` carries no `errorClass`; `ok: false` MUST carry
    * one (a fault the reader can classify). Skipped when absent.
    */
-  result?: { ok?: boolean; errorClass?: string };
+  result?: {
+    ok?: boolean;
+    errorClass?: string;
+    /** Exact authenticated handler-return refs; order and values are binding. */
+    txRefs?: readonly ChainTxRef[];
+  };
+  /**
+   * Authenticated PC-2 address tuple for this payment invocation. The verifier
+   * derives the complete logical locator itself; callers cannot substitute a
+   * preassembled address or compare only the terminal phase index.
+   */
+  paymentAddress?: {
+    railId: string;
+    phaseIndex: number;
+    resolved?: boolean;
+  };
   /**
    * The locator the deliverable MUST be anchored at (derived by the caller from
    * the SR-2 address scheme). When set, `deliverableAnchor.locator` MUST equal it.
@@ -107,6 +162,23 @@ export interface EvidenceDeps {
   /** Verify a signature over raw bytes for a public key. */
   verify?: Verifier;
 }
+
+/** Complete caller-authenticated context required at the trust-bearing API. */
+export interface AuthenticatedEvidenceContext extends EvidenceContext {
+  orchestrator: string;
+  agreement: Required<EvidenceAgreementContext>;
+  attestationRef: Readonly<AttestationRef>;
+  result: {
+    ok: boolean;
+    errorClass?: string;
+    txRefs?: readonly ChainTxRef[];
+  };
+}
+
+/** Cryptographic dependencies required at the trust-bearing API. */
+export type AuthenticatedEvidenceDeps = Required<
+  Pick<EvidenceDeps, "resolvePublicKey" | "verify">
+>;
 
 const PAYMENT_PHASES = new Set([
   "pay-evm-erc20",
@@ -134,6 +206,23 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-dem": "demos-native",
 };
 
+const RAIL_SPEC_KINDS: Readonly<
+  Record<string, Readonly<{ asset: string; network: string }>>
+> = Object.freeze({
+  "evm-erc20": Object.freeze({ asset: "erc20", network: "evm" }),
+  "solana-spl": Object.freeze({ asset: "spl", network: "solana" }),
+  "cross-chain-htlc": Object.freeze({
+    asset: "stablecoin-cross-chain",
+    network: "cross-chain",
+  }),
+  "cross-chain-liquidity-tank": Object.freeze({
+    asset: "stablecoin-cross-chain",
+    network: "cross-chain",
+  }),
+  ap2: Object.freeze({ asset: "fiat-via-ap2", network: "ap2-provider" }),
+  "demos-native": Object.freeze({ asset: "native-dem", network: "demos" }),
+});
+
 /**
  * The closed set of §9.7 SettlementFinalityRecord.model tokens (PC-6). Presence
  * of `settlementFinality` is not enough — an out-of-set model (`"trust-me"`)
@@ -157,6 +246,20 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const is64Hex = (v: unknown): v is string => isStr(v) && /^[0-9a-f]{64}$/.test(v);
+const isPositiveSafeInteger = (v: unknown): v is number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+const isSafeUint = (v: unknown): v is number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 0 && !Object.is(v, -0);
+
+function expectedPaymentEvidenceLocator(
+  jobId: string,
+  address: Readonly<NonNullable<EvidenceContext["paymentAddress"]>>,
+): string {
+  return (
+    `dacs4:payment:${jobId}:${encodeAddressSegment(address.railId)}:` +
+    `${address.phaseIndex}${address.resolved === true ? ":resolved" : ""}`
+  );
+}
 
 type PinnedEvidenceNetwork =
   | { kind: "evm"; chainId: number }
@@ -210,10 +313,11 @@ function decimalIsPositive(v: string): boolean {
  * Verify one SettlementEvidence record (its signed scope = the record without
  * `signature`). See the module doc for the four-valued verdict.
  */
-export async function verifySettlementEvidence(
+async function evaluateSettlementEvidence(
   record: unknown,
-  ctx: EvidenceContext = {},
-  deps: EvidenceDeps = {},
+  ctx: EvidenceContext,
+  deps: EvidenceDeps,
+  requireAuthenticatedContext: boolean,
 ): Promise<EvidenceVerification> {
   const reasons: string[] = [];
   let sawError = false;
@@ -277,6 +381,50 @@ export async function verifySettlementEvidence(
   record = recordSnapshot;
   ctx = contextSnapshot;
 
+  const assetSpec = ctx.rail?.assetSpec;
+  const networkSpec = ctx.rail?.networkSpec;
+  if (
+    assetSpec !== undefined &&
+    (!isObj(assetSpec) || !isStr(assetSpec.kind) || assetSpec.kind.length === 0 ||
+      (assetSpec.chainId !== undefined && !isPositiveSafeInteger(assetSpec.chainId)) ||
+      (assetSpec.cluster !== undefined &&
+        (!isStr(assetSpec.cluster) || assetSpec.cluster.length === 0)))
+  ) {
+    sawError = true;
+    reasons.push("pinned rail assetSpec is malformed");
+  }
+  if (
+    networkSpec !== undefined &&
+    (!isObj(networkSpec) || !isStr(networkSpec.kind) || networkSpec.kind.length === 0 ||
+      (networkSpec.chainId !== undefined && !isPositiveSafeInteger(networkSpec.chainId)) ||
+      (networkSpec.cluster !== undefined &&
+        (!isStr(networkSpec.cluster) || networkSpec.cluster.length === 0)))
+  ) {
+    sawError = true;
+    reasons.push("pinned rail networkSpec is malformed");
+  }
+  if (
+    ctx.paymentAddress !== undefined &&
+    (!isObj(ctx.paymentAddress) || !isStr(ctx.paymentAddress.railId) ||
+      ctx.paymentAddress.railId.length === 0 ||
+      ctx.paymentAddress.railId.normalize("NFC") !== ctx.paymentAddress.railId ||
+      /[\s\u0000-\u001f\u007f]/.test(ctx.paymentAddress.railId) ||
+      !isSafeUint(ctx.paymentAddress.phaseIndex) ||
+      (ctx.paymentAddress.resolved !== undefined &&
+        typeof ctx.paymentAddress.resolved !== "boolean"))
+  ) {
+    sawError = true;
+    reasons.push("payment evidence address context is malformed");
+  }
+  if (
+    ctx.result?.txRefs !== undefined &&
+    (!Array.isArray(ctx.result.txRefs) ||
+      !ctx.result.txRefs.every((ref) => isChainTxRef(ref)))
+  ) {
+    sawError = true;
+    reasons.push("phase result txRefs context is malformed");
+  }
+
   // A non-object root isn't a record at all — it can't be evaluated as evidence,
   // so it's `error` (input isn't parseable), not a definite `fail` (§7.5.1) —
   // consistent with the malformed-key line below.
@@ -287,6 +435,56 @@ export async function verifySettlementEvidence(
   const outcome = ev["outcome"];
   const isPayment = isStr(phase) && PAYMENT_PHASES.has(phase);
   const isDelivery = isStr(phase) && DELIVERY_PHASES.has(phase);
+
+  if (requireAuthenticatedContext) {
+    if (!resolvePublicKey || !verify) {
+      sawError = true;
+      reasons.push("authenticated evidence verification requires key resolution and signature verification");
+    }
+    if (!isCanonicalClaimReference(ctx.orchestrator)) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires a canonical phase orchestrator ClaimReference");
+    }
+    if (!isObj(ctx.agreement) || !isCanonicalDecimal(ctx.agreement.amount) ||
+        !isStr(ctx.agreement.currency) || ctx.agreement.currency.length === 0) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact agreement amount and currency");
+    }
+    if (!isAttestationRef(ctx.attestationRef)) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact evidence attestationRef");
+    }
+    if (!isObj(ctx.result) || typeof ctx.result.ok !== "boolean") {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact phase result");
+    }
+    if (isPayment) {
+      const requiresCanonicalNetwork =
+        isObj(ctx.rail) && isStr(ctx.rail.railType) &&
+        new Set(["evm-erc20", "solana-spl", "x402", "demos-native"])
+          .has(ctx.rail.railType);
+      if (!isObj(ctx.rail) || !isStr(ctx.rail.railId) || ctx.rail.railId.length === 0 ||
+          !isStr(ctx.rail.railType) || ctx.rail.railType.length === 0 ||
+          !isStr(ctx.rail.asset) || ctx.rail.asset.length === 0 ||
+          (requiresCanonicalNetwork &&
+            (!isStr(ctx.rail.network) || ctx.rail.network.length === 0)) ||
+          !isStr(ctx.rail.handler) || ctx.rail.handler.length === 0) {
+        sawError = true;
+        reasons.push("authenticated payment evidence context requires the exact pinned rail");
+      }
+      if (!isObj(ctx.paymentAddress) ||
+          !isStr(ctx.paymentAddress.railId) || ctx.paymentAddress.railId.length === 0 ||
+          !isSafeUint(ctx.paymentAddress.phaseIndex)) {
+        sawError = true;
+        reasons.push("authenticated payment evidence context requires the exact PC-2 address tuple");
+      }
+    }
+    if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
+        ctx.expectedAnchorLocator.length === 0)) {
+      sawError = true;
+      reasons.push("authenticated delivery evidence context requires the expected deliverable locator");
+    }
+  }
 
   // ── Basic shape (§9.7) ──────────────────────────────────────────────────
   if (ev["evidenceVersion"] !== "1") fail(`evidenceVersion MUST be "1"`);
@@ -312,6 +510,12 @@ export async function verifySettlementEvidence(
     if (ctx.result.ok === false && !hasErrorClass) {
       fail("phase result is ok:false but carries no errorClass to classify the fault");
     }
+    if (ctx.result.ok === true && outcome !== "success") {
+      fail("phase result is ok:true but SettlementEvidence does not report success");
+    }
+    if (ctx.result.ok === false && outcome !== "failure") {
+      fail("phase result is ok:false but SettlementEvidence does not report failure");
+    }
   }
 
   const amount = isObj(ev["paymentAmount"]) ? (ev["paymentAmount"] as Record<string, unknown>) : null;
@@ -327,6 +531,16 @@ export async function verifySettlementEvidence(
   }
   if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
     fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
+  }
+  if (
+    isPayment && ctx.result?.txRefs !== undefined &&
+    Array.isArray(ctx.result.txRefs) &&
+    ctx.result.txRefs.every((ref) => isChainTxRef(ref)) &&
+    canonicalize(ctx.result.txRefs) !== canonicalize(txRefs ?? [])
+  ) {
+    fail(
+      "signed evidence.paymentTxRefs do not equal the authenticated phase-handler result txRefs",
+    );
   }
   if (txRefs) {
     for (const ref of txRefs) {
@@ -461,6 +675,68 @@ export async function verifySettlementEvidence(
       `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
     );
   }
+  const expectedSpecKinds = ctx.rail?.railType
+    ? RAIL_SPEC_KINDS[ctx.rail.railType]
+    : undefined;
+  if (
+    expectedSpecKinds && assetSpec && isObj(assetSpec) &&
+    isStr(assetSpec.kind) && assetSpec.kind !== expectedSpecKinds.asset
+  ) {
+    fail(
+      `rail type "${ctx.rail!.railType}" requires asset kind ` +
+        `"${expectedSpecKinds.asset}", got "${assetSpec.kind}" (RD-5)`,
+    );
+  }
+  if (
+    expectedSpecKinds && networkSpec && isObj(networkSpec) &&
+    isStr(networkSpec.kind) && networkSpec.kind !== expectedSpecKinds.network
+  ) {
+    fail(
+      `rail type "${ctx.rail!.railType}" requires network kind ` +
+        `"${expectedSpecKinds.network}", got "${networkSpec.kind}" (RD-5)`,
+    );
+  }
+  if (
+    assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
+    (assetSpec.kind === "erc20" || assetSpec.kind === "native-evm") &&
+    networkSpec.kind === "evm" &&
+    isPositiveSafeInteger(assetSpec.chainId) &&
+    isPositiveSafeInteger(networkSpec.chainId) &&
+    assetSpec.chainId !== networkSpec.chainId
+  ) {
+    fail(
+      `rail asset chainId ${assetSpec.chainId} does not match network chainId ` +
+        `${networkSpec.chainId} (RD-5)`,
+    );
+  }
+  if (
+    assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
+    (assetSpec.kind === "spl" || assetSpec.kind === "native-solana") &&
+    networkSpec.kind === "solana" && isStr(assetSpec.cluster) &&
+    isStr(networkSpec.cluster) && assetSpec.cluster !== networkSpec.cluster
+  ) {
+    fail(
+      `rail asset cluster "${assetSpec.cluster}" does not match network cluster ` +
+        `"${networkSpec.cluster}" (RD-5)`,
+    );
+  }
+  if (ctx.rail?.network && networkSpec && isObj(networkSpec)) {
+    const pinned = parsePinnedEvidenceNetwork(ctx.rail.network);
+    if (
+      pinned?.kind === "evm" && networkSpec.kind === "evm" &&
+      isPositiveSafeInteger(networkSpec.chainId) &&
+      pinned.chainId !== networkSpec.chainId
+    ) {
+      fail("canonical rail network contradicts networkSpec.chainId");
+    } else if (
+      pinned?.kind === "solana" && networkSpec.kind === "solana" &&
+      isStr(networkSpec.cluster) && pinned.cluster !== networkSpec.cluster
+    ) {
+      fail("canonical rail network contradicts networkSpec.cluster");
+    } else if (pinned?.kind === "demos" && networkSpec.kind !== "demos") {
+      fail("canonical Demos rail network contradicts networkSpec.kind");
+    }
+  }
   // This layer validates the signed ChainTxRef and its pinned-rail tuple. The
   // independently authenticated ledger-event selection, complete PC-2 address
   // binding and SB-2 cross-session uniqueness check live in
@@ -562,6 +838,47 @@ export async function verifySettlementEvidence(
 
   // ── Attestation ref (§7.5.2 content addressing) ─────────────────────────
   const scopeHash = contentHash(ev);
+  if (
+    ctx.paymentAddress && isObj(ctx.paymentAddress) &&
+    isStr(ctx.paymentAddress.railId) && ctx.paymentAddress.railId.length > 0 &&
+    isSafeUint(ctx.paymentAddress.phaseIndex) &&
+    (ctx.paymentAddress.resolved === undefined ||
+      typeof ctx.paymentAddress.resolved === "boolean")
+  ) {
+    if (!isPayment) {
+      fail("paymentAddress context is valid only for payment evidence");
+    }
+    if (
+      !isStr(ev["jobId"]) || ev["jobId"].normalize("NFC") !== ev["jobId"] ||
+      /[:?&=%\s\u0000-\u001f\u007f]/.test(ev["jobId"])
+    ) {
+      fail("payment evidence jobId cannot form a canonical PC-2 address segment");
+    }
+    if (ctx.rail?.railId && ctx.rail.railId !== ctx.paymentAddress.railId) {
+      fail("paymentAddress railId contradicts the authenticated pinned rail");
+    }
+    const isResolution = ev["supersedesEvidenceRef"] !== undefined;
+    if ((ctx.paymentAddress.resolved === true) !== isResolution) {
+      fail(
+        "paymentAddress resolved discriminator contradicts SettlementEvidence supersession",
+      );
+    }
+    if (!ctx.attestationRef) {
+      sawIndeterminate = true;
+      reasons.push("payment evidence attestationRef is unavailable for PC-2 address binding");
+    } else if (
+      isAttestationRef(ctx.attestationRef) &&
+      isStr(ev["jobId"]) &&
+      ctx.attestationRef.anchor.locator !== expectedPaymentEvidenceLocator(
+        ev["jobId"],
+        ctx.paymentAddress,
+      )
+    ) {
+      fail(
+        "attestationRef locator does not match the complete authenticated PC-2 payment address",
+      );
+    }
+  }
   if (ctx.attestationRef) {
     if (!isAttestationRef(ctx.attestationRef)) {
       fail("attestationRef MUST use the exact DACS-2 §7.5.2 anchor shape");
@@ -586,7 +903,10 @@ export async function verifySettlementEvidence(
     );
   } else {
     const signer = sig.signer;
-    if (ctx.orchestrator && signer !== ctx.orchestrator) {
+    if (!isCanonicalClaimReference(signer)) {
+      fail("evidence signer MUST be a canonical ClaimReference");
+    }
+    if (ctx.orchestrator && !sameCanonicalClaimIdentity(signer, ctx.orchestrator)) {
       fail(`signer "${signer}" is not the phase orchestrator "${ctx.orchestrator}"`);
     }
     if (resolvePublicKey && verify) {
@@ -657,4 +977,45 @@ export async function verifySettlementEvidence(
   if (sawIndeterminate) return { decision: "indeterminate", reasons };
   if (failCount > 0) return { decision: "fail", reasons };
   return { decision: "pass", reasons };
+}
+
+/**
+ * Validate evidence shape and any supplied comparison context without granting
+ * authenticity. A `valid` result says only that no evaluated structural rule
+ * failed; it does not say the signer, anchor, agreement, rail, or phase result
+ * was authenticated.
+ */
+export async function validateSettlementEvidenceStructure(
+  record: unknown,
+  ctx: EvidenceContext = {},
+): Promise<EvidenceStructureValidation> {
+  const result = await evaluateSettlementEvidence(record, ctx, {}, false);
+  return {
+    decision: result.decision === "pass"
+      ? "valid"
+      : result.decision === "fail"
+        ? "invalid"
+        : result.decision === "indeterminate"
+          ? "incomplete"
+          : "error",
+    reasons: result.reasons,
+  };
+}
+
+/**
+ * Verify one SettlementEvidence against complete authenticated context and
+ * cryptographic dependencies. Missing trust inputs are an SDK configuration
+ * error and can never produce `pass`.
+ */
+export async function verifySettlementEvidence(
+  record: unknown,
+  ctx: AuthenticatedEvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceVerification> {
+  return evaluateSettlementEvidence(
+    record,
+    (ctx ?? {}) as EvidenceContext,
+    (deps ?? {}) as EvidenceDeps,
+    true,
+  );
 }

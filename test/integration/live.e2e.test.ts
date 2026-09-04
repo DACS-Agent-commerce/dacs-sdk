@@ -6,7 +6,7 @@ import { createPublicClient, erc20Abi, http } from "viem";
 
 import {
   AnchorWaitError,
-  createAgent,
+  createUnsafeManualAgent,
   createFsDemosWriteJournal,
   createFsSessionStore,
   createInMemoryBindingStore,
@@ -212,7 +212,9 @@ function formatDem(os: bigint): string {
   return fraction ? `${whole}.${fraction}` : whole.toString();
 }
 
-async function balanceInOs(agent: Awaited<ReturnType<typeof createAgent>>) {
+async function balanceInOs(
+  agent: Awaited<ReturnType<typeof createUnsafeManualAgent>>,
+) {
   const network = await agent.adapter.raw.getNetworkInfo();
   if (!network) {
     throw new Error(
@@ -311,7 +313,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           asset: env.PAY_TOKEN!,
         },
       };
-      const seller = await createAgent({
+      const seller = await createUnsafeManualAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
         demosWriteJournal: sellerWriteJournal,
@@ -321,7 +323,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         resolvePayloadVerificationCapability: payloadCapability,
       });
       const sellerPublicKey = await seller.adapter.getPublicKey();
-      const buyer = await createAgent({
+      const buyer = await createUnsafeManualAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
         demosWriteJournal: buyerWriteJournal,
