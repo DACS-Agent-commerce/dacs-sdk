@@ -52,15 +52,20 @@ export {
   type BundleRole,
 } from "./bundleConsistency.js";
 export {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
   type EvidenceRailAssetSpecContext,
   type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
   verifyBundleCopy,
