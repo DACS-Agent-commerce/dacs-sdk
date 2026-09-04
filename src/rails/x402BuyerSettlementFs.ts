@@ -1,12 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
 import {
-  chmod,
-  link,
-  lstat,
   mkdir,
   open,
-  readFile,
   readdir,
   rename,
   rm,
@@ -18,6 +13,12 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementStoreInternals,
@@ -167,7 +168,10 @@ export async function createFsX402BuyerSettlementStore(
   options: FsX402BuyerSettlementStoreOptions,
 ): Promise<X402BuyerSettlementStore> {
   const capturedOptions = captureOptions(options);
-  const root = capturedOptions.dir;
+  const root = await preparePrivateStoreDirectory(
+    capturedOptions.dir,
+    "x402 buyer filesystem store",
+  );
   const lockTimeoutMs = finitePositive(
     capturedOptions.lockTimeoutMs,
     DEFAULT_LOCK_TIMEOUT_MS,
@@ -189,31 +193,9 @@ export async function createFsX402BuyerSettlementStore(
   const reclaimGatePath = join(locksDir, ".reclaim");
   const reclaimQuarantinePrefix = ".reclaim.";
 
-  let rootMetadata;
-  try {
-    rootMetadata = await lstat(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(root, { recursive: true, mode: DIR_MODE });
-    rootMetadata = await lstat(root);
-  }
-  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
-    throw new DacsError("x402 buyer store path is not a safe directory");
-  }
-  await chmod(root, DIR_MODE);
-
-  async function prepareOwnedDirectory(path: string): Promise<void> {
-    await mkdir(path, { recursive: true, mode: DIR_MODE });
-    const metadata = await lstat(path);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new DacsError("x402 buyer store path is not a safe directory");
-    }
-    await chmod(path, DIR_MODE);
-  }
-
-  await prepareOwnedDirectory(recordsDir);
-  await prepareOwnedDirectory(locksDir);
-  await prepareOwnedDirectory(markersDir);
+  await preparePrivateStoreDirectory(recordsDir, "x402 buyer filesystem store");
+  await preparePrivateStoreDirectory(locksDir, "x402 buyer filesystem store");
+  await preparePrivateStoreDirectory(markersDir, "x402 buyer filesystem store");
 
   const safe = (settlementKey: string): string => sha256Hex(settlementKey);
   const recordPath = (settlementKey: string): string =>
@@ -233,20 +215,11 @@ export async function createFsX402BuyerSettlementStore(
   }
 
   async function atomicWrite(path: string, value: unknown): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify(value), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, path);
-      await syncDirectory(recordsDir);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await atomicWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "x402 buyer filesystem store",
+    );
   }
 
   const initializationText = (settlementKey: string): string => JSON.stringify({
@@ -258,26 +231,15 @@ export async function createFsX402BuyerSettlementStore(
     settlementKey: string,
   ): Promise<"absent" | "present"> {
     const path = markerPath(settlementKey);
-    let handle;
     let text: string;
     try {
-      handle = await open(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) {
-        throw new DacsError("x402 buyer initialization marker is corrupt");
-      }
-      text = await handle.readFile("utf8");
+      text = await readPrivateFile(path, "utf8", "x402 buyer filesystem marker");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
         throw new DacsError("x402 buyer initialization marker path is unsafe");
       }
       throw error;
-    } finally {
-      await handle?.close();
     }
     if (text !== initializationText(settlementKey)) {
       throw new DacsError("x402 buyer initialization marker is corrupt");
@@ -288,32 +250,27 @@ export async function createFsX402BuyerSettlementStore(
   async function ensureInitializationMarker(settlementKey: string): Promise<void> {
     if (await readInitializationMarker(settlementKey) === "present") return;
     const path = markerPath(settlementKey);
-    const temporary = `${path}.${randomUUID()}.tmp`;
     try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(initializationText(settlementKey), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
+      await exclusiveWritePrivateFile(
+        path,
+        initializationText(settlementKey),
+        "x402 buyer filesystem marker",
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await readInitializationMarker(settlementKey) !== "present") {
+        throw new DacsError("x402 buyer initialization marker is corrupt");
       }
-      try {
-        await link(temporary, path);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        if (await readInitializationMarker(settlementKey) !== "present") {
-          throw new DacsError("x402 buyer initialization marker is corrupt");
-        }
-      }
-    } finally {
-      await unlink(temporary).catch(() => {});
     }
-    await syncDirectory(markersDir);
   }
 
   async function readOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(join(path, "owner.json"), "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        join(path, "owner.json"),
+        "utf8",
+        "x402 buyer filesystem lock",
+      )) as unknown;
       if (typeof parsed === "object" && parsed !== null &&
           "pid" in parsed && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && "token" in parsed &&
@@ -343,7 +300,11 @@ export async function createFsX402BuyerSettlementStore(
 
   async function readFileOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        path,
+        "utf8",
+        "x402 buyer filesystem lock",
+      )) as unknown;
       if (typeof parsed === "object" && parsed !== null &&
           "pid" in parsed && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && "token" in parsed &&
@@ -357,21 +318,11 @@ export async function createFsX402BuyerSettlementStore(
   }
 
   async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify(owner), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      // A hard link publishes complete bytes without an empty-file window.
-      await link(temporary, path);
-      await syncDirectory(locksDir);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(
+      path,
+      JSON.stringify(owner),
+      "x402 buyer filesystem lock",
+    );
   }
 
   const reclaimQuarantinePath = (): string =>
@@ -595,17 +546,12 @@ export async function createFsX402BuyerSettlementStore(
   async function readRecord(settlementKey: string): Promise<StoreRead> {
     const initialization = await readInitializationMarker(settlementKey);
     let text: string;
-    let handle;
     try {
-      handle = await open(
+      text = await readPrivateFile(
         recordPath(settlementKey),
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        "utf8",
+        "x402 buyer filesystem store",
       );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) {
-        return { status: "corrupt", reason: "record path is not a file" };
-      }
-      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return initialization === "present"
@@ -615,9 +561,15 @@ export async function createFsX402BuyerSettlementStore(
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
         return { status: "corrupt", reason: "record path is unsafe" };
       }
+      if (error instanceof DacsError && /symbolic link|not a regular file/u.test(error.message)) {
+        return {
+          status: "corrupt",
+          reason: error.message.includes("symbolic link")
+            ? "record path is unsafe"
+            : "record path is not a file",
+        };
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     let parsed: unknown;
     try {

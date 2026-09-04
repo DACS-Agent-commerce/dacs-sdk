@@ -44,6 +44,7 @@ import {
   isCanonicalSettlementIdentity,
   createX402Paywall,
   deriveReputationWithValidation,
+  lookupBundleCopies,
   x402PaywallCore,
   x402PaywallSettlementKey,
   runSessionCore,
@@ -76,6 +77,7 @@ import {
 } from "../../src/index.js";
 import {
   deriveReputationWithValidation as agentDeriveReputationWithValidation,
+  lookupBundleCopies as agentLookupBundleCopies,
   createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
   finalizeCompletedCounterpartyBundleCore as agentFinalizeCompletedCounterpartyBundleCore,
   assembleTerminalBundleForOwnRole as agentAssembleTerminalBundleForOwnRole,
@@ -120,6 +122,11 @@ import {
 } from "../../src/rails/index.js";
 
 describe("public core surface (#14)", () => {
+  it("#6: two-sided bundle lookup is exported from root and agent surfaces", () => {
+    expect(typeof lookupBundleCopies).toBe("function");
+    expect(agentLookupBundleCopies).toBe(lookupBundleCopies);
+  });
+
   it("#220: async reputation validation is exported from root and agent surfaces", () => {
     expect(typeof deriveReputationWithValidation).toBe("function");
     expect(agentDeriveReputationWithValidation).toBe(
