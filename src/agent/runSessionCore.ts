@@ -254,17 +254,18 @@ export interface SessionDeps {
    * still carries only `settle:intent`.
    *
    * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
-   * return the prior definitive result when payment landed, resubmit only after a
-   * rail query proves no payment landed, and throw while state is indeterminate.
+   * return the prior definitive result when payment landed, and throw while state
+   * is absent or indeterminate unless the rail also proves the old effect terminal
+   * or enforces one deterministic external effect identity.
    * `req.priorAttempts` carries the validated ordered transaction history from
    * the SessionStore; a fresh process must reconcile the entire chain before it
    * may return a replacement transaction.
    * It MUST also serialize recovery with a possibly-live original submitter; a
    * non-observation is not proof of absence while that worker can still submit.
-   * The durable #52 `SettlementIdempotencyStore.once(..., reconcile)` wrapper is
-   * the intended implementation when its documented single-writer/leased recovery
-   * precondition is met. Callers may then wire the same wrapper as both `settle`
-   * and `resumeSettlement`.
+   * The generation-fenced `SettlementIdempotencyStore.once(..., reconcile)`
+   * wrapper is the intended implementation with a durable atomic SettlementLog.
+   * Callers may then wire the same wrapper as both `settle` and
+   * `resumeSettlement`.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -881,7 +882,10 @@ function durableSettlementCheckpointData(
 function snapshotSettleResult(value: unknown, label: string): SettleResult {
   let snapshot: unknown;
   try {
-    snapshot = snapshotCanonicalJson(value, label);
+    // Settlement is an asynchronous callback/read boundary. A conforming rail
+    // may return a deeply frozen owned snapshot; accept read-only data
+    // descriptors while retaining the proxy/accessor/exotic-object checks.
+    snapshot = snapshotCanonicalJsonRead(value, label);
   } catch (cause) {
     throw new CounterpartyError(`${label} was not stable canonical JSON`, {
       cause,
