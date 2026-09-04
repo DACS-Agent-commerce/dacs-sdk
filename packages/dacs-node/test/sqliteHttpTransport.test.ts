@@ -1093,6 +1093,48 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     });
   });
 
+  it("collapses an inbox renewal with a later signed validity window", async () => {
+    const database = await open(join(root(), "seller.sqlite"));
+    const store = database.createHttpInboxStore();
+    const now = await store.readTime();
+    const first = await envelope("buyer", 67, now, "same-renewed-action");
+    const renewal = await envelope("buyer", 68, now + 1_000, "same-renewed-action");
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    await expect(store.reserve({
+      authenticated: await authenticate(first, SELLER, now),
+      retainUntil,
+    })).resolves.toMatchObject({ status: "reserved" });
+    await expect(store.reserve({
+      authenticated: await authenticate(renewal, SELLER, now + 1_000),
+      retainUntil,
+    })).resolves.toMatchObject({
+      status: "pending",
+      replay: "semantic",
+      receivedEnvelopeId: renewal.envelopeId,
+      record: { authenticated: { envelope: { envelopeId: first.envelopeId } } },
+    });
+  });
+
+  it("retains a bounded outbox renewal under its new signed validity window", async () => {
+    const database = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const first = await envelope("buyer", 69, now, "same-renewed-action");
+    const renewal = await envelope("buyer", 70, now + 1_000, "same-renewed-action");
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    await expect(store.put({ envelope: first, retainUntil })).resolves.toMatchObject({
+      status: "created",
+      record: { envelope: { envelopeId: first.envelopeId } },
+    });
+    await expect(store.put({ envelope: renewal, retainUntil })).resolves.toMatchObject({
+      status: "created",
+      record: { envelope: { envelopeId: renewal.envelopeId } },
+    });
+    await expect(store.diagnostics()).resolves.toMatchObject({
+      global: { retainedRows: 4 },
+    });
+  });
+
   it("durably rejects quota overflow and adopts the bound policy after restart", async () => {
     const databasePath = join(root(), "seller.sqlite");
     let database = await open(databasePath);

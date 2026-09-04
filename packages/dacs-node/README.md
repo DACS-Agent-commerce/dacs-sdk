@@ -71,6 +71,9 @@ from a still-pending crash window without allocating an unbounded alias row.
 Semantic replay returns the original retained record plus the newly received
 envelope ID, because any acknowledgement must bind the newly received ID;
 only a durably recorded disposition may be projected into an acknowledgement.
+An expired, unacknowledged outbox message may be renewed with a new signed
+validity window, while the receiving inbox still collapses that renewal to the
+same semantic action and binds its acknowledgement to the newly received ID.
 The outbox retains the exact signed envelope across retries, claims work with a
 generation-fenced lease, applies one-second exponential backoff capped at sixty
 seconds, and never manufactures a replacement after envelope expiry. A valid

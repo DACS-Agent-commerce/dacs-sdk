@@ -237,13 +237,26 @@ function principalQuotaKey(value: string): string {
   return `${parsed.identity.scheme}:${parsed.identity.identifier}`;
 }
 
-function semanticKey(envelope: Readonly<DacsHttpEnvelopeV1>): string {
+function inboxSemanticKey(envelope: Readonly<DacsHttpEnvelopeV1>): string {
   return sha256Hex(canonicalize({
     domain: "dacs-http-semantic-idempotency:v1",
     type: envelope.type,
     jobId: envelope.jobId,
     sender: envelope.sender,
     audience: envelope.audience,
+    payloadHash: envelope.payloadHash,
+  }));
+}
+
+function outboxSemanticKey(envelope: Readonly<DacsHttpEnvelopeV1>): string {
+  return sha256Hex(canonicalize({
+    domain: "dacs-http-outbox-delivery-idempotency:v1",
+    type: envelope.type,
+    jobId: envelope.jobId,
+    sender: envelope.sender,
+    audience: envelope.audience,
+    issuedAt: envelope.issuedAt,
+    expiresAt: envelope.expiresAt,
     payloadHash: envelope.payloadHash,
   }));
 }
@@ -984,7 +997,7 @@ function inboxStored(
       row.received_at !== authenticated.receivedAt || row.retain_until !== value.retainUntil ||
       row.revision !== value.revision || row.updated_at !== value.updatedAt ||
       (row.semantic_key !== undefined && row.semantic_key !== null &&
-        row.semantic_key !== semanticKey(envelope))) {
+        row.semantic_key !== inboxSemanticKey(envelope))) {
     throw context.error("http-inbox-record-corrupt", "HTTP inbox projection differs from its record");
   }
   return value;
@@ -1058,7 +1071,7 @@ function outboxStored(
       row.revision !== value.revision || row.created_at !== value.createdAt ||
       row.updated_at !== value.updatedAt ||
       (row.semantic_key !== undefined && row.semantic_key !== null &&
-        row.semantic_key !== semanticKey(value.envelope))) {
+        row.semantic_key !== outboxSemanticKey(value.envelope))) {
     throw context.error("http-outbox-record-corrupt", "HTTP outbox projection differs from its record");
   }
   return value;
@@ -1427,7 +1440,7 @@ function insertInbox(
     record.authenticated.identityEvidenceHash, envelope.payloadHash, envelope.nonce,
     record.disposition ?? null, record.reasonCode ?? null,
     record.authenticated.receivedAt, record.retainUntil, record.revision,
-    recordHashValue, json, record.updatedAt, semanticKey(envelope),
+    recordHashValue, json, record.updatedAt, inboxSemanticKey(envelope),
   );
   appendInboxHistory(context, record, json, recordHashValue);
   return context.database.prepare(`
@@ -1518,7 +1531,7 @@ function insertOutbox(
     record.lease?.expiresAt ?? null, record.nextAttemptAt,
     record.acknowledgement?.authenticationHash ?? null, record.reasonCode ?? null,
     record.retainUntil, record.revision, recordHashValue, json,
-    record.createdAt, record.updatedAt, semanticKey(record.envelope),
+    record.createdAt, record.updatedAt, outboxSemanticKey(record.envelope),
   );
   appendOutboxHistory(context, record, json, recordHashValue);
   return context.database.prepare(`SELECT * FROM dacs_http_outbox WHERE envelope_id = ?`)
@@ -2114,7 +2127,7 @@ export function createDacsHttpInboxSqliteStore(
           context,
           envelope.sender,
           envelope.audience,
-          semanticKey(envelope),
+          inboxSemanticKey(envelope),
         );
         if (semantic) {
           if (semantic.stored.state === "pending") {
@@ -2385,7 +2398,7 @@ export function createDacsHttpOutboxSqliteStore(
           context,
           envelope.sender,
           envelope.audience,
-          semanticKey(envelope),
+          outboxSemanticKey(envelope),
         );
         if (semantic) return { status: "existing", record: semantic.record };
         if (envelope.expiresAt <= now) {
@@ -2893,7 +2906,7 @@ export function migrateDacsHttpSqliteV7Rows(context: DacsHttpSqliteContext): voi
         "Legacy HTTP inbox history exceeds the supported revision bound",
       );
     }
-    const key = semanticKey(stored.authenticated.envelope);
+    const key = inboxSemanticKey(stored.authenticated.envelope);
     const identity = canonicalize(["inbox", row.sender, row.audience, key]);
     if (semanticIdentities.has(identity)) {
       throw context.error(
@@ -2934,7 +2947,7 @@ export function migrateDacsHttpSqliteV7Rows(context: DacsHttpSqliteContext): voi
         "Legacy HTTP outbox history exceeds the supported revision bound",
       );
     }
-    const key = semanticKey(stored.envelope);
+    const key = outboxSemanticKey(stored.envelope);
     const identity = canonicalize(["outbox", row.sender, row.audience, key]);
     if (semanticIdentities.has(identity)) {
       throw context.error(
@@ -2997,7 +3010,7 @@ export function verifyDacsHttpSqliteRows(
     const stored = inboxStored(context, row);
     verifyInboxHistory(context, row);
     if (lifecycleSchema && (!hash(row.semantic_key) ||
-        row.semantic_key !== semanticKey(stored.authenticated.envelope))) {
+        row.semantic_key !== inboxSemanticKey(stored.authenticated.envelope))) {
       throw context.error("http-store-semantic-corrupt", "HTTP inbox semantic key is corrupt");
     }
   }
@@ -3007,7 +3020,7 @@ export function verifyDacsHttpSqliteRows(
     const stored = outboxStored(context, row);
     verifyOutboxHistory(context, row);
     if (lifecycleSchema && (!hash(row.semantic_key) ||
-        row.semantic_key !== semanticKey(stored.envelope))) {
+        row.semantic_key !== outboxSemanticKey(stored.envelope))) {
       throw context.error("http-store-semantic-corrupt", "HTTP outbox semantic key is corrupt");
     }
   }
