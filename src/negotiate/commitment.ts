@@ -46,6 +46,12 @@ import {
   type VerifiedListingInput,
 } from "./fixedPrice.js";
 import { requireCanonicalJobId } from "./jobId.js";
+import {
+  assertAlternativePaymentCommitmentAuthority,
+  type AlternativePaymentAuthorizationInput,
+  type AlternativePaymentAgreementLike,
+  type AlternativePaymentListingLike,
+} from "../rails/payAlternative.js";
 
 export const FINALITY_COMMITMENT_SEPARATOR =
   "dacs-finality-commitment:v1:" as const satisfies DomainSeparator;
@@ -146,6 +152,8 @@ export interface CommitFixedPriceAgreementInput extends CommitmentBindingInput {
   /** Record construction time only; never used as authoritative committedAt (CA-8). */
   createdAt: number;
   commitmentSigner: BuildComponentSignatureOptions;
+  /** Required for an APR Listing; exact authenticated projection/replacement outputs. */
+  alternativePayment?: AlternativePaymentAuthorizationInput;
 }
 
 export interface ReadLegacyFixedPriceAgreementCommitmentInput
@@ -256,6 +264,27 @@ function ownDataProperty(
   }
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+    throw new DacsError(`${label}.${key} must be an enumerable data property`);
+  }
+  return descriptor.value;
+}
+
+function optionalOwnDataProperty(
+  value: unknown,
+  key: string,
+  label: string,
+): unknown {
+  if (
+    !isRecord(value) ||
+    nodeTypes.isProxy(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new DacsError(`${label} must be a plain data object`);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return undefined;
+  if (!("value" in descriptor) || !descriptor.enumerable) {
     throw new DacsError(`${label}.${key} must be an enumerable data property`);
   }
   return descriptor.value;
@@ -498,6 +527,9 @@ function validateRailAndPayoutCoverage(
   agreement: AgreementArtifact,
 ): void {
   const indexes = payIndexes(listing);
+  const alternativeIndexes = indexes.filter(
+    (index) => listing.pipeline[index]!.kind === "pay-alternative",
+  );
   const rail = agreement.terms.rail;
   if (indexes.length === 0) {
     if (rail !== undefined) {
@@ -514,22 +546,44 @@ function validateRailAndPayoutCoverage(
         "agreement rail is not an exact acceptedRails member",
       );
     }
-    for (const index of indexes) {
-      if (listing.pipeline[index]!.parameters?.rail !== rail.railId) {
+    if (alternativeIndexes.length > 0) {
+      const alternatives = listing.pipeline[alternativeIndexes[0]!]!.parameters
+        ?.alternatives;
+      if (
+        alternativeIndexes.length !== 1 ||
+        !Array.isArray(alternatives) ||
+        alternatives.filter((candidate) => exact(candidate, rail)).length !== 1
+      ) {
         throw new DacsError(
-          `pay phase ${index} does not bind the agreement rail`,
+          "agreement rail is not one exact signed pay-alternative member",
         );
+      }
+    } else {
+      for (const index of indexes) {
+        if (listing.pipeline[index]!.parameters?.rail !== rail.railId) {
+          throw new DacsError(
+            `pay phase ${index} does not bind the agreement rail`,
+          );
+        }
       }
     }
   }
 
-  if (!("payeeBoundAgreementVersion" in agreement)) return;
   const expected = new Set(
-    indexes.map(
-      (index) =>
-        `${listing.pipeline[index]!.parameters?.rail}\u0000${index}`,
-    ),
+    indexes.map((index) => {
+      const phase = listing.pipeline[index]!;
+      const railId =
+        phase.kind === "pay-alternative" ? rail?.railId : phase.parameters?.rail;
+      if (typeof railId !== "string" || railId.length === 0) {
+        throw new DacsError(
+          `pay phase ${index} has no authenticated effective rail binding`,
+        );
+      }
+      return `${railId}\u0000${index}`;
+    }),
   );
+
+  if (!("payeeBoundAgreementVersion" in agreement)) return;
   const actual = new Set(
     agreement.terms.payoutBindings.map(
       (binding) => `${binding.railId}\u0000${binding.phaseIndex}`,
@@ -544,6 +598,35 @@ function validateRailAndPayoutCoverage(
       "payee-bound agreement does not exactly cover the Listing pay phases",
     );
   }
+}
+
+function usesAlternativePayment(listing: Listing): boolean {
+  return listing.pipeline.some((phase) => phase.kind === "pay-alternative");
+}
+
+function establishAlternativePaymentAuthority(
+  selected: { agreement: AgreementArtifact; listing: Listing },
+  authority: unknown,
+): boolean {
+  if (!usesAlternativePayment(selected.listing)) {
+    if (authority !== undefined) {
+      throw new DacsError(
+        "ordinary commitment must not carry alternative-payment authority",
+      );
+    }
+    return false;
+  }
+  if (authority === undefined) {
+    throw new DacsError(
+      "pay-alternative commitment requires authenticated APR projection and replacement gates",
+    );
+  }
+  assertAlternativePaymentCommitmentAuthority(
+    authority as AlternativePaymentAuthorizationInput,
+    selected.agreement as unknown as AlternativePaymentAgreementLike,
+    selected.listing as unknown as AlternativePaymentListingLike,
+  );
+  return true;
 }
 
 function selectFixedPriceArtifact(
@@ -753,8 +836,14 @@ function validateAuthenticatedSessionBinding(
 function fixedPriceBinding(
   selected: ReturnType<typeof selectFixedPriceArtifact>,
   authenticated: ReturnType<typeof validateAuthenticatedSessionBinding>,
+  alternativeAuthorityEstablished = false,
 ): FixedPriceBinding {
   const { agreement, listing } = selected;
+  if (usesAlternativePayment(listing) && !alternativeAuthorityEstablished) {
+    throw new DacsError(
+      "pay-alternative commitment requires authenticated APR projection and replacement gates",
+    );
+  }
   if (agreement.derivedFromPattern !== "fixed-price") {
     throw new DacsError(
       "this commitment core supports only fixed-price agreements",
@@ -826,11 +915,37 @@ export function validateFixedPriceAgreementBinding(callerInput: {
   agreement: AgreementArtifact;
   verifiedListing: VerifiedListingInput;
   committedAt: number;
+  alternativePayment?: AlternativePaymentAuthorizationInput;
 }): FixedPriceBinding {
-  const input = snapshotCanonicalJson(
+  const alternativePayment = optionalOwnDataProperty(
     callerInput,
+    "alternativePayment",
     "fixed-price agreement binding input",
   );
+  const input = snapshotCanonicalJson(
+    {
+      agreement: ownDataProperty(
+        callerInput,
+        "agreement",
+        "fixed-price agreement binding input",
+      ),
+      verifiedListing: ownDataProperty(
+        callerInput,
+        "verifiedListing",
+        "fixed-price agreement binding input",
+      ),
+      committedAt: ownDataProperty(
+        callerInput,
+        "committedAt",
+        "fixed-price agreement binding input",
+      ),
+    },
+    "fixed-price agreement binding input",
+  ) as {
+    agreement: AgreementArtifact;
+    verifiedListing: VerifiedListingInput;
+    committedAt: number;
+  };
   if (
     !isRecord(input) ||
     !hasExactKeys(input, ["agreement", "verifiedListing", "committedAt"])
@@ -838,6 +953,7 @@ export function validateFixedPriceAgreementBinding(callerInput: {
     throw new DacsError("fixed-price agreement binding input is not exact");
   }
   const selected = selectFixedPriceArtifact(input);
+  establishAlternativePaymentAuthority(selected, alternativePayment);
   const { agreement, listing } = selected;
   const pin: ListingPin = {
     listingId: listing.listingId,
@@ -1443,8 +1559,17 @@ export async function commitFixedPriceAgreement(
   // Dependency identity is fixed before any caller-owned artifact is read.
   const provider = captureProvider(callerProvider);
   const verifySignature = captureVerifier(callerVerifySignature);
+  const alternativePayment = optionalOwnDataProperty(
+    callerInput,
+    "alternativePayment",
+    "commitment input",
+  );
   const input = captureCommitmentInput(callerInput);
   const selected = selectFixedPriceArtifact(input);
+  const alternativeAuthorityEstablished = establishAlternativePaymentAuthority(
+    selected,
+    alternativePayment,
+  );
   const logicalAddress = finalityCommitmentAddress(selected.agreement.jobId);
   const authenticated = validateAuthenticatedSessionBinding(input, selected);
   if (input.commitmentSigner.signer !== input.session.orchestrator) {
@@ -1454,7 +1579,11 @@ export async function commitFixedPriceAgreement(
   }
 
   await verifyAgreementSignatures(selected.agreement, verifySignature);
-  const binding = fixedPriceBinding(selected, authenticated);
+  const binding = fixedPriceBinding(
+    selected,
+    authenticated,
+    alternativeAuthorityEstablished,
+  );
   const lookup = await resolveCommitment(logicalAddress, provider);
   if (lookup.disposition === "present") {
     // A retry clock cannot invalidate an immutable commitment that finalized

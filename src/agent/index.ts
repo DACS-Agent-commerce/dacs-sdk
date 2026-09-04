@@ -3,6 +3,8 @@ export {
   buildAgent,
   type Agent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
@@ -32,6 +34,8 @@ export {
   type RefVerdict,
   type BundleEvidenceVerificationContext,
   type BundleEvidenceVerificationResult,
+  type AlternativePaymentBundleVerificationInput,
+  type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
   lookupBundleCopies,
@@ -188,12 +192,14 @@ export {
 export {
   evaluateParserSpec,
   defaultParserEngine,
+  defaultParserEngineCapabilities,
   successExpr,
   predicateExpr,
   type ParserSpec,
   type ParserFormat,
   type IndeterminatePredicate,
   type ParserEngine,
+  type ParserEngineCapabilities,
   type ParserEvalContext,
   type ParserEvaluation,
   type ParserDecision,
@@ -362,6 +368,15 @@ export {
   type TerminalPhaseAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+export {
+  prepareVetTerminalBundle,
+  type PrepareVetTerminalBundleDeps,
+  type PrepareVetTerminalBundleInput,
+  type PreparedVetTerminalBundle,
+  type VetFailureTerminalSessionRecord,
+  type VetProductionAuthentication,
+  type VetTerminalSessionParty,
+} from "./vetTerminalBundle.js";
 export {
   advanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus,

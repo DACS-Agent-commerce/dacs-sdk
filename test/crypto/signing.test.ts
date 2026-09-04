@@ -56,9 +56,9 @@ describe("signing (§B.7)", () => {
     expect(verifyArtifact("dacs-bundle:v1:", GOLDEN.doc, sig, pub)).toBe(false);
   });
 
-  it("sig-registry-closed-25: the registry is the full closed §B.7 set of 25", () => {
-    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(25);
-    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(25);
+  it("sig-registry-closed-28: the registry is the full closed §B.7 set of 28", () => {
+    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(28);
+    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(28);
     // Exact §B.7 membership added since the original 18-entry registry.
     for (const sep of [
       "dacs-finality-commitment:v1:",
@@ -68,12 +68,28 @@ describe("signing (§B.7)", () => {
       "dacs-auto-accept-commitment:v1:",
       "dacs-auto-accept-instance:v1:",
       "dacs-payload-attestation:v1:",
+      "dacs-evidence-bound-fault-bundle:v1:",
+      "dacs-evidence-bound-fault-bundle-pointer:v1:",
+      "dacs-prior-payment-disposition:v1:",
     ] as const) {
       expect(isRegisteredSeparator(sep)).toBe(true);
     }
     // The non-signature hash-domain tags are NOT signature separators (§B.7).
     expect(isRegisteredSeparator("dacs-sealed-bid:v1:")).toBe(false);
     expect(isRegisteredSeparator("dacs-sb3:v1:")).toBe(false);
+    expect(isRegisteredSeparator("dacs-ap2-idem:v1:")).toBe(false);
+  });
+
+  it("662be1d: the three separators added with the pin sign + verify generically", () => {
+    for (const sep of [
+      "dacs-prior-payment-disposition:v1:",
+      "dacs-evidence-bound-fault-bundle:v1:",
+      "dacs-evidence-bound-fault-bundle-pointer:v1:",
+    ] as const) {
+      const sig = signArtifact(sep, GOLDEN.doc, seed);
+      expect(verifyArtifact(sep, GOLDEN.doc, sig, pub)).toBe(true);
+      expect(verifyArtifact("dacs-listing:v1:", GOLDEN.doc, sig, pub)).toBe(false);
+    }
   });
 
   it("#86: the four newly-added single-hash domains sign + verify generically", () => {

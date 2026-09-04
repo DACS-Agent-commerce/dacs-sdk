@@ -12,6 +12,10 @@ import type {
   RatingRecord,
 } from "../artifacts/types.js";
 import { isRatingRecord } from "../artifacts/validators.js";
+import {
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
 
@@ -250,6 +254,12 @@ function deriveReputationCore(
   deps: DeriveReputationDeps = {},
 ): ReputationCoreResult {
   const basis = window.windowingBasis ?? "finalisedAt";
+  const parsedParty = requireCanonicalClaimReference(
+    party,
+    "ReputationDerivation partyPrimaryClaim",
+  );
+  const canonicalParty =
+    `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`;
   if (!deps.isValid && deps.trustBundles !== true) {
     throw new DacsError(
       "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
@@ -270,14 +280,16 @@ function deriveReputationCore(
 
   const scoped = candidates.filter(
     (b) =>
-      b.parties.some((p) => p.primaryClaim === party) &&
+      b.parties.some((p) =>
+        sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+      ) &&
       window.windowStart <= b.finalisedAt &&
       b.finalisedAt <= window.windowEnd,
   );
 
   const empty = (): ReputationDerivation => ({
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: 0,
@@ -332,7 +344,7 @@ function deriveReputationCore(
       try {
         roleOfParty = deps.resolvePartyRole(Object.freeze({
           jobId: valid[0]!.jobId,
-          partyPrimaryClaim: party,
+          partyPrimaryClaim: canonicalParty,
         }));
       } catch {
         // Unavailable or malformed independent context is not permission to
@@ -342,8 +354,8 @@ function deriveReputationCore(
     } else {
       // Explicit compatibility path for callers that authenticated the exact
       // party map against independent session/agreement context upstream.
-      roleOfParty = valid[0]!.parties.find(
-        (candidate) => candidate.primaryClaim === party,
+      roleOfParty = valid[0]!.parties.find((candidate) =>
+        sameCanonicalClaimIdentity(candidate.primaryClaim, canonicalParty)
       )?.role;
     }
     if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
@@ -414,7 +426,7 @@ function deriveReputationCore(
   return {
     derivation: {
       derivationVersion: "1",
-      partyPrimaryClaim: party,
+      partyPrimaryClaim: canonicalParty,
       windowStart: window.windowStart,
       windowEnd: window.windowEnd,
       bundleCount: reconciled.length,
@@ -548,23 +560,23 @@ async function deriveAuthenticatedRatingAverages(
     const unsignedHash = contentHash(
       stripSignature(record as unknown as Record<string, unknown>),
     );
-    const rater = bundle.parties.find(
-      (candidate) => candidate.primaryClaim === record.rater,
+    const rater = bundle.parties.find((candidate) =>
+      sameCanonicalClaimIdentity(candidate.primaryClaim, record.rater)
     );
-    const target = bundle.parties.find(
-      (candidate) => candidate.primaryClaim === record.target,
+    const target = bundle.parties.find((candidate) =>
+      sameCanonicalClaimIdentity(candidate.primaryClaim, record.target)
     );
     if (
       unsignedHash !== ref.contentHash ||
       record.jobId !== bundle.jobId ||
-      record.target !== party ||
-      record.rater === party ||
+      !sameCanonicalClaimIdentity(record.target, party) ||
+      sameCanonicalClaimIdentity(record.rater, party) ||
       record.targetRole !== scoredPartyRole ||
       !rater ||
       !target ||
       (rater.role !== "buyer" && rater.role !== "seller") ||
       rater.role === scoredPartyRole ||
-      target.primaryClaim !== party ||
+      !sameCanonicalClaimIdentity(target.primaryClaim, party) ||
       target.role !== scoredPartyRole
     ) {
       continue;
@@ -656,7 +668,7 @@ export async function deriveReputationWithValidation(
     return core.derivation;
   }
   const ratingMetrics = await deriveAuthenticatedRatingAverages(
-    party,
+    core.derivation.partyPrimaryClaim,
     core.reconciled,
     resolveAndAuthenticateRating,
   );
