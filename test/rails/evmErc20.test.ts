@@ -16,6 +16,7 @@ const PAYER = "0x2222222222222222222222222222222222222222";
 const TX_HASH = `0x${"a".repeat(64)}`;
 const BLOCK_HASH = `0x${"b".repeat(64)}`;
 const FINALITY_HASH = `0x${"c".repeat(64)}`;
+const PARENT_HASH = `0x${"d".repeat(64)}`;
 
 const topic = (address: string) =>
   `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
@@ -50,6 +51,7 @@ function finalityClient(
     getBlock: async ({ blockNumber }: { blockNumber: bigint }) => ({
       number: blockNumber,
       hash: blockNumber === 100n ? BLOCK_HASH : FINALITY_HASH,
+      parentHash: blockNumber === 100n ? PARENT_HASH : BLOCK_HASH,
       timestamp: blockNumber === 100n ? 1_700_000_000n : 1_700_000_011n,
     }),
     ...over,
@@ -183,6 +185,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
           getBlock: async ({ blockNumber }) => ({
             number: blockNumber,
             hash: FINALITY_HASH,
+            parentHash: PARENT_HASH,
             timestamp: 1_700_000_011n,
           }),
         }),
@@ -260,6 +263,7 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
             hash: blockNumber === 100n
               ? (inclusionReads === 2 ? FINALITY_HASH : BLOCK_HASH)
               : FINALITY_HASH,
+            parentHash: blockNumber === 100n ? PARENT_HASH : BLOCK_HASH,
             timestamp: 1_700_000_011n,
           };
         },
@@ -370,10 +374,24 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
         getBlock: async ({ blockNumber }) => ({
           number: blockNumber,
           hash: blockNumber === 100n ? BLOCK_HASH : FINALITY_HASH,
+          parentHash: blockNumber === 100n ? PARENT_HASH : BLOCK_HASH,
           timestamp: blockNumber === 100n ? 1_700_000_011n : 1_700_000_000n,
         }),
       }),
-    }))).rejects.toThrow(/predates the inclusion block/);
+    }))).rejects.toThrow(/predates its parent/);
+  });
+
+  test("rejects stable blocks from unrelated forks", async () => {
+    await expect(evmErc20SettleCore(params, client({
+      finalityClient: finalityClient({
+        getBlock: async ({ blockNumber }) => ({
+          number: blockNumber,
+          hash: blockNumber === 100n ? BLOCK_HASH : FINALITY_HASH,
+          parentHash: PARENT_HASH,
+          timestamp: blockNumber === 100n ? 1_700_000_000n : 1_700_000_011n,
+        }),
+      }),
+    }))).rejects.toThrow(/does not descend/);
   });
 
   test("rejects a non-positive amount before sending", async () => {
