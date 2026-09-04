@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-import type { SettleResponse } from "@x402/core/types";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
@@ -13,12 +12,15 @@ import {
   type X402ClientLike,
   type X402PaymentRequired,
   type X402Rail,
+  type X402SettleCoreDeps,
   type X402SettleParams,
 } from "../../src/rails/x402.js";
 
 const NETWORK = "eip155:84532";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
+const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const TX_HASH = `0x${"a".repeat(64)}`;
 const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:x402-rail"));
 
 describe("DACS EIP-3009 session binding", () => {
@@ -90,6 +92,8 @@ describe("DACS EIP-3009 session binding", () => {
       evmPrivateKey: TEST_EVM_KEY,
       requireSessionBinding: true,
       fetchImpl: fakeFetch(),
+      rpcUrl: "https://rpc.example",
+      finalityBlocks: 2,
     });
     await expect(rail.settle({
       paywallUrl: "https://seller.example/deliver",
@@ -175,26 +179,31 @@ describe("termsMatch (§4.1 abort guard, base-unit amounts)", () => {
 
 // ── A fake x402 client + fetch so the 402-dance is exercised without a chain ──
 
-function fakeClient(
-  accepts: X402PaymentRequired["accepts"],
-  settlement: Partial<SettleResponse> = {},
-): X402ClientLike {
+function fakeClient(accepts: X402PaymentRequired["accepts"]): X402ClientLike {
   return {
     getPaymentRequiredResponse: () => ({ accepts }),
     createPaymentPayload: async (pr) => pr,
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed" }),
     getPaymentSettleResponse: () => ({
       success: true,
-      transaction: "0xsettled",
+      transaction: TX_HASH,
       network: NETWORK,
       payer: PAYER,
       amount: "1000000",
-      ...settlement,
     }),
   };
 }
 
-function fakeFetch(opts: { onPaid?: (init?: RequestInit) => void } = {}) {
+function encodedReceipt(settlement: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(settlement), "utf8").toString("base64");
+}
+
+function fakeFetch(opts: {
+  onPaid?: (init?: RequestInit) => void;
+  settlement?: Record<string, unknown>;
+  omitReceipt?: boolean;
+  rawReceipt?: string;
+} = {}) {
   let call = 0;
   const impl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     call += 1;
@@ -202,9 +211,43 @@ function fakeFetch(opts: { onPaid?: (init?: RequestInit) => void } = {}) {
       return new Response(JSON.stringify({ x402Version: 2 }), { status: 402 });
     }
     opts.onPaid?.(init);
-    return new Response(JSON.stringify({ data: "ok" }), { status: 200 });
+    const settlement = opts.settlement ?? {
+      success: true,
+      transaction: TX_HASH,
+      network: NETWORK,
+      payer: PAYER,
+      amount: "1000000",
+      extensions: { retained: "yes" },
+    };
+    return new Response(JSON.stringify({ data: "ok" }), {
+      status: 200,
+      headers: opts.omitReceipt ? {} : {
+        "PAYMENT-RESPONSE": opts.rawReceipt ?? encodedReceipt(settlement),
+      },
+    });
   };
   return impl as unknown as typeof fetch;
+}
+
+function coreDeps(
+  client: X402ClientLike,
+  fetchImpl: typeof fetch,
+  authenticateTransfer: X402SettleCoreDeps["authenticateTransfer"] = async () => ({
+    chainId: 84532,
+    transactionHash: "a".repeat(64),
+    logIndex: 7,
+    blockNumber: 100,
+    confirmations: 2,
+    finalityObservedAt: 1_700_000_011_000,
+  }),
+) {
+  return {
+    client,
+    fetchImpl,
+    payerAddress: PAYER,
+    assertFinalityContext: async () => {},
+    authenticateTransfer,
+  };
 }
 
 describe("x402SettleCore (buyer 402-dance)", () => {
@@ -213,7 +256,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     network: NETWORK,
     recipientEvm: RECIPIENT,
     amount: "1000000",
-    asset: "USDC",
+    asset: TOKEN,
+    finalityBlocks: 2,
   };
 
   test("happy path: pays the matching requirement and returns settlement", async () => {
@@ -224,147 +268,260 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       },
     });
     const client = fakeClient([
-      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
 
-    const res = await x402SettleCore(params, { client, fetchImpl, payerAddress: PAYER });
+    const res = await x402SettleCore(params, coreDeps(client, fetchImpl));
 
     expect(paidHeader).toBe("signed");
-    expect(res).toEqual({
+    expect(res).toEqual(expect.objectContaining({
       ok: true,
-      txHash: "0xsettled",
+      txHash: TX_HASH,
       chainId: NETWORK,
       payer: PAYER,
       payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 2 },
+      finalityObservedAt: 1_700_000_011_000,
+      txRef: expect.objectContaining({
+        kind: "x402-event",
+        settlementTxHash: "a".repeat(64),
+        chainId: 84532,
+        logIndex: 7,
+        protocolVersion: "2",
+      }),
+      x402Receipt: expect.objectContaining({
+        headerName: "PAYMENT-RESPONSE",
+        protocolVersion: "2",
+      }),
+    }));
+  });
+
+  test("checks the recovery generation before sending the signed payment", async () => {
+    let paidRequests = 0;
+    const fetchImpl = fakeFetch({ onPaid: () => { paidRequests += 1; } });
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    let fenceChecks = 0;
+    await expect(x402SettleCore(
+      params,
+      coreDeps(client, fetchImpl),
+      {
+        owner: "worker",
+        generation: 2,
+        settlementKey: "x402:job:0",
+        bindingHash: "a".repeat(64),
+        async assertCurrent() {
+          fenceChecks += 1;
+          throw new Error("stale effect generation");
+        },
+      },
+    )).rejects.toThrow(/stale effect generation/);
+    expect(fenceChecks).toBe(1);
+    expect(paidRequests).toBe(0);
+  });
+
+  test("canonicalizes the durable transaction identity from authenticated chain data", async () => {
+    const upperHash = `0x${"A".repeat(64)}`;
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    const result = await x402SettleCore(params, coreDeps(client, fakeFetch({
+      settlement: {
+        success: true,
+        transaction: upperHash,
+        network: NETWORK,
+        payer: PAYER,
+        amount: "1000000",
+      },
+    })));
+    expect(result.txHash).toBe(TX_HASH);
+    expect(result.txRef).toMatchObject({
+      kind: "x402-event",
+      settlementTxHash: "a".repeat(64),
+    });
+  });
+
+  test("preflights finality before the first HTTP request or authorization", async () => {
+    let fetchCalls = 0;
+    let authorizationCalls = 0;
+    let eventCalls = 0;
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    client.createPaymentPayload = async () => {
+      authorizationCalls += 1;
+      throw new Error("must not authorize");
+    };
+    const fetchImpl = (async () => {
+      fetchCalls += 1;
+      throw new Error("must not fetch");
+    }) as unknown as typeof fetch;
+    await expect(x402SettleCore(params, {
+      ...coreDeps(client, fetchImpl),
+      assertFinalityContext: async () => {
+        throw new Error("wrong RPC chain");
+      },
+      authenticateTransfer: async () => {
+        eventCalls += 1;
+        throw new Error("must not authenticate event");
+      },
+    })).rejects.toThrow(/wrong RPC chain/);
+    expect(fetchCalls).toBe(0);
+    expect(authorizationCalls).toBe(0);
+    expect(eventCalls).toBe(0);
+  });
+
+  test("pins negotiated params before any async finality or HTTP callback", async () => {
+    const entryHeaders = new Headers({ "X-Entry-Policy": "original" });
+    const mutable: X402SettleParams = {
+      ...params,
+      requestInit: { headers: entryHeaders },
+    };
+    const underlyingFetch = fakeFetch();
+    const requests: Array<{ url: string; policy: string | null }> = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requests.push({
+        url: String(input),
+        policy: new Headers(init?.headers).get("X-Entry-Policy"),
+      });
+      return underlyingFetch(input, init);
+    }) as typeof fetch;
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    let authenticated: unknown;
+    const result = await x402SettleCore(mutable, {
+      ...coreDeps(client, fetchImpl, async (request) => {
+        authenticated = request;
+        return {
+          chainId: 84532,
+          transactionHash: "a".repeat(64),
+          logIndex: 7,
+          blockNumber: 100,
+          confirmations: 2,
+          finalityObservedAt: 1_700_000_011_000,
+        };
+      }),
+      assertFinalityContext: async () => {
+        entryHeaders.set("X-Entry-Policy", "mutated");
+        Object.assign(mutable, {
+          paywallUrl: "https://attacker.example/deliver",
+          network: "eip155:8453",
+          recipientEvm: "0x3333333333333333333333333333333333333333",
+          amount: "1",
+          asset: "0x4444444444444444444444444444444444444444",
+          finalityBlocks: 1,
+          requestInit: { headers: { "X-Entry-Policy": "replacement" } },
+        });
+      },
+    });
+
+    expect(requests).toEqual([
+      { url: params.paywallUrl, policy: "original" },
+      { url: params.paywallUrl, policy: "original" },
+    ]);
+    expect(authenticated).toEqual({
+      chainId: 84532,
+      transactionHash: TX_HASH,
+      tokenAddress: TOKEN,
+      payerAddress: PAYER,
+      payeeAddress: RECIPIENT,
+      amount: 1000000n,
+      minimumConfirmations: 2,
+    });
+    expect(result).toMatchObject({
+      chainId: NETWORK,
+      payee: RECIPIENT,
+      finality: { model: "block-depth", finalityBlocks: 2 },
+      txRef: { httpResource: params.paywallUrl },
     });
   });
 
   test("picks the matching requirement among several advertised", async () => {
     const client = fakeClient([
-      { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000", asset: "USDC" }, // wrong network
-      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }, // the match
+      { network: "eip155:8453", payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
+    const res = await x402SettleCore(params, coreDeps(client, fakeFetch()));
     expect(res.ok).toBe(true);
   });
 
   test("aborts (§4.1) when no advertised requirement matches the agreement", async () => {
     const client = fakeClient([
-      { network: NETWORK, payTo: RECIPIENT, amount: "9999999", asset: "USDC" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "9999999", asset: TOKEN },
     ]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, coreDeps(client, fakeFetch())),
     ).rejects.toThrow(/does not match negotiated agreement/);
   });
 
   test("aborts when the 402 advertises a different asset (no wrong-token pay)", async () => {
     // Same chain, recipient, and base-unit amount — but a different token.
     const client = fakeClient([
-      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "DAI" },
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "0x1111111111111111111111111111111111111111" },
     ]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, coreDeps(client, fakeFetch())),
     ).rejects.toThrow(/asset mismatch/);
   });
 
   test("aborts when the 402 omits the asset (can't confirm the token)", async () => {
     const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000" }]);
     await expect(
-      x402SettleCore(params, { client, fetchImpl: fakeFetch(), payerAddress: PAYER }),
+      x402SettleCore(params, coreDeps(client, fakeFetch())),
     ).rejects.toThrow(/asset mismatch/);
   });
 
-  test("reports non-success when settlement returns no transaction id", async () => {
-    // Gate passes (HTTP 200) but X-PAYMENT-RESPONSE carries no tx hash — an
-    // unverifiable receipt. Must NOT be reported as a success.
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      { transaction: "" },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.txHash).toBe("");
-  });
-
-  test("reports non-success when the x402 receipt says settlement failed", async () => {
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      {
-        success: false,
-        errorReason: "settlement_failed",
-        transaction: "0xfailed",
+  test.each([
+    ["missing transaction", { transaction: "" }],
+    ["failed receipt", { success: false }],
+    ["wrong network", { network: "eip155:8453" }],
+    ["wrong payer", { payer: "0x3333333333333333333333333333333333333333" }],
+    ["wrong amount", { amount: "999999" }],
+  ])("rejects %s instead of producing current success", async (_name, change) => {
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    await expect(x402SettleCore(params, coreDeps(client, fakeFetch({
+      settlement: {
+        success: true,
+        transaction: TX_HASH,
+        network: NETWORK,
+        payer: PAYER,
+        amount: "1000000",
+        ...change,
       },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.txHash).toBe("0xfailed");
+    })))).rejects.toThrow(/x402:/);
   });
 
-  test("reports non-success and preserves the actual network on a receipt mismatch", async () => {
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      { network: "eip155:8453" },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.chainId).toBe("eip155:8453");
+  test("rejects success with no raw PAYMENT-RESPONSE", async () => {
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    await expect(x402SettleCore(
+      params,
+      coreDeps(client, fakeFetch({ omitReceipt: true })),
+    )).rejects.toThrow(/PAYMENT-RESPONSE/);
   });
 
-  test("reports non-success and preserves the actual payer on a receipt mismatch", async () => {
-    const otherPayer = "0x3333333333333333333333333333333333333333";
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      { payer: otherPayer },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-    expect(res.payer).toBe(otherPayer);
-  });
-
-  test("does not treat a malformed present payer as an omitted payer", async () => {
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      { payer: "" },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
-  });
-
-  test("reports non-success when the receipt amount contradicts the agreement", async () => {
-    const client = fakeClient(
-      [{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: "USDC" }],
-      { amount: "999999" },
-    );
-    const res = await x402SettleCore(params, {
-      client,
-      fetchImpl: fakeFetch(),
-      payerAddress: PAYER,
-    });
-    expect(res.ok).toBe(false);
+  test("rejects malformed raw receipt and independent finality failure", async () => {
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    await expect(x402SettleCore(
+      params,
+      coreDeps(client, fakeFetch({ rawReceipt: "not-base64" })),
+    )).rejects.toThrow(/not conforming/);
+    await expect(x402SettleCore(
+      params,
+      coreDeps(client, fakeFetch(), async () => {
+        throw new Error("not final");
+      }),
+    )).rejects.toThrow(/not final/);
   });
 
   test("throws if the paywall doesn't return a 402", async () => {
@@ -375,6 +532,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         client: fakeClient([]),
         fetchImpl,
         payerAddress: PAYER,
+        assertFinalityContext: async () => {},
+        authenticateTransfer: async () => { throw new Error("unused"); },
       }),
     ).rejects.toThrow(/expected HTTP 402/);
   });
@@ -385,6 +544,8 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         client: fakeClient([]),
         fetchImpl: fakeFetch(),
         payerAddress: PAYER,
+        assertFinalityContext: async () => {},
+        authenticateTransfer: async () => { throw new Error("unused"); },
       }),
     ).rejects.toThrow(/no .accepts. payment requirements/);
   });
@@ -395,6 +556,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     let calls = 0;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async () => {
         calls += 1;
         throw new Error("must not submit");
@@ -421,12 +583,20 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
   });
 
   test("hands the rail the configured token id as the guard's asset", async () => {
-    let captured: X402SettleParams | undefined;
+    let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {
@@ -460,12 +630,20 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     // same value the idempotency key uses — so the SB-3 nonce and the dedup key
     // describe the SAME phase. The paywall descriptor omits phaseIndex here (the
     // normal production shape); the session carries phase 2.
-    let captured: X402SettleParams | undefined;
+    let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {
@@ -492,12 +670,20 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
   });
 
   test("a session with no phaseIndex binds phase 0 (never undefined) so the binding stays active", async () => {
-    let captured: X402SettleParams | undefined;
+    let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {

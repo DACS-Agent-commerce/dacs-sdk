@@ -1,6 +1,6 @@
 import type { KeyObject } from "node:crypto";
 
-import { ed25519Sign, privateKeyFromSeed, signedBytes } from "../crypto/index.js";
+import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
@@ -13,6 +13,7 @@ import {
   type BundleBinding,
 } from "../artifacts/index.js";
 import {
+  assertNoRawSessionSeed,
   attestationBundleHash,
 } from "../agent/twoSidedBundle.js";
 import {
@@ -60,7 +61,7 @@ export type SellerBundleFencedSigner = (
   fence: Readonly<SellerBundleEffectFence>,
 ) => Promise<Uint8Array> | Uint8Array;
 
-export type SellerBundleDurableSigner = Uint8Array | KeyObject | SellerBundleFencedSigner;
+export type SellerBundleDurableSigner = KeyObject | SellerBundleFencedSigner;
 
 export type SellerBundleFencedComponentSigner = (
   bytes: Uint8Array,
@@ -251,11 +252,9 @@ async function invokeBundleSigner(
   fence: Readonly<SellerBundleEffectFence>,
 ): Promise<Uint8Array> {
   const retainedBytes = new Uint8Array(bytes);
+  assertNoRawSessionSeed(signer, "durable seller bundle signer");
   if (typeof signer === "function") return await signer(retainedBytes, fence);
-  return ed25519Sign(
-    retainedBytes,
-    signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer,
-  );
+  return ed25519Sign(retainedBytes, signer);
 }
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -1752,14 +1751,12 @@ function captureInput(
 ): FinalizeCompletedSellerBundleDurableInput {
   const { seller, bindingSigner, ...data } = input;
   const { signer: sellerSigner, ...sellerIdentity } = seller;
-  const capturedSellerSigner = sellerSigner instanceof Uint8Array
-    ? new Uint8Array(sellerSigner)
-    : sellerSigner;
+  assertNoRawSessionSeed(sellerSigner, "durable seller bundle signer");
   const captured: FinalizeCompletedSellerBundleDurableInput = {
     ...clone(data),
     seller: {
       ...clone(sellerIdentity),
-      signer: capturedSellerSigner,
+      signer: sellerSigner,
     },
     ...(bindingSigner
       ? {

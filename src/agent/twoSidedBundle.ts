@@ -19,9 +19,10 @@ import { sha256Hex } from "../canonical/hash.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { isFaultAttestationBundle } from "../artifacts/validators.js";
-import { ed25519Sign, privateKeyFromSeed } from "../crypto/ed25519.js";
+import { ed25519Sign } from "../crypto/ed25519.js";
 import { signedBytes } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type {
   AnyAttestationBundle,
   BundleParty,
@@ -59,7 +60,23 @@ export { BUNDLE_OUTCOMES, type BundleOutcome } from "./bundleSemantics.js";
 /** The roles that can anchor a copy of a bundle (§10.4.2). */
 export type BundleAnchorRole = BundlePartyRole;
 
-type SessionSigner = Uint8Array | KeyObject | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
+/**
+ * A session-scoped signer never contains raw private-key bytes. Convert a seed
+ * to a `KeyObject` before constructing the session, then wipe the caller-owned
+ * seed, or supply a remote/HSM-backed callback.
+ */
+export type SessionSigner =
+  | KeyObject
+  | ((bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array);
+
+/** @internal Runtime guard for JavaScript and type-erased callers. */
+export function assertNoRawSessionSeed(signer: unknown, subject: string): void {
+  if (signer instanceof Uint8Array) {
+    throw new DacsError(
+      `${subject} must not retain a raw Ed25519 seed; use a prepared KeyObject or signing callback`,
+    );
+  }
+}
 
 /** The §B.2 canonical form of a bundle: the document minus `signatures` and `anchoredByRole`. */
 export function bundleSignedScope(bundle: AnyAttestationBundle): Record<string, unknown> {
@@ -103,7 +120,7 @@ export interface SessionParty {
    * this constructor because a 64-hex string is indistinguishable from the right one.
    */
   bundleHash: string;
-  /** A 32-byte Ed25519 seed, a prepared KeyObject, or a remote signing function. */
+  /** A prepared KeyObject or remote/HSM-backed signing function. */
   signer?: SessionSigner;
 }
 
@@ -158,7 +175,7 @@ export interface TwoSidedBundles {
 
 /** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
 function sameParty(a: SessionParty, b: SessionParty): boolean {
-  return a.primaryClaim === b.primaryClaim;
+  return sameCanonicalClaimIdentity(a.primaryClaim, b.primaryClaim);
 }
 
 function canSign(party: SessionParty): party is SigningSessionParty {
@@ -171,13 +188,11 @@ function isAgreementCommitPhase(kind: string): boolean {
 
 async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
   const payload = signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, hash);
+  assertNoRawSessionSeed(party.signer, `session signer ${party.primaryClaim}`);
   const raw =
     typeof party.signer === "function"
       ? await party.signer(payload)
-      : ed25519Sign(
-          payload,
-          party.signer instanceof Uint8Array ? privateKeyFromSeed(party.signer) : party.signer,
-        );
+      : ed25519Sign(payload, party.signer);
   return {
     party: party.primaryClaim,
     algorithm: "ed25519",

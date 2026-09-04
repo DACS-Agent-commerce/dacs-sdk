@@ -27,7 +27,10 @@ import {
 } from "../artifacts/signatures.js";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
-import { identityBundleHash } from "../identity/index.js";
+import {
+  identityBundleHash,
+  sameCanonicalClaimIdentity,
+} from "../identity/index.js";
 import {
   isAuthenticatedRecipeDescriptor,
   type AuthenticatedRecipeDescriptor,
@@ -1805,7 +1808,6 @@ async function proxyAttestation(
           negativeMatch,
           // A negative result founded on absence is never trusted unless the
           // attested response is independently complete (PSP-5).
-          requiresCompleteness: negativeMatch,
           listComplete: response.complete === true,
         },
       );
@@ -3029,7 +3031,9 @@ async function authenticateCarriedResult<TKey>(
   deps: CapturedPartyVetDeps<TKey>,
   now: number,
 ): Promise<"freshness" | "dealSpecific"> {
-  const matches = bundle.claims.filter((claim) => claim.ref === claimSubject);
+  const matches = bundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, claimSubject)
+  );
   if (matches.length !== 1) {
     throw new DacsError(
       `party Vet claim ${claimSubject} has ambiguous bundle provenance`,

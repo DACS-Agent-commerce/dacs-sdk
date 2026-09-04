@@ -5,6 +5,7 @@ import type {
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
   CompositeVerificationRecord,
+  IdentityBundle,
   ListingDraft,
   ListingPin,
 } from "../artifacts/types.js";
@@ -38,7 +39,24 @@ import {
   type BoundArtifactWriteResult,
 } from "../discovery/index.js";
 import { DacsError } from "../errors.js";
-import { parseCciRecord, type CciRecord } from "../identity/index.js";
+import {
+  authenticateDemosCciRecord,
+  canonicalDemosAgentPublicKey,
+  classifyCciTlsnProof,
+  demosAgentClaimRef,
+  isCanonicalClaimReference,
+  parseCanonicalClaimReference,
+  parseCciRecord,
+  parseDemosAgentClaimReference,
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+  type AuthenticateDemosCciDeps,
+  type AuthenticateDemosCciResult,
+  type CciRecord,
+  type CciTlsnDisposition,
+  type CciTlsnSessionContext,
+  type ClassifyCciTlsnDeps,
+} from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   DemosWriteEvidence,
@@ -46,7 +64,7 @@ import type {
 } from "../substrate/SubstrateAdapter.js";
 import {
   runSessionCore,
-  sessionAnchorName,
+  legacyMvpSessionAnchorName,
   type SessionDeps,
   type SessionResult,
   type SessionTerms,
@@ -71,6 +89,9 @@ import {
   discoverListings,
   type DiscoveredListing,
 } from "./discover.js";
+import {
+  listingDraftClaimReferencesArePublishable,
+} from "./listingClaimReferences.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import {
   computeReputation,
@@ -161,6 +182,83 @@ function stableAgentMethod<T>(
   return Function.prototype.bind.call(candidate, source) as T;
 }
 
+interface CapturedAgentDemosCciConfig {
+  authenticateResolution: AuthenticateDemosCciDeps["authenticateResolution"];
+  authenticateProviderClaim?: AuthenticateDemosCciDeps["authenticateProviderClaim"];
+  verifyIdentityPresentation?: ClassifyCciTlsnDeps["verifyIdentityPresentation"];
+  verifyNativeTlsn?: ClassifyCciTlsnDeps["verifyNativeTlsn"];
+  nowMs?: () => number;
+}
+
+function captureAgentDemosCciConfig(
+  value: unknown,
+): Readonly<CapturedAgentDemosCciConfig> | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) {
+    throw new DacsError("AgentConfig.demosCci must be stable data");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const keys = Reflect.ownKeys(value);
+  const allowed = new Set<PropertyKey>([
+    "authenticateResolution",
+    "authenticateProviderClaim",
+    "verifyIdentityPresentation",
+    "verifyNativeTlsn",
+    "nowMs",
+  ]);
+  if ((prototype !== Object.prototype && prototype !== null) ||
+      !keys.includes("authenticateResolution") ||
+      keys.some((key) => !allowed.has(key))) {
+    throw new DacsError("AgentConfig.demosCci has an invalid capability shape");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const capture = <T>(key: string, optional = false): T | undefined => {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined && optional) return undefined;
+    if (!descriptor?.enumerable || !("value" in descriptor) ||
+        typeof descriptor.value !== "function" || nodeTypes.isProxy(descriptor.value)) {
+      throw new DacsError(`AgentConfig.demosCci.${key} must be a stable function`);
+    }
+    return Function.prototype.bind.call(descriptor.value, value) as T;
+  };
+  const authenticateResolution = capture<
+    AuthenticateDemosCciDeps["authenticateResolution"]
+  >("authenticateResolution")!;
+  const authenticateProviderClaim = capture<
+    NonNullable<AuthenticateDemosCciDeps["authenticateProviderClaim"]>
+  >("authenticateProviderClaim", true);
+  const verifyIdentityPresentation = capture<
+    ClassifyCciTlsnDeps["verifyIdentityPresentation"]
+  >("verifyIdentityPresentation", true);
+  const verifyNativeTlsn = capture<ClassifyCciTlsnDeps["verifyNativeTlsn"]>(
+    "verifyNativeTlsn",
+    true,
+  );
+  const nowMs = capture<() => number>("nowMs", true);
+  const nativeCapabilityCount = [
+    verifyIdentityPresentation,
+    verifyNativeTlsn,
+    nowMs,
+  ].filter((entry) => entry !== undefined).length;
+  if (nativeCapabilityCount !== 0 && nativeCapabilityCount !== 3) {
+    throw new DacsError(
+      "AgentConfig.demosCci native TLSN verifiers and clock must be configured together",
+    );
+  }
+  return Object.freeze({
+    authenticateResolution,
+    ...(authenticateProviderClaim === undefined ? {} : { authenticateProviderClaim }),
+    ...(verifyIdentityPresentation === undefined
+      ? {}
+      : {
+          verifyIdentityPresentation,
+          verifyNativeTlsn: verifyNativeTlsn!,
+          nowMs: nowMs!,
+        }),
+  });
+}
+
 /** Own the low-level reader policy once; the SDK retains the algorithm. */
 function captureAgentListingValidationDeps(
   value: unknown,
@@ -233,31 +331,36 @@ function captureAgentListingValidationDeps(
   });
 }
 
-/**
- * Resolve a signer DID/claim to its raw ed25519 public key. In the Demos
- * model a CCI *is* the ed25519 public-key hex, so a DID embedding that hex
- * (`did:…:<64-hex>`, `0x<64-hex>`, or a bare `<64-hex>`) resolves directly.
- * Aliases that don't embed the key return null (the artifact stays
- * `unverified` rather than falsely `valid`); alias→CCI lookup is a follow-up.
- */
-function publicKeyFromDid(did: string): Uint8Array | null {
-  const hex = did.match(/(?:^|:)(?:0x)?([0-9a-fA-F]{64})$/)?.[1];
-  return hex ? Uint8Array.from(Buffer.from(hex, "hex")) : null;
-}
-
 function normalizedDemosPublicKey(value: string): string | null {
   const match = value.trim().match(/^(?:0x)?([0-9a-fA-F]{64})$/);
   return match?.[1]?.toLowerCase() ?? null;
 }
 
-/**
- * Current MVP self-certifying publisher claims. The reduced Listing shape does
- * not yet carry the normative seller.identity authorization chain, so the write
- * path accepts only claims whose key ownership can be established locally.
- */
-function publishingKeyFromClaim(claim: string): string | null {
-  const match = claim.match(/^did:demos:agent:([0-9a-f]{64})$/);
-  return match?.[1] ?? null;
+/** Resolve only explicit identity-lookup conveniences, never signed claims. */
+function demosIdentityLookup(subject: string): Readonly<{
+  address: string;
+  primaryClaim: string;
+}> {
+  const claim = parseDemosAgentClaimReference(subject);
+  if (claim) {
+    return {
+      address: Buffer.from(claim.publicKey).toString("hex"),
+      primaryClaim: claim.canonicalIdentity,
+    };
+  }
+  const native = /^(?:0x)?([0-9a-fA-F]{64})$/.exec(subject)?.[1];
+  if (native) {
+    const address = native.toLowerCase();
+    return { address, primaryClaim: demosAgentClaimRef(address) };
+  }
+  const parsed = requireCanonicalClaimReference(
+    subject,
+    "Identity lookup subject",
+  );
+  return {
+    address: parsed.reference,
+    primaryClaim: `${parsed.identity.scheme}:${parsed.identity.identifier}`,
+  };
 }
 
 /** Verifier that lifts a raw 32-byte key into a KeyObject for ed25519Verify. */
@@ -342,6 +445,16 @@ export interface AgentConfig {
   demosWriteJournal?: DemosWriteJournal;
   /** Optional identity metadata (e.g. the agent's DID / primary claim). */
   identity?: { agentId?: string };
+  /**
+   * DACS-1 §6.3.1 / CORE §B.1: explicit Ed25519 resolver for canonical
+   * current ClaimReference methods that are not the self-certifying
+   * `did:demos:agent` profile. It is used for signature verification and must
+   * resolve the configured writer identity to the connected adapter's actual
+   * signing key before a new artifact is signed.
+   */
+  resolveIdentitySigningPublicKey?: (
+    claim: string,
+  ) => Promise<Uint8Array | null> | Uint8Array | null;
   /** DACS-1 §6.3.4 LP-6 authority read for pay-bearing Listing publication. */
   loadListingRailResolution?: (
     listing: Readonly<ListingDraft>,
@@ -377,6 +490,14 @@ export interface AgentConfig {
   resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
 
   /**
+   * Optional Demos CCI trust capabilities. Authenticated identity resolution
+   * requires `authenticateResolution`; provider scores additionally require
+   * `authenticateProviderClaim`. Native TLSN qualification is exposed only
+   * when both TLSN verification capabilities and a trusted clock are configured.
+   */
+  demosCci?: AgentDemosCciConfig;
+
+  /**
    * Published logical→native binding authority used by listing writes and their
    * consumer-index readback. `publishListing` refuses to anchor unless this is
    * configured: a physical write without its independently readable binding
@@ -384,6 +505,20 @@ export interface AgentConfig {
    * typed logical reads and owner-scoped enumeration require only `index`.
    */
   bindings?: AgentBindingConfig;
+}
+
+export interface AgentDemosCciConfig extends AuthenticateDemosCciDeps {
+  verifyIdentityPresentation?: ClassifyCciTlsnDeps["verifyIdentityPresentation"];
+  verifyNativeTlsn?: ClassifyCciTlsnDeps["verifyNativeTlsn"];
+  /** Trusted wall clock used for current-session freshness evaluation. */
+  nowMs?: () => number;
+}
+
+export interface AgentNativeCciTlsnInput {
+  subject: string;
+  bundle: IdentityBundle;
+  proofHash: string;
+  context: Omit<CciTlsnSessionContext, "evaluatedAt">;
 }
 
 export interface AgentSettlementEvidenceContextInput {
@@ -551,15 +686,31 @@ export interface Agent<
   readonly adapter: TAdapter;
   /**
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
-   * primary claim plus the linked Web2 handles and cross-chain wallets bound to
-   * it in the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
-   * primary key; other claim refs are passed through (reverse resolution is a
-   * substrate follow-up).
+   * primary claim plus all eight production Demos CCI contexts bound to it in
+   * the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
+   * primary key; other canonical claim refs are passed through (reverse
+   * resolution is a substrate follow-up). Lookup conveniences are never
+   * retained: the returned `primaryClaim` is a canonical parameter-free CF-3
+   * identity.
    */
   resolveIdentity(subject: string): Promise<CciRecord>;
   /**
+   * Resolve and authenticate the exact Demos GCR response through the
+   * construction-time `AgentConfig.demosCci` trust capabilities.
+   */
+  resolveAuthenticatedIdentity(subject: string): Promise<AuthenticateDemosCciResult>;
+  /**
+   * Resolve authenticated CCI state and qualify one native TLSN commitment for
+   * an exact current Vet job/session. This never routes a registered native
+   * commitment through the external `tlsnotary` recipe.
+   */
+  qualifyNativeCciTlsn(
+    input: Readonly<AgentNativeCciTlsnInput>,
+  ): Promise<CciTlsnDisposition>;
+  /**
    * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
-   * `findByClaim("web2:twitter:alice")` or `findByClaim("xm:evm:0x…")` returns
+   * `findByClaim("cci-web2:twitter:alice")` or
+   * `findByClaim("cci-xm:evm:mainnet:0x…")` returns
    * the matching primary claims (Demos pubkeys), usually one, or [] if none.
    */
   findByClaim(claimRef: string): Promise<string[]>;
@@ -616,6 +767,12 @@ export interface Agent<
 export async function createAgent(
   config: AgentConfig,
 ): Promise<Agent<DemosBackedAdapter>> {
+  // Capture CCI trust authority before the adapter import/connect awaits. A
+  // caller cannot replace verifier methods while connection establishment is
+  // in flight and thereby change the authority retained by the Agent.
+  const retainedDemosCci = captureAgentDemosCciConfig(
+    stableAgentData(config, "demosCci", "AgentConfig.demosCci"),
+  );
   // Lazy-load the adapter so importing the package barrel doesn't eagerly pull
   // @kynesyslabs/demosdk, whose ESM packaging breaks plain-Node-ESM imports of
   // the pure/verify surface. demosdk loads only when an agent is actually built.
@@ -632,7 +789,14 @@ export async function createAgent(
       : { writeJournal: config.demosWriteJournal }),
   });
   await adapter.connect();
-  return buildAgent(adapter, config);
+  const retainedConfig = Object.create(config) as AgentConfig;
+  Object.defineProperty(retainedConfig, "demosCci", {
+    value: retainedDemosCci,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  });
+  return buildAgent(adapter, retainedConfig);
 }
 
 /**
@@ -671,6 +835,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.resolvePayloadVerificationCapability",
     true,
   );
+  const resolveIdentitySigningPublicKey = stableAgentMethod<
+    AgentConfig["resolveIdentitySigningPublicKey"]
+  >(
+    config,
+    "resolveIdentitySigningPublicKey",
+    "AgentConfig.resolveIdentitySigningPublicKey",
+    true,
+  );
   const identity = stableAgentData(config, "identity", "AgentConfig.identity");
   if (
     identity !== undefined &&
@@ -688,6 +860,75 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
+  const resolveCanonicalSigningKey = async (
+    claim: string,
+  ): Promise<Uint8Array | null> => {
+    const parsed = parseCanonicalClaimReference(claim);
+    if (parsed === null) return null;
+    const intrinsic = canonicalDemosAgentPublicKey(claim);
+    if (intrinsic) return Uint8Array.from(intrinsic);
+    if (!resolveIdentitySigningPublicKey) return null;
+    // CORE CF-3 excludes advisory parameters from identity. Do not let two
+    // parameter spellings of one party select different signing authorities.
+    const identityClaim = `${parsed.identity.scheme}:${parsed.identity.identifier}`;
+    const resolved = await resolveIdentitySigningPublicKey(identityClaim);
+    if (resolved === null) return null;
+    if (!(resolved instanceof Uint8Array) || resolved.length !== 32) {
+      throw new DacsError(
+        "identity signing-key resolver must return null or an exact 32-byte Ed25519 key",
+      );
+    }
+    return Uint8Array.from(resolved);
+  };
+  const resolveCanonicalSigningKeyForRead = async (
+    claim: string,
+  ): Promise<Uint8Array | null> => {
+    try {
+      return await resolveCanonicalSigningKey(claim);
+    } catch {
+      return null;
+    }
+  };
+  const requireConnectedSigner = async (
+    claim: string,
+    label: string,
+  ): Promise<Uint8Array> => {
+    const parsed = requireCanonicalClaimReference(claim, label);
+    // DACS-1 §6.3.1 calls this substrate notation out explicitly: although
+    // its unknown `demos` scheme is forwardable on read, a current producer
+    // must never emit it as a ClaimReference or treat it as the agent DID.
+    if (
+      parsed.identity.scheme === "demos" &&
+      /^0x[0-9a-fA-F]{64}$/i.test(parsed.identity.identifier)
+    ) {
+      throw new DacsError(
+        `${label} cannot use native demos:0x address notation as a ClaimReference`,
+      );
+    }
+    const expected = await resolveCanonicalSigningKey(claim);
+    if (!expected) {
+      throw new DacsError(
+        `${label} uses an unsupported identity method; configure ` +
+          "AgentConfig.resolveIdentitySigningPublicKey",
+      );
+    }
+    const resolved = await adapter.getPublicKey();
+    if (!(resolved instanceof Uint8Array) || resolved.length !== 32) {
+      throw new DacsError(
+        `${label} requires the adapter's exact 32-byte Ed25519 signing public key`,
+      );
+    }
+    const actual = Uint8Array.from(resolved);
+    const addressHex = normalizedDemosPublicKey(adapter.getAddress());
+    const addressMatches = addressHex === null ||
+      Buffer.from(addressHex, "hex").equals(Buffer.from(actual));
+    if (!addressMatches || !Buffer.from(expected).equals(Buffer.from(actual))) {
+      throw new DacsError(
+        `${label} does not match the connected adapter signing key`,
+      );
+    }
+    return actual;
+  };
   const sign: Signer = (bytes) => adapter.sign(bytes);
   const listingValidator = (deps: ListingValidationDeps | undefined) =>
     deps
@@ -711,6 +952,41 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.resolveSettlementEvidenceContext",
     true,
   );
+  const demosCci = captureAgentDemosCciConfig(
+    stableAgentData(config, "demosCci", "AgentConfig.demosCci"),
+  );
+  const resolveDemosCciRaw = async (
+    subject: string,
+  ): Promise<Readonly<{ primaryClaim: string; raw: unknown }>> => {
+    const lookup = demosIdentityLookup(subject);
+    const resolved = await adapter.resolveIdentity(lookup.address);
+    return Object.freeze({
+      primaryClaim: lookup.primaryClaim,
+      raw: resolved.raw,
+    });
+  };
+  const resolveAuthenticatedDemosCci = async (
+    subject: string,
+  ): Promise<AuthenticateDemosCciResult> => {
+    if (!demosCci) {
+      throw new DacsError(
+        "resolveAuthenticatedIdentity requires AgentConfig.demosCci",
+      );
+    }
+    if (!isCanonicalClaimReference(subject)) {
+      return Object.freeze({
+        status: "error" as const,
+        reason: "CCI subject is malformed",
+      });
+    }
+    const resolved = await resolveDemosCciRaw(subject);
+    return authenticateDemosCciRecord(resolved.primaryClaim, resolved.raw, {
+      authenticateResolution: demosCci.authenticateResolution,
+      ...(demosCci.authenticateProviderClaim === undefined
+        ? {}
+        : { authenticateProviderClaim: demosCci.authenticateProviderClaim }),
+    });
+  };
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => adapter.readAnchor(artifactRef),
@@ -723,7 +999,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           : null,
       resolveListingRef: async (listingRef, parties) => {
         const seller = parties.find((party) => party.role === "seller");
-        const key = seller ? publicKeyFromDid(seller.primaryClaim) : null;
+        const key = seller
+          ? await resolveCanonicalSigningKeyForRead(seller.primaryClaim)
+          : null;
         if (!seller || !key) return null;
         const logical = listingAddress(
           seller.primaryClaim,
@@ -746,15 +1024,17 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         }
         const name =
           kind === "dacs-3-agreement"
-            ? sessionAnchorName.agreement(jobId)
+            ? legacyMvpSessionAnchorName.agreement(jobId)
             : kind === "dacs-4-evidence"
-              ? sessionAnchorName.evidence(jobId)
+              ? legacyMvpSessionAnchorName.evidence(jobId)
               : kind === "dacs-2-verifyresult"
-                ? sessionAnchorName.vet(jobId)
+                ? legacyMvpSessionAnchorName.vet(jobId)
                 : null;
         if (!name) return null;
         const buyer = parties.find((party) => party.role === "buyer");
-        const key = buyer ? publicKeyFromDid(buyer.primaryClaim) : null;
+        const key = buyer
+          ? await resolveCanonicalSigningKeyForRead(buyer.primaryClaim)
+          : null;
         if (!key) return null;
         const owner = Buffer.from(key).toString("hex");
         const resolved = await adapter.resolveAnchorByName(name, owner);
@@ -762,7 +1042,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           ? adapter.readAnchor(resolved.address)
           : null;
       },
-      resolvePublicKey: async (did) => publicKeyFromDid(did),
+      resolvePublicKey: resolveCanonicalSigningKeyForRead,
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
       verifyEvidence: async (evidence, context) => {
@@ -807,7 +1087,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             attestationRef: context.evidenceRef,
           },
           {
-            resolvePublicKey: async (signer) => publicKeyFromDid(signer),
+            resolvePublicKey: resolveCanonicalSigningKeyForRead,
             verify: ed25519RawVerify,
           },
         );
@@ -862,13 +1142,81 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
 
     async resolveIdentity(subject: string): Promise<CciRecord> {
       // The GCR routine resolves by Demos address (the ed25519 pubkey hex).
-      // Accept a DID / 0x-prefixed / bare-hex primary key; anything else is
-      // handed through as-is. The parsed record keeps `subject` as its primary
-      // claim (the canonical form the caller passed).
-      const key = publicKeyFromDid(subject);
-      const address = key ? Buffer.from(key).toString("hex") : subject;
-      const resolved = await adapter.resolveIdentity(address);
-      return parseCciRecord(subject, resolved.raw);
+      // Accept a Demos DID / 0x-prefixed / bare-hex key as explicit lookup
+      // conveniences, but never retain those caller aliases in protocol data.
+      const resolved = await resolveDemosCciRaw(subject);
+      return parseCciRecord(resolved.primaryClaim, resolved.raw);
+    },
+
+    async resolveAuthenticatedIdentity(
+      subject: string,
+    ): Promise<AuthenticateDemosCciResult> {
+      return resolveAuthenticatedDemosCci(subject);
+    },
+
+    async qualifyNativeCciTlsn(
+      input: Readonly<AgentNativeCciTlsnInput>,
+    ): Promise<CciTlsnDisposition> {
+      if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
+          !demosCci.nowMs) {
+        throw new DacsError(
+          "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
+        );
+      }
+      let captured: AgentNativeCciTlsnInput;
+      try {
+        captured = snapshotCanonicalJson(
+          input,
+          "Agent native CCI TLSN request",
+        ) as unknown as AgentNativeCciTlsnInput;
+      } catch {
+        return Object.freeze({
+          status: "invalid",
+          reason: "CCI TLSN request is malformed",
+        });
+      }
+      if (Reflect.ownKeys(captured).length !== 4 ||
+          !["subject", "bundle", "proofHash", "context"].every((key) =>
+            Object.prototype.hasOwnProperty.call(captured, key)) ||
+          captured.context === null || typeof captured.context !== "object" ||
+          Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
+        return Object.freeze({
+          status: "invalid",
+          reason: "CCI TLSN request is malformed",
+        });
+      }
+      const resolution = await resolveAuthenticatedDemosCci(captured.subject);
+      if (resolution.status !== "authenticated") {
+        return Object.freeze({
+          status: resolution.status,
+          reason: resolution.reason,
+        });
+      }
+      let evaluatedAt: number;
+      try {
+        evaluatedAt = demosCci.nowMs();
+      } catch {
+        return Object.freeze({
+          status: "indeterminate",
+          reason: "CCI TLSN evaluation clock was unavailable",
+        });
+      }
+      if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
+        return Object.freeze({
+          status: "error",
+          reason: "CCI TLSN evaluation clock was malformed",
+        });
+      }
+      return classifyCciTlsnProof(
+        resolution.record,
+        captured.bundle,
+        captured.proofHash,
+        { ...captured.context, evaluatedAt },
+        {
+          verifyIdentityPresentation: demosCci.verifyIdentityPresentation,
+          verifyNativeTlsn: demosCci.verifyNativeTlsn,
+        },
+      );
     },
 
     async findByClaim(claimRef: string): Promise<string[]> {
@@ -890,19 +1238,40 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // the pure core. Pin once here so both layers see the same listing even if
       // caller-owned fields are mutated while history lookup is in flight.
       const listing = structuredClone(listingInput);
-      const sellerKey = publishingKeyFromClaim(
+      if (!listingDraftClaimReferencesArePublishable(listing)) {
+        throw new DacsError(
+          "publishListing ClaimReferences must use exact, current-producer-valid CORE B.1 CF-2 bytes",
+        );
+      }
+      // This high-level Agent publishes through the native Demos
+      // logical-to-storage binding. A resolver-backed foreign DID can be a
+      // valid portable Listing signer, but it cannot identify the owner of
+      // this Demos publication slot. Refuse it before any scan or write so a
+      // fresh publication is always readable through this Agent's own Demos
+      // discovery profile (DACS-1 §6.3.1 / §6.3.4 SR-1).
+      const sellerKey = canonicalDemosAgentPublicKey(
         listing.seller.identity.presentedBy,
       );
       const walletKey = normalizedDemosPublicKey(adapter.getAddress());
-      if (
-        sellerKey === null ||
-        walletKey === null ||
-        sellerKey !== walletKey
-      ) {
+      if (sellerKey === null) {
         throw new DacsError(
-          "listing seller identity must be a canonical self-certifying Demos claim for the connected wallet",
+          "publishListing seller uses an unsupported identity method for native Demos publication; expected canonical did:demos:agent identity",
         );
       }
+      if (walletKey === null) {
+        throw new DacsError(
+          "publishListing requires a canonical native Demos adapter address",
+        );
+      }
+      if (!Buffer.from(sellerKey).equals(Buffer.from(walletKey, "hex"))) {
+        throw new DacsError(
+          "listing seller identity does not match the connected adapter signing key",
+        );
+      }
+      await requireConnectedSigner(
+        listing.seller.identity.presentedBy,
+        "listing seller identity",
+      );
       if (bindingIndex === null) {
         throw new DacsError("publishListing has no configured binding index");
       }
@@ -1116,7 +1485,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // historical string signatures remain in the explicit legacy read arm.
       return discoverListings(listingRefs, (r) => adapter.readAnchor(r), {
         verify: ed25519RawVerify,
-        resolvePublicKey: (claim) => publicKeyFromDid(claim),
+        resolvePublicKey: resolveCanonicalSigningKeyForRead,
         validateListing: listingValidator(configuredListingValidationDeps),
       });
     },
@@ -1204,55 +1573,50 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
-      if (
-        buyerId.normalize("NFC") !== buyerId ||
-        buyerId.trim() !== buyerId ||
-        /[\u0000-\u001f\u007f]/.test(buyerId)
-      ) {
+      if (parseCanonicalClaimReference(buyerId) === null) {
         throw new DacsError(
-          "runSession buyer identity must be an exact NFC protocol identifier",
+          "runSession buyer identity must use exact CORE B.1 CF-2 ClaimReference bytes",
         );
       }
-      // Recovery needs the connected wallet's actual signing key, while a fresh
-      // run does not. Resolve and cache it lazily so this hardening introduces
-      // no additional await (and no new pre-snapshot TOCTOU window) on fresh
-      // sessions.
+      if (
+        canonicalDemosAgentPublicKey(buyerId) === null &&
+        !resolveIdentitySigningPublicKey
+      ) {
+        throw new DacsError(
+          "runSession buyer identity uses an unsupported identity method; " +
+            "configure AgentConfig.resolveIdentitySigningPublicKey",
+        );
+      }
+      // Both fresh writes and recovery authenticate as this identity. Resolve
+      // and bind it lazily at the first signature/authentication operation, then
+      // retain one owned key snapshot for the rest of this run.
       let buyerSigningPublicKeyPromise: Promise<Uint8Array> | undefined;
       const buyerSigningPublicKey = (): Promise<Uint8Array> => {
-        buyerSigningPublicKeyPromise ??= adapter.getPublicKey().then((resolved) => {
-          if (!(resolved instanceof Uint8Array) || resolved.length !== 32) {
-            throw new DacsError(
-              "runSession recovery requires the adapter's exact 32-byte signing public key",
-            );
-          }
-          const key = Uint8Array.from(resolved);
-          const addressKey = publicKeyFromDid(adapter.getAddress());
-          const claimKey = publicKeyFromDid(buyerId);
-          if (
-            (addressKey && !Buffer.from(addressKey).equals(Buffer.from(key))) ||
-            (claimKey && !Buffer.from(claimKey).equals(Buffer.from(key)))
-          ) {
-            throw new DacsError(
-              "runSession recovery buyer identity does not match the connected signing key",
-            );
-          }
-          return key;
-        });
+        buyerSigningPublicKeyPromise ??= requireConnectedSigner(
+          buyerId,
+          "runSession buyer identity",
+        );
         return buyerSigningPublicKeyPromise;
+      };
+      const signAsBuyer = async (bytes: Uint8Array): Promise<Uint8Array> => {
+        await buyerSigningPublicKey();
+        return sign(bytes);
       };
       const verifyBuyerComponentArtifact = async (
         raw: Record<string, unknown>,
         separator: DomainSeparator,
         buyerClaim: string,
       ): Promise<boolean> => {
-        if (buyerClaim !== buyerId) return false;
+        if (!sameCanonicalClaimIdentity(buyerClaim, buyerId)) return false;
         const publicKey = await buyerSigningPublicKey();
         const verdict = await verifyComponentSignature(raw, separator, {
           isSignerAuthorized: (_artifact, signature) =>
             signature.algorithm === "ed25519" &&
-            signature.signer === buyerClaim,
+            sameCanonicalClaimIdentity(signature.signer, buyerClaim),
           resolvePublicKey: (signature) =>
-            signature.signer === buyerClaim ? publicKey : null,
+            sameCanonicalClaimIdentity(signature.signer, buyerClaim)
+              ? publicKey
+              : null,
           verify: ({ signedBytes: bytes, signature, publicKey }) => {
             const signatureBytes = Uint8Array.from(
               Buffer.from(signature.value, "base64url"),
@@ -1363,8 +1727,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           // migration is owned by #98; it is deliberately not coerced into a
           // ComponentSignature envelope here.
           sign: (artifact, separator) =>
-            buildSignedArtifact(artifact, separator as DomainSeparator, sign),
-          signBytes: async (bytes) => sign(bytes),
+            buildSignedArtifact(
+              artifact,
+              separator as DomainSeparator,
+              signAsBuyer,
+            ),
+          signBytes: signAsBuyer,
           // Do not move to payment or the next artifact after mere node
           // acceptance. The current phase must be canonical and readable.
           anchor: async (name, value) =>
@@ -1402,18 +1770,18 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             // SettlementEvidence before this callback is reached.
             const verified = await authenticateReadableListingArtifact(raw, {
               verify: ed25519RawVerify,
-              resolvePublicKey: (claim) => publicKeyFromDid(claim),
+              resolvePublicKey: resolveCanonicalSigningKeyForRead,
             });
             if (!verified) return false;
             const advertisedSeller =
               verified.compatibility === "normative"
                 ? verified.listing.seller.identity.presentedBy
                 : verified.listing.agentId;
-            return advertisedSeller === sellerClaim;
+            return sameCanonicalClaimIdentity(advertisedSeller, sellerClaim);
           },
           authenticateRecoveredAgreement: async (raw, buyerClaim) => {
             if (
-              buyerClaim !== buyerId ||
+              !sameCanonicalClaimIdentity(buyerClaim, buyerId) ||
               Object.prototype.hasOwnProperty.call(raw, "signatures") ||
               typeof raw.signature !== "string" ||
               !/^[0-9a-f]{128}$/.test(raw.signature)
@@ -1442,7 +1810,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             separator,
             buyerClaim,
           ) => {
-            if (buyerClaim !== buyerId) return false;
+            if (!sameCanonicalClaimIdentity(buyerClaim, buyerId)) return false;
             if (separator === ARTIFACT_SEPARATORS.AgreementDocument) {
               if (
                 Object.prototype.hasOwnProperty.call(raw, "signatures") ||
@@ -1475,7 +1843,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
                 Object.prototype.hasOwnProperty.call(raw, "signature") ||
                 raw.parties.length !== 1 ||
                 raw.parties[0]?.role !== "buyer" ||
-                raw.parties[0]?.primaryClaim !== buyerClaim
+                !sameCanonicalClaimIdentity(
+                  raw.parties[0]?.primaryClaim,
+                  buyerClaim,
+                )
               ) {
                 return false;
               }
@@ -1507,7 +1878,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               if (signatures.length !== 1) return false;
               const signature = signatures[0];
               if (
-                signature?.party !== buyerClaim ||
+                signature === undefined ||
+                !sameCanonicalClaimIdentity(signature.party, buyerClaim) ||
                 signature.algorithm !== "ed25519" ||
                 typeof signature.value !== "string" ||
                 Object.keys(signature).length !== 3 ||
@@ -1563,6 +1935,11 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       primaryClaim: string,
       bundleRefs: string[],
     ): Promise<Reputation> {
+      const identity = requireCanonicalClaimReference(
+        primaryClaim,
+        "Reputation primaryClaim",
+      ).identity;
+      const reputationKey = `${identity.scheme}:${identity.identifier}`;
       const bundles: AnyAttestationBundle[] = [];
       const invalid: ReputationExclusion[] = [];
       for (const ref of bundleRefs) {
@@ -1583,7 +1960,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           });
         }
       }
-      const reputation = computeReputation(primaryClaim, bundles);
+      const reputation = computeReputation(reputationKey, bundles);
       return {
         ...reputation,
         exclusions: [...reputation.exclusions, ...invalid].sort((left, right) =>

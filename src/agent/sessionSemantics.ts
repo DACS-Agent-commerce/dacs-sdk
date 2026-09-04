@@ -32,7 +32,6 @@ export type Dacs5ResumableSessionState =
   | "commit-pending"
   | "settle-pending"
   | "settle-asymmetric"
-  | "rate-pending"
   | "audit-pending";
 
 export interface Dacs5SessionTransitionContext {
@@ -51,7 +50,6 @@ const RESUMABLE = new Set<Dacs5SessionState>([
   "commit-pending",
   "settle-pending",
   "settle-asymmetric",
-  "rate-pending",
   "audit-pending",
 ]);
 

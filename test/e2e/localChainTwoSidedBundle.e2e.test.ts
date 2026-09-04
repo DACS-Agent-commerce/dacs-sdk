@@ -44,6 +44,7 @@ import {
   signFixedPriceAgreement,
 } from "../../src/negotiate/fixedPrice.js";
 import { x402SettleCore, type X402ClientLike } from "../../src/rails/x402.js";
+import { verifyEvmTransferFinality } from "../../src/rails/evmTransferFinality.js";
 
 const RUN = process.env.DACS_LOCAL_CHAIN_E2E === "1";
 const PROOF_OUTDIR = process.env.DACS_LOCAL_CHAIN_E2E_OUTDIR?.trim();
@@ -241,7 +242,8 @@ function x402Client(): X402ClientLike {
     createPaymentPayload: async (paymentRequired) => paymentRequired,
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed-local-payment" }),
     getPaymentSettleResponse: (getHeader) => {
-      const raw = getHeader("X-PAYMENT-RESPONSE");
+      const encoded = getHeader("PAYMENT-RESPONSE");
+      const raw = encoded ? Buffer.from(encoded, "base64").toString("utf8") : null;
       return raw
         ? (JSON.parse(raw) as ReturnType<
             X402ClientLike["getPaymentSettleResponse"]
@@ -306,13 +308,13 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
             res.writeHead(receipt.status === "success" ? 200 : 500, {
               "content-type": "application/json",
-              "X-PAYMENT-RESPONSE": JSON.stringify({
+              "PAYMENT-RESPONSE": Buffer.from(JSON.stringify({
                 success: receipt.status === "success",
                 transaction: txHash,
                 network: NETWORK,
                 payer: buyerAccount.address,
                 amount: AMOUNT,
-              }),
+              })).toString("base64"),
             });
             res.end(JSON.stringify({ ok: receipt.status === "success" }));
           } catch (err) {
@@ -490,8 +492,27 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             recipientEvm: sellerAccount.address,
             amount: AMOUNT,
             asset: tokenAddress,
+            finalityBlocks: 1,
           },
-          { client: x402Client(), fetchImpl: fetch, payerAddress: buyerAccount.address },
+          {
+            client: x402Client(),
+            fetchImpl: fetch,
+            payerAddress: buyerAccount.address,
+            assertFinalityContext: async ({ chainId }) => {
+              expect(await publicClient.getChainId()).toBe(chainId);
+            },
+            authenticateTransfer: (request) => verifyEvmTransferFinality(request, {
+              getChainId: () => publicClient.getChainId(),
+              waitForTransactionReceipt: ({ hash, confirmations }) =>
+                publicClient.waitForTransactionReceipt({
+                  hash: hash as `0x${string}`,
+                  confirmations,
+                }),
+              getTransactionReceipt: ({ hash }) =>
+                publicClient.getTransactionReceipt({ hash: hash as `0x${string}` }),
+              getBlock: ({ blockNumber }) => publicClient.getBlock({ blockNumber }),
+            }),
+          },
         );
         expect(settlement.ok).toBe(true);
         expect(settlement.txHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -512,28 +533,22 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
             data: uint256Data(BigInt(AMOUNT)),
           }),
         );
+        if (!settlement.txRef || settlement.txRef.kind !== "x402-event" ||
+            settlement.finality?.model !== "block-depth" ||
+            settlement.finalityObservedAt === undefined) {
+          throw new Error("x402 rail did not return current authenticated event evidence");
+        }
 
         const evidence = {
           evidenceVersion: "1",
           jobId: JOB_ID,
           phase: "pay-x402",
           outcome: "success",
-          paymentTxRefs: [
-            {
-              kind: "x402" as const,
-              httpResource: paywallUrl,
-              paymentReceiptHash: sha256Hex(settlement.txHash),
-              settlementTxHash: settlement.txHash,
-              chainId: CHAIN_ID,
-              protocolVersion: "1",
-            },
-          ],
+          paymentTxRefs: [settlement.txRef],
           paymentAmount: { amount: AMOUNT, currency: "USDC" },
           settlementFinality: {
-            // finalityBlocks is block-depth-only (§9.7, enforced since #32) —
-            // a provider-receipt finality carries no block depth.
-            model: "provider-receipt",
-            finalityObservedAt: observedAt,
+            ...settlement.finality,
+            finalityObservedAt: settlement.finalityObservedAt,
           },
           observedAt,
         };
@@ -581,12 +596,12 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           buyer: {
             primaryClaim: buyerDid,
             bundleHash: identityBundleHash(buyerIdentity),
-            signer: BUYER_SEED,
+            signer: privateKeyFromSeed(BUYER_SEED),
           },
           seller: {
             primaryClaim: sellerDid,
             bundleHash: identityBundleHash(sellerIdentity),
-            signer: SELLER_SEED,
+            signer: privateKeyFromSeed(SELLER_SEED),
           },
         });
         expect(buyerCopy).toBeDefined();

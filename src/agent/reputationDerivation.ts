@@ -2,6 +2,10 @@ import { bundleAddress, contentHash, stripSignature } from "../canonical/index.j
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
+import {
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
 
@@ -174,6 +178,12 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   const basis = window.windowingBasis ?? "finalisedAt";
+  const parsedParty = requireCanonicalClaimReference(
+    party,
+    "ReputationDerivation partyPrimaryClaim",
+  );
+  const canonicalParty =
+    `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`;
   if (!deps.isValid && !deps.trustBundles) {
     throw new DacsError(
       "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
@@ -187,14 +197,16 @@ export function deriveReputation(
 
   const scoped = candidates.filter(
     (b) =>
-      b.parties.some((p) => p.primaryClaim === party) &&
+      b.parties.some((p) =>
+        sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+      ) &&
       window.windowStart <= b.finalisedAt &&
       b.finalisedAt <= window.windowEnd,
   );
 
   const empty = (): ReputationDerivation => ({
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: 0,
@@ -231,7 +243,9 @@ export function deriveReputation(
       (b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller",
     );
     if (valid.length === 0) continue;
-    const roleOfParty = valid[0]!.parties.find((p) => p.primaryClaim === party)?.role;
+    const roleOfParty = valid[0]!.parties.find((p) =>
+      sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+    )?.role;
     if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
     const selfCopy = valid.find((b) => b.anchoredByRole === roleOfParty);
     const cp = valid.find((b) => b.anchoredByRole !== roleOfParty);
@@ -296,7 +310,7 @@ export function deriveReputation(
 
   return {
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: reconciled.length,
