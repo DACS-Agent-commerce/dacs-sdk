@@ -998,6 +998,7 @@ export class DemosAdapter implements SubstrateAdapter {
       ...(writeJournal === undefined
         ? {}
         : { writeJournal: writeJournal as DemosWriteJournal }),
+      ...(maximumFeeOs === undefined ? {} : { maximumFeeOs }),
       ...(chainIdentity === undefined ? {} : { chainIdentity }),
     });
     this.#pendingWalletSecret = secret;

@@ -183,8 +183,8 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
             signer: context.peerAuthority,
           },
           paymentAddress: {
-            railId: loaded.record.protocol.rail.railId,
-            phaseIndex: 2,
+            railId: payment.payment.railId,
+            phaseIndex: payment.payment.phaseIndex,
             resolved: false,
           },
           result: {
@@ -213,9 +213,27 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
   const buyerReceived: DacsFixedPricePayDemBuyerCommerceV1["buyerReceived"] = {
     async authorizeReceived({ operation, record, payload }) {
       try {
+        const loaded = await context.database.createPayDemCoordinatorStore("buyer")
+          .load("buyer", operation.order.jobId);
+        if (
+          loaded.status !== "ok" ||
+          loaded.record.buyer !== context.authority ||
+          loaded.record.seller !== context.peerAuthority
+        ) return false;
+        const agreement = await loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
+          context,
+          loaded.record,
+        );
+        const artifact = agreement.artifact;
+        if (
+          !isAgreementArtifact(artifact) ||
+          !("payeeBoundAgreementVersion" in artifact)
+        ) return false;
+        const evidenceLogicalAddress =
+          `dacs4:delivery-evidence:${operation.order.jobId}`;
         const evidenceAnchor = await verifyPeerAnchor(
           context,
-          `dacs4:delivery-evidence:${operation.order.jobId}`,
+          evidenceLogicalAddress,
         );
         if (evidenceAnchor === null) return "indeterminate" as const;
         const evidenceRaw = evidenceAnchor.artifact;
@@ -227,13 +245,6 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
             evidenceRaw.deliverableAnchor.locator !== record.logicalAddress ||
             evidenceRaw.deliverableContentHash !== record.contentHash ||
             contentHash(payload) !== evidenceRaw.deliverableContentHash) return false;
-        const agreement = await loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
-          context,
-          operation.order,
-        );
-        const artifact = agreement.artifact;
-        if (!isAgreementArtifact(artifact) ||
-            !("payeeBoundAgreementVersion" in artifact)) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
           agreement: {

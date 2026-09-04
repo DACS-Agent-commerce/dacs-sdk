@@ -540,7 +540,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     );
     expect(getter).not.toHaveBeenCalled();
   });
-  test("accepts a deeply frozen read-only verification context", async () => {
+  test("accepts a deeply frozen read-only structural context", async () => {
     const ev = payment();
     const context = Object.freeze({
       agreement: Object.freeze({
