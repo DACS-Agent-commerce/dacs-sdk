@@ -438,7 +438,9 @@ export {
 export {
   isDacsPublicAddressV1,
   createAgent,
+  createUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
