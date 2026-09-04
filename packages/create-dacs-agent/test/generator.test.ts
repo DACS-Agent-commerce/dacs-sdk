@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   lstat,
   mkdtemp,
@@ -230,6 +231,7 @@ describe("create-dacs-agent", () => {
       "src/setup.ts",
       "src/service.ts",
       "src/upgrade.ts",
+      "scripts/docker-runtime-smoke.mjs",
       "test/live-bootstrap.test.ts",
       "compose.yaml",
       "Dockerfile",
@@ -274,6 +276,7 @@ describe("create-dacs-agent", () => {
       "dacs:backup": expect.any(String),
       "dacs:restore": expect.any(String),
       "dacs:uninstall": expect.any(String),
+      "dacs:image:smoke": "node scripts/docker-runtime-smoke.mjs",
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
@@ -322,14 +325,35 @@ describe("create-dacs-agent", () => {
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
-    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional");
-    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts");
+    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional --no-audit --no-fund");
+    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain(
       'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
     );
     expect(dockerfile).not.toContain("COPY . .");
+    const imageSmoke = await readFile(
+      join(target, "scripts", "docker-runtime-smoke.mjs"),
+      "utf8",
+    );
+    expect(imageSmoke).toContain('"--network", "none"');
+    expect(imageSmoke).toContain('"--read-only"');
+    expect(imageSmoke).toContain('config.User !== "10001:10001"');
+    expect(imageSmoke).toContain('await import("@kynesyslabs/dacs/substrate")');
+    expect(imageSmoke).toContain('await import("@kynesyslabs/demosdk/websdk")');
+    expect(imageSmoke).not.toContain('await import("@kynesyslabs/demosdk")');
+    expect(imageSmoke).toContain('+ "\\\\n");');
+    expect(imageSmoke).not.toContain("shell: true");
+    const missingImage = spawnSync(
+      process.execPath,
+      [join(target, "scripts", "docker-runtime-smoke.mjs")],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(missingImage.status).toBe(2);
+    expect(missingImage.stderr).toContain(
+      "usage: npm run dacs:image:smoke -- <built-image-reference>",
+    );
     const combined = (await Promise.all(
       (await filesBelow(target)).map((file) => readFile(join(target, file), "utf8")),
     )).join("\n");
