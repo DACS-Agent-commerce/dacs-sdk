@@ -242,6 +242,8 @@ export {
   isAuthenticatedCciRecord,
   projectCciSupplementarySignals,
   identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
   isCanonicalClaimReference,
   isDemosAgentClaimRef,
   parseCanonicalClaimReference,

@@ -29,6 +29,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   signArtifact,
+  signedBytes,
   verifyArtifact,
   type DomainSeparator,
 } from "../../src/crypto/index.js";
@@ -76,6 +77,10 @@ import {
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
+import {
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "../../src/identity/index.js";
 import type {
   AnyAttestationBundle,
   AttestationBundle,
@@ -1004,6 +1009,19 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         failedAt: want.failedAt,
         reason: want.reason,
       });
+    },
+
+    // dacs1 — exact SIWD Resources binding (§6.3.2). The Standard publishes
+    // the primitive bundle-hash input and all derived bytes in the manifest.
+    "dacs1-siwd-resource-binding": (want) => {
+      const bytes = signedBytes("dacs-bundle-presentation:v1:", want.bundleHash);
+      const resource = siwdBundleResource(want.bundleHash);
+      expect(Buffer.from(bytes).toString("utf8")).toBe(want.signedBytes);
+      expect(resource).toBe(want.resource);
+      expect(Buffer.from(resource.slice("dacs:".length), "hex").toString("utf8")).toBe(
+        want.decoded,
+      );
+      expect(siwdResourcesBindBundleHash([resource], want.bundleHash)).toBe(true);
     },
 
     // governance — DACS-2 §7.4.4 GOV-1..GOV-3. These primitive vectors
@@ -1992,12 +2010,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Current main provides 132 non-vacuous SDK
-    // runners; this PR adds five settlement-context runners, raising coverage
-    // to 137.
+    // This pin has 236 cases. Current main provides 137 non-vacuous SDK
+    // runners; this PR adds SIWD resource binding, raising coverage to 138.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(137);
+    expect(Object.keys(RUNNERS)).toHaveLength(138);
     expect(manifest.cases).toHaveLength(236);
   });
 
