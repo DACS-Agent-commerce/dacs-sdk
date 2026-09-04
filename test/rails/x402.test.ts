@@ -296,6 +296,31 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     }));
   });
 
+  test("checks the recovery generation before sending the signed payment", async () => {
+    let paidRequests = 0;
+    const fetchImpl = fakeFetch({ onPaid: () => { paidRequests += 1; } });
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    let fenceChecks = 0;
+    await expect(x402SettleCore(
+      params,
+      coreDeps(client, fetchImpl),
+      {
+        owner: "worker",
+        generation: 2,
+        settlementKey: "x402:job:0",
+        bindingHash: "a".repeat(64),
+        async assertCurrent() {
+          fenceChecks += 1;
+          throw new Error("stale effect generation");
+        },
+      },
+    )).rejects.toThrow(/stale effect generation/);
+    expect(fenceChecks).toBe(1);
+    expect(paidRequests).toBe(0);
+  });
+
   test("canonicalizes the durable transaction identity from authenticated chain data", async () => {
     const upperHash = `0x${"A".repeat(64)}`;
     const client = fakeClient([
@@ -531,6 +556,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     let calls = 0;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async () => {
         calls += 1;
         throw new Error("must not submit");
@@ -560,9 +586,17 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {
@@ -599,9 +633,17 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {
@@ -631,9 +673,17 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     let captured: Omit<X402SettleParams, "finalityBlocks"> | undefined;
     const rail: X402Rail = {
       address: PAYER,
+      finalityBlocks: 12,
       settle: async (p) => {
         captured = p;
-        return { ok: true, txHash: "0x1", chainId: NETWORK, payer: PAYER, payee: RECIPIENT };
+        return {
+          ok: true,
+          txHash: "0x1",
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
       },
     };
     const settle = x402Settle(rail, {
