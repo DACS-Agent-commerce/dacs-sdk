@@ -100,6 +100,16 @@ export {
   type FaultCategory,
 } from "./errors.js";
 
+// Shared host-local durability boundary used by every filesystem-backed store
+// (including the companion dacs-node package).
+export {
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  isPathWithinPrivateRoot,
+} from "./filesystem/privateStore.js";
+
 // Foundation (T2): canonical form, decimals, content hashing, domain-separated signing.
 export {
   canonicalize,
@@ -232,6 +242,8 @@ export {
   isAuthenticatedCciRecord,
   projectCciSupplementarySignals,
   identityBundleHash,
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
   isCanonicalClaimReference,
   isDemosAgentClaimRef,
   parseCanonicalClaimReference,
@@ -422,7 +434,9 @@ export {
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
   createAgent,
+  createUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
@@ -463,12 +477,19 @@ export {
   type BundleConsistencyDeps,
   type BundleRole,
   verifySettlementEvidence,
+  validateSettlementEvidenceStructure,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
   verifyBundleCopy,
   ABORT_OUTCOMES,
   type BundleCopyDeps,

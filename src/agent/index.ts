@@ -1,7 +1,10 @@
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
@@ -49,13 +52,20 @@ export {
   type BundleRole,
 } from "./bundleConsistency.js";
 export {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
   verifyBundleCopy,
