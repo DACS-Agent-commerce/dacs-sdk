@@ -22,7 +22,10 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type { SettlementIdempotencyStore } from "../../src/rails/idempotency.js";
+import type {
+  SettlementBinding,
+  SettlementIdempotencyStore,
+} from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
@@ -53,6 +56,34 @@ const stewardPrivateKey = privateKeyFromSeed(STEWARD_SEED);
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
 const stewardSigner = `did:demos:agent:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const DEM_RAIL_ID = "demos-native:DEM";
+
+function storeBinding(
+  railId = "rail",
+  jobId = "job",
+  phaseIndex = 4,
+): Readonly<SettlementBinding> {
+  return Object.freeze({
+    bindingVersion: "1",
+    railId,
+    jobId,
+    phaseIndex,
+    phase: "pay-dem",
+    amount: "1000000000",
+    agreementAsset: "DEM",
+    settlementAsset: "DEM",
+    payer: "cc".repeat(32),
+    payee: "aa".repeat(32),
+    network: "demos",
+    finality: Object.freeze({ model: "bft-final" }),
+  });
+}
+
+async function runStoreSubmit(
+  submit: Parameters<SettlementIdempotencyStore["once"]>[2],
+): Promise<Awaited<ReturnType<SettlementIdempotencyStore["once"]>>> {
+  const submitted = await submit();
+  return "disposition" in submitted ? submitted.result : submitted;
+}
 
 type UnsignedRailDefinition = Omit<RailDefinition, "signature">;
 
@@ -94,7 +125,7 @@ function x402Definition(): UnsignedRailDefinition {
       resourceBaseUrl: "https://seller.example",
     },
     phaseHandler: "pay-x402",
-    parameters: { authorization: "eip-3009" },
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
     availability: "live",
     governance: demDefinition().governance,
   };
@@ -327,10 +358,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       readonly calls: string[] = [];
       async once(
         key: string,
-        submit: () => Promise<Awaited<ReturnType<SettlementIdempotencyStore["once"]>>>,
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
       ) {
         this.calls.push(key);
-        return submit();
+        return runStoreSubmit(submit);
       }
     }
     const firstStore = new ReceiverStore();
@@ -413,6 +445,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     };
     await expect(capturedRecovery.store!.once(
       "demos-native:DEM:job-1:4",
+      storeBinding("demos-native:DEM", "job-1", 4),
       async () => submitted,
     )).resolves.toEqual(submitted);
     expect(firstStore.calls).toEqual(["demos-native:DEM:job-1:4"]);
@@ -427,10 +460,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       readonly keys: string[] = [];
       async once(
         key: string,
-        submit: Parameters<SettlementIdempotencyStore["once"]>[1],
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
       ) {
         this.keys.push(key);
-        return submit();
+        return runStoreSubmit(submit);
       }
     }
     const store = new ReceiverStore();
@@ -462,7 +496,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       payee: "aa".repeat(32),
       settlementFinality: "bft-final" as const,
     };
-    await expect(captured.once("rail:job:4", async () => outcome))
+    await expect(captured.once("rail:job:4", storeBinding(), async () => outcome))
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
@@ -477,12 +511,13 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
 
       async once(
         key: string,
-        submit: Parameters<SettlementIdempotencyStore["once"]>[1],
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
       ) {
         this.keys.push(key);
         const retained = this.#outcomes.get(key);
         if (retained !== undefined) return retained;
-        const result = await submit();
+        const result = await runStoreSubmit(submit);
         this.#outcomes.set(key, result);
         return result;
       }
@@ -514,8 +549,9 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const firstSubmit = vi.fn(async () => result);
     const forbiddenResubmit = vi.fn(async () => ({ ...result, txHash: "tx-2" }));
 
-    await expect(firstStore.once("rail:job:4", firstSubmit)).resolves.toEqual(result);
-    await expect(restartedStore.once("rail:job:4", forbiddenResubmit))
+    await expect(firstStore.once("rail:job:4", storeBinding(), firstSubmit))
+      .resolves.toEqual(result);
+    await expect(restartedStore.once("rail:job:4", storeBinding(), forbiddenResubmit))
       .resolves.toEqual(result);
     expect(firstSubmit).toHaveBeenCalledTimes(1);
     expect(forbiddenResubmit).not.toHaveBeenCalled();
@@ -619,7 +655,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     })).rejects.toThrow(/resolveRail \(RAV-R5\)/);
   });
 
-  test("captures x402 fetch before the first dispatch await", async () => {
+  test("captures x402 fetch and finality rpc before the first dispatch await", async () => {
     const firstFetch = vi.fn(async () => new Response("first")) as unknown as typeof fetch;
     const secondFetch = vi.fn(async () => new Response("second")) as unknown as typeof fetch;
     mocks.createX402Rail.mockResolvedValue({});
@@ -633,15 +669,19 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         recipient: "0x2222222222222222222222222222222222222222",
       },
       fetchImpl: firstFetch,
+      rpcUrl: "https://rpc.example",
     };
 
     const pending = settleFromRail(descriptor, options);
     options.fetchImpl = secondFetch;
+    options.rpcUrl = "https://attacker.example";
     await pending;
-    const capturedFetch = mocks.createX402Rail.mock.calls[0]![0].fetchImpl!;
+    const capturedOptions = mocks.createX402Rail.mock.calls[0]![0];
+    const capturedFetch = capturedOptions.fetchImpl!;
     await capturedFetch("https://seller.example/pay");
     expect(firstFetch).toHaveBeenCalledTimes(1);
     expect(secondFetch).not.toHaveBeenCalled();
+    expect(capturedOptions.rpcUrl).toBe("https://rpc.example");
   });
 
   test("captures the availability authority before awaiting its decision", async () => {
@@ -789,6 +829,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       expectedPhase: "pay-x402",
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
+        rpcUrl: "https://rpc.example",
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",
