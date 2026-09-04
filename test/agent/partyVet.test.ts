@@ -1078,6 +1078,46 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.checkpoints.size).toBe(0);
   });
 
+  test("rejects external recipe execution for a native cci-tlsn commitment", async () => {
+    const harness = state();
+    const subject = `cci-tlsn:${"ab".repeat(32)}`;
+    const jobId = "job-party-native-tlsn";
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{
+        scheme: "cci-tlsn",
+        verificationRequired: true,
+        recipeVersion: 1,
+      }],
+    };
+    const identity = await bundle(subject, [subject]);
+    const attempts = await pinnedRequestAttempts(
+      jobId,
+      subject,
+      identity,
+      requirement,
+      [{
+        requirementPath: { kind: "required", index: 0 },
+        claimSubject: subject,
+        recipe: await recipe("cci-tlsn"),
+      }],
+    );
+    await activateEffectLease(harness, jobId);
+
+    await expect(partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts,
+      },
+      deps(harness),
+    )).rejects.toThrow(/cannot re-verify a native cci-tlsn claim/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.checkpoints.size).toBe(0);
+  });
+
   test("rejects an unauthenticated presentation before method, sign, anchor or checkpoint", async () => {
     const harness = state();
     const request = await singleClaimRequest("job-party-bad-presentation");
