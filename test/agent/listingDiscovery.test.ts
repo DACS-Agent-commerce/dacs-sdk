@@ -107,6 +107,7 @@ async function normativeListingFixture(options: {
   version?: number;
   signer?: typeof SELLER.privateKey;
   primaryClaim?: string;
+  additionalClaimRef?: string;
 } = {}): Promise<Fixture> {
   const listingId = options.listingId ?? "normative-market-data";
   const version = options.version ?? 1;
@@ -120,10 +121,23 @@ async function normativeListingFixture(options: {
         bundleVersion: "1",
         presentedBy: primaryClaim,
         presentedAt: 1_780_000_000_000,
-        claims: [{ ref: primaryClaim }],
+        claims: [
+          { ref: primaryClaim },
+          ...(options.additionalClaimRef
+            ? [{ ref: options.additionalClaimRef }]
+            : []),
+        ],
         presentation: {
           kind: "per-claim",
-          signatures: [{ ref: primaryClaim, signature: "identity-presentation" }],
+          signatures: [
+            { ref: primaryClaim, signature: "identity-presentation" },
+            ...(options.additionalClaimRef
+              ? [{
+                  ref: options.additionalClaimRef,
+                  signature: "additional-claim-proof",
+                }]
+              : []),
+          ],
         },
       },
       displayName: "Normative Market Data",
@@ -328,6 +342,25 @@ describe("readListingByLogicalAddress (#54)", () => {
       check: "validation",
       code: "listing-validation-failed",
       validation: { disposition: "rejected", step: 4 },
+    });
+  });
+
+  test("rejects non-CF-2 ClaimReferences embedded outside the signer field", async () => {
+    const fixture = await normativeListingFixture({
+      additionalClaimRef: `${SELLER.did}?z=last&a=first`,
+    });
+    await expect(
+      readListingByLogicalAddress(
+        fixture.logicalAddress,
+        depsFor([fixture], {
+          listingValidationDeps: normativeValidationDeps(),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      check: "shape",
+      code: "unsupported-listing-shape",
+      reason: expect.stringContaining("non-canonical CORE B.1 CF-2"),
     });
   });
 

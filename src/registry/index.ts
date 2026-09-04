@@ -1,7 +1,19 @@
 export {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  getAuthenticatedRailProvenance,
+  isAuthenticatedRailDefinition,
   resolveRail,
   resolveRecipe,
+  type AuthenticatedRailDefinition,
   type AuthenticatedRecipeDescriptor,
+  type CurrentRailRegistryIndex,
+  type RailRegistryAuthorityInput,
+  type RailRegistryDefinitionAuthorityInput,
+  type RailRegistryAuthorityVerification,
+  type RailRegistryDefinitionRef,
+  type RailRegistryIndexDocument,
+  type RailRegistryProvenance,
+  type RailRegistrySelectionProvider,
   type RegistryResolveDeps,
 } from "./resolve.js";
 export {
@@ -41,8 +53,15 @@ export {
   type PinnedRecipeGovernanceDecision,
 } from "./governance.js";
 export type {
+  AssetSpec,
   Availability,
+  CrossChainRoute,
+  NetworkSpec,
+  RailDefinition,
   RailDescriptor,
+  RailGovernance,
+  RailSelector,
+  RailType,
   RecipeDescriptor,
   RecipeGovernance,
   RecipeSelector,
