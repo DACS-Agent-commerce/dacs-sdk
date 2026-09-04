@@ -40,12 +40,15 @@ export {
 export {
   ceilMeteredQuantity,
   deriveMeteredPriceTerm,
+  negotiablePriceBand,
+  isNegotiablePriceWithinBand,
   deriveFixedPriceAgreement,
   signFixedPriceAgreement,
   type VerifiedListingInput,
   type FixedPricePartyInput,
   type FixedPriceAgreementInput,
   type MeteredQuantityInput,
+  type NegotiablePriceBand,
   type UnsignedAgreementArtifact,
   type AgreementSigner,
 } from "./negotiate/fixedPrice.js";

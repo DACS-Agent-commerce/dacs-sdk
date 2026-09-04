@@ -41,6 +41,13 @@ All five lifecycle stages run end to end:
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
+Agreement readers can call `validateFixedPriceAgreementBinding()` with the
+authenticated commitment timestamp to re-check the complete fixed-price
+agreement/listing binding. RFQ or other negotiable-pattern implementations can
+use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
+§8.5.2's exact inclusive, half-up-rounded band arithmetic; both reject
+non-canonical CD-1 amounts instead of normalising them into acceptance.
+
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
