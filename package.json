@@ -99,6 +99,7 @@
     "test": "vitest run",
     "host:test": "npm test --workspace @kynesyslabs/dacs-node",
     "generator:test": "npm test --workspace create-dacs-agent",
+    "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
     "test:watch": "vitest",
