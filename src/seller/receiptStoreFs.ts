@@ -1,12 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
 import {
-  chmod,
-  link,
-  lstat,
   mkdir,
   open,
-  readFile,
   readdir,
   rename,
   rm,
@@ -18,6 +13,12 @@ import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   isSellerFulfilmentHandoff,
   isValidSellerReceiptClaim,
@@ -320,24 +321,14 @@ export async function createFsSellerReceiptStore(
     DEFAULT_LOCK_POLL_MS,
     "seller receipt lockPollMs",
   );
-  const root = capturedOptions.dir;
+  const root = await preparePrivateStoreDirectory(
+    capturedOptions.dir,
+    "filesystem seller receipt store",
+  );
   const statePath = join(root, STATE_FILE);
   const initializationPath = join(root, INITIALIZATION_FILE);
   const lockPath = join(root, LOCK_DIR);
   const reclaimGatePath = join(root, RECLAIM_GATE);
-
-  let rootMetadata;
-  try {
-    rootMetadata = await lstat(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(root, { recursive: true, mode: DIR_MODE });
-    rootMetadata = await lstat(root);
-  }
-  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
-    throw new DacsError("filesystem seller receipt store path is not a safe directory");
-  }
-  await chmod(root, DIR_MODE);
 
   async function syncRoot(): Promise<void> {
     const handle = await open(root, "r");
@@ -350,17 +341,12 @@ export async function createFsSellerReceiptStore(
 
   async function readInitializationMarker(): Promise<"absent" | "present"> {
     let text: string;
-    let handle;
     try {
-      handle = await open(
+      text = await readPrivateFile(
         initializationPath,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        "utf8",
+        "filesystem seller receipt store marker",
       );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) {
-        throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
-      }
-      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
@@ -368,9 +354,13 @@ export async function createFsSellerReceiptStore(
           "filesystem seller receipt store initialization marker path is unsafe",
         );
       }
+      if (error instanceof DacsError && error.message.includes("not a regular file")) {
+        throw new DacsError(
+          "filesystem seller receipt store initialization marker is corrupt",
+          { cause: error },
+        );
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     if (text !== INITIALIZATION_TEXT) {
       throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
@@ -381,71 +371,44 @@ export async function createFsSellerReceiptStore(
   /** Publish only after a state file has itself been renamed and directory-fsynced. */
   async function ensureInitializationMarker(): Promise<void> {
     if (await readInitializationMarker() === "present") return;
-    const temporary = join(root, `.${INITIALIZATION_FILE}.${randomUUID()}.tmp`);
     try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(INITIALIZATION_TEXT, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
+      await exclusiveWritePrivateFile(
+        initializationPath,
+        INITIALIZATION_TEXT,
+        "filesystem seller receipt store marker",
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await readInitializationMarker() !== "present") {
+        throw new DacsError(
+          "filesystem seller receipt store initialization marker is corrupt",
+        );
       }
-      try {
-        // A hard link is a no-overwrite publication point. An unexpected file
-        // at the marker path is validated rather than silently replaced.
-        await link(temporary, initializationPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        if (await readInitializationMarker() !== "present") {
-          throw new DacsError(
-            "filesystem seller receipt store initialization marker is corrupt",
-          );
-        }
-      }
-    } finally {
-      await unlink(temporary).catch(() => {});
     }
-    // This path began with no marker. Fsync even after a validated EEXIST race
-    // so a concurrent no-overwrite publication is durable before we return.
-    await syncRoot();
   }
 
   async function atomicWriteState(state: FsSellerReceiptState): Promise<void> {
     captureState(state);
     const text = JSON.stringify(state);
-    const temporary = join(root, `.${STATE_FILE}.${randomUUID()}.tmp`);
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(text, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, statePath);
-      await chmod(statePath, FILE_MODE);
-      await syncRoot();
-      // State durability is the precondition for publishing the marker. A
-      // crash between these operations leaves a migratable pre-marker state;
-      // the inverse order could falsely bless a missing state as initialized.
-      await ensureInitializationMarker();
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await atomicWritePrivateFile(
+      statePath,
+      text,
+      "filesystem seller receipt store",
+    );
+    // State durability is the precondition for publishing the marker. A crash
+    // between these operations leaves a migratable pre-marker state.
+    await ensureInitializationMarker();
   }
 
   async function readState(): Promise<FsSellerReceiptState> {
     const initialization = await readInitializationMarker();
     let text: string;
-    let handle;
     try {
-      handle = await open(
+      text = await readPrivateFile(
         statePath,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        "utf8",
+        "filesystem seller receipt store",
       );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) corruptState();
-      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         if (initialization === "present") corruptState();
@@ -454,9 +417,10 @@ export async function createFsSellerReceiptStore(
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
         throw new DacsError("filesystem seller receipt store state path is unsafe");
       }
+      if (error instanceof DacsError && error.message.includes("not a regular file")) {
+        return corruptState();
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     let parsed: unknown;
     try {
@@ -477,7 +441,11 @@ export async function createFsSellerReceiptStore(
 
   async function readOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(join(path, "owner.json"), "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        join(path, "owner.json"),
+        "utf8",
+        "filesystem seller receipt store lock",
+      )) as unknown;
       if (plainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
           parsed.token.length > 0) {
@@ -491,7 +459,11 @@ export async function createFsSellerReceiptStore(
 
   async function readFileOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        path,
+        "utf8",
+        "filesystem seller receipt store lock",
+      )) as unknown;
       if (plainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
           parsed.token.length > 0) {
@@ -504,20 +476,11 @@ export async function createFsSellerReceiptStore(
   }
 
   async function exclusiveWriteOwner(path: string, owner: LockOwner): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify(owner), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      // The hard link is a no-overwrite atomic publication point.
-      await link(temporary, path);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(
+      path,
+      JSON.stringify(owner),
+      "filesystem seller receipt store lock",
+    );
   }
 
   function processAlive(pid: number): boolean {
