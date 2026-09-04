@@ -325,6 +325,53 @@ export interface DemosNativeClient {
   }): Promise<DemosTransferResult>;
 }
 
+function captureSettlementEffectFence(
+  value: unknown,
+): Readonly<SettlementEffectFence> | undefined {
+  if (value === undefined) return undefined;
+  const owner = requiredStableString(value, "owner", "pay-dem effect fence owner");
+  const settlementKey = requiredStableString(
+    value,
+    "settlementKey",
+    "pay-dem effect fence settlementKey",
+  );
+  const bindingHash = requiredStableString(
+    value,
+    "bindingHash",
+    "pay-dem effect fence bindingHash",
+  );
+  const generationProperty = stableDataProperty(
+    value,
+    "generation",
+    "pay-dem effect fence generation",
+  );
+  if (!generationProperty.found ||
+      !Number.isSafeInteger(generationProperty.value) ||
+      (generationProperty.value as number) < 0) {
+    throw new DacsError(
+      "pay-dem effect fence generation must be a non-negative safe integer",
+    );
+  }
+  const effectIdentity = optionalStableString(
+    value,
+    "effectIdentity",
+    "pay-dem effect fence effectIdentity",
+  );
+  const assertCurrent = stableMethod<() => Promise<void>>(
+    value,
+    "assertCurrent",
+    "pay-dem effect fence assertion",
+  );
+  return Object.freeze({
+    owner,
+    generation: generationProperty.value as number,
+    settlementKey,
+    bindingHash,
+    ...(effectIdentity === undefined ? {} : { effectIdentity }),
+    assertCurrent,
+  });
+}
+
 function captureRecoveryContext(
   value: unknown,
 ): Readonly<PayDemSettlementRecoveryContext> | undefined {
@@ -407,11 +454,22 @@ function captureRecoveryContext(
   });
 }
 
+export function payDemSettleCore(
+  params: PayDemSettleParams,
+  client: DemosNativeClient,
+  effectFence?: Readonly<SettlementEffectFence>,
+): Promise<SettleResult>;
+export function payDemSettleCore(
+  params: PayDemSettleParams,
+  client: DemosNativeClient,
+  defaultNetwork?: string,
+  effectFence?: Readonly<SettlementEffectFence>,
+): Promise<SettleResult>;
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
-  defaultNetworkOrEffectFence: string | Readonly<SettlementEffectFence> = "demos",
-  effectFenceArgument?: Readonly<SettlementEffectFence>,
+  defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
+  effectFenceOverride?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
@@ -423,12 +481,20 @@ export async function payDemSettleCore(
     "pay-dem recipient",
   );
   const amount = requiredStableString(params, "amount", "pay-dem amount");
-  const defaultNetwork = typeof defaultNetworkOrEffectFence === "string"
-    ? defaultNetworkOrEffectFence
+  const defaultNetwork = typeof defaultNetworkOrFence === "string"
+    ? defaultNetworkOrFence
     : "demos";
-  const effectFence = typeof defaultNetworkOrEffectFence === "string"
-    ? effectFenceArgument
-    : defaultNetworkOrEffectFence;
+  if (typeof defaultNetworkOrFence !== "string" &&
+      effectFenceOverride !== undefined) {
+    throw new DacsError(
+      "pay-dem effect fence cannot be supplied in both argument positions",
+    );
+  }
+  const effectFence = captureSettlementEffectFence(
+    typeof defaultNetworkOrFence === "string"
+      ? effectFenceOverride
+      : defaultNetworkOrFence,
+  );
   if (typeof defaultNetwork !== "string" || defaultNetwork.length === 0 ||
       defaultNetwork.trim() !== defaultNetwork || defaultNetwork.includes("\0")) {
     throw new DacsError("pay-dem default network must be stable text");
