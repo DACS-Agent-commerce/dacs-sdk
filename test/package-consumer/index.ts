@@ -3,6 +3,7 @@ import {
   type DemosAdapterConfig,
   type DemosWriteJournal,
   type SubstrateAdapter,
+  lookupBundleCopies,
   verifyBundleCore,
 } from "@kynesyslabs/dacs";
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
@@ -16,6 +17,7 @@ import {
 
 const config: DemosAdapterConfig = { rpc: "https://example.invalid" };
 const verifier: typeof verifyBundleCore = verifyBundleCore;
+const bundleLookup: typeof lookupBundleCopies = lookupBundleCopies;
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
@@ -29,6 +31,7 @@ declare const tankStore: LiquidityTankStore;
 
 void config;
 void verifier;
+void bundleLookup;
 void canonical;
 void fulfilment;
 void adapter;
