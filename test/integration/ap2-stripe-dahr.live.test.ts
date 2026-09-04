@@ -9,7 +9,7 @@ import {
   advanceAp2Settlement,
   canonicalize,
   contentHash,
-  createAgent,
+  createUnsafeManualAgent,
   createFsAp2BindingStore,
   createFsDemosWriteJournal,
   createStripeAp2Integration,
@@ -161,7 +161,9 @@ async function loadOrCreatePresentation(path: string): Promise<OfficialReference
   return generated;
 }
 
-async function balanceOs(agent: Awaited<ReturnType<typeof createAgent>>): Promise<bigint> {
+async function balanceOs(
+  agent: Awaited<ReturnType<typeof createUnsafeManualAgent>>,
+): Promise<bigint> {
   const network = await agent.adapter.raw.getNetworkInfo();
   if (!network) throw new Error("Demos denomination preflight is unavailable");
   const info = await agent.adapter.raw.getAddressInfo(agent.adapter.getAddress());
@@ -170,7 +172,7 @@ async function balanceOs(agent: Awaited<ReturnType<typeof createAgent>>): Promis
 }
 
 async function ensureFaucetFunds(
-  agent: Awaited<ReturnType<typeof createAgent>>,
+  agent: Awaited<ReturnType<typeof createUnsafeManualAgent>>,
 ): Promise<bigint> {
   let balance = await balanceOs(agent);
   if (balance >= MINIMUM_OS) return balance;
@@ -220,7 +222,7 @@ describe("LIVE AP2 → Stripe → DAHR → Demos reference path", () => {
     const journal = await createFsDemosWriteJournal({
       dir: join(stateDir, "demos-write-journal"),
     });
-    const agent = await createAgent({
+    const agent = await createUnsafeManualAgent({
       demosRpc: DEMOS_RPC,
       wallet: process.env.DACS_AP2_DEMOS_WALLET!,
       demosWriteJournal: journal,

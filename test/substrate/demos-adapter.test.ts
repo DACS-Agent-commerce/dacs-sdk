@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
+import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
 import {
   DemosAdapter,
   createInMemoryDemosWriteJournal,
+  type DemosAdapterConfig,
 } from "../../src/substrate/index.js";
+import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
 const makeAdapter = (
@@ -28,9 +31,63 @@ describe("DemosAdapter", () => {
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
   });
 
+  it("rejects proxy and accessor-backed secret carriers", () => {
+    expect(() => new DemosAdapter(new Proxy({ rpc: RPC }, {})))
+      .toThrow(/stable data/);
+    const accessor = { rpc: RPC } as DemosAdapterConfig;
+    Object.defineProperty(accessor, "secret", {
+      enumerable: true,
+      get: () => "wallet-secret-sentinel-never-expose",
+    });
+    expect(() => new DemosAdapter(accessor)).toThrow(/secret.*stable data/);
+  });
+
   it("constructs and exposes the raw demosdk instance", () => {
     const adapter = makeAdapter();
     expect(adapter.raw).toBeDefined();
+  });
+
+  it("does not retain its config carrier or wallet secret in reflectable fields", async () => {
+    const secret = "wallet-secret-sentinel-never-expose";
+    const config = {
+      rpc: RPC,
+      secret,
+      chainIdentity: "test-chain",
+      writeJournal: createInMemoryDemosWriteJournal(),
+    };
+    const adapter = new DemosAdapter(config);
+    const raw = adapter.raw;
+    vi.spyOn(raw, "connect").mockResolvedValue(undefined as never);
+    const connectWallet = vi.spyOn(raw, "connectWallet")
+      .mockResolvedValue(undefined as never);
+
+    const reflectedBefore = Reflect.ownKeys(adapter).flatMap((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(adapter, key);
+      return descriptor && "value" in descriptor ? [descriptor.value] : [];
+    });
+    expect(reflectedBefore).not.toContain(config);
+    expect(reflectedBefore).not.toContain(secret);
+
+    await adapter.connect();
+    expect(connectWallet).toHaveBeenCalledOnce();
+    expect(connectWallet).toHaveBeenCalledWith(secret);
+    expect(Reflect.ownKeys(adapter)).not.toContain("demos");
+    expect(Reflect.ownKeys(adapter)).not.toContain("pendingWalletSecret");
+  });
+
+  it("fails closed after wallet initialization fails and the secret is discarded", async () => {
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      secret: "wallet-secret-sentinel-never-expose",
+    });
+    const raw = adapter.raw;
+    vi.spyOn(raw, "connect").mockResolvedValue(undefined as never);
+    const connectWallet = vi.spyOn(raw, "connectWallet")
+      .mockRejectedValueOnce(new Error("wallet initialization failed"));
+
+    await expect(adapter.connect()).rejects.toThrow(/wallet initialization failed/);
+    await expect(adapter.connect()).rejects.toThrow(/previously failed/);
+    expect(connectWallet).toHaveBeenCalledOnce();
   });
 
   it("uses the directly queryable genesis block as the journal chain identity", async () => {
@@ -139,7 +196,7 @@ describe("DemosAdapter", () => {
       /not connected/,
     );
     await expect(
-      adapter.findSubjectsByClaim("web2:twitter:alice"),
+      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
     ).rejects.toThrow(/not connected/);
   });
 
@@ -223,6 +280,61 @@ describe("DemosAdapter", () => {
       adapter.proxyFetch({ url: "https://example.com/status" }),
     ).rejects.toThrow(/DAHR anchor transaction 0xdahr-failed failed on chain/);
     expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
+  it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(Identities.prototype, "getIdentities").mockResolvedValue({
+      response: {
+        web2: {
+          github: new Array(
+            DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength + 1,
+          ).fill("alice"),
+        },
+      },
+    } as never);
+
+    await expect(adapter.resolveIdentity("subject")).rejects.toThrow(
+      /maxArrayLength/,
+    );
+  });
+
+  it("reverse-resolves canonical CCI web2 and chain/subchain wallet refs", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity")
+      .mockResolvedValue([{ pubkey: "subject-a" }, {}, { pubkey: "subject-b" }] as never);
+    const wallet = vi.spyOn(Identities.prototype, "getDemosIdsByWeb3Identity")
+      .mockResolvedValue([{ pubkey: "subject-c" }] as never);
+
+    await expect(
+      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
+    ).resolves.toEqual(["subject-a", "subject-b"]);
+    expect(web2).toHaveBeenCalledWith(adapter.raw, "twitter", "alice");
+
+    await expect(
+      adapter.findSubjectsByClaim(
+        `cci-xm:evm:base-sepolia:0x${"11".repeat(20)}`,
+      ),
+    ).resolves.toEqual(["subject-c"]);
+    expect(wallet).toHaveBeenCalledWith(
+      adapter.raw,
+      "evm.base-sepolia",
+      `0x${"11".repeat(20)}`,
+    );
+  });
+
+  it("fails closed when the current Demos SDK lacks a reverse resolver", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+
+    await expect(
+      adapter.findSubjectsByClaim("domain:alice.example"),
+    ).rejects.toThrow(/domain reverse lookup is not exposed/);
+    await expect(
+      adapter.findSubjectsByClaim(`cci-nomis:0x${"11".repeat(20)}`),
+    ).rejects.toThrow(/not a reverse-resolvable/);
   });
 
   it("anchorWriteOnce returns only an exact existing envelope", async () => {

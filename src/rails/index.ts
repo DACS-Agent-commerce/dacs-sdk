@@ -169,6 +169,16 @@ export {
   type StripeAp2IntegrationOptions,
 } from "./ap2Stripe.js";
 export {
+  ERC20_TRANSFER_EVENT_TOPIC,
+  verifyEvmTransferFinality,
+  type EvmCanonicalBlock,
+  type EvmTransferFinalityClient,
+  type EvmTransferFinalityObservation,
+  type EvmTransferFinalityRequest,
+  type EvmTransferLog,
+  type EvmTransferReceipt,
+} from "./evmTransferFinality.js";
+export {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementKey,
   createX402BuyerSettlementIntent,
@@ -249,10 +259,22 @@ export {
 export {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  settlementBindingHash,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
+  type SettlementIdempotencyStoreOptions,
+  type SettlementIntentClaim,
+  type SettlementIntentLease,
+  type SettlementLeaseToken,
   type SettlementLog,
+  type SettlementNotInvokedResult,
+  type SettlementOutcomeRecord,
+  type SettlementOutcomeWrite,
   type SettlementReconcile,
+  type SettlementReplayAuthorization,
+  type SettlementRecoveryGrant,
 } from "./idempotency.js";
 export {
   createPayD402Rail,
