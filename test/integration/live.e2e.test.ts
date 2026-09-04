@@ -5,14 +5,25 @@ import { describe, expect, it } from "vitest";
 import { createPublicClient, erc20Abi, http } from "viem";
 
 import {
+  AnchorWaitError,
   createAgent,
   createFsDemosWriteJournal,
+  createFsSessionStore,
   createInMemoryBindingStore,
   createX402Rail,
   ed25519Verify,
+  generateCanonicalJobId,
+  identityBundleHash,
+  listingAddress,
+  logicalToStorageProgramName,
   publicKeyFromRaw,
+  signedBytes,
+  SubstrateError,
   x402Settle,
   type IdentityBundle,
+  type ListingDraft,
+  type ListingValidationDeps,
+  type PaymentRailRef,
 } from "../../src/index.js";
 import { startLiveX402Paywall } from "./live-x402-paywall.js";
 
@@ -57,7 +68,143 @@ const OS_PER_DEM = 1_000_000_000n;
 // The extra DEM is deliberate live-test headroom, not a general fee estimator.
 const SELLER_MINIMUM_OS = 3n * OS_PER_DEM;
 const BUYER_MINIMUM_OS = 7n * OS_PER_DEM;
-const PAYMENT_AMOUNT = 1_000_000n;
+// A real non-zero settlement is sufficient for this finality gate. Keep the
+// irreversible spend aligned with the Listing's base-unit price and capped at
+// the smallest representable USDC amount.
+const PAYMENT_AMOUNT = 1n;
+const MAX_PAYMENT_AMOUNT = 1n;
+
+const payloadCapability = () => ({ disposition: "supported" as const });
+
+async function retryDefinitiveDemosFailure<T>(input: {
+  operation: () => Promise<T>;
+  expectedNames: ReadonlySet<string>;
+  label: string;
+}): Promise<T> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await input.operation();
+    } catch (error) {
+      const definitivelyFailed =
+        error instanceof AnchorWaitError &&
+        error.code === "inclusion-failed" &&
+        error.receipt.state === "failed" &&
+        input.expectedNames.has(error.receipt.name);
+      if (!definitivelyFailed || attempt === 3) throw error;
+      console.warn("LIVE E2E retrying definitively failed Demos write", {
+        label: input.label,
+        attempt,
+        name: error.receipt.name,
+        txRef: error.receipt.txRef,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error(`${input.label} exhausted its bounded Demos retries`);
+}
+
+async function retryListingHistoryRead<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const preWriteReadFailure =
+        error instanceof SubstrateError &&
+        error.message.startsWith(
+          "listing version history lookup was indeterminate (name-prefix lookup failed:",
+        );
+      if (!preWriteReadFailure || attempt === 3) throw error;
+      console.warn("LIVE E2E retrying read-only listing history preflight", {
+        attempt,
+        message: error.message,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("listing history preflight exhausted its bounded retries");
+}
+
+function railAuthority(selectedRail: PaymentRailRef) {
+  return {
+    trustPhase: "PA-1" as const,
+    trustPolicyAcceptsPA1: true,
+    registry: { state: "not-used" as const, entries: [], definitions: [] },
+    inCodeDefinitions: [
+      {
+        railId: selectedRail.railId,
+        railVersion: selectedRail.railVersion!,
+        phaseHandler: "pay-x402",
+        governanceAnchoring: "in-code" as const,
+        signatureValid: true,
+      },
+    ],
+  };
+}
+
+async function signedIdentity(
+  primaryClaim: string,
+  signer: { sign(bytes: Uint8Array): Promise<Uint8Array> },
+  presentedAt: number,
+): Promise<IdentityBundle> {
+  const presentation = {
+    kind: "per-claim" as const,
+    signatures: [{ ref: primaryClaim, signature: "pending" }],
+  };
+  const bundle: IdentityBundle = {
+    bundleVersion: "1",
+    presentedBy: primaryClaim,
+    presentedAt,
+    claims: [{ ref: primaryClaim }],
+    presentation,
+  };
+  const signature = await signer.sign(
+    signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
+  );
+  presentation.signatures[0]!.signature = Buffer.from(signature).toString("base64url");
+  return bundle;
+}
+
+function listingValidationDeps(input: {
+  sellerDid: string;
+  sellerPublicKey: Uint8Array;
+  selectedRail: PaymentRailRef;
+}): ListingValidationDeps {
+  const verifyEd25519 = (bytes: Uint8Array, value: string): boolean => {
+    try {
+      return ed25519Verify(
+        bytes,
+        Uint8Array.from(Buffer.from(value, "base64url")),
+        publicKeyFromRaw(input.sellerPublicKey),
+      );
+    } catch {
+      return false;
+    }
+  };
+  return {
+    nowMs: () => Date.now(),
+    verifyListingSignature: ({ signedBytes: bytes, signature }) =>
+      signature.signer === input.sellerDid &&
+      signature.algorithm === "ed25519" &&
+      verifyEd25519(bytes, signature.value),
+    revocation: {
+      surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+      readMarker: async () => null,
+      verifyMarkerSignature: () => false,
+    },
+    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) =>
+      bundle.presentedBy === input.sellerDid &&
+      bundle.presentation.kind === "per-claim" &&
+      bundle.presentation.signatures.length === 1 &&
+      bundle.presentation.signatures[0]?.ref === input.sellerDid &&
+      verifyEd25519(bytes, bundle.presentation.signatures[0].signature),
+    loadRailResolution: () => railAuthority(input.selectedRail),
+    resolvePayloadVerificationCapability: payloadCapability,
+    verifySellerControl: ({ bundle, signer }) =>
+      signer === input.sellerDid &&
+      bundle.presentedBy === signer &&
+      bundle.claims.some(({ ref }) => ref === signer),
+  };
+}
 
 function formatDem(os: bigint): string {
   const whole = os / OS_PER_DEM;
@@ -131,13 +278,18 @@ function verifyDemosIdentityPresentation(input: {
   });
 }
 
-async function tokenBalance(address: string): Promise<bigint> {
+function paymentRpc(): string {
   const rpc =
     process.env.PAY_RPC ??
     (env.PAY_NETWORK === "eip155:84532" ? "https://sepolia.base.org" : undefined);
   if (!rpc) {
     throw new Error("PAY_RPC is required to preflight token funds on this network");
   }
+  return rpc;
+}
+
+async function tokenBalance(address: string): Promise<bigint> {
+  const rpc = paymentRpc();
   const client = createPublicClient({ transport: http(rpc) });
   return client.readContract({
     address: env.PAY_TOKEN! as `0x${string}`,
@@ -160,6 +312,9 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         throw new Error(
           "set LIVE_E2E_CONFIRM=1 to acknowledge the Demos writes and x402 payment",
         );
+      }
+      if (PAYMENT_AMOUNT <= 0n || PAYMENT_AMOUNT > MAX_PAYMENT_AMOUNT) {
+        throw new Error("live x402 payment exceeds the one-base-unit spend cap");
       }
       if (
         env.PAY_NETWORK === "eip155:8453" &&
@@ -185,13 +340,27 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       const buyerIdentity = JSON.parse(
         env.BUYER_IDENTITY_BUNDLE_JSON!,
       ) as IdentityBundle;
+      const buyerSessionStore = await createFsSessionStore({
+        dir: join(env.DACS_STATE_DIR!, "live-e2e-buyer-sessions"),
+      });
+      const selectedRail: PaymentRailRef = {
+        railId: "x402:default",
+        railVersion: 1,
+        parameters: {
+          network: env.PAY_NETWORK!,
+          asset: env.PAY_TOKEN!,
+        },
+      };
       const seller = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.SELLER_WALLET!,
         demosWriteJournal: sellerWriteJournal,
         identity: { agentId: env.SELLER_DID!, bundle: sellerIdentity },
         bindings: { index: sellerBindings, publisher: sellerBindings },
+        loadListingRailResolution: () => railAuthority(selectedRail),
+        resolvePayloadVerificationCapability: payloadCapability,
       });
+      const sellerPublicKey = await seller.adapter.getPublicKey();
       const buyer = await createAgent({
         demosRpc: env.DEMOS_RPC!,
         wallet: env.BUYER_WALLET!,
@@ -201,8 +370,17 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           bundle: buyerIdentity,
           verifyPresentation: verifyDemosIdentityPresentation,
         },
+        listingValidationDeps: listingValidationDeps({
+          sellerDid: env.SELLER_DID!,
+          sellerPublicKey,
+          selectedRail,
+        }),
       });
-      const rail = await createX402Rail({ evmPrivateKey: env.BUYER_EVM_KEY! });
+      const rail = await createX402Rail({
+        evmPrivateKey: env.BUYER_EVM_KEY!,
+        rpcUrl: paymentRpc(),
+        finalityBlocks: 1,
+      });
 
       const [sellerBalanceOs, buyerBalanceOs, buyerTokenBalance] = await Promise.all([
         balanceInOs(seller),
@@ -249,14 +427,22 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
       try {
         const runStartedAt = Date.now();
         const listingId = `live-e2e-${runStartedAt}-${randomUUID()}`;
-        const published = await seller.publishListing({
+        const jobId = generateCanonicalJobId({ timestamp: runStartedAt });
+        const sellerIdentity = await signedIdentity(
+          env.SELLER_DID!,
+          seller.adapter,
+          runStartedAt,
+        );
+        const listing: ListingDraft = {
           dacsVersion: "1",
           listingVersion: 1,
           listingId,
           seller: {
             identity: sellerIdentity,
             displayName: "Live E2E",
-            publicEndpoint: localPaywall?.url ?? env.PAYWALL_URL!,
+            // DACS-1 advertisements are HTTPS-only. The loopback HTTP paywall
+            // is an isolated test transport supplied directly to x402Settle.
+            publicEndpoint: "https://seller.example/dacs/live-e2e",
           },
           offering: {
             title: "Live E2E",
@@ -280,10 +466,23 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
             kind: "fixed",
             price: { amount: "1", currency: "USDC" },
           },
-          acceptedRails: [{ railId: "x402:default" }],
+          acceptedRails: [selectedRail],
           terms: { deadlineSecAfterCommit: 3_600 },
-          validity: { notBefore: runStartedAt - 1_000 },
-        });
+          validity: {
+            notBefore: runStartedAt - 1_000,
+            notAfter: runStartedAt + 3_600_000,
+          },
+        };
+        const listingStorageName = logicalToStorageProgramName(
+          listingAddress(env.SELLER_DID!, listingId, 1),
+        );
+        const published = await retryListingHistoryRead(() =>
+          retryDefinitiveDemosFailure({
+            label: "listing publication",
+            expectedNames: new Set([listingStorageName]),
+            operation: () => seller.publishListing(listing),
+          }),
+        );
         expect(published.status).toBe("published");
         if (published.status !== "published") {
           throw new Error("live listing binding publication failed");
@@ -291,24 +490,36 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         expect(published.ref).toBeTruthy();
         expect(published.listingPin.listingId).toBe(listingId);
 
-        const session = await buyer.runSession(published.ref, {
-          terms: {
-            price: {
-              amount: PAYMENT_AMOUNT.toString(),
-              asset: "USDC",
-              decimals: 6,
-              rail: "x402:default",
-            },
-            deliveryPhase: "deliver-attested-payload",
-            deliveryFormat: "application/json",
-          },
-          expectedSettlementPayee: sellerEvm,
-          settle: x402Settle(rail, {
-            url: localPaywall?.url ?? env.PAYWALL_URL!,
-            network: env.PAY_NETWORK!,
-            recipientEvm: sellerEvm,
-            asset: env.PAY_TOKEN!,
-          }),
+        const settle = x402Settle(rail, {
+          url: localPaywall?.url ?? env.PAYWALL_URL!,
+          network: env.PAY_NETWORK!,
+          recipientEvm: sellerEvm,
+          asset: env.PAY_TOKEN!,
+        });
+        const session = await retryDefinitiveDemosFailure({
+          label: "buyer session",
+          expectedNames: new Set([
+            `dacs3:agreement:${jobId}`,
+            `dacs4:evidence:${jobId}`,
+            `dacs5:bundle:${jobId}`,
+          ]),
+          operation: () =>
+            buyer.runSession(published.ref, {
+              jobId,
+              sessionStore: buyerSessionStore,
+              terms: {
+                price: {
+                  amount: PAYMENT_AMOUNT.toString(),
+                  asset: "USDC",
+                  decimals: 6,
+                  rail: "x402:default",
+                },
+                deliveryPhase: "deliver-attested-payload",
+                deliveryFormat: "application/json",
+              },
+              expectedSettlementPayee: sellerEvm,
+              settle,
+            }),
         });
         expect(session.outcome).toBe("completed");
 
