@@ -22,6 +22,10 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 /**
  * SettlementEvidence verifier (DACS-4 §9.7, driven by DACS-5 §14 settlement
@@ -38,9 +42,10 @@ import { type Verifier } from "./signedArtifact.js";
  * error > indeterminate > fail > pass (§7.7 composite discipline).
  *
  * Pure over injected context (the resolved agreement + rail + expected signer)
- * and a key resolver, so it's unit-tested without a node. Checks that need
- * context absent from the call are skipped (can't-evaluate ≠ fail), so a caller
- * that supplies only the record still gets the full structural verdict.
+ * and a key resolver, so it's unit-tested without a node. The authenticated
+ * entry point requires that complete boundary. Shape/context-only inspection is
+ * exposed separately as `validateSettlementEvidenceStructure`, whose distinct
+ * verdict vocabulary cannot be mistaken for cryptographic authorization.
  */
 
 export type EvidenceDecision = "pass" | "fail" | "error" | "indeterminate";
@@ -48,6 +53,18 @@ export type EvidenceDecision = "pass" | "fail" | "error" | "indeterminate";
 export interface EvidenceVerification {
   decision: EvidenceDecision;
   /** Human-readable violation reasons (empty on a clean pass). */
+  reasons: string[];
+}
+
+export type EvidenceStructureDecision =
+  | "valid"
+  | "invalid"
+  | "incomplete"
+  | "error";
+
+/** Non-authoritative shape/context validation. Never grants settlement trust. */
+export interface EvidenceStructureValidation {
+  decision: EvidenceStructureDecision;
   reasons: string[];
 }
 
@@ -145,6 +162,23 @@ export interface EvidenceDeps {
   /** Verify a signature over raw bytes for a public key. */
   verify?: Verifier;
 }
+
+/** Complete caller-authenticated context required at the trust-bearing API. */
+export interface AuthenticatedEvidenceContext extends EvidenceContext {
+  orchestrator: string;
+  agreement: Required<EvidenceAgreementContext>;
+  attestationRef: Readonly<AttestationRef>;
+  result: {
+    ok: boolean;
+    errorClass?: string;
+    txRefs?: readonly ChainTxRef[];
+  };
+}
+
+/** Cryptographic dependencies required at the trust-bearing API. */
+export type AuthenticatedEvidenceDeps = Required<
+  Pick<EvidenceDeps, "resolvePublicKey" | "verify">
+>;
 
 const PAYMENT_PHASES = new Set([
   "pay-evm-erc20",
@@ -279,10 +313,11 @@ function decimalIsPositive(v: string): boolean {
  * Verify one SettlementEvidence record (its signed scope = the record without
  * `signature`). See the module doc for the four-valued verdict.
  */
-export async function verifySettlementEvidence(
+async function evaluateSettlementEvidence(
   record: unknown,
-  ctx: EvidenceContext = {},
-  deps: EvidenceDeps = {},
+  ctx: EvidenceContext,
+  deps: EvidenceDeps,
+  requireAuthenticatedContext: boolean,
 ): Promise<EvidenceVerification> {
   const reasons: string[] = [];
   let sawError = false;
@@ -401,6 +436,56 @@ export async function verifySettlementEvidence(
   const isPayment = isStr(phase) && PAYMENT_PHASES.has(phase);
   const isDelivery = isStr(phase) && DELIVERY_PHASES.has(phase);
 
+  if (requireAuthenticatedContext) {
+    if (!resolvePublicKey || !verify) {
+      sawError = true;
+      reasons.push("authenticated evidence verification requires key resolution and signature verification");
+    }
+    if (!isCanonicalClaimReference(ctx.orchestrator)) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires a canonical phase orchestrator ClaimReference");
+    }
+    if (!isObj(ctx.agreement) || !isCanonicalDecimal(ctx.agreement.amount) ||
+        !isStr(ctx.agreement.currency) || ctx.agreement.currency.length === 0) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact agreement amount and currency");
+    }
+    if (!isAttestationRef(ctx.attestationRef)) {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact evidence attestationRef");
+    }
+    if (!isObj(ctx.result) || typeof ctx.result.ok !== "boolean") {
+      sawError = true;
+      reasons.push("authenticated evidence context requires the exact phase result");
+    }
+    if (isPayment) {
+      const requiresCanonicalNetwork =
+        isObj(ctx.rail) && isStr(ctx.rail.railType) &&
+        new Set(["evm-erc20", "solana-spl", "x402", "demos-native"])
+          .has(ctx.rail.railType);
+      if (!isObj(ctx.rail) || !isStr(ctx.rail.railId) || ctx.rail.railId.length === 0 ||
+          !isStr(ctx.rail.railType) || ctx.rail.railType.length === 0 ||
+          !isStr(ctx.rail.asset) || ctx.rail.asset.length === 0 ||
+          (requiresCanonicalNetwork &&
+            (!isStr(ctx.rail.network) || ctx.rail.network.length === 0)) ||
+          !isStr(ctx.rail.handler) || ctx.rail.handler.length === 0) {
+        sawError = true;
+        reasons.push("authenticated payment evidence context requires the exact pinned rail");
+      }
+      if (!isObj(ctx.paymentAddress) ||
+          !isStr(ctx.paymentAddress.railId) || ctx.paymentAddress.railId.length === 0 ||
+          !isSafeUint(ctx.paymentAddress.phaseIndex)) {
+        sawError = true;
+        reasons.push("authenticated payment evidence context requires the exact PC-2 address tuple");
+      }
+    }
+    if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
+        ctx.expectedAnchorLocator.length === 0)) {
+      sawError = true;
+      reasons.push("authenticated delivery evidence context requires the expected deliverable locator");
+    }
+  }
+
   // ── Basic shape (§9.7) ──────────────────────────────────────────────────
   if (ev["evidenceVersion"] !== "1") fail(`evidenceVersion MUST be "1"`);
   if (!isStr(ev["jobId"]) || ev["jobId"] === "") fail("jobId MUST be a non-empty string");
@@ -424,6 +509,12 @@ export async function verifySettlementEvidence(
     }
     if (ctx.result.ok === false && !hasErrorClass) {
       fail("phase result is ok:false but carries no errorClass to classify the fault");
+    }
+    if (ctx.result.ok === true && outcome !== "success") {
+      fail("phase result is ok:true but SettlementEvidence does not report success");
+    }
+    if (ctx.result.ok === false && outcome !== "failure") {
+      fail("phase result is ok:false but SettlementEvidence does not report failure");
     }
   }
 
@@ -812,7 +903,10 @@ export async function verifySettlementEvidence(
     );
   } else {
     const signer = sig.signer;
-    if (ctx.orchestrator && signer !== ctx.orchestrator) {
+    if (!isCanonicalClaimReference(signer)) {
+      fail("evidence signer MUST be a canonical ClaimReference");
+    }
+    if (ctx.orchestrator && !sameCanonicalClaimIdentity(signer, ctx.orchestrator)) {
       fail(`signer "${signer}" is not the phase orchestrator "${ctx.orchestrator}"`);
     }
     if (resolvePublicKey && verify) {
@@ -883,4 +977,45 @@ export async function verifySettlementEvidence(
   if (sawIndeterminate) return { decision: "indeterminate", reasons };
   if (failCount > 0) return { decision: "fail", reasons };
   return { decision: "pass", reasons };
+}
+
+/**
+ * Validate evidence shape and any supplied comparison context without granting
+ * authenticity. A `valid` result says only that no evaluated structural rule
+ * failed; it does not say the signer, anchor, agreement, rail, or phase result
+ * was authenticated.
+ */
+export async function validateSettlementEvidenceStructure(
+  record: unknown,
+  ctx: EvidenceContext = {},
+): Promise<EvidenceStructureValidation> {
+  const result = await evaluateSettlementEvidence(record, ctx, {}, false);
+  return {
+    decision: result.decision === "pass"
+      ? "valid"
+      : result.decision === "fail"
+        ? "invalid"
+        : result.decision === "indeterminate"
+          ? "incomplete"
+          : "error",
+    reasons: result.reasons,
+  };
+}
+
+/**
+ * Verify one SettlementEvidence against complete authenticated context and
+ * cryptographic dependencies. Missing trust inputs are an SDK configuration
+ * error and can never produce `pass`.
+ */
+export async function verifySettlementEvidence(
+  record: unknown,
+  ctx: AuthenticatedEvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceVerification> {
+  return evaluateSettlementEvidence(
+    record,
+    (ctx ?? {}) as EvidenceContext,
+    (deps ?? {}) as EvidenceDeps,
+    true,
+  );
 }

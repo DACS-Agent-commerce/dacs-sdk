@@ -94,6 +94,16 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
+Settlement evidence has two deliberately different public boundaries.
+`validateSettlementEvidenceStructure()` checks wire shape and any supplied
+comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
+an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
+operation and requires the authenticated agreement, pinned rail, phase
+orchestrator, evidence reference, phase result, PC-2 address (for payment),
+expected deliverable locator (for delivery), plus key resolution and signature
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
