@@ -483,6 +483,46 @@ describe("createPayDemRail nonce coordination", () => {
     expect(order).toEqual(["journal", "fence", "broadcast"]);
   });
 
+  it("keeps the settlement generation and prepared-transfer fences current through broadcast", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+    const effectFence = {
+      owner: "payment-worker",
+      generation: 3,
+      settlementKey: "demos-native:DEM:job-fenced:0",
+      bindingHash: "ab".repeat(32),
+      async assertCurrent() {
+        order.push("generation-fence");
+      },
+    };
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+      assertCurrentBeforeBroadcast: async () => {
+        order.push("prepared-transfer-fence");
+      },
+    }, effectFence)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual([
+      "generation-fence",
+      "journal",
+      "prepared-transfer-fence",
+      "generation-fence",
+      "broadcast",
+    ]);
+  });
+
   it("fails before signing when configured and per-settlement journals conflict", async () => {
     const rail = await createPayDemRail({
       rpc: "https://node.test",
