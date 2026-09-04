@@ -127,6 +127,20 @@ describe("native DEM payment crash fixture", () => {
         while (true) Atomics.wait(lock, 0, 0, 1_000);
       },
     };
+    const bootstrap = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-bootstrap",
+      operations: { agreement: success },
+      leaseDurationMs: 5_000,
+    });
+    await bootstrap.startOrder(ORDER);
+    await bootstrap.runPending({ limit: 1 });
+    const bootstrapped = await bootstrap.getOrderStatus(JOB_ID);
+    if (bootstrapped?.tracks.agreement?.state !== "final" ||
+        bootstrapped.tracks.agreement.outcome !== "success") {
+      throw new Error("crash fixture could not finalize its agreement prerequisite");
+    }
+
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       database,
       workerId: "buyer-payment-before-kill",
@@ -134,16 +148,16 @@ describe("native DEM payment crash fixture", () => {
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
       publishNotice: () => undefined,
-      effectLeaseDurationMs: 100,
+      effectLeaseDurationMs: 2_000,
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-kill",
-      operations: { agreement: success, payment },
-      leaseDurationMs: 100,
+      operations: { payment },
+      leaseDurationMs: 2_000,
     });
-    await coordinator.startOrder(ORDER);
-    await coordinator.runPending({ limit: 2 });
+    await coordinator.runPending({ limit: 1 });
+    throw new Error("crash fixture returned without reaching its prepared checkpoint");
   }, 30_000);
 });

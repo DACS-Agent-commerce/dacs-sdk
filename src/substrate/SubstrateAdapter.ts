@@ -297,9 +297,12 @@ export interface SubstrateAdapter {
   /**
    * SR-1 (reverse) — find the subject primary claims (Demos pubkeys) that have a
    * given linked claim bound to them. `claimRef` is a canonical linked-claim ref
-   * (`domain:<host>`, `web2:<platform>:<handle>`, or `xm:<chainType>:<address>`);
-   * `web2:domain:<host>` is permanently accepted as a historical alias of
-   * `domain:<host>`. Returns the matching subjects (usually one), or [] if none.
+   * (`domain:<host>`, `cci-web2:<platform>:<handle>`, or
+   * `cci-xm:<chain>:<subchain>:<address>`).
+   * A current `domain:` ref must already use exact DCR-1 spelling. Historical
+   * `web2:domain:` aliases require enclosing-artifact authentication and are not
+   * accepted by this bare reverse-lookup boundary. Returns the matching subjects
+   * (usually one), or [] if none.
    */
   findSubjectsByClaim(claimRef: string): Promise<string[]>;
 }

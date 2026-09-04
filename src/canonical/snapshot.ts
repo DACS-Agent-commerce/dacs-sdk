@@ -230,6 +230,36 @@ export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
   return snapshotCanonicalJsonInternal(value, label, false, true);
 }
 
+/**
+ * Own JSON returned by an external wire/signing boundary without changing its
+ * byte-significant object-key order or string representation.
+ *
+ * This is deliberately narrower than protocol canonicalisation. Some deployed
+ * transports still bind signatures or validity checks to `JSON.stringify`
+ * output, so sorting keys or NFC-normalising strings after signing invalidates
+ * the wire object. The same data-only checks as {@link snapshotCanonicalJsonRead}
+ * still reject accessors, proxies, exotic prototypes, sparse arrays, symbols,
+ * unsupported scalars, cycles, hidden properties, and `undefined`; only the
+ * subsequent JCS normalisation is omitted.
+ */
+export function snapshotWireJsonRead<T>(value: T, label: string): T {
+  try {
+    if (!isDataOnlyJson(value, new Set(), false, true)) {
+      throw new TypeError("not data-only JSON");
+    }
+    const snapshot = cloneValidatedJson(value, false) as T;
+    if (!isDataOnlyJson(snapshot)) {
+      throw new TypeError("wire snapshot changed data shape");
+    }
+    if (JSON.stringify(snapshot) !== JSON.stringify(value)) {
+      throw new TypeError("wire snapshot changed JSON serialization");
+    }
+    return snapshot;
+  } catch (cause) {
+    throw new DacsError(`${label} is not stable wire JSON`, { cause });
+  }
+}
+
 function snapshotCanonicalJsonInternal<T>(
   value: T,
   label: string,
@@ -252,7 +282,8 @@ function snapshotCanonicalJsonInternal<T>(
     );
     // Parsing the canonical wire form both owns the result and deliberately
     // expands repeated in-memory references into independent JSON values.
-    // CF-1 normalization therefore also happens exactly once at this boundary.
+    // CF-1 string-value normalization therefore happens exactly once at this
+    // boundary; canonical member names are deliberately preserved.
     const snapshot = JSON.parse(canonical) as T;
     if (!isDataOnlyJson(snapshot) || canonicalize(snapshot) !== canonical) {
       throw new TypeError("snapshot changed canonical bytes");

@@ -32,6 +32,7 @@ export interface EvmTransferReceipt {
 export interface EvmCanonicalBlock {
   number: bigint;
   hash: string;
+  parentHash: string;
   timestamp: bigint;
 }
 
@@ -107,6 +108,7 @@ function parseBlock(value: unknown, label: string): EvmCanonicalBlock {
   return {
     number: block.number,
     hash: canonicalHash(block.hash, `${label} hash`),
+    parentHash: canonicalHash(block.parentHash, `${label} parent hash`),
     timestamp: block.timestamp,
   };
 }
@@ -254,18 +256,27 @@ export async function verifyEvmTransferFinality(
           "evm finality: receipt and canonical block views have not converged",
         );
       }
-      const finalityBlockNumber = receipt.blockNumber +
-        BigInt(minimumConfirmations - 1);
-      const finalityBlock = parseBlock(
-        await client.getBlock({ blockNumber: finalityBlockNumber }),
-        "finality block",
-      );
-      if (finalityBlock.number !== finalityBlockNumber) {
-        return fail("RPC returned the wrong finality block");
+      let finalityBlock = inclusionBlock;
+      for (let offset = 1; offset < minimumConfirmations; offset += 1) {
+        const blockNumber = receipt.blockNumber + BigInt(offset);
+        const descendant = parseBlock(
+          await client.getBlock({ blockNumber }),
+          `confirmation block ${offset + 1}`,
+        );
+        if (descendant.number !== blockNumber) {
+          return fail("RPC returned the wrong confirmation block");
+        }
+        if (descendant.parentHash !== finalityBlock.hash) {
+          return fail(
+            "confirmation block does not descend from the authenticated inclusion block",
+          );
+        }
+        if (descendant.timestamp < finalityBlock.timestamp) {
+          return fail("confirmation block predates its parent");
+        }
+        finalityBlock = descendant;
       }
-      if (finalityBlock.timestamp < inclusionBlock.timestamp) {
-        return fail("finality block predates the inclusion block");
-      }
+      const finalityBlockNumber = finalityBlock.number;
 
       const candidates = receipt.logs.filter((log) => {
         if (log.removed === true || log.address !== tokenAddress ||
@@ -301,7 +312,9 @@ export async function verifyEvmTransferFinality(
         "finality block recheck",
       );
       if (inclusionRecheck.hash !== inclusionBlock.hash ||
+          inclusionRecheck.parentHash !== inclusionBlock.parentHash ||
           finalityRecheck.hash !== finalityBlock.hash ||
+          finalityRecheck.parentHash !== finalityBlock.parentHash ||
           finalityRecheck.timestamp !== finalityBlock.timestamp) {
         throw new TransientError(
           "evm finality: canonical block set changed during finality verification",

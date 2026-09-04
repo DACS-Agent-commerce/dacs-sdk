@@ -160,12 +160,28 @@ WebSocket transport — an app already running a full chain stack with these dep
 
 - **Direct dependencies** are the only ones this repo can fix directly; a new
   direct dependency with an open critical/high advisory is not added. CI **fails**
-  on any direct high/critical advisory (see below).
+  on any direct high/critical advisory (see below). The blocking gate submits
+  exact installed versions to npm's bulk advisory endpoint, validates and bounds
+  the response, retries transient failures, and fails closed if no authenticated
+  result can be obtained. If npm's bulk service is unavailable, CI queries OSV
+  with the same exact npm package/version pairs and conservatively blocks every
+  match regardless of severity; both services must fail before the gate fails
+  closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.
+
+## In-process signing keys
+
+Session and bundle-finalization APIs do not accept raw Ed25519 seed arrays.
+Callers must convert a seed to a Node `KeyObject` before constructing a session,
+then immediately wipe their own seed buffer, or provide a remote/HSM-backed
+signing callback. `privateKeyFromSeed()` wipes its temporary PKCS#8 encoding but
+does not mutate the caller-owned array. Long-running services should prefer a
+signing callback so exportable private-key material does not live in the
+JavaScript heap.
 
 ## Remediation implemented
 
