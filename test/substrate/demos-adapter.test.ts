@@ -7,6 +7,7 @@ import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import {
   DemosAdapter,
   createInMemoryDemosWriteJournal,
+  type DemosAdapterConfig,
 } from "../../src/substrate/index.js";
 import {
   ed25519Verify,
@@ -43,9 +44,63 @@ describe("DemosAdapter", () => {
     })).toThrow(/maximumFeeOs/);
   });
 
+  it("rejects proxy and accessor-backed secret carriers", () => {
+    expect(() => new DemosAdapter(new Proxy({ rpc: RPC }, {})))
+      .toThrow(/stable data/);
+    const accessor = { rpc: RPC } as DemosAdapterConfig;
+    Object.defineProperty(accessor, "secret", {
+      enumerable: true,
+      get: () => "wallet-secret-sentinel-never-expose",
+    });
+    expect(() => new DemosAdapter(accessor)).toThrow(/secret.*stable data/);
+  });
+
   it("constructs and exposes the raw demosdk instance", () => {
     const adapter = makeAdapter();
     expect(adapter.raw).toBeDefined();
+  });
+
+  it("does not retain its config carrier or wallet secret in reflectable fields", async () => {
+    const secret = "wallet-secret-sentinel-never-expose";
+    const config = {
+      rpc: RPC,
+      secret,
+      chainIdentity: "test-chain",
+      writeJournal: createInMemoryDemosWriteJournal(),
+    };
+    const adapter = new DemosAdapter(config);
+    const raw = adapter.raw;
+    vi.spyOn(raw, "connect").mockResolvedValue(undefined as never);
+    const connectWallet = vi.spyOn(raw, "connectWallet")
+      .mockResolvedValue(undefined as never);
+
+    const reflectedBefore = Reflect.ownKeys(adapter).flatMap((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(adapter, key);
+      return descriptor && "value" in descriptor ? [descriptor.value] : [];
+    });
+    expect(reflectedBefore).not.toContain(config);
+    expect(reflectedBefore).not.toContain(secret);
+
+    await adapter.connect();
+    expect(connectWallet).toHaveBeenCalledOnce();
+    expect(connectWallet).toHaveBeenCalledWith(secret);
+    expect(Reflect.ownKeys(adapter)).not.toContain("demos");
+    expect(Reflect.ownKeys(adapter)).not.toContain("pendingWalletSecret");
+  });
+
+  it("fails closed after wallet initialization fails and the secret is discarded", async () => {
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      secret: "wallet-secret-sentinel-never-expose",
+    });
+    const raw = adapter.raw;
+    vi.spyOn(raw, "connect").mockResolvedValue(undefined as never);
+    const connectWallet = vi.spyOn(raw, "connectWallet")
+      .mockRejectedValueOnce(new Error("wallet initialization failed"));
+
+    await expect(adapter.connect()).rejects.toThrow(/wallet initialization failed/);
+    await expect(adapter.connect()).rejects.toThrow(/previously failed/);
+    expect(connectWallet).toHaveBeenCalledOnce();
   });
 
   it("uses the directly queryable genesis block as the journal chain identity", async () => {
