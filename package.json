@@ -106,7 +106,6 @@
     "test:watch": "vitest",
     "conformance:sync": "node scripts/sync-vectors.mjs",
     "clean": "rm -rf dist",
-    "prepare": "npm run build",
     "prepack": "npm run clean && npm run build",
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs"
