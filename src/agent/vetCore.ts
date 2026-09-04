@@ -33,6 +33,7 @@ import {
   identityBundleHash,
   isCanonicalClaimReference,
   isCanonicalDomainHostname,
+  sameCanonicalClaimIdentity,
   type CciTlsnDisposition,
 } from "../identity/index.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
@@ -3334,7 +3335,9 @@ async function authenticateCarriedResult<TKey>(
   deps: CapturedPartyVetDeps<TKey>,
   now: number,
 ): Promise<"freshness" | "dealSpecific"> {
-  const matches = bundle.claims.filter((claim) => claim.ref === claimSubject);
+  const matches = bundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, claimSubject)
+  );
   if (matches.length !== 1) {
     throw new DacsError(
       `party Vet claim ${claimSubject} has ambiguous bundle provenance`,

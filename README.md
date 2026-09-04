@@ -101,13 +101,52 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
+Settlement evidence has two deliberately different public boundaries.
+`validateSettlementEvidenceStructure()` checks wire shape and any supplied
+comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
+an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
+operation and requires the authenticated agreement, pinned rail, phase
+orchestrator, evidence reference, phase result, PC-2 address (for payment),
+expected deliverable locator (for delivery), plus key resolution and signature
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
 same exclusive lease and generation-fencing guarantees. Read-only agents may
 omit it.
 
+### Demos agent ClaimReferences
+
+Use `demosAgentClaimRef`, `parseDemosAgentClaimReference`,
+`demosAgentPublicKey`, and `isDemosAgentClaimRef` from either
+`@kynesyslabs/dacs` or
+`@kynesyslabs/dacs/identity` for the DACS-1 §6.3.1 / §A.1 self-certifying
+profile. Writers emit only `did:demos:agent:<64-lowercase-hex>`. Readers accept
+case variation in the leading `did` scheme and preserve unknown canonical
+parameters for forwarding; the typed parse result exposes the parameter-free
+CF-3 identity separately. Signed-artifact authorization uses exact CF-2 bytes
+and never performs that read-time repair. Foreign DIDs, mixed-case
+`demos:agent`, uppercase key bytes, bare keys, and `demos:0x...` substrate
+address notation are never intrinsically decoded as Demos signature authority
+or aliased to the registered profile. `Agent.resolveIdentity()` retains
+bare/`0x` native-address lookup as an explicit convenience but returns the
+canonical Demos DID, so aliases never leak into a `CciRecord` or reputation key.
+Non-intrinsic writer identities require
+`AgentConfig.resolveIdentitySigningPublicKey` and are bound to the connected
+adapter's actual key before signing.
+
 ## Public API
+
+`createAgent()` returns only the high-level DACS operations below. It does not
+expose the connected substrate adapter, raw demosdk client, signing primitive,
+or broadcast/transfer authority. Operator diagnostics and funded conformance
+tests that genuinely need the low-level adapter must opt into the clearly named
+`createUnsafeManualAgent()` escape hatch and must never pass that result to an
+application callback, plugin, or HTTP handler. In-process narrowing prevents
+accidental capability leakage; OS-level buyer/seller signer isolation remains a
+deployment responsibility of the generated role services.
 
 ```ts
 import {
@@ -144,8 +183,10 @@ const seller = await createAgent({
     ),
   // Required to accept bundles with SettlementEvidence. Resolve the exact
   // phase orchestrator and authenticated pinned-rail definition from trusted
-  // session/registry state; the SDK binds the Agreement and AttestationRef and
-  // performs the DACS-4 semantic and cryptographic verification itself.
+  // session/registry state, including the structured assetSpec/networkSpec
+  // needed for RD-5. The SDK derives the PC-2 phase index and exact handler
+  // txRefs from the authenticated bundle, binds the Agreement/AttestationRef,
+  // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
@@ -187,7 +228,12 @@ if (
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({ evmPrivateKey });
+const rail = await createX402Rail({
+  evmPrivateKey,
+  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
+  // Use the exact positive value from the authenticated rail descriptor.
+  finalityBlocks: 1,
+});
 // Passing the authenticated result (not only `resolved.ref`) pins the selected
 // content hash across runSession's pre-payment re-read.
 const session = await buyer.runSession(resolved, {
@@ -255,6 +301,14 @@ const session = await buyer.runSession(resolved, {
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
+
+`Agent.getReputation()` is the normal untrusted-input path and fully verifies
+each referenced bundle before scoring it. Lower-level consumers that already
+hold candidate bundle objects must use `deriveReputationWithValidation()` when
+their cryptographic verifier is asynchronous. The pure `deriveReputation()`
+helper accepts only a synchronous primitive-boolean predicate over copies that
+were authenticated upstream; a Promise-valued predicate is rejected rather
+than treated as truthy.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
@@ -337,9 +391,11 @@ settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
 when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Cached durable success is reauthenticated
-after every process restart before reuse; missing or contradictory recovery
-fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+non-final observation must throw. Even authoritative absence does not revoke a
+possibly-live old process or signed transaction and therefore does not authorize
+an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
+after every process restart before reuse; missing, absent, or contradictory
+recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
@@ -473,6 +529,24 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+`prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
+coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
+recursive production authenticator, and creates DACS-5 `vet-failed` terminal
+authority only for an authenticated objective `fail`. A passing record remains
+non-terminal; `indeterminate`, verifier `error`, an unresolved closure, or a
+thrown authentication dependency cannot blame the counterparty. The returned
+authority contains no signing capability and is intended for the existing
+role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
+co-signed; single-signature suppression is available only for an honest abort.
+
+`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
+§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
+bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
+ignores content returned for another job. Lookup is discovery, not trust: pass
+each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
+that returns its `.valid` boolean to `bundleConsistency` before using the
+resulting two-sided verdict.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2
@@ -568,6 +642,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
+| `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified
