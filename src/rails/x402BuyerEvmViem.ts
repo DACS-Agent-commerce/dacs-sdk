@@ -8,6 +8,8 @@ export interface ViemX402BuyerEvmReadClientOptions {
   chainName?: string;
   /** `finalized` is the safe default; `safe`/`latest` require an appropriate confirmation policy. */
   finalityTag?: "finalized" | "safe" | "latest";
+  /** Maximum parent-hash links followed for one ancestry proof. */
+  maximumAncestryDepth?: number;
 }
 
 type RawRpcRequest = (input: Readonly<{
@@ -27,6 +29,13 @@ function quantity(value: unknown): number {
   const parsed = BigInt(value);
   if (parsed > BigInt(Number.MAX_SAFE_INTEGER)) throw new TypeError("EVM quantity exceeds safe range");
   return Number(parsed);
+}
+
+function blockHash(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new TypeError(`invalid EVM ${label}`);
+  }
+  return value.toLowerCase();
 }
 
 function mapLog(value: unknown): Record<string, unknown> {
@@ -56,7 +65,10 @@ export async function createViemX402BuyerEvmReadClient(
       (options.chainName !== undefined &&
         (typeof options.chainName !== "string" || options.chainName.length === 0)) ||
       (options.finalityTag !== undefined &&
-        !["finalized", "safe", "latest"].includes(options.finalityTag))) {
+        !["finalized", "safe", "latest"].includes(options.finalityTag)) ||
+      (options.maximumAncestryDepth !== undefined &&
+        (!Number.isSafeInteger(options.maximumAncestryDepth) ||
+          options.maximumAncestryDepth <= 0))) {
     throw new TypeError("viem x402 buyer EVM reader options are invalid");
   }
   let parsed: URL;
@@ -81,6 +93,7 @@ export async function createViemX402BuyerEvmReadClient(
   const request: RawRpcRequest = async (input) =>
     (publicClient.request as unknown as RawRpcRequest).call(publicClient, input);
   const finalityTag = options.finalityTag ?? "finalized";
+  const maximumAncestryDepth = options.maximumAncestryDepth ?? 4_096;
 
   return Object.freeze<X402BuyerEvmReadClient>({
     async getFinalityHead() {
@@ -153,22 +166,53 @@ export async function createViemX402BuyerEvmReadClient(
     },
 
     async confirmBlockAncestor(input) {
-      const raw = await request({
-        method: "eth_getBlockByNumber",
-        params: [`0x${input.blockNumber.toString(16)}`, false],
-      });
-      if (!isRecord(raw)) throw new TypeError("EVM ancestor block unavailable");
-      const observedNumber = quantity(raw.number);
-      const observedHash = typeof raw.hash === "string" ? raw.hash.toLowerCase() : "";
-      return {
-        canonical: observedNumber === input.blockNumber &&
-          observedHash === input.blockHash.toLowerCase() &&
-          input.blockNumber <= input.headBlockNumber,
-        blockNumber: input.blockNumber,
-        blockHash: input.blockHash,
-        headBlockNumber: input.headBlockNumber,
-        headBlockHash: input.headBlockHash,
-      };
+      if (!Number.isSafeInteger(input.blockNumber) || input.blockNumber < 0 ||
+          !Number.isSafeInteger(input.headBlockNumber) || input.headBlockNumber < 0) {
+        throw new TypeError("invalid EVM ancestry height");
+      }
+      const expectedBlockHash = blockHash(input.blockHash, "ancestor block hash");
+      const expectedHeadHash = blockHash(input.headBlockHash, "ancestry head hash");
+      if (input.blockNumber > input.headBlockNumber) {
+        return { canonical: false, ...input };
+      }
+      const depth = input.headBlockNumber - input.blockNumber;
+      if (depth > maximumAncestryDepth) {
+        throw new TypeError(
+          `EVM ancestry depth ${depth} exceeds configured maximum ${maximumAncestryDepth}`,
+        );
+      }
+
+      // Walk from the exact hash-pinned head. Looking up the lower block by
+      // number only proves that two hashes are independently visible; it does
+      // not prove the head descends from the settlement block.
+      let expectedNumber = input.headBlockNumber;
+      let expectedHash = expectedHeadHash;
+      while (true) {
+        const raw = await request({
+          method: "eth_getBlockByHash",
+          params: [expectedHash, false],
+        });
+        if (!isRecord(raw)) throw new TypeError("EVM ancestry block unavailable");
+        const observedNumber = quantity(raw.number);
+        const observedHash = blockHash(raw.hash, "ancestry block hash");
+        if (observedNumber !== expectedNumber || observedHash !== expectedHash) {
+          throw new TypeError("EVM ancestry path changed during verification");
+        }
+        if (observedNumber === input.blockNumber) {
+          return {
+            canonical: observedHash === expectedBlockHash,
+            blockNumber: input.blockNumber,
+            blockHash: input.blockHash,
+            headBlockNumber: input.headBlockNumber,
+            headBlockHash: input.headBlockHash,
+          };
+        }
+        if (observedNumber === 0) {
+          throw new TypeError("EVM ancestry path ended before the requested block");
+        }
+        expectedHash = blockHash(raw.parentHash, "ancestry parent hash");
+        expectedNumber -= 1;
+      }
     },
   });
 }

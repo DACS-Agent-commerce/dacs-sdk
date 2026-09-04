@@ -1,18 +1,17 @@
 import {
-  link,
-  mkdir,
-  open,
-  readFile,
   readdir,
-  rename,
-  stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   assertCheckpointPayloadShape,
   assertSessionReceiptShape,
@@ -48,10 +47,8 @@ import {
  * passes the stale window (`lockStaleMs`), so a session can't be blocked forever.
  */
 
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 const LOCK_RETRY_MS = 5;
-const LOCK_MAX_RETRIES = 400; // ~2s of contention before giving up
+const LOCK_TIMEOUT_MS = 2_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const safe = (s: string) => encodeURIComponent(s);
@@ -79,11 +76,12 @@ export async function createFsSessionStore(
       `lockStaleMs must be a positive finite number, got ${lockStaleMs}`,
     );
   }
-  const sessionsDir = join(opts.dir, "sessions");
-  const hashesDir = join(opts.dir, "hashes");
-  const locksDir = join(opts.dir, "locks");
+  const root = await preparePrivateStoreDirectory(opts.dir, "filesystem session store");
+  const sessionsDir = join(root, "sessions");
+  const hashesDir = join(root, "hashes");
+  const locksDir = join(root, "locks");
   for (const d of [sessionsDir, hashesDir, locksDir]) {
-    await mkdir(d, { recursive: true, mode: DIR_MODE });
+    await preparePrivateStoreDirectory(d, "filesystem session store");
   }
 
   const sessionPath = (jobId: string) => join(sessionsDir, `${safe(jobId)}.json`);
@@ -91,9 +89,7 @@ export async function createFsSessionStore(
   const lockPath = (jobId: string) => join(locksDir, `${safe(jobId)}.lock`);
 
   async function atomicWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, JSON.stringify(value), { mode: FILE_MODE });
-    await rename(tmp, path);
+    await atomicWritePrivateFile(path, JSON.stringify(value), "filesystem session store");
   }
 
   /**
@@ -102,22 +98,13 @@ export async function createFsSessionStore(
    * binding, and concurrent creators cannot overwrite one another.
    */
   async function exclusiveWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(value), {
-        mode: FILE_MODE,
-        flag: "wx",
-      });
-      await link(tmp, path);
-    } finally {
-      await unlink(tmp).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(path, JSON.stringify(value), "filesystem session store");
   }
 
   async function readSession(jobId: string): Promise<SessionLoad> {
     let text: string;
     try {
-      text = await readFile(sessionPath(jobId), "utf8");
+      text = await readPrivateFile(sessionPath(jobId), "utf8", "filesystem session store");
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
       throw e;
@@ -149,34 +136,75 @@ export async function createFsSessionStore(
     return { status: "ok", record: parsed as SessionRecord };
   }
 
-  /** Reclaim a lock left behind by a crashed holder once it's older than the stale window. */
-  async function reclaimIfStale(lp: string): Promise<void> {
+  interface LockOwner {
+    pid: number;
+    token: string;
+    createdAt: number;
+  }
+
+  function processIsAlive(pid: number): boolean {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
     try {
-      const st = await stat(lp);
-      if (Date.now() - st.mtimeMs > lockStaleMs) {
-        // Best-effort: unlink the stale lock so a fresh holder can take it. A race
-        // where another worker reclaims first is harmless — the next open() retries.
-        await unlink(lp).catch(() => {});
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  async function readLockOwner(lp: string): Promise<LockOwner | undefined> {
+    try {
+      const parsed = JSON.parse(
+        await readPrivateFile(lp, "utf8", "filesystem session store lock"),
+      ) as Partial<LockOwner>;
+      if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0 ||
+          typeof parsed.token !== "string" || parsed.token.length === 0 ||
+          !Number.isSafeInteger(parsed.createdAt) || (parsed.createdAt ?? -1) < 0) {
+        return undefined;
       }
-    } catch {
-      // Lock vanished between EEXIST and stat — nothing to reclaim; retry loop continues.
+      return parsed as LockOwner;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      return undefined;
+    }
+  }
+
+  /** Reclaim only a sufficiently old lock whose same-host process is provably dead. */
+  async function reclaimIfStale(lp: string): Promise<void> {
+    const owner = await readLockOwner(lp);
+    if (owner !== undefined && Date.now() - owner.createdAt > lockStaleMs &&
+        !processIsAlive(owner.pid)) {
+      // All conforming releases validate the token before releasing their own
+      // lock. Re-read immediately before unlink so a replacement is not removed
+      // after an observed owner has released.
+      const current = await readLockOwner(lp);
+      if (current?.token === owner.token) await unlink(lp).catch(() => {});
     }
   }
 
   /** Serialise a read-modify-write for one session via an exclusive lock file. */
   async function withLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
     const lp = lockPath(jobId);
-    for (let i = 0; ; i++) {
+    const owner: LockOwner = {
+      pid: process.pid,
+      token: randomUUID(),
+      createdAt: Date.now(),
+    };
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    for (;;) {
       try {
-        const handle = await open(lp, "wx", FILE_MODE); // O_EXCL: only one holder
-        await handle.close();
+        await exclusiveWritePrivateFile(
+          lp,
+          JSON.stringify(owner),
+          "filesystem session store lock",
+        );
         break;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
         // A hard-crashed holder can never release its lock; reclaim it once stale
         // so the session isn't blocked forever (#67).
         await reclaimIfStale(lp);
-        if (i >= LOCK_MAX_RETRIES) {
+        if (Date.now() >= deadline) {
           throw new DacsError(`session ${jobId} lock is contended (timed out)`);
         }
         await sleep(LOCK_RETRY_MS);
@@ -185,7 +213,8 @@ export async function createFsSessionStore(
     try {
       return await fn();
     } finally {
-      await unlink(lp).catch(() => {});
+      const current = await readLockOwner(lp);
+      if (current?.token === owner.token) await unlink(lp).catch(() => {});
     }
   }
 
@@ -202,7 +231,11 @@ export async function createFsSessionStore(
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       let existing: { jobId?: unknown; kind?: unknown };
       try {
-        existing = JSON.parse(await readFile(path, "utf8")) as {
+        existing = JSON.parse(await readPrivateFile(
+          path,
+          "utf8",
+          "filesystem session store",
+        )) as {
           jobId?: unknown;
           kind?: unknown;
         };
@@ -238,7 +271,11 @@ export async function createFsSessionStore(
     for (const file of files) {
       let parsed: unknown;
       try {
-        parsed = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as unknown;
+        parsed = JSON.parse(await readPrivateFile(
+          join(sessionsDir, file),
+          "utf8",
+          "filesystem session store",
+        )) as unknown;
       } catch {
         continue;
       }
@@ -456,7 +493,11 @@ export async function createFsSessionStore(
       const records: SessionRecord[] = [];
       for (const f of files) {
         try {
-          const parsed = JSON.parse(await readFile(join(sessionsDir, f), "utf8")) as unknown;
+          const parsed = JSON.parse(await readPrivateFile(
+            join(sessionsDir, f),
+            "utf8",
+            "filesystem session store",
+          )) as unknown;
           if (sessionRecordShapeViolation(parsed) === null) {
             records.push(parsed as SessionRecord);
           }

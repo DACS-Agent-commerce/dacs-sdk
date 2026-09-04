@@ -1071,7 +1071,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const evidenceRef = {
       anchor: {
         kind: "storage-program" as const,
-        locator: "stor:settlement-evidence",
+        locator:
+          "dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7E:x402%3Adefault:0",
       },
       contentHash: contentHash(stripSignature(evidence)),
     };
@@ -1088,6 +1089,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
         },
         attestationRef: evidenceRef,
+        paymentAddress: {
+          railId: "x402:default",
+          phaseIndex: 0,
+        },
+        result: { ok: true, txRefs: evidence.paymentTxRefs },
       },
       {
         resolvePublicKey: async () => sellerPublicKey,
@@ -1145,7 +1151,15 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         { role: "buyer", bundleHash: "a".repeat(64), primaryClaim: normativeBuyerDid },
         { role: "seller", bundleHash: "b".repeat(64), primaryClaim: sellerDid },
       ],
-      phaseSummary: [],
+      phaseSummary: [
+        {
+          index: 0,
+          kind: "pay-x402" as const,
+          outcome: "ok" as const,
+          txRefs: structuredClone(evidence.paymentTxRefs),
+          attestationRef: evidenceRef,
+        },
+      ],
       vetRecords: [
         {
           anchor: {
@@ -1333,7 +1347,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     });
     const aliasVerdict = await aliasAgent.verifyBundle("stor:aliased-bundle");
-    expect(aliasKeyResolutions).toBe(2);
+    // Suffix-key aliases are rejected before the external resolver is invoked.
+    expect(aliasKeyResolutions).toBe(0);
     expect(aliasVerdict.ok).toBe(false);
     expect(
       aliasVerdict.refs.find((entry) => entry.kind === "dacs-4-evidence"),
