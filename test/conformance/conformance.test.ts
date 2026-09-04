@@ -18,6 +18,7 @@ import {
   paymentEvidenceAddress,
   ratingAddress,
   sha256Hex,
+  stripSignature,
 } from "../../src/canonical/index.js";
 import {
   SIGNATURE_DOMAIN_SEPARATORS,
@@ -55,6 +56,7 @@ import {
   type ListingValidationDeps,
 } from "../../src/agent/listingValidation.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
@@ -1248,6 +1250,73 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(r.reasons).toEqual([]);
       expect(r.decision).toBe(want);
     },
+    "settlement-x402-pass": async (want) => {
+      const document = read(
+        "conformance/vectors/security/settlement-event-identity-v0.6.json",
+      ) as any;
+      const vector = document.vectors.find(
+        (entry: { name?: string }) => entry.name === "current-x402-event",
+      );
+      expect(vector).toBeDefined();
+      const evidence = structuredClone(vector.settlementEvidence);
+      const signer = evidence.signature.signer as string;
+      const publicKey = hex(document.publicKey);
+      const deps = {
+        resolvePublicKey: async (candidate: string) =>
+          candidate === signer ? publicKey : null,
+        verify: verifySig,
+      };
+      const semantic = await verifySettlementEvidence(
+        evidence,
+        {
+          orchestrator: signer,
+          attestationRef: {
+            anchor: {
+              kind: "storage-program",
+              locator: vector.anchorAddress,
+            },
+            contentHash: contentHash(stripSignature(evidence)),
+          },
+          result: { ok: true, txRefs: vector.settlementEvidence.paymentTxRefs },
+          agreement: vector.verificationContext.amount,
+          rail: {
+            railId: vector.verificationContext.railId,
+            railType: "x402",
+            asset: vector.verificationContext.amount.currency,
+            network: `eip155:${vector.verificationContext.x402Receipt.chainId}`,
+            handler: "pay-x402",
+          },
+          paymentAddress: {
+            railId: vector.verificationContext.railId,
+            phaseIndex: vector.phaseIndex,
+          },
+        },
+        deps,
+      );
+      expect(semantic.reasons).toEqual([]);
+      expect(semantic.decision).toBe(want);
+
+      const identity = await resolveSettlementEventIdentity(
+        evidence,
+        {
+          anchorAddress: vector.anchorAddress,
+          phaseIndex: vector.phaseIndex,
+          railId: vector.verificationContext.railId,
+          asset: vector.verificationContext.asset,
+          payer: vector.verificationContext.payer,
+          payee: vector.verificationContext.payee,
+          amount: vector.verificationContext.amount,
+          x402Receipt: vector.verificationContext.x402Receipt,
+          ledgerEvents: vector.ledgerEvents,
+          priorClaims: vector.priorClaims,
+        },
+        deps,
+      );
+      expect(identity.decision).toBe(want);
+      expect(identity).toMatchObject({
+        settlementId: vector.expectedSettlementTxId,
+      });
+    },
     "settlement-delivery-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-delivery-success.json") as any;
       const r = await verifySettlementEvidence(
@@ -1305,6 +1374,29 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           })
         ).decision,
       ).toBe(want);
+    },
+    "settlement-wrong-anchor-fail": async (want) => {
+      const fx = read(
+        "conformance/fixtures/settlement-evidence-payment-success.json",
+      ) as any;
+      const wrongRef = structuredClone(fx.result.attestationRef);
+      wrongRef.anchor.locator =
+        `dacs4:payment:${fx.evidence.jobId}:polygon-amoy-usdc:1`;
+      expect((await verifyEvidence(fx.evidence, {
+        attestationRef: wrongRef,
+        rail: { railId: "polygon-amoy-usdc" },
+        paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+      })).decision).toBe(want);
+    },
+    "settlement-txrefs-mismatch-fail": async (want) => {
+      const fx = read(
+        "conformance/fixtures/settlement-evidence-payment-success.json",
+      ) as any;
+      const handlerRefs = structuredClone(fx.result.txRefs);
+      handlerRefs[0].txHash = "polygon-amoy:0xdifferent";
+      expect((await verifyEvidence(fx.evidence, {
+        result: { ok: true, txRefs: handlerRefs },
+      })).decision).toBe(want);
     },
     "settlement-attestationref-hash-mismatch-fail": async (want) => {
       expect(
@@ -1411,6 +1503,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       evidence.deliverableContentHash = "not-a-hash";
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
+    "settlement-storage-anchored-as-entitlement-fail": async (want) => {
+      const evidence = deliveryEvidence();
+      const expected = evidence.deliverableAnchor.locator;
+      evidence.deliverableAnchor.locator =
+        `dacs4:entitlement:${evidence.jobId}:0`;
+      expect((await verifyEvidence(evidence, {
+        expectedAnchorLocator: expected,
+      })).decision).toBe(want);
+    },
     "settlement-negative-fee-fail": async (want) => {
       const evidence = paymentEvidence();
       evidence.paymentFee = { amount: "-1", currency: "USDC" };
@@ -1438,6 +1539,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           })
         ).decision,
       ).toBe(want);
+    },
+    "settlement-rail-network-mismatch-fail": async (want) => {
+      expect((await verifyEvidence(paymentEvidence(), {
+        rail: {
+          railType: "evm-erc20",
+          assetSpec: { kind: "erc20", chainId: 80002 },
+          networkSpec: { kind: "solana", cluster: "devnet" },
+        },
+      })).decision).toBe(want);
     },
     "settlement-htlc-finality-params-pass": async (want) => {
       expect(
@@ -1822,6 +1932,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
+    "cf4-dacs2-attestation-address": "no exported dacs2 address builder (MVP anchor names deliberately unexported; #5/#48)",
+    "cf4-dacs2-composite-address": "no exported dacs2 composite address builder (#5/#48)",
+    "cf4-dacs4-payment-address": "no exported dacs4 payment address builder (#5/#48)",
+    "cf4-dacs5-rating-address": "no exported dacs5 rating address builder (#5/#48)",
+    "vet-cm2-address": "no exported dacs2 attestation address builder (#5/#48)",
     "settlement-wrong-anchor-fail":
       "EvidenceContext cannot validate the result.attestationRef payment-address id (PC-2)",
     "settlement-txrefs-mismatch-fail":
@@ -1831,7 +1946,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "settlement-rail-network-mismatch-fail":
       "EvidenceRailContext carries only opaque asset/network strings, not the categorical or chainId structure needed for RD-5 coherence",
     "settlement-cross-chainid-matching-kind-pass":
-      "EvidenceRailContext does not represent asset.chainId/network.chainId",
+      "blocked by DACS-Standard#352: RD-5 prose requires chainId equality while this golden expects a mismatch to pass",
   };
 
   // ── Drive the manifest ────────────────────────────────────────────────────
@@ -1877,12 +1992,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
-    // coverage to 128; the two-sided bundle lookup surface raises it to 132.
+    // This pin has 236 cases. Current main provides 132 non-vacuous SDK
+    // runners; this PR adds five settlement-context runners, raising coverage
+    // to 137.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(132);
+    expect(Object.keys(RUNNERS)).toHaveLength(137);
     expect(manifest.cases).toHaveLength(236);
   });
 

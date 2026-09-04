@@ -166,8 +166,10 @@ const seller = await createAgent({
     ),
   // Required to accept bundles with SettlementEvidence. Resolve the exact
   // phase orchestrator and authenticated pinned-rail definition from trusted
-  // session/registry state; the SDK binds the Agreement and AttestationRef and
-  // performs the DACS-4 semantic and cryptographic verification itself.
+  // session/registry state, including the structured assetSpec/networkSpec
+  // needed for RD-5. The SDK derives the PC-2 phase index and exact handler
+  // txRefs from the authenticated bundle, binds the Agreement/AttestationRef,
+  // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },

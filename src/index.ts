@@ -480,6 +480,8 @@ export {
   type EvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
   verifyBundleCopy,
   ABORT_OUTCOMES,

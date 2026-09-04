@@ -4,6 +4,7 @@ import type {
   AnyAttestationBundle,
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
+  ChainTxRef,
   CompositeVerificationRecord,
   IdentityBundle,
   ListingDraft,
@@ -15,11 +16,13 @@ import {
   isAnyAttestationBundle,
   isAgreementArtifact,
   isAttestationRef,
+  isChainTxRef,
   isLegacyMvpListing,
   isListing,
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
@@ -540,11 +543,18 @@ export interface AgentSettlementEvidenceContextInput {
   agreement: Readonly<AgreementArtifact>;
 }
 
+type AgentSettlementEvidenceResultContext = Omit<
+  NonNullable<EvidenceContext["result"]>,
+  "txRefs"
+>;
+
 export type AgentSettlementEvidenceContext = Omit<
   EvidenceContext,
-  "agreement" | "attestationRef"
+  "agreement" | "attestationRef" | "paymentAddress" | "result"
 > & {
   orchestrator: string;
+  /** `txRefs` are derived from the authenticated bundle phase, never supplied. */
+  result?: AgentSettlementEvidenceResultContext;
 };
 
 export type AgentSettlementEvidenceContextResolver = (
@@ -579,6 +589,11 @@ function captureSettlementEvidenceContext(
   if (
     Object.prototype.hasOwnProperty.call(context, "agreement") ||
     Object.prototype.hasOwnProperty.call(context, "attestationRef") ||
+    Object.prototype.hasOwnProperty.call(context, "paymentAddress") ||
+    (context.result !== undefined &&
+      context.result !== null &&
+      typeof context.result === "object" &&
+      Object.prototype.hasOwnProperty.call(context.result, "txRefs")) ||
     typeof context.orchestrator !== "string" ||
     context.orchestrator.length === 0
   ) {
@@ -1284,10 +1299,69 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         if (!resolvedContext) {
           return { decision: "error" as const, authorizedSigner: null };
         }
+        let exactPhase:
+          | Readonly<(typeof context.bundle.phaseSummary)[number]>
+          | undefined;
+        try {
+          const evidenceRefBytes = canonicalize(context.evidenceRef);
+          const matchingPhases = context.bundle.phaseSummary.filter(
+            (candidate) =>
+              candidate.kind === phase &&
+              candidate.attestationRef !== undefined &&
+              isAttestationRef(candidate.attestationRef) &&
+              canonicalize(candidate.attestationRef) === evidenceRefBytes,
+          );
+          if (matchingPhases.length !== 1) {
+            return { decision: "fail" as const, authorizedSigner: null };
+          }
+          exactPhase = matchingPhases[0];
+        } catch {
+          return { decision: "error" as const, authorizedSigner: null };
+        }
+        if (!exactPhase) {
+          return { decision: "fail" as const, authorizedSigner: null };
+        }
+        const exactPaymentTxRefs = phase.startsWith("pay-")
+          ? exactPhase.txRefs
+          : undefined;
+        if (
+          phase.startsWith("pay-") && evidence.outcome === "success" &&
+          exactPaymentTxRefs === undefined
+        ) {
+          return {
+            decision: "indeterminate" as const,
+            authorizedSigner: resolvedContext.orchestrator,
+          };
+        }
+        if (
+          exactPaymentTxRefs !== undefined &&
+          !exactPaymentTxRefs.every((ref) => isChainTxRef(ref))
+        ) {
+          return { decision: "fail" as const, authorizedSigner: null };
+        }
+        const paymentAddress = phase.startsWith("pay-")
+          ? agreement.terms.rail
+            ? {
+                railId: agreement.terms.rail.railId,
+                phaseIndex: exactPhase.index,
+                resolved: evidence.supersedesEvidenceRef !== undefined,
+              }
+            : null
+          : undefined;
+        if (paymentAddress === null) {
+          return { decision: "fail" as const, authorizedSigner: null };
+        }
         const verification = await verifySettlementEvidence(
           evidence,
           {
             ...resolvedContext,
+            ...(paymentAddress === undefined ? {} : { paymentAddress }),
+            result: {
+              ...resolvedContext.result,
+              ...(exactPaymentTxRefs !== undefined
+                ? { txRefs: exactPaymentTxRefs as readonly ChainTxRef[] }
+                : {}),
+            },
             agreement: {
               amount: agreement.terms.price.amount,
               currency: agreement.terms.price.currency,
