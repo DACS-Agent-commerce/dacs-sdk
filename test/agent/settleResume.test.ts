@@ -9,7 +9,12 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
-import { createIdempotencyStore, createInMemorySettlementLog, settlementKey } from "../../src/rails/idempotency.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+  type SettlementBinding,
+} from "../../src/rails/idempotency.js";
 
 const seed = Uint8Array.from(Buffer.alloc(32, 5));
 const priv = privateKeyFromSeed(seed);
@@ -63,11 +68,38 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
       kv.set(addr, value as Record<string, unknown>);
       return addr;
     },
-    settle: (req) =>
-      opts.store.once(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0), async (): Promise<SettleResult> => {
+    settle: (req) => {
+      const phaseIndex = req.phaseIndex ?? 0;
+      const binding = Object.freeze({
+        bindingVersion: "1",
+        railId: req.rail,
+        jobId: req.jobId,
+        phaseIndex,
+        phase: req.phase,
+        amount: req.amount,
+        agreementAsset: req.asset,
+        settlementAsset: req.asset,
+        payer: "0xbuyer",
+        payee: req.payee,
+        network: "eip155:84532",
+        finality: Object.freeze({ model: "block-depth", finalityBlocks: 1 }),
+      }) satisfies Readonly<SettlementBinding>;
+      return opts.store.once(
+        settlementKey(req.rail, req.jobId, phaseIndex),
+        binding,
+        async (): Promise<SettleResult> => {
         opts.counter.n += 1;
-        return { ok: true, txHash: `0xsettle${opts.counter.n}`, chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
-      }),
+        return {
+          ok: true,
+          txHash: `0xsettle${opts.counter.n}`,
+          chainId: "eip155:84532",
+          payer: "0xbuyer",
+          payee: req.payee,
+          finality: { model: "block-depth", finalityBlocks: 1 },
+        };
+        },
+      );
+    },
     newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
     nowMs: () => 1780000000000,
