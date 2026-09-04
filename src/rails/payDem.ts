@@ -12,6 +12,8 @@ import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
 import {
   createIdempotencyStore,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
@@ -270,8 +272,10 @@ export interface PayDemReconciledSettlement extends SettleResult {
 
 /**
  * Reconcile one exact pay-DEM payment tuple. `null` is a positive proof that no
- * transfer for this tuple landed and is the only answer that may authorize a
- * resubmission. An indeterminate or non-final observation must throw.
+ * transfer for this tuple landed, but cannot by itself revoke an earlier process
+ * or signed transaction. Native DEM therefore remains fail-closed after absence
+ * unless a higher-level adapter supplies a separately fenced replay primitive.
+ * An indeterminate or non-final observation must throw.
  */
 export type PayDemSettlementReconcile = (
   context: Readonly<PayDemSettlementRecoveryContext>,
@@ -315,7 +319,55 @@ export interface DemosNativeClient {
       transfer: Readonly<PayDemPreparedTransfer>,
     ) => Promise<void>;
     assertCurrentBeforeBroadcast?: () => Promise<void>;
+    effectFence?: Readonly<SettlementEffectFence>;
   }): Promise<DemosTransferResult>;
+}
+
+function captureSettlementEffectFence(
+  value: unknown,
+): Readonly<SettlementEffectFence> | undefined {
+  if (value === undefined) return undefined;
+  const owner = requiredStableString(value, "owner", "pay-dem effect fence owner");
+  const settlementKey = requiredStableString(
+    value,
+    "settlementKey",
+    "pay-dem effect fence settlementKey",
+  );
+  const bindingHash = requiredStableString(
+    value,
+    "bindingHash",
+    "pay-dem effect fence bindingHash",
+  );
+  const generationProperty = stableDataProperty(
+    value,
+    "generation",
+    "pay-dem effect fence generation",
+  );
+  if (!generationProperty.found ||
+      !Number.isSafeInteger(generationProperty.value) ||
+      (generationProperty.value as number) < 0) {
+    throw new DacsError(
+      "pay-dem effect fence generation must be a non-negative safe integer",
+    );
+  }
+  const effectIdentity = optionalStableString(
+    value,
+    "effectIdentity",
+    "pay-dem effect fence effectIdentity",
+  );
+  const assertCurrent = stableMethod<() => Promise<void>>(
+    value,
+    "assertCurrent",
+    "pay-dem effect fence assertion",
+  );
+  return Object.freeze({
+    owner,
+    generation: generationProperty.value as number,
+    settlementKey,
+    bindingHash,
+    ...(effectIdentity === undefined ? {} : { effectIdentity }),
+    assertCurrent,
+  });
 }
 
 function captureRecoveryContext(
@@ -400,10 +452,22 @@ function captureRecoveryContext(
   });
 }
 
+export function payDemSettleCore(
+  params: PayDemSettleParams,
+  client: DemosNativeClient,
+  effectFence?: Readonly<SettlementEffectFence>,
+): Promise<SettleResult>;
+export function payDemSettleCore(
+  params: PayDemSettleParams,
+  client: DemosNativeClient,
+  defaultNetwork?: string,
+  effectFence?: Readonly<SettlementEffectFence>,
+): Promise<SettleResult>;
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
-  defaultNetwork = "demos",
+  defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
+  effectFenceOverride?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
@@ -415,6 +479,20 @@ export async function payDemSettleCore(
     "pay-dem recipient",
   );
   const amount = requiredStableString(params, "amount", "pay-dem amount");
+  const defaultNetwork = typeof defaultNetworkOrFence === "string"
+    ? defaultNetworkOrFence
+    : "demos";
+  if (typeof defaultNetworkOrFence !== "string" &&
+      effectFenceOverride !== undefined) {
+    throw new DacsError(
+      "pay-dem effect fence cannot be supplied in both argument positions",
+    );
+  }
+  const effectFence = captureSettlementEffectFence(
+    typeof defaultNetworkOrFence === "string"
+      ? effectFenceOverride
+      : defaultNetworkOrFence,
+  );
   if (typeof defaultNetwork !== "string" || defaultNetwork.length === 0 ||
       defaultNetwork.trim() !== defaultNetwork || defaultNetwork.includes("\0")) {
     throw new DacsError("pay-dem default network must be stable text");
@@ -506,6 +584,7 @@ export async function payDemSettleCore(
     }
   }
 
+  await effectFence?.assertCurrent();
   const response = await transfer({
     to: recipient,
     amountOs,
@@ -515,6 +594,7 @@ export async function payDemSettleCore(
     ...(assertCurrentBeforeBroadcast === undefined
       ? {}
       : { assertCurrentBeforeBroadcast }),
+    ...(effectFence === undefined ? {} : { effectFence }),
   });
   const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
   const hashProperty = stableDataProperty(
@@ -643,7 +723,10 @@ export interface PayDemRail {
   /** The buyer's Demos address. */
   readonly address: string;
   /** Settle one session's payment via a native DEM transfer. */
-  settle(params: PayDemSettleParams): Promise<SettleResult>;
+  settle(
+    params: PayDemSettleParams,
+    effectFence?: Readonly<SettlementEffectFence>,
+  ): Promise<SettleResult>;
 }
 
 /**
@@ -1177,6 +1260,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       recovery,
       journalPreparedTransfer: invocationJournal,
       assertCurrentBeforeBroadcast,
+      effectFence,
     }) => {
       if (configuredMaxTotalDebitOs !== undefined &&
           invocationMaxTotalDebitOs !== undefined &&
@@ -1324,6 +1408,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // late fulfilment/rejection; inclusion is established independently below
       // from the pre-journaled signed hash, and ambiguity never authorises a
       // second submission.
+      await effectFence?.assertCurrent();
       const broadcastAttempt = Promise.resolve().then(() => broadcast(validity));
       void broadcastAttempt.then(
         () => undefined,
@@ -1374,7 +1459,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
 
   return {
     address: client.address,
-    settle: async (params) => {
+    settle: async (params, effectFence) => {
       const invocationJournal = stableDataProperty(
         params,
         "journalPreparedTransfer",
@@ -1390,6 +1475,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         params,
         client,
         network ?? "demos",
+        effectFence,
       );
     },
   };
@@ -1562,7 +1648,7 @@ function capturePayDemReconciliation(
   );
   if (!captured.ok) {
     throw new DacsError(
-      "pay-dem reconciliation is indeterminate; only null proof-of-absence may authorize resubmission",
+      "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
     );
   }
   return captured;
@@ -1798,13 +1884,27 @@ export function payDemSettle(
         "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
       );
     }
-    const submit = async () => {
+    const binding = Object.freeze({
+      bindingVersion: "1",
+      railId,
+      jobId,
+      phaseIndex,
+      phase,
+      amount: amountOs,
+      agreementAsset: asset,
+      settlementAsset: DEM_CURRENCY,
+      payer: payerAddress,
+      payee: payeeAddress,
+      network,
+      finality: Object.freeze({ model: "bft-final" }),
+    }) satisfies Readonly<SettlementBinding>;
+    const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
       const submitted = await railSettle({
         recipient: payeeAddress,
         amount: amountOs,
         network,
         recovery: context,
-      });
+      }, effectFence);
       const captured = capturePayDemResult(
         submitted,
         context,
@@ -1829,6 +1929,7 @@ export function payDemSettle(
         };
     const result = await storeOnce(
       key,
+      binding,
       submit,
       reconcileForStore,
     );
@@ -1878,6 +1979,12 @@ export function payDemSettle(
         `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
       );
     }
-    return { ...captured, payee: expectedPayee };
+    return Object.freeze({
+      ...captured,
+      payee: expectedPayee,
+      ...(captured.finality === undefined
+        ? {}
+        : { finality: Object.freeze({ ...captured.finality }) }),
+    });
   };
 }

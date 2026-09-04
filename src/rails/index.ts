@@ -214,10 +214,22 @@ export {
 export {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  settlementBindingHash,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
+  type SettlementIdempotencyStoreOptions,
+  type SettlementIntentClaim,
+  type SettlementIntentLease,
+  type SettlementLeaseToken,
   type SettlementLog,
+  type SettlementNotInvokedResult,
+  type SettlementOutcomeRecord,
+  type SettlementOutcomeWrite,
   type SettlementReconcile,
+  type SettlementReplayAuthorization,
+  type SettlementRecoveryGrant,
 } from "./idempotency.js";
 export {
   createPayD402Rail,

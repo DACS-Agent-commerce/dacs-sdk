@@ -82,8 +82,10 @@
     "README.md",
     "docs/parser-engine.md",
     "docs/alternative-payment-projection.md",
+    "docs/demos-cci-identities.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
+    "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
   ],
@@ -97,6 +99,7 @@
     "test": "vitest run",
     "host:test": "npm test --workspace @kynesyslabs/dacs-node",
     "generator:test": "npm test --workspace create-dacs-agent",
+    "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
     "test:watch": "vitest",
@@ -113,6 +116,14 @@
     "access": "public",
     "provenance": true
   },
+  "dacs": {
+    "releaseMetadataVersion": 1,
+    "standardRevision": "662be1d4899a2cadf327fe2d5523e93a80334e5f",
+    "configSchemaVersion": 1,
+    "sqliteSchemaVersion": 7,
+    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7],
+    "breakingConfigurationChanges": []
+  },
   "dependencies": {
     "@swaggerexpert/jsonpath": "4.0.4",
     "@xmldom/xmldom": "^0.9.12",
@@ -120,14 +131,6 @@
     "htmlparser2": "^12.0.0",
     "re2-wasm": "^1.0.2",
     "xpath": "^0.0.34"
-  },
-  "dacs": {
-    "releaseMetadataVersion": 1,
-    "standardRevision": "965df755aba4ff392f1fb37a93d287242b177ba4",
-    "configSchemaVersion": 1,
-    "sqliteSchemaVersion": 7,
-    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7],
-    "breakingConfigurationChanges": []
   },
   "peerDependencies": {
     "@kynesyslabs/demosdk": "^4.0.16",

@@ -3,9 +3,14 @@ export {
 } from "./publicAddress.js";
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
@@ -39,21 +44,31 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  lookupBundleCopies,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
+  type BundleCopyRead,
+  type BundleCopyReader,
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
 } from "./bundleConsistency.js";
 export {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
   verifyBundleCopy,
@@ -70,11 +85,13 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
   type ReputationWindow,
   type SessionOutcome,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,
@@ -83,6 +100,15 @@ export {
   type Dacs5ResumableSessionState,
   type Dacs5SessionTransitionContext,
 } from "./sessionSemantics.js";
+export {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+  type VerificationRetryPolicy,
+  type VetPhaseFailureCause,
+  type VetPhaseFailureClass,
+} from "./vetSemantics.js";
 export {
   discoverListings,
   verifyReadableListingArtifact,

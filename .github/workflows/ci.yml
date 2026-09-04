@@ -26,7 +26,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm ci
+        # All audit policy is enforced explicitly below. Disable npm's implicit
+        # install-time audit so it cannot invoke an obsolete endpoint first.
+        run: npm ci --no-audit
 
       - name: Sync DACS-Standard conformance vectors
         run: npm run conformance:sync
@@ -59,8 +61,8 @@ jobs:
           test -f dist/index.js
           tar -tf "$smoke_root"/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/index.js
           tar -tf "$smoke_root"/kynesyslabs-dacs-0.1.0-alpha.0.tgz | grep -Fx package/dist/commerce/index.js
-          npm install --prefix "$smoke_root/app" --save-dev typescript@^5 @types/node@^20
-          npm install --prefix "$smoke_root/app" --omit=optional --ignore-scripts "$smoke_root"/*.tgz
+          npm install --prefix "$smoke_root/app" --no-audit --save-dev typescript@^5 @types/node@^20
+          npm install --prefix "$smoke_root/app" --no-audit --omit=optional --ignore-scripts "$smoke_root"/*.tgz
           test ! -d "$smoke_root/app/node_modules/@kynesyslabs/demosdk"
           test ! -d "$smoke_root/app/node_modules/@x402/core"
           test ! -d "$smoke_root/app/node_modules/@x402/evm"
@@ -76,8 +78,8 @@ jobs:
           grep -q "Cannot find module '@x402/fetch'" "$smoke_root/live-without-peers.log"
           grep -q "Cannot find module 'viem/accounts'" "$smoke_root/live-without-peers.log"
           (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
-          npm audit --prefix "$smoke_root/app" --omit=dev --omit=optional
-          npm install --prefix "$smoke_root/app" --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
+          node scripts/check-npm-advisories.mjs --prefix "$smoke_root/app" --scope all --omit dev --omit optional --threshold low
+          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
@@ -92,7 +94,7 @@ jobs:
           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/transport/index.js
           tar -tf host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz | grep -Fx package/dist/sqlite.js
           node -e "const core=require('./package.json'); const host=require('./packages/dacs-node/package.json'); if (host.peerDependencies?.['@kynesyslabs/dacs'] !== core.version || host.peerDependenciesMeta?.['@kynesyslabs/dacs']?.optional === true) process.exit(1)"
-          npm install --prefix host-package-smoke/app --ignore-scripts --strict-peer-deps \
+          npm install --prefix host-package-smoke/app --no-audit --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
           (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport'), import('@kynesyslabs/dacs-node/sqlite')]).then(([core, host, transport, sqlite]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof host.createDacsBuyerServiceV1 !== 'function' || typeof host.createDacsSellerServiceV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsSellerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsUnavailableLiveCommerceGraphV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsSellerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsFixedPriceX402RoleOrderV1 !== 'function' || typeof host.createDacsFixedPriceX402OrderPairV1 !== 'function' || typeof host.loadDacsSecretV1 !== 'function' || typeof host.installDacsRoleServiceProcessHooksV1 !== 'function' || typeof host.runDacsLiveDoctorV1 !== 'function' || typeof host.createDacsNodeLocalDoctorProbesV1 !== 'function' || typeof host.inspectDacsNodePackageIntegrityV1 !== 'function' || typeof host.createDacsRoleServiceDoctorProbesV1 !== 'function' || typeof host.readDacsRoleServiceStatusesV1 !== 'function' || typeof host.createDacsGuardedSetupPlanV1 !== 'function' || typeof host.createDacsGuardedPurchasePlanV1 !== 'function' || typeof host.createDacsFundedDoctorPlanV1 !== 'function' || typeof host.prepareDacsFundedDoctorV1 !== 'function' || typeof host.createDacsFundedDoctorExecutorV1 !== 'function' || typeof host.runDacsGuardedCommandV1 !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || typeof transport.createDacsHttpMessageClientV1 !== 'function' || typeof transport.startDacsHttpMessageServerV1 !== 'function' || typeof sqlite.inspectExistingDacsNodeSqliteDatabaseV1 !== 'function' || typeof sqlite.inspectDacsNodeSqliteUpgradeSafetyV1 !== 'function') process.exit(1) })")
@@ -101,7 +103,7 @@ jobs:
       - name: Packed SQLite host smoke
         run: |
           mkdir -p host-sqlite-smoke/app
-          npm install --prefix host-sqlite-smoke/app \
+          npm install --prefix host-sqlite-smoke/app --no-audit \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
           (cd host-sqlite-smoke/app && node --input-type=module - <<'NODE'
@@ -175,7 +177,7 @@ jobs:
           }
           NODE
           )
-          npm audit --prefix host-sqlite-smoke/app --omit=dev
+          node scripts/check-npm-advisories.mjs --prefix host-sqlite-smoke/app --scope all --omit dev --threshold low
 
       - name: Packed generator clean-project acceptance
         run: |
@@ -185,7 +187,7 @@ jobs:
           node -e "require('node:fs').rmSync('packages/create-dacs-agent/dist', { recursive: true, force: true })"
           npm pack --workspace create-dacs-agent --pack-destination generator-smoke/packs
           test -f packages/create-dacs-agent/dist/bin.js
-          npm install --prefix generator-smoke/runner --ignore-scripts \
+          npm install --prefix generator-smoke/runner --no-audit --ignore-scripts \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/create-dacs-agent-0.1.0-alpha.0.tgz
           node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
             generator-smoke/generated-agent --yes --no-install
@@ -194,7 +196,7 @@ jobs:
           # The prerelease packages are intentionally installed from the local
           # tarballs. --no-save preserves the generator's registry-ready exact
           # manifest; npm ci cannot validate it until those versions publish.
-          (cd generator-smoke/generated-agent && npm install --no-save --ignore-scripts --omit=optional \
+          (cd generator-smoke/generated-agent && npm install --no-audit --no-save --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
             typescript@5.9.2 @types/node@20.19.1)
@@ -331,74 +333,21 @@ jobs:
       - name: Test project generator
         run: npm run generator:test
 
+      - name: Test fail-closed dependency audit gate
+        run: npm run audit:test
+
       # Informational (non-blocking): surface production-tree advisories per the
-      # SECURITY.md audit policy (#40). continue-on-error keeps the JOB green, but
-      # the step's own status is NOT swallowed with `|| true` — a non-zero audit
-      # shows as a ⚠️ on the step, and a compact summary is published to the run.
+      # SECURITY.md audit policy (#40). Findings are summarized without blocking;
+      # transport/schema failure remains visible as a warning on this step.
       - name: Dependency audit (production, informational)
         continue-on-error: true
-        run: |
-          npm audit --omit=dev --json > audit.json || true
-          node -e '
-            const a = require("./audit.json");
-            const m = (a.metadata && a.metadata.vulnerabilities) || {};
-            const v = a.vulnerabilities || {};
-            // OWN advisory = a `via` object on a direct dep (not a severity inherited
-            // from its subtree). This is what SECURITY.md tracks as fixable-here.
-            const ownDirect = Object.values(v).filter(x =>
-              x.isDirect && (x.via || []).some(e => typeof e === "object"));
-            const rows = ["| severity | count |", "| --- | --- |"]
-              .concat(["critical","high","moderate","low"].map(s => `| ${s} | ${m[s] ?? 0} |`));
-            const out = [
-              "### Production dependency audit (informational)",
-              "",
-              ...rows,
-              "",
-              `Direct dependencies with their OWN advisory: **${ownDirect.length}**. ` +
-              `Live integration peers are audited by applications that install them; see SECURITY.md.`,
-            ].join("\n");
-            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY || "/dev/stdout", out + "\n");
-          '
-          # Re-run without masking so the step reflects the real audit status.
-          npm audit --omit=dev
+        run: node scripts/check-npm-advisories.mjs --scope all --omit dev --threshold none --summary
 
-      # Blocking gate: fail ONLY on a high/critical advisory a DIRECT dependency
-      # carries ITSELF. A direct dep's `severity` is inherited from its subtree via
-      # `via` edges, so severity alone flags demosdk/viem for their transitive tree
-      # (covered by SECURITY.md). An OWN advisory is a `via` OBJECT on the node — a
-      # new one here means a direct dependency we must fix directly.
+      # Blocking gate: submit only the exact installed versions of direct
+      # production dependencies (including workspace-owned optional dependencies).
+      # Optional live peers are audited by the applications that install them.
       - name: Fail on direct-dependency high/critical advisories
-        run: |
-          # `|| true` keeps a non-zero audit exit (findings exist) from aborting the
-          # step before we parse — but a TOTAL audit failure is caught below, not
-          # swallowed, so a registry/network error can't pass the gate silently.
-          npm audit --omit=dev --json > audit.json || true
-          node -e '
-            let a;
-            try { a = require("./audit.json"); } catch { a = null; }
-            // A completed audit always carries a metadata.vulnerabilities block.
-            // Its absence means the audit did not run to completion — FAIL CLOSED
-            // rather than treat a missing/garbage report as "no advisories".
-            if (!a || !a.metadata || !a.metadata.vulnerabilities) {
-              console.error("dependency audit did not produce a valid report; failing closed");
-              process.exit(1);
-            }
-            const v = a.vulnerabilities || {};
-            const bad = [];
-            for (const [name, node] of Object.entries(v)) {
-              if (!node.isDirect) continue;
-              for (const via of node.via || []) {
-                if (typeof via === "object" && (via.severity === "high" || via.severity === "critical")) {
-                  bad.push(`${name}: ${via.title || via.url} (${via.severity})`);
-                }
-              }
-            }
-            if (bad.length) {
-              console.error("Direct-dependency high/critical advisories:\n  " + bad.join("\n  "));
-              process.exit(1);
-            }
-            console.log("No high/critical advisory on any direct dependency.");
-          '
+        run: node scripts/check-npm-advisories.mjs --scope direct --omit dev --threshold high --summary
 
   packed-live-rail:
     runs-on: ubuntu-latest

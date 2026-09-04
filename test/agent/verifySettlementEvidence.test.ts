@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, test, vi } from "vitest";
 
 import {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
+  type AuthenticatedEvidenceContext,
+  type AuthenticatedEvidenceDeps,
   type EvidenceContext,
-  type EvidenceDeps,
 } from "../../src/agent/verifySettlementEvidence.js";
 import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/index.js";
 
@@ -29,7 +31,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 // Resolve the orchestrator's real key + verify with real ed25519.
-function realDeps(publicKeys: Record<string, string>): EvidenceDeps {
+function realDeps(publicKeys: Record<string, string>): AuthenticatedEvidenceDeps {
   return {
     resolvePublicKey: async (signer) =>
       publicKeys[signer] ? b64u(publicKeys[signer]) : null,
@@ -39,19 +41,39 @@ function realDeps(publicKeys: Record<string, string>): EvidenceDeps {
 
 const ORCH = "did:demos:orchestrator";
 
+function paymentAuthenticatedContext(): AuthenticatedEvidenceContext {
+  const fixture = read("fixtures/settlement-evidence-payment-success.json");
+  return {
+    orchestrator: ORCH,
+    agreement: { amount: "5", currency: "USDC" },
+    rail: {
+      railId: "polygon-amoy-usdc",
+      railType: "evm-erc20",
+      asset: "USDC",
+      network: "eip155:80002",
+      handler: "pay-evm-erc20",
+    },
+    attestationRef: fixture.result.attestationRef,
+    paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+    result: { ok: true, txRefs: fixture.result.txRefs },
+  };
+}
+
 describe.skipIf(!haveVectors)("verifySettlementEvidence — §14 golden fixtures", () => {
   const golden = read("vectors/golden.json").settlement;
   const paymentFx = read("fixtures/settlement-evidence-payment-success.json");
   const deliveryFx = read("fixtures/settlement-evidence-delivery-success.json");
   const deps = realDeps(golden.publicKeys ?? deliveryFx.publicKeys);
 
-  const paymentCtx: EvidenceContext = {
-    orchestrator: ORCH,
-    attestationRef: paymentFx.result.attestationRef,
+  const paymentCtx: AuthenticatedEvidenceContext = {
+    ...paymentAuthenticatedContext(),
   };
-  const deliveryCtx: EvidenceContext = {
+  const deliveryCtx: AuthenticatedEvidenceContext = {
     orchestrator: ORCH,
+    agreement: { amount: "1", currency: "TEST" },
     attestationRef: deliveryFx.result.attestationRef,
+    result: { ok: true },
+    expectedAnchorLocator: deliveryFx.evidence.deliverableAnchor.locator,
   };
 
   it("paymentPass — the reference payment-success record verifies", async () => {
@@ -72,6 +94,34 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — §14 golden fixtures
     const r = await verifySettlementEvidence(tampered, paymentCtx, deps);
     expect(r.decision).toBe("fail");
   });
+
+  it("never turns a structural-only call into an authenticated pass", async () => {
+    const structural = await validateSettlementEvidenceStructure(paymentFx.evidence);
+    expect(structural).toEqual({ decision: "valid", reasons: [] });
+
+    const authenticated = await verifySettlementEvidence(
+      paymentFx.evidence,
+      {} as never,
+      {} as never,
+    );
+    expect(authenticated.decision).toBe("error");
+    expect(authenticated.reasons).toEqual(expect.arrayContaining([
+      expect.stringMatching(/requires key resolution/),
+      expect.stringMatching(/requires a canonical phase orchestrator/),
+      expect.stringMatching(/requires the exact agreement/),
+      expect.stringMatching(/requires the exact evidence attestationRef/),
+      expect.stringMatching(/requires the exact phase result/),
+      expect.stringMatching(/requires the exact pinned rail/),
+      expect.stringMatching(/requires the exact PC-2 address tuple/),
+    ]));
+  });
+
+  it("compares orchestrators by canonical ClaimReference identity", async () => {
+    const context = paymentAuthenticatedContext();
+    context.orchestrator = `${ORCH}?role=seller`;
+    await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+      .resolves.toEqual({ decision: "pass", reasons: [] });
+  });
 });
 
 // ── Decision-by-decision, over constructed mutations of the base records ──
@@ -83,8 +133,19 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
 
   // Structural mutations run WITHOUT key deps: the record signature is left
   // intact but unverified, so the structural violation is the sole verdict.
-  const verify = (ev: unknown, ctx: EvidenceContext = {}) =>
-    verifySettlementEvidence(ev, ctx, {});
+  const verify = async (ev: unknown, ctx: EvidenceContext = {}) => {
+    const result = await validateSettlementEvidenceStructure(ev, ctx);
+    return {
+      decision: result.decision === "valid"
+        ? "pass" as const
+        : result.decision === "invalid"
+          ? "fail" as const
+          : result.decision === "incomplete"
+            ? "indeterminate" as const
+            : "error" as const,
+      reasons: result.reasons,
+    };
+  };
 
   test("paymentPass: base record with no context is a clean pass", async () => {
     expect((await verify(payment())).decision).toBe("pass");
@@ -411,14 +472,17 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   // Key-dependent verdicts (error / indeterminate / signature-fail).
   test("unresolvableKey → indeterminate", async () => {
     const ev = payment();
-    const r = await verifySettlementEvidence(ev, {}, { resolvePublicKey: async () => null, verify: () => true });
+    const r = await verifySettlementEvidence(ev, paymentAuthenticatedContext(), {
+      resolvePublicKey: async () => null,
+      verify: () => true,
+    });
     expect(r.decision).toBe("indeterminate");
   });
   test("malformedKey → error", async () => {
     const ev = payment();
     const r = await verifySettlementEvidence(
       ev,
-      {},
+      paymentAuthenticatedContext(),
       { resolvePublicKey: async () => new Uint8Array(10), verify: () => true },
     );
     expect(r.decision).toBe("error");
@@ -427,14 +491,14 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = payment();
     const r = await verifySettlementEvidence(
       ev,
-      {},
+      paymentAuthenticatedContext(),
       { resolvePublicKey: async () => new Uint8Array(32), verify: () => false },
     );
     expect(r.decision).toBe("fail");
   });
   test("uses one authoritative evidence/context snapshot across async key resolution", async () => {
     const ev = payment();
-    const ctx: EvidenceContext = { orchestrator: ORCH };
+    const ctx = paymentAuthenticatedContext();
     const publicKeys = read("vectors/golden.json").settlement.publicKeys as Record<
       string,
       string
@@ -469,14 +533,14 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       get: getter,
     });
 
-    const result = await verifySettlementEvidence(ev);
+    const result = await validateSettlementEvidenceStructure(ev);
     expect(result.decision).toBe("error");
     expect(result.reasons).toContain(
       "evidence or verification context is not stable canonical JSON",
     );
     expect(getter).not.toHaveBeenCalled();
   });
-  test("accepts a deeply frozen read-only verification context", async () => {
+  test("accepts a deeply frozen read-only structural context", async () => {
     const ev = payment();
     const context = Object.freeze({
       agreement: Object.freeze({
@@ -485,8 +549,8 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       }),
     });
 
-    await expect(verifySettlementEvidence(ev, context)).resolves.toEqual({
-      decision: "pass",
+    await expect(validateSettlementEvidenceStructure(ev, context)).resolves.toEqual({
+      decision: "valid",
       reasons: [],
     });
   });
@@ -494,7 +558,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = payment();
     const key = new Uint8Array(32);
 
-    const nonBoolean = await verifySettlementEvidence(ev, {}, {
+    const nonBoolean = await verifySettlementEvidence(ev, paymentAuthenticatedContext(), {
       resolvePublicKey: async () => key,
       verify: (() => "yes") as never,
     });
@@ -503,7 +567,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       "evidence signature verifier returned a non-boolean result",
     );
 
-    const resolverThrow = await verifySettlementEvidence(ev, {}, {
+    const resolverThrow = await verifySettlementEvidence(ev, paymentAuthenticatedContext(), {
       resolvePublicKey: async () => {
         throw new Error("key backend unavailable");
       },
@@ -514,7 +578,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       `signer key for "${ORCH}" could not be resolved`,
     );
 
-    const verifierThrow = await verifySettlementEvidence(ev, {}, {
+    const verifierThrow = await verifySettlementEvidence(ev, paymentAuthenticatedContext(), {
       resolvePublicKey: async () => key,
       verify: () => {
         throw new Error("crypto backend unavailable");
@@ -583,9 +647,89 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ctx: EvidenceContext = { expectedAnchorLocator: "stor-somewhere-else" };
     expect((await verify(delivery(), ctx)).decision).toBe("fail");
   });
+  test("binds the complete PC-2 payment address tuple, including CF-4 rail encoding", async () => {
+    const fixture = read("fixtures/settlement-evidence-payment-success.json");
+    const validContext: EvidenceContext = {
+      attestationRef: fixture.result.attestationRef,
+      rail: { railId: "polygon-amoy-usdc" },
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+    };
+    expect((await verify(fixture.evidence, validContext)).decision).toBe("pass");
+
+    expect((await verify(fixture.evidence, {
+      ...validContext,
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 1 },
+    })).decision).toBe("fail");
+
+    expect((await verify(fixture.evidence, {
+      ...validContext,
+      rail: { railId: "evm-erc20:80002:USDC" },
+      paymentAddress: { railId: "evm-erc20:80002:USDC", phaseIndex: 0 },
+      attestationRef: {
+        ...fixture.result.attestationRef,
+        anchor: {
+          kind: "storage-program",
+          locator:
+            `dacs4:payment:${fixture.evidence.jobId}:` +
+            "evm-erc20%3A80002%3AUSDC:0",
+        },
+      },
+    })).decision).toBe("pass");
+  });
+  test("does not turn a missing PC-2 read into evidence absence", async () => {
+    const ev = payment();
+    const result = await verify(ev, {
+      paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+    });
+    expect(result.decision).toBe("indeterminate");
+    expect(result.reasons).toContain(
+      "payment evidence attestationRef is unavailable for PC-2 address binding",
+    );
+  });
+  test("requires signed paymentTxRefs to equal the authenticated handler result", async () => {
+    const fixture = read("fixtures/settlement-evidence-payment-success.json");
+    expect((await verify(fixture.evidence, {
+      result: { ok: true, txRefs: fixture.result.txRefs },
+    })).decision).toBe("pass");
+
+    const mismatched = structuredClone(fixture.result.txRefs);
+    mismatched[0].txHash = "polygon-amoy:0xanother-settlement";
+    expect((await verify(fixture.evidence, {
+      result: { ok: true, txRefs: mismatched },
+    })).decision).toBe("fail");
+  });
   test("incoherentRailTypeHandler → fail", async () => {
     const ctx: EvidenceContext = { rail: { railType: "evm-erc20", handler: "pay-solana-spl" } };
     expect((await verify(payment(), ctx)).decision).toBe("fail");
+  });
+  test("enforces structured RD-5 asset/network kinds and EVM chain identity", async () => {
+    const valid: EvidenceContext = {
+      rail: {
+        railType: "evm-erc20",
+        network: "eip155:80002",
+        assetSpec: { kind: "erc20", chainId: 80002 },
+        networkSpec: { kind: "evm", chainId: 80002 },
+      },
+    };
+    expect((await verify(payment(), valid)).decision).toBe("pass");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        networkSpec: { kind: "solana", cluster: "devnet" },
+      },
+    })).decision).toBe("fail");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        networkSpec: { kind: "evm", chainId: 8453 },
+      },
+    })).decision).toBe("fail");
+    expect((await verify(payment(), {
+      rail: {
+        ...valid.rail,
+        assetSpec: { kind: "erc20", chainId: 0 },
+      },
+    })).decision).toBe("error");
   });
 
   // Tolerated / valid cross-chain shapes → pass.
