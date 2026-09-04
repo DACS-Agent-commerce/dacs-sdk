@@ -29,12 +29,14 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   signArtifact,
+  signedBytes,
   verifyArtifact,
   type DomainSeparator,
 } from "../../src/crypto/index.js";
 import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
 import {
   bundleConsistency,
+  lookupBundleCopies,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
 import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
@@ -75,6 +77,10 @@ import {
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
+import {
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "../../src/identity/index.js";
 import type {
   AnyAttestationBundle,
   AttestationBundle,
@@ -1005,6 +1011,19 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       });
     },
 
+    // dacs1 — exact SIWD Resources binding (§6.3.2). The Standard publishes
+    // the primitive bundle-hash input and all derived bytes in the manifest.
+    "dacs1-siwd-resource-binding": (want) => {
+      const bytes = signedBytes("dacs-bundle-presentation:v1:", want.bundleHash);
+      const resource = siwdBundleResource(want.bundleHash);
+      expect(Buffer.from(bytes).toString("utf8")).toBe(want.signedBytes);
+      expect(resource).toBe(want.resource);
+      expect(Buffer.from(resource.slice("dacs:".length), "hex").toString("utf8")).toBe(
+        want.decoded,
+      );
+      expect(siwdResourcesBindBundleHash([resource], want.bundleHash)).toBe(true);
+    },
+
     // governance — DACS-2 §7.4.4 GOV-1..GOV-3. These primitive vectors
     // exercise the shipped fail-closed phase/disclosure policy directly.
     "gov-gov2-classify": (want) => {
@@ -1645,6 +1664,46 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       ];
       expect([b !== s, s !== o]).toEqual(want);
     },
+    "verify-lookup-both": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) => ({
+        disposition: "present",
+        bundle: { jobId: "job-1", anchoredByRole: role },
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-one": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) =>
+        role === "buyer"
+          ? {
+              disposition: "present",
+              bundle: { jobId: "job-1", anchoredByRole: role },
+            }
+          : { disposition: "absent" },
+      );
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-none": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "absent",
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-cross-session-jobid-ignored": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "present",
+        bundle: { jobId: "job-other" },
+      }));
+      expect(await bundleConsistency(copies, { trustBundles: true })).toBe(want);
+    },
     "verify-consume-absent": async (want) => {
       expect(await consume({ buyer: absent, seller: absent })).toBe(want.verdict);
     },
@@ -1951,12 +2010,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Current main provides 128 non-vacuous SDK
-    // runners; this PR adds five settlement-context runners, raising coverage
-    // to 133.
+    // This pin has 236 cases. Current main provides 137 non-vacuous SDK
+    // runners; this PR adds SIWD resource binding, raising coverage to 138.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(133);
+    expect(Object.keys(RUNNERS)).toHaveLength(138);
     expect(manifest.cases).toHaveLength(236);
   });
 
