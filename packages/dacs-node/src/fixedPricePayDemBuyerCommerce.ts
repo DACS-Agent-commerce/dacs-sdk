@@ -163,6 +163,22 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
           orchestrator: context.peerAuthority,
           agreement: { amount: artifact.terms.price.amount, currency: "DEM" },
           rail: railContext,
+          attestationRef: {
+            anchor: { kind: "storage-program", locator: request.logicalAddress },
+            contentHash: request.evidenceHash,
+          },
+          paymentAddress: {
+            railId: payment.payment.railId,
+            phaseIndex: payment.payment.phaseIndex,
+          },
+          result: {
+            ok: true,
+            txRefs: [{
+              kind: "demos",
+              txHash: settlement.txHash,
+              blockNumber: settlement.blockNumber,
+            }],
+          },
         }, verifier());
         return verified.decision === "pass"
           ? { disposition: "valid" as const }
@@ -181,9 +197,27 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
   const buyerReceived: DacsFixedPricePayDemBuyerCommerceV1["buyerReceived"] = {
     async authorizeReceived({ operation, record, payload }) {
       try {
+        const loaded = await context.database.createPayDemCoordinatorStore("buyer")
+          .load("buyer", operation.order.jobId);
+        if (
+          loaded.status !== "ok" ||
+          loaded.record.buyer !== context.authority ||
+          loaded.record.seller !== context.peerAuthority
+        ) return false;
+        const agreement = await loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
+          context,
+          loaded.record,
+        );
+        const artifact = agreement.artifact;
+        if (
+          !isAgreementArtifact(artifact) ||
+          !("payeeBoundAgreementVersion" in artifact)
+        ) return false;
+        const evidenceLogicalAddress =
+          `dacs4:delivery-evidence:${operation.order.jobId}`;
         const evidenceRaw = await verifyPeerAnchor(
           context,
-          `dacs4:delivery-evidence:${operation.order.jobId}`,
+          evidenceLogicalAddress,
         );
         if (evidenceRaw === null) return "indeterminate" as const;
         if (!isSettlementEvidence(evidenceRaw) ||
@@ -196,6 +230,16 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
             contentHash(payload) !== evidenceRaw.deliverableContentHash) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
+          agreement: {
+            amount: artifact.terms.price.amount,
+            currency: artifact.terms.price.currency,
+          },
+          attestationRef: {
+            anchor: { kind: "storage-program", locator: evidenceLogicalAddress },
+            contentHash: contentHash(evidenceRaw),
+          },
+          result: { ok: true },
+          expectedAnchorLocator: record.logicalAddress,
         }, verifier());
         return verification.decision === "indeterminate"
           ? "indeterminate" as const

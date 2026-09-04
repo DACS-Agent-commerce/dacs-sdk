@@ -94,6 +94,16 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
+Settlement evidence has two deliberately different public boundaries.
+`validateSettlementEvidenceStructure()` checks wire shape and any supplied
+comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
+an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
+operation and requires the authenticated agreement, pinned rail, phase
+orchestrator, evidence reference, phase result, PC-2 address (for payment),
+expected deliverable locator (for delivery), plus key resolution and signature
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
@@ -121,6 +131,15 @@ Non-intrinsic writer identities require
 adapter's actual key before signing.
 
 ## Public API
+
+`createAgent()` returns only the high-level DACS operations below. It does not
+expose the connected substrate adapter, raw demosdk client, signing primitive,
+or broadcast/transfer authority. Operator diagnostics and funded conformance
+tests that genuinely need the low-level adapter must opt into the clearly named
+`createUnsafeManualAgent()` escape hatch and must never pass that result to an
+application callback, plugin, or HTTP handler. In-process narrowing prevents
+accidental capability leakage; OS-level buyer/seller signer isolation remains a
+deployment responsibility of the generated role services.
 
 ```ts
 import {
@@ -157,8 +176,10 @@ const seller = await createAgent({
     ),
   // Required to accept bundles with SettlementEvidence. Resolve the exact
   // phase orchestrator and authenticated pinned-rail definition from trusted
-  // session/registry state; the SDK binds the Agreement and AttestationRef and
-  // performs the DACS-4 semantic and cryptographic verification itself.
+  // session/registry state, including the structured assetSpec/networkSpec
+  // needed for RD-5. The SDK derives the PC-2 phase index and exact handler
+  // txRefs from the authenticated bundle, binds the Agreement/AttestationRef,
+  // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
@@ -510,6 +531,14 @@ thrown authentication dependency cannot blame the counterparty. The returned
 authority contains no signing capability and is intended for the existing
 role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
 co-signed; single-signature suppression is available only for an honest abort.
+
+`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
+§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
+bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
+ignores content returned for another job. Lookup is discovery, not trust: pass
+each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
+that returns its `.valid` boolean to `bundleConsistency` before using the
+resulting two-sided verdict.
 
 ### Normative artifact references
 

@@ -887,6 +887,11 @@ describe("x402 buyer EVM authorization provider", () => {
 
   test("the lazy viem reader binds logs, receipts and authorizationState to one finality head", async () => {
     const calls: Array<{ method: string; params?: unknown[] }> = [];
+    const ancestryHash = (height: number): string => {
+      if (height === 100) return BLOCK_HASH;
+      if (height === 110) return HEAD_HASH;
+      return `0x${height.toString(16).padStart(64, "0")}`;
+    };
     const rpcLog = (entry: X402BuyerEvmLog) => ({
       ...entry,
       blockNumber: `0x${entry.blockNumber.toString(16)}`,
@@ -908,6 +913,18 @@ describe("x402 buyer EVM authorization provider", () => {
           result = body.params?.[0] === "0x64"
             ? { number: "0x64", hash: BLOCK_HASH, timestamp: "0x700" }
             : { number: "0x6e", hash: HEAD_HASH, timestamp: "0x7d0" };
+        } else if (body.method === "eth_getBlockByHash") {
+          const requestedHash = body.params?.[0];
+          const height = Array.from({ length: 11 }, (_, index) => 100 + index)
+            .find((candidate) => ancestryHash(candidate) === requestedHash);
+          result = height === undefined
+            ? null
+            : {
+                number: `0x${height.toString(16)}`,
+                hash: ancestryHash(height),
+                parentHash: ancestryHash(height - 1),
+                timestamp: `0x${(1_800 + height).toString(16)}`,
+              };
         } else if (body.method === "eth_getLogs") {
           const filter = body.params?.[0] as { topics: string[] };
           result = filter.topics[0] === EIP3009_AUTHORIZATION_USED_TOPIC
@@ -933,12 +950,20 @@ describe("x402 buyer EVM authorization provider", () => {
       const client = await createViemX402BuyerEvmReadClient({
         rpcUrl: `http://127.0.0.1:${port}`,
         chainId: CHAIN_ID,
+        maximumAncestryDepth: 20,
       });
       const { result } = await reconcile(provider(client));
       expect(result?.disposition).toBe("settled-same");
+      await expect(client.confirmBlockAncestor({
+        blockNumber: 100,
+        blockHash: `0x${"dd".repeat(32)}`,
+        headBlockNumber: 110,
+        headBlockHash: HEAD_HASH,
+      })).resolves.toMatchObject({ canonical: false });
       expect(calls.map((call) => call.method)).toEqual(expect.arrayContaining([
         "eth_chainId",
         "eth_getBlockByNumber",
+        "eth_getBlockByHash",
         "eth_getLogs",
         "eth_getTransactionReceipt",
         "eth_call",

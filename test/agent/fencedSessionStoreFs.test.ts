@@ -1,4 +1,16 @@
-import { mkdtemp, writeFile, stat, mkdir, readFile, readdir, open, rm, unlink, utimes } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1959,8 +1971,16 @@ describe("crash-window hardening (#67 round 3)", () => {
 test("create keeps its published session locked through marker-conflict rollback", async () => {
   const jobId = "create-race";
   const agreementHash = "a".repeat(64);
-  const sessionFile = join(dir, "sessions", `${encodeURIComponent(jobId)}.json`);
-  const jobLock = join(dir, "locks", `${encodeURIComponent(jobId)}.lock`);
+  // The hardened store normalizes immutable macOS /var and /tmp aliases to
+  // their physical /private paths before publishing. Match the path observed
+  // by the mocked filesystem call on every platform.
+  const admittedDir = await realpath(dir);
+  const sessionFile = join(
+    admittedDir,
+    "sessions",
+    `${encodeURIComponent(jobId)}.json`,
+  );
+  const jobLock = join(admittedDir, "locks", `${encodeURIComponent(jobId)}.lock`);
   let signalPublished = () => {};
   let permitSessionLink = () => {};
   let signalMutationContended = () => {};
