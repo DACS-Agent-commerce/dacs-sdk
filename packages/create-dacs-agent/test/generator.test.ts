@@ -412,6 +412,7 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("funded doctor adapter is not configured");
     expect(combined).toContain("dacs-generated-upgrade-check/v1");
     expect(combined).toContain("inspectDacsNodeSqliteUpgradeSafetyV1");
+    expect(combined.match(/httpTransport: Object\.freeze/g)).toHaveLength(2);
     expect(combined).toContain("registry.npmjs.org");
     expect(combined).toContain("automatic-upgrade-not-supported");
     expect(combined).not.toContain('availableVersion: "not-queried"');
