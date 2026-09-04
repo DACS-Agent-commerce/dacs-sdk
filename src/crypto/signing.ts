@@ -11,7 +11,8 @@ import {
 
 /**
  * The closed §B.7 registry of signature domain separators — the full 28-entry
- * set at the DACS-Standard PR #335 merge revision. A signature produced under one
+ * set at this revision, in CORE §B.7 table order (issue #86; oracle pin
+ * 662be1d4899a2cadf327fe2d5523e93a80334e5f). A signature produced under one
  * separator MUST NOT validate under any other (SIG-2).
  *
  * Registry membership (all 28) is distinct from *generic single-hash signing
@@ -21,8 +22,8 @@ import {
  * and MUST use their recipe-specific helpers below. The generic helpers reject
  * the composite separators so a caller can never silently sign the wrong bytes.
  *
- * The non-signature hash-domain tags (`dacs-sealed-bid:v1:`, `dacs-sb3:v1:`) are
- * deliberately NOT here — they domain-separate hash preimages, not signature
+ * The non-signature hash-domain tags (`dacs-sealed-bid:v1:`, `dacs-sb3:v1:`,
+ * `dacs-ap2-idem:v1:`) are deliberately NOT here — they domain-separate hash preimages, not signature
  * `signed_bytes`, so SIG-1 does not scope to them.
  */
 export const SIGNATURE_DOMAIN_SEPARATORS = [
@@ -43,13 +44,13 @@ export const SIGNATURE_DOMAIN_SEPARATORS = [
   "dacs-rail:v1:",
   "dacs-entitlement:v1:",
   "dacs-payload-attestation:v1:",
+  "dacs-prior-payment-disposition:v1:",
   "dacs-bundle:v1:",
   "dacs-fault-bundle:v1:",
+  "dacs-evidence-bound-fault-bundle:v1:",
   "dacs-bundle-binding:v1:",
   "dacs-fault-bundle-pointer:v1:",
-  "dacs-evidence-bound-fault-bundle:v1:",
   "dacs-evidence-bound-fault-bundle-pointer:v1:",
-  "dacs-prior-payment-disposition:v1:",
   "dacs-rating:v1:",
   "dacs-session-binding:v1:",
   "dacs-auto-accept-commitment:v1:",
