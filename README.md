@@ -501,14 +501,6 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
-`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
-§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
-bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
-ignores content returned for another job. Lookup is discovery, not trust: pass
-each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
-that returns its `.valid` boolean to `bundleConsistency` before using the
-resulting two-sided verdict.
-
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
 recursive production authenticator, and creates DACS-5 `vet-failed` terminal
@@ -518,6 +510,14 @@ thrown authentication dependency cannot blame the counterparty. The returned
 authority contains no signing capability and is intended for the existing
 role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
 co-signed; single-signature suppression is available only for an honest abort.
+
+`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
+§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
+bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
+ignores content returned for another job. Lookup is discovery, not trust: pass
+each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
+that returns its `.valid` boolean to `bundleConsistency` before using the
+resulting two-sided verdict.
 
 ### Normative artifact references
 
