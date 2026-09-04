@@ -15,7 +15,7 @@ const SDK_VERSION = "0.1.0-alpha.0";
 const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "662be1d4899a2cadf327fe2d5523e93a80334e5f";
 const CONFIG_SCHEMA_VERSION = 1;
-const SQLITE_SCHEMA_VERSION = 7;
+const SQLITE_SCHEMA_VERSION = 8;
 
 function packageJson(options: LiveProjectTemplateOptions): string {
   const x402 = options.rails !== "pay-dem";

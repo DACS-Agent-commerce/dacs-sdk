@@ -117,6 +117,9 @@ idempotency key to the role service. The service durably retains the envelope
 inputs before signing, so a coordinator retry or process restart reconstructs
 and resumes the exact same envelope; reusing the key with a changed payload,
 job, type or lifetime fails locally.
+An expired, unacknowledged outbox message may be renewed with a new signed
+validity window, while the receiving inbox still collapses that renewal to the
+same semantic action and binds its acknowledgement to the newly received ID.
 
 Both transport stores reject retention shorter than seven days, support a
 terminal-session retention extension, use stable bounded cursors, and keep a

@@ -64,7 +64,14 @@ async function verifyPeerAnchor(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   logicalAddress: string,
   expectedHash?: string,
-): Promise<Readonly<Record<string, unknown>> | null> {
+): Promise<Readonly<{
+  artifact: Readonly<Record<string, unknown>>;
+  attestationRef: Readonly<{
+    anchor: Readonly<{ kind: "storage-program"; locator: string }>;
+    contentHash: string;
+    signer: string;
+  }>;
+}> | null> {
   const resolved = await context.demos.adapter.resolveAnchorByName(
     logicalAddress,
     owner(context.peerAuthority),
@@ -86,7 +93,14 @@ async function verifyPeerAnchor(
       receipt.observationDisposition === "established" &&
       (receipt.state === "included" || receipt.state === "finalized") &&
       await context.demos.adapter.verifyDemosAnchorReceipt(receipt) === true
-    ? artifact : null;
+    ? Object.freeze({
+        artifact,
+        attestationRef: Object.freeze({
+          anchor: Object.freeze({ kind: "storage-program" as const, locator: logicalAddress }),
+          contentHash: hash,
+          signer: context.peerAuthority,
+        }),
+      }) : null;
 }
 
 /** Native PC-7 and buyer-received policy over authenticated Demos facts. */
@@ -163,6 +177,24 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
           orchestrator: context.peerAuthority,
           agreement: { amount: artifact.terms.price.amount, currency: "DEM" },
           rail: railContext,
+          attestationRef: {
+            anchor: { kind: "storage-program", locator: request.logicalAddress },
+            contentHash: request.evidenceHash,
+            signer: context.peerAuthority,
+          },
+          paymentAddress: {
+            railId: loaded.record.protocol.rail.railId,
+            phaseIndex: 2,
+            resolved: false,
+          },
+          result: {
+            ok: true,
+            txRefs: [{
+              kind: "demos",
+              txHash: settlement.txHash,
+              blockNumber: settlement.blockNumber,
+            }],
+          },
         }, verifier());
         return verified.decision === "pass"
           ? { disposition: "valid" as const }
@@ -181,11 +213,12 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
   const buyerReceived: DacsFixedPricePayDemBuyerCommerceV1["buyerReceived"] = {
     async authorizeReceived({ operation, record, payload }) {
       try {
-        const evidenceRaw = await verifyPeerAnchor(
+        const evidenceAnchor = await verifyPeerAnchor(
           context,
           `dacs4:delivery-evidence:${operation.order.jobId}`,
         );
-        if (evidenceRaw === null) return "indeterminate" as const;
+        if (evidenceAnchor === null) return "indeterminate" as const;
+        const evidenceRaw = evidenceAnchor.artifact;
         if (!isSettlementEvidence(evidenceRaw) ||
             evidenceRaw.jobId !== operation.order.jobId ||
             evidenceRaw.phase !== "deliver-storage-program" ||
@@ -194,8 +227,22 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
             evidenceRaw.deliverableAnchor.locator !== record.logicalAddress ||
             evidenceRaw.deliverableContentHash !== record.contentHash ||
             contentHash(payload) !== evidenceRaw.deliverableContentHash) return false;
+        const agreement = await loadDacsFixedPricePayDemBuyerAgreementPublicationV1(
+          context,
+          operation.order,
+        );
+        const artifact = agreement.artifact;
+        if (!isAgreementArtifact(artifact) ||
+            !("payeeBoundAgreementVersion" in artifact)) return false;
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
+          agreement: {
+            amount: artifact.terms.price.amount,
+            currency: artifact.terms.price.currency,
+          },
+          attestationRef: evidenceAnchor.attestationRef,
+          result: { ok: true },
+          expectedAnchorLocator: record.logicalAddress,
         }, verifier());
         return verification.decision === "indeterminate"
           ? "indeterminate" as const
