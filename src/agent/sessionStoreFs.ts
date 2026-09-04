@@ -1,5 +1,10 @@
 import {
+  lstat,
+  mkdir,
+  open,
   readdir,
+  rename,
+  rm,
   unlink,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -87,6 +92,18 @@ export async function createFsSessionStore(
   const sessionPath = (jobId: string) => join(sessionsDir, `${safe(jobId)}.json`);
   const hashPath = (hash: string) => join(hashesDir, `${safe(hash)}.json`);
   const lockPath = (jobId: string) => join(locksDir, `${safe(jobId)}.lock`);
+  const mutationGatePath = (jobId: string) =>
+    join(locksDir, `${safe(jobId)}.reclaim`);
+  const mutationQuarantinePrefix = (jobId: string) => {
+    const encoded = safe(jobId);
+    return `reclaim-${encoded.length}-${encoded}.`;
+  };
+  const mutationQuarantinePath = (jobId: string) =>
+    join(locksDir, `${mutationQuarantinePrefix(jobId)}${randomUUID()}.quarantine`);
+  const releasedLockPath = (jobId: string, token: string) =>
+    join(locksDir, `${safe(jobId)}.${token}.released`);
+  const staleLockPath = (jobId: string) =>
+    join(locksDir, `${safe(jobId)}.${randomUUID()}.stale`);
 
   async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await atomicWritePrivateFile(path, JSON.stringify(value), "filesystem session store");
@@ -142,13 +159,206 @@ export async function createFsSessionStore(
     createdAt: number;
   }
 
+  interface MutationGateOwner {
+    pid: number;
+    token: string;
+  }
+
+  async function removeIfExists(path: string): Promise<void> {
+    await rm(path, { recursive: true, force: true });
+  }
+
+  async function readMutationGateOwner(
+    path: string,
+  ): Promise<MutationGateOwner | null> {
+    try {
+      const metadata = await lstat(path);
+      const ownerPath = metadata.isDirectory() ? join(path, "owner.json") : path;
+      const parsed = JSON.parse(await readPrivateFile(
+        ownerPath,
+        "utf8",
+        "filesystem session store mutation gate",
+      )) as Partial<MutationGateOwner>;
+      if (
+        Number.isSafeInteger(parsed.pid) &&
+        (parsed.pid ?? 0) > 0 &&
+        typeof parsed.token === "string" &&
+        parsed.token.length > 0
+      ) {
+        return parsed as MutationGateOwner;
+      }
+    } catch {
+      // Missing or malformed gates remain authoritative until stale.
+    }
+    return null;
+  }
+
+  async function publishCompleteMutationGate(
+    path: string,
+    owner: MutationGateOwner,
+  ): Promise<void> {
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: 0o700 });
+      const handle = await open(join(candidate, "owner.json"), "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+      } finally {
+        await handle.close();
+      }
+      // Locks are process-coordination state, not durable business state. A
+      // complete closed owner file is required before publication, while an OS
+      // crash may safely lose the gate because every process stops with it.
+      await rename(candidate, path);
+    } finally {
+      await removeIfExists(candidate);
+    }
+  }
+
   function processIsAlive(pid: number): boolean {
     if (!Number.isSafeInteger(pid) || pid <= 0) return false;
     try {
       process.kill(pid, 0);
       return true;
     } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "EPERM";
+      // EPERM and unknown failures do not prove death. Only ESRCH does.
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  }
+
+  const sameLockOwner = (
+    left: LockOwner | undefined,
+    right: LockOwner | undefined,
+  ): boolean => left === undefined
+    ? right === undefined
+    : right !== undefined && left.pid === right.pid && left.token === right.token;
+
+  const sameMutationGateOwner = (
+    left: MutationGateOwner | null,
+    right: MutationGateOwner | null,
+  ): boolean => left === null
+    ? right === null
+    : right !== null && left.pid === right.pid && left.token === right.token;
+
+  async function reclaimMutationQuarantines(jobId: string): Promise<string[]> {
+    const prefix = mutationQuarantinePrefix(jobId);
+    const names = (await readdir(locksDir)).filter(
+      (name) => name.startsWith(prefix) && name.endsWith(".quarantine"),
+    );
+    const live: string[] = [];
+    for (const name of names) {
+      const path = join(locksDir, name);
+      try {
+        const metadata = await lstat(path);
+        const owner = await readMutationGateOwner(path);
+        if (
+          Date.now() - metadata.mtimeMs <= lockStaleMs ||
+          (owner !== null && processIsAlive(owner.pid))
+        ) {
+          live.push(path);
+          continue;
+        }
+        await removeIfExists(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return live;
+  }
+
+  async function quarantineStaleMutationGate(jobId: string): Promise<void> {
+    const gatePath = mutationGatePath(jobId);
+    let observed;
+    try {
+      observed = await lstat(gatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
+    const observedOwner = await readMutationGateOwner(gatePath);
+    if (observedOwner !== null && processIsAlive(observedOwner.pid)) return;
+
+    const quarantine = mutationQuarantinePath(jobId);
+    try {
+      await rename(gatePath, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let moved;
+    try {
+      moved = await lstat(quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const movedOwner = await readMutationGateOwner(quarantine);
+    if (
+      moved.dev === observed.dev &&
+      moved.ino === observed.ino &&
+      sameMutationGateOwner(movedOwner, observedOwner) &&
+      Date.now() - moved.mtimeMs > lockStaleMs &&
+      (movedOwner === null || !processIsAlive(movedOwner.pid))
+    ) {
+      await removeIfExists(quarantine);
+    }
+  }
+
+  async function releaseMutationGate(
+    jobId: string,
+    owner: MutationGateOwner,
+  ): Promise<void> {
+    const gatePath = mutationGatePath(jobId);
+    const observed = await readMutationGateOwner(gatePath);
+    if (observed?.pid === owner.pid && observed.token === owner.token) {
+      const quarantine = mutationQuarantinePath(jobId);
+      try {
+        await rename(gatePath, quarantine);
+        const movedOwner = await readMutationGateOwner(quarantine);
+        if (movedOwner?.pid === owner.pid && movedOwner.token === owner.token) {
+          await removeIfExists(quarantine);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
+
+  async function acquireMutationGate(
+    jobId: string,
+    owner: MutationGateOwner,
+  ): Promise<boolean> {
+    if ((await reclaimMutationQuarantines(jobId)).length > 0) return false;
+    try {
+      await publishCompleteMutationGate(mutationGatePath(jobId), owner);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "ENOTDIR") {
+        throw error;
+      }
+      await quarantineStaleMutationGate(jobId);
+      return false;
+    }
+    return true;
+  }
+
+  async function withLockMutationGate<T>(
+    jobId: string,
+    deadline: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const owner: MutationGateOwner = { pid: process.pid, token: randomUUID() };
+    while (!await acquireMutationGate(jobId, owner)) {
+      if (Date.now() >= deadline) {
+        throw new DacsError(`session ${jobId} lock mutation gate is contended (timed out)`);
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+    try {
+      return await operation();
+    } finally {
+      await releaseMutationGate(jobId, owner);
     }
   }
 
@@ -170,16 +380,54 @@ export async function createFsSessionStore(
   }
 
   /** Reclaim only a sufficiently old lock whose same-host process is provably dead. */
-  async function reclaimIfStale(lp: string): Promise<void> {
-    const owner = await readLockOwner(lp);
-    if (owner !== undefined && Date.now() - owner.createdAt > lockStaleMs &&
-        !processIsAlive(owner.pid)) {
-      // All conforming releases validate the token before releasing their own
-      // lock. Re-read immediately before unlink so a replacement is not removed
-      // after an observed owner has released.
-      const current = await readLockOwner(lp);
-      if (current?.token === owner.token) await unlink(lp).catch(() => {});
+  async function reclaimIfStaleUnderMutationGate(
+    jobId: string,
+    lp: string,
+  ): Promise<void> {
+    // The caller holds the mutation gate for this complete check-and-quarantine
+    // operation. Repeat the authoritative observation immediately before rename.
+    try {
+      const candidate = await lstat(lp);
+      if (Date.now() - candidate.mtimeMs <= lockStaleMs) return;
+      const candidateOwner = await readLockOwner(lp);
+      if (candidateOwner !== undefined && processIsAlive(candidateOwner.pid)) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
+
+    let observed;
+    try {
+      observed = await lstat(lp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
+    const observedOwner = await readLockOwner(lp);
+    if (observedOwner !== undefined && processIsAlive(observedOwner.pid)) return;
+
+    const quarantine = staleLockPath(jobId);
+    try {
+      await rename(lp, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const moved = await lstat(quarantine);
+    const movedOwner = await readLockOwner(quarantine);
+    if (
+      moved.dev !== observed.dev ||
+      moved.ino !== observed.ino ||
+      !sameLockOwner(movedOwner, observedOwner) ||
+      Date.now() - moved.mtimeMs <= lockStaleMs ||
+      (movedOwner !== undefined && processIsAlive(movedOwner.pid))
+    ) {
+      throw new DacsError(`session ${jobId} lock changed during recovery`);
+    }
+    await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
   }
 
   /** Serialise a read-modify-write for one session via an exclusive lock file. */
@@ -191,31 +439,43 @@ export async function createFsSessionStore(
       createdAt: Date.now(),
     };
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    for (;;) {
-      try {
-        await exclusiveWritePrivateFile(
-          lp,
-          JSON.stringify(owner),
-          "filesystem session store lock",
-        );
-        break;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-        // A hard-crashed holder can never release its lock; reclaim it once stale
-        // so the session isn't blocked forever (#67).
-        await reclaimIfStale(lp);
+    return withLockMutationGate(jobId, deadline, async () => {
+      for (;;) {
+        try {
+          await exclusiveWritePrivateFile(
+            lp,
+            JSON.stringify(owner),
+            "filesystem session store lock",
+          );
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+        // A legacy holder does not use the mutation gate. Wait for a live one,
+        // or recover a dead one while every new-version mutation is excluded.
+        await reclaimIfStaleUnderMutationGate(jobId, lp);
         if (Date.now() >= deadline) {
           throw new DacsError(`session ${jobId} lock is contended (timed out)`);
         }
         await sleep(LOCK_RETRY_MS);
       }
-    }
-    try {
-      return await fn();
-    } finally {
-      const current = await readLockOwner(lp);
-      if (current?.token === owner.token) await unlink(lp).catch(() => {});
-    }
+      try {
+        return await fn();
+      } finally {
+        const current = await readLockOwner(lp);
+        if (current?.pid === owner.pid && current.token === owner.token) {
+          const released = releasedLockPath(jobId, owner.token);
+          try {
+            await rename(lp, released);
+            await unlink(released).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+    });
   }
 
   const bindHashImpl = async (
