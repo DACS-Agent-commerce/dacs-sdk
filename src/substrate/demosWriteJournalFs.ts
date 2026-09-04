@@ -1,17 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  lstat,
   mkdir,
-  open,
-  readFile,
   rename,
   rm,
-  stat,
-  writeFile,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   DEMOS_WRITE_JOURNAL_VERSION,
   type DemosWriteJournal,
@@ -21,7 +24,6 @@ import {
 } from "./demosWriteJournal.js";
 
 const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 const DEFAULT_LOCK_STALE_MS = 30_000;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const LOCK_RETRY_MS = 10;
@@ -214,38 +216,12 @@ function validateSnapshot(
   };
 }
 
-function unsupportedDirectorySync(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === "EINVAL" || code === "ENOSYS" || code === "ENOTSUP";
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  let handle;
-  try {
-    handle = await open(path, "r");
-    await handle.sync();
-  } catch (error) {
-    if (!unsupportedDirectorySync(error)) throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
 async function atomicWrite(path: string, value: unknown): Promise<void> {
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    const handle = await open(temporary, "wx", FILE_MODE);
-    try {
-      await handle.writeFile(JSON.stringify(value), "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, path);
-    await syncDirectory(dirname(path));
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await atomicWritePrivateFile(
+    path,
+    JSON.stringify(value),
+    "filesystem Demos write journal",
+  );
 }
 
 function processIsAlive(pid: number): boolean {
@@ -273,10 +249,18 @@ export async function createFsDemosWriteJournal(
     throw new DacsError("Demos write journal lockTimeoutMs must be positive");
   }
 
-  const statesDir = join(options.dir, "wallets");
-  const locksDir = join(options.dir, "locks");
-  await mkdir(statesDir, { recursive: true, mode: DIR_MODE });
-  await mkdir(locksDir, { recursive: true, mode: DIR_MODE });
+  const root = await preparePrivateStoreDirectory(
+    options.dir,
+    "filesystem Demos write journal",
+  );
+  const statesDir = await preparePrivateStoreDirectory(
+    join(root, "wallets"),
+    "filesystem Demos write journal",
+  );
+  const locksDir = await preparePrivateStoreDirectory(
+    join(root, "locks"),
+    "filesystem Demos write journal",
+  );
 
   return {
     async acquire(input) {
@@ -306,10 +290,11 @@ export async function createFsDemosWriteJournal(
         try {
           await mkdir(lockPath, { mode: DIR_MODE });
           try {
-            await writeFile(ownerPath, JSON.stringify(owner), {
-              mode: FILE_MODE,
-              flag: "wx",
-            });
+            await exclusiveWritePrivateFile(
+              ownerPath,
+              JSON.stringify(owner),
+              "filesystem Demos write journal lock",
+            );
           } catch (error) {
             await rm(lockPath, { recursive: true, force: true });
             throw error;
@@ -318,9 +303,18 @@ export async function createFsDemosWriteJournal(
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 
+          const lockMetadata = await lstat(lockPath);
+          if (lockMetadata.isSymbolicLink() || !lockMetadata.isDirectory()) {
+            throw new DacsError("Demos write journal lock path is unsafe");
+          }
+
           let existing: LockOwner | undefined;
           try {
-            existing = JSON.parse(await readFile(ownerPath, "utf8")) as LockOwner;
+            existing = JSON.parse(await readPrivateFile(
+              ownerPath,
+              "utf8",
+              "filesystem Demos write journal lock",
+            )) as LockOwner;
           } catch {
             // A creator can briefly expose the directory before owner.json.
           }
@@ -333,7 +327,7 @@ export async function createFsDemosWriteJournal(
             reclaim = true;
           } else {
             try {
-              const age = Date.now() - (await stat(lockPath)).mtimeMs;
+              const age = Date.now() - (await lstat(lockPath)).mtimeMs;
               // A live process cannot be probed across hosts. Never steal a
               // well-formed foreign-host lease merely because its mtime is old.
               // Distributed deployments must share a backend with equivalent
@@ -367,7 +361,11 @@ export async function createFsDemosWriteJournal(
       const readState = async (): Promise<DemosWriteJournalSnapshot | undefined> => {
         try {
           return validateSnapshot(
-            JSON.parse(await readFile(statePath, "utf8")) as unknown,
+            JSON.parse(await readPrivateFile(
+              statePath,
+              "utf8",
+              "filesystem Demos write journal",
+            )) as unknown,
             key,
           );
         } catch (error) {
@@ -396,7 +394,11 @@ export async function createFsDemosWriteJournal(
           }
           const [disk, lockText] = await Promise.all([
             readState(),
-            readFile(ownerPath, "utf8"),
+            readPrivateFile(
+              ownerPath,
+              "utf8",
+              "filesystem Demos write journal lock",
+            ),
           ]);
           const lock = JSON.parse(lockText) as LockOwner;
           if (disk?.generation !== generation || lock.token !== token) {
@@ -443,7 +445,11 @@ export async function createFsDemosWriteJournal(
             released = true;
             try {
               const currentOwner = JSON.parse(
-                await readFile(ownerPath, "utf8"),
+                await readPrivateFile(
+                  ownerPath,
+                  "utf8",
+                  "filesystem Demos write journal lock",
+                ),
               ) as LockOwner;
               if (currentOwner.token === token) {
                 await rm(lockPath, { recursive: true, force: true });

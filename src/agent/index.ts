@@ -1,8 +1,11 @@
 export { isDacsPublicAddressV1 } from "./publicAddress.js";
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
   type AgentDemosCciConfig,
   type AgentNativeCciTlsnInput,
@@ -39,21 +42,31 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  lookupBundleCopies,
   bundleConsistency,
   bundlesDiverge,
   type ConsistencyVerdict,
+  type BundleCopyRead,
+  type BundleCopyReader,
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
 } from "./bundleConsistency.js";
 export {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
   verifyBundleCopy,
