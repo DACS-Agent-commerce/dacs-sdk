@@ -281,10 +281,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         chainId: "eip155:84532",
         payer: "0xbuyer",
         payee: recipientEvm,
+        finality: { model: "block-depth", finalityBlocks: 12 },
       }));
       return {
         settle,
-        rail: { address: "0xbuyer", settle } as X402Rail,
+        rail: { address: "0xbuyer", finalityBlocks: 12, settle } as X402Rail,
       };
     };
 
