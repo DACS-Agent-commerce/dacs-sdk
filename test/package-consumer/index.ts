@@ -2,6 +2,7 @@ import {
   type BundleVerification,
   type DemosAdapterConfig,
   type DemosWriteJournal,
+  type DeriveReputationDeps,
   type SubstrateAdapter,
   lookupBundleCopies,
   verifyBundleCore,
@@ -19,6 +20,11 @@ import {
 const config: DemosAdapterConfig = { rpc: "https://example.invalid" };
 const verifier: typeof verifyBundleCore = verifyBundleCore;
 const bundleLookup: typeof lookupBundleCopies = lookupBundleCopies;
+const reputationDeps: DeriveReputationDeps = {
+  trustBundles: true,
+  resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
+    jobId.length > 0 && partyPrimaryClaim.length > 0 ? "buyer" : undefined,
+};
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
@@ -34,6 +40,7 @@ declare const ap2Provider: Ap2ProviderAdapter;
 void config;
 void verifier;
 void bundleLookup;
+void reputationDeps;
 void canonical;
 void fulfilment;
 void adapter;

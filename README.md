@@ -301,7 +301,14 @@ hold candidate bundle objects must use `deriveReputationWithValidation()` when
 their cryptographic verifier is asynchronous. The pure `deriveReputation()`
 helper accepts only a synchronous primitive-boolean predicate over copies that
 were authenticated upstream; a Promise-valued predicate is rejected rather
-than treated as truthy.
+than treated as truthy. Both helpers also require an independently authenticated
+per-job `resolvePartyRole({ jobId, partyPrimaryClaim })` mapping. Bundle-local
+`parties[]` labels cannot decide whether a copy is the scored party's own or its
+counterparty's: trusting those labels would let a relabelled self-abort become a
+false counterparty fault. Callers whose validation already authenticated the
+exact party map against the pinned agreement may instead make the explicit
+`trustBundlePartyRoles: true` compatibility assertion; it is not implied by
+`trustBundles` or by signature validation alone.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:

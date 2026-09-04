@@ -282,6 +282,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       },
       {
         trustBundles: true,
+        trustBundlePartyRoles: true,
         // §10.5.1 guard (iv): a one-copy attribution needs authoritative
         // absence of the other role's copy. The current golden models NO
         // retained absence context, so every missing copy is indeterminate.
@@ -1891,6 +1892,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1949,6 +1951,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1960,6 +1963,92 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
         want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
       );
+    },
+    "verify-reputation-relabel-attack-defeated": (want) => {
+      const fx = repFixture();
+      const relabelled = structuredClone(
+        fx.bundles.find((bundle) => bundle.outcome === "aborted-by-self")!,
+      );
+      relabelled.parties = relabelled.parties.map((party) => ({
+        ...party,
+        role: party.primaryClaim === fx.partyPrimaryClaim ? "seller" : "buyer",
+      }));
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [relabelled],
+        {
+          windowStart: fx.windowStart,
+          windowEnd: fx.windowEnd,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          // This vector isolates the metric boundary. The externally
+          // authenticated session binding, not the producer's relabelled
+          // parties[], fixes the scored party as buyer for this job.
+          trustBundles: true,
+          resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
+            jobId === relabelled.jobId &&
+            partyPrimaryClaim === fx.partyPrimaryClaim
+              ? "buyer"
+              : undefined,
+          copyAbsence: () => "absent",
+        },
+      );
+      expect({
+        bundleCount: derived.bundleCount,
+        counterpartyFaultRate: derived.metrics.counterpartyFaultRate,
+        completionRate: derived.metrics.completionRate,
+      }).toEqual(want);
+    },
+    "verify-one-sided-role-signature-binding": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const scope = structuredClone(original);
+      delete scope.signatures;
+      delete scope.anchoredByRole;
+      const sellerOnly = {
+        ...scope,
+        anchoredByRole: "buyer",
+        signatures: [{
+          party: "did:demos:seller",
+          algorithm: "ed25519",
+          value: Buffer.from(signArtifact(
+            "dacs-bundle:v1:",
+            scope,
+            hex(golden.verify.seeds.seller!),
+          )).toString("base64url"),
+        }],
+      };
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(sellerOnly, "buyer", {
+        resolvePublicKey: async (did) => keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("missing required signatures"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
+    },
+    "verify-one-sided-unverified-signature-absent": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(original, "buyer", {
+        resolvePublicKey: async (did) =>
+          did === "did:demos:buyer"
+            ? keys["did:demos:seller"] ?? null
+            : keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("failed verification"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
     },
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
@@ -2003,7 +2092,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     settlement:
       "mutation/candidate inputs are constructed in dacs-verify run.ts, not shipped (only the two success fixtures are); PayeeBound (PB-1..3) has no SDK surface",
     verify:
-      "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
+      "remaining reputation/consumption cases need authenticated resolution context or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
     "cf4-dacs2-attestation-address": "no exported dacs2 address builder (MVP anchor names deliberately unexported; #5/#48)",
@@ -2066,11 +2155,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Current main provides 137 non-vacuous SDK
-    // runners; this PR adds SIWD resource binding, raising coverage to 138.
+    // This pin has 236 cases. Current main provides 138 non-vacuous SDK
+    // runners; this PR adds three role/signature and reputation guards while
+    // retaining all mainline runners, raising coverage to 141.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(138);
+    expect(Object.keys(RUNNERS)).toHaveLength(141);
     expect(manifest.cases).toHaveLength(236);
   });
 
