@@ -9,10 +9,12 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { isSettlementEvidence } from "../../src/artifacts/validators.js";
 import type {
   IdentityBundle,
   SettlementFinalityParameters,
 } from "../../src/artifacts/types.js";
+import { deriveX402ReceiptCommitment } from "../../src/seller/x402Receipt.js";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -24,7 +26,7 @@ const seed = Uint8Array.from(Buffer.alloc(32, 5));
 const priv = privateKeyFromSeed(seed);
 const sign: Signer = (b) => ed25519Sign(b, priv);
 const sellerDid = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
-const buyerDid = "did:demos:agent:buyer";
+const buyerDid = "did:demos:buyer";
 const buyerIdentity: IdentityBundle = {
   bundleVersion: "1",
   presentedBy: buyerDid,
@@ -193,6 +195,165 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const res = await runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1");
     expect(res.outcome).toBe("completed");
     expect(resumed.settleCalls.n).toBe(0); // did NOT pay again — reconciled from the checkpoint
+  });
+
+  test("restart preserves exact x402 event, raw receipt commitment, and finality time", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    const txHash = `0x${"a".repeat(64)}`;
+    const receiptHeader = Buffer.from(JSON.stringify({
+      success: true,
+      transaction: txHash,
+      network: "eip155:84532",
+      payer: "0xbuyer",
+      amount: "1000000",
+      extension: { retained: true },
+    })).toString("base64");
+    const receipt = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: { name: "PAYMENT-RESPONSE", value: receiptHeader },
+    });
+    if (receipt.disposition !== "pass" || !receipt.computedPaymentReceiptHash) {
+      throw new Error("invalid test receipt");
+    }
+    const receiptHash = receipt.computedPaymentReceiptHash;
+    let payments = 0;
+    const settle: SessionDeps["settle"] = async (req) => {
+      payments += 1;
+      return {
+        ok: true,
+        txHash,
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: req.expectedPayee,
+        finality: { model: "block-depth", finalityBlocks: 2 },
+        finalityObservedAt: 1_700_000_011_000,
+        blockNumber: 100,
+        txRef: {
+          kind: "x402-event",
+          httpResource: "https://seller.example/deliver",
+          paymentReceiptHash: receiptHash,
+          settlementTxHash: "a".repeat(64),
+          chainId: 84532,
+          logIndex: 7,
+          protocolVersion: "2",
+        },
+        x402Receipt: {
+          protocolVersion: "2",
+          headerName: "PAYMENT-RESPONSE",
+          headerValue: receiptHeader,
+          paymentReceiptHash: receiptHash,
+        },
+      };
+    };
+    const interrupted = await makeDeps(store, {
+      kv,
+      settle,
+      anchor: async (name, value) => {
+        if (name.includes("evidence")) throw new Error("crash after settlement WAL");
+        const ref = `stor:${name}`;
+        kv.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+    });
+    await expect(runSessionCore(
+      interrupted.listingRef,
+      terms,
+      interrupted.deps,
+    )).rejects.toThrow(/crash after settlement WAL/);
+    expect(payments).toBe(1);
+
+    const resumed = await makeDeps(store, { kv, settle });
+    const result = await runSessionCore(
+      resumed.listingRef,
+      terms,
+      resumed.deps,
+      "job-1",
+    );
+    expect(payments).toBe(1);
+    const anchoredEvidence = kv.get(result.settlementRef);
+    expect(isSettlementEvidence(anchoredEvidence)).toBe(true);
+    expect(anchoredEvidence).not.toHaveProperty("phaseIndex");
+    expect(anchoredEvidence).toMatchObject({
+      settlementFinality: {
+        model: "block-depth",
+        finalityBlocks: 2,
+        finalityObservedAt: 1_700_000_011_000,
+      },
+      paymentTxRefs: [{
+        kind: "x402-event",
+        paymentReceiptHash: receiptHash,
+        settlementTxHash: "a".repeat(64),
+        chainId: 84532,
+        logIndex: 7,
+      }],
+    });
+  });
+
+  test("a contradictory raw x402 receipt fails closed without reopening payment", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    const txHash = `0x${"a".repeat(64)}`;
+    const receiptHeader = Buffer.from(JSON.stringify({
+      success: true,
+      transaction: txHash,
+      network: "eip155:84532",
+      payer: "0x3333333333333333333333333333333333333333",
+      amount: "1000000",
+    })).toString("base64");
+    const commitment = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader: { name: "PAYMENT-RESPONSE", value: receiptHeader },
+    });
+    if (commitment.disposition !== "pass" ||
+        !commitment.computedPaymentReceiptHash) {
+      throw new Error("invalid test receipt");
+    }
+    const receiptHash = commitment.computedPaymentReceiptHash;
+    let payments = 0;
+    const settle: SessionDeps["settle"] = async (req) => {
+      payments += 1;
+      return {
+        ok: true,
+        txHash,
+        chainId: "eip155:84532",
+        payer: "0x2222222222222222222222222222222222222222",
+        payee: req.expectedPayee,
+        finality: { model: "block-depth", finalityBlocks: 2 },
+        finalityObservedAt: 1_700_000_011_000,
+        txRef: {
+          kind: "x402-event",
+          httpResource: "https://seller.example/deliver",
+          paymentReceiptHash: receiptHash,
+          settlementTxHash: "a".repeat(64),
+          chainId: 84532,
+          logIndex: 7,
+          protocolVersion: "2",
+        },
+        x402Receipt: {
+          protocolVersion: "2",
+          headerName: "PAYMENT-RESPONSE",
+          headerValue: receiptHeader,
+          paymentReceiptHash: receiptHash,
+        },
+      };
+    };
+    const first = await makeDeps(store, { kv, settle });
+    await expect(runSessionCore(
+      first.listingRef,
+      terms,
+      first.deps,
+    )).rejects.toThrow(/unauthenticated x402 receipt/);
+    expect(payments).toBe(1);
+
+    const resumed = await makeDeps(store, { kv, settle });
+    await expect(runSessionCore(
+      resumed.listingRef,
+      terms,
+      resumed.deps,
+      "job-1",
+    )).rejects.toThrow(/resumeSettlement/);
+    expect(payments).toBe(1);
   });
 
   test("restart replay preserves rail finality and tx-ref metadata from the checkpoint", async () => {
@@ -1184,7 +1345,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     );
     expect(evidenceOutcome?.data).toMatchObject({
       evidenceRef: completed.settlementRef,
-      evidenceSigner: "did:demos:agent:buyer",
+      evidenceSigner: buyerDid,
       txHash: "0xpaid",
       phase: "pay-x402",
       expectedPayee: sellerDid,

@@ -2,6 +2,10 @@ import { bundleAddress, contentHash, stripSignature } from "../canonical/index.j
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import type { AnyAttestationBundle, AttestationRef } from "../artifacts/types.js";
+import {
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
 
@@ -203,6 +207,12 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   const basis = window.windowingBasis ?? "finalisedAt";
+  const parsedParty = requireCanonicalClaimReference(
+    party,
+    "ReputationDerivation partyPrimaryClaim",
+  );
+  const canonicalParty =
+    `${parsedParty.identity.scheme}:${parsedParty.identity.identifier}`;
   if (!deps.isValid && deps.trustBundles !== true) {
     throw new DacsError(
       "deriveReputation requires deps.isValid (wire verifyBundle) or an explicit deps.trustBundles: true opt-out — " +
@@ -223,14 +233,16 @@ export function deriveReputation(
 
   const scoped = candidates.filter(
     (b) =>
-      b.parties.some((p) => p.primaryClaim === party) &&
+      b.parties.some((p) =>
+        sameCanonicalClaimIdentity(p.primaryClaim, canonicalParty)
+      ) &&
       window.windowStart <= b.finalisedAt &&
       b.finalisedAt <= window.windowEnd,
   );
 
   const empty = (): ReputationDerivation => ({
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: 0,
@@ -272,7 +284,7 @@ export function deriveReputation(
       try {
         roleOfParty = deps.resolvePartyRole(Object.freeze({
           jobId: valid[0]!.jobId,
-          partyPrimaryClaim: party,
+          partyPrimaryClaim: canonicalParty,
         }));
       } catch {
         // Unavailable or malformed independent context is not permission to
@@ -282,8 +294,8 @@ export function deriveReputation(
     } else {
       // Explicit compatibility path for callers that authenticated the exact
       // party map against independent session/agreement context upstream.
-      roleOfParty = valid[0]!.parties.find(
-        (candidate) => candidate.primaryClaim === party,
+      roleOfParty = valid[0]!.parties.find((candidate) =>
+        sameCanonicalClaimIdentity(candidate.primaryClaim, canonicalParty)
       )?.role;
     }
     if (roleOfParty !== "buyer" && roleOfParty !== "seller") continue;
@@ -350,7 +362,7 @@ export function deriveReputation(
 
   return {
     derivationVersion: "1",
-    partyPrimaryClaim: party,
+    partyPrimaryClaim: canonicalParty,
     windowStart: window.windowStart,
     windowEnd: window.windowEnd,
     bundleCount: reconciled.length,

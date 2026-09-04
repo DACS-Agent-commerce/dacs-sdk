@@ -22,6 +22,7 @@ import { isFaultAttestationBundle } from "../artifacts/validators.js";
 import { ed25519Sign } from "../crypto/ed25519.js";
 import { signedBytes } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type {
   AnyAttestationBundle,
   BundleParty,
@@ -172,7 +173,7 @@ export interface TwoSidedBundles {
 
 /** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
 function sameParty(a: SessionParty, b: SessionParty): boolean {
-  return a.primaryClaim === b.primaryClaim;
+  return sameCanonicalClaimIdentity(a.primaryClaim, b.primaryClaim);
 }
 
 function canSign(party: SessionParty): party is SigningSessionParty {

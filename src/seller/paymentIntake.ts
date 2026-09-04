@@ -33,6 +33,7 @@ import {
   isPayeeBoundAgreementDocument,
 } from "../artifacts/validators.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
 import {
   verifyX402ReceiptClaim,
@@ -2501,12 +2502,20 @@ export async function verifySellerPaymentIntake(
   const buyerBundle = buyerResult.bundle;
   const sellerBundle = sellerResult.bundle;
   if (identityBundleHash(buyerBundle) !== agreement.buyer.bundleHash ||
-      buyerBundle.presentedBy !== agreement.buyer.primaryClaim ||
+      !sameCanonicalClaimIdentity(
+        buyerBundle.presentedBy,
+        agreement.buyer.primaryClaim,
+      ) ||
       identityBundleHash(sellerBundle) !== agreement.seller.bundleHash ||
-      sellerBundle.presentedBy !== agreement.seller.primaryClaim) {
+      !sameCanonicalClaimIdentity(
+        sellerBundle.presentedBy,
+        agreement.seller.primaryClaim,
+      )) {
     return reject("party-bundle-agreement-mismatch");
   }
-  if (!buyerBundle.claims.some((claim) => claim.ref === request.payerPayingKey)) {
+  if (!buyerBundle.claims.some((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, request.payerPayingKey)
+  )) {
     return reject("payer-paying-key-not-in-bundle");
   }
 
