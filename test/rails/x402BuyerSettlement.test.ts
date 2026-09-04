@@ -1275,49 +1275,53 @@ describe("filesystem x402 buyer settlement recovery", () => {
   });
 
   test("serializes competing stale-lock reclaimers into one paid authority", async () => {
-    const dir = await tempStoreDir();
-    const intent = makeIntent();
-    const stores = await Promise.all(Array.from({ length: 8 }, () =>
-      createFsX402BuyerSettlementStore({
+    // Repeat the real filesystem race: before the mutation gate repair this
+    // typically displaced a live successor within a handful of attempts.
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const dir = await tempStoreDir();
+      const intent = makeIntent();
+      const stores = await Promise.all(Array.from({ length: 8 }, () =>
+        createFsX402BuyerSettlementStore({
+          dir,
+          lockStaleMs: 1,
+          lockTimeoutMs: 5_000,
+          lockPollMs: 1,
+        })));
+      const staleLock = join(
         dir,
-        lockStaleMs: 1,
-        lockTimeoutMs: 5_000,
-        lockPollMs: 1,
-      })));
-    const staleLock = join(
-      dir,
-      "locks",
-      `${sha256Hex(intent.settlementKey)}.lock`,
-    );
-    await mkdir(staleLock, { mode: 0o700 });
-    await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
-    const old = new Date(Date.now() - 10_000);
-    await utimes(staleLock, old, old);
+        "locks",
+        `${sha256Hex(intent.settlementKey)}.lock`,
+      );
+      await mkdir(staleLock, { mode: 0o700 });
+      await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
+      const old = new Date(Date.now() - 10_000);
+      await utimes(staleLock, old, old);
 
-    let submits = 0;
-    const paidTransport = transport(async (_intent, fence) => {
-      await fence.assertCurrent();
-      submits += 1;
-      return { disposition: "indeterminate", reason: "response-lost" };
-    });
-    const results = await Promise.all(stores.map((store, index) =>
-      advanceX402BuyerSettlement({
-        intent,
-        owner: `process-${index}`,
-        store,
-        authorizationProvider: provider([]),
-        transport: paidTransport,
-        now: () => 1_000,
-        leaseDurationMs: 10_000,
-      })));
+      let submits = 0;
+      const paidTransport = transport(async (_intent, fence) => {
+        await fence.assertCurrent();
+        submits += 1;
+        return { disposition: "indeterminate", reason: "response-lost" };
+      });
+      const results = await Promise.all(stores.map((store, index) =>
+        advanceX402BuyerSettlement({
+          intent,
+          owner: `process-${index}`,
+          store,
+          authorizationProvider: provider([]),
+          transport: paidTransport,
+          now: () => 1_000,
+          leaseDurationMs: 10_000,
+        })));
 
-    expect(submits).toBe(1);
-    expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
-    expect(results.filter((result) => result.status === "indeterminate")).toHaveLength(1);
-    expect((await readdir(join(dir, "locks"))).filter((name) =>
-      name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
-    )).toEqual([]);
-  });
+      expect(submits).toBe(1);
+      expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
+      expect(results.filter((result) => result.status === "indeterminate")).toHaveLength(1);
+      expect((await readdir(join(dir, "locks"))).filter((name) =>
+        name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
+      )).toEqual([]);
+    }
+  }, 45_000);
 
   test("rejects accessor options and symlinked store paths without invoking traps", async () => {
     let reads = 0;
