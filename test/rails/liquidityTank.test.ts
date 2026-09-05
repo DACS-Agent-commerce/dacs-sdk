@@ -147,6 +147,34 @@ function runner(overrides: Partial<AdvanceLiquidityTankInput> = {}) {
   };
 }
 
+test("malformed persistence results resolve indeterminate without throwing or broadcasting", async () => {
+  for (const method of ["recordSubmission", "recordObservation", "recordSettlement"] as const) {
+    for (const result of [null, undefined, {}, { status: "unexpected" }, { get status() { throw new Error("unsafe accessor"); } }]) {
+      const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
+      const store = createInMemoryLiquidityTankStore();
+      store[method] = async () => result as never;
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    }
+  }
+});
+
+test("persistence status is captured before the post-write fence await", async () => {
+  const h = harness();
+  const store = createInMemoryLiquidityTankStore();
+  const result = { status: "corrupt" };
+  let mutate = false;
+  const isCurrent = store.isCurrent.bind(store);
+  store.recordSubmission = async () => { mutate = true; return result as never; };
+  store.isCurrent = async (input) => {
+    if (mutate) result.status = "recorded";
+    return isCurrent(input);
+  };
+  await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toMatchObject({ status: "indeterminate" });
+  expect(h.observe).not.toHaveBeenCalled();
+  expect(h.broadcastRetained).not.toHaveBeenCalled();
+});
+
 describe("createLiquidityTankIntent", () => {
   test("binds the exact v0.1 route and per-chain base units", () => {
     expect(createLiquidityTankIntent(authority())).toMatchObject({

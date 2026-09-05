@@ -286,6 +286,13 @@ function requireUInt(value: unknown, label: string, positive = false): number {
   return Number(value);
 }
 
+function successfulStoreWrite(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const status = Object.getOwnPropertyDescriptor(value, "status");
+  return status !== undefined && "value" in status &&
+    (status.value === "recorded" || status.value === "existing");
+}
+
 function captureSettlement(
   value: unknown,
   intent: Readonly<LiquidityTankIntent>,
@@ -704,20 +711,20 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-submission-preparation-unavailable" };
     }
-    let stored: LiquidityTankStoreWrite;
+    let stored: boolean;
     try {
-      stored = await recordSubmission({
+      stored = successfulStoreWrite(await recordSubmission({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
         submission,
-      });
+      }));
       await fence.assertCurrent();
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
     }
-    if (stored.status !== "recorded" && stored.status !== "existing") {
+    if (!stored) {
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
     }
   }
@@ -751,15 +758,15 @@ export async function advanceLiquidityTankSettlement(
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
   ): Promise<boolean> => {
     try {
-      const stored = await recordObservation({
+      const stored = successfulStoreWrite(await recordObservation({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
         observation,
-      });
+      }));
       await fence.assertCurrent();
-      return stored.status === "recorded" || stored.status === "existing";
+      return stored;
     } catch {
       return false;
     }
@@ -821,19 +828,19 @@ export async function advanceLiquidityTankSettlement(
         }),
         authenticationHash: observation.authenticationHash,
       });
-      let stored: LiquidityTankStoreWrite;
+      let stored: boolean;
       try {
-        stored = await recordSettlement({
+        stored = successfulStoreWrite(await recordSettlement({
           settlementKey: intent.settlementKey,
           bindingHash: intent.bindingHash,
           owner: fence.owner,
           generation: fence.generation,
           settlement,
-        });
+        }));
       } catch {
         return { status: "indeterminate", reason: "liquidity-tank-settlement-persistence-uncertain" };
       }
-      return stored.status === "recorded" || stored.status === "existing"
+      return stored
         ? { status: "settled", settlement }
         : { status: "indeterminate", reason: "liquidity-tank-settlement-persistence-uncertain" };
     }
