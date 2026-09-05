@@ -48,6 +48,7 @@ export {
   type RfqTranscriptConsentInput,
   type RfqTranscriptConsentVerificationInput,
   type RfqTranscriptConsentVerifier,
+  type RfqTranscriptDisclosureVerifiers,
   type RfqTranscriptDisclosureAction,
   type RfqTranscriptDisclosureResult,
   type PlanRfqTranscriptDisclosureInput,
@@ -117,6 +118,8 @@ export {
 export {
   ceilMeteredQuantity,
   deriveMeteredPriceTerm,
+  negotiablePriceBand,
+  isNegotiablePriceWithinBand,
   deriveFixedPriceAgreement,
   signAgreementArtifact,
   signFixedPriceAgreement,
@@ -124,6 +127,7 @@ export {
   type FixedPricePartyInput,
   type FixedPriceAgreementInput,
   type MeteredQuantityInput,
+  type NegotiablePriceBand,
   type UnsignedAgreementArtifact,
   type AgreementSigner,
 } from "./fixedPrice.js";

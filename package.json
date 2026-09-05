@@ -86,6 +86,7 @@
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/rfq-negotiation-core.md",
+    "docs/pay-ap2.md",
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
     "LICENSE"
