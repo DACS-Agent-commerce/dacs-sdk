@@ -206,6 +206,22 @@ export {
   type StrictCompositeVerification,
 } from "./compositeVerification.js";
 export {
+  evaluateClaimRequirementQualification,
+  type ClaimQualificationDecision,
+  type ClaimQualificationResultProjection,
+  type ClaimQualificationResultReuse,
+  type ClaimQualificationProductionAuthority,
+  type ClaimQualificationReplayAuthority,
+  type ClaimQualificationAuthority,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type ClaimQualificationRecipeRegistry,
+  type ClaimQualificationAuthentication,
+  type ClaimQualificationDeps,
+  type ClaimQualificationEvaluation,
+} from "./claimRequirementQualification.js";
+export {
   evaluateParserSpec,
   defaultParserEngine,
   defaultParserEngineCapabilities,

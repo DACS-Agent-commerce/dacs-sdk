@@ -2,6 +2,13 @@ import {
   type BundleVerification,
   type DemosAdapterConfig,
   type DemosWriteJournal,
+  evaluateClaimRequirementQualification,
+  evaluateRailAvailabilitySelection,
+  type ClaimQualificationDeps,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type RailAvailabilityAuthority,
   type DeriveReputationDeps,
   type SubstrateAdapter,
   lookupBundleCopies,
@@ -41,12 +48,21 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const qualify: typeof evaluateClaimRequirementQualification =
+  evaluateClaimRequirementQualification;
+const selectRail: typeof evaluateRailAvailabilitySelection =
+  evaluateRailAvailabilitySelection;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const qualificationInput: ClaimQualificationInput;
+declare const qualificationDeps: ClaimQualificationDeps;
+declare const qualificationMember: ClaimQualificationRequirement;
+declare const qualificationRequirement: ClaimQualificationBundleRequirement;
+declare const railAuthority: RailAvailabilityAuthority;
 declare const ap2Store: Ap2BindingStore;
 declare const ap2Verifier: Ap2MandateVerifier;
 declare const ap2Provider: Ap2ProviderAdapter;
@@ -59,6 +75,10 @@ void priceBand;
 void priceAccepted;
 void canonical;
 void fulfilment;
+void qualify(qualificationInput, qualificationDeps);
+void qualificationMember;
+void qualificationRequirement;
+void selectRail({}, railAuthority);
 void adapter;
 void journal;
 void result;
