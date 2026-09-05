@@ -43,6 +43,10 @@ function intent(jobId = JOB): Ap2SettlementIntent {
   return { ...unsigned, bindingHash: sha256Hex(canonicalize(unsigned)) };
 }
 
+function gateFile(directory: string): string {
+  return join(directory, "locks", `${sha256Hex(TX)}.gate`);
+}
+
 describe("filesystem AP2-7 binding store", () => {
   test("rejects option accessors without invoking them", async () => {
     let getterCalls = 0;
@@ -164,5 +168,73 @@ describe("filesystem AP2-7 binding store", () => {
     await expect(contender.claim({
       intent: intent(), owner: "a", now: 1, leaseDurationMs: 10,
     })).resolves.toMatchObject({ status: "acquired" });
+  });
+
+  test("does not publish while a live reclaim gate owns the transition", async () => {
+    const dir = await directory();
+    await createFsAp2BindingStore({ dir });
+    const gate = gateFile(dir);
+    await writeFile(gate, JSON.stringify({
+      token: "00000000-0000-4000-8000-000000000002",
+      pid: process.pid,
+    }), { mode: 0o600 });
+    await utimes(gate, 0, 0);
+
+    const contender = await createFsAp2BindingStore({
+      dir, lockTimeoutMs: 25, lockStaleMs: 5, lockPollMs: 1,
+    });
+    await expect(contender.claim({
+      intent: intent(), owner: "a", now: 1, leaseDurationMs: 10,
+    })).rejects.toThrow(/timed out waiting/);
+    expect(await readdir(join(dir, "records"))).toEqual([]);
+  });
+
+  test("recovers a dead stale reclaim gate before publishing", async () => {
+    const dir = await directory();
+    await createFsAp2BindingStore({ dir });
+    const gate = gateFile(dir);
+    await writeFile(gate, JSON.stringify({
+      token: "00000000-0000-4000-8000-000000000003",
+      pid: 2_000_000_000,
+    }), { mode: 0o600 });
+    await utimes(gate, 0, 0);
+
+    const contender = await createFsAp2BindingStore({
+      dir, lockTimeoutMs: 1_000, lockStaleMs: 5, lockPollMs: 1,
+    });
+    await expect(contender.claim({
+      intent: intent(), owner: "a", now: 1, leaseDurationMs: 10,
+    })).resolves.toMatchObject({ status: "acquired" });
+    expect((await readdir(join(dir, "locks"))).filter((name) =>
+      name.includes(".gate.") || name.endsWith(".candidate") ||
+      name.endsWith(".quarantine") || name.endsWith(".release")
+    )).toEqual([]);
+  });
+
+  test("serializes competing stale-lock reclaimers without losing the binding", async () => {
+    const dir = await directory();
+    const stores = await Promise.all(Array.from({ length: 8 }, () =>
+      createFsAp2BindingStore({
+        dir, lockTimeoutMs: 5_000, lockStaleMs: 5, lockPollMs: 1,
+      })));
+    const lock = join(dir, "locks", `${sha256Hex(TX)}.lock`);
+    await mkdir(lock, { mode: 0o700 });
+    await writeFile(join(lock, "owner"), "not-json", { mode: 0o600 });
+    await utimes(lock, 0, 0);
+
+    const results = await Promise.all(stores.map((store, index) => store.claim({
+      intent: intent(), owner: `worker-${index}`, now: 1, leaseDurationMs: 10,
+    })));
+    expect(results.filter((result) => result.status === "acquired")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
+    for (const store of stores) {
+      await expect(store.claim({
+        intent: intent(), owner: "reader", now: 2, leaseDurationMs: 10,
+      })).resolves.toMatchObject({ status: "waiting" });
+    }
+    expect((await readdir(join(dir, "locks"))).filter((name) =>
+      name.includes(".gate.") || name.endsWith(".candidate") ||
+      name.endsWith(".quarantine") || name.endsWith(".release")
+    )).toEqual([]);
   });
 });

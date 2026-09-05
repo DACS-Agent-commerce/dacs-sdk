@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  unlink,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { types as nodeTypes } from "node:util";
 
@@ -42,6 +53,11 @@ interface FsAp2BindingRecord {
   failure?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+interface LockOwner {
+  token: string;
+  pid: number;
 }
 
 function clone<T>(value: T): T {
@@ -194,6 +210,13 @@ export async function createFsAp2BindingStore(
     join(locksDir, `${key(transactionId)}.lock`);
   const gatePath = (transactionId: string): string =>
     join(locksDir, `${key(transactionId)}.gate`);
+  const gateQuarantinePrefix = (transactionId: string): string =>
+    `${key(transactionId)}.gate.`;
+  const gateQuarantinePath = (transactionId: string): string =>
+    join(
+      locksDir,
+      `${gateQuarantinePrefix(transactionId)}${randomUUID()}.quarantine`,
+    );
 
   async function syncDirectory(path: string): Promise<void> {
     const handle = await open(path, "r");
@@ -244,39 +267,34 @@ export async function createFsAp2BindingStore(
     }
   }
 
-  async function acquireGate(transactionId: string): Promise<() => Promise<void>> {
-    const path = gatePath(transactionId);
-    const started = Date.now();
-    for (;;) {
-      try {
-        await mkdir(path, { mode: DIR_MODE });
-        return async () => { await rm(path, { recursive: true, force: true }); };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-      const metadata = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      });
-      if (!metadata) continue;
-      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-        throw new DacsError("AP2 settlement-store reclaim gate is unsafe");
-      }
-      if (Date.now() - started >= lockTimeoutMs) {
-        throw new DacsError("timed out waiting for the AP2 settlement-store reclaim gate");
-      }
-      await new Promise((resolve) => setTimeout(resolve, lockPollMs));
+  async function lockOwner(path: string): Promise<LockOwner | undefined> {
+    let value: string;
+    try {
+      value = await readFile(join(path, "owner"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return undefined;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const token = (parsed as { token?: unknown }).token;
+    const pid = (parsed as { pid?: unknown }).pid;
+    if (typeof token !== "string" || !/^[0-9a-f-]{36}$/.test(token) ||
+        !Number.isSafeInteger(pid) || (pid as number) <= 0) return undefined;
+    return { token, pid: pid as number };
   }
 
-  async function lockOwner(path: string): Promise<
-    { token: string; pid?: number } | undefined
-  > {
+  async function gateOwner(path: string): Promise<LockOwner | undefined> {
     try {
-      const value = await readFile(join(path, "owner"), "utf8");
-      if (/^[0-9a-f-]{36}$/.test(value)) return { token: value };
-      const parsed = JSON.parse(value) as unknown;
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return undefined;
+      }
       const token = (parsed as { token?: unknown }).token;
       const pid = (parsed as { pid?: unknown }).pid;
       if (typeof token !== "string" || !/^[0-9a-f-]{36}$/.test(token) ||
@@ -284,7 +302,7 @@ export async function createFsAp2BindingStore(
       return { token, pid: pid as number };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
+      return undefined;
     }
   }
 
@@ -297,86 +315,287 @@ export async function createFsAp2BindingStore(
     }
   }
 
-  async function reclaimStaleLock(transactionId: string, path: string): Promise<boolean> {
-    const releaseGate = await acquireGate(transactionId);
+  function sameOwner(
+    left: LockOwner | undefined,
+    right: LockOwner | undefined,
+  ): boolean {
+    return left === undefined
+      ? right === undefined
+      : right !== undefined && left.pid === right.pid && left.token === right.token;
+  }
+
+  async function publishCompleteGate(
+    path: string,
+    owner: LockOwner,
+  ): Promise<void> {
+    const temporary = `${path}.${randomUUID()}.tmp`;
     try {
-      const metadata = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      const handle = await open(temporary, "wx", FILE_MODE);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      // A hard link publishes the fully written owner without allowing rename
+      // to overwrite an already-authoritative gate.
+      await link(temporary, path);
+      await syncDirectory(locksDir);
+    } finally {
+      await unlink(temporary).catch(() => {});
+    }
+  }
+
+  async function activeGateQuarantines(
+    transactionId: string,
+  ): Promise<string[]> {
+    const prefix = gateQuarantinePrefix(transactionId);
+    const names = (await readdir(locksDir)).filter(
+      (name) => name.startsWith(prefix) && name.endsWith(".quarantine"),
+    );
+    const live: string[] = [];
+    for (const name of names) {
+      const path = join(locksDir, name);
+      try {
+        const metadata = await lstat(path);
+        if (metadata.isSymbolicLink()) {
+          throw new DacsError("AP2 settlement-store reclaim quarantine is unsafe");
+        }
+        const owner = metadata.isFile() ? await gateOwner(path) : undefined;
+        if (
+          Date.now() - metadata.mtimeMs <= lockStaleMs ||
+          (owner !== undefined && processIsAlive(owner.pid))
+        ) {
+          live.push(path);
+          continue;
+        }
+        // Unique quarantine names are never reused, so a dead quarantine can
+        // be removed without targeting a replacement at the canonical path.
+        await rm(path, { recursive: true, force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return live;
+  }
+
+  async function quarantineStaleGate(transactionId: string): Promise<void> {
+    const path = gatePath(transactionId);
+    let observed;
+    try {
+      observed = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (observed.isSymbolicLink() ||
+        (!observed.isFile() && !observed.isDirectory())) {
+      throw new DacsError("AP2 settlement-store reclaim gate is unsafe");
+    }
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
+    const observedOwner = observed.isFile() ? await gateOwner(path) : undefined;
+    if (observedOwner !== undefined && processIsAlive(observedOwner.pid)) return;
+
+    const quarantine = gateQuarantinePath(transactionId);
+    try {
+      await rename(path, quarantine);
+      await syncDirectory(locksDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    let moved;
+    try {
+      moved = await lstat(quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const movedOwner = moved.isFile() ? await gateOwner(quarantine) : undefined;
+    if (
+      moved.dev === observed.dev &&
+      moved.ino === observed.ino &&
+      sameOwner(movedOwner, observedOwner) &&
+      Date.now() - moved.mtimeMs > lockStaleMs &&
+      (movedOwner === undefined || !processIsAlive(movedOwner.pid))
+    ) {
+      await rm(quarantine, { recursive: true, force: true });
+    }
+    // If a replacement was moved, its unique quarantine remains authoritative
+    // until its live owner releases it or it later becomes provably stale.
+  }
+
+  async function releaseGate(
+    transactionId: string,
+    owner: LockOwner,
+  ): Promise<void> {
+    const path = gatePath(transactionId);
+    const observed = await gateOwner(path);
+    if (sameOwner(observed, owner)) {
+      const quarantine = gateQuarantinePath(transactionId);
+      try {
+        await rename(path, quarantine);
+        const moved = await gateOwner(quarantine);
+        if (sameOwner(moved, owner)) {
+          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+          });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const prefix = gateQuarantinePrefix(transactionId);
+    for (const name of (await readdir(locksDir)).filter(
+      (item) => item.startsWith(prefix) && item.endsWith(".quarantine"),
+    )) {
+      const quarantine = join(locksDir, name);
+      if (sameOwner(await gateOwner(quarantine), owner)) {
+        await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
+    }
+    await syncDirectory(locksDir);
+  }
+
+  async function acquireGate(
+    transactionId: string,
+    owner: LockOwner,
+  ): Promise<boolean> {
+    if ((await activeGateQuarantines(transactionId)).length > 0) return false;
+    const path = gatePath(transactionId);
+    try {
+      await publishCompleteGate(path, owner);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      await quarantineStaleGate(transactionId);
+      return false;
+    }
+    if ((await activeGateQuarantines(transactionId)).length > 0 ||
+        !sameOwner(await gateOwner(path), owner)) {
+      await releaseGate(transactionId, owner);
+      return false;
+    }
+    return true;
+  }
+
+  async function reclaimStaleLock(transactionId: string, path: string): Promise<boolean> {
+    const gate = { token: randomUUID(), pid: process.pid };
+    if (!await acquireGate(transactionId, gate)) return false;
+    try {
+      const observed = await lstat(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return undefined;
         throw error;
       });
-      if (!metadata || Date.now() - metadata.mtimeMs <= lockStaleMs) return false;
-      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      if (!observed) return true;
+      if (Date.now() - observed.mtimeMs <= lockStaleMs) return false;
+      if (!observed.isDirectory() || observed.isSymbolicLink()) {
         throw new DacsError("AP2 settlement-store lock is unsafe");
       }
-      const owner = await lockOwner(path);
-      if (owner?.pid !== undefined && processIsAlive(owner.pid)) return false;
+      const observedOwner = await lockOwner(path);
+      if (observedOwner !== undefined && processIsAlive(observedOwner.pid)) return false;
       const quarantine = `${path}.${randomUUID()}.quarantine`;
       try {
         await rename(path, quarantine);
+        await syncDirectory(locksDir);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
         throw error;
       }
+      const moved = await lstat(quarantine);
+      const movedOwner = await lockOwner(quarantine);
+      if (
+        moved.dev !== observed.dev ||
+        moved.ino !== observed.ino ||
+        !sameOwner(movedOwner, observedOwner) ||
+        Date.now() - moved.mtimeMs <= lockStaleMs ||
+        (movedOwner !== undefined && processIsAlive(movedOwner.pid))
+      ) {
+        throw new DacsError("AP2 settlement-store lock changed during stale recovery");
+      }
       await rm(quarantine, { recursive: true, force: true });
+      await syncDirectory(locksDir);
       return true;
     } finally {
-      await releaseGate();
+      await releaseGate(transactionId, gate);
+    }
+  }
+
+  async function publishLockCandidate(
+    transactionId: string,
+    candidate: string,
+    path: string,
+  ): Promise<boolean> {
+    const gate = { token: randomUUID(), pid: process.pid };
+    if (!await acquireGate(transactionId, gate)) return false;
+    try {
+      try {
+        await rename(candidate, path);
+        await syncDirectory(locksDir);
+        return true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EEXIST" || code === "ENOTEMPTY") return false;
+        throw error;
+      }
+    } finally {
+      await releaseGate(transactionId, gate);
     }
   }
 
   async function acquireLock(transactionId: string): Promise<() => Promise<void>> {
     const path = lockPath(transactionId);
-    const started = Date.now();
+    const owner = { token: randomUUID(), pid: process.pid };
+    const deadline = Date.now() + lockTimeoutMs;
     for (;;) {
-      const token = randomUUID();
+      // Prepare the complete owner under a unique, unpublished directory. Both
+      // normal publication and stale recovery hold the same transition gate.
+      const candidate = `${path}.${randomUUID()}.candidate`;
       try {
-        await mkdir(path, { mode: DIR_MODE });
+        await mkdir(candidate, { mode: DIR_MODE });
         try {
-          const handle = await open(join(path, "owner"), "wx", FILE_MODE);
+          const handle = await open(join(candidate, "owner"), "wx", FILE_MODE);
           try {
-            await handle.writeFile(JSON.stringify({ token, pid: process.pid }), "utf8");
+            await handle.writeFile(JSON.stringify(owner), "utf8");
             await handle.sync();
           } finally {
             await handle.close();
           }
         } catch (error) {
-          await rm(path, { recursive: true, force: true });
+          await rm(candidate, { recursive: true, force: true });
           throw error;
         }
-        return async () => {
-          const releaseGate = await acquireGate(transactionId);
-          try {
-            if ((await lockOwner(path))?.token !== token) return;
-            const quarantine = `${path}.${token}.release`;
+        await syncDirectory(candidate);
+        if (await publishLockCandidate(transactionId, candidate, path)) {
+          return async () => {
+            const observed = await lockOwner(path);
+            if (!sameOwner(observed, owner)) return;
+            const released = `${path}.${owner.token}.release`;
             try {
-              await rename(path, quarantine);
+              await rename(path, released);
+              await syncDirectory(locksDir);
+              const moved = await lockOwner(released);
+              if (!sameOwner(moved, owner)) {
+                throw new DacsError(
+                  "AP2 settlement-store lock changed during release",
+                );
+              }
+              await rm(released, { recursive: true, force: true });
+              await syncDirectory(locksDir);
             } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-              throw error;
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
             }
-            await rm(quarantine, { recursive: true, force: true });
-          } finally {
-            await releaseGate();
-          }
-        };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-      try {
-        const metadata = await lstat(path);
-        if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-          throw new DacsError("AP2 settlement-store lock is unsafe");
+          };
         }
-        if (Date.now() - metadata.mtimeMs > lockStaleMs &&
-            await reclaimStaleLock(transactionId, path)) continue;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
+        await reclaimStaleLock(transactionId, path);
+        if (Date.now() >= deadline) {
+          throw new DacsError("timed out waiting for the AP2 settlement-store lock");
+        }
+        await new Promise((resolve) => setTimeout(resolve, lockPollMs));
+      } finally {
+        await rm(candidate, { recursive: true, force: true }).catch(() => {});
       }
-      if (Date.now() - started >= lockTimeoutMs) {
-        throw new DacsError("timed out waiting for the AP2 settlement-store lock");
-      }
-      await new Promise((resolve) => setTimeout(resolve, lockPollMs));
     }
   }
 
