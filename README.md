@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a complete live RFQ/L2PS phase handler, AP2, and dispute (DACS-X) are deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2 safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a complete live RFQ/L2PS phase handler, a bundled live AP2 provider integration, and dispute execution (DACS-X) remain deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
@@ -38,8 +38,15 @@ All five lifecycle stages run end to end:
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` | end-to-end fixed-price; transport-neutral RFQ agreement/commitment core |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
+
+Agreement readers can call `validateFixedPriceAgreementBinding()` with the
+authenticated commitment timestamp to re-check the complete fixed-price
+agreement/listing binding. RFQ or other negotiable-pattern implementations can
+use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
+§8.5.2's exact inclusive, half-up-rounded band arithmetic; both reject
+non-canonical CD-1 amounts instead of normalising them into acceptance.
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
@@ -309,7 +316,14 @@ hold candidate bundle objects must use `deriveReputationWithValidation()` when
 their cryptographic verifier is asynchronous. The pure `deriveReputation()`
 helper accepts only a synchronous primitive-boolean predicate over copies that
 were authenticated upstream; a Promise-valued predicate is rejected rather
-than treated as truthy.
+than treated as truthy. Both helpers also require an independently authenticated
+per-job `resolvePartyRole({ jobId, partyPrimaryClaim })` mapping. Bundle-local
+`parties[]` labels cannot decide whether a copy is the scored party's own or its
+counterparty's: trusting those labels would let a relabelled self-abort become a
+false counterparty fault. Callers whose validation already authenticated the
+exact party map against the pinned agreement may instead make the explicit
+`trustBundlePartyRoles: true` compatibility assertion; it is not implied by
+`trustBundles` or by signature validation alone.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
@@ -637,7 +651,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected AP2 safety core |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |
