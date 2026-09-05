@@ -211,7 +211,17 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: { agentId: buyerId },
+  identity: {
+    agentId: buyerId,
+    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
+    // terminal bundle. A bare agent id is not an identity commitment.
+    bundle: buyerIdentityBundle,
+    // Presentation authentication is deliberately bundle-scoped so the same
+    // identity bundle can be reused. Session replay resistance is separate:
+    // its exact bundle hash is committed inside each signed Agreement.
+    verifyPresentation: ({ bundle, signedBytes }) =>
+      verifyBuyerIdentityPresentation(bundle, signedBytes),
+  },
   bindings: { index: bindings },
 });
 
