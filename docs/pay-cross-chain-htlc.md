@@ -53,6 +53,14 @@ enforce cross-session salt uniqueness, authenticate retained signed payloads,
 and persist the reveal checkpoint. The exported in-memory store is for tests
 and development only.
 
+`HtlcObservedAction.state: "final"` is an authenticated adapter assertion, not
+an independently corroborated core observation. Each chain adapter owns the
+confirmation-depth and irreversibility policy selected by the intent, including
+reorg detection. It must return `pending` while reversal remains possible and
+must never report `final` for a state it could later reverse. A reorg-capable
+adapter therefore needs to keep observing through its required finality horizon
+before allowing the core to checkpoint a reveal or report settlement.
+
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require
 separate contract audits and funded proofs.

@@ -154,6 +154,11 @@ export type HtlcObservedAction =
       authenticationHash: string;
     }
   | {
+      /**
+       * Authenticated and irreversible under the intent's selected chain
+       * finality policy. The adapter owns confirmation-depth and reorg checks;
+       * it must return `pending` while a reversal remains possible.
+       */
       state: "final";
       txRef: Readonly<HtlcTxRef>;
       /** Unix milliseconds at which the named finality condition was observed. */
