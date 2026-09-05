@@ -4563,8 +4563,12 @@ function docker(args, timeout = 120_000) {
   return child.stdout.trim();
 }
 
+const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
+if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) {
+  throw new Error("image reference did not resolve to an immutable Docker image ID");
+}
 const config = JSON.parse(docker([
-  "image", "inspect", "--format", "{{json .Config}}", image,
+  "image", "inspect", "--format", "{{json .Config}}", imageId,
 ]));
 if (config.User !== "10001:10001") {
   throw new Error("image runtime user is not the generated non-root identity");
@@ -4618,7 +4622,7 @@ const runtime = JSON.parse(docker([
   "--network", "none",
   "--read-only",
   "--entrypoint", "node",
-  image,
+  imageId,
   "--import", "@kynesyslabs/dacs-node/demos-loader",
   "--input-type=module",
   "--eval", probe,
@@ -4626,7 +4630,6 @@ const runtime = JSON.parse(docker([
 if (runtime.uid !== 10001 || runtime.gid !== 10001) {
   throw new Error("container runtime identity is not uid 10001 and gid 10001");
 }
-const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
 process.stdout.write(JSON.stringify({
   status: "pass",
   image,
