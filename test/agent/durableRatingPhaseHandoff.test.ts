@@ -33,7 +33,7 @@ import {
 
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
 const SELLER = `did:demos:agent:${"22".repeat(32)}`;
-const JOB = "durable-rating-handoff-job";
+const JOB = "01J00000000000000000000040";
 const SESSION_HASH = "a".repeat(64);
 const directories: string[] = [];
 
@@ -368,6 +368,81 @@ describe("durable DACS-5 rating-to-audit handoff", () => {
     expect(loaded.record.checkpoints).toHaveLength(2);
   });
 
+  test("does not trust a success response without the exact committed outcome", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    const lyingStore: FencedSessionStoreV2 = {
+      ...store,
+      transition: async (input) => {
+        if (
+          input.checkpoint?.key === RATING_PHASE_HANDOFF_CHECKPOINT_KEY &&
+          input.checkpoint.stage === "outcome"
+        ) {
+          const retained = await store.load(input.jobId);
+          if (retained.status !== "ok") throw new Error("session missing");
+          return { ok: true, record: retained.record };
+        }
+        return store.transition(input);
+      },
+    };
+
+    await expect(persistRatingPhaseHandoffDurably(
+      await handoff(),
+      deps(lyingStore),
+    )).resolves.toMatchObject({
+      disposition: "indeterminate",
+      stage: "commit",
+      reason: expect.stringContaining("atomically advance"),
+    });
+  });
+
+  test("re-authenticates an outcome discovered while claiming the checkpoint", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    const racingStore: FencedSessionStoreV2 = {
+      ...store,
+      claimCheckpoint: async (input) => {
+        const claimed = await store.claimCheckpoint(input);
+        if (!claimed.ok) return claimed;
+        const committed = await store.transition({
+          jobId: input.jobId,
+          expectedRevision: claimed.record.revision,
+          leaseToken: input.leaseToken,
+          phase: "audit-pending",
+          checkpoint: {
+            key: RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+            stage: "outcome",
+            data: input.data,
+          },
+          lease: null,
+          now: input.now,
+        });
+        if (!committed.ok) throw new Error("competing commit failed");
+        return { ok: false, reason: "completed", record: committed.record };
+      },
+    };
+    let authenticationCalls = 0;
+
+    const result = await persistRatingPhaseHandoffDurably(
+      await handoff(),
+      deps(racingStore, {
+        authenticateHandoff: async () => {
+          authenticationCalls += 1;
+          return authenticationCalls === 1
+            ? { disposition: "valid" }
+            : { disposition: "invalid", reason: "retained authority changed" };
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      disposition: "rejected",
+      stage: "authentication",
+      reason: "retained authority changed",
+    });
+    expect(authenticationCalls).toBe(2);
+  });
+
   test("rejects tampering before invoking session authentication", async () => {
     const store = createInMemoryFencedSessionStore();
     await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
@@ -454,5 +529,42 @@ describe("durable DACS-5 rating-to-audit handoff", () => {
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.disposition === "persisted" && result.handoff.phaseEntry))
       .toBe(true);
+  });
+
+  test("captures dependency properties once and preserves callback receivers", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    let workerReads = 0;
+    const dependencies = {
+      store,
+      get workerId() {
+        workerReads += 1;
+        if (workerReads > 1) throw new Error("workerId read twice");
+        return "receiver-worker";
+      },
+      leaseTtlMs: 100,
+      nowMs() {
+        expect(this).toBe(dependencies);
+        return 0;
+      },
+      authenticateHandoff() {
+        expect(this).toBe(dependencies);
+        return { disposition: "valid" as const };
+      },
+    };
+
+    await expect(persistRatingPhaseHandoffDurably(
+      await handoff(),
+      dependencies,
+    )).resolves.toMatchObject({ disposition: "persisted" });
+    expect(workerReads).toBe(1);
+  });
+
+  test("requires a canonical ULID for persisted and recovered handoffs", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await expect(recoverRatingPhaseHandoff("durable-rating-handoff-job", {
+      store,
+      authenticateHandoff: validAuthentication,
+    })).rejects.toThrow(/jobId is malformed/);
   });
 });

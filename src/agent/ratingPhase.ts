@@ -167,11 +167,7 @@ export function captureRatingPhaseReadyHandoff(
     ]) ||
     captured.handoffVersion !== "1" ||
     captured.disposition !== "ready" ||
-    typeof captured.jobId !== "string" ||
-    captured.jobId.length === 0 ||
-    captured.jobId.trim() !== captured.jobId ||
-    captured.jobId.normalize("NFC") !== captured.jobId ||
-    /[\u0000-\u001f\u007f]/.test(captured.jobId) ||
+    !isCanonicalJobId(captured.jobId) ||
     !HASH.test(captured.sessionRecordHash) ||
     !HASH.test(captured.planHash) ||
     !HASH.test(captured.handoffHash) ||

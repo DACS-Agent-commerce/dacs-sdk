@@ -14,6 +14,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   FENCED_SESSION_STORE_VERSION,
   sessionRecordShapeViolation,
@@ -154,20 +155,46 @@ function captureStore(value: unknown): CapturedStore {
     throw new DacsError("rating handoff durability requires FencedSessionStoreV2");
   }
   const store = value as FencedSessionStoreV2;
+  const apiVersion = store.apiVersion;
+  const load = store.load;
+  const acquireLease = store.acquireLease;
+  const claimCheckpoint = store.claimCheckpoint;
+  const transition = store.transition;
   if (
-    store.apiVersion !== FENCED_SESSION_STORE_VERSION ||
-    typeof store.load !== "function" ||
-    typeof store.acquireLease !== "function" ||
-    typeof store.claimCheckpoint !== "function" ||
-    typeof store.transition !== "function"
+    apiVersion !== FENCED_SESSION_STORE_VERSION ||
+    typeof load !== "function" ||
+    typeof acquireLease !== "function" ||
+    typeof claimCheckpoint !== "function" ||
+    typeof transition !== "function"
   ) {
     throw new DacsError("rating handoff durability requires FencedSessionStoreV2");
   }
   return Object.freeze({
-    load: store.load.bind(store),
-    acquireLease: store.acquireLease.bind(store),
-    claimCheckpoint: store.claimCheckpoint.bind(store),
-    transition: store.transition.bind(store),
+    load: async (jobId: Parameters<FencedSessionStoreV2["load"]>[0]) => snapshotCanonicalJsonRead(
+      await Reflect.apply(load, store, [jobId]),
+      "rating handoff store load result",
+    ) as Awaited<ReturnType<FencedSessionStoreV2["load"]>>,
+    acquireLease: async (input: Parameters<FencedSessionStoreV2["acquireLease"]>[0]) => snapshotCanonicalJsonRead(
+      await Reflect.apply(acquireLease, store, [snapshotCanonicalJsonRead(
+        input,
+        "rating handoff store lease input",
+      )]),
+      "rating handoff store lease result",
+    ) as Awaited<ReturnType<FencedSessionStoreV2["acquireLease"]>>,
+    claimCheckpoint: async (input: Parameters<FencedSessionStoreV2["claimCheckpoint"]>[0]) => snapshotCanonicalJsonRead(
+      await Reflect.apply(claimCheckpoint, store, [snapshotCanonicalJsonRead(
+        input,
+        "rating handoff store checkpoint input",
+      )]),
+      "rating handoff store checkpoint result",
+    ) as Awaited<ReturnType<FencedSessionStoreV2["claimCheckpoint"]>>,
+    transition: async (input: Parameters<FencedSessionStoreV2["transition"]>[0]) => snapshotCanonicalJsonRead(
+      await Reflect.apply(transition, store, [snapshotCanonicalJsonRead(
+        input,
+        "rating handoff store transition input",
+      )]),
+      "rating handoff store transition result",
+    ) as Awaited<ReturnType<FencedSessionStoreV2["transition"]>>,
   });
 }
 
@@ -177,46 +204,56 @@ function capturePersistDeps(
   if (!value || typeof value !== "object") {
     throw new DacsError("rating handoff durability dependencies are required");
   }
+  const store = value.store;
+  const workerId = value.workerId;
+  const leaseTtlMs = value.leaseTtlMs;
+  const nowMs = value.nowMs;
+  const authenticateHandoff = value.authenticateHandoff;
   if (
-    typeof value.workerId !== "string" ||
-    value.workerId.length === 0 ||
-    value.workerId.trim() !== value.workerId ||
-    value.workerId.normalize("NFC") !== value.workerId ||
-    /[\u0000-\u001f\u007f]/.test(value.workerId)
+    typeof workerId !== "string" ||
+    workerId.length === 0 ||
+    workerId.trim() !== workerId ||
+    workerId.normalize("NFC") !== workerId ||
+    /[\u0000-\u001f\u007f]/.test(workerId)
   ) {
     throw new DacsError("rating handoff workerId must be canonical and non-empty");
   }
-  if (!Number.isSafeInteger(value.leaseTtlMs) || value.leaseTtlMs <= 0) {
+  if (!Number.isSafeInteger(leaseTtlMs) || leaseTtlMs <= 0) {
     throw new DacsError("rating handoff leaseTtlMs must be a positive safe integer");
   }
   if (
-    (value.nowMs !== undefined && typeof value.nowMs !== "function") ||
-    typeof value.authenticateHandoff !== "function"
+    (nowMs !== undefined && typeof nowMs !== "function") ||
+    typeof authenticateHandoff !== "function"
   ) {
     throw new DacsError("rating handoff durability callbacks are malformed");
   }
   return Object.freeze({
-    store: captureStore(value.store),
-    workerId: value.workerId,
-    leaseTtlMs: value.leaseTtlMs,
-    nowMs: value.nowMs ?? Date.now,
-    authenticateHandoff: value.authenticateHandoff,
+    store: captureStore(store),
+    workerId,
+    leaseTtlMs,
+    nowMs: nowMs === undefined
+      ? Date.now
+      : () => Reflect.apply(nowMs, value, []),
+    authenticateHandoff: (input: RatingPhaseHandoffAuthenticationInput) =>
+      Reflect.apply(authenticateHandoff, value, [input]),
   });
 }
 
 function captureRecoverDeps(
   value: Readonly<RecoverRatingPhaseHandoffDeps>,
 ): Pick<CapturedPersistDeps, "store" | "authenticateHandoff"> {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    typeof value.authenticateHandoff !== "function"
-  ) {
+  if (!value || typeof value !== "object") {
+    throw new DacsError("rating handoff recovery dependencies are malformed");
+  }
+  const store = value.store;
+  const authenticateHandoff = value.authenticateHandoff;
+  if (typeof authenticateHandoff !== "function") {
     throw new DacsError("rating handoff recovery dependencies are malformed");
   }
   return Object.freeze({
-    store: captureStore(value.store),
-    authenticateHandoff: value.authenticateHandoff,
+    store: captureStore(store),
+    authenticateHandoff: (input: RatingPhaseHandoffAuthenticationInput) =>
+      Reflect.apply(authenticateHandoff, value, [input]),
   });
 }
 
@@ -243,14 +280,31 @@ function latestCheckpoint(
 function checkpointData(
   handoff: Readonly<RatingPhaseReadyHandoff>,
 ): RatingHandoffCheckpointData {
-  return {
+  return deepFreeze({
     schema: CHECKPOINT_SCHEMA,
     jobId: handoff.jobId,
     sessionRecordHash: handoff.sessionRecordHash,
     planHash: handoff.planHash,
     handoffHash: handoff.handoffHash,
     payload: canonicalize(handoff),
-  };
+  });
+}
+
+function committedHandoff(
+  record: Readonly<SessionRecord>,
+  expectedData: Readonly<RatingHandoffCheckpointData>,
+): Readonly<RatingPhaseReadyHandoff> {
+  if (record.phase !== "audit-pending" || record.lease !== undefined) {
+    throw new DacsError("rating handoff commit did not atomically advance and release its lease");
+  }
+  const checkpoint = latestCheckpoint(record);
+  if (
+    checkpoint?.stage !== "outcome" ||
+    !sameCheckpointData(checkpoint.data, expectedData)
+  ) {
+    throw new DacsError("rating handoff commit did not retain the exact outcome");
+  }
+  return decodeCheckpoint(checkpoint);
 }
 
 function decodeCheckpoint(
@@ -516,6 +570,20 @@ export async function persistRatingPhaseHandoffDurably(
     generation: acquired.lease.generation,
   };
   const acquiredRecord = captureRecord(acquired.record);
+  if (
+    acquiredRecord.jobId !== handoff.jobId ||
+    !acquiredRecord.lease ||
+    acquiredRecord.lease.owner !== leaseToken.owner ||
+    acquiredRecord.lease.generation !== leaseToken.generation ||
+    acquired.lease.owner !== leaseToken.owner ||
+    acquired.lease.generation !== leaseToken.generation
+  ) {
+    return deepFreeze({
+      disposition: "indeterminate" as const,
+      stage: "lease" as const,
+      reason: "rating handoff store returned a contradictory lease",
+    });
+  }
   const racedCheckpoint = latestCheckpoint(acquiredRecord);
   if (racedCheckpoint?.stage === "outcome") {
     let persisted: Readonly<RatingPhaseReadyHandoff>;
@@ -603,7 +671,20 @@ export async function persistRatingPhaseHandoffDurably(
       }
       if (claimed.reason === "completed") {
         const persisted = decodeCheckpoint(existing);
+        const completedRecord = captureRecord(claimed.record);
+        const completedAuthentication = await authenticateForResult(
+          persisted,
+          completedRecord,
+          deps.authenticateHandoff,
+        );
         await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
+        if (completedAuthentication.disposition !== "valid") {
+          return deepFreeze({
+            disposition: completedAuthentication.disposition,
+            stage: "authentication" as const,
+            reason: completedAuthentication.reason,
+          });
+        }
         return deepFreeze({ disposition: "persisted", handoff: persisted, recovered: true });
       }
       recoveredIntent = true;
@@ -626,6 +707,18 @@ export async function persistRatingPhaseHandoffDurably(
             disposition: "rejected" as const,
             stage: "checkpoint" as const,
             reason: "rating handoff outcome changed during commit",
+          });
+        }
+        const completedAuthentication = await authenticateForResult(
+          persisted,
+          current.record,
+          deps.authenticateHandoff,
+        );
+        if (completedAuthentication.disposition !== "valid") {
+          return deepFreeze({
+            disposition: completedAuthentication.disposition,
+            stage: "authentication" as const,
+            reason: completedAuthentication.reason,
           });
         }
         return deepFreeze({ disposition: "persisted", handoff: persisted, recovered: true });
@@ -651,9 +744,11 @@ export async function persistRatingPhaseHandoffDurably(
         now: nowFrom(deps.nowMs),
       });
       if (committed.ok) {
+        const committedRecord = captureRecord(committed.record);
+        const persisted = committedHandoff(committedRecord, expectedData);
         return deepFreeze({
           disposition: "persisted",
-          handoff,
+          handoff: persisted,
           recovered: recoveredIntent,
         });
       }
@@ -685,11 +780,7 @@ export async function recoverRatingPhaseHandoff(
   dependencies: Readonly<RecoverRatingPhaseHandoffDeps>,
 ): Promise<RecoverRatingPhaseHandoffResult> {
   if (
-    typeof rawJobId !== "string" ||
-    rawJobId.length === 0 ||
-    rawJobId.trim() !== rawJobId ||
-    rawJobId.normalize("NFC") !== rawJobId ||
-    /[\u0000-\u001f\u007f]/.test(rawJobId)
+    !isCanonicalJobId(rawJobId)
   ) {
     throw new DacsError("rating handoff recovery jobId is malformed");
   }
