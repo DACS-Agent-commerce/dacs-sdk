@@ -63,6 +63,7 @@ export {
   type RfqTranscriptConsentInput,
   type RfqTranscriptConsentVerificationInput,
   type RfqTranscriptConsentVerifier,
+  type RfqTranscriptDisclosureVerifiers,
   type RfqTranscriptDisclosureAction,
   type RfqTranscriptDisclosureResult,
   type PlanRfqTranscriptDisclosureInput,
