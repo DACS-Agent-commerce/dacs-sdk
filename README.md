@@ -41,6 +41,13 @@ All five lifecycle stages run end to end:
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` · `advanceAp2Settlement` | registry-selected buyer rails, optional AP2 provider settlement, plus transport-neutral seller intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
+Agreement readers can call `validateFixedPriceAgreementBinding()` with the
+authenticated commitment timestamp to re-check the complete fixed-price
+agreement/listing binding. RFQ or other negotiable-pattern implementations can
+use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
+§8.5.2's exact inclusive, half-up-rounded band arithmetic; both reject
+non-canonical CD-1 amounts instead of normalising them into acceptance.
+
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
@@ -301,7 +308,14 @@ hold candidate bundle objects must use `deriveReputationWithValidation()` when
 their cryptographic verifier is asynchronous. The pure `deriveReputation()`
 helper accepts only a synchronous primitive-boolean predicate over copies that
 were authenticated upstream; a Promise-valued predicate is rejected rather
-than treated as truthy.
+than treated as truthy. Both helpers also require an independently authenticated
+per-job `resolvePartyRole({ jobId, partyPrimaryClaim })` mapping. Bundle-local
+`parties[]` labels cannot decide whether a copy is the scored party's own or its
+counterparty's: trusting those labels would let a relabelled self-abort become a
+false counterparty fault. Callers whose validation already authenticated the
+exact party map against the pinned agreement may instead make the explicit
+`trustBundlePartyRoles: true` compatibility assertion; it is not implied by
+`trustBundles` or by signature validation alone.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
