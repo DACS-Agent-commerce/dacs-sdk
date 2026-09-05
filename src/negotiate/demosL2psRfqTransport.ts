@@ -41,6 +41,8 @@ const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
 
 type JsonRecord = Record<string, unknown>;
 
+class TransientTransportCapabilityError extends DacsError {}
+
 export interface DemosL2psRfqEncryptedMessage {
   ciphertext: string;
   nonce: string;
@@ -531,57 +533,117 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "onError",
       ],
       ["historyPageSize", "historyMaxPages", "operationTimeoutMs"],
-    ) ||
-    value.peer === null ||
-    typeof value.peer !== "object" ||
-    nodeTypes.isProxy(value.peer) ||
-    typeof value.peer.send !== "function" ||
-    typeof value.peer.history !== "function" ||
-    typeof value.peer.onMessage !== "function" ||
-    value.codec === null ||
-    typeof value.codec !== "object" ||
-    nodeTypes.isProxy(value.codec) ||
-    typeof value.codec.seal !== "function" ||
-    typeof value.codec.open !== "function" ||
-    typeof value.codec.codecId !== "string" ||
-    typeof value.peerForClaim !== "function" ||
-    typeof value.claimForPeer !== "function" ||
-    typeof value.onError !== "function" ||
-    nodeTypes.isProxy(value.peerForClaim) ||
-    nodeTypes.isProxy(value.claimForPeer) ||
-    nodeTypes.isProxy(value.onError)
+    )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
   }
-  canonicalString(value.codec.codecId, "L2PS RFQ codecId");
-  return {
-    peer: value.peer,
-    codec: value.codec,
-    l2psUid: canonicalString(value.l2psUid, "L2PS UID"),
-    localClaim: canonicalString(value.localClaim, "localClaim"),
-    localPeerKey: capturePeerKey(value.localPeerKey, "localPeerKey"),
-    peerForClaim: value.peerForClaim,
-    claimForPeer: value.claimForPeer,
-    onError: value.onError,
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = descriptors[key as keyof typeof descriptors];
+    if (
+      typeof key !== "string" ||
+      descriptor === undefined ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.value === undefined
+    ) {
+      throw new DacsError(
+        "Demos L2PS RFQ transport options must use enumerable data properties",
+      );
+    }
+  }
+  const peer = descriptors.peer?.value as DemosL2psRfqPeerLike | undefined;
+  const codec = descriptors.codec?.value as DemosL2psRfqWireCodec | undefined;
+  const peerForClaim = descriptors.peerForClaim?.value as
+    DemosL2psRfqTransportOptions["peerForClaim"] | undefined;
+  const claimForPeer = descriptors.claimForPeer?.value as
+    DemosL2psRfqTransportOptions["claimForPeer"] | undefined;
+  const onError = descriptors.onError?.value as
+    DemosL2psRfqTransportOptions["onError"] | undefined;
+  if (
+    peer === undefined ||
+    peer === null ||
+    typeof peer !== "object" ||
+    nodeTypes.isProxy(peer) ||
+    codec === undefined ||
+    codec === null ||
+    typeof codec !== "object" ||
+    nodeTypes.isProxy(codec) ||
+    typeof peerForClaim !== "function" ||
+    typeof claimForPeer !== "function" ||
+    typeof onError !== "function" ||
+    nodeTypes.isProxy(peerForClaim) ||
+    nodeTypes.isProxy(claimForPeer) ||
+    nodeTypes.isProxy(onError)
+  ) {
+    throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
+  }
+  const send = peer.send;
+  const history = peer.history;
+  const onMessage = peer.onMessage;
+  const removeMessageHandler = peer.removeMessageHandler;
+  const seal = codec.seal;
+  const open = codec.open;
+  const codecId = codec.codecId;
+  if (
+    typeof send !== "function" ||
+    typeof history !== "function" ||
+    typeof onMessage !== "function" ||
+    (removeMessageHandler !== undefined &&
+      typeof removeMessageHandler !== "function") ||
+    typeof seal !== "function" ||
+    typeof open !== "function" ||
+    typeof codecId !== "string" ||
+    [send, history, onMessage, seal, open].some((fn) => nodeTypes.isProxy(fn)) ||
+    (removeMessageHandler !== undefined && nodeTypes.isProxy(removeMessageHandler))
+  ) {
+    throw new DacsError("Demos L2PS RFQ transport capabilities are malformed or unsafe");
+  }
+  canonicalString(codecId, "L2PS RFQ codecId");
+  return Object.freeze({
+    send: (...args: Parameters<DemosL2psRfqPeerLike["send"]>) =>
+      Reflect.apply(send, peer, args) as ReturnType<DemosL2psRfqPeerLike["send"]>,
+    history: (...args: Parameters<DemosL2psRfqPeerLike["history"]>) =>
+      Reflect.apply(history, peer, args) as ReturnType<DemosL2psRfqPeerLike["history"]>,
+    onMessage: (...args: Parameters<DemosL2psRfqPeerLike["onMessage"]>) =>
+      Reflect.apply(onMessage, peer, args) as ReturnType<DemosL2psRfqPeerLike["onMessage"]>,
+    removeMessageHandler: removeMessageHandler === undefined
+      ? undefined
+      : (...args: Parameters<NonNullable<DemosL2psRfqPeerLike["removeMessageHandler"]>>) =>
+          Reflect.apply(removeMessageHandler, peer, args) as ReturnType<
+            NonNullable<DemosL2psRfqPeerLike["removeMessageHandler"]>
+          >,
+    seal: (...args: Parameters<DemosL2psRfqWireCodec["seal"]>) =>
+      Reflect.apply(seal, codec, args) as ReturnType<DemosL2psRfqWireCodec["seal"]>,
+    open: (...args: Parameters<DemosL2psRfqWireCodec["open"]>) =>
+      Reflect.apply(open, codec, args) as ReturnType<DemosL2psRfqWireCodec["open"]>,
+    l2psUid: canonicalString(descriptors.l2psUid?.value, "L2PS UID"),
+    localClaim: canonicalString(descriptors.localClaim?.value, "localClaim"),
+    localPeerKey: capturePeerKey(descriptors.localPeerKey?.value, "localPeerKey"),
+    peerForClaim: (claim: string) => Reflect.apply(peerForClaim, value, [claim]) as
+      ReturnType<DemosL2psRfqTransportOptions["peerForClaim"]>,
+    claimForPeer: (peerKey: string) => Reflect.apply(claimForPeer, value, [peerKey]) as
+      ReturnType<DemosL2psRfqTransportOptions["claimForPeer"]>,
+    onError: (error: Error) => Reflect.apply(onError, value, [error]) as void,
     historyPageSize: positiveInteger(
-      value.historyPageSize,
+      descriptors.historyPageSize?.value,
       DEFAULT_HISTORY_PAGE_SIZE,
       "historyPageSize",
       100,
     ),
     historyMaxPages: positiveInteger(
-      value.historyMaxPages,
+      descriptors.historyMaxPages?.value,
       DEFAULT_HISTORY_MAX_PAGES,
       "historyMaxPages",
       1_000,
     ),
     operationTimeoutMs: positiveInteger(
-      value.operationTimeoutMs,
+      descriptors.operationTimeoutMs?.value,
       DEFAULT_OPERATION_TIMEOUT_MS,
       "operationTimeoutMs",
       300_000,
     ),
-  };
+  });
 }
 
 /**
@@ -630,10 +692,30 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   }
 
   function remotePeer(claim: string): string {
-    const value = captured.peerForClaim(claim);
+    let value: string | undefined;
+    try {
+      value = captured.peerForClaim(claim);
+    } catch (cause) {
+      throw new TransientTransportCapabilityError(
+        "Demos L2PS RFQ peer mapping failed",
+        { cause },
+      );
+    }
     const peerKey = capturePeerKey(value, "resolved peer key");
     if (peerKey === captured.localPeerKey) {
       throw new DacsError("Demos L2PS RFQ remote route resolved to the local peer");
+    }
+    let reciprocalClaim: string | undefined;
+    try {
+      reciprocalClaim = captured.claimForPeer(peerKey);
+    } catch (cause) {
+      throw new TransientTransportCapabilityError(
+        "Demos L2PS RFQ reciprocal claim mapping failed",
+        { cause },
+      );
+    }
+    if (reciprocalClaim !== claim) {
+      throw new DacsError("Demos L2PS RFQ peer/claim mapping is not reciprocal");
     }
     return peerKey;
   }
@@ -652,15 +734,21 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     return { packet, bytes, recipientPeer, context };
   }
 
-  async function sealPacket(candidate: unknown) {
-    const routed = routePacket(candidate);
+  async function sealPacket(routed: ReturnType<typeof routePacket>) {
     const { packet, bytes, recipientPeer, context } = routed;
-    const encrypted = captureEncrypted(
-      await bounded(
-        () => captured.codec.seal(bytes, context),
+    let sealed: unknown;
+    try {
+      sealed = await bounded(
+        () => captured.seal(bytes, context),
         "Demos L2PS RFQ encryption",
-      ),
-    );
+      );
+    } catch (cause) {
+      throw new TransientTransportCapabilityError(
+        "Demos L2PS RFQ encryption capability failed",
+        { cause },
+      );
+    }
+    const encrypted = captureEncrypted(sealed);
     return { packet, recipientPeer, encrypted };
   }
 
@@ -680,7 +768,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     try {
       const plaintext = await bounded(
         () =>
-          captured.codec.open(message.encrypted, {
+          captured.open(message.encrypted, {
             messageHash: packet.packetId,
             fromPeer: captured.localPeerKey,
             toPeer: recipientPeer,
@@ -702,7 +790,13 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     try {
       prepared = routePacket(candidate);
     } catch (cause) {
-      return { disposition: "rejected", reason: errorFrom(cause, "RFQ packet failed").message };
+      return {
+        disposition:
+          cause instanceof TransientTransportCapabilityError
+            ? "indeterminate"
+            : "rejected",
+        reason: errorFrom(cause, "RFQ packet failed").message,
+      };
     }
     let before: number | undefined;
     let paginated = false;
@@ -713,7 +807,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         page = captureHistoryPage(
           await bounded(
             () =>
-              captured.peer.history(prepared.recipientPeer, {
+              captured.history(prepared.recipientPeer, {
                 ...(before === undefined ? {} : { before }),
                 limit: captured.historyPageSize,
               }),
@@ -793,7 +887,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
     const plaintext = await bounded(
       () =>
-        captured.codec.open(payload.encrypted, {
+        captured.open(payload.encrypted, {
           messageHash: payload.messageHash,
           fromPeer: payload.from,
           toPeer: captured.localPeerKey,
@@ -863,7 +957,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         page = captureHistoryPage(
           await bounded(
             () =>
-              captured.peer.history(remotePeerKey, {
+              captured.history(remotePeerKey, {
                 ...(before === undefined ? {} : { before }),
                 limit: captured.historyPageSize,
               }),
@@ -885,7 +979,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         try {
           const plaintext = await bounded(
             () =>
-              captured.codec.open(message.encrypted, {
+              captured.open(message.encrypted, {
                 messageHash: message.messageHash,
                 fromPeer: remotePeerKey,
                 toPeer: captured.localPeerKey,
@@ -962,20 +1056,35 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
 
   return {
     async publish(candidate) {
-      let prepared: Awaited<ReturnType<typeof sealPacket>>;
+      let routed: ReturnType<typeof routePacket>;
       try {
-        prepared = await sealPacket(candidate);
+        routed = routePacket(candidate);
       } catch (cause) {
         return {
-          disposition: "rejected",
+          disposition:
+            cause instanceof TransientTransportCapabilityError
+              ? "indeterminate" as const
+              : "rejected" as const,
           reason: errorFrom(cause, "Demos L2PS RFQ packet preparation failed").message,
+        };
+      }
+      let prepared: Awaited<ReturnType<typeof sealPacket>>;
+      try {
+        prepared = await sealPacket(routed);
+      } catch (cause) {
+        return {
+          disposition:
+            cause instanceof TransientTransportCapabilityError
+              ? "indeterminate" as const
+              : "rejected" as const,
+          reason: errorFrom(cause, "Demos L2PS RFQ packet encryption failed").message,
         };
       }
       try {
         const result = captureSendResult(
           await bounded(
             () =>
-              captured.peer.send(
+              captured.send(
                 prepared.recipientPeer,
                 prepared.encrypted,
                 prepared.packet.packetId,
@@ -1018,7 +1127,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           });
       };
       try {
-        captured.peer.onMessage(peerHandler);
+        captured.onMessage(peerHandler);
       } catch (cause) {
         started = false;
         onPacket = undefined;
@@ -1030,7 +1139,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       started = false;
       onPacket = undefined;
       if (peerHandler !== undefined) {
-        captured.peer.removeMessageHandler?.(peerHandler);
+        captured.removeMessageHandler?.(peerHandler);
         peerHandler = undefined;
       }
     },

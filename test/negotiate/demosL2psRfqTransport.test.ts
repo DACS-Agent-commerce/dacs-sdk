@@ -16,6 +16,8 @@ import {
   type DemosL2psRfqMessageHandler,
   type DemosL2psRfqPeerLike,
   type DemosL2psRfqStoredMessage,
+  type DemosL2psRfqTransportOptions,
+  type DemosL2psRfqWireCodec,
   type DurableRfqLifecycleRole,
   type DurableRfqLifecycleTransport,
   type IdentityBundle,
@@ -470,6 +472,207 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(status.status).toBe("ok");
     if (status.status !== "ok") return;
     expect(status.record.failure).toMatchObject({ class: "transport" });
+  });
+
+  test("keeps a transient seal failure retryable until authenticated absence", async () => {
+    const hub = new FakeL2psHub();
+    const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    let failSeal = true;
+    const codec: DemosL2psRfqWireCodec = {
+      codecId: baseCodec.codecId,
+      seal(plaintext, context) {
+        if (failSeal) {
+          failSeal = false;
+          throw new Error("transient codec outage");
+        }
+        return baseCodec.seal(plaintext, context);
+      },
+      open(encrypted, context) {
+        return baseCodec.open(encrypted, context);
+      },
+    };
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec,
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    expect(hub.sends).toBe(0);
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(hub.sends).toBe(1);
+  });
+
+  test("keeps a transient peer-mapping failure retryable", async () => {
+    const hub = new FakeL2psHub();
+    let failMapping = true;
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim(claim) {
+        if (failMapping) {
+          failMapping = false;
+          throw new Error("transient mapping outage");
+        }
+        return peerForClaim(claim);
+      },
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    expect(hub.sends).toBe(0);
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(hub.sends).toBe(1);
+  });
+
+  test("rejects a malformed encrypted frame before peer send", async () => {
+    const hub = new FakeL2psHub();
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: {
+        codecId: "malformed-frame-test",
+        seal: () => ({} as never),
+        open: () => new Uint8Array(),
+      },
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "rejected" });
+    expect(hub.sends).toBe(0);
+  });
+
+  test("captures receiver-bound peer, codec, mapping, and error capabilities once", async () => {
+    const hub = new FakeL2psHub();
+    const backingPeer = hub.peer(BUYER_PEER);
+    let registered: DemosL2psRfqMessageHandler | undefined;
+    let removed = false;
+    const peer: DemosL2psRfqPeerLike = {
+      send(to, encrypted, messageHash) {
+        expect(this).toBe(peer);
+        return backingPeer.send(to, encrypted, messageHash);
+      },
+      history(peerKey, historyOptions) {
+        expect(this).toBe(peer);
+        return backingPeer.history(peerKey, historyOptions);
+      },
+      onMessage(handler) {
+        expect(this).toBe(peer);
+        registered = handler;
+      },
+      removeMessageHandler(handler) {
+        expect(this).toBe(peer);
+        expect(handler).toBe(registered);
+        removed = true;
+      },
+    };
+    const backingCodec = createDemosL2psRfqAesGcmCodec({
+      sharedKey: randomBytes(32),
+    });
+    const codec: DemosL2psRfqWireCodec = {
+      codecId: backingCodec.codecId,
+      seal(plaintext, context) {
+        expect(this).toBe(codec);
+        return backingCodec.seal(plaintext, context);
+      },
+      open(encrypted, context) {
+        expect(this).toBe(codec);
+        return backingCodec.open(encrypted, context);
+      },
+    };
+    const errors: Error[] = [];
+    let options!: DemosL2psRfqTransportOptions;
+    options = {
+      peer,
+      codec,
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim(claim) {
+        expect(this).toBe(options);
+        return peerForClaim(claim);
+      },
+      claimForPeer(peerKey) {
+        expect(this).toBe(options);
+        return claimForPeer(peerKey);
+      },
+      onError(error) {
+        expect(this).toBe(options);
+        errors.push(error);
+      },
+    };
+    const transport = createDemosL2psRfqTransport<string>(options);
+    peer.send = async () => { throw new Error("swapped send"); };
+    peer.history = async () => { throw new Error("swapped history"); };
+    peer.onMessage = () => { throw new Error("swapped onMessage"); };
+    peer.removeMessageHandler = () => { throw new Error("swapped remove handler"); };
+    codec.seal = () => { throw new Error("swapped seal"); };
+    codec.open = () => { throw new Error("swapped open"); };
+    options.peerForClaim = () => { throw new Error("swapped peer mapping"); };
+    options.claimForPeer = () => { throw new Error("swapped claim mapping"); };
+    options.onError = () => { throw new Error("swapped error handler"); };
+
+    transport.start(async () => ({ status: "duplicate", record: {} as never }));
+    if (registered === undefined) throw new Error("message handler was not registered");
+    registered({} as never);
+    await transport.drain();
+    expect(errors).toHaveLength(1);
+    transport.stop();
+    expect(removed).toBe(true);
+
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "ready" });
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    const packet = status.record.outbox[0]?.packet;
+    if (packet === undefined) throw new Error("outbox packet missing");
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "acknowledged",
+    });
   });
 
   test("bounds an unresponsive Demos send and retains an indeterminate outbox", async () => {
