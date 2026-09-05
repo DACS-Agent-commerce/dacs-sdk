@@ -37,6 +37,8 @@ export interface DacsX402BuyerRuntimePreparationV1 {
 export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
+  /** Operator-consented maximum payment amount in the rail's base units. */
+  maximumServiceAmount: string;
   minimumConfirmations: number;
   authorizationSearchFromBlock: number;
   resolvePreparation(input: Readonly<{
@@ -172,6 +174,11 @@ function preparationBindingsMatch(
     HASH_RE.test(authority.sessionBindingHash);
 }
 
+function amountWithinConsentedMaximum(amount: string, maximum: string): boolean {
+  return /^[1-9][0-9]*$/.test(amount) && /^[1-9][0-9]*$/.test(maximum) &&
+    BigInt(amount) <= BigInt(maximum);
+}
+
 /**
  * Compose the role-owned EVM signer/read client, immutable order input,
  * chain-authenticated authorization provider and retained paid HTTP request
@@ -184,6 +191,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       options.context.role !== "buyer" || options.context.evm.role !== "buyer" ||
       options.context.commerceStores.role !== "buyer" ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
+      !/^[1-9][0-9]*$/.test(options.maximumServiceAmount) ||
       !Number.isSafeInteger(options.minimumConfirmations) ||
       options.minimumConfirmations <= 0 ||
       !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
@@ -238,6 +246,15 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
         throw new DacsLiveEffectInputControlError(
           "operator-action",
           "x402-preparation-authority-mismatch",
+        );
+      }
+      if (!amountWithinConsentedMaximum(
+        preparation.authority.amount,
+        options.maximumServiceAmount,
+      )) {
+        throw new DacsLiveEffectInputControlError(
+          "operator-action",
+          "x402-preparation-amount-exceeds-consented-maximum",
         );
       }
       let client;

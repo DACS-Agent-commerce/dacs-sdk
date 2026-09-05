@@ -2818,6 +2818,7 @@ async function main(): Promise<void> {
         }
         return createDacsFixedPriceX402BuyerLiveV1({
           ...common,
+          maximumServiceAmount: config.limits.maxServiceAmount.amount,
           confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
             publicBaseUrl: sellerPublicEndpoint,
           }),

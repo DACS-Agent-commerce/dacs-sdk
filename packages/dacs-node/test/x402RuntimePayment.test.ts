@@ -247,39 +247,41 @@ describe("buyer runtime x402 payment composition", () => {
         },
       },
     }) as unknown as DacsLiveRoleOperationContextV1;
+    const preparation = {
+      authority: {
+        jobId: JOB_ID,
+        phaseIndex: 2,
+        railId: "x402:default",
+        railVersion: "2",
+        railDescriptorHash: "2".repeat(64),
+        agreementHash: "3".repeat(64),
+        termsHash: "4".repeat(64),
+        sessionBindingHash: "5".repeat(64),
+        network: "eip155:84532",
+        payer: PAYER,
+        payee: PAYEE,
+        asset: ASSET,
+        amount: "1000",
+        httpResource: RESOURCE,
+        method: "GET",
+      },
+      expectedRequirements: {
+        scheme: "exact" as const,
+        network: "eip155:84532",
+        amount: "1000",
+        asset: ASSET,
+        payTo: PAYEE,
+        maxTimeoutSeconds: 120,
+        extra: { name: "USD Coin", version: "2" },
+      },
+    } as const;
     const track = createDacsX402BuyerRuntimePaymentTrackV1({
       context,
       workerId: "buyer-worker",
+      maximumServiceAmount: "1000",
       minimumConfirmations: 1,
       authorizationSearchFromBlock: 1,
-      resolvePreparation: () => ({
-        authority: {
-          jobId: JOB_ID,
-          phaseIndex: 2,
-          railId: "x402:default",
-          railVersion: "2",
-          railDescriptorHash: "2".repeat(64),
-          agreementHash: "3".repeat(64),
-          termsHash: "4".repeat(64),
-          sessionBindingHash: "5".repeat(64),
-          network: "eip155:84532",
-          payer: PAYER,
-          payee: PAYEE,
-          asset: ASSET,
-          amount: "1000",
-          httpResource: RESOURCE,
-          method: "GET",
-        },
-        expectedRequirements: {
-          scheme: "exact",
-          network: "eip155:84532",
-          amount: "1000",
-          asset: ASSET,
-          payTo: PAYEE,
-          maxTimeoutSeconds: 120,
-          extra: { name: "USD Coin", version: "2" },
-        },
-      }),
+      resolvePreparation: () => preparation,
       authorizeIntent: async ({ intent }) => ({
         disposition: "authorized" as const,
         bindingHash: intent.bindingHash,
@@ -297,9 +299,30 @@ describe("buyer runtime x402 payment composition", () => {
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
     expect(challengeClient.createPaymentPayload).not.toHaveBeenCalled();
 
+    const overLimitTrack = createDacsX402BuyerRuntimePaymentTrackV1({
+      context,
+      workerId: "buyer-worker",
+      maximumServiceAmount: "999",
+      minimumConfirmations: 1,
+      authorizationSearchFromBlock: 1,
+      resolvePreparation: () => preparation,
+      authorizeIntent: async ({ intent }) => ({
+        disposition: "authorized" as const,
+        bindingHash: intent.bindingHash,
+      }),
+      authorizePreparedIntent: () => true,
+    });
+    await expect(overLimitTrack(operation())).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "x402-preparation-amount-exceeds-consented-maximum",
+    });
+    expect(createChallengeClient).toHaveBeenCalledOnce();
+    expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
+
     const controlledTrack = createDacsX402BuyerRuntimePaymentTrackV1({
       context,
       workerId: "buyer-worker",
+      maximumServiceAmount: "1000",
       minimumConfirmations: 1,
       authorizationSearchFromBlock: 1,
       resolvePreparation: () => {
