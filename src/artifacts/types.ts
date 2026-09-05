@@ -925,7 +925,7 @@ export type SettlementEvidence =
       attestationRef?: never;
     })
   | (SettlementEvidenceBase & {
-      phase: Exclude<DeliveryPhaseType, "deliver-attested-payload">;
+      phase: "deliver-storage-program";
       outcome: "success";
       reason?: never;
       paymentTxRefs?: ChainTxRef[];
@@ -934,6 +934,18 @@ export type SettlementEvidence =
       settlementFinality?: never;
       deliverableContentHash: string;
       deliverableAnchor: { kind: string; locator: string };
+      attestationRef?: AttestationRef;
+    })
+  | (SettlementEvidenceBase & {
+      phase: "deliver-entitlement";
+      outcome: "success";
+      reason?: never;
+      paymentTxRefs?: ChainTxRef[];
+      paymentAmount?: PaymentAmount;
+      paymentFee?: PaymentAmount;
+      settlementFinality?: never;
+      deliverableContentHash: string;
+      deliverableAnchor?: { kind: string; locator: string };
       attestationRef?: AttestationRef;
     })
   | (SettlementEvidenceBase & {
@@ -1001,6 +1013,15 @@ export interface PhaseSummaryEntry {
 }
 
 /**
+ * DACS-5 v0.4 SEB-1 execution-result entry. `retryExhausted` is legal only on
+ * the terminal transient failure of an EvidenceBoundFaultAttestationBundle;
+ * the semantic verifier enforces that placement.
+ */
+export interface EvidenceBoundPhaseSummaryEntry extends PhaseSummaryEntry {
+  retryExhausted?: true;
+}
+
+/**
  * DACS-5 §10.4.1 legacy-read phase entry. Historical AttestationBundle
  * producers used pre-registry phase labels; consumers retain those strings for
  * replay, while every FaultAttestationBundle write uses closed `PhaseType`.
@@ -1057,6 +1078,7 @@ export type AttestationBundle = Omit<BundleFields, "phaseSummary"> & {
   /** Pinned literal per DACS-5 §10.4.1 (legacy two-party bundle line). */
   bundleVersion: "1";
   faultBundleVersion?: never;
+  evidenceBoundFaultBundleVersion?: never;
   faultedParty?: never;
   phaseSummary: LegacyBundlePhaseEntry[];
 };
@@ -1066,9 +1088,46 @@ export interface FaultAttestationBundle extends BundleFields {
   faultBundleVersion: "1";
   faultedParty: FaultedParty;
   bundleVersion?: never;
+  evidenceBoundFaultBundleVersion?: never;
 }
 
-export type AnyAttestationBundle = AttestationBundle | FaultAttestationBundle;
+/** DACS-5 v0.4 exact-set artifact; it is not a renamed v0.3 fault bundle. */
+export interface EvidenceBoundFaultAttestationBundle
+  extends Omit<BundleFields, "phaseSummary"> {
+  evidenceBoundFaultBundleVersion: "1";
+  faultedParty: FaultedParty;
+  phaseSummary: EvidenceBoundPhaseSummaryEntry[];
+  bundleVersion?: never;
+  faultBundleVersion?: never;
+}
+
+export type AbsoluteFaultAttestationBundle =
+  | FaultAttestationBundle
+  | EvidenceBoundFaultAttestationBundle;
+
+export type AnyAttestationBundle =
+  | AttestationBundle
+  | AbsoluteFaultAttestationBundle;
+
+/** Released v0.3 oversized-bundle pointer. Its URL remains an opaque string. */
+export interface FaultBundleExtendedPointer {
+  faultBundleVersion: "1";
+  pointerKind: "extended";
+  fullBundleUrl: string;
+  fullBundleContentHash: string;
+  segmentRefs?: AttestationRef[];
+  signature: ComponentSignature;
+}
+
+/** v0.4 EBFAB pointer; unlike v0.3 its URL shape is action-bearing. */
+export interface EvidenceBoundFaultBundleExtendedPointer {
+  evidenceBoundFaultBundleVersion: "1";
+  pointerKind: "extended";
+  fullBundleUrl: string;
+  fullBundleContentHash: string;
+  segmentRefs?: AttestationRef[];
+  signature: ComponentSignature;
+}
 
 /** DACS-5 §10.4.2 — signed logical-to-native mapping for one anchored bundle copy. */
 export interface BundleBinding {
@@ -1091,4 +1150,5 @@ export type ArtifactKind =
   | "PayeeBoundAgreementDocument"
   | "SettlementEvidence"
   | "AttestationBundle"
-  | "FaultAttestationBundle";
+  | "FaultAttestationBundle"
+  | "EvidenceBoundFaultAttestationBundle";

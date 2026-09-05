@@ -7,7 +7,11 @@ import {
   sameCanonicalClaimIdentity,
 } from "../identity/claimReference.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
-import { isFaultBundle, scoredBundleOutcome } from "./bundleSemantics.js";
+import {
+  bundleArtifactType,
+  isFaultBundle,
+  scoredBundleOutcome,
+} from "./bundleSemantics.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -275,9 +279,12 @@ export function deriveReputation(
   const outcomes: string[] = [];
   const orchestratorFaultJobs = new Set<string>();
   for (const copies of byJob.values()) {
-    const valid = copies.filter(
-      (b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller",
-    );
+    const valid = copies
+      // Released derivation v1 has no job-bound resolution context. DACS-5
+      // therefore forbids EBFAB admission here; use the distinct job-bound or
+      // settlement-verified derivation path instead.
+      .filter((b) => bundleArtifactType(b) !== "evidence-bound")
+      .filter((b) => b.anchoredByRole === "buyer" || b.anchoredByRole === "seller");
     if (valid.length === 0) continue;
     let roleOfParty: unknown;
     if (deps.resolvePartyRole) {

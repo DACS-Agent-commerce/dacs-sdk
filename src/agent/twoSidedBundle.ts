@@ -13,14 +13,18 @@
  * round-trip across the two copies.
  */
 import type { KeyObject } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { isFaultAttestationBundle } from "../artifacts/validators.js";
+import {
+  isEvidenceBoundFaultAttestationBundle,
+  isFaultAttestationBundle,
+} from "../artifacts/validators.js";
 import { ed25519Sign } from "../crypto/ed25519.js";
-import { signedBytes } from "../crypto/signing.js";
+import { signedBytes, type DomainSeparator } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
 import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type {
@@ -28,6 +32,8 @@ import type {
   BundleParty,
   BundlePartyRole,
   BundleSignature,
+  EvidenceBoundFaultAttestationBundle,
+  EvidenceBoundPhaseSummaryEntry,
   FaultAttestationBundle,
   FaultedParty,
 } from "../artifacts/types.js";
@@ -173,6 +179,30 @@ export interface TwoSidedBundles {
   orchestratorCopy?: FaultAttestationBundle;
 }
 
+type BundleConstructionSession = Omit<TwoSidedSession, "phaseSummary"> & {
+  phaseSummary: TwoSidedSession["phaseSummary"];
+};
+
+interface BundleConstructionOptions {
+  versionField: "faultBundleVersion" | "evidenceBoundFaultBundleVersion";
+  separator: DomainSeparator;
+  isValid: (
+    value: unknown,
+  ) => value is FaultAttestationBundle | EvidenceBoundFaultAttestationBundle;
+  invalidMessage: string;
+  assertVersion: () => void;
+  admit?: (
+    bundle: FaultAttestationBundle | EvidenceBoundFaultAttestationBundle,
+  ) => Promise<void>;
+}
+
+type ConstructedBundles = Partial<
+  Record<
+    BundleAnchorRole,
+    FaultAttestationBundle | EvidenceBoundFaultAttestationBundle
+  >
+>;
+
 /** Party identity is the primary claim (§10.4.1 `parties[].primaryClaim` = `bundle.presentedBy`). */
 function sameParty(a: SessionParty, b: SessionParty): boolean {
   return sameCanonicalClaimIdentity(a.primaryClaim, b.primaryClaim);
@@ -186,8 +216,12 @@ function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
 
-async function signOver(party: SigningSessionParty, hash: string): Promise<BundleSignature> {
-  const payload = signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, hash);
+async function signOver(
+  party: SigningSessionParty,
+  hash: string,
+  separator: DomainSeparator = ARTIFACT_SEPARATORS.FaultAttestationBundle,
+): Promise<BundleSignature> {
+  const payload = signedBytes(separator, hash);
   assertNoRawSessionSeed(party.signer, `session signer ${party.primaryClaim}`);
   const raw =
     typeof party.signer === "function"
@@ -211,9 +245,10 @@ async function signOver(party: SigningSessionParty, hash: string): Promise<Bundl
  * that suppression path, the emitted copy is anchored by the actual signer and records
  * `aborted-by-other`; consumers classify the absent non-signer as `aborted-by-self` (§10.11).
  */
-export async function buildTwoSidedBundle(
-  session: TwoSidedSession,
-): Promise<TwoSidedBundles> {
+async function buildTwoSidedCopies(
+  session: BundleConstructionSession,
+  options: BundleConstructionOptions,
+): Promise<ConstructedBundles> {
   const { buyer, seller, outcome } = session;
 
   // Gate 1 — the outcome is in the spec's CLOSED set. Without this, a plausible-looking but
@@ -227,12 +262,7 @@ export async function buildTwoSidedBundle(
     );
   }
 
-  if (session.faultBundleVersion !== undefined && session.faultBundleVersion !== "1") {
-    throw new DacsError(
-      `faultBundleVersion "${session.faultBundleVersion}" is not supported by this v1 bundle signer. ` +
-        "Use faultBundleVersion \"1\" or omit it.",
-    );
-  }
+  options.assertVersion();
 
   const outcomeClass = bundleOutcomeClass(outcome)!;
   const suppliedFault = session.faultedParty as unknown;
@@ -393,7 +423,7 @@ export async function buildTwoSidedBundle(
     );
   }
   const bodyFor = (role: BundleAnchorRole) => ({
-    faultBundleVersion: session.faultBundleVersion ?? "1",
+    [options.versionField]: "1",
     jobId: session.jobId,
     outcome: roleRelativeOutcome(outcomeClass, faultedParty, role),
     faultedParty,
@@ -409,7 +439,7 @@ export async function buildTwoSidedBundle(
     recipeRegistryVersion: session.recipeRegistryVersion,
     railRegistryVersion: session.railRegistryVersion,
     finalisedAt: session.finalisedAt,
-  }) as unknown as FaultAttestationBundle;
+  });
 
   const signers = availableSigners.map(({ party }) => party);
   const roles: BundleAnchorRole[] = singlePartyAbort
@@ -420,28 +450,157 @@ export async function buildTwoSidedBundle(
         ...(orchestrator ? (["orchestrator"] as const) : []),
       ];
 
-  const copy = async (role: BundleAnchorRole): Promise<FaultAttestationBundle> => {
+  const copy = async (
+    role: BundleAnchorRole,
+  ): Promise<FaultAttestationBundle | EvidenceBoundFaultAttestationBundle> => {
     const body = bodyFor(role);
     // This is an in-memory signing draft, not a protocol artifact: §10.4.1
-    // requires signatures on the published FaultAttestationBundle. Hash the
-    // exact unsigned scope, attach signatures, then validate the final record.
-    const candidate = { ...body, anchoredByRole: role } as FaultAttestationBundle;
+    // requires signatures on the published bundle. Hash the exact unsigned
+    // scope, attach signatures, then validate against the selected discriminator.
+    const candidate = {
+      ...body,
+      anchoredByRole: role,
+    } as FaultAttestationBundle | EvidenceBoundFaultAttestationBundle;
     const hash = attestationBundleHash(candidate);
     const signatures: BundleSignature[] = [];
-    for (const signer of signers) signatures.push(await signOver(signer, hash));
-    const signed = { ...candidate, signatures };
-    if (!isFaultAttestationBundle(signed)) {
-      throw new DacsError("session facts do not form a valid FaultAttestationBundle");
+    for (const signer of signers) {
+      signatures.push(await signOver(signer, hash, options.separator));
     }
+    const signed = { ...candidate, signatures };
+    if (!options.isValid(signed)) {
+      throw new DacsError(options.invalidMessage);
+    }
+    await options.admit?.(signed);
     return signed;
   };
 
-  const out: TwoSidedBundles = {};
+  const out: ConstructedBundles = {};
   for (const role of roles) {
-    const bundle = await copy(role);
-    if (role === "buyer") out.buyerCopy = bundle;
-    if (role === "seller") out.sellerCopy = bundle;
-    if (role === "orchestrator") out.orchestratorCopy = bundle;
+    out[role] = await copy(role);
   }
   return out;
+}
+
+export async function buildTwoSidedBundle(
+  session: TwoSidedSession,
+): Promise<TwoSidedBundles> {
+  const copies = await buildTwoSidedCopies(session, {
+    versionField: "faultBundleVersion",
+    separator: ARTIFACT_SEPARATORS.FaultAttestationBundle,
+    isValid: isFaultAttestationBundle,
+    invalidMessage: "session facts do not form a valid FaultAttestationBundle",
+    assertVersion: () => {
+      if (
+        session.faultBundleVersion !== undefined &&
+        session.faultBundleVersion !== "1"
+      ) {
+        throw new DacsError(
+          `faultBundleVersion "${session.faultBundleVersion}" is not supported by this v1 bundle signer. ` +
+            "Use faultBundleVersion \"1\" or omit it.",
+        );
+      }
+    },
+  });
+  const out: TwoSidedBundles = {};
+  if (copies.buyer) out.buyerCopy = copies.buyer as FaultAttestationBundle;
+  if (copies.seller) out.sellerCopy = copies.seller as FaultAttestationBundle;
+  if (copies.orchestrator) {
+    out.orchestratorCopy = copies.orchestrator as FaultAttestationBundle;
+  }
+  return out;
+}
+
+export interface EvidenceBoundTwoSidedSession
+  extends Omit<TwoSidedSession, "faultBundleVersion" | "phaseSummary"> {
+  evidenceBoundFaultBundleVersion?: "1";
+  phaseSummary: EvidenceBoundPhaseSummaryEntry[];
+}
+
+export interface EvidenceBoundTwoSidedBundles {
+  buyerCopy?: EvidenceBoundFaultAttestationBundle;
+  sellerCopy?: EvidenceBoundFaultAttestationBundle;
+  orchestratorCopy?: EvidenceBoundFaultAttestationBundle;
+}
+
+export interface EvidenceBoundBundleProducerDeps {
+  /**
+   * Validate the signed candidate against independently authenticated SEB
+   * inputs supplied by the producer's closure. Returning anything other than
+   * verified refuses production. Publication still remains in `audit-pending`
+   * until the completed bundle itself passes ST-11 finality/resolvability.
+   */
+  validateEvidenceSet: (
+    bundle: Readonly<EvidenceBoundFaultAttestationBundle>,
+  ) => Promise<{ decision: "verified" | "rejected" | "indeterminate"; reason?: string }>;
+}
+
+/**
+ * Produce v0.4 EBFAB perspective copies through the session guards shared with
+ * v0.3, then sign and validate the structurally distinct artifact directly and
+ * require the producer's complete SEB gate. No FAB candidate, signature, or
+ * discriminator is created, so cross-type replay is impossible.
+ */
+export async function buildEvidenceBoundTwoSidedBundle(
+  session: EvidenceBoundTwoSidedSession,
+  deps: EvidenceBoundBundleProducerDeps,
+): Promise<EvidenceBoundTwoSidedBundles> {
+  if (
+    session.evidenceBoundFaultBundleVersion !== undefined &&
+    session.evidenceBoundFaultBundleVersion !== "1"
+  ) {
+    throw new DacsError("only evidenceBoundFaultBundleVersion \"1\" is supported");
+  }
+  if (!deps || typeof deps !== "object" || nodeTypes.isProxy(deps)) {
+    throw new DacsError("EBFAB production requires stable producer dependencies");
+  }
+  const validatorDescriptor = Object.getOwnPropertyDescriptor(
+    deps,
+    "validateEvidenceSet",
+  );
+  if (
+    !validatorDescriptor ||
+    !("value" in validatorDescriptor) ||
+    typeof validatorDescriptor.value !== "function" ||
+    nodeTypes.isProxy(validatorDescriptor.value)
+  ) {
+    throw new DacsError("EBFAB production requires validateEvidenceSet");
+  }
+  const validateEvidenceSet = validatorDescriptor.value.bind(deps) as
+    EvidenceBoundBundleProducerDeps["validateEvidenceSet"];
+  const copies = await buildTwoSidedCopies(session, {
+    versionField: "evidenceBoundFaultBundleVersion",
+    separator: ARTIFACT_SEPARATORS.EvidenceBoundFaultAttestationBundle,
+    isValid: isEvidenceBoundFaultAttestationBundle,
+    invalidMessage:
+      "session facts do not form a valid EvidenceBoundFaultAttestationBundle",
+    assertVersion: () => undefined,
+    admit: async (signed) => {
+      let verdict: {
+        decision: "verified" | "rejected" | "indeterminate";
+        reason?: string;
+      };
+      try {
+        verdict = snapshotCanonicalJsonRead(
+          await validateEvidenceSet(
+            structuredClone(signed as EvidenceBoundFaultAttestationBundle),
+          ),
+          "EBFAB producer exact-set verdict",
+        ) as typeof verdict;
+      } catch {
+        throw new DacsError("EBFAB producer exact-set validation failed");
+      }
+      if (verdict?.decision !== "verified") {
+        throw new DacsError(
+          `EBFAB producer exact-set validation ${verdict?.decision ?? "failed"}: ${verdict?.reason ?? "no reason"}`,
+        );
+      }
+    },
+  });
+  return {
+    buyerCopy: copies.buyer as EvidenceBoundFaultAttestationBundle | undefined,
+    sellerCopy: copies.seller as EvidenceBoundFaultAttestationBundle | undefined,
+    orchestratorCopy: copies.orchestrator as
+      | EvidenceBoundFaultAttestationBundle
+      | undefined,
+  };
 }
