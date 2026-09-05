@@ -45,6 +45,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
       "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
       "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
+      "dacs:image:smoke": "node scripts/docker-runtime-smoke.mjs",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
@@ -4541,16 +4542,115 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
+const DOCKER_RUNTIME_SMOKE = `import { spawnSync } from "node:child_process";
+
+const image = process.argv[2];
+if (!image || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image)) {
+  process.stderr.write("usage: npm run dacs:image:smoke -- <built-image-reference>\\n");
+  process.exit(2);
+}
+
+function docker(args, timeout = 120_000) {
+  const child = spawnSync("docker", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout,
+  });
+  if (child.error) throw child.error;
+  if (child.status !== 0) {
+    throw new Error("docker " + args[0] + " failed: " + child.stderr.trim());
+  }
+  return child.stdout.trim();
+}
+
+const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
+if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) {
+  throw new Error("image reference did not resolve to an immutable Docker image ID");
+}
+const config = JSON.parse(docker([
+  "image", "inspect", "--format", "{{json .Config}}", imageId,
+]));
+if (config.User !== "10001:10001") {
+  throw new Error("image runtime user is not the generated non-root identity");
+}
+if (config.WorkingDir !== "/app") {
+  throw new Error("image working directory is not /app");
+}
+if (config.Entrypoint !== null &&
+    (!Array.isArray(config.Entrypoint) || config.Entrypoint.length !== 0)) {
+  throw new Error("image entrypoint overrides the generated DACS service command");
+}
+const expectedCommand = [
+  "node",
+  "--import",
+  "@kynesyslabs/dacs-node/demos-loader",
+  "dist/src/service.js",
+];
+if (JSON.stringify(config.Cmd) !== JSON.stringify(expectedCommand)) {
+  throw new Error("image command does not start the generated DACS service");
+}
+
+const probe = [
+  'import { access, readFile } from "node:fs/promises";',
+  'const required = ["/app/dist/src/service.js", "/app/dist/src/cli.js", "/app/package.json", "/app/package-lock.json"];',
+  'for (const path of required) await access(path);',
+  'const forbidden = ["/app/src", "/app/test", "/app/.env", "/app/tsconfig.json", "/app/dacs.config.ts"];',
+  'for (const path of forbidden) {',
+  '  try { await access(path); throw new Error("development or secret path is present: " + path); }',
+  '  catch (error) { if (error && error.code !== "ENOENT") throw error; }',
+  '}',
+  'const expected = {"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0","@kynesyslabs/demosdk":"4.0.16","better-sqlite3":"12.6.2"};',
+  'const versions = {};',
+  'for (const [name, version] of Object.entries(expected)) {',
+  '  const manifest = JSON.parse(await readFile("/app/node_modules/" + name + "/package.json", "utf8"));',
+  '  if (manifest.version !== version) throw new Error(name + " version mismatch");',
+  '  versions[name] = manifest.version;',
+  '}',
+  'await import("@kynesyslabs/dacs");',
+  'await import("@kynesyslabs/dacs/substrate");',
+  'await import("@kynesyslabs/dacs-node");',
+  'await import("@kynesyslabs/demosdk/websdk");',
+  'await import("@kynesyslabs/demosdk/storage");',
+  'await import("@kynesyslabs/demosdk/abstraction");',
+  'if (typeof process.getuid !== "function" || process.getuid() === 0) throw new Error("container executed as root");',
+  'process.stdout.write(JSON.stringify({status:"pass",node:process.versions.node,uid:process.getuid(),gid:process.getgid(),versions}) + "\\\\n");',
+].join("\\n");
+
+const runtime = JSON.parse(docker([
+  "run",
+  "--rm",
+  "--network", "none",
+  "--read-only",
+  "--entrypoint", "node",
+  imageId,
+  "--import", "@kynesyslabs/dacs-node/demos-loader",
+  "--input-type=module",
+  "--eval", probe,
+]));
+if (runtime.uid !== 10001 || runtime.gid !== 10001) {
+  throw new Error("container runtime identity is not uid 10001 and gid 10001");
+}
+process.stdout.write(JSON.stringify({
+  status: "pass",
+  image,
+  imageId,
+  configuredUser: config.User,
+  configuredEntrypoint: config.Entrypoint,
+  configuredCommand: config.Cmd,
+  runtime,
+}) + "\\n");
+`;
+
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --omit=optional
+RUN npm ci --ignore-scripts --omit=optional --no-audit --no-fund
 RUN npm rebuild better-sqlite3
 COPY tsconfig.json dacs.config.ts ./
 COPY src ./src
 COPY test ./test
 RUN npm run build
-RUN npm prune --omit=dev --omit=optional --ignore-scripts
+RUN npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
 
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
@@ -4842,6 +4942,10 @@ Fresh generation is deliberately read-only. Run:
 
 \`\`\`bash
 cp .env.example .env
+# A deployment installer must run both checks before reporting success. Use
+# them explicitly after a manual image build, with your own immutable tag.
+docker build -t my-dacs-agent:local .
+npm run dacs:image:smoke -- my-dacs-agent:local
 npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
@@ -4959,7 +5063,12 @@ manual deletion.
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
-are omitted. Compiled services use the host package's exact Demos ESM
+are omitted, and image assembly disables install-time audit and funding network
+requests; dependency auditing remains a separate release gate. The generated
+\`dacs:image:smoke\` command starts the built image without network or writable
+root access, verifies its non-root identity, configured command, production files
+and exact package versions, and must pass before an installer reports success.
+Compiled services use the host package's exact Demos ESM
 compatibility loader rather than a general TypeScript/esbuild production
 transformer. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
@@ -4999,6 +5108,7 @@ export function liveProjectTemplates(
     "src/local-lifecycle.ts": LOCAL_LIFECYCLE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
+    "scripts/docker-runtime-smoke.mjs": DOCKER_RUNTIME_SMOKE,
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",
