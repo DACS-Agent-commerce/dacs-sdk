@@ -160,6 +160,8 @@ describe("Demos immutable publication coordinator track", () => {
         anchorWriteOnce,
         verifyDemosAnchorReceipt: vi.fn(async () => true),
         resolveDemosAnchorReceipt: vi.fn(async () => receipt()),
+        reconcileWalletJournal: vi.fn(async () => undefined),
+        reconcileNativeTransferJournal: vi.fn(async () => undefined),
       },
       signTransportEnvelope: async () => new Uint8Array(64),
       signComponent: async () => new Uint8Array(64),

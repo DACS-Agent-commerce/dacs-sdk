@@ -12,6 +12,9 @@ import {
   type FixedPriceAgreementProposal,
   type FixedPriceX402ErrorClass,
   type FixedPriceX402FaultedParty,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemTrackOperation,
+  type FixedPricePayDemTrackOperationInput,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
   type FixedPriceX402TrackOperationResult,
@@ -110,6 +113,61 @@ export interface DacsSellerAgreementTrackOptionsV1
   }>): Promise<boolean | DacsAgreementAuthorizationDecisionV1> |
     boolean | DacsAgreementAuthorizationDecisionV1;
   classifyRejected?: DacsBuyerAgreementTrackOptionsV1["classifyRejected"];
+}
+
+export interface DacsPayDemBuyerAgreementTrackOptionsV1
+  extends Omit<DacsBuyerAgreementTrackOptionsV1,
+    "buildDraft" | "authorizeAnchored" | "classifyRejected"> {
+  buildDraft(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<UnsignedAgreementArtifact>> |
+    Readonly<UnsignedAgreementArtifact>;
+  authorizeAnchored(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    result: Readonly<DurableAnchoredFixedPriceAgreement>;
+  }>): Promise<boolean> | boolean;
+  classifyRejected?: (input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    stage: string;
+    reasonCode: string;
+  }>) => Promise<Readonly<DacsAgreementRejectionDecisionV1>> |
+    Readonly<DacsAgreementRejectionDecisionV1>;
+}
+
+export interface DacsPayDemSellerAgreementTrackOptionsV1
+  extends Omit<DacsSellerAgreementTrackOptionsV1,
+    "resolveProposal" | "resolveAuthenticatedAgreementContext" |
+      "authorizeComplete" | "classifyRejected"> {
+  resolveProposal(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<{
+    proposal: Readonly<FixedPriceAgreementProposal>;
+    transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+  }>> | Readonly<{
+    proposal: Readonly<FixedPriceAgreementProposal>;
+    transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+  }>;
+  resolveAuthenticatedAgreementContext(input:
+    Parameters<DurableSellerFixedPriceAgreementDurability[
+      "resolveAuthenticatedAgreementContext"
+    ]>[0] & Readonly<{
+      operation: Readonly<FixedPricePayDemTrackOperationInput>;
+      retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    }>): ReturnType<DurableSellerFixedPriceAgreementDurability[
+      "resolveAuthenticatedAgreementContext"
+    ]>;
+  authorizeComplete(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    proposal: Readonly<FixedPriceAgreementProposal>;
+    result: Readonly<DurableSellerFixedPriceAgreementResponse>;
+  }>): Promise<boolean | DacsAgreementAuthorizationDecisionV1> |
+    boolean | DacsAgreementAuthorizationDecisionV1;
+  classifyRejected?: DacsPayDemBuyerAgreementTrackOptionsV1["classifyRejected"];
 }
 
 export class DacsAgreementRuntimeError extends Error {
@@ -557,5 +615,41 @@ export function createDacsSellerAgreementTrackV1(
         reasonCode: "seller-agreement-result-unauthorized",
       });
     }
+  };
+}
+
+/** Native DEM wrapper over the rail-neutral durable Agreement state machine. */
+export function createDacsPayDemBuyerAgreementTrackV1(
+  options: Readonly<DacsPayDemBuyerAgreementTrackOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  const x402 = createDacsBuyerAgreementTrackV1(
+    options as unknown as Readonly<DacsBuyerAgreementTrackOptionsV1>,
+  );
+  return async (operation) => {
+    if (operation.order.protocol.phase !== "pay-dem") {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "buyer-agreement-rail-mismatch",
+      });
+    }
+    return x402(operation as unknown as FixedPriceX402TrackOperationInput);
+  };
+}
+
+/** Native DEM wrapper over the rail-neutral durable Agreement responder. */
+export function createDacsPayDemSellerAgreementTrackV1(
+  options: Readonly<DacsPayDemSellerAgreementTrackOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  const x402 = createDacsSellerAgreementTrackV1(
+    options as unknown as Readonly<DacsSellerAgreementTrackOptionsV1>,
+  );
+  return async (operation) => {
+    if (operation.order.protocol.phase !== "pay-dem") {
+      return Object.freeze({
+        status: "operator-action" as const,
+        reasonCode: "seller-agreement-rail-mismatch",
+      });
+    }
+    return x402(operation as unknown as FixedPriceX402TrackOperationInput);
   };
 }

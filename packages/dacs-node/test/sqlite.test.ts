@@ -24,15 +24,22 @@ import {
   createFixedPriceX402BuyerCoordinator,
   FIXED_PRICE_OFFLINE_COMMERCE_PROFILE,
   FIXED_PRICE_OFFLINE_STANDARD_REVISION,
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceOfflineOrderBindingHash,
   fixedPriceOfflineOrderLocalBindingHash,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceOfflineOrderInput,
   type FixedPriceOfflineProtocolBinding,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperation,
@@ -54,6 +61,7 @@ import {
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
 } from "../src/sqlite.js";
+import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
 
 const BINDING_HASH = "a".repeat(64);
 const OTHER_BINDING_HASH = "b".repeat(64);
@@ -79,6 +87,25 @@ const LIVE_PROTOCOL: FixedPriceX402ProtocolBinding = {
     railType: "x402",
     phaseHandler: "pay-x402",
     network: "eip155:8453",
+    availability: "live",
+  },
+};
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: "3".repeat(64),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: "4".repeat(64),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
     availability: "live",
   },
 };
@@ -124,6 +151,23 @@ function liveSellerOrder(jobId = JOB_ID): FixedPriceX402OrderInput {
       deliveryEvidence: `seller:delivery-evidence:${jobId}`,
       audit: `seller:audit:${jobId}`,
     },
+  };
+}
+
+function payDemOrder(jobId = JOB_ID): FixedPricePayDemOrderInput {
+  return {
+    ...liveOrder(jobId),
+    protocol: PAY_DEM_PROTOCOL,
+  };
+}
+
+function payDemOrderBinding(order: FixedPricePayDemOrderInput): Readonly<{
+  bindingHash: string;
+  localBindingHash: string;
+}> {
+  return {
+    bindingHash: fixedPricePayDemOrderBindingHash(order),
+    localBindingHash: fixedPricePayDemOrderLocalBindingHash(order),
   };
 }
 
@@ -261,6 +305,7 @@ describe("DACS Node SQLite durability foundation", () => {
         ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
@@ -514,6 +559,7 @@ describe("DACS Node SQLite durability foundation", () => {
             profile, role, track, eligible, state, next_attempt_at,
             lease_expires_at, job_id
           );
+        DELETE FROM dacs_migrations WHERE version = 7;
         DELETE FROM dacs_migrations WHERE version = 6;
         DELETE FROM dacs_migrations WHERE version = 5;
         DELETE FROM dacs_migrations WHERE version = 4;
@@ -817,6 +863,70 @@ describe("DACS Node SQLite durability foundation", () => {
     await expect(database.createOfflineCoordinatorStore("buyer").create(coordinatorInput))
       .resolves.toMatchObject({ status: "corrupt" });
     expect(coordinatorReads).toBe(0);
+  });
+
+  it("durably journals one immutable pre-effect checkpoint per generation", async () => {
+    const databasePath = join(temporaryRoot(), "effect-checkpoint.sqlite");
+    const database = await open(databasePath);
+    const intent = {
+      kind: "payment" as const,
+      effectId: "payment:pay-dem-checkpoint",
+      bindingHash: BINDING_HASH,
+      input: { amountOs: "1000000000", payee: "2".repeat(64) },
+      idempotencyKey: "payment:pay-dem-checkpoint",
+      jobId: JOB_ID,
+    };
+    expect(database.putEffectIntent(intent)).toMatchObject({ status: "created" });
+    const claim = database.claimEffect({
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      owner: "pay-dem-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected pay-dem effect claim");
+    const checkpointInput = {
+      kind: intent.kind,
+      effectId: intent.effectId,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      name: "pay-dem-prepared-transfer",
+      value: {
+        txHash: "3".repeat(64),
+        nonce: 7,
+        payer: "1".repeat(64),
+        payee: "2".repeat(64),
+        amountOs: "1000000000",
+        network: "demos",
+      },
+    };
+    expect(database.recordEffectCheckpoint(checkpointInput))
+      .toMatchObject({ status: "recorded", checkpoint: { generation: 1 } });
+    expect(database.recordEffectCheckpoint(checkpointInput))
+      .toMatchObject({ status: "existing", checkpoint: { generation: 1 } });
+    expect(database.recordEffectCheckpoint({
+      ...checkpointInput,
+      value: { ...checkpointInput.value, nonce: 8 },
+    })).toEqual({ status: "conflict" });
+    expect(database.loadEffectCheckpoint(
+      intent.kind,
+      intent.effectId,
+      checkpointInput.name,
+    )).toMatchObject({
+      generation: 1,
+      valueHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      value: checkpointInput.value,
+    });
+
+    database.checkpoint();
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const reopened = await open(databasePath);
+    expect(reopened.loadEffectCheckpoint(
+      intent.kind,
+      intent.effectId,
+      checkpointInput.name,
+    )).toMatchObject({ generation: 1, value: checkpointInput.value });
   });
 
   it("reports a busy FULL checkpoint instead of treating a partial checkpoint as success", async () => {
@@ -1301,7 +1411,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
       .toEqual([
         { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 },
-        { version: 6 },
+        { version: 6 }, { version: 7 },
       ]);
     raw.close();
   });
@@ -1469,6 +1579,7 @@ describe("DACS Node SQLite durability foundation", () => {
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
       DELETE FROM dacs_migrations WHERE version = 4;
@@ -2218,6 +2329,120 @@ describe("DACS Node SQLite durability foundation", () => {
       .toMatchObject({ status: "created", record: { protocol: OFFLINE_PROTOCOL } });
     expect(await store.load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { bindingHash } });
+  });
+
+  it("atomically binds each live job identity to exactly one rail profile", async () => {
+    const database = await open(join(temporaryRoot(), "buyer.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const x402Store = database.createLiveCoordinatorStore("buyer");
+    const payDemStore = database.createPayDemCoordinatorStore("buyer");
+    const x402 = liveOrder();
+    const conflictingPayDem = payDemOrder();
+    const independentPayDem = payDemOrder(OTHER_JOB_ID);
+
+    expect(await x402Store.create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created", record: { protocol: LIVE_PROTOCOL } });
+    expect(await payDemStore.create({
+      role: "buyer",
+      order: conflictingPayDem,
+      ...payDemOrderBinding(conflictingPayDem),
+    })).toEqual({ status: "conflict" });
+    expect(await payDemStore.create({
+      role: "buyer",
+      order: independentPayDem,
+      ...payDemOrderBinding(independentPayDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
+
+    expect(await x402Store.load("buyer", JOB_ID)).toMatchObject({
+      status: "ok",
+      record: { protocol: LIVE_PROTOCOL },
+    });
+    expect(await payDemStore.load("buyer", JOB_ID)).toEqual({ status: "missing" });
+    expect(await payDemStore.load("buyer", OTHER_JOB_ID)).toMatchObject({
+      status: "ok",
+      record: { protocol: PAY_DEM_PROTOCOL },
+    });
+  });
+
+  it("converges competing cross-rail creates on one durable winner", async () => {
+    const database = await open(join(temporaryRoot(), "buyer-race.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const x402 = liveOrder();
+    const payDem = payDemOrder();
+    const [x402Result, payDemResult] = await Promise.all([
+      database.createLiveCoordinatorStore("buyer").create({
+        role: "buyer",
+        order: x402,
+        ...liveOrderBinding(x402),
+      }),
+      database.createPayDemCoordinatorStore("buyer").create({
+        role: "buyer",
+        order: payDem,
+        ...payDemOrderBinding(payDem),
+      }),
+    ]);
+
+    expect([x402Result.status, payDemResult.status].sort())
+      .toEqual(["conflict", "created"]);
+    const [retainedX402, retainedPayDem] = await Promise.all([
+      database.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID),
+      database.createPayDemCoordinatorStore("buyer").load("buyer", JOB_ID),
+    ]);
+    expect([retainedX402.status, retainedPayDem.status].sort())
+      .toEqual(["missing", "ok"]);
+  });
+
+  it("migrates a v6 x402 order before enabling the native DEM namespace", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const initial = await open(databasePath, liveOptions);
+    const x402 = liveOrder();
+    expect(await initial.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created" });
+    initial.checkpoint();
+    initial.close();
+    databases.splice(databases.indexOf(initial), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 7;
+      UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
+      PRAGMA user_version = 6;
+    `);
+    raw.close();
+
+    const migrated = await open(databasePath, liveOptions);
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v6-")))
+      .toHaveLength(1);
+    expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
+    const payDem = payDemOrder(OTHER_JOB_ID);
+    expect(await migrated.createPayDemCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: payDem,
+      ...payDemOrderBinding(payDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
   });
 
   it("enforces live DACS-5 terminal attribution and irreversible-effect rules", async () => {

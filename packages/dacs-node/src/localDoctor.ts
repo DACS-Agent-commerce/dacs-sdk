@@ -155,7 +155,8 @@ export async function inspectDacsNodePackageIntegrityV1() {
     if (parsed.name !== "@kynesyslabs/dacs-node" || parsed.version !== VERSION ||
         parsed.peerDependencies?.["@kynesyslabs/dacs"] !== VERSION ||
         parsed.exports?.["."] === undefined || parsed.exports?.["./sqlite"] === undefined ||
-        parsed.exports?.["./transport"] === undefined) {
+        parsed.exports?.["./transport"] === undefined ||
+        parsed.exports?.["./demos-loader"] === undefined) {
       return fail("package-integrity-mismatch");
     }
     return pass({ packageVersion: VERSION });

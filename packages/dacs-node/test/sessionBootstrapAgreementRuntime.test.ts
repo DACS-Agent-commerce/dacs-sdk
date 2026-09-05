@@ -20,6 +20,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "../src/purchaseDemosBudget.js";
 import {
   createDacsBuyerSessionBootstrapAgreementTrackV1,
   createDacsSellerSessionBootstrapAgreementTrackV1,
@@ -161,6 +163,20 @@ async function fixture() {
     }),
   ]);
   databases.push(buyerDatabase, sellerDatabase);
+  retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+    database: buyerDatabase,
+    jobId: JOB_ID,
+    role: "buyer",
+    authority: buyer,
+    maximumPerWriteFeeDem: "2",
+  });
+  retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+    database: sellerDatabase,
+    jobId: JOB_ID,
+    role: "seller",
+    authority: seller,
+    maximumPerWriteFeeDem: "2",
+  });
   putDacsLiveOrderInputV1({ database: buyerDatabase, order: pair.buyer,
     application: APPLICATION });
   const buyerStore = buyerDatabase.createLiveCoordinatorStore("buyer");
@@ -228,7 +244,11 @@ async function fixture() {
     peerAuthority: seller,
     database: buyerDatabase,
     demos: demos("buyer", buyer, buyerKeys.privateKey),
-    config: { rail: { requestedNetwork: "eip155:84532" } },
+    config: {
+      role: "buyer",
+      rail: { requestedNetwork: "eip155:84532" },
+      limits: { maxDemosNetworkFeeDem: "2" },
+    },
     evm: {
       role: "buyer",
       address: buyerEvm.address,
@@ -252,7 +272,11 @@ async function fixture() {
     peerAuthority: buyer,
     database: sellerDatabase,
     demos: demos("seller", seller, sellerKeys.privateKey),
-    config: { rail: { requestedNetwork: "eip155:84532" } },
+    config: {
+      role: "seller",
+      rail: { requestedNetwork: "eip155:84532" },
+      limits: { maxDemosNetworkFeeDem: "2" },
+    },
     sendMessage: sellerSend,
   } as never;
   const buyerTransport = createDacsBuyerSessionBootstrapTransportRuntimeV1(buyerContext);

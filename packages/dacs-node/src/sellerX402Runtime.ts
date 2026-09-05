@@ -374,8 +374,9 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
   options: Readonly<DacsSellerX402RuntimeOptionsV1<T>>,
 ): Promise<Readonly<DacsSellerX402RuntimeV1<T>>> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "seller" || options.context.evm.role !== "seller" ||
+      options.context.role !== "seller" || options.context.evm?.role !== "seller" ||
       options.context.commerceStores.role !== "seller" ||
+      options.context.commerceStores.x402Settlement === undefined ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !plainObject(options.paywall) || !plainObject(options.spine) ||
       typeof options.publicBaseUrl !== "string" ||
@@ -391,7 +392,10 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
   }
   const context = options.context;
   const stores = context.commerceStores;
-  if (stores.role !== "seller") throw new TypeError("seller x402 runtime options are invalid");
+  if (stores.role !== "seller" || stores.x402Settlement === undefined) {
+    throw new TypeError("seller x402 runtime options are invalid");
+  }
+  const settlementStore = stores.x402Settlement;
   if (typeof stores.sellerReceipts.inspectPermit !== "function") {
     throw new TypeError("seller x402 runtime requires receipt inspection");
   }
@@ -510,7 +514,7 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
 
   const spine = createX402SellerSpine<T>({
     ...options.spine,
-    settlementStore: stores.x402Settlement,
+    settlementStore,
     receiptStore,
     fulfilmentDurability,
     deliveryReady: {
@@ -600,9 +604,9 @@ export async function createDacsSellerX402RuntimeV1<T = unknown>(
       jobId: operation.order.jobId,
       phaseIndex: scope.paymentPhaseIndex,
     });
-    let settlement: Awaited<ReturnType<typeof stores.x402Settlement.load>>;
+    let settlement: Awaited<ReturnType<typeof settlementStore.load>>;
     try {
-      settlement = await stores.x402Settlement.load(settlementKey);
+      settlement = await settlementStore.load(settlementKey);
     } catch {
       return Object.freeze({
         status: "pending-retry" as const,

@@ -133,6 +133,10 @@ export type DacsHttpOutboxDispatchResultV1 = Readonly<
 >;
 
 export interface DacsHttpMessageClientV1 extends DacsNodeMessageTransport {
+  /** Retain an exact signed envelope without waiting for peer availability. */
+  queue(
+    envelope: Readonly<DacsHttpEnvelopeV1>,
+  ): Promise<Readonly<{ status: "created" | "existing"; envelopeId: string }>>;
   dispatch(
     envelopeId: string,
     options?: Readonly<{ signal?: AbortSignal }>,
@@ -949,22 +953,31 @@ export function createDacsHttpMessageClientV1(
     }
   }
 
+  const queue: DacsHttpMessageClientV1["queue"] = async (envelope) => {
+    const verified = verifyDacsHttpEnvelopeSelfSignatureV1(envelope);
+    if (verified.status !== "valid" || verified.envelope.type === "acknowledgement" ||
+        !sameCanonicalAuthority(verified.envelope.sender, authority)) {
+      throw new DacsHttpTransportError("outbox-envelope-invalid", false);
+    }
+    const now = await outbox.readTime();
+    const retained = await outbox.put({
+      envelope: verified.envelope,
+      retainUntil: safeRetentionDeadline(now, retentionMs),
+    });
+    if (retained.status === "conflict") {
+      throw new DacsHttpTransportError("outbox-envelope-conflict", false);
+    }
+    return Object.freeze({
+      status: retained.status,
+      envelopeId: verified.envelope.envelopeId,
+    });
+  };
+
   const client: DacsHttpMessageClientV1 = {
+    queue,
     send: async (envelope, sendOptions = {}) => {
-      const verified = verifyDacsHttpEnvelopeSelfSignatureV1(envelope);
-      if (verified.status !== "valid" || verified.envelope.type === "acknowledgement" ||
-          !sameCanonicalAuthority(verified.envelope.sender, authority)) {
-        throw new DacsHttpTransportError("outbox-envelope-invalid", false);
-      }
-      const now = await outbox.readTime();
-      const retained = await outbox.put({
-        envelope: verified.envelope,
-        retainUntil: safeRetentionDeadline(now, retentionMs),
-      });
-      if (retained.status === "conflict") {
-        throw new DacsHttpTransportError("outbox-envelope-conflict", false);
-      }
-      const result = await dispatch(verified.envelope.envelopeId, sendOptions);
+      const retained = await queue(envelope);
+      const result = await dispatch(retained.envelopeId, sendOptions);
       if (result.status === "acknowledged") return result.acknowledgement;
       throw new DacsHttpTransportError(
         result.reasonCode,

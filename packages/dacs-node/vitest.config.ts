@@ -19,6 +19,7 @@ export default defineConfig({
       { find: "@kynesyslabs/dacs/crypto", replacement: coreSource("crypto") },
       { find: "@kynesyslabs/dacs/identity", replacement: coreSource("identity") },
       { find: "@kynesyslabs/dacs/negotiate", replacement: coreSource("negotiate") },
+      { find: "@kynesyslabs/dacs/rails", replacement: coreSource("rails") },
       { find: "@kynesyslabs/dacs/seller", replacement: coreSource("seller") },
       { find: "@kynesyslabs/dacs/substrate", replacement: coreSource("substrate") },
     ],
@@ -26,5 +27,9 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // Host recovery tests spawn separate workers and real child processes.
+    // Bound outer concurrency so those safety fixtures are not starved by a
+    // high-core machine running every SQLite-heavy file simultaneously.
+    maxWorkers: 2,
   },
 });

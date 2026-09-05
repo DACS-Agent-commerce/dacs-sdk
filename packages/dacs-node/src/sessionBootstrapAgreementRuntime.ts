@@ -12,6 +12,10 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemOrderInput,
+  FixedPricePayDemOrderRecord,
+  FixedPricePayDemTrackOperation,
+  FixedPricePayDemTrackOperationInput,
   FixedPriceX402OrderRecord,
   FixedPriceX402TrackOperation,
   FixedPriceX402TrackOperationInput,
@@ -27,7 +31,7 @@ import {
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import {
   authenticateDacsSessionVetProductionV1,
-  createDacsX402SessionIdentityV1,
+  createDacsLiveSessionIdentityV1,
   produceDacsEmptyRequirementSessionVetV1,
   type DacsSessionVetProductionV1,
 } from "./sessionIdentityVetRuntime.js";
@@ -98,6 +102,31 @@ export interface DacsSellerSessionBootstrapAgreementTrackOptionsV1
   agreementProposalReady(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
+  }>): Promise<boolean> | boolean;
+}
+
+export interface DacsPayDemBuyerSessionBootstrapAgreementTrackOptionsV1
+  extends Omit<DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
+    "agreement" | "resolveRequirements"> {
+  agreement: FixedPricePayDemTrackOperation;
+  resolveRequirements(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<DacsSessionBootstrapRequirementsV1>> |
+    Readonly<DacsSessionBootstrapRequirementsV1>;
+}
+
+export interface DacsPayDemSellerSessionBootstrapAgreementTrackOptionsV1
+  extends Omit<DacsSellerSessionBootstrapAgreementTrackOptionsV1,
+    "agreement" | "resolveBuyerRequirement" | "agreementProposalReady"> {
+  agreement: FixedPricePayDemTrackOperation;
+  resolveBuyerRequirement(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<BundleRequirement>> | Readonly<BundleRequirement>;
+  agreementProposalReady(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
   }>): Promise<boolean> | boolean;
 }
 
@@ -332,6 +361,46 @@ export function loadDacsSellerSessionAgreementFactsForOrderV1(
   return facts;
 }
 
+export function loadDacsPayDemBuyerSessionAgreementFactsV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  operation: Readonly<FixedPricePayDemTrackOperationInput>,
+): Readonly<DacsBuyerSessionAgreementFactsV1> {
+  return loadDacsBuyerSessionAgreementFactsV1(
+    context,
+    operation as unknown as FixedPriceX402TrackOperationInput,
+  );
+}
+
+export function loadDacsPayDemSellerSessionAgreementFactsV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  operation: Readonly<FixedPricePayDemTrackOperationInput>,
+): Readonly<DacsSellerSessionAgreementFactsV1> {
+  return loadDacsSellerSessionAgreementFactsV1(
+    context,
+    operation as unknown as FixedPriceX402TrackOperationInput,
+  );
+}
+
+export function loadDacsPayDemBuyerSessionAgreementFactsForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Readonly<DacsBuyerSessionAgreementFactsV1> {
+  return loadDacsBuyerSessionAgreementFactsForOrderV1(
+    context,
+    order as unknown as FixedPriceX402OrderRecord,
+  );
+}
+
+export function loadDacsPayDemSellerSessionAgreementFactsForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<FixedPricePayDemOrderRecord>,
+): Readonly<DacsSellerSessionAgreementFactsV1> {
+  return loadDacsSellerSessionAgreementFactsForOrderV1(
+    context,
+    order as unknown as FixedPriceX402OrderRecord,
+  );
+}
+
 function requirements(value: unknown): value is Readonly<DacsSessionBootstrapRequirementsV1> {
   return plainObject(value) && exactKeys(value, ["buyer", "seller"]) &&
     isBundleRequirement(value.buyer) && isBundleRequirement(value.seller);
@@ -400,8 +469,9 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
           bootstrapVersion: "1" as const,
           challengePayloadHash: dacsHttpPayloadHashV1(challenge),
           buyerChallenge: challenge.buyerChallenge,
-          buyerIdentity: await createDacsX402SessionIdentityV1({
+          buyerIdentity: await createDacsLiveSessionIdentityV1({
             context,
+            operation,
             challenge: challenge.buyerChallenge,
           }),
         });
@@ -508,8 +578,9 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
           initPayloadHash: dacsHttpPayloadHashV1(init),
           sellerChallenge: init.sellerChallenge,
           buyerChallenge: randomBytes(32).toString("hex"),
-          sellerIdentity: await createDacsX402SessionIdentityV1({
+          sellerIdentity: await createDacsLiveSessionIdentityV1({
             context,
+            operation,
             challenge: init.sellerChallenge,
           }),
         });
@@ -576,5 +647,33 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     } catch {
       return operator("seller-agreement-runtime-failed");
     }
+  };
+}
+
+export function createDacsPayDemBuyerSessionBootstrapAgreementTrackV1(
+  options: Readonly<DacsPayDemBuyerSessionBootstrapAgreementTrackOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  const x402 = createDacsBuyerSessionBootstrapAgreementTrackV1(
+    options as unknown as DacsBuyerSessionBootstrapAgreementTrackOptionsV1,
+  );
+  return async (operation) => {
+    if (operation.order.protocol.phase !== "pay-dem") {
+      return operator("buyer-session-bootstrap-rail-mismatch");
+    }
+    return x402(operation as unknown as FixedPriceX402TrackOperationInput);
+  };
+}
+
+export function createDacsPayDemSellerSessionBootstrapAgreementTrackV1(
+  options: Readonly<DacsPayDemSellerSessionBootstrapAgreementTrackOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  const x402 = createDacsSellerSessionBootstrapAgreementTrackV1(
+    options as unknown as DacsSellerSessionBootstrapAgreementTrackOptionsV1,
+  );
+  return async (operation) => {
+    if (operation.order.protocol.phase !== "pay-dem") {
+      return operator("seller-session-bootstrap-rail-mismatch");
+    }
+    return x402(operation as unknown as FixedPriceX402TrackOperationInput);
   };
 }

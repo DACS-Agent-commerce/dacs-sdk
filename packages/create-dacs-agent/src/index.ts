@@ -23,8 +23,10 @@ export interface CreateDacsAgentOptions {
   targetDirectory: string;
   mode?: "offline" | "live-demos";
   profile?: string;
-  role?: "demo-all" | "buyer" | "seller" | "verifier";
+  role?: "demo-all" | "buyer" | "seller";
   deployment?: "local" | "docker";
+  /** Live payment capability: one rail or two signed sibling Listings. */
+  rails?: "x402" | "pay-dem" | "both";
   install?: boolean;
   run?: boolean;
 }
@@ -33,8 +35,9 @@ export interface CreatedDacsAgentProject {
   targetDirectory: string;
   mode: "offline" | "live-demos";
   profile: typeof OFFLINE_PROFILE | typeof LIVE_PROFILE;
-  role: "demo-all" | "buyer" | "seller" | "verifier";
+  role: "demo-all" | "buyer" | "seller";
   deployment: "local" | "docker";
+  rails?: "x402" | "pay-dem" | "both";
   installed: boolean;
   ran: boolean;
   doctor: "not-run" | "pass" | "blocked";
@@ -165,17 +168,21 @@ export async function createDacsAgentProject(
       | typeof LIVE_PROFILE;
   const role = options.role ?? (mode === "offline" ? "demo-all" : "buyer");
   const deployment = options.deployment ?? "local";
+  const rails = options.rails ?? "both";
   const install = options.install ?? true;
   const run = options.run ?? false;
 
   if (mode !== "offline" && mode !== "live-demos") {
     throw new Error("mode must be offline or live-demos");
   }
-  if (role !== "demo-all" && role !== "buyer" && role !== "seller" && role !== "verifier") {
-    throw new Error("role must be demo-all, buyer, seller or verifier");
+  if (role !== "demo-all" && role !== "buyer" && role !== "seller") {
+    throw new Error("role must be demo-all, buyer or seller");
   }
   if (deployment !== "local" && deployment !== "docker") {
     throw new Error("deployment must be local or docker");
+  }
+  if (rails !== "x402" && rails !== "pay-dem" && rails !== "both") {
+    throw new Error("rails must be x402, pay-dem or both");
   }
   if (typeof install !== "boolean" || typeof run !== "boolean") {
     throw new Error("install and run options must be boolean");
@@ -193,7 +200,7 @@ export async function createDacsAgentProject(
     );
   }
   if (mode === "live-demos" && role === "demo-all") {
-    throw new Error("live-demos requires buyer, seller or verifier role separation");
+    throw new Error("live-demos requires buyer or seller role separation");
   }
   if (mode === "live-demos" && run) {
     throw new Error("--run is the offline smoke flag and is not valid for live-demos");
@@ -209,6 +216,7 @@ export async function createDacsAgentProject(
     deployment,
     mode,
     role,
+    rails,
     runtimeUid: typeof process.getuid === "function" && process.getuid() > 0
       ? process.getuid() : 10001,
     runtimeGid: typeof process.getgid === "function" && process.getgid() > 0
@@ -251,7 +259,11 @@ export async function createDacsAgentProject(
 
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   if (install) {
-    await runCommand(npm, ["install", "--ignore-scripts"], targetDirectory);
+    await runCommand(npm, [
+      "install",
+      "--ignore-scripts",
+      "--omit=optional",
+    ], targetDirectory);
     if (mode === "live-demos") {
       // The host kit's reviewed SQLite adapter is the only dependency allowed
       // to run a native install lifecycle in the generated live project.
@@ -276,6 +288,7 @@ export async function createDacsAgentProject(
     profile,
     role,
     deployment,
+    ...(mode === "live-demos" ? { rails } : {}),
     installed: install,
     ran: run,
     doctor,

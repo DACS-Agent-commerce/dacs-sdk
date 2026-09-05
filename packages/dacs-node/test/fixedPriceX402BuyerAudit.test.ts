@@ -22,9 +22,14 @@ import type {
 import { canonicalize, contentHash, listingAddress, sha256Hex } from
   "@kynesyslabs/dacs/canonical";
 import {
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
 } from "@kynesyslabs/dacs/commerce";
@@ -46,6 +51,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   agreementPublication: vi.fn(),
+  nativeAgreementPublication: vi.fn(),
+  nativeSessionFacts: vi.fn(),
   observeX402Transfer: vi.fn(),
   provenance: vi.fn(),
   sessionFacts: vi.fn(),
@@ -62,11 +69,18 @@ vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
     mocks.agreementPublication,
 }));
 
+vi.mock("../src/fixedPricePayDemProfile.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/fixedPricePayDemProfile.js")>()),
+  loadDacsFixedPricePayDemBuyerAgreementPublicationV1:
+    mocks.nativeAgreementPublication,
+}));
+
 vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../src/sessionBootstrapAgreementRuntime.js")
   >()),
   loadDacsBuyerSessionAgreementFactsForOrderV1: mocks.sessionFacts,
+  loadDacsPayDemBuyerSessionAgreementFactsForOrderV1: mocks.nativeSessionFacts,
 }));
 
 vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
@@ -77,9 +91,15 @@ vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
 }));
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
-import { createDacsFixedPriceX402BuyerAuditV1 } from
+import {
+  createDacsFixedPricePayDemBuyerAuditV1,
+  createDacsFixedPriceX402BuyerAuditV1,
+} from
   "../src/fixedPriceX402BuyerAudit.js";
-import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
+import {
+  createDacsFixedPricePayDemOrderPairV1,
+  createDacsFixedPriceX402OrderPairV1,
+} from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "../src/roleRuntime.js";
 import {
@@ -193,6 +213,28 @@ function protocol() {
       railType: "x402" as const,
       phaseHandler: "pay-x402" as const,
       network: "eip155:84532" as const,
+      availability: "live" as const,
+    },
+  };
+}
+
+function payDemProtocol() {
+  return {
+    commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+    standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+    phase: "pay-dem" as const,
+    orchestratorTopology: "seller-as-phase-orchestrator-v1" as const,
+    orchestrator: SELLER,
+    rail: {
+      registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+      registryIndexHash: "a".repeat(64),
+      railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+      railDefinitionHash: "b".repeat(64),
+      railId: "demos-native:DEM",
+      railVersion: 1,
+      railType: "demos-native" as const,
+      phaseHandler: "pay-dem" as const,
+      network: "demos" as const,
       availability: "live" as const,
     },
   };
@@ -418,6 +460,7 @@ async function fixture() {
     listingLogicalAddress: listingAddress(SELLER, listing.listingId,
       listing.listingVersion),
     listing,
+    demosWriteFeeCeilings: { buyer: "2", seller: "2" },
     requestHash: sha256Hex(canonicalize({ query: "test" })),
     request: { query: "test" },
   };
@@ -441,6 +484,164 @@ async function fixture() {
     deliveryEvidence, deliveryRef, event, names, paymentEvidence, paymentRef,
     preliminaryRequest, rail, receipts, sellerIdentity, sellerVet, sellerVetNative,
     sellerVetRef };
+}
+
+async function payDemFixture() {
+  const base = await fixture();
+  const railId = "demos-native:DEM";
+  const sellerPayee = Buffer.from(SELLER_KEY).toString("hex");
+  const listingUnsigned = {
+    ...structuredClone(base.application.listing),
+    pipeline: [
+      { kind: "negotiate-fixed-price" as const },
+      { kind: "commit-payee-bound-agreement" as const },
+      { kind: "pay-dem" as const, parameters: { rail: railId } },
+      { kind: "deliver-storage-program" as const },
+    ],
+    pricing: { kind: "fixed" as const,
+      price: { amount: "1", currency: "DEM" } },
+    acceptedRails: [{
+      railId,
+      railVersion: 1,
+      parameters: { network: "demos", payTo: sellerPayee },
+    }],
+  } as Record<string, unknown>;
+  delete listingUnsigned.signature;
+  const listing = signComponent(
+    listingUnsigned,
+    ARTIFACT_SEPARATORS.Listing,
+    SELLER,
+  ) as unknown as Listing;
+  const listingHash = contentHash(listing as unknown as Record<string, unknown>);
+  const listingPin = {
+    listingId: listing.listingId,
+    version: listing.listingVersion,
+    contentHash: listingHash,
+  };
+  const unsignedAgreement = deriveFixedPriceAgreement({
+    jobId: JOB_ID,
+    verifiedListing: { disposition: "verified", listing: structuredClone(listing),
+      pin: structuredClone(listingPin) },
+    buyer: { identityBundle: structuredClone(base.buyerIdentity),
+      vetRecordRef: structuredClone(base.buyerVetRef) },
+    seller: { identityBundle: structuredClone(base.sellerIdentity),
+      vetRecordRef: structuredClone(base.sellerVetRef) },
+    selectedRail: structuredClone(listing.acceptedRails![0]!),
+    payoutBindings: [{ railId, phaseIndex: 2, payeeAddress: sellerPayee }],
+    generatedAt: NOW - 15_000,
+  });
+  const agreement = await signFixedPriceAgreement(
+    unsignedAgreement,
+    { party: BUYER, algorithm: "ed25519", sign: (bytes) =>
+      ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)) },
+    { party: SELLER, algorithm: "ed25519", sign: (bytes) =>
+      ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) },
+  );
+  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+  const commitment = signComponent({
+    finalityCommitmentVersion: "1" as const,
+    jobId: JOB_ID,
+    agreementHash,
+    listingRef: listingPin,
+    parties: [BUYER, SELLER],
+    pattern: "fixed-price" as const,
+    createdAt: NOW - 12_000,
+  }, FINALITY_COMMITMENT_SEPARATOR, SELLER);
+  const commitmentRef = ref(base.commitmentRef.anchor.locator, commitment, SELLER);
+  const event = {
+    kind: "demos" as const,
+    txHash: "f".repeat(64),
+    blockNumber: 123,
+  };
+  const paymentEvidence = signComponent({
+    evidenceVersion: "1" as const,
+    jobId: JOB_ID,
+    phase: "pay-dem" as const,
+    outcome: "success" as const,
+    paymentTxRefs: [event],
+    paymentAmount: { amount: "1", currency: "DEM" },
+    settlementFinality: { model: "bft-final" as const,
+      finalityObservedAt: NOW - 3_000 },
+    observedAt: NOW - 3_000,
+  }, ARTIFACT_SEPARATORS.SettlementEvidence, SELLER);
+  const paymentLogicalAddress = `dacs4:payment:${JOB_ID}:demos-native%3ADEM:2`;
+  const paymentRef = ref(paymentLogicalAddress, paymentEvidence, SELLER);
+
+  const artifacts = new Map(base.artifacts);
+  const names = new Map(base.names);
+  const receipts = new Map(base.receipts);
+  const replace = (logicalAddress: string, artifact: Readonly<Record<string, unknown>>,
+    writer: string, timestamp: number, nativeAddress: string) => {
+    artifacts.set(nativeAddress, structuredClone(artifact));
+    names.set(logicalAddress, nativeAddress);
+    receipts.set(nativeAddress, receipt(
+      logicalAddress,
+      nativeAddress,
+      artifact,
+      writer,
+      timestamp,
+    ));
+  };
+  replace(base.application.listingLogicalAddress,
+    listing as unknown as Record<string, unknown>, SELLER, NOW - 18_000,
+    base.application.listingRef);
+  replace(base.agreementLogicalAddress,
+    agreement as unknown as Record<string, unknown>, BUYER, NOW - 14_000,
+    names.get(base.agreementLogicalAddress)!);
+  replace(commitmentRef.anchor.locator, commitment, SELLER, NOW - 11_000,
+    names.get(commitmentRef.anchor.locator)!);
+  const oldPaymentNative = names.get(base.paymentRef.anchor.locator)!;
+  names.delete(base.paymentRef.anchor.locator);
+  replace(paymentLogicalAddress, paymentEvidence, BUYER, NOW - 3_000,
+    oldPaymentNative);
+
+  const phaseSummary = [
+    { index: 0, kind: "negotiate-fixed-price", outcome: "ok" },
+    { index: 1, kind: "commit-payee-bound-agreement", outcome: "ok",
+      attestationRef: commitmentRef },
+    { index: 2, kind: "pay-dem", outcome: "ok", txRefs: [event],
+      attestationRef: paymentRef },
+    { index: 3, kind: "deliver-storage-program", outcome: "ok",
+      attestationRef: base.deliveryRef },
+  ];
+  const preliminaryRequest = {
+    bundleContentHash: "e".repeat(64),
+    signedScope: {
+      ...structuredClone(base.preliminaryRequest.signedScope),
+      listingRef: listingPin,
+      agreementRef: {
+        anchor: { kind: "storage-program", locator: base.agreementLogicalAddress },
+        contentHash: agreementHash,
+        signer: BUYER,
+      },
+      phaseSummary,
+      settlementEvidence: [paymentRef, base.deliveryRef],
+    },
+    signedBytes: Uint8Array.from([1]),
+    requiredCounterSigners: [BUYER],
+  };
+  const application = {
+    ...structuredClone(base.application),
+    listingContentHash: listingHash,
+    listing,
+  };
+  const rail = {
+    railVersion: 1,
+    railId,
+    railType: "demos-native",
+    asset: { kind: "native-dem", symbol: "DEM", decimals: 9 },
+    network: { kind: "demos" },
+    phaseHandler: "pay-dem",
+    parameters: {},
+    availability: "live",
+    governance: { proposedBy: SELLER, acceptedAt: NOW - 30_000,
+      anchoring: "single-signer" },
+    signature: { algorithm: "ed25519", signer: SELLER,
+      value: Buffer.alloc(64, 9).toString("base64url") },
+  };
+  return { ...base, agreement, agreementHash, application, artifacts,
+    commitmentRef, event, names, paymentEvidence, paymentRef,
+    preliminaryRequest, rail, receipts };
 }
 
 describe("fixed-price x402 buyer audit reconstruction", () => {
@@ -595,6 +796,139 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     mocks.observeX402Transfer.mockResolvedValueOnce({
       ...observation,
       amountBaseUnits: "1000001",
+    });
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: exactRequest,
+    })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+  });
+
+  it("independently re-observes native DEM before accepting the audit request", async () => {
+    const f = await payDemFixture();
+    const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
+    roots.push(root);
+    const database = await openDacsNodeSqliteDatabase({
+      databasePath: join(root, "buyer.sqlite"),
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    databases.push(database);
+    const pair = createDacsFixedPricePayDemOrderPairV1({
+      jobId: JOB_ID,
+      buyer: BUYER,
+      seller: SELLER,
+      protocol: payDemProtocol(),
+    });
+    await database.createPayDemCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: pair.buyer,
+      bindingHash: fixedPricePayDemOrderBindingHash(pair.buyer),
+      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+    });
+    expect(putDacsLiveOrderInputV1({
+      database,
+      order: pair.buyer,
+      application: f.application,
+    }).status).toBe("created");
+    mocks.provenance.mockReturnValue({
+      registryVersion: 7,
+      indexContentHash: "a".repeat(64),
+      definitionContentHash: "b".repeat(64),
+    });
+    mocks.nativeSessionFacts.mockReturnValue({
+      factsVersion: "1",
+      role: "buyer",
+      jobId: JOB_ID,
+      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+      buyerIdentity: f.buyerIdentity,
+      sellerIdentity: f.sellerIdentity,
+      buyerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+      buyerVetRecord: f.buyerVet,
+      buyerVetRef: f.buyerVetRef,
+      buyerVetReceipt: f.receipts.get(f.buyerVetNative),
+      sellerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+      sellerVetRecord: f.sellerVet,
+      sellerVetRef: f.sellerVetRef,
+      sellerVetReceipt: f.receipts.get(f.sellerVetNative),
+    });
+    mocks.nativeAgreementPublication.mockReturnValue({
+      publicationVersion: "1",
+      jobId: JOB_ID,
+      localBindingHash: fixedPricePayDemOrderLocalBindingHash(pair.buyer),
+      writer: BUYER,
+      logicalAddress: f.agreementLogicalAddress,
+      agreementHash: f.agreementHash,
+      artifact: f.agreement,
+    });
+    const observation = {
+      status: "included" as const,
+      txHash: f.event.txHash,
+      blockNumber: f.event.blockNumber,
+      payer: Buffer.from(BUYER_KEY).toString("hex"),
+      payee: Buffer.from(SELLER_KEY).toString("hex"),
+      amountOs: "1000000000",
+      includedAt: NOW - 3_000,
+    };
+    const observeDemosTransfer = vi.fn(async () => observation);
+    const adapter = {
+      resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
+        const address = f.names.get(logicalAddress);
+        return address === undefined
+          ? { status: "absent" as const }
+          : { status: "present" as const, address };
+      }),
+      readAnchor: vi.fn(async (address: string) =>
+        structuredClone(f.artifacts.get(address) ?? null)),
+      resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
+        structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
+      verifyDemosAnchorReceipt: vi.fn(async () => true),
+      anchorWriteOnce: vi.fn(),
+      sign: vi.fn(),
+    };
+    const context = {
+      role: "buyer",
+      authority: BUYER,
+      peerAuthority: SELLER,
+      database,
+      demos: { publicKey: BUYER_KEY, adapter,
+        signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 4))) },
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const audit = createDacsFixedPricePayDemBuyerAuditV1({
+      context,
+      rail: f.rail as never,
+      observeDemosTransfer,
+      recipeRegistryVersion: 1,
+    });
+    const authenticated = {
+      envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
+    } as never;
+    const preliminary = await audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: f.preliminaryRequest as never,
+    });
+    const exactRequest = prepareCompletedSellerBundleCounterSignatureRequest({
+      ...preliminary.input,
+      seller: {
+        ...preliminary.input.seller,
+        signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+      },
+    });
+    const exact = await audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: exactRequest,
+    });
+    await expect(verifyCompletedSellerBundleCounterSignatureRequest(
+      exact.input,
+      exactRequest,
+      exact.provider,
+    )).resolves.toEqual(exactRequest);
+    expect(observeDemosTransfer).toHaveBeenLastCalledWith(f.event.txHash);
+
+    observeDemosTransfer.mockResolvedValueOnce({
+      ...observation,
+      payee: "0".repeat(64),
     });
     await expect(audit.bundleTransport.resolveVerification({
       authenticated,

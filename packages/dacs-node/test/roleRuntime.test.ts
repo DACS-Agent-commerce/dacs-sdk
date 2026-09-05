@@ -57,6 +57,49 @@ describe("complete role-owned live runtime", () => {
     };
   }
 
+  function payDemConfig(directory: string, role: "buyer" | "seller" = "buyer") {
+    const value = config(directory, role);
+    return {
+      ...value,
+      rail: {
+        ...value.rail,
+        requestedNetwork: "demos",
+        enabledProfiles: ["pay-dem"] as const,
+      },
+      limits: {
+        ...value.limits,
+        maxServiceAmount: { asset: "DEM", amount: "1" },
+        maxEvmNetworkFeeEth: "0",
+      },
+    };
+  }
+
+  function bothConfig(directory: string, role: "buyer" | "seller" = "buyer") {
+    const value = config(directory, role);
+    return {
+      ...value,
+      rail: {
+        ...value.rail,
+        enabledProfiles: ["pay-dem", "x402"] as const,
+      },
+    };
+  }
+
+  function buyerOperations() {
+    const pending = vi.fn(async () => ({
+      status: "pending-retry" as const,
+      reasonCode: "fixture-pending",
+      retryAt: 1,
+    }));
+    return Object.freeze({
+      agreement: pending,
+      payment: pending,
+      "payment-evidence": pending,
+      "buyer-received": pending,
+      audit: pending,
+    });
+  }
+
   function adapter(
     publicKey = PUBLIC_KEY,
     privateKey = PRIVATE_KEY,
@@ -68,6 +111,7 @@ describe("complete role-owned live runtime", () => {
         getAddressInfo: vi.fn(async () => ({ balance: "10" })),
       },
       connect: vi.fn(async () => undefined),
+      getChainIdentity: vi.fn(async () => "test-chain"),
       getAddress: vi.fn(() => "0xactor"),
       getPublicKey: vi.fn(async () => Uint8Array.from(publicKey)),
       sign: vi.fn(async (bytes) => ed25519Sign(bytes, privateKey)),
@@ -78,6 +122,8 @@ describe("complete role-owned live runtime", () => {
       anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
       verifyDemosAnchorReceipt: vi.fn(async () => true),
       resolveDemosAnchorReceipt: vi.fn(async () => null),
+      reconcileWalletJournal: vi.fn(async () => undefined),
+      reconcileNativeTransferJournal: vi.fn(async () => undefined),
     };
   }
 
@@ -165,6 +211,126 @@ describe("complete role-owned live runtime", () => {
     })).rejects.toBeInstanceOf(TypeError);
   });
 
+  it("opens a native DEM role without an EVM key, RPC, or x402 store", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-pay-dem-worker",
+      demosIdentityFilePath: secretPath,
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => Buffer.from(PUBLIC_KEY).toString("hex")),
+      }),
+      createPayDemRail: async () => ({
+        address: Buffer.from(PUBLIC_KEY).toString("hex"),
+        settle: vi.fn(),
+      }),
+      createPayDemOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.evm).toBeUndefined();
+      expect(runtime.demos.payDem?.rail.address).toBe(
+        Buffer.from(PUBLIC_KEY).toString("hex"),
+      );
+      expect(runtime.service.coordinator.profiles).toEqual(["pay-dem"]);
+      expect(runtime.commerceStores).toEqual({ role: "buyer" });
+      await runtime.start();
+      expect(runtime.service.endpoint).toEqual(expect.any(String));
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("admits a role-closed native DEM commerce graph", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-pay-dem-graph-worker",
+      demosIdentityFilePath: secretPath,
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => wallet),
+      }),
+      createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
+      createCommerceGraph: async () => Object.freeze({
+        role: "buyer" as const,
+        availability: Object.freeze({ status: "configured" as const }),
+        payDemOperations: buyerOperations(),
+        validatePayload: vi.fn(() => Object.freeze({ status: "valid" as const })),
+        handleMessage: vi.fn(async () => Object.freeze({
+          disposition: "accepted" as const,
+        })),
+      }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.service.coordinator.profiles).toEqual(["pay-dem"]);
+      await runtime.start();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("admits both complete rail graphs without sharing EVM requirements with DEM-only", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: bothConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-both-graph-worker",
+      demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
+      createDemosAdapter: async () => ({
+        ...adapter(),
+        getAddress: vi.fn(() => wallet),
+      }),
+      createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
+      createCommerceGraph: async () => Object.freeze({
+        role: "buyer" as const,
+        availability: Object.freeze({ status: "configured" as const }),
+        operations: buyerOperations(),
+        payDemOperations: buyerOperations(),
+        validatePayload: vi.fn(() => Object.freeze({ status: "valid" as const })),
+        handleMessage: vi.fn(async () => Object.freeze({
+          disposition: "accepted" as const,
+        })),
+      }),
+      server: { hostname: "127.0.0.1", port: 0 },
+    });
+    try {
+      expect(runtime.service.coordinator.profiles).toEqual(["x402", "pay-dem"]);
+      expect(runtime.evm?.role).toBe("buyer");
+      expect(runtime.demos.payDem?.rail.address).toBe(wallet);
+      await runtime.start();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it("rejects a partial async commerce graph before service creation", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
@@ -247,9 +413,10 @@ describe("complete role-owned live runtime", () => {
       role: "buyer",
       address: expect.stringMatching(/^0x[0-9A-Fa-f]{40}$/),
     });
-    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(false);
+    const buyerEvm = runtime.evm;
+    expect(buyerEvm?.role === "buyer" && buyerEvm.runtime.destroyed).toBe(false);
     if (runtime.commerceStores.role === "buyer") {
-      await expect(runtime.commerceStores.x402Settlement.load("missing"))
+      await expect(runtime.commerceStores.x402Settlement!.load("missing"))
         .resolves.toMatchObject({ status: "absent" });
     }
     await runtime.start();
@@ -272,7 +439,7 @@ describe("complete role-owned live runtime", () => {
       coordinator: runtime.service.coordinator,
     });
     await runtime.stop();
-    expect(runtime.evm.role === "buyer" && runtime.evm.runtime.destroyed).toBe(true);
+    expect(buyerEvm?.role === "buyer" && buyerEvm.runtime.destroyed).toBe(true);
     await expect(runtime.start()).rejects.toMatchObject({ reasonCode: "role-runtime-closed" });
 
     const restarted = await createDacsLiveRoleRuntimeV1({

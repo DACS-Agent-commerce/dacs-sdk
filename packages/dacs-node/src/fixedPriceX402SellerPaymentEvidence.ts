@@ -1,6 +1,8 @@
 import {
+  baseUnits,
   encodeAddressSegment,
   type SettlementEvidence,
+  type SellerPaymentIntakeDeps,
   type SellerSessionSettlementPublicationDeps,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
@@ -16,7 +18,11 @@ import type { DacsSellerPaymentEvidenceRuntimeOptionsV1 } from
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type { DacsSellerSettlementPublicationTrackOptionsV1 } from
   "./sellerSettlementRuntime.js";
+import type { DacsPayDemSellerSettlementPublicationTrackOptionsV1 } from
+  "./sellerSettlementRuntime.js";
 import { loadDacsSellerX402AuthorizationForOrderV1 } from "./sellerX402Runtime.js";
+import { loadDacsPayDemSellerPaymentAuthorizationForOrderV1 } from
+  "./payDemSellerPayment.js";
 
 const RECORD_VERSION = "1" as const;
 const RECORD_DOMAIN = "dacs-live-seller-payment-evidence:v1:" as const;
@@ -71,6 +77,22 @@ export interface DacsFixedPriceX402SellerPaymentEvidenceV1 {
   >;
   settlement: Omit<
     DacsSellerSettlementPublicationTrackOptionsV1,
+    "context" | "paymentEvidence"
+  >;
+}
+
+export interface DacsFixedPricePayDemSellerPaymentEvidenceOptionsV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  observeDemosTransfer: SellerPaymentIntakeDeps["observeDemosTransfer"];
+}
+
+export interface DacsFixedPricePayDemSellerPaymentEvidenceV1 {
+  paymentEvidence: Omit<
+    DacsSellerPaymentEvidenceRuntimeOptionsV1,
+    "context" | "workerId"
+  >;
+  settlement: Omit<
+    DacsPayDemSellerSettlementPublicationTrackOptionsV1,
     "context" | "paymentEvidence"
   >;
 }
@@ -148,8 +170,27 @@ async function loadOrder(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
 ) {
-  const loaded = await context.database.createLiveCoordinatorStore("seller")
-    .load("seller", jobId);
+  const [x402, payDem] = await Promise.all([
+    context.database.createLiveCoordinatorStore("seller").load("seller", jobId),
+    context.database.createPayDemCoordinatorStore("seller").load("seller", jobId),
+  ]);
+  if (x402.status === "ok" && payDem.status === "ok") {
+    throw new DacsFixedPriceX402SellerPaymentEvidenceError(
+      "seller-payment-evidence-order-profile-conflict",
+    );
+  }
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok")) {
+    throw new DacsFixedPriceX402SellerPaymentEvidenceError(
+      "seller-payment-evidence-order-state-invalid",
+    );
+  }
+  const loaded = x402.status === "ok" ? x402 : payDem.status === "ok" ? payDem : undefined;
+  if (loaded === undefined) {
+    throw new DacsFixedPriceX402SellerPaymentEvidenceError(
+      "seller-payment-evidence-order-invalid",
+    );
+  }
   if (loaded.status !== "ok" || loaded.record.seller !== context.authority ||
       loaded.record.buyer !== context.peerAuthority) {
     throw new DacsFixedPriceX402SellerPaymentEvidenceError(
@@ -545,6 +586,241 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
           scope.paymentPhaseIndex,
         );
         const payment = authorization.paymentAuthorization;
+        return evidenceHash === payment.evidenceHash &&
+          reference === "dacs4:payment:" + payment.jobId + ":" +
+            encodeAddressSegment(payment.railId) + ":" + String(payment.phaseIndex);
+      } catch {
+        return false;
+      }
+    },
+  };
+
+  return Object.freeze({
+    paymentEvidence: Object.freeze(paymentEvidence),
+    settlement: Object.freeze(settlement),
+  });
+}
+
+/**
+ * Compose native DEM settlement authoring with the buyer-owned PC-7 Demos
+ * publication lane. The native transfer is re-observed and bound to the exact
+ * store-backed authorization before signed evidence can leave the seller.
+ */
+export function createDacsFixedPricePayDemSellerPaymentEvidenceV1(
+  options: Readonly<DacsFixedPricePayDemSellerPaymentEvidenceOptionsV1>,
+): Readonly<DacsFixedPricePayDemSellerPaymentEvidenceV1> {
+  if (!plainObject(options) || !plainObject(options.context) ||
+      options.context.role !== "seller" ||
+      typeof options.observeDemosTransfer !== "function") {
+    throw new TypeError("fixed-price pay-dem seller payment evidence options are invalid");
+  }
+  const context = options.context;
+
+  const paymentEvidence: DacsFixedPricePayDemSellerPaymentEvidenceV1[
+    "paymentEvidence"
+  ] = {
+    verifyAnchorReceipt: async ({ request, completion }) => {
+      if (completion.anchorReceipt.writer !== context.peerAuthority ||
+          completion.anchorReceipt.logicalAddress !== request.logicalAddress ||
+          completion.anchorReceipt.contentHash !== request.evidenceHash ||
+          completion.evidenceRef.anchor.locator !== request.logicalAddress ||
+          completion.evidenceRef.contentHash !== request.evidenceHash) {
+        return { disposition: "invalid" as const,
+          reason: "buyer payment-evidence receipt binding invalid" };
+      }
+      try {
+        const readback = await context.demos.adapter.readAnchor(
+          completion.anchorReceipt.nativeAddress,
+        );
+        return await context.demos.adapter.verifyDemosAnchorReceipt(
+          completion.anchorReceipt,
+        ) === true && readback !== null &&
+            contentHash(readback) === request.evidenceHash &&
+            canonicalize(readback) === canonicalize(request.evidence)
+          ? { disposition: "valid" as const }
+          : { disposition: "indeterminate" as const,
+            reason: "buyer payment-evidence receipt unverified" };
+      } catch {
+        return { disposition: "indeterminate" as const,
+          reason: "buyer payment-evidence receipt unavailable" };
+      }
+    },
+  };
+
+  const settlement: DacsFixedPricePayDemSellerPaymentEvidenceV1["settlement"] = {
+    async resolvePublication({ operation }) {
+      const recovered = await loadDacsPayDemSellerPaymentAuthorizationForOrderV1(
+        context,
+        operation.order,
+      );
+      const authorization = recovered.authorization;
+      return {
+        request: {
+          paymentPermitId: recovered.result.permitId,
+          authorization: copy(authorization),
+        },
+        dependencies: {
+          anchorWriter: { role: "buyer" as const, primaryClaim: operation.order.buyer },
+          evidence: evidenceVerifier(),
+          async resolveAuthenticatedNativeProof({ authorization: payment }) {
+            const identity = payment.settlementIdentity;
+            const retainedFinality = payment.evidenceInput.settlementFinality;
+            const txRef = payment.evidenceInput.paymentTxRefs[0];
+            if (identity.kind !== "demos" || retainedFinality.model !== "bft-final" ||
+                txRef?.kind !== "demos") {
+              return { disposition: "rejected" as const,
+                reason: "pay-dem settlement identity is not native Demos" };
+            }
+            const observed = await options.observeDemosTransfer(identity.txHash);
+            const buyerKey = canonicalDemosAgentPublicKey(operation.order.buyer);
+            const sellerKey = canonicalDemosAgentPublicKey(operation.order.seller);
+            let amountOs: string | undefined;
+            try {
+              amountOs = payment.evidenceInput.paymentAmount.currency === "DEM"
+                ? baseUnits(payment.evidenceInput.paymentAmount.amount, 9)
+                : undefined;
+            } catch {
+              amountOs = undefined;
+            }
+            if (observed.status !== "included" || buyerKey === null || sellerKey === null ||
+                amountOs === undefined || observed.txHash !== identity.txHash ||
+                observed.blockNumber !== identity.blockNumber ||
+                observed.includedAt !== identity.includedAt ||
+                observed.includedAt !== retainedFinality.finalityObservedAt ||
+                observed.payer !== Buffer.from(buyerKey).toString("hex") ||
+                observed.payee !== Buffer.from(sellerKey).toString("hex") ||
+                observed.amountOs !== amountOs || txRef.txHash !== identity.txHash ||
+                txRef.blockNumber !== identity.blockNumber) {
+              return {
+                disposition: observed.status === "failed" || observed.status === "invalid"
+                  ? "rejected" as const : "indeterminate" as const,
+                reason: "authenticated pay-dem native proof unavailable",
+              };
+            }
+            const artifact = {
+              proofVersion: "dacs-pay-dem-transfer-v1",
+              jobId: payment.jobId,
+              railId: payment.railId,
+              phaseIndex: payment.phaseIndex,
+              transfer: copy(identity),
+              payer: observed.payer,
+              payee: observed.payee,
+              amountOs: observed.amountOs,
+              asset: { kind: "native-dem", symbol: "DEM", decimals: 9 },
+              finality: copy(retainedFinality),
+            };
+            return {
+              disposition: "authenticated" as const,
+              binding: {
+                bindingVersion: "1" as const,
+                jobId: payment.jobId,
+                railId: payment.railId,
+                phaseIndex: payment.phaseIndex,
+                phase: payment.evidenceInput.phase,
+                evidenceHash: payment.evidenceHash,
+                settlementId: payment.settlementId,
+                network: "demos",
+                event: copy(identity),
+                settlementFinality: copy(retainedFinality),
+              },
+              proof: {
+                encoding: "jcs" as const,
+                kind: "authenticated-demos-transfer",
+                locator: identity.txHash,
+                artifact,
+              },
+            };
+          },
+          async resolveRetainedSignedEvidence(input) {
+            const retainedEvidence = loadRecord(context, input.effectId);
+            if (retainedEvidence === undefined) return { disposition: "absent" as const };
+            const unsigned = Object.fromEntries(Object.entries(
+              retainedEvidence.evidence,
+            ).filter(([key]) => key !== "signature"));
+            if (retainedEvidence.evidenceHash !== input.evidenceHash ||
+                retainedEvidence.evidence.signature.signer !== input.expectedSigner ||
+                canonicalize(unsigned) !== canonicalize(input.unsignedEvidence)) {
+              return { disposition: "rejected" as const,
+                reason: "retained payment evidence binding conflict" };
+            }
+            return { disposition: "present" as const,
+              effectId: input.effectId,
+              evidence: copy(retainedEvidence.evidence) };
+          },
+          async verifyAnchorReceipt({
+            effectId,
+            expectedWriter,
+            evidenceRef,
+            anchorReceipt,
+          }) {
+            if (expectedWriter !== operation.order.buyer ||
+                anchorReceipt.writer !== expectedWriter ||
+                anchorReceipt.logicalAddress !== evidenceRef.anchor.locator ||
+                anchorReceipt.contentHash !== evidenceRef.contentHash) {
+              return { disposition: "fail" as const,
+                reason: "buyer payment-evidence anchor binding invalid" };
+            }
+            try {
+              const verified = await context.demos.adapter.verifyDemosAnchorReceipt(
+                anchorReceipt,
+              );
+              const readback = verified
+                ? await context.demos.adapter.readAnchor(anchorReceipt.nativeAddress)
+                : null;
+              if (!verified || readback === null ||
+                  contentHash(readback) !== evidenceRef.contentHash) {
+                return { disposition: "indeterminate" as const,
+                  reason: "buyer payment-evidence anchor unverified" };
+              }
+              const retained = loadRecord(context, effectId);
+              if (retained === undefined ||
+                  canonicalize(readback) !== canonicalize(retained.evidence)) {
+                return { disposition: "fail" as const,
+                  reason: "buyer payment-evidence readback conflict" };
+              }
+              await retainPublication(context, effectId, evidenceRef, anchorReceipt);
+              return { disposition: "pass" as const };
+            } catch {
+              return { disposition: "indeterminate" as const,
+                reason: "buyer payment-evidence anchor unavailable" };
+            }
+          },
+          async resolveEvidence({ effectId, evidenceRef }) {
+            const retainedEvidence = loadRecord(context, effectId);
+            const publication = loadPublication(context, effectId);
+            if (retainedEvidence === undefined || publication === undefined) {
+              return { disposition: "absent" as const };
+            }
+            if (canonicalize(publication.evidenceRef) !== canonicalize(evidenceRef)) {
+              return { disposition: "indeterminate" as const,
+                reason: "payment-evidence publication reference conflict" };
+            }
+            try {
+              const readback = await context.demos.adapter.readAnchor(
+                publication.anchorReceipt.nativeAddress,
+              );
+              return readback !== null &&
+                  canonicalize(readback) === canonicalize(retainedEvidence.evidence)
+                ? { disposition: "present" as const,
+                  evidence: copy(retainedEvidence.evidence) }
+                : { disposition: "indeterminate" as const,
+                  reason: "payment-evidence native readback unavailable" };
+            } catch {
+              return { disposition: "indeterminate" as const,
+                reason: "payment-evidence native readback unavailable" };
+            }
+          },
+        },
+      };
+    },
+    retainSignedEvidence: (input) => retainRecord(context, input),
+    async authorizePublished({ operation, evidenceHash, reference }) {
+      try {
+        const recovered = await loadDacsPayDemSellerPaymentAuthorizationForOrderV1(
+          context,
+          operation.order,
+        );
+        const payment = recovered.authorization;
         return evidenceHash === payment.evidenceHash &&
           reference === "dacs4:payment:" + payment.jobId + ":" +
             encodeAddressSegment(payment.railId) + ":" + String(payment.phaseIndex);

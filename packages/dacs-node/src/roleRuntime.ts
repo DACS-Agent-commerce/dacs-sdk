@@ -10,11 +10,18 @@ import {
   type X402BuyerSettlementStore,
   type X402PaywallSettlementStore,
 } from "@kynesyslabs/dacs";
-import type { FixedPriceX402Operations } from "@kynesyslabs/dacs/commerce";
+import type {
+  FixedPricePayDemOperations,
+  FixedPriceX402Operations,
+} from "@kynesyslabs/dacs/commerce";
 
-import { createDacsFixedPriceX402OperationSetV1 } from "./commerceRuntime.js";
+import {
+  createDacsFixedPricePayDemOperationSetV1,
+  createDacsFixedPriceX402OperationSetV1,
+} from "./commerceRuntime.js";
 import {
   DACS_NODE_LIVE_PROFILE,
+  dacsLiveRailProfiles,
   validateDacsAgentConfig,
   type DacsLiveAgentConfig,
 } from "./config.js";
@@ -51,10 +58,6 @@ import {
 } from "./sqlite.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 import type {
-  DacsBuyerLiveCommerceGraphV1,
-  DacsSellerLiveCommerceGraphV1,
-} from "./liveCommerceGraph.js";
-import type {
   DacsHttpAuthenticatedEnvelopeV1,
   DacsHttpMessageType,
   DacsHttpPayloadValidatorV1,
@@ -68,8 +71,8 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   peerEndpoint: string;
   workerId: string;
   demosIdentityFilePath: string;
-  evmPrivateKeyFilePath: string;
-  evmRpcUrl: string;
+  evmPrivateKeyFilePath?: string;
+  evmRpcUrl?: string;
   /**
    * Buyer chain head used by authorization reconciliation. `finalized` is the
    * default; hosts selecting `safe` or `latest` must pair it with the
@@ -95,6 +98,9 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   createOperations?(
     context: Readonly<DacsLiveRoleOperationContextV1>,
   ): Readonly<FixedPriceX402Operations>;
+  createPayDemOperations?(
+    context: Readonly<DacsLiveRoleOperationContextV1>,
+  ): Readonly<FixedPricePayDemOperations>;
   validatePayload?: DacsLiveRoleRuntimePayloadValidatorV1;
   handleMessage?(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -113,15 +119,33 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   createDemosAdapter?: Parameters<
     typeof createDacsDemosActorRuntimeV1
   >[0]["createAdapter"];
+  /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
+  createPayDemRail?: Parameters<
+    typeof createDacsDemosActorRuntimeV1
+  >[0]["createPayDemRail"];
   /** Deterministic test/custom-host seam. Production omits this callback. */
   openDatabase?: (
     input: Parameters<typeof openDacsNodeSqliteDatabase>[0],
   ) => Promise<DacsNodeSqliteDatabase>;
 }
 
-export type DacsLiveRoleCommerceGraphV1 =
-  | DacsBuyerLiveCommerceGraphV1
-  | DacsSellerLiveCommerceGraphV1;
+export interface DacsLiveRoleCommerceGraphV1 {
+  readonly role: "buyer" | "seller";
+  readonly availability: Readonly<
+    | { status: "configured" }
+    | { status: "blocked"; reasonCode: string }
+  >;
+  /** Complete x402 track set when that rail is enabled. */
+  readonly operations?: Readonly<FixedPriceX402Operations>;
+  /** Complete native DEM track set when that rail is enabled. */
+  readonly payDemOperations?: Readonly<FixedPricePayDemOperations>;
+  readonly validatePayload: DacsHttpPayloadValidatorV1;
+  handleMessage(
+    authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
+    context: Readonly<DacsLiveRoleInboundOperationContextV1>,
+  ): Promise<DacsHttpInboundDispositionV1> | DacsHttpInboundDispositionV1;
+  readonly handleApplicationRequest?: DacsLiveRoleApplicationRequestHandlerV1;
+}
 
 /**
  * Complete actor-local authority available while composing production tracks.
@@ -136,17 +160,17 @@ export interface DacsLiveRoleOperationContextV1
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
   readonly sessionStore: FencedSessionStoreV2;
   readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
-  readonly evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
+  readonly evm?: Readonly<DacsLiveRoleEvmRuntimeV1>;
 }
 
 export type DacsLiveRoleCommerceStoresV1 =
   | Readonly<{
       role: "buyer";
-      x402Settlement: X402BuyerSettlementStore;
+      x402Settlement?: X402BuyerSettlementStore;
     }>
   | Readonly<{
       role: "seller";
-      x402Settlement: X402PaywallSettlementStore;
+      x402Settlement?: X402PaywallSettlementStore;
       sellerReceipts: SellerReceiptStore;
     }>;
 
@@ -183,7 +207,7 @@ export interface DacsLiveRoleRuntimeV1 {
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
   readonly sessionStore: FencedSessionStoreV2;
   readonly commerceStores: Readonly<DacsLiveRoleCommerceStoresV1>;
-  readonly evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
+  readonly evm?: Readonly<DacsLiveRoleEvmRuntimeV1>;
   readonly readinessLatch: Readonly<DacsRoleReadinessLatchV1>;
   readonly service: Readonly<DacsLiveRoleServiceV1>;
   start(): Promise<void>;
@@ -232,19 +256,27 @@ export async function createDacsLiveRoleRuntimeV1(
   }
   const graphMode = typeof rawOptions.createCommerceGraph === "function";
   const anyLegacyCommerce = rawOptions.createOperations !== undefined ||
+    rawOptions.createPayDemOperations !== undefined ||
     rawOptions.validatePayload !== undefined || rawOptions.handleMessage !== undefined ||
     rawOptions.handleApplicationRequest !== undefined;
-  const completeLegacyCommerce = typeof rawOptions.createOperations === "function" &&
+  const completeLegacyCommerce = (typeof rawOptions.createOperations === "function" ||
+    typeof rawOptions.createPayDemOperations === "function") &&
     typeof rawOptions.validatePayload === "function" &&
     typeof rawOptions.handleMessage === "function";
   if ((rawOptions.role !== "buyer" && rawOptions.role !== "seller") ||
       !nonEmpty(rawOptions.authority) || !nonEmpty(rawOptions.peerAuthority) ||
       !nonEmpty(rawOptions.peerEndpoint) || !nonEmpty(rawOptions.workerId) ||
       !nonEmpty(rawOptions.demosIdentityFilePath) ||
-      !nonEmpty(rawOptions.evmPrivateKeyFilePath) || !nonEmpty(rawOptions.evmRpcUrl) ||
+      (rawOptions.evmPrivateKeyFilePath !== undefined &&
+        !nonEmpty(rawOptions.evmPrivateKeyFilePath)) ||
+      (rawOptions.evmRpcUrl !== undefined && !nonEmpty(rawOptions.evmRpcUrl)) ||
       (rawOptions.evmFinalityTag !== undefined &&
         !["finalized", "safe", "latest"].includes(rawOptions.evmFinalityTag)) ||
       (rawOptions.databasePath !== undefined && !nonEmpty(rawOptions.databasePath)) ||
+      (rawOptions.createOperations !== undefined &&
+        typeof rawOptions.createOperations !== "function") ||
+      (rawOptions.createPayDemOperations !== undefined &&
+        typeof rawOptions.createPayDemOperations !== "function") ||
       (graphMode ? anyLegacyCommerce : !completeLegacyCommerce) ||
       (rawOptions.createCommerceGraph !== undefined && !graphMode) ||
       (rawOptions.handleApplicationRequest !== undefined &&
@@ -254,6 +286,8 @@ export async function createDacsLiveRoleRuntimeV1(
       (rawOptions.authorizeJob !== undefined && typeof rawOptions.authorizeJob !== "function") ||
       (rawOptions.createDemosAdapter !== undefined &&
         typeof rawOptions.createDemosAdapter !== "function") ||
+      (rawOptions.createPayDemRail !== undefined &&
+        typeof rawOptions.createPayDemRail !== "function") ||
       (rawOptions.openDatabase !== undefined && typeof rawOptions.openDatabase !== "function")) {
     throw new TypeError("live role runtime options are invalid");
   }
@@ -261,6 +295,17 @@ export async function createDacsLiveRoleRuntimeV1(
   if (config.mode !== "live-demos" || config.profile !== DACS_NODE_LIVE_PROFILE ||
       config.role !== rawOptions.role) {
     throw new TypeError("live role runtime configuration is incompatible");
+  }
+  const railProfiles = dacsLiveRailProfiles(config);
+  const x402Enabled = railProfiles.includes("x402");
+  const payDemEnabled = railProfiles.includes("pay-dem");
+  if ((x402Enabled && (!nonEmpty(rawOptions.evmPrivateKeyFilePath) ||
+        !nonEmpty(rawOptions.evmRpcUrl))) ||
+      (rawOptions.createOperations !== undefined && !x402Enabled) ||
+      (rawOptions.createPayDemOperations !== undefined && !payDemEnabled) ||
+      (x402Enabled && !graphMode && rawOptions.createOperations === undefined) ||
+      (payDemEnabled && !graphMode && rawOptions.createPayDemOperations === undefined)) {
+    throw new TypeError("live role runtime rail capabilities are incompatible");
   }
   const role = rawOptions.role;
   const demosIdentity = await loadDacsSecretV1({
@@ -294,6 +339,8 @@ export async function createDacsLiveRoleRuntimeV1(
       demosIdentity,
       ...(rawOptions.createDemosAdapter === undefined
         ? {} : { createAdapter: rawOptions.createDemosAdapter }),
+      ...(rawOptions.createPayDemRail === undefined
+        ? {} : { createPayDemRail: rawOptions.createPayDemRail }),
     });
   } catch {
     database.close();
@@ -324,15 +371,23 @@ export async function createDacsLiveRoleRuntimeV1(
     commerceStores = role === "buyer"
       ? Object.freeze({
           role,
-          x402Settlement: await createFsX402BuyerSettlementStore({
-            dir: resolve(config.dataDirectory, "x402-buyer-settlements"),
-          }),
+          ...(x402Enabled
+            ? {
+                x402Settlement: await createFsX402BuyerSettlementStore({
+                  dir: resolve(config.dataDirectory, "x402-buyer-settlements"),
+                }),
+              }
+            : {}),
         })
       : Object.freeze({
           role,
-          x402Settlement: await createFsX402PaywallSettlementStore({
-            dir: resolve(config.dataDirectory, "x402-seller-settlements"),
-          }),
+          ...(x402Enabled
+            ? {
+                x402Settlement: await createFsX402PaywallSettlementStore({
+                  dir: resolve(config.dataDirectory, "x402-seller-settlements"),
+                }),
+              }
+            : {}),
           sellerReceipts: await createFsSellerReceiptStore({
             dir: resolve(config.dataDirectory, "seller-receipts"),
           }),
@@ -341,28 +396,30 @@ export async function createDacsLiveRoleRuntimeV1(
     database.close();
     throw new DacsLiveRoleRuntimeError("role-commerce-stores-open-failed");
   }
-  let evm: Readonly<DacsLiveRoleEvmRuntimeV1>;
+  let evm: Readonly<DacsLiveRoleEvmRuntimeV1> | undefined;
   try {
-    const evmPrivateKey = await loadDacsSecretV1({
-      name: `${role}-evm-private-key`,
-      mode: "live-demos",
-      filePath: resolve(rawOptions.evmPrivateKeyFilePath),
-    });
-    if (role === "buyer") {
-      const runtime = await createDacsX402BuyerEvmRuntimeV1({
-        config,
-        evmPrivateKey,
-        rpcUrl: rawOptions.evmRpcUrl,
-        finalityTag: rawOptions.evmFinalityTag ?? "finalized",
+    if (x402Enabled) {
+      const evmPrivateKey = await loadDacsSecretV1({
+        name: `${role}-evm-private-key`,
+        mode: "live-demos",
+        filePath: resolve(rawOptions.evmPrivateKeyFilePath!),
       });
-      evm = Object.freeze({ role, runtime, address: runtime.payerAddress });
-    } else {
-      const identity = await deriveDacsEvmRoleIdentityV1({
-        config,
-        role,
-        evmPrivateKey,
-      });
-      evm = Object.freeze({ role, identity, address: identity.address });
+      if (role === "buyer") {
+        const runtime = await createDacsX402BuyerEvmRuntimeV1({
+          config,
+          evmPrivateKey,
+          rpcUrl: rawOptions.evmRpcUrl!,
+          finalityTag: rawOptions.evmFinalityTag ?? "finalized",
+        });
+        evm = Object.freeze({ role, runtime, address: runtime.payerAddress });
+      } else {
+        const identity = await deriveDacsEvmRoleIdentityV1({
+          config,
+          role,
+          evmPrivateKey,
+        });
+        evm = Object.freeze({ role, identity, address: identity.address });
+      }
     }
   } catch {
     database.close();
@@ -386,7 +443,7 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
-      evm,
+      ...(evm === undefined ? {} : { evm }),
     });
     const inboundOperationContext = (
       context: Readonly<DacsLiveRoleInboundContextV1>,
@@ -397,12 +454,22 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
-      evm,
+      ...(evm === undefined ? {} : { evm }),
     });
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;
     let commerceGraph: Readonly<DacsLiveRoleCommerceGraphV1> | undefined;
     let commerceOperations: Readonly<FixedPriceX402Operations> | undefined;
+    let payDemCommerceOperations: Readonly<FixedPricePayDemOperations> | undefined;
     if (graphMode) {
+      const deferredQueueMessage: DacsLiveRoleRuntimeContextV1["queueMessage"] =
+        (input) => {
+          if (service === undefined) {
+            return Promise.reject(new DacsLiveRoleRuntimeError(
+              "role-service-send-before-initialization",
+            ));
+          }
+          return service.queueMessage(input);
+        };
       const deferredSendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] =
         (input, sendOptions) => {
           if (service === undefined) {
@@ -416,25 +483,38 @@ export async function createDacsLiveRoleRuntimeV1(
         role,
         authority: rawOptions.authority,
         peerAuthority: rawOptions.peerAuthority,
+        queueMessage: deferredQueueMessage,
         sendMessage: deferredSendMessage,
       }));
       const created = await rawOptions.createCommerceGraph!(establishedOperationContext);
       if (!plainObject(created) || created.role !== role ||
-          !plainObject(created.operations) ||
           typeof created.validatePayload !== "function" ||
           typeof created.handleMessage !== "function" ||
-          (role === "seller" &&
-            (created.role !== "seller" ||
-              typeof created.handleApplicationRequest !== "function"))) {
+          (role === "seller" && x402Enabled &&
+            typeof created.handleApplicationRequest !== "function") ||
+          (x402Enabled !== plainObject(created.operations)) ||
+          (payDemEnabled !== plainObject(created.payDemOperations))) {
         throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
       }
-      try {
-        commerceOperations = createDacsFixedPriceX402OperationSetV1({
-          role,
-          operations: created.operations as Readonly<Record<string, unknown>>,
-        });
-      } catch {
-        throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+      if (x402Enabled) {
+        try {
+          commerceOperations = createDacsFixedPriceX402OperationSetV1({
+            role,
+            operations: created.operations as Readonly<Record<string, unknown>>,
+          });
+        } catch {
+          throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+        }
+      }
+      if (payDemEnabled) {
+        try {
+          payDemCommerceOperations = createDacsFixedPricePayDemOperationSetV1({
+            role,
+            operations: created.payDemOperations as Readonly<Record<string, unknown>>,
+          });
+        } catch {
+          throw new DacsLiveRoleRuntimeError("role-commerce-graph-invalid");
+        }
       }
       if (!plainObject(created.availability) ||
           (created.availability.status !== "configured" &&
@@ -463,11 +543,29 @@ export async function createDacsLiveRoleRuntimeV1(
           : commerceGraph.validatePayload(input);
       },
       signTransportEnvelope: demos.signTransportEnvelope,
-      createOperations: (context) => {
-        if (commerceOperations !== undefined) return commerceOperations;
-        establishedOperationContext = operationContext(context);
-        return rawOptions.createOperations!(establishedOperationContext);
-      },
+      ...((commerceOperations === undefined && rawOptions.createOperations === undefined)
+        ? {}
+        : {
+            createOperations: (context: Readonly<DacsLiveRoleRuntimeContextV1>) => {
+              if (commerceOperations !== undefined) return commerceOperations;
+              establishedOperationContext = operationContext(context);
+              return rawOptions.createOperations!(establishedOperationContext);
+            },
+          }),
+      ...((payDemCommerceOperations === undefined &&
+          rawOptions.createPayDemOperations === undefined)
+        ? {}
+        : {
+            createPayDemOperations: (
+              context: Readonly<DacsLiveRoleRuntimeContextV1>,
+            ) => {
+              if (payDemCommerceOperations !== undefined) {
+                return payDemCommerceOperations;
+              }
+              establishedOperationContext = operationContext(context);
+              return rawOptions.createPayDemOperations!(establishedOperationContext);
+            },
+          }),
       handleMessage: (authenticated, context) => {
         const inbound = inboundOperationContext(context);
         return commerceGraph === undefined
@@ -483,11 +581,11 @@ export async function createDacsLiveRoleRuntimeV1(
         handlePublicRequest: rawOptions.handlePublicRequest,
       }),
       ...((rawOptions.handleApplicationRequest === undefined &&
-          !(commerceGraph?.role === "seller"))
+          commerceGraph?.handleApplicationRequest === undefined)
         ? {} : {
             handleApplicationRequest: (request, response, context) => {
               const inbound = inboundOperationContext(context);
-              return commerceGraph?.role === "seller"
+              return commerceGraph?.handleApplicationRequest !== undefined
                 ? commerceGraph.handleApplicationRequest(request, response, inbound)
                 : rawOptions.handleApplicationRequest!(request, response, inbound);
             },
@@ -508,7 +606,7 @@ export async function createDacsLiveRoleRuntimeV1(
       ? createDacsBuyerServiceV1(serviceOptions)
       : createDacsSellerServiceV1(serviceOptions);
   } catch (error) {
-    if (evm.role === "buyer") evm.runtime.destroy();
+    if (evm?.role === "buyer") evm.runtime.destroy();
     database.close();
     if (error instanceof DacsLiveRoleRuntimeError) throw error;
     throw new DacsLiveRoleRuntimeError("role-service-create-failed");
@@ -527,7 +625,7 @@ export async function createDacsLiveRoleRuntimeV1(
         failed = true;
       } finally {
         closed = true;
-        if (evm.role === "buyer") evm.runtime.destroy();
+        if (evm?.role === "buyer") evm.runtime.destroy();
         try {
           database!.close();
         } catch {
@@ -548,7 +646,7 @@ export async function createDacsLiveRoleRuntimeV1(
     demos,
     sessionStore,
     commerceStores,
-    evm,
+    ...(evm === undefined ? {} : { evm }),
     readinessLatch,
     service,
     async start() {

@@ -1,20 +1,26 @@
+import { LIFECYCLE_SOURCE } from "./lifecycleTemplate.js";
+import { FULFILMENT_EXAMPLES_SOURCE } from "./fulfilmentTemplate.js";
+import { TELEMETRY_SOURCE } from "./telemetryTemplate.js";
+
 export interface LiveProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
-  role: "buyer" | "seller" | "verifier";
+  role: "buyer" | "seller";
+  rails: "x402" | "pay-dem" | "both";
   runtimeUid: number;
   runtimeGid: number;
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
-const TSX_VERSION = "4.23.12";
+const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "662be1d4899a2cadf327fe2d5523e93a80334e5f";
 const CONFIG_SCHEMA_VERSION = 1;
-const SQLITE_SCHEMA_VERSION = 6;
+const SQLITE_SCHEMA_VERSION = 7;
 
-function packageJson(packageName: string): string {
+function packageJson(options: LiveProjectTemplateOptions): string {
+  const x402 = options.rails !== "pay-dem";
   return JSON.stringify({
-    name: packageName,
+    name: options.packageName,
     version: "0.1.0",
     private: true,
     type: "module",
@@ -22,30 +28,35 @@ function packageJson(packageName: string): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      // demosdk 4.0.16 publishes one extensionless ESM directory import. The
-      // declared loader keeps generated services runnable on the supported
-      // Node floors without mutating the installed dependency.
-      test: "npm run build && node --import tsx --test dist/test/live-bootstrap.test.js",
-      "dacs:doctor": "npm run build --silent && node --import tsx dist/src/cli.js doctor",
-      "dacs:doctor:funded": "npm run build --silent && node --import tsx dist/src/cli.js doctor-funded",
-      "dacs:up": "npm run build --silent && node --import tsx dist/src/cli.js up",
-      "dacs:setup": "npm run build --silent && node --import tsx dist/src/cli.js setup",
-      "dacs:buy": "npm run build --silent && node --import tsx dist/src/cli.js buy",
-      "dacs:status": "npm run build --silent && node --import tsx dist/src/cli.js status",
-      "dacs:down": "npm run build --silent && node --import tsx dist/src/cli.js down",
-      "dacs:upgrade": "npm run build --silent && node --import tsx dist/src/cli.js upgrade",
-      "dacs:service": "npm run build --silent && node --import tsx dist/src/service.js",
-      "dacs:smoke:offline": "npm run build --silent && node --import tsx dist/src/offline-smoke.js",
+      // The host loader fixes only demosdk 4.0.16's published extensionless ESM
+      // directory import; generated production services need no TS transformer.
+      test: "npm run build && node --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js",
+      "dacs:doctor": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor",
+      "dacs:doctor:funded": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor-funded",
+      "dacs:up": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js up",
+      "dacs:setup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js setup",
+      "dacs:buy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js buy",
+      "dacs:status": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js status",
+      "dacs:metrics": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js metrics",
+      "dacs:down": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js down",
+      "dacs:backup": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js backup",
+      "dacs:restore": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js restore",
+      "dacs:uninstall": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js uninstall",
+      "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
+      "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
+      "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
       "@kynesyslabs/demosdk": "4.0.16",
-      "@x402/core": "2.15.0",
-      "@x402/evm": "2.15.0",
-      "@x402/fetch": "2.15.0",
-      tsx: TSX_VERSION,
-      "viem": "2.55.19",
+      "better-sqlite3": BETTER_SQLITE_VERSION,
+      ...(x402 ? {
+        "@x402/core": "2.15.0",
+        "@x402/evm": "2.15.0",
+        "@x402/fetch": "2.15.0",
+      } : {}),
+      ...(x402 ? { "viem": "2.55.19" } : {}),
     },
     dacs: {
       generatorVersion: SDK_VERSION,
@@ -53,7 +64,7 @@ function packageJson(packageName: string): string {
       standardRevision: STANDARD_REVISION,
       configSchemaVersion: CONFIG_SCHEMA_VERSION,
       sqliteSchemaVersion: SQLITE_SCHEMA_VERSION,
-      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
       breakingConfigurationChanges: [],
     },
     devDependencies: {
@@ -84,7 +95,14 @@ const TSCONFIG = `{
 }
 `;
 
-function dacsConfig(role: LiveProjectTemplateOptions["role"]): string {
+function dacsConfig(options: LiveProjectTemplateOptions): string {
+  const enabledProfiles = options.rails === "both"
+    ? ["pay-dem", "x402"]
+    : [options.rails];
+  const requestedNetwork = options.rails === "pay-dem"
+    ? '"demos"'
+    : 'process.env.DACS_X402_NETWORK ?? "eip155:84532"';
+  const serviceAsset = options.rails === "pay-dem" ? "DEM" : "USDC";
   return `import { existsSync, readFileSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
@@ -93,7 +111,7 @@ import type { DacsLiveAgentConfig } from "@kynesyslabs/dacs-node";
 let persistentConfirmationDetected = false;
 if (existsSync(".env")) {
   const persisted = readFileSync(".env", "utf8");
-  if (/^\\s*(?:export\\s+)?DACS_(?:SETUP_WRITE|PURCHASE|DOCTOR_FUNDED)_CONFIRM\\s*=/mu
+  if (/^\\s*(?:export\\s+)?DACS_(?:SETUP_WRITE|PURCHASE|DOCTOR_FUNDED|RESTORE|UNINSTALL)_CONFIRM\\s*=/mu
       .test(persisted)) {
     persistentConfirmationDetected = true;
   } else {
@@ -131,11 +149,12 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
     },
     rail: {
       registryIndexRef: process.env.DACS_RAIL_REGISTRY_INDEX_REF ?? "dacs4:registry:v0.1",
-      requestedNetwork: process.env.DACS_X402_NETWORK ?? "eip155:84532",
+      requestedNetwork: ${requestedNetwork},
+      enabledProfiles: ${JSON.stringify(enabledProfiles)},
     },
     limits: {
       maxServiceAmount: {
-        asset: process.env.DACS_MAX_SERVICE_ASSET ?? "USDC",
+        asset: process.env.DACS_MAX_SERVICE_ASSET ?? "${serviceAsset}",
         amount: process.env.DACS_MAX_SERVICE_AMOUNT ?? "1",
       },
       maxSetupSpendDem: process.env.DACS_MAX_SETUP_SPEND_DEM ?? "10",
@@ -146,7 +165,7 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
 }
 
 export function selectedGeneratedRoleConfig(): DacsLiveAgentConfig {
-  const selected = process.env.DACS_ROLE ?? "${role}";
+  const selected = process.env.DACS_ROLE ?? "${options.role}";
   if (selected !== "buyer" && selected !== "seller" && selected !== "verifier") {
     throw new Error("DACS_ROLE must be buyer, seller or verifier");
   }
@@ -160,6 +179,7 @@ export default selectedGeneratedRoleConfig;
 const CONFIG_SOURCE = `import { resolve } from "node:path";
 
 import {
+  dacsLiveRailProfiles,
   validateDacsAgentConfig,
   type DacsLiveAgentConfig,
 } from "@kynesyslabs/dacs-node";
@@ -206,6 +226,10 @@ export function configuredX402RailId(): string {
   return process.env.DACS_X402_RAIL_ID ?? "x402:default";
 }
 
+export function configuredPayDemRailId(): string {
+  return process.env.DACS_PAY_DEM_RAIL_ID ?? "demos-native:DEM";
+}
+
 export function configuredX402FacilitatorUrl(): string | undefined {
   const value = process.env.DACS_X402_FACILITATOR_URL;
   return value === undefined || value.trim() === "" ? undefined : value;
@@ -221,8 +245,13 @@ export function configuredSellerEvmPayee(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
-export function configuredListingDraftFile(): string | undefined {
-  const value = process.env.DACS_LISTING_DRAFT_FILE;
+export function configuredListingDraftFile(
+  rail?: "x402" | "pay-dem",
+): string | undefined {
+  const value = process.env[rail === "x402"
+    ? "DACS_X402_LISTING_DRAFT_FILE"
+    : rail === "pay-dem" ? "DACS_PAY_DEM_LISTING_DRAFT_FILE" : "DACS_LISTING_DRAFT_FILE"] ??
+    process.env.DACS_LISTING_DRAFT_FILE;
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
 }
 
@@ -260,6 +289,30 @@ export function configuredFixedPriceAmount(): string {
   return value;
 }
 
+export function configuredFixedPricePayDemAmount(): string {
+  const value = process.env.DACS_PAY_DEM_FIXED_PRICE_AMOUNT ?? "1";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM fixed service price is invalid");
+  }
+  return value;
+}
+
+export function configuredMaximumPayDemServiceAmount(): string {
+  const value = process.env.DACS_MAX_PAY_DEM_SERVICE_AMOUNT ?? "1";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM maximum service price is invalid");
+  }
+  return value;
+}
+
+export function configuredMaximumPayDemTotalDebit(): string {
+  const value = process.env.DACS_MAX_PAY_DEM_TOTAL_DEBIT ?? "3";
+  if (value.length === 0 || value.trim() !== value) {
+    throw new Error("native DEM total debit ceiling is invalid");
+  }
+  return value;
+}
+
 export function actorDatabasePath(role: GeneratedLiveRole): string {
   return resolve(loadRoleConfig(role).dataDirectory, "actor.sqlite");
 }
@@ -269,7 +322,10 @@ export function listingDiscoveryDirectory(): string {
 }
 
 export function actorSecretPaths(role: GeneratedLiveRole): readonly string[] {
-  return SECRET_NAMES[role].flatMap((name) => {
+  const profiles = role === "verifier" ? [] : dacsLiveRailProfiles(loadRoleConfig(role));
+  return SECRET_NAMES[role].filter((name) =>
+    !name.endsWith("_EVM_SECRET_FILE") || profiles.includes("x402")
+  ).flatMap((name) => {
     const value = process.env[name];
     return value === undefined || value.trim() === "" ? [] : [resolve(value)];
   });
@@ -279,6 +335,8 @@ export function actorSecretPath(
   role: "buyer" | "seller",
   kind: "demos-identity" | "evm-wallet",
 ): string | undefined {
+  if (kind === "evm-wallet" &&
+      !dacsLiveRailProfiles(loadRoleConfig(role)).includes("x402")) return undefined;
   const name = role === "buyer"
     ? kind === "demos-identity" ? "DACS_BUYER_DEMOS_SECRET_FILE" : "DACS_BUYER_EVM_SECRET_FILE"
     : kind === "demos-identity" ? "DACS_SELLER_DEMOS_SECRET_FILE" : "DACS_SELLER_EVM_SECRET_FILE";
@@ -315,6 +373,8 @@ export function serviceEndpoint(role: "buyer" | "seller"): string {
 const DOCTOR_SOURCE = `import { constants } from "node:fs";
 import { access, lstat, open, readFile, statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { resolve } from "node:path";
 
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -330,20 +390,25 @@ import {
 } from "@kynesyslabs/dacs/identity";
 import {
   DACS_LIVE_DOCTOR_CHECK_IDS,
+  DACS_NODE_CONFIG_SCHEMA_VERSION,
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
   createViemDacsX402BalanceReadClientV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   establishDacsRoleServiceReadinessV1,
+  estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
   inspectDacsX402TokenDomainV1,
   inspectDacsX402PurchaseCostV1,
+  inspectDacsPayDemListingDraftV1,
+  resolveDacsPayDemExistingListingV1,
   resolveDacsX402ExistingListingV1,
   inspectDacsX402ListingDraftV1,
   loadDacsSecretV1,
@@ -358,11 +423,11 @@ import {
   type DacsLiveDoctorScopeV1,
 } from "@kynesyslabs/dacs-node";
 import {
+  DACS_NODE_SQLITE_SCHEMA_VERSION,
   inspectExistingDacsNodeSqliteDatabaseV1,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "@kynesyslabs/dacs-node/sqlite";
-import { HTTPFacilitatorClient } from "@x402/core/http";
 
 import {
   actorDatabasePath,
@@ -371,7 +436,11 @@ import {
   configuredAuthority,
   configuredEvmRpcUrl,
   configuredFixedPriceAmount,
+  configuredFixedPricePayDemAmount,
   configuredListingDraftFile,
+  configuredMaximumPayDemServiceAmount,
+  configuredMaximumPayDemTotalDebit,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402AuthorizationSearchFromBlock,
@@ -400,10 +469,14 @@ interface DoctorActor {
 type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
 
 export interface GeneratedDoctorOperationV1 {
-  listingRef: string;
-  maximumServiceAmount: string;
-  maximumNetworkFeeEth: string;
+  rail: "x402" | "pay-dem";
+  listingRef?: string;
+  maximumServiceAmount?: string;
+  maximumNetworkFeeEth?: string;
+  maximumTotalDebitDem?: string;
 }
+
+type GeneratedRailProfile = "x402" | "pay-dem";
 
 function pass(facts?: Readonly<Record<string, string | number | boolean | null>>) {
   return Object.freeze({ status: "pass" as const, ...(facts === undefined ? {} : { facts }) });
@@ -443,10 +516,39 @@ function listingPriceAmount(value: unknown): string | undefined {
   return typeof amount === "string" ? amount : undefined;
 }
 
+function decimalAtMost(value: string, ceiling: string): boolean {
+  const left = canonicalizeDecimal(value);
+  const right = canonicalizeDecimal(ceiling);
+  if (left.startsWith("-") || right.startsWith("-")) return false;
+  const scale = Math.max(left.split(".")[1]?.length ?? 0, right.split(".")[1]?.length ?? 0);
+  const units = (input: string) => {
+    const [whole, fraction = ""] = input.split(".");
+    return BigInt(whole! + fraction.padEnd(scale, "0"));
+  };
+  return units(left) <= units(right);
+}
+
+async function x402FacilitatorSupported(url: string): Promise<unknown> {
+  // The non-literal optional import keeps DEM-only generated projects free of
+  // x402 packages while retaining an exact runtime capability check when x402
+  // is enabled.
+  const moduleName: string = "@x402/core/http";
+  const loaded = await import(moduleName) as Readonly<{
+    HTTPFacilitatorClient?: new (options: Readonly<{ url: string }>) => Readonly<{
+      getSupported(): Promise<unknown>;
+    }>;
+  }>;
+  if (typeof loaded.HTTPFacilitatorClient !== "function") {
+    throw new Error("x402 facilitator client is unavailable");
+  }
+  return new loaded.HTTPFacilitatorClient({ url }).getSupported();
+}
+
 async function openDoctorActors(
   phase: DacsLiveDoctorPhaseV1,
 ): Promise<DoctorActors | undefined> {
   const opened: DoctorActor[] = [];
+  const x402Enabled = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402");
   try {
     for (const role of ROLES) {
       const authority = configuredAuthority(role);
@@ -467,17 +569,19 @@ async function openDoctorActors(
         writePolicy: "read-only",
       });
       const evmSecretPath = actorSecretPath(role, "evm-wallet");
-      if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
-      const evmSecret = await loadDacsSecretV1({
-        name: role + "-doctor-evm-wallet",
-        mode: "live-demos",
-        filePath: evmSecretPath,
-      });
-      const evmIdentity = await deriveDacsEvmRoleIdentityV1({
-        config: loadRoleConfig(role),
-        role,
-        evmPrivateKey: evmSecret,
-      });
+      const evmIdentity = x402Enabled ? await (async () => {
+        if (evmSecretPath === undefined) throw new Error("doctor EVM secret unavailable");
+        const evmSecret = await loadDacsSecretV1({
+          name: role + "-doctor-evm-wallet",
+          mode: "live-demos",
+          filePath: evmSecretPath,
+        });
+        return deriveDacsEvmRoleIdentityV1({
+          config: loadRoleConfig(role),
+          role,
+          evmPrivateKey: evmSecret,
+        });
+      })() : Object.freeze({ network: "disabled", chainId: 0, address: "" });
       const database = phase === "post-start"
         ? await openDacsNodeSqliteDatabase({
             databasePath: actorDatabasePath(role),
@@ -556,7 +660,8 @@ async function diskSpace() {
 
 async function secrets() {
   const paths = ROLES.flatMap((role) => actorSecretPaths(role));
-  if (paths.length !== 4) return blocked("role-secret-file-missing");
+  const expected = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402") ? 4 : 2;
+  if (paths.length !== expected) return blocked("role-secret-file-missing");
   const hashes: string[] = [];
   try {
     for (const path of paths) {
@@ -612,9 +717,58 @@ function sqlite() {
 }
 
 async function dockerRuntime(
-  context: Readonly<{ signal: AbortSignal }>,
+  context: Readonly<{ phase: DacsLiveDoctorPhaseV1; signal: AbortSignal }>,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
-  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") return pass();
+  let endpoints: readonly Readonly<{ hostname: string; port: number }>[];
+  try {
+    endpoints = ROLES.map((role) => {
+      const endpoint = new URL(serviceEndpoint(role));
+      const hostname = endpoint.hostname.toLowerCase().replace(/\\.$/u, "");
+      const loopback = hostname === "localhost" || hostname.endsWith(".localhost") ||
+        hostname === "[::1]" || hostname === "::1" ||
+        /^127(?:\\.\\d{1,3}){3}$/u.test(hostname);
+      const port = Number(endpoint.port);
+      if (endpoint.protocol !== "http:" || !loopback || endpoint.pathname !== "/" ||
+          endpoint.username !== "" || endpoint.password !== "" || endpoint.search !== "" ||
+          endpoint.hash !== "" || !Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+        throw new Error("service endpoint is not a bounded loopback port");
+      }
+      return Object.freeze({
+        hostname: endpoint.hostname.startsWith("[")
+          ? endpoint.hostname.slice(1, -1) : endpoint.hostname,
+        port,
+      });
+    });
+  } catch {
+    return fail("service-endpoint-invalid");
+  }
+  if (endpoints[0]!.port === endpoints[1]!.port) {
+    return fail("service-port-shared");
+  }
+  if (context.phase === "pre-start") {
+    for (const endpoint of endpoints) {
+      const available = await new Promise<boolean>((resolve) => {
+        const server = createServer();
+        let settled = false;
+        const finish = (result: boolean) => {
+          if (settled) return;
+          settled = true;
+          context.signal.removeEventListener("abort", onAbort);
+          server.close(() => resolve(result));
+        };
+        const onAbort = () => finish(false);
+        context.signal.addEventListener("abort", onAbort, { once: true });
+        server.once("error", () => finish(false));
+        server.listen({ host: endpoint.hostname, port: endpoint.port, exclusive: true },
+          () => finish(true));
+        if (context.signal.aborted) onAbort();
+      });
+      if (!available) return fail("service-port-unavailable");
+    }
+  }
+  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") {
+    return pass({ servicePortCount: endpoints.length });
+  }
   const runtimeUid = Number(process.env.DACS_RUNTIME_UID);
   const runtimeGid = Number(process.env.DACS_RUNTIME_GID);
   if (process.env.DACS_RUNTIME_UID === undefined || process.env.DACS_RUNTIME_GID === undefined) {
@@ -642,8 +796,43 @@ async function dockerRuntime(
     context.signal.addEventListener("abort", onAbort, { once: true });
     if (context.signal.aborted) onAbort();
     child.once("error", () => finish(blocked("docker-runtime-unavailable")));
-    child.once("exit", (code) => finish(code === 0 ? pass() : blocked("docker-runtime-unavailable")));
+    child.once("exit", (code) => finish(code === 0
+      ? pass({ servicePortCount: endpoints.length })
+      : blocked("docker-runtime-unavailable")));
   });
+}
+
+async function versionBindings() {
+  try {
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url),
+      "utf8")) as Readonly<{
+        dependencies?: Readonly<Record<string, unknown>>;
+        dacs?: Readonly<Record<string, unknown>>;
+      }>;
+    const metadata = manifest.dacs;
+    if (manifest.dependencies?.["@kynesyslabs/dacs"] !== VERSION ||
+        manifest.dependencies?.["@kynesyslabs/dacs-node"] !== VERSION ||
+        metadata?.generatorVersion !== VERSION ||
+        metadata?.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
+        metadata?.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
+        metadata?.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return fail("version-binding-mismatch");
+    }
+    const configs = ROLES.map((role) => loadRoleConfig(role));
+    if (configs.some((config, index) => config.role !== ROLES[index] ||
+        config.profile !== DACS_NODE_LIVE_PROFILE)) {
+      return fail("version-binding-mismatch");
+    }
+    return pass({
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      configSchemaVersion: DACS_NODE_CONFIG_SCHEMA_VERSION,
+      sqliteSchemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+    });
+  } catch {
+    return fail("version-binding-unavailable");
+  }
 }
 
 function baseProbes(
@@ -651,24 +840,27 @@ function baseProbes(
   operation: Readonly<GeneratedDoctorOperationV1> | undefined,
 ): DacsLiveDoctorProbesV1 {
   const actorUnavailable = () => blocked("role-demos-runtime-unavailable");
+  const x402Disabled = () => blocked("x402-profile-disabled");
+  const payDemDisabled = () => blocked("pay-dem-profile-disabled");
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
-  let railTask: ReturnType<typeof resolveRail> | undefined;
-  const selectedRail = () => {
+  const enabledProfiles = dacsLiveRailProfiles(loadRoleConfig("buyer"));
+  const railTasks: Partial<Record<GeneratedRailProfile, ReturnType<typeof resolveRail>>> = {};
+  const selectedRail = (profile: GeneratedRailProfile) => {
     if (actors === undefined || stewardAuthority === undefined || stewardPublicKey === null) {
       throw new Error("rail authority prerequisite unavailable");
     }
-    railTask ??= resolveRail(
+    railTasks[profile] ??= resolveRail(
       RAIL_REGISTRY_INDEX_ADDRESS,
-      configuredX402RailId(),
+      profile === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
       createDacsDemosRailRegistryProviderV1({
         runtime: actors.buyer.runtime,
         stewardAuthority,
         stewardPublicKey,
       }),
     );
-    return railTask;
+    return railTasks[profile]!;
   };
   let fundingTask: Promise<Readonly<{
     asset: Readonly<DacsLiveDoctorProbeResultV1>;
@@ -680,7 +872,7 @@ function baseProbes(
     const rpcUrl = configuredEvmRpcUrl();
     if (rpcUrl === undefined) throw new Error("x402 funding RPC unavailable");
     fundingTask ??= (async () => {
-      const rail = await selectedRail();
+      const rail = await selectedRail("x402");
       const buyer = loadRoleConfig("buyer");
       if (rail.asset.kind !== "erc20" ||
           rail.asset.chainId !== actors.buyer.evmIdentity.chainId ||
@@ -700,7 +892,8 @@ function baseProbes(
           asset: rail.asset.contract,
           symbol: rail.asset.symbol,
           decimals: rail.asset.decimals,
-          minimumAmount: operation?.maximumServiceAmount ?? buyer.limits.maxServiceAmount.amount,
+          minimumAmount: operation?.rail === "x402" && operation.maximumServiceAmount !== undefined
+            ? operation.maximumServiceAmount : buyer.limits.maxServiceAmount.amount,
         }),
         inspectDacsX402GasBalanceV1({
           client,
@@ -722,45 +915,91 @@ function baseProbes(
     })();
     return fundingTask;
   };
-  let listingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
+  let x402ListingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
+  let payDemListingTask: ReturnType<typeof resolveDacsPayDemExistingListingV1> | undefined;
   const selectedListing = () => {
-    if (actors === undefined || operation === undefined) {
+    if (actors === undefined || operation === undefined || operation.listingRef === undefined ||
+        operation.maximumServiceAmount === undefined) {
       throw new Error("existing Listing operation context unavailable");
     }
+    const listingRef = operation.listingRef;
+    const maximumServiceAmount = operation.maximumServiceAmount;
+    const operationRail = operation.rail;
     const sellerEndpoint = loadRoleConfig("seller").publicBaseUrl;
     if (sellerEndpoint === undefined) throw new Error("seller public endpoint unavailable");
-    listingTask ??= (async () => resolveDacsX402ExistingListingV1({
-      listingRef: operation.listingRef,
+    const common = {
+      listingRef,
       sellerAuthority: actors.seller.authority,
       sellerPublicKey: actors.seller.runtime.publicKey,
       sellerPublicEndpoint: sellerEndpoint,
-      sellerPayee: actors.seller.evmIdentity.address,
-      network: loadRoleConfig("buyer").rail.requestedNetwork as \`eip155:\${number}\`,
-      rail: await selectedRail(),
-      maximumServiceAmount: operation.maximumServiceAmount,
+      maximumServiceAmount,
       now: Date.now(),
-      readAnchor: (locator) => actors.buyer.runtime.adapter.readAnchor(locator),
-      async authenticateAnchor(input) {
+      readAnchor: (locator: string) => actors.buyer.runtime.adapter.readAnchor(locator),
+      async authenticateAnchor(input: Readonly<{
+        logicalAddress: string;
+        nativeAddress: string;
+        contentHash: string;
+        writer: string;
+      }>) {
         const receipt = await actors.buyer.runtime.adapter.resolveDemosAnchorReceipt(input);
         return receipt !== null &&
           await actors.buyer.runtime.adapter.verifyDemosAnchorReceipt(receipt) === true;
       },
-      readJson: (url) => readDacsPublicJsonV1(url, { timeoutMs: 5_000, maxBytes: 1_048_576 }),
+      readJson: (url: string) => readDacsPublicJsonV1(
+        url,
+        { timeoutMs: 5_000, maxBytes: 1_048_576 },
+      ),
+    };
+    if (operationRail === "pay-dem") {
+      payDemListingTask ??= (async () => resolveDacsPayDemExistingListingV1({
+        ...common,
+        sellerPayee: Buffer.from(actors.seller.runtime.publicKey).toString("hex"),
+        rail: await selectedRail("pay-dem"),
+      }))();
+      return payDemListingTask;
+    }
+    x402ListingTask ??= (async () => resolveDacsX402ExistingListingV1({
+      ...common,
+      sellerPayee: actors.seller.evmIdentity.address,
+      network: loadRoleConfig("buyer").rail.requestedNetwork as \`eip155:\${number}\`,
+      rail: await selectedRail("x402"),
     }))();
-    return listingTask;
+    return x402ListingTask;
   };
+  const x402Cost = operation?.rail === "x402" &&
+      operation.maximumServiceAmount !== undefined &&
+      operation.maximumNetworkFeeEth !== undefined
+    ? Object.freeze({
+        maximumServiceAmount: operation.maximumServiceAmount,
+        maximumNetworkFeeEth: operation.maximumNetworkFeeEth,
+      })
+    : undefined;
+  const payDemCost = operation?.rail === "pay-dem" &&
+      operation.maximumTotalDebitDem !== undefined
+    ? Object.freeze({ maximumTotalDebitDem: operation.maximumTotalDebitDem })
+    : undefined;
   return Object.freeze({
     "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
       : fail("node-version-unsupported"),
     "local.package-integrity": inspectDacsNodePackageIntegrityV1,
-    "local.version-bindings": () => pass({ sdkVersion: VERSION,
-      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION, profile: DACS_NODE_LIVE_PROFILE }),
+    "local.version-bindings": versionBindings,
     "local.configuration": () => {
       try {
-        const configs = ROLES.map((role) => loadRoleConfig(role));
-        return configs.every((config) =>
-          config.rail.registryIndexRef === RAIL_REGISTRY_INDEX_ADDRESS)
-          ? pass() : fail("rail-registry-index-incompatible");
+        const [buyer, seller] = ROLES.map((role) => loadRoleConfig(role));
+        if (buyer === undefined || seller === undefined ||
+            buyer.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS ||
+            seller.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS) {
+          return fail("rail-registry-index-incompatible");
+        }
+        if (JSON.stringify(dacsLiveRailProfiles(buyer)) !==
+              JSON.stringify(dacsLiveRailProfiles(seller)) ||
+            buyer.rail.requestedNetwork !== seller.rail.requestedNetwork) {
+          return fail("role-commerce-configuration-mismatch");
+        }
+        if (resolve(buyer.dataDirectory) === resolve(seller.dataDirectory)) {
+          return fail("actor-data-directory-shared");
+        }
+        return pass({ enabledRailCount: dacsLiveRailProfiles(buyer).length });
       }
       catch { return fail("configuration-invalid"); }
     },
@@ -806,7 +1045,10 @@ function baseProbes(
     "demos.storage-read": actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
-          try { await selectedRail(); return pass(); }
+          try {
+            await Promise.all(enabledProfiles.map((profile) => selectedRail(profile)));
+            return pass({ railCount: enabledProfiles.length });
+          }
           catch { return fail("demos-storage-read-or-proof-failed"); }
         },
     "demos.binding-resolution": actors === undefined ? actorUnavailable : async () => {
@@ -826,18 +1068,46 @@ function baseProbes(
         return pass({ actorCount: 2 });
       } catch { return fail("demos-nonce-unavailable"); }
     },
-    "demos.balance-fees": actors === undefined ? actorUnavailable : (probeContext) => {
+    "demos.balance-fees": actors === undefined ? actorUnavailable : async (probeContext) => {
       const buyer = loadRoleConfig("buyer");
       const seller = loadRoleConfig("seller");
+      const estimate = probeContext.scope === "buy" && operation !== undefined &&
+          (operation.rail !== "pay-dem" || operation.maximumTotalDebitDem !== undefined)
+        ? estimateDacsFixedPriceDemosCostV1({
+            rail: operation.rail,
+            maximumStorageWriteFeeDem: {
+              buyer: buyer.limits.maxDemosNetworkFeeDem,
+              seller: seller.limits.maxDemosNetworkFeeDem,
+            },
+            ...(operation.rail === "pay-dem" && operation.maximumTotalDebitDem !== undefined
+              ? { maximumPayDemTotalDebitDem: operation.maximumTotalDebitDem } : {}),
+          })
+        : undefined;
+      if (probeContext.scope === "buy" && estimate === undefined) {
+        return blocked("purchase-cost-context-missing");
+      }
       const minimumDem = probeContext.scope === "setup"
         ? { buyer: "0", seller: seller.limits.maxSetupSpendDem }
-        : {
+        : estimate?.minimumDem ?? {
             buyer: buyer.limits.maxDemosNetworkFeeDem,
             seller: seller.limits.maxDemosNetworkFeeDem,
           };
-      return inspectDacsDemosBalanceHeadroomV1({
+      const inspected = await inspectDacsDemosBalanceHeadroomV1({
         actors: { buyer: actors.buyer.runtime, seller: actors.seller.runtime },
         minimumDem,
+      });
+      if (estimate === undefined || !("facts" in inspected)) return inspected;
+      return Object.freeze({
+        ...inspected,
+        facts: Object.freeze({
+          ...inspected.facts,
+          expectedBuyerStorageWrites: estimate.expectedStorageWrites.buyer,
+          expectedSellerStorageWrites: estimate.expectedStorageWrites.seller,
+          buyerDemosSafetyMarginDem: estimate.safetyMarginDem.buyer,
+          sellerDemosSafetyMarginDem: estimate.safetyMarginDem.seller,
+          maximumTotalDemosDebitDem: estimate.maximumTotalDemosDebitDem,
+          storageWriteFeeCeilingScope: "per-transaction",
+        }),
       });
     },
     "demos.wallet-identity": actors === undefined ? actorUnavailable : () =>
@@ -845,28 +1115,41 @@ function baseProbes(
         actors.seller.runtime.authority === actors.seller.authority
         ? pass({ actorCount: 2 }) : fail("demos-wallet-identity-mismatch"),
     "demos.listing-candidate": actors === undefined ? actorUnavailable : async () => {
-      const path = configuredListingDraftFile();
+      const profile = operation?.rail;
+      if (profile === undefined) return blocked("listing-operation-context-missing");
+      const path = configuredListingDraftFile(profile);
       const endpoint = loadRoleConfig("seller").publicBaseUrl;
       if (path === undefined) return blocked("listing-candidate-file-missing");
       if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
       try {
         const draft = await readPublicJsonFile(path);
-        const rail = await selectedRail();
-        const inspected = inspectDacsX402ListingDraftV1({
+        const rail = await selectedRail(profile);
+        const common = {
           draft,
           sellerAuthority: actors.seller.authority,
           sellerPublicKey: actors.seller.runtime.publicKey,
           sellerPublicEndpoint: endpoint,
-          sellerPayee: actors.seller.evmIdentity.address,
-          network: loadRoleConfig("seller").rail.requestedNetwork as \`eip155:\${number}\`,
           rail,
-          maximumServiceAmount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
+          maximumServiceAmount: profile === "x402"
+            ? loadRoleConfig("buyer").limits.maxServiceAmount.amount
+            : configuredMaximumPayDemServiceAmount(),
           now: Date.now(),
-        });
+        };
+        const inspected = profile === "x402"
+          ? inspectDacsX402ListingDraftV1({
+              ...common,
+              sellerPayee: actors.seller.evmIdentity.address,
+              network: loadRoleConfig("seller").rail.requestedNetwork as \`eip155:\${number}\`,
+            })
+          : inspectDacsPayDemListingDraftV1({
+              ...common,
+              sellerPayee: Buffer.from(actors.seller.runtime.publicKey).toString("hex"),
+            });
         if (inspected.status !== "pass") return inspected;
         const amount = listingPriceAmount(draft);
         return amount !== undefined && canonicalizeDecimal(amount) ===
-            canonicalizeDecimal(configuredFixedPriceAmount())
+            canonicalizeDecimal(profile === "x402"
+              ? configuredFixedPriceAmount() : configuredFixedPricePayDemAmount())
           ? inspected : fail("listing-fixed-price-runtime-mismatch");
       } catch { return fail("listing-candidate-read-or-authority-invalid"); }
     },
@@ -880,22 +1163,30 @@ function baseProbes(
           } catch { return blocked("listing-existing-resolution-unavailable"); }
         },
     "demos.engagement-endpoint-shape": () => {
-      try { new URL(serviceEndpoint("buyer")); new URL(serviceEndpoint("seller")); return pass(); }
+      const endpoint = loadRoleConfig("seller").publicBaseUrl;
+      if (endpoint === undefined) return blocked("seller-public-endpoint-missing");
+      try {
+        const parsed = new URL(endpoint);
+        return pass({ sellerPublicOrigin: parsed.origin });
+      }
       catch { return fail("engagement-endpoint-invalid"); }
     },
-    "x402.rail-authority": actors === undefined ? actorUnavailable
+    "x402.rail-authority": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
           try {
-            const rail = await selectedRail();
+            const rail = await selectedRail("x402");
             return rail.railType === "x402" && rail.phaseHandler === "pay-x402"
               ? pass({ railId: rail.railId, railVersion: rail.railVersion })
               : fail("x402-rail-incompatible");
           } catch { return fail("x402-rail-authority-invalid"); }
         },
-    "x402.testnet-policy": () => loadRoleConfig("buyer").rail.requestedNetwork === "eip155:84532"
-      ? pass() : fail("x402-mainnet-or-unsupported-network"),
-    "x402.endpoints": actors === undefined ? actorUnavailable
+    "x402.testnet-policy": !enabledProfiles.includes("x402") ? x402Disabled
+      : () => loadRoleConfig("buyer").rail.requestedNetwork === "eip155:84532"
+        ? pass() : fail("x402-mainnet-or-unsupported-network"),
+    "x402.endpoints": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
       : async () => {
           const facilitatorUrl = configuredX402FacilitatorUrl();
@@ -908,7 +1199,7 @@ function baseProbes(
           }
           try {
             configuredX402TokenDomain();
-            const rail = await selectedRail();
+            const rail = await selectedRail("x402");
             const resource = rail.network.kind === "x402-resource"
               ? new URL(rail.network.resourceBaseUrl) : undefined;
             const facilitator = new URL(facilitatorUrl);
@@ -926,7 +1217,7 @@ function baseProbes(
             });
             const [head, supported] = await Promise.all([
               reader.getFinalityHead(),
-              new HTTPFacilitatorClient({ url: facilitatorUrl }).getSupported(),
+              x402FacilitatorSupported(facilitatorUrl),
             ]);
             const finality = head as { chainId?: unknown };
             return finality !== null && typeof finality === "object" &&
@@ -939,16 +1230,19 @@ function baseProbes(
               : fail("x402-endpoint-capability-mismatch");
           } catch { return fail("x402-endpoint-resolution-failed"); }
         },
-    "x402.token-domain": actors === undefined ? actorUnavailable : async () => {
+    "x402.token-domain": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).tokenDomain; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.payer-binding": actors === undefined ? actorUnavailable : () =>
+    "x402.payer-binding": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : () =>
       actors.buyer.evmIdentity.network === loadRoleConfig("buyer").rail.requestedNetwork &&
         /^0x[0-9A-Fa-f]{40}$/.test(actors.buyer.evmIdentity.address)
         ? pass({ payer: actors.buyer.evmIdentity.address.toLowerCase() })
         : fail("x402-payer-binding-mismatch"),
-    "x402.payee-binding": actors === undefined ? actorUnavailable : () =>
+    "x402.payee-binding": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : () =>
       configuredSellerEvmPayee() !== undefined &&
         actors.seller.evmIdentity.network === loadRoleConfig("seller").rail.requestedNetwork &&
         /^0x[0-9A-Fa-f]{40}$/.test(actors.seller.evmIdentity.address) &&
@@ -958,32 +1252,81 @@ function baseProbes(
           actors.buyer.evmIdentity.address.toLowerCase()
         ? pass({ payee: actors.seller.evmIdentity.address.toLowerCase() })
         : fail("x402-payee-binding-mismatch"),
-    "x402.asset-balance": actors === undefined ? actorUnavailable : async () => {
+    "x402.asset-balance": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).asset; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.gas-balance": actors === undefined ? actorUnavailable : async () => {
+    "x402.gas-balance": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable : async () => {
       try { return (await selectedFunding()).gas; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.service-limit": () => pass({
+    "x402.service-limit": !enabledProfiles.includes("x402") ? x402Disabled : () => pass({
       asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
       amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
     }),
-    "x402.cost-estimate": actors === undefined ? actorUnavailable
-      : operation === undefined ? () => blocked("purchase-cost-context-missing")
+    "x402.cost-estimate": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
+      : x402Cost === undefined ? () => blocked("purchase-cost-context-missing")
       : async () => {
           try {
             const result = await selectedListing();
             return result.status === "verified"
               ? inspectDacsX402PurchaseCostV1({
                   admission: result.admission,
-                  maximumServiceAmount: operation.maximumServiceAmount,
-                  maximumNetworkFeeEth: operation.maximumNetworkFeeEth,
+                  maximumServiceAmount: x402Cost.maximumServiceAmount,
+                  maximumNetworkFeeEth: x402Cost.maximumNetworkFeeEth,
                 })
               : result;
           } catch { return blocked("x402-cost-estimate-unavailable"); }
         },
+    "pay-dem.rail-authority": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable
+      : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
+      : async () => {
+          try {
+            const rail = await selectedRail("pay-dem");
+            return rail.railType === "demos-native" && rail.phaseHandler === "pay-dem" &&
+                rail.asset.kind === "native-dem" && rail.network.kind === "demos"
+              ? pass({ railId: rail.railId, railVersion: rail.railVersion })
+              : fail("pay-dem-rail-incompatible");
+          } catch { return fail("pay-dem-rail-authority-invalid"); }
+        },
+    "pay-dem.payer-binding": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable : () => {
+      const payer = Buffer.from(actors.buyer.runtime.publicKey).toString("hex");
+      return payer.length === 64 && actors.buyer.runtime.authority === actors.buyer.authority
+        ? pass({ payer }) : fail("pay-dem-payer-binding-mismatch");
+    },
+    "pay-dem.payee-binding": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable : () => {
+      const payer = Buffer.from(actors.buyer.runtime.publicKey).toString("hex");
+      const payee = Buffer.from(actors.seller.runtime.publicKey).toString("hex");
+      return payee.length === 64 && payer !== payee &&
+          actors.seller.runtime.authority === actors.seller.authority
+        ? pass({ payee }) : fail("pay-dem-payee-binding-mismatch");
+    },
+    "pay-dem.service-limit": !enabledProfiles.includes("pay-dem") ? payDemDisabled : () => pass({
+      asset: "DEM",
+      amount: configuredMaximumPayDemServiceAmount(),
+    }),
+    "pay-dem.total-debit": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable
+      : payDemCost === undefined ? () => blocked("pay-dem-cost-context-missing")
+        : async () => {
+            try {
+              const result = await selectedListing();
+              if (result.status !== "verified") return result;
+              const amount = listingPriceAmount(result.admission.listing);
+              return amount !== undefined &&
+                  decimalAtMost(amount, payDemCost.maximumTotalDebitDem) &&
+                  decimalAtMost(payDemCost.maximumTotalDebitDem,
+                    configuredMaximumPayDemTotalDebit())
+                ? pass({ maximumTotalDebitDem: payDemCost.maximumTotalDebitDem })
+                : fail("pay-dem-total-debit-invalid");
+            } catch { return blocked("pay-dem-cost-estimate-unavailable"); }
+          },
   });
 }
 
@@ -992,6 +1335,38 @@ export async function runGeneratedDoctor(
   scope: DacsLiveDoctorScopeV1,
   operation?: Readonly<GeneratedDoctorOperationV1>,
 ): Promise<Readonly<DacsLiveDoctorReportV1>> {
+  let enabledRailProfiles: readonly GeneratedRailProfile[];
+  try {
+    const buyer = loadRoleConfig("buyer");
+    const seller = loadRoleConfig("seller");
+    enabledRailProfiles = dacsLiveRailProfiles(buyer);
+    dacsLiveRailProfiles(seller);
+  } catch {
+    const probes: DacsLiveDoctorProbesV1 = Object.freeze({
+      "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
+        : fail("node-version-unsupported"),
+      "local.package-integrity": inspectDacsNodePackageIntegrityV1,
+      "local.version-bindings": versionBindings,
+      "local.configuration": () => fail("configuration-invalid"),
+      "local.deployment-runtime": dockerRuntime,
+    });
+    const report = await runDacsLiveDoctorV1({
+      phase,
+      scope,
+      sdkVersion: VERSION,
+      standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
+      profile: DACS_NODE_LIVE_PROFILE,
+      enabledRailProfiles: operation === undefined
+        ? ["pay-dem", "x402"] : [operation.rail],
+      ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
+      probes,
+      probeTimeoutMs: 30_000,
+    });
+    if (report.checks.length !== DACS_LIVE_DOCTOR_CHECK_IDS.length) {
+      throw new Error("doctor-catalog-incomplete");
+    }
+    return report;
+  }
   const actors = await openDoctorActors(phase);
   try {
     const service = phase === "post-start" ? createDacsRoleServiceDoctorProbesV1({
@@ -1028,6 +1403,8 @@ export async function runGeneratedDoctor(
       sdkVersion: VERSION,
       standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
       profile: DACS_NODE_LIVE_PROFILE,
+      enabledRailProfiles,
+      ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
       // A Demos block is approximately ten seconds. Registry resolution can
       // legitimately cross one block boundary during node catch-up, so the
@@ -1083,6 +1460,7 @@ import {
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
   createDacsListingSetupExecutorV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   loadDacsSecretV1,
   openDacsListingDiscoveryStoreV1,
@@ -1099,6 +1477,8 @@ import {
   actorSecretPath,
   configuredAuthority,
   configuredListingDraftFile,
+  configuredMaximumPayDemServiceAmount,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402RailId,
@@ -1111,6 +1491,8 @@ interface PreparedContext {
   seller: Awaited<ReturnType<typeof createDacsDemosActorRuntimeV1>>;
   rail: Awaited<ReturnType<typeof resolveRail>>;
 }
+
+export type GeneratedListingSetupRailV1 = "x402" | "pay-dem";
 
 async function publicJsonFile(path: string): Promise<unknown> {
   const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -1149,25 +1531,27 @@ function exactMaximum(value: string, ceiling: string): string {
 }
 
 async function buildPrepared(
+  selectedRail: GeneratedListingSetupRailV1,
   maximumSpendDem: string,
   writePolicy: "perform" | "read-only",
 ): Promise<PreparedContext> {
   const sellerConfig = loadRoleConfig("seller");
   const buyerConfig = loadRoleConfig("buyer");
+  if (!dacsLiveRailProfiles(sellerConfig).includes(selectedRail)) {
+    throw new Error("selected setup rail is not enabled");
+  }
   const sellerAuthority = configuredAuthority("seller");
   const buyerAuthority = configuredAuthority("buyer");
   const demosSecretPath = actorSecretPath("seller", "demos-identity");
-  const evmSecretPath = actorSecretPath("seller", "evm-wallet");
-  const draftPath = configuredListingDraftFile();
+  const draftPath = configuredListingDraftFile(selectedRail);
   const stewardAuthority = configuredRailStewardAuthority();
   const sellerEndpoint = sellerConfig.publicBaseUrl;
-  const configuredPayee = configuredSellerEvmPayee();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
   if (sellerAuthority === undefined || buyerAuthority === undefined ||
-      demosSecretPath === undefined || evmSecretPath === undefined || draftPath === undefined ||
+      demosSecretPath === undefined || draftPath === undefined ||
       stewardAuthority === undefined || stewardPublicKey === null || sellerEndpoint === undefined ||
-      configuredPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(configuredPayee)) {
+      canonicalDemosAgentPublicKey(sellerAuthority) === null) {
     throw new Error("setup prerequisite is unavailable");
   }
   const demosSecret = await loadDacsSecretV1({
@@ -1182,22 +1566,9 @@ async function buildPrepared(
     demosIdentity: demosSecret,
     writePolicy,
   });
-  const evmSecret = await loadDacsSecretV1({
-    name: "seller-setup-evm-wallet",
-    mode: "live-demos",
-    filePath: evmSecretPath,
-  });
-  const evm = await deriveDacsEvmRoleIdentityV1({
-    config: sellerConfig,
-    role: "seller",
-    evmPrivateKey: evmSecret,
-  });
-  if (evm.address.toLowerCase() !== configuredPayee.toLowerCase()) {
-    throw new Error("configured seller payee does not match the seller EVM authority");
-  }
   const rail = await resolveRail(
     RAIL_REGISTRY_INDEX_ADDRESS,
-    configuredX402RailId(),
+    selectedRail === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
     createDacsDemosRailRegistryProviderV1({
       runtime: seller,
       stewardAuthority,
@@ -1209,16 +1580,44 @@ async function buildPrepared(
   }
   const chainIdentity = await seller.chainIdentity();
   const demosNetwork = "demos-network:sha256:" + sha256Hex(canonicalize({ chainIdentity }));
+  let sellerPayee: string;
+  if (selectedRail === "x402") {
+    const evmSecretPath = actorSecretPath("seller", "evm-wallet");
+    const configuredPayee = configuredSellerEvmPayee();
+    if (evmSecretPath === undefined || configuredPayee === undefined ||
+        !/^0x[0-9A-Fa-f]{40}$/.test(configuredPayee)) {
+      throw new Error("x402 setup prerequisite is unavailable");
+    }
+    const evmSecret = await loadDacsSecretV1({
+      name: "seller-setup-evm-wallet",
+      mode: "live-demos",
+      filePath: evmSecretPath,
+    });
+    const evm = await deriveDacsEvmRoleIdentityV1({
+      config: sellerConfig,
+      role: "seller",
+      evmPrivateKey: evmSecret,
+    });
+    if (evm.address.toLowerCase() !== configuredPayee.toLowerCase()) {
+      throw new Error("configured seller payee does not match the seller EVM authority");
+    }
+    sellerPayee = evm.address;
+  } else {
+    sellerPayee = Buffer.from(seller.publicKey).toString("hex");
+  }
   const prepared = await prepareDacsListingSetupV1({
     draft: await publicJsonFile(draftPath),
     buyerAuthority,
     seller,
     sellerPublicEndpoint: sellerEndpoint,
-    sellerPayee: evm.address,
-    network: sellerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    sellerPayee,
+    ...(selectedRail === "x402" ? {
+      network: sellerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
+    } : {}),
     demosNetwork,
     rail,
-    maximumServiceAmount: buyerConfig.limits.maxServiceAmount.amount,
+    maximumServiceAmount: selectedRail === "x402"
+      ? buyerConfig.limits.maxServiceAmount.amount : configuredMaximumPayDemServiceAmount(),
     actionMaximumSpendDem: sellerConfig.limits.maxDemosNetworkFeeDem,
     safetyMarginDem: sellerConfig.limits.maxDemosNetworkFeeDem,
     maximumSpendDem: exactMaximum(maximumSpendDem, sellerConfig.limits.maxSetupSpendDem),
@@ -1228,19 +1627,21 @@ async function buildPrepared(
 }
 
 export async function prepareGeneratedListingSetupV1(
+  selectedRail: GeneratedListingSetupRailV1,
   maximumSpendDem: string,
 ): Promise<Readonly<DacsPreparedListingSetupV1>> {
-  return (await buildPrepared(maximumSpendDem, "read-only")).prepared;
+  return (await buildPrepared(selectedRail, maximumSpendDem, "read-only")).prepared;
 }
 
 export async function executeGeneratedListingSetupV1(input: Readonly<{
   expected: Readonly<DacsPreparedListingSetupV1>;
+  selectedRail: GeneratedListingSetupRailV1;
   maximumSpendDem: string;
   doctorReports: readonly Readonly<DacsLiveDoctorReportV1>[];
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -1249,7 +1650,7 @@ export async function executeGeneratedListingSetupV1(input: Readonly<{
     paymentPossible: boolean;
   }>): Promise<boolean>;
 }>): Promise<Readonly<DacsGuardedCommandResultV1>> {
-  const context = await buildPrepared(input.maximumSpendDem, "perform");
+  const context = await buildPrepared(input.selectedRail, input.maximumSpendDem, "perform");
   if (canonicalize(context.prepared.plan) !== canonicalize(input.expected.plan) ||
       canonicalize(context.prepared.listing) !== canonicalize(input.expected.listing)) {
     throw new Error("setup plan changed after doctor");
@@ -1303,14 +1704,19 @@ import {
   createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
   createDacsPurchaseQueueExecutorV1,
+  dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
   loadDacsSecretV1,
+  prepareDacsPayDemPurchaseV1,
   prepareDacsX402PurchaseV1,
   readDacsPublicJsonV1,
+  resolveDacsPayDemExistingListingV1,
   resolveDacsX402ExistingListingV1,
   runDacsGuardedCommandV1,
   type DacsGuardedCommandResultV1,
   type DacsLiveDoctorReportV1,
+  type DacsPreparedLivePurchaseV1,
+  type DacsPreparedPayDemPurchaseV1,
   type DacsPreparedX402PurchaseV1,
 } from "@kynesyslabs/dacs-node";
 import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
@@ -1319,6 +1725,7 @@ import {
   actorDatabasePath,
   actorSecretPath,
   configuredAuthority,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402RailId,
@@ -1329,12 +1736,14 @@ export const GENERATED_PURCHASE_REQUEST_SCHEMA =
   "dacs-generated-purchase-request/v1" as const;
 
 export interface GeneratedPurchasePreparationInputV1 {
+  rail: "x402" | "pay-dem";
   jobId: string;
   resume: boolean;
   listingRef: string;
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
-  maximumNetworkFeeEth: string;
+  maximumNetworkFeeEth?: string;
+  maximumTotalDebitDem?: string;
 }
 
 function plainData(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -1380,24 +1789,24 @@ export async function readGeneratedPurchaseRequestV1(
 
 async function buildPrepared(
   input: Readonly<GeneratedPurchasePreparationInputV1>,
-): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+): Promise<Readonly<DacsPreparedLivePurchaseV1>> {
   const buyerConfig = loadRoleConfig("buyer");
   const sellerConfig = loadRoleConfig("seller");
+  if (!dacsLiveRailProfiles(buyerConfig).includes(input.rail)) {
+    throw new Error("selected purchase rail is not enabled");
+  }
   const buyerAuthority = configuredAuthority("buyer");
   const sellerAuthority = configuredAuthority("seller");
   const buyerDemosSecretPath = actorSecretPath("buyer", "demos-identity");
-  const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
   const sellerPublicKey = sellerAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(sellerAuthority);
-  const sellerPayee = configuredSellerEvmPayee();
   const sellerEndpoint = sellerConfig.publicBaseUrl;
   if (buyerAuthority === undefined || sellerAuthority === undefined ||
-      buyerDemosSecretPath === undefined || buyerEvmSecretPath === undefined ||
+      buyerDemosSecretPath === undefined ||
       stewardAuthority === undefined || stewardPublicKey === null || sellerPublicKey === null ||
-      sellerPayee === undefined || !/^0x[0-9A-Fa-f]{40}$/.test(sellerPayee) ||
       sellerEndpoint === undefined) {
     throw new Error("purchase prerequisite is unavailable");
   }
@@ -1413,6 +1822,73 @@ async function buildPrepared(
     demosIdentity: demosSecret,
     writePolicy: "read-only",
   });
+  const rail = await resolveRail(
+    RAIL_REGISTRY_INDEX_ADDRESS,
+    input.rail === "x402" ? configuredX402RailId() : configuredPayDemRailId(),
+    createDacsDemosRailRegistryProviderV1({
+      runtime: buyer,
+      stewardAuthority,
+      stewardPublicKey,
+    }),
+  );
+  const common = {
+    listingRef: input.listingRef,
+    sellerAuthority,
+    sellerPublicKey,
+    sellerPublicEndpoint: sellerEndpoint,
+    rail,
+    maximumServiceAmount: input.maximumServiceAmount,
+    now: Date.now(),
+    readAnchor: (locator: string) => buyer.adapter.readAnchor(locator),
+    async authenticateAnchor(anchor: Readonly<{
+      logicalAddress: string;
+      nativeAddress: string;
+      contentHash: string;
+      writer: string;
+    }>) {
+      const receipt = await buyer.adapter.resolveDemosAnchorReceipt(anchor);
+      return receipt !== null &&
+        await buyer.adapter.verifyDemosAnchorReceipt(receipt) === true;
+    },
+    readJson: (url: string) => readDacsPublicJsonV1(url, {
+      timeoutMs: 5_000,
+      maxBytes: 1_048_576,
+    }),
+  };
+  const maximumDemosStorageWriteFeeDem = Object.freeze({
+    buyer: buyerConfig.limits.maxDemosNetworkFeeDem,
+    seller: sellerConfig.limits.maxDemosNetworkFeeDem,
+  });
+  if (input.rail === "pay-dem") {
+    if (input.maximumTotalDebitDem === undefined) {
+      throw new Error("native DEM total debit ceiling is unavailable");
+    }
+    const resolved = await resolveDacsPayDemExistingListingV1({
+      ...common,
+      sellerPayee: Buffer.from(sellerPublicKey).toString("hex"),
+    });
+    if (resolved.status !== "verified") {
+      throw new Error("purchase Listing admission failed: " + resolved.reasonCode);
+    }
+    return prepareDacsPayDemPurchaseV1({
+      admission: resolved.admission,
+      jobId: input.jobId,
+      resume: input.resume,
+      buyerAuthority,
+      payer: Buffer.from(buyer.publicKey).toString("hex"),
+      request: input.request,
+      maximumServiceAmount: input.maximumServiceAmount,
+      maximumTotalDebitDem: input.maximumTotalDebitDem,
+      maximumDemosStorageWriteFeeDem,
+    });
+  }
+  const buyerEvmSecretPath = actorSecretPath("buyer", "evm-wallet");
+  const sellerPayee = configuredSellerEvmPayee();
+  if (buyerEvmSecretPath === undefined || sellerPayee === undefined ||
+      !/^0x[0-9A-Fa-f]{40}$/.test(sellerPayee) ||
+      input.maximumNetworkFeeEth === undefined) {
+    throw new Error("x402 purchase prerequisite is unavailable");
+  }
   const evmSecret = await loadDacsSecretV1({
     name: "buyer-purchase-evm-wallet",
     mode: "live-demos",
@@ -1423,35 +1899,10 @@ async function buildPrepared(
     role: "buyer",
     evmPrivateKey: evmSecret,
   });
-  const rail = await resolveRail(
-    RAIL_REGISTRY_INDEX_ADDRESS,
-    configuredX402RailId(),
-    createDacsDemosRailRegistryProviderV1({
-      runtime: buyer,
-      stewardAuthority,
-      stewardPublicKey,
-    }),
-  );
   const resolved = await resolveDacsX402ExistingListingV1({
-    listingRef: input.listingRef,
-    sellerAuthority,
-    sellerPublicKey,
-    sellerPublicEndpoint: sellerEndpoint,
+    ...common,
     sellerPayee,
     network: buyerConfig.rail.requestedNetwork as \`eip155:\${number}\`,
-    rail,
-    maximumServiceAmount: input.maximumServiceAmount,
-    now: Date.now(),
-    readAnchor: (locator) => buyer.adapter.readAnchor(locator),
-    async authenticateAnchor(anchor) {
-      const receipt = await buyer.adapter.resolveDemosAnchorReceipt(anchor);
-      return receipt !== null &&
-        await buyer.adapter.verifyDemosAnchorReceipt(receipt) === true;
-    },
-    readJson: (url) => readDacsPublicJsonV1(url, {
-      timeoutMs: 5_000,
-      maxBytes: 1_048_576,
-    }),
   });
   if (resolved.status !== "verified") {
     throw new Error("purchase Listing admission failed: " + resolved.reasonCode);
@@ -1465,23 +1916,24 @@ async function buildPrepared(
     request: input.request,
     maximumServiceAmount: input.maximumServiceAmount,
     maximumNetworkFeeEth: input.maximumNetworkFeeEth,
+    maximumDemosStorageWriteFeeDem,
   });
 }
 
 export async function prepareGeneratedPurchaseV1(
   input: Readonly<GeneratedPurchasePreparationInputV1>,
-): Promise<Readonly<DacsPreparedX402PurchaseV1>> {
+): Promise<Readonly<DacsPreparedLivePurchaseV1>> {
   return buildPrepared(input);
 }
 
 export async function executeGeneratedPurchaseV1(input: Readonly<{
-  expected: Readonly<DacsPreparedX402PurchaseV1>;
+  expected: Readonly<DacsPreparedX402PurchaseV1 | DacsPreparedPayDemPurchaseV1>;
   preparation: Readonly<GeneratedPurchasePreparationInputV1>;
   doctorReport: Readonly<DacsLiveDoctorReportV1>;
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -1629,7 +2081,7 @@ export async function executeGeneratedFundedDoctorV1(input: Readonly<{
   confirmation: string;
   nonInteractive: boolean;
   confirm(summary: Readonly<{
-    kind: "setup" | "purchase" | "funded-doctor";
+    kind: "setup" | "purchase" | "purchase-pay-dem" | "funded-doctor";
     planHash: string;
     actionCount: number;
     network: string;
@@ -1839,7 +2291,9 @@ export async function startDacsLocalRoleServices(): Promise<number> {
     for (const role of ROLES) {
       const log = await safeLog(role);
       const token = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
-      const child = spawn(process.execPath, ["--import", "tsx", "dist/src/service.js"], {
+      const child = spawn(process.execPath, [
+        "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js",
+      ], {
         cwd: process.cwd(),
         detached: true,
         env: { ...process.env, DACS_DEPLOYMENT: "local", DACS_ROLE: role,
@@ -2220,9 +2674,11 @@ export async function checkGeneratedUpgradeV1(
       supportedOnlyFromRestorableBackup: true,
       instructions: Object.freeze([
         "Stop both role services before changing packages or store files.",
-        "Record the exact installed package version and preserve each actor database backup.",
-        "Restore buyer and seller backups independently while both services remain stopped.",
-        "Reinstall all three DACS packages at the recorded exact version.",
+        "Run dacs:backup to preserve one authenticated two-role snapshot and its printed ID.",
+        "Record the exact generated project, package lock and three installed package versions.",
+        "Regenerate the replacement project from one exact reviewed three-package release set.",
+        "Use dacs:restore with the authenticated backup ID while both services remain stopped.",
+        "For rollback, reinstall the recorded generated project and exact package lock before restore.",
         "Refuse rollback when that runtime does not support the restored store schema.",
         "Run pre-start doctor before restarting either role service.",
       ]),
@@ -2241,6 +2697,7 @@ import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 import { generateCanonicalJobId, isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import {
   DACS_NODE_LIVE_PROFILE,
+  dacsLiveRailProfiles,
   formatDacsLiveDoctorTextV1,
   readDacsRoleServiceStatusesV1,
   type DacsLiveDoctorReportV1,
@@ -2250,6 +2707,8 @@ import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
 import {
   actorDatabasePath,
   configuredAuthority,
+  configuredMaximumPayDemServiceAmount,
+  configuredMaximumPayDemTotalDebit,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -2271,6 +2730,13 @@ import {
   startDacsLocalRoleServices,
   stopDacsLocalRoleServices,
 } from "./local-lifecycle.js";
+import {
+  assertGeneratedBackupRestorableV1,
+  createGeneratedBackupV1,
+  inspectGeneratedBackupV1,
+  restoreGeneratedBackupV1,
+} from "./lifecycle.js";
+import { readGeneratedCommerceTimingV1 } from "./telemetry.js";
 import { checkGeneratedUpgradeV1 } from "./upgrade.js";
 
 type DoctorPhase = "pre-start" | "post-start";
@@ -2282,13 +2748,22 @@ function valueAfter(args: readonly string[], index: number, flag: string): strin
   return value;
 }
 
-function doctorArguments(args: readonly string[]): { phase: DoctorPhase; scope: DoctorScope; json: boolean } {
+function doctorArguments(args: readonly string[]): {
+  phase: DoctorPhase;
+  scope: DoctorScope;
+  rail?: "x402" | "pay-dem";
+  json: boolean;
+  explain: boolean;
+} {
   let phase: DoctorPhase = "pre-start";
   let scope: DoctorScope = "start";
+  let requestedRail: string | undefined;
   let json = false;
+  let explain = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === "--json") json = true;
+    else if (argument === "--explain") explain = true;
     else if (argument === "--phase") {
       const value = valueAfter(args, index, argument);
       if (value !== "pre-start" && value !== "post-start") throw new Error("invalid doctor phase");
@@ -2299,19 +2774,81 @@ function doctorArguments(args: readonly string[]): { phase: DoctorPhase; scope: 
       if (value !== "start" && value !== "setup" && value !== "buy") throw new Error("invalid doctor scope");
       scope = value;
       index += 1;
+    } else if (argument === "--rail") {
+      if (requestedRail !== undefined) throw new Error("doctor rail is repeated");
+      requestedRail = valueAfter(args, index, argument);
+      index += 1;
     } else throw new Error("unknown doctor option: " + argument);
   }
-  return { phase, scope, json };
+  if (scope === "start" && requestedRail !== undefined) {
+    throw new Error("--rail applies only to setup or buy doctor scopes");
+  }
+  if (json && explain) throw new Error("--json and --explain are mutually exclusive");
+  if (scope === "start") return { phase, scope, json, explain };
+  const enabledRails = dacsLiveRailProfiles(loadRoleConfig(scope === "setup" ? "seller" : "buyer"));
+  const rail = requestedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0] : requestedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected doctor rail is not enabled");
+  }
+  return { phase, scope, rail, json, explain };
 }
 
-function printDoctor(report: Readonly<DacsLiveDoctorReportV1>, json = false): void {
+function doctorGuidance(report: Readonly<DacsLiveDoctorReportV1>): readonly string[] {
+  const reasons = report.checks.flatMap((item) =>
+    item.status === "pass" || typeof item.reasonCode !== "string"
+      ? [] : [item.reasonCode]);
+  const guidance = new Set<string>();
+  for (const reason of reasons) {
+    if (reason.includes("secret") || reason.includes("credential")) {
+      guidance.add("Create separate buyer/seller secret files, set their *_SECRET_FILE paths, and chmod each file 0600.");
+    } else if (reason.includes("authority") || reason.includes("identity")) {
+      guidance.add("Set the canonical buyer, seller, and rail-steward authorities derived from the configured role keys.");
+    } else if (reason.includes("balance") || reason.includes("fund")) {
+      guidance.add("Fund only the reported public testnet address, then rerun the same read-only doctor scope.");
+    } else if (reason.includes("rpc") || reason.includes("network") ||
+        reason.includes("facilitator")) {
+      guidance.add("Verify the public RPC/facilitator URL and network selection; never paste a secret into .env.");
+    } else if (reason.includes("listing")) {
+      guidance.add("Validate the rail-specific Listing draft, then run the plan-only dacs:setup command.");
+    } else if (reason.includes("service") || reason.includes("endpoint") ||
+        reason.includes("readiness")) {
+      guidance.add("Start both role services and rerun post-start doctor before setup or purchase.");
+    } else if (reason.includes("permission") || reason.includes("directory") ||
+        reason.includes("sqlite")) {
+      guidance.add("Keep each actor data directory private and independently owned; do not share a database between roles.");
+    } else if (reason.includes("version") || reason.includes("release") ||
+        reason.includes("schema")) {
+      guidance.add("Run dacs:upgrade -- --check and preserve authenticated actor backups before changing packages.");
+    }
+  }
+  if (guidance.size === 0 && report.exitCode !== 0) {
+    guidance.add("Use --json for the exact sanitized reason codes; do not bypass a blocked gate.");
+  }
+  return Object.freeze([...guidance]);
+}
+
+function printDoctor(
+  report: Readonly<DacsLiveDoctorReportV1>,
+  json = false,
+  explain = false,
+): void {
   process.stdout.write(json ? JSON.stringify(report) + "\\n" : formatDacsLiveDoctorTextV1(report));
+  if (explain) {
+    for (const item of doctorGuidance(report)) process.stdout.write("next: " + item + "\\n");
+  }
 }
 
 async function doctor(args: readonly string[]): Promise<number> {
   const parsed = doctorArguments(args);
-  const report = await runGeneratedDoctor(parsed.phase, parsed.scope);
-  printDoctor(report, parsed.json);
+  const report = await runGeneratedDoctor(
+    parsed.phase,
+    parsed.scope,
+    parsed.rail === undefined ? undefined : { rail: parsed.rail },
+  );
+  printDoctor(report, parsed.json, parsed.explain);
   return report.exitCode;
 }
 
@@ -2380,6 +2917,15 @@ async function serviceStatus(): Promise<number> {
   return report.status === "available" ? 0 : 5;
 }
 
+async function commerceMetrics(args: readonly string[]): Promise<number> {
+  if (args.length !== 2 || args[0] !== "--job" || !isCanonicalJobId(args[1]!)) {
+    throw new Error("metrics requires one canonical --job ID");
+  }
+  const report = await readGeneratedCommerceTimingV1(args[1]!);
+  process.stdout.write(JSON.stringify(report) + "\\n");
+  return report.start === null ? 5 : 0;
+}
+
 function decimalWithin(value: string, ceiling: string): string {
   const normalized = canonicalizeDecimal(value);
   if (normalized.startsWith("-")) throw new Error("amount must not be negative");
@@ -2397,11 +2943,12 @@ function decimalWithin(value: string, ceiling: string): string {
 
 async function purchaseArguments(args: readonly string[]) {
   const config = loadRoleConfig("buyer");
+  const enabledRails = dacsLiveRailProfiles(config);
   const values: Record<string, string> = {};
   let nonInteractive = false;
   const valued = new Set([
-    "--listing-ref", "--request-file", "--max-service-amount",
-    "--max-network-fee-eth", "--resume-job",
+    "--rail", "--listing-ref", "--request-file", "--max-service-amount",
+    "--max-network-fee-eth", "--max-total-debit-dem", "--resume-job",
   ]);
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index]!;
@@ -2416,10 +2963,27 @@ async function purchaseArguments(args: readonly string[]) {
     values[name] = valueAfter(args, index, name);
     index += 1;
   }
-  for (const required of [
-    "--listing-ref", "--request-file", "--max-service-amount", "--max-network-fee-eth",
-  ]) {
+  for (const required of ["--listing-ref", "--request-file", "--max-service-amount"]) {
     if (!Object.hasOwn(values, required)) throw new Error(required + " is required");
+  }
+  const requestedRail = values["--rail"];
+  const rail = requestedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0]
+    : requestedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected purchase rail is not enabled");
+  }
+  if (rail === "x402" && values["--max-network-fee-eth"] === undefined) {
+    throw new Error("--max-network-fee-eth is required for x402");
+  }
+  if (rail === "pay-dem" && values["--max-total-debit-dem"] === undefined) {
+    throw new Error("--max-total-debit-dem is required for pay-dem");
+  }
+  if (rail === "x402" && values["--max-total-debit-dem"] !== undefined ||
+      rail === "pay-dem" && values["--max-network-fee-eth"] !== undefined) {
+    throw new Error("purchase ceiling does not belong to the selected rail");
   }
   const listingRef = values["--listing-ref"]!;
   if (listingRef.length > 512 || listingRef.trim() !== listingRef || listingRef.length === 0) {
@@ -2429,17 +2993,29 @@ async function purchaseArguments(args: readonly string[]) {
   if (resumedJobId !== undefined && !isCanonicalJobId(resumedJobId)) {
     throw new Error("resume job must be a canonical DACS job ID");
   }
-  return Object.freeze({
+  const common = {
     invocationMode: resumedJobId === undefined ? "new" as const : "resume" as const,
     jobId: resumedJobId ?? generateCanonicalJobId(),
     listingRef,
     request: await readGeneratedPurchaseRequestV1(values["--request-file"]!),
     maximumServiceAmount: decimalWithin(
-      values["--max-service-amount"]!, config.limits.maxServiceAmount.amount),
-    maximumNetworkFeeEth: decimalWithin(
-      values["--max-network-fee-eth"]!, config.limits.maxEvmNetworkFeeEth),
+      values["--max-service-amount"]!, rail === "x402"
+        ? config.limits.maxServiceAmount.amount : configuredMaximumPayDemServiceAmount()),
     nonInteractive,
-  });
+  };
+  return rail === "x402"
+    ? Object.freeze({
+      ...common,
+      rail: "x402" as const,
+      maximumNetworkFeeEth: decimalWithin(
+        values["--max-network-fee-eth"]!, config.limits.maxEvmNetworkFeeEth),
+    })
+    : Object.freeze({
+      ...common,
+      rail: "pay-dem" as const,
+      maximumTotalDebitDem: decimalWithin(
+        values["--max-total-debit-dem"]!, configuredMaximumPayDemTotalDebit()),
+    });
 }
 
 async function confirmPurchase(planHash: string): Promise<boolean> {
@@ -2464,19 +3040,25 @@ async function guardedPurchase(args: readonly string[]): Promise<number> {
     "buy",
     {
       listingRef: parsed.listingRef,
+      rail: parsed.rail,
       maximumServiceAmount: parsed.maximumServiceAmount,
-      maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
+      ...(parsed.rail === "x402"
+        ? { maximumNetworkFeeEth: parsed.maximumNetworkFeeEth }
+        : { maximumTotalDebitDem: parsed.maximumTotalDebitDem }),
     },
   );
   printDoctor(report);
   if (report.exitCode !== 0) return report.exitCode;
   const preparation = Object.freeze({
+    rail: parsed.rail,
     jobId: parsed.jobId,
     resume: parsed.invocationMode === "resume",
     listingRef: parsed.listingRef,
     request: parsed.request,
     maximumServiceAmount: parsed.maximumServiceAmount,
-    maximumNetworkFeeEth: parsed.maximumNetworkFeeEth,
+    ...(parsed.rail === "x402"
+      ? { maximumNetworkFeeEth: parsed.maximumNetworkFeeEth }
+      : { maximumTotalDebitDem: parsed.maximumTotalDebitDem }),
   });
   const prepared = await prepareGeneratedPurchaseV1(preparation);
   process.stdout.write(JSON.stringify({
@@ -2500,9 +3082,12 @@ async function guardedPurchase(args: readonly string[]): Promise<number> {
 }
 
 function setupArguments(args: readonly string[]): Readonly<{
+  selectedRail: "x402" | "pay-dem";
   maximumSpendDem: string;
   nonInteractive: boolean;
 }> {
+  const enabledRails = dacsLiveRailProfiles(loadRoleConfig("seller"));
+  let selectedRail: string | undefined;
   let maximumSpendDem: string | undefined;
   let nonInteractive = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -2514,12 +3099,23 @@ function setupArguments(args: readonly string[]): Readonly<{
       if (maximumSpendDem !== undefined) throw new Error("setup option is repeated");
       maximumSpendDem = valueAfter(args, index, argument);
       index += 1;
+    } else if (argument === "--rail") {
+      if (selectedRail !== undefined) throw new Error("setup option is repeated");
+      selectedRail = valueAfter(args, index, argument);
+      index += 1;
     } else {
       throw new Error("unknown setup option: " + argument);
     }
   }
   if (maximumSpendDem === undefined) throw new Error("--max-spend-dem is required");
-  return Object.freeze({ maximumSpendDem, nonInteractive });
+  const rail = selectedRail === undefined && enabledRails.length === 1
+    ? enabledRails[0] : selectedRail;
+  if ((rail !== "x402" && rail !== "pay-dem") || !enabledRails.includes(rail)) {
+    throw new Error(enabledRails.length === 2
+      ? "--rail must select one enabled rail: x402 or pay-dem"
+      : "selected setup rail is not enabled");
+  }
+  return Object.freeze({ selectedRail: rail, maximumSpendDem, nonInteractive });
 }
 
 async function confirmSetup(planHash: string): Promise<boolean> {
@@ -2539,7 +3135,10 @@ async function confirmSetup(planHash: string): Promise<boolean> {
 
 async function guardedSetup(args: readonly string[]): Promise<number> {
   const parsed = setupArguments(args);
-  const prepared = await prepareGeneratedListingSetupV1(parsed.maximumSpendDem);
+  const prepared = await prepareGeneratedListingSetupV1(
+    parsed.selectedRail,
+    parsed.maximumSpendDem,
+  );
   process.stdout.write(JSON.stringify({ execute: false, ...prepared.plan }) + "\\n");
   const confirmation = process.env.DACS_SETUP_WRITE_CONFIRM;
   if (confirmation === undefined) return 0;
@@ -2547,12 +3146,15 @@ async function guardedSetup(args: readonly string[]): Promise<number> {
   const postStart = await runGeneratedDoctor("post-start", "start");
   printDoctor(postStart);
   if (postStart.exitCode !== 0) return postStart.exitCode;
-  const preSetup = await runGeneratedDoctor("pre-start", "setup");
+  const preSetup = await runGeneratedDoctor("pre-start", "setup", {
+    rail: parsed.selectedRail,
+  });
   printDoctor(preSetup);
   if (preSetup.exitCode !== 0) return preSetup.exitCode;
   if (!parsed.nonInteractive && !await confirmSetup(prepared.plan.planHash)) return 5;
   const result = await executeGeneratedListingSetupV1({
     expected: prepared,
+    selectedRail: parsed.selectedRail,
     maximumSpendDem: parsed.maximumSpendDem,
     doctorReports: [postStart, preSetup],
     confirmation,
@@ -2647,6 +3249,146 @@ async function guardedFundedDoctor(args: readonly string[]): Promise<number> {
   return result.status === "completed" || result.status === "existing-completion" ? 0 : 5;
 }
 
+function maintenanceArguments(
+  args: readonly string[],
+  required: readonly string[],
+): Readonly<{ values: Readonly<Record<string, string>>; nonInteractive: boolean }> {
+  const values: Record<string, string> = {};
+  let nonInteractive = false;
+  const allowed = new Set(required);
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--non-interactive") {
+      if (nonInteractive) throw new Error("maintenance option is repeated");
+      nonInteractive = true;
+      continue;
+    }
+    if (!allowed.has(argument) || Object.hasOwn(values, argument)) {
+      throw new Error("unknown or repeated maintenance option: " + argument);
+    }
+    values[argument] = valueAfter(args, index, argument);
+    index += 1;
+  }
+  for (const name of required) {
+    if (!Object.hasOwn(values, name)) throw new Error(name + " is required");
+  }
+  return Object.freeze({ values: Object.freeze(values), nonInteractive });
+}
+
+async function maintenanceConfirmation(
+  promptText: string,
+  nonInteractive: boolean,
+): Promise<boolean> {
+  if (nonInteractive) return true;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("interactive maintenance requires a terminal; use --non-interactive explicitly");
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await prompt.question(promptText + " Type yes to continue: ") === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
+async function stopForMaintenance(): Promise<number> {
+  return (process.env.DACS_DEPLOYMENT ?? "docker") === "local"
+    ? stopDacsLocalRoleServices()
+    : command("docker", ["compose", "stop"]);
+}
+
+async function backup(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(args, ["--output"]);
+  if (await stopForMaintenance() !== 0) return 5;
+  const manifest = await createGeneratedBackupV1({
+    outputDirectory: parsed.values["--output"]!,
+  });
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "backup",
+    backupId: manifest.backupId,
+    outputDirectory: parsed.values["--output"],
+    services: "stopped",
+  }) + "\\n");
+  return 0;
+}
+
+async function restore(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(
+    args,
+    ["--from", "--backup-id", "--safety-backup"],
+  );
+  const manifest = await inspectGeneratedBackupV1({
+    backupDirectory: parsed.values["--from"]!,
+  });
+  assertGeneratedBackupRestorableV1(manifest);
+  if (manifest.backupId !== parsed.values["--backup-id"]) {
+    throw new Error("restore-backup-identity-mismatch");
+  }
+  process.stdout.write(JSON.stringify({
+    execute: false,
+    operation: "restore",
+    backupId: manifest.backupId,
+    backupDirectory: parsed.values["--from"],
+    safetyBackupDirectory: parsed.values["--safety-backup"],
+    servicesRequired: "stopped",
+  }) + "\\n");
+  const confirmation = process.env.DACS_RESTORE_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("restore confirmation is malformed");
+  if (!await maintenanceConfirmation(
+    "Restore authenticated backup " + manifest.backupId + " and replace both actor data directories?",
+    parsed.nonInteractive,
+  )) return 5;
+  if (await stopForMaintenance() !== 0) return 5;
+  const result = await restoreGeneratedBackupV1({
+    backupDirectory: parsed.values["--from"]!,
+    expectedBackupId: manifest.backupId,
+    safetyBackupDirectory: parsed.values["--safety-backup"]!,
+  });
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "restore",
+    ...result,
+    services: "stopped",
+    next: "run pre-start doctor before dacs:up",
+  }) + "\\n");
+  return 0;
+}
+
+async function uninstall(args: readonly string[]): Promise<number> {
+  const parsed = maintenanceArguments(args, ["--backup"]);
+  process.stdout.write(JSON.stringify({
+    execute: false,
+    operation: "uninstall",
+    backupDirectory: parsed.values["--backup"],
+    dataPolicy: "retain",
+    removesData: false,
+  }) + "\\n");
+  const confirmation = process.env.DACS_UNINSTALL_CONFIRM;
+  if (confirmation === undefined) return 0;
+  if (confirmation !== "1") throw new Error("uninstall confirmation is malformed");
+  if (!await maintenanceConfirmation(
+    "Stop and decommission this deployment after creating its authenticated backup?",
+    parsed.nonInteractive,
+  )) return 5;
+  if (await stopForMaintenance() !== 0) return 5;
+  const manifest = await createGeneratedBackupV1({
+    outputDirectory: parsed.values["--backup"]!,
+  });
+  if ((process.env.DACS_DEPLOYMENT ?? "docker") === "docker" &&
+      await command("docker", ["compose", "down", "--remove-orphans"]) !== 0) return 5;
+  process.stdout.write(JSON.stringify({
+    status: "completed",
+    operation: "uninstall",
+    backupId: manifest.backupId,
+    dataPolicy: "retain",
+    removesData: false,
+    next: "remove the project and actor data manually only after verifying the backup",
+  }) + "\\n");
+  return 0;
+}
+
 async function main(args = process.argv.slice(2)): Promise<void> {
   const [operation = "doctor", ...rest] = args;
   if (operation === "doctor") process.exitCode = await doctor(rest);
@@ -2662,6 +3404,14 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       : await command("docker", ["compose", "down"]);
   } else if (operation === "status") {
     process.exitCode = await serviceStatus();
+  } else if (operation === "metrics") {
+    process.exitCode = await commerceMetrics(rest);
+  } else if (operation === "backup") {
+    process.exitCode = await backup(rest);
+  } else if (operation === "restore") {
+    process.exitCode = await restore(rest);
+  } else if (operation === "uninstall") {
+    process.exitCode = await uninstall(rest);
   } else if (operation === "setup") process.exitCode = await guardedSetup(rest);
   else if (operation === "buy") process.exitCode = await guardedPurchase(rest);
   else if (operation === "doctor-funded") process.exitCode = await guardedFundedDoctor(rest);
@@ -2690,14 +3440,19 @@ const SERVICE_SOURCE = `import {
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
 import {
   createDacsDemosRailRegistryProviderV1,
+  createDacsFixedPriceMultirailBuyerLiveV1,
+  createDacsFixedPriceMultirailSellerLiveV1,
+  createDacsFixedPricePayDemBuyerLiveV1,
+  createDacsFixedPricePayDemSellerLiveV1,
   createDacsX402ExactRetainedReplayConfirmerV1,
   createDacsFixedPriceX402BuyerLiveV1,
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
+  dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
-  type DacsNodeEvent,
+  type DacsX402HttpResultObservationV1,
 } from "@kynesyslabs/dacs-node";
 
 import {
@@ -2705,6 +3460,8 @@ import {
   configuredEvmRpcUrl,
   configuredAuthority,
   configuredFixedPriceAmount,
+  configuredMaximumPayDemServiceAmount,
+  configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
   configuredX402AuthorizationSearchFromBlock,
@@ -2716,16 +3473,12 @@ import {
   serviceEndpoint,
 } from "./config.js";
 import { fulfil } from "./seller.js";
+import { createGeneratedTelemetrySinkV1 } from "./telemetry.js";
 
 function loopbackHostname(hostname: string): boolean {
   const value = hostname.toLowerCase().replace(/\\.$/, "");
   return value === "localhost" || value.endsWith(".localhost") || value === "[::1]" ||
     value === "::1" || /^127(?:\\.\\d{1,3}){3}$/.test(value);
-}
-
-function eventSink(event: Readonly<DacsNodeEvent>): void {
-  if (event.level === "debug" && event.code === "service-worker-cycle-complete") return;
-  process.stderr.write(JSON.stringify({ event: "dacs.live-service.event", ...event }) + "\\n");
 }
 
 async function main(): Promise<void> {
@@ -2735,6 +3488,7 @@ async function main(): Promise<void> {
   }
   const peerRole = role === "buyer" ? "seller" : "buyer";
   const config = loadRoleConfig(role);
+  const telemetry = createGeneratedTelemetrySinkV1(role);
   const authority = configuredAuthority(role);
   const peerAuthority = configuredAuthority(peerRole);
   const demosIdentityFilePath = actorSecretPath(role, "demos-identity");
@@ -2744,10 +3498,14 @@ async function main(): Promise<void> {
   const railStewardPublicKey = railStewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(railStewardAuthority);
   const authorizationSearchFromBlock = configuredX402AuthorizationSearchFromBlock();
+  const profiles = dacsLiveRailProfiles(config);
+  const x402Enabled = profiles.includes("x402");
+  const payDemEnabled = profiles.includes("pay-dem");
   if (authority === undefined || peerAuthority === undefined ||
-      demosIdentityFilePath === undefined || evmPrivateKeyFilePath === undefined ||
-      evmRpcUrl === undefined || railStewardAuthority === undefined ||
-      railStewardPublicKey === null || authorizationSearchFromBlock === undefined) {
+      demosIdentityFilePath === undefined || railStewardAuthority === undefined ||
+      railStewardPublicKey === null ||
+      (x402Enabled && (evmPrivateKeyFilePath === undefined || evmRpcUrl === undefined ||
+        authorizationSearchFromBlock === undefined))) {
     throw new Error("role, rail, Demos identity, EVM identity or RPC is unavailable");
   }
   const ownEndpoint = new URL(serviceEndpoint(role));
@@ -2777,84 +3535,138 @@ async function main(): Promise<void> {
     peerEndpoint: peerEndpoint.toString(),
     workerId: role + "-" + String(process.pid),
     demosIdentityFilePath,
-    evmPrivateKeyFilePath,
-    evmRpcUrl,
+    ...(x402Enabled ? { evmPrivateKeyFilePath: evmPrivateKeyFilePath!,
+      evmRpcUrl: evmRpcUrl! } : {}),
     // The authenticated registry supplies finalityBlocks below. Use the live
     // head here so that policy, rather than the host runtime's safe default,
     // determines the required confirmation depth.
     evmFinalityTag: "latest",
     createCommerceGraph: async (context) => {
-      const rail = await resolveRail(
-        RAIL_REGISTRY_INDEX_ADDRESS,
-        configuredX402RailId(),
-        createDacsDemosRailRegistryProviderV1({
-          runtime: context.demos,
-          stewardAuthority: railStewardAuthority,
-          stewardPublicKey: railStewardPublicKey,
-        }),
-      );
-      if (rail.asset.kind !== "erc20") {
-        throw new Error("generated fixed-price graph requires an ERC-20 rail");
+      const provider = createDacsDemosRailRegistryProviderV1({
+        runtime: context.demos,
+        stewardAuthority: railStewardAuthority,
+        stewardPublicKey: railStewardPublicKey,
+      });
+      const [x402Rail, payDemRail] = await Promise.all([
+        x402Enabled ? resolveRail(
+          RAIL_REGISTRY_INDEX_ADDRESS,
+          configuredX402RailId(),
+          provider,
+        ) : undefined,
+        payDemEnabled ? resolveRail(
+          RAIL_REGISTRY_INDEX_ADDRESS,
+          configuredPayDemRailId(),
+          provider,
+        ) : undefined,
+      ]);
+      if (x402Rail !== undefined && x402Rail.asset.kind !== "erc20") {
+        throw new Error("generated x402 graph requires an ERC-20 rail");
       }
-      const finalityBlocks = rail.parameters.finalityBlocks;
-      if (!Number.isSafeInteger(finalityBlocks) || Number(finalityBlocks) <= 0) {
+      const x402Asset = x402Rail?.asset.kind === "erc20" ? x402Rail.asset : undefined;
+      if (payDemRail !== undefined && (payDemRail.asset.kind !== "native-dem" ||
+          payDemRail.phaseHandler !== "pay-dem" || payDemRail.network.kind !== "demos")) {
+        throw new Error("generated pay-dem graph requires the native DEM rail");
+      }
+      const finalityBlocks = x402Rail?.parameters.finalityBlocks;
+      if (x402Rail !== undefined &&
+          (!Number.isSafeInteger(finalityBlocks) || Number(finalityBlocks) <= 0)) {
         throw new Error("generated x402 rail requires positive finalityBlocks");
       }
-      const common = {
-        context,
-        workerId: role + "-" + String(process.pid),
-        rail,
-        tokenDomain: configuredX402TokenDomain(),
-        evmRpcUrl,
-        authorizationSearchFromBlock,
-        recipeRegistryVersion: 1,
-        finalityTag: "latest" as const,
-        retryDelayMs: 5_000,
-      };
+      const workerId = role + "-" + String(process.pid);
       if (role === "buyer") {
-        const sellerPublicEndpoint = loadRoleConfig("seller").publicBaseUrl;
-        if (sellerPublicEndpoint === undefined) {
-          throw new Error("seller x402 endpoint configuration is unavailable");
-        }
-        return createDacsFixedPriceX402BuyerLiveV1({
-          ...common,
+        const x402 = x402Rail === undefined ? undefined : {
+          context,
+          workerId,
+          rail: x402Rail,
+          tokenDomain: configuredX402TokenDomain(),
+          evmRpcUrl: evmRpcUrl!,
+          authorizationSearchFromBlock: authorizationSearchFromBlock!,
+          recipeRegistryVersion: 1,
+          finalityTag: "latest" as const,
+          retryDelayMs: 5_000,
           maximumServiceAmount: config.limits.maxServiceAmount.amount,
           confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
-            publicBaseUrl: sellerPublicEndpoint,
+            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
+              throw new Error("seller x402 endpoint configuration is unavailable");
+            })(),
           }),
           maxTimeoutSeconds: 120,
           minimumConfirmations: Number(finalityBlocks),
-        });
+        };
+        const payDem = payDemRail === undefined ? undefined : {
+          context,
+          workerId,
+          rail: payDemRail,
+          demosRpcUrl: config.demos.rpcUrl,
+          recipeRegistryVersion: 1,
+          retryDelayMs: 5_000,
+        };
+        if (x402 !== undefined && payDem !== undefined) {
+          return createDacsFixedPriceMultirailBuyerLiveV1({ x402, payDem });
+        }
+        if (x402 !== undefined) return createDacsFixedPriceX402BuyerLiveV1(x402);
+        if (payDem !== undefined) return createDacsFixedPricePayDemBuyerLiveV1(payDem);
+        throw new Error("no generated buyer payment rail is enabled");
       }
-      const facilitatorUrl = configuredX402FacilitatorUrl();
-      const sellerPayee = configuredSellerEvmPayee();
       const sellerPublicEndpoint = config.publicBaseUrl;
-      if (facilitatorUrl === undefined || sellerPayee === undefined ||
-          sellerPublicEndpoint === undefined) {
-        throw new Error("seller x402 endpoint configuration is unavailable");
+      if (sellerPublicEndpoint === undefined) {
+        throw new Error("seller public endpoint configuration is unavailable");
       }
-      return createDacsFixedPriceX402SellerLiveV1({
-        ...common,
-        amount: baseUnits(configuredFixedPriceAmount(), rail.asset.decimals),
-        facilitator: { url: facilitatorUrl },
+      const x402 = x402Rail === undefined ? undefined : {
+        context,
+        workerId,
+        rail: x402Rail,
+        tokenDomain: configuredX402TokenDomain(),
+        evmRpcUrl: evmRpcUrl!,
+        authorizationSearchFromBlock: authorizationSearchFromBlock!,
+        recipeRegistryVersion: 1,
+        finalityTag: "latest" as const,
+        retryDelayMs: 5_000,
+        amount: baseUnits(configuredFixedPriceAmount(), x402Asset!.decimals),
+        facilitator: { url: configuredX402FacilitatorUrl() ?? (() => {
+          throw new Error("seller x402 facilitator is unavailable");
+        })() },
         prepareDeliverable: fulfil,
         sellerPublicEndpoint,
-        sellerPayee,
+        sellerPayee: configuredSellerEvmPayee() ?? (() => {
+          throw new Error("seller x402 payee is unavailable");
+        })(),
         maximumServiceAmount: config.limits.maxServiceAmount.amount,
         maxTimeoutSeconds: 120,
-        observeHttpResult: (result) => {
+        observeHttpResult: (result: Readonly<DacsX402HttpResultObservationV1>) => {
           process.stderr.write(JSON.stringify({
             event: "dacs.live-service.x402-result",
             role: "seller",
             ...result,
           }) + "\\n");
         },
-      });
+      };
+      const sellerDemosKey = canonicalDemosAgentPublicKey(authority);
+      const payDem = payDemRail === undefined ? undefined : {
+        context,
+        workerId,
+        rail: payDemRail,
+        demosRpcUrl: config.demos.rpcUrl,
+        sellerPublicEndpoint,
+        sellerPayee: sellerDemosKey === null ? (() => {
+          throw new Error("seller native DEM payee is unavailable");
+        })() : Buffer.from(sellerDemosKey).toString("hex"),
+        maximumServiceAmount: configuredMaximumPayDemServiceAmount(),
+        recipeRegistryVersion: 1,
+        prepareDeliverable: fulfil,
+        retryDelayMs: 5_000,
+      };
+      if (x402 !== undefined && payDem !== undefined) {
+        return createDacsFixedPriceMultirailSellerLiveV1({ x402, payDem });
+      }
+      if (x402 !== undefined) return createDacsFixedPriceX402SellerLiveV1(x402);
+      if (payDem !== undefined) return createDacsFixedPricePayDemSellerLiveV1(payDem);
+      throw new Error("no generated seller payment rail is enabled");
     },
     ...(discovery === undefined ? {} : {
       handlePublicRequest: createDacsListingDiscoveryRequestHandlerV1(discovery),
     }),
-    events: { emit: eventSink },
+    events: telemetry,
     server: { hostname: ownEndpoint.hostname, port },
   });
   const hooks = installDacsRoleServiceProcessHooksV1(runtime);
@@ -2910,19 +3722,14 @@ const BUYER_SOURCE = `export const buyerApplication = Object.freeze({
 });
 `;
 
-const SELLER_SOURCE = `import type {
-  DacsPublicStorageDeliverableInputV1,
-} from "@kynesyslabs/dacs-node";
+const SELLER_SOURCE = `import type { DacsPublicStorageDeliverableInputV1 } from "@kynesyslabs/dacs-node";
+
+import { echoRequestFulfilment } from "./fulfilment-examples.js";
 
 export async function fulfil(input: Readonly<DacsPublicStorageDeliverableInputV1>) {
-  // Replace only this pure/idempotent callback with the seller's bounded work.
-  // The host persists its JSON output and owns every irreversible publication.
-  return Object.freeze({
-    jobId: input.jobId,
-    fulfilmentId: input.fulfilmentId,
-    request: input.request,
-    status: "completed" as const,
-  });
+  // Replace only this replay-safe callback with the seller's bounded work.
+  // See fulfilment-examples.ts before integrating any external side effect.
+  return echoRequestFulfilment(input);
 }
 `;
 
@@ -2934,11 +3741,199 @@ const VERIFIER_SOURCE = `export const verifierApplication = Object.freeze({
 
 const TEST_SOURCE = `import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { DACS_LIVE_DOCTOR_CHECK_IDS } from "@kynesyslabs/dacs-node";
 import { runGeneratedDoctor } from "../src/doctor.js";
+import {
+  createStaticJsonFulfilment,
+  echoRequestFulfilment,
+} from "../src/fulfilment-examples.js";
+import {
+  assertGeneratedBackupRestorableV1,
+  createGeneratedBackupV1,
+  inspectGeneratedBackupV1,
+  restoreGeneratedBackupV1,
+} from "../src/lifecycle.js";
 import { checkGeneratedUpgradeV1 } from "../src/upgrade.js";
+import {
+  createGeneratedTelemetrySinkV1,
+  readGeneratedCommerceTimingV1,
+} from "../src/telemetry.js";
+
+test("durable telemetry projects the four operational finish lines", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-generated-telemetry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await chmod(root, 0o700);
+  const buyerDirectory = join(root, "buyer");
+  const sellerDirectory = join(root, "seller");
+  await Promise.all([
+    mkdir(buyerDirectory, { mode: 0o700 }),
+    mkdir(sellerDirectory, { mode: 0o700 }),
+  ]);
+  const previousBuyer = process.env.DACS_BUYER_DATA_DIRECTORY;
+  const previousSeller = process.env.DACS_SELLER_DATA_DIRECTORY;
+  process.env.DACS_BUYER_DATA_DIRECTORY = buyerDirectory;
+  process.env.DACS_SELLER_DATA_DIRECTORY = sellerDirectory;
+  t.after(() => {
+    if (previousBuyer === undefined) delete process.env.DACS_BUYER_DATA_DIRECTORY;
+    else process.env.DACS_BUYER_DATA_DIRECTORY = previousBuyer;
+    if (previousSeller === undefined) delete process.env.DACS_SELLER_DATA_DIRECTORY;
+    else process.env.DACS_SELLER_DATA_DIRECTORY = previousSeller;
+  });
+  const jobId = "job:telemetry-example";
+  const buyer = createGeneratedTelemetrySinkV1("buyer");
+  const seller = createGeneratedTelemetrySinkV1("seller");
+  const event = (role: "buyer" | "seller", occurredAt: number, code: string,
+    details?: Record<string, string>) => ({
+      version: 1, sequence: occurredAt, occurredAt, level: "info",
+      kind: "order-progress", code, role, jobId,
+      ...(details === undefined ? {} : { details }),
+    }) as never;
+  await buyer.emit(event("buyer", 1_000, "order-started"));
+  await seller.emit(event("seller", 2_000, "order-track-processed",
+    { track: "delivery", state: "final", outcome: "success" }));
+  await buyer.emit(event("buyer", 2_500, "order-track-processed",
+    { track: "buyer-received", state: "final", outcome: "success" }));
+  await seller.emit(event("seller", 3_000, "order-track-processed",
+    { track: "delivery-evidence", state: "final", outcome: "success" }));
+  await buyer.emit(event("buyer", 4_000, "order-track-processed",
+    { track: "audit", state: "final", outcome: "success" }));
+  await seller.emit(event("seller", 4_500, "order-track-processed",
+    { track: "audit", state: "final", outcome: "success" }));
+  const report = await readGeneratedCommerceTimingV1(jobId);
+  assert.equal(report.evidenceClass, "operational-telemetry-not-normative-proof");
+  assert.equal(report.milestones.sellerReady?.elapsedMs, 1_000);
+  assert.equal(report.milestones.buyerReceived?.elapsedMs, 1_500);
+  assert.equal(report.milestones.commerceComplete?.elapsedMs, 2_000);
+  assert.equal(report.milestones.auditComplete?.elapsedMs, 3_500);
+  assert.equal(report.log.matchingEvents, 6);
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(join(buyerDirectory, "telemetry", "events.jsonl"))).mode &
+      0o777, 0o600);
+  }
+  await assert.rejects(
+    async () => buyer.emit(event("seller", 5_000, "order-started")),
+    /telemetry-role-mismatch/,
+  );
+});
+
+test("fulfilment examples are deterministic, isolated and bounded", async () => {
+  const request = Object.freeze({ query: "hello" });
+  const input = Object.freeze({
+    jobId: "job:example",
+    fulfilmentId: "fulfilment:example",
+    request,
+  }) as never;
+  const echoed = await echoRequestFulfilment(input);
+  assert.deepEqual(echoed, {
+    jobId: "job:example",
+    fulfilmentId: "fulfilment:example",
+    request: { query: "hello" },
+    status: "completed",
+  });
+  assert.notEqual(echoed.request, request);
+  const staticDocument = { answer: { value: 42 } };
+  const fulfil = createStaticJsonFulfilment(staticDocument);
+  staticDocument.answer.value = 99;
+  const first = await fulfil(input);
+  const second = await fulfil(input);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.deliverable, { answer: { value: 42 } });
+  assert.notEqual(first.deliverable, second.deliverable);
+  assert.throws(() => createStaticJsonFulfilment("x".repeat(1_048_576)),
+    /exceeds 1 MiB/);
+});
+
+test("authenticated lifecycle backup restores both roles and rejects tampering", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dacs-generated-lifecycle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await chmod(root, 0o700);
+  const buyer = join(root, "buyer");
+  const seller = join(root, "seller");
+  const backupParent = join(root, "backups");
+  const backupDirectory = join(backupParent, "baseline");
+  const safetyBackupDirectory = join(backupParent, "pre-restore");
+  const authKeyFile = join(root, "backup-auth.hex");
+  await Promise.all([
+    mkdir(buyer, { mode: 0o700 }),
+    mkdir(seller, { mode: 0o700 }),
+    mkdir(backupParent, { mode: 0o700 }),
+  ]);
+  await Promise.all([
+    writeFile(join(buyer, "actor.sqlite"), "buyer-original", { mode: 0o600 }),
+    writeFile(join(seller, "actor.sqlite"), "seller-original", { mode: 0o600 }),
+    writeFile(authKeyFile, "11".repeat(32) + "\\n", { mode: 0o600 }),
+  ]);
+  await chmod(authKeyFile, 0o600);
+  const paths = { buyer, seller, authKeyFile };
+  const backup = await createGeneratedBackupV1({
+    outputDirectory: backupDirectory,
+    backupId: "11111111-1111-4111-8111-111111111111",
+    now: 1_700_000_000_000,
+    paths,
+  });
+  assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
+  assert.equal((await inspectGeneratedBackupV1({
+    backupDirectory,
+    authKeyFile,
+  })).backupId, backup.backupId);
+  assert.throws(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, configSchemaVersion: backup.release.configSchemaVersion + 1 },
+  }), /restore-backup-release-incompatible/);
+
+  await Promise.all([
+    writeFile(join(buyer, "actor.sqlite"), "buyer-changed", "utf8"),
+    writeFile(join(seller, "actor.sqlite"), "seller-changed", "utf8"),
+  ]);
+  const restored = await restoreGeneratedBackupV1({
+    backupDirectory,
+    expectedBackupId: backup.backupId,
+    safetyBackupDirectory,
+    paths,
+  });
+  assert.equal(restored.backupId, backup.backupId);
+  assert.equal(await readFile(join(buyer, "actor.sqlite"), "utf8"), "buyer-original");
+  assert.equal(await readFile(join(seller, "actor.sqlite"), "utf8"), "seller-original");
+  assert.equal(await readFile(
+    join(safetyBackupDirectory, "roles", "buyer", "actor.sqlite"), "utf8"),
+  "buyer-changed");
+
+  await writeFile(
+    join(backupDirectory, "roles", "buyer", "actor.sqlite"),
+    "tampered",
+    "utf8",
+  );
+  await assert.rejects(
+    inspectGeneratedBackupV1({ backupDirectory, authKeyFile }),
+    /backup-content-mismatch/,
+  );
+  const emptyDirectory = join(buyer, "empty");
+  await mkdir(emptyDirectory, { mode: 0o700 });
+  await assert.rejects(createGeneratedBackupV1({
+    outputDirectory: join(backupParent, "reject-empty"),
+    paths,
+  }), /backup-empty-directory-unsupported/);
+  await rm(emptyDirectory, { recursive: true });
+  await chmod(authKeyFile, 0o644);
+  await assert.rejects(createGeneratedBackupV1({
+    outputDirectory: join(backupParent, "reject-key-permissions"),
+    paths,
+  }), /backup-owned-file-unsafe/);
+});
 
 test("fresh live bootstrap is complete, read-only and visibly blocked", async () => {
   const before = existsSync("./data/buyer/actor.sqlite");
@@ -2952,7 +3947,110 @@ test("fresh live bootstrap is complete, read-only and visibly blocked", async ()
   assert.equal(report.exitCode, 5);
   assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
   assert.equal(report.checks.some((item) => item.status === "blocked"), true);
+  assert.equal(report.checks.find((item) => item.id === "local.version-bindings")?.status,
+    "pass");
+  assert.deepEqual(report.checks.find((item) => item.id === "local.deployment-runtime")?.facts,
+    { servicePortCount: 2 });
+  const engagement = report.checks.find((item) =>
+    item.id === "demos.engagement-endpoint-shape");
+  assert.equal(engagement?.status, "blocked");
+  assert.equal(engagement?.reasonCode, "seller-public-endpoint-missing");
   assert.equal(existsSync("./data/buyer/actor.sqlite"), before);
+});
+
+test("pre-start doctor rejects an occupied service port", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("test service did not receive an IP port");
+  }
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerUrl = process.env.DACS_BUYER_SERVICE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_SERVICE_URL = "http://127.0.0.1:" + String(address.port);
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const deployment = report.checks.find((item) =>
+      item.id === "local.deployment-runtime");
+    assert.equal(deployment?.status, "fail");
+    assert.equal(deployment?.reasonCode, "service-port-unavailable");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) =>
+      error === undefined ? resolve() : reject(error)));
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerUrl === undefined) delete process.env.DACS_BUYER_SERVICE_URL;
+    else process.env.DACS_BUYER_SERVICE_URL = previousBuyerUrl;
+  }
+});
+
+test("doctor validates the configured seller Listing endpoint", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousSellerUrl = process.env.DACS_SELLER_PUBLIC_BASE_URL;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_SELLER_PUBLIC_BASE_URL = "https://seller.example/engage";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.deepEqual(report.checks.find((item) =>
+      item.id === "demos.engagement-endpoint-shape")?.facts, {
+        sellerPublicOrigin: "https://seller.example",
+      });
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousSellerUrl === undefined) delete process.env.DACS_SELLER_PUBLIC_BASE_URL;
+    else process.env.DACS_SELLER_PUBLIC_BASE_URL = previousSellerUrl;
+  }
+});
+
+test("malformed configuration still produces the complete fail-closed report", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousMaximum = process.env.DACS_MAX_SERVICE_AMOUNT;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_MAX_SERVICE_AMOUNT = "-1";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    assert.equal(report.checks.length, DACS_LIVE_DOCTOR_CHECK_IDS.length);
+    assert.equal(report.exitCode, 1);
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "configuration-invalid");
+    assert.equal(report.checks.find((item) => item.id === "demos.rpc-chain")?.status,
+      "blocked");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousMaximum === undefined) delete process.env.DACS_MAX_SERVICE_AMOUNT;
+    else process.env.DACS_MAX_SERVICE_AMOUNT = previousMaximum;
+  }
+});
+
+test("doctor rejects a shared buyer and seller data directory", async () => {
+  const previousDeployment = process.env.DACS_DEPLOYMENT;
+  const previousBuyerDirectory = process.env.DACS_BUYER_DATA_DIRECTORY;
+  const previousSellerDirectory = process.env.DACS_SELLER_DATA_DIRECTORY;
+  process.env.DACS_DEPLOYMENT = "local";
+  process.env.DACS_BUYER_DATA_DIRECTORY = "./data/shared";
+  process.env.DACS_SELLER_DATA_DIRECTORY = "./data/shared";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const configuration = report.checks.find((item) =>
+      item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "actor-data-directory-shared");
+  } finally {
+    if (previousDeployment === undefined) delete process.env.DACS_DEPLOYMENT;
+    else process.env.DACS_DEPLOYMENT = previousDeployment;
+    if (previousBuyerDirectory === undefined) delete process.env.DACS_BUYER_DATA_DIRECTORY;
+    else process.env.DACS_BUYER_DATA_DIRECTORY = previousBuyerDirectory;
+    if (previousSellerDirectory === undefined) delete process.env.DACS_SELLER_DATA_DIRECTORY;
+    else process.env.DACS_SELLER_DATA_DIRECTORY = previousSellerDirectory;
+  }
 });
 
 const releaseMetadata = Object.freeze({
@@ -2960,7 +4058,7 @@ const releaseMetadata = Object.freeze({
   standardRevision: "${STANDARD_REVISION}",
   configSchemaVersion: ${CONFIG_SCHEMA_VERSION},
   sqliteSchemaVersion: ${SQLITE_SCHEMA_VERSION},
-  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6]),
+  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6, 7]),
   breakingConfigurationChanges: Object.freeze([]),
 });
 
@@ -3048,13 +4146,13 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --omit=optional
 RUN npm rebuild better-sqlite3
 COPY tsconfig.json dacs.config.ts ./
 COPY src ./src
 COPY test ./test
 RUN npm run build
-RUN npm prune --omit=dev --ignore-scripts
+RUN npm prune --omit=dev --omit=optional --ignore-scripts
 
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
@@ -3066,7 +4164,7 @@ COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
 USER 10001:10001
-CMD ["node", "--import", "tsx", "dist/src/service.js"]
+CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]
 `;
 
 const DOCKERIGNORE = `**
@@ -3086,6 +4184,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
   DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
+  DACS_PAY_DEM_RAIL_ID: \${DACS_PAY_DEM_RAIL_ID:-demos-native:DEM}
   DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
   DACS_EVM_RPC_URL: \${DACS_EVM_RPC_URL:-}
   DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK: \${DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK:-}
@@ -3094,6 +4193,9 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_X402_NETWORK: \${DACS_X402_NETWORK:-eip155:84532}
   DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}
   DACS_FIXED_PRICE_AMOUNT: \${DACS_FIXED_PRICE_AMOUNT:-1}
+  DACS_PAY_DEM_FIXED_PRICE_AMOUNT: \${DACS_PAY_DEM_FIXED_PRICE_AMOUNT:-1}
+  DACS_MAX_PAY_DEM_SERVICE_AMOUNT: \${DACS_MAX_PAY_DEM_SERVICE_AMOUNT:-1}
+  DACS_MAX_PAY_DEM_TOTAL_DEBIT: \${DACS_MAX_PAY_DEM_TOTAL_DEBIT:-3}
   DACS_MAX_SERVICE_AMOUNT: \${DACS_MAX_SERVICE_AMOUNT:-1}
   DACS_MAX_SETUP_SPEND_DEM: \${DACS_MAX_SETUP_SPEND_DEM:-10}
   DACS_MAX_DEMOS_NETWORK_FEE_DEM: \${DACS_MAX_DEMOS_NETWORK_FEE_DEM:-2}
@@ -3168,8 +4270,39 @@ services:
       - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
 `;
 
+function compose(options: LiveProjectTemplateOptions): string {
+  const draftEnvironment = options.rails === "both"
+    ? "      DACS_X402_LISTING_DRAFT_FILE: /run/dacs/listing-draft-x402.json\n" +
+      "      DACS_PAY_DEM_LISTING_DRAFT_FILE: /run/dacs/listing-draft-pay-dem.json"
+    : options.rails === "x402"
+      ? "      DACS_X402_LISTING_DRAFT_FILE: /run/dacs/listing-draft-x402.json"
+      : "      DACS_PAY_DEM_LISTING_DRAFT_FILE: /run/dacs/listing-draft-pay-dem.json";
+  const draftVolumes = options.rails === "both"
+    ? "      - \${DACS_X402_LISTING_DRAFT_FILE:?set DACS_X402_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-x402.json:ro\n" +
+      "      - \${DACS_PAY_DEM_LISTING_DRAFT_FILE:?set DACS_PAY_DEM_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-pay-dem.json:ro"
+    : options.rails === "x402"
+      ? "      - \${DACS_X402_LISTING_DRAFT_FILE:?set DACS_X402_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-x402.json:ro"
+      : "      - \${DACS_PAY_DEM_LISTING_DRAFT_FILE:?set DACS_PAY_DEM_LISTING_DRAFT_FILE}:/run/dacs/listing-draft-pay-dem.json:ro";
+  const configured = COMPOSE
+    .replaceAll("      DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json", draftEnvironment)
+    .replaceAll("      - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro", draftVolumes)
+    .replace("DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-USDC}",
+      `DACS_MAX_SERVICE_ASSET: \${DACS_MAX_SERVICE_ASSET:-${options.rails === "pay-dem" ? "DEM" : "USDC"}}`);
+  if (options.rails === "both") return configured;
+  const unrelated = options.rails === "pay-dem"
+    ? [
+        "DACS_BUYER_EVM_SECRET_FILE", "DACS_SELLER_EVM_SECRET_FILE",
+        "DACS_SELLER_EVM_PAYEE", "DACS_X402_", "DACS_EVM_",
+        "DACS_FIXED_PRICE_AMOUNT", "DACS_MAX_EVM_",
+      ]
+    : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
+  return configured.split("\n").filter((line) =>
+    !unrelated.some((name) => line.includes(name))
+  ).join("\n");
+}
+
 function envExample(options: LiveProjectTemplateOptions): string {
-  return `# Public configuration only. Never put secret values in this file.
+  const template = `# Public configuration only. Never put secret values in this file.
 DACS_DEPLOYMENT=${options.deployment}
 DACS_RUNTIME_UID=${options.runtimeUid}
 DACS_RUNTIME_GID=${options.runtimeGid}
@@ -3179,6 +4312,7 @@ DACS_DEMOS_RPC_URL=https://node2.demos.sh
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default
+DACS_PAY_DEM_RAIL_ID=demos-native:DEM
 DACS_X402_FACILITATOR_URL=
 DACS_EVM_RPC_URL=
 DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK=
@@ -3186,8 +4320,11 @@ DACS_X402_TOKEN_NAME=USDC
 DACS_X402_TOKEN_VERSION=2
 DACS_LISTING_DRAFT_FILE=./listing-draft.json
 DACS_X402_NETWORK=eip155:84532
-DACS_MAX_SERVICE_ASSET=USDC
+DACS_MAX_SERVICE_ASSET=${options.rails === "pay-dem" ? "DEM" : "USDC"}
 DACS_FIXED_PRICE_AMOUNT=1
+DACS_PAY_DEM_FIXED_PRICE_AMOUNT=1
+DACS_MAX_PAY_DEM_SERVICE_AMOUNT=1
+DACS_MAX_PAY_DEM_TOTAL_DEBIT=3
 DACS_MAX_SERVICE_AMOUNT=1
 DACS_MAX_SETUP_SPEND_DEM=10
 DACS_MAX_DEMOS_NETWORK_FEE_DEM=2
@@ -3204,7 +4341,26 @@ DACS_SELLER_EVM_SECRET_FILE=
 DACS_FUNDED_DOCTOR_AUTHORITY=
 DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE=
 DACS_FUNDED_DOCTOR_DATA_ROOT=./data/funded-doctor
+DACS_BACKUP_AUTH_KEY_FILE=
 `;
+  const draftLines = options.rails === "both"
+    ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n" +
+      "DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json"
+    : options.rails === "x402"
+      ? "DACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json"
+      : "DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json";
+  const configured = template.replace("DACS_LISTING_DRAFT_FILE=./listing-draft.json", draftLines);
+  if (options.rails === "both") return configured;
+  const unrelated = options.rails === "pay-dem"
+    ? [
+        "DACS_BUYER_EVM_SECRET_FILE=", "DACS_SELLER_EVM_SECRET_FILE=",
+        "DACS_SELLER_EVM_PAYEE=", "DACS_X402_", "DACS_EVM_",
+        "DACS_FIXED_PRICE_AMOUNT=", "DACS_MAX_EVM_",
+      ]
+    : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
+  return configured.split("\n").filter((line) =>
+    !unrelated.some((name) => line.startsWith(name))
+  ).join("\n");
 }
 
 const GITIGNORE = `.env
@@ -3224,20 +4380,39 @@ secrets/*
 !secrets/README.md
 `;
 
-const SECRETS_README = `# Role secrets
+function secretsReadme(options: LiveProjectTemplateOptions): string {
+  const x402 = options.rails !== "pay-dem";
+  return `# Role secrets
 
-Keep buyer and seller material in four different files outside this project.
+Keep buyer and seller Demos identities in two different files outside this
+project.${x402 ? " Keep their EVM wallets in two additional role-owned files; no Demos or EVM secret may be reused across roles." : " This native DEM profile does not require or accept EVM wallet files."}
 Live mode rejects symlinks and group/other-readable secret files. Set each file
 to mode 0600 and make its owner the non-root DACS_RUNTIME_UID/GID written by the
 generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
-The optional funded doctor uses a fifth, named disposable Demos wallet through
+The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
+Backup and restore require a separate operator-owned
+\`DACS_BACKUP_AUTH_KEY_FILE\`. Store exactly 32 random bytes as 64 hexadecimal
+characters, keep the file outside this project, and set mode 0600. It
+authenticates backup manifests but is not a buyer or seller protocol key.
 Do not persist a write-confirmation variable in .env or Compose.
 `;
+}
 
 function readme(options: LiveProjectTemplateOptions): string {
-  return `# DACS fixed-price x402 live bootstrap
+  const setupCommands = options.rails === "both"
+    ? "npm run dacs:setup -- --rail x402 --max-spend-dem 10\n" +
+      "npm run dacs:setup -- --rail pay-dem --max-spend-dem 10"
+    : `npm run dacs:setup -- --max-spend-dem 10`;
+  const purchaseCommands = options.rails === "both"
+    ? "# Select exactly one authenticated sibling; there is no fallback.\n" +
+      "npm run dacs:buy -- --rail x402 --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001\n" +
+      "npm run dacs:buy -- --rail pay-dem --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-total-debit-dem 3"
+    : options.rails === "x402"
+      ? "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001"
+      : "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-total-debit-dem 3";
+  return `# DACS fixed-price ${options.rails} live bootstrap
 
 This generated project is an **experimental live bootstrap** using the exact
 published SDK and host package surfaces. It contains deployment configuration
@@ -3251,11 +4426,13 @@ cp .env.example .env
 npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
-npm run dacs:setup -- --max-spend-dem 10
-npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001
+${setupCommands}
+${purchaseCommands}
 npm run dacs:doctor:funded -- --wallet disposable-alpha --max-cost-dem 2
 npm run dacs:status
+npm run dacs:metrics -- --job <printed-job-id>
 npm run dacs:upgrade -- --check
+npm run dacs:backup -- --output ../backups/agent-YYYYMMDD
 npm run dacs:down
 \`\`\`
 
@@ -3266,12 +4443,32 @@ readiness runtime when their prerequisites exist. Commerce remains blocked until
 the exact Listing, signed rail authority and operation graph pass doctor. Never
 bypass that gate.
 
+Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
+signed sibling Listings for the same offer. Setup and purchase select one exact
+rail explicitly; a failed or indeterminate attempt is reconciled on that rail and
+is never retried on the sibling.
+
 Setup requires \`DACS_SETUP_WRITE_CONFIRM=1\`; purchase requires
 \`DACS_PURCHASE_CONFIRM=1\`; funded doctor requires
 \`DACS_DOCTOR_FUNDED_CONFIRM=1\`. These are intentionally absent from .env and
 are non-interchangeable and are rejected if persisted there. Without its own
 confirmation, setup or purchase prints a read-only preflight plan and exits.
 Every executing command also requires explicit caps.
+
+\`DACS_MAX_DEMOS_NETWORK_FEE_DEM\` is enforced before broadcast as the ceiling
+for each individual Storage Program transaction. Purchase doctor and the
+consent-bound plan reserve five buyer writes, six seller writes and one write
+per role of headroom; pay-DEM also adds the selected transfer-and-fee ceiling.
+The buyer carries those ceilings in the authenticated order application. Each
+role retains its immutable local grant before starting the order, and the seller
+rejects a grant above its local policy. A later configuration increase therefore
+cannot enlarge an admitted order. The generated graph is bounded by deterministic
+logical names, durable write-once reconciliation and the per-transaction caps.
+Before each purchase artifact broadcast, the wallet journal durably reserves its
+authenticated confirmed fee against the role-local aggregate ceiling; a
+definitively failed attempt still consumes that reservation. The reported ceiling
+does not cover custom extensions or unrelated concurrent orders using the same
+wallets.
 
 The purchase request file is closed, versioned JSON:
 
@@ -3294,13 +4491,49 @@ Upgrade check is read-only. It queries the public npm \`next\` manifests for all
 three exact-version DACS packages, compares their declared Standard, config and
 SQLite compatibility, authenticates each existing actor store, and blocks on
 unfinished or recovering work. Package application is intentionally not
-automatic in this release: stop both services and retain independent actor
-backups before following the report's rollback instructions. An older runtime
+automatic in this release: stop both services and create one authenticated
+two-role backup before following the report's rollback instructions. An older runtime
 must never open a store schema newer than it supports.
+
+Seller application work lives only in \`src/seller.ts\`. The generated
+\`src/fulfilment-examples.ts\` provides deterministic request-echo and bounded
+static-JSON examples. Both are replay-safe. Do not add an email, subprocess,
+model charge, API mutation or external job directly to the callback: recovery
+may invoke it again. Such effects require their own durable intent and exact
+idempotency/reconciliation adapter keyed by \`fulfilmentId\`.
+
+\`dacs:metrics -- --job <id>\` reads the private per-role event journals and
+reports seller-ready, buyer-received, commerce-complete and two-role
+audit-complete durations. These are durable operational timings, explicitly not
+normative DACS proof; the anchored evidence and audit bundles remain the source
+of protocol truth. The journals are capped at 64 MiB per role and are included
+in lifecycle backups. Capacity exhaustion degrades service health instead of
+silently discarding events.
+
+Backup stops both services and writes separate buyer/seller data trees plus a
+keyed manifest into a new directory. Restore is plan-only unless
+\`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
+rehashes every file, creates a separate safety backup, then replaces both actor
+directories with rollback on partial failure. Example:
+
+\`\`\`bash
+npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \\
+  --backup-id <printed-backup-id> \\
+  --safety-backup ../backups/pre-restore-YYYYMMDD
+\`\`\`
+
+\`dacs:uninstall -- --backup <new-directory>\` is a safe decommission command.
+It is plan-only unless \`DACS_UNINSTALL_CONFIRM=1\` is supplied, stops the
+deployment and creates an authenticated backup, but deliberately retains actor
+data and never recursively deletes the project. Verify the backup before any
+manual deletion.
 
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
-the reviewed \`better-sqlite3\` native adapter. It uses separate non-root buyer/seller processes, secret mounts and durable
+the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
+are omitted. Compiled services use the host package's exact Demos ESM
+compatibility loader rather than a general TypeScript/esbuild production
+transformer. It uses separate non-root buyer/seller processes, secret mounts and durable
 data bind mounts, read-only root filesystems, bounded resources and no database
 port. On the clean Linux VPS it uses host networking solely to keep the
 inter-role transport on \`127.0.0.1\`; public traffic requires a separately
@@ -3313,14 +4546,14 @@ export function liveProjectTemplates(
   options: LiveProjectTemplateOptions,
 ): Readonly<Record<string, string>> {
   return Object.freeze({
-    "package.json": packageJson(options.packageName),
+    "package.json": packageJson(options),
     "tsconfig.json": TSCONFIG,
-    "dacs.config.ts": dacsConfig(options.role),
+    "dacs.config.ts": dacsConfig(options),
     ".env.example": envExample(options),
     ".gitignore": GITIGNORE,
     ".dockerignore": DOCKERIGNORE,
     Dockerfile: DOCKERFILE,
-    "compose.yaml": COMPOSE,
+    "compose.yaml": compose(options),
     "README.md": readme(options),
     "src/buyer.ts": BUYER_SOURCE,
     "src/seller.ts": SELLER_SOURCE,
@@ -3331,13 +4564,16 @@ export function liveProjectTemplates(
     "src/setup.ts": SETUP_SOURCE,
     "src/purchase.ts": PURCHASE_SOURCE,
     "src/funded-doctor.ts": FUNDED_DOCTOR_SOURCE,
+    "src/fulfilment-examples.ts": FULFILMENT_EXAMPLES_SOURCE,
     "src/upgrade.ts": UPGRADE_SOURCE,
+    "src/lifecycle.ts": LIFECYCLE_SOURCE,
+    "src/telemetry.ts": TELEMETRY_SOURCE,
     "src/local-lifecycle.ts": LOCAL_LIFECYCLE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",
-    "secrets/README.md": SECRETS_README,
+    "secrets/README.md": secretsReadme(options),
   });
 }
