@@ -13,17 +13,17 @@ import type {
   AnyAttestationBundle,
   AttestationRef,
   BundleBinding,
-  ComponentSignature,
   PaymentPhaseType,
+  RatingRecord,
   SettlementEvidence,
 } from "../artifacts/types.js";
 import {
   isAgreementArtifact,
   isAttestationRef,
   isBundleBinding,
+  isRatingRecord,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
-import { isComponentSignature } from "../artifacts/signatures.js";
 import {
   parseCanonicalClaimReference,
   requireCanonicalClaimReference,
@@ -132,22 +132,8 @@ export type AuthenticatedReputationAgreement =
   | { disposition: "verified"; agreement: AgreementArtifact }
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
-/**
- * The exact DACS-5 §10.6 shape. This local name keeps the additive RSV API
- * stackable on the pending public RatingRecord PR without changing its bytes.
- */
-export interface SettlementVerifiedRatingRecord {
-  ratingVersion: "1";
-  jobId: string;
-  rater: string;
-  target: string;
-  targetRole: "buyer" | "seller";
-  value: number;
-  freeText?: string;
-  dimensions?: Record<string, number>;
-  ratedAt: number;
-  signature: ComponentSignature;
-}
+/** Compatibility name for the public DACS-5 §10.6 RatingRecord type. */
+export type SettlementVerifiedRatingRecord = RatingRecord;
 
 export type AuthenticatedReputationRating =
   | { disposition: "verified"; record: SettlementVerifiedRatingRecord }
@@ -267,37 +253,6 @@ function exactKeys(
   const allowed = new Set([...required, ...optional]);
   return required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
     Object.keys(value).every((key) => allowed.has(key));
-}
-
-function isSettlementVerifiedRatingRecord(
-  value: unknown,
-): value is SettlementVerifiedRatingRecord {
-  if (!isRecord(value) || !exactKeys(value, [
-    "ratingVersion", "jobId", "rater", "target", "targetRole", "value",
-    "ratedAt", "signature",
-  ], ["freeText", "dimensions"])) return false;
-  if (value.ratingVersion !== "1" || typeof value.jobId !== "string" ||
-    value.jobId.length === 0 || value.jobId !== value.jobId.trim() ||
-    value.jobId.normalize("NFC") !== value.jobId ||
-    /[\u0000-\u001f\u007f]/.test(value.jobId) ||
-    typeof value.rater !== "string" ||
-    parseCanonicalClaimReference(value.rater) === null ||
-    typeof value.target !== "string" ||
-    parseCanonicalClaimReference(value.target) === null ||
-    value.rater === value.target ||
-    (value.targetRole !== "buyer" && value.targetRole !== "seller") ||
-    !Number.isInteger(value.value) || (value.value as number) < 1 ||
-    (value.value as number) > 5 || !isSafeUint(value.ratedAt) ||
-    !isComponentSignature(value.signature) ||
-    value.signature.signer !== value.rater) return false;
-  if (value.freeText !== undefined &&
-    (typeof value.freeText !== "string" || value.freeText.length > 1_000)) {
-    return false;
-  }
-  return value.dimensions === undefined ||
-    (isRecord(value.dimensions) && Object.values(value.dimensions).every(
-      (dimension) => typeof dimension === "number" && Number.isFinite(dimension),
-    ));
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -919,7 +874,7 @@ async function ratingAverages(
         if (isRecord(captured) &&
           exactKeys(captured, ["disposition", "record"]) &&
           captured.disposition === "verified" &&
-          isSettlementVerifiedRatingRecord(captured.record)) record = captured.record;
+          isRatingRecord(captured.record)) record = captured.record;
       } catch {
         // Invalid or unavailable ratings are excluded, not treated as zero.
       }
@@ -932,7 +887,11 @@ async function ratingAverages(
       const rater = bundle.parties.find((candidate) =>
         sameCanonicalClaimIdentity(candidate.primaryClaim, record!.rater));
       if (!rater || rater.role === job.authoritative.partyRole) continue;
-      const tuple = canonicalize([record.rater, record.jobId, record.targetRole]);
+      const parsedRater = parseCanonicalClaimReference(record.rater);
+      if (!parsedRater) continue;
+      const canonicalRater =
+        `${parsedRater.identity.scheme}:${parsedRater.identity.identifier}`;
+      const tuple = canonicalize([canonicalRater, record.jobId, record.targetRole]);
       const current = retained.get(tuple);
       if (!current || record.ratedAt > current.ratedAt ||
         (record.ratedAt === current.ratedAt &&

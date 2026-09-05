@@ -16,6 +16,7 @@ import type {
   AgreementArtifact,
   AnyAttestationBundle,
   AttestationRef,
+  RatingRecord,
   SettlementEvidence,
 } from "../../src/artifacts/types.js";
 import {
@@ -404,6 +405,76 @@ describe("settlement-verified semantic conformance", () => {
 });
 
 describe("deriveSettlementVerifiedReputation", () => {
+  test("deduplicates ratings by the rater's parameter-free CF-3 identity", async () => {
+    const evidence = paymentEvidence("rating-alias");
+    const agreementValue = agreement("rating-alias");
+    const value = bundle(
+      "rating-alias",
+      "completed",
+      [evidenceRef(evidence)],
+      agreementValue,
+    );
+    const ratings: RatingRecord[] = [
+      {
+        ratingVersion: "1",
+        jobId: value.jobId,
+        rater: SELLER,
+        target: PARTY,
+        targetRole: "buyer",
+        value: 1,
+        ratedAt: 1_100,
+        signature: { algorithm: "ed25519", signer: SELLER, value: SIG },
+      },
+      {
+        ratingVersion: "1",
+        jobId: value.jobId,
+        rater: `${SELLER}?region=US`,
+        target: PARTY,
+        targetRole: "buyer",
+        value: 5,
+        ratedAt: 1_100,
+        signature: {
+          algorithm: "ed25519",
+          signer: `${SELLER}?region=US`,
+          value: SIG,
+        },
+      },
+    ];
+    const ratingByHash = new Map(ratings.map((record) => [
+      contentHash(stripSignature(record as unknown as Record<string, unknown>)),
+      record,
+    ]));
+    const winningRating = [...ratingByHash.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .at(-1)![1];
+    value.ratingRefs = [...ratingByHash.keys()].map((hash, index) =>
+      ref(hash, `rating-alias-${index}`));
+    const authority = deps([evidence], [agreementValue]);
+    authority.resolveRating = async ({ ref: ratingPointer }) => {
+      const record = ratingByHash.get(ratingPointer.contentHash);
+      return record
+        ? { disposition: "verified", record }
+        : { disposition: "rejected", reason: "unknown rating" };
+    };
+
+    const forward = await deriveSettlementVerifiedReputation(
+      PARTY,
+      [input(value)],
+      WINDOW,
+      authority,
+    );
+    value.ratingRefs.reverse();
+    const reversed = await deriveSettlementVerifiedReputation(
+      PARTY,
+      [input(value)],
+      WINDOW,
+      authority,
+    );
+
+    expect(forward.metrics.averageBuyerRating).toBe(winningRating.value);
+    expect(reversed.metrics.averageBuyerRating).toBe(winningRating.value);
+  });
+
   test("pair divergence includes full refs and multiplicity for every bundle type", async () => {
     const record = paymentEvidence("pair");
     const pointer = evidenceRef(record);

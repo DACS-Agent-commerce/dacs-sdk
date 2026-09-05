@@ -330,7 +330,6 @@ function deriveReputationCore(
   const orchestratorFaultJobs = new Set<string>();
   for (const copies of byJob.values()) {
     const valid = copies
-      .filter((b) => isValid(b))
       // Released derivation v1 has no job-bound resolution context. DACS-5
       // therefore forbids EBFAB admission here; use the distinct job-bound or
       // settlement-verified derivation path instead.
