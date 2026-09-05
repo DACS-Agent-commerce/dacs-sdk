@@ -994,7 +994,6 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     this.config = Object.freeze({
       rpc,
-      ...(maximumFeeOs === undefined ? {} : { maximumFeeOs }),
       ...(writeJournal === undefined
         ? {}
         : { writeJournal: writeJournal as DemosWriteJournal }),
