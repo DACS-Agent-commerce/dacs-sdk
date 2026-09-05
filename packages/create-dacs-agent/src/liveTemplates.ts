@@ -4557,6 +4557,10 @@ if (config.User !== "10001:10001") {
 if (config.WorkingDir !== "/app") {
   throw new Error("image working directory is not /app");
 }
+if (config.Entrypoint !== null &&
+    (!Array.isArray(config.Entrypoint) || config.Entrypoint.length !== 0)) {
+  throw new Error("image entrypoint overrides the generated DACS service command");
+}
 const expectedCommand = [
   "node",
   "--import",
@@ -4604,12 +4608,16 @@ const runtime = JSON.parse(docker([
   "--input-type=module",
   "--eval", probe,
 ]));
+if (runtime.uid !== 10001 || runtime.gid !== 10001) {
+  throw new Error("container runtime identity is not uid 10001 and gid 10001");
+}
 const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
 process.stdout.write(JSON.stringify({
   status: "pass",
   image,
   imageId,
   configuredUser: config.User,
+  configuredEntrypoint: config.Entrypoint,
   configuredCommand: config.Cmd,
   runtime,
 }) + "\\n");

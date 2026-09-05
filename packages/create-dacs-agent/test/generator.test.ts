@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  chmod,
   lstat,
   mkdtemp,
   mkdir,
@@ -10,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -42,6 +43,44 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
     else files.push(path.slice(root.length + 1));
   }
   return files.sort();
+}
+
+const TEST_ONLY_FAKE_DOCKER_SOURCE = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "image" && args[1] === "inspect" &&
+    args[3] === "{{json .Config}}") {
+  process.stdout.write(process.env.CREATE_DACS_AGENT_TEST_IMAGE_CONFIG + "\\n");
+} else if (args[0] === "run") {
+  process.stdout.write(process.env.CREATE_DACS_AGENT_TEST_RUNTIME_RESULT + "\\n");
+} else if (args[0] === "image" && args[1] === "inspect" &&
+    args[3] === "{{.Id}}") {
+  process.stdout.write("sha256:test-only-fake-image\\n");
+} else {
+  process.stderr.write("unexpected test-only fake docker invocation: " +
+    JSON.stringify(args) + "\\n");
+  process.exitCode = 64;
+}
+`;
+
+async function runGeneratedDockerSmokeWithFakeImage(
+  script: string,
+  config: Readonly<Record<string, unknown>>,
+  runtime: Readonly<Record<string, unknown>>,
+) {
+  const fakeBin = await temporaryDirectory();
+  const fakeDocker = join(fakeBin, "docker");
+  await writeFile(fakeDocker, TEST_ONLY_FAKE_DOCKER_SOURCE, "utf8");
+  await chmod(fakeDocker, 0o700);
+  return spawnSync(process.execPath, [script, "test-only/fake-image:latest"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      PATH: fakeBin + delimiter + (process.env.PATH ?? ""),
+      CREATE_DACS_AGENT_TEST_IMAGE_CONFIG: JSON.stringify(config),
+      CREATE_DACS_AGENT_TEST_RUNTIME_RESULT: JSON.stringify(runtime),
+    },
+  });
 }
 
 describe("create-dacs-agent", () => {
@@ -197,6 +236,83 @@ describe("create-dacs-agent", () => {
       createDacsAgentProject({ targetDirectory: linked, install: false }),
     ).rejects.toThrow(/symbolic link/);
   });
+
+  test.runIf(process.platform !== "win32")(
+    "rejects an unexpected image entrypoint through the generated smoke script",
+    async () => {
+      const parent = await temporaryDirectory();
+      const target = join(parent, "entrypoint-image-agent");
+      await createDacsAgentProject({
+        targetDirectory: target,
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+        deployment: "docker",
+        rails: "both",
+        install: false,
+      });
+      const result = await runGeneratedDockerSmokeWithFakeImage(
+        join(target, "scripts", "docker-runtime-smoke.mjs"),
+        {
+          User: "10001:10001",
+          WorkingDir: "/app",
+          Entrypoint: ["unexpected-program"],
+          Cmd: [
+            "node",
+            "--import",
+            "@kynesyslabs/dacs-node/demos-loader",
+            "dist/src/service.js",
+          ],
+        },
+        { status: "pass", uid: 10001, gid: 10001 },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        "image entrypoint overrides the generated DACS service command",
+      );
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "rejects wrong UID or GID through the generated smoke script",
+    async () => {
+      for (const { entrypoint, runtime } of [
+        { entrypoint: null, runtime: { status: "pass", uid: 10002, gid: 10001 } },
+        { entrypoint: [], runtime: { status: "pass", uid: 10001, gid: 10002 } },
+      ]) {
+        const parent = await temporaryDirectory();
+        const target = join(parent, `runtime-identity-${runtime.uid}-${runtime.gid}`);
+        await createDacsAgentProject({
+          targetDirectory: target,
+          mode: "live-demos",
+          profile: "dacs-sdk:fixed-price-x402:v1",
+          role: "buyer",
+          deployment: "docker",
+          rails: "both",
+          install: false,
+        });
+        const result = await runGeneratedDockerSmokeWithFakeImage(
+          join(target, "scripts", "docker-runtime-smoke.mjs"),
+          {
+            User: "10001:10001",
+            WorkingDir: "/app",
+            Entrypoint: entrypoint,
+            Cmd: [
+              "node",
+              "--import",
+              "@kynesyslabs/dacs-node/demos-loader",
+              "dist/src/service.js",
+            ],
+          },
+          runtime,
+        );
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "container runtime identity is not uid 10001 and gid 10001",
+        );
+      }
+    },
+  );
 
   test("generates a guarded authority-separated dual-rail Docker bootstrap", async () => {
     const parent = await temporaryDirectory();
