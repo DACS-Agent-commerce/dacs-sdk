@@ -37,6 +37,10 @@ import {
 } from "../artifacts/validators.js";
 import { signedBytes } from "../crypto/signing.js";
 import { DacsError } from "../errors.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import { attestationBundleHash, bundleSignedScope } from "./twoSidedBundle.js";
 import type { Verifier } from "./signedArtifact.js";
 import {
@@ -178,6 +182,13 @@ function canonicalRef(ref: AttestationRef): string {
   return canonicalize(ref as unknown as Record<string, unknown>);
 }
 
+function claimIdentityKey(value: unknown): string | null {
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed === null
+    ? null
+    : `${parsed.identity.scheme}:${parsed.identity.identifier}`;
+}
+
 function reject(
   reasonCode: EvidenceBoundReasonCode,
   reason: string,
@@ -242,12 +253,14 @@ async function verifyEd25519(
   message: Uint8Array,
   deps: EvidenceBoundBundleVerifierDeps,
 ): Promise<"valid" | "invalid" | "indeterminate"> {
+  const signerIdentity = claimIdentityKey(signer);
+  if (signerIdentity === null) return "invalid";
   if (!isCanonicalBase64Url(encoded)) return "invalid";
   const signature = Uint8Array.from(Buffer.from(encoded, "base64url"));
   if (signature.length !== 64) return "invalid";
   let publicKey: Uint8Array | null;
   try {
-    publicKey = await deps.resolvePublicKey(signer);
+    publicKey = await deps.resolvePublicKey(signerIdentity);
   } catch {
     return "indeterminate";
   }
@@ -260,39 +273,56 @@ async function verifyEd25519(
   }
 }
 
-function requiredBundleSigners(
+function bundleSignerAuthority(
   bundle: EvidenceBoundFaultAttestationBundle | FaultAttestationBundle,
-): string[] | null {
-  const byRole = new Map(bundle.parties.map((party) => [party.role, party.primaryClaim]));
+): {
+  required: string[];
+  parties: Set<string>;
+  anchor: string;
+} | null {
+  const byRole = new Map<string, string>();
+  const parties = new Set<string>();
+  for (const party of bundle.parties) {
+    const identity = claimIdentityKey(party.primaryClaim);
+    if (identity === null || parties.has(identity)) return null;
+    parties.add(identity);
+    byRole.set(party.role, identity);
+  }
   const buyer = byRole.get("buyer");
   const seller = byRole.get("seller");
-  if (!buyer || !seller) return null;
+  const anchor = byRole.get(bundle.anchoredByRole);
+  if (!buyer || !seller || !anchor) return null;
   const orchestrator = byRole.get("orchestrator");
-  return orchestrator ? [buyer, seller, orchestrator] : [buyer, seller];
+  return {
+    required: orchestrator ? [buyer, seller, orchestrator] : [buyer, seller],
+    parties,
+    anchor,
+  };
 }
 
 async function verifyBundleSignatures(
   bundle: EvidenceBoundFaultAttestationBundle | FaultAttestationBundle,
   deps: EvidenceBoundBundleVerifierDeps,
 ): Promise<"valid" | "invalid" | "indeterminate"> {
-  const required = requiredBundleSigners(bundle);
-  if (!required) return "invalid";
-  const signerSet = new Set(bundle.signatures.map((signature) => signature.party));
+  const authority = bundleSignerAuthority(bundle);
+  if (!authority) return "invalid";
+  const signerIdentities: string[] = [];
+  for (const signature of bundle.signatures) {
+    const identity = claimIdentityKey(signature.party);
+    if (identity === null) return "invalid";
+    signerIdentities.push(identity);
+  }
+  const signerSet = new Set(signerIdentities);
   const fullSet =
-    bundle.signatures.length === required.length &&
-    signerSet.size === required.length &&
-    required.every((signer) => signerSet.has(signer));
-  const anchorSigner = bundle.parties.find(
-    (party) => party.role === bundle.anchoredByRole,
-  )?.primaryClaim;
+    bundle.signatures.length === authority.required.length &&
+    signerSet.size === authority.required.length &&
+    authority.required.every((signer) => signerSet.has(signer));
   const singleSignedAbort =
     (bundle.outcome === "aborted-by-self" || bundle.outcome === "aborted-by-other") &&
     bundle.signatures.length === 1 &&
     signerSet.size === 1 &&
-    anchorSigner !== undefined &&
-    signerSet.has(anchorSigner);
+    signerSet.has(authority.anchor);
   if (!fullSet && !singleSignedAbort) return "invalid";
-  const parties = new Set(bundle.parties.map((party) => party.primaryClaim));
   const seen = new Set<string>();
   const message = signedBytes(
     "evidenceBoundFaultBundleVersion" in bundle
@@ -301,13 +331,15 @@ async function verifyBundleSignatures(
     attestationBundleHash(bundle),
   );
   let uncertain = false;
-  for (const signature of bundle.signatures) {
+  for (let index = 0; index < bundle.signatures.length; index += 1) {
+    const signature = bundle.signatures[index]!;
+    const identity = signerIdentities[index]!;
     if (
       signature.algorithm !== "ed25519" ||
-      !parties.has(signature.party) ||
-      seen.has(signature.party)
+      !authority.parties.has(identity) ||
+      seen.has(identity)
     ) return "invalid";
-    seen.add(signature.party);
+    seen.add(identity);
     const verdict = await verifyEd25519(signature.party, signature.value, message, deps);
     if (verdict === "invalid") return "invalid";
     if (verdict === "indeterminate") uncertain = true;
@@ -331,14 +363,18 @@ function listingScopeAndSigner(listing: Record<string, unknown>): {
     ? listing.sellerPrimaryClaim
     : null;
   const seller = normativeSeller ?? compactSeller;
+  const sellerIdentity = claimIdentityKey(seller);
+  const signerIdentity = isComponentSignature(signature)
+    ? claimIdentityKey(signature.signer)
+    : null;
   if (
     !isComponentSignature(signature) ||
     signature.algorithm !== "ed25519" ||
     typeof listing.listingId !== "string" ||
     !safeInteger(listing.listingVersion) ||
     listing.listingVersion < 1 ||
-    seller === null ||
-    signature.signer !== seller ||
+    sellerIdentity === null ||
+    signerIdentity !== sellerIdentity ||
     !Array.isArray(pipeline) ||
     pipeline.some(
       (step) =>
@@ -454,13 +490,16 @@ function receiptMatches(
   if (
     execution.jobId !== bundle.jobId ||
     execution.phaseKind !== record.phase ||
-    execution.phaseOrchestrator !== record.signature.signer ||
+    !sameCanonicalClaimIdentity(
+      execution.phaseOrchestrator,
+      record.signature.signer,
+    ) ||
     !safeInteger(execution.phaseIndex) ||
     receipt.nativeAddress !== ref.anchor.locator ||
     receipt.contentHash !== ref.contentHash ||
     typeof receipt.transaction !== "string" ||
     receipt.transaction.length === 0 ||
-    receipt.writer !== record.signature.signer ||
+    !sameCanonicalClaimIdentity(receipt.writer, record.signature.signer) ||
     !safeInteger(receipt.nonce)
   ) return false;
   let expectedAddress: string;
@@ -501,7 +540,10 @@ function resolvePhaseBinding(
       phaseKey !== `${execution.phaseIndex}:${execution.phaseKind}` ||
       execution.jobId !== bundle.jobId ||
       execution.phaseKind !== record.phase ||
-      execution.phaseOrchestrator !== record.signature.signer
+      !sameCanonicalClaimIdentity(
+        execution.phaseOrchestrator,
+        record.signature.signer,
+      )
     ) continue;
     const classes =
       (record.phase === "pay-cross-chain-htlc" ||
@@ -1122,17 +1164,26 @@ export async function verifyFaultBundleExtendedPointer(
       isRecord(party) && party.role === anchoredRole && typeof party.primaryClaim === "string")
     .map((party) => party.primaryClaim as string);
   const signature = pointer.signature;
+  const roleIdentity = roleClaims.length === 1
+    ? claimIdentityKey(roleClaims[0])
+    : null;
+  const pointerSignerIdentity = isComponentSignature(signature)
+    ? claimIdentityKey(signature.signer)
+    : null;
   if (
     roleClaims.length !== 1 ||
     !isComponentSignature(signature) ||
     signature.algorithm !== "ed25519" ||
-    signature.signer !== roleClaims[0]
+    roleIdentity === null ||
+    pointerSignerIdentity !== roleIdentity
   ) return { ok: false, reason: "pointer signer is not the unique anchoring-role holder" };
   if (binding !== undefined) {
+    const bindingSignerIdentity = claimIdentityKey(binding.signer);
+    const bindingSignatureIdentity = claimIdentityKey(binding.signature.signer);
     if (
       binding.role !== anchoredRole ||
-      binding.signer !== roleClaims[0] ||
-      binding.signature.signer !== roleClaims[0] ||
+      bindingSignerIdentity !== roleIdentity ||
+      bindingSignatureIdentity !== roleIdentity ||
       binding.signature.algorithm !== "ed25519"
     ) return { ok: false, reason: "BundleBinding role or signer is unauthorized" };
     const bindingVerdict = await verifyEd25519(
