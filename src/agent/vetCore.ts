@@ -33,6 +33,7 @@ import {
   identityBundleHash,
   isCanonicalClaimReference,
   isCanonicalDomainHostname,
+  parseCanonicalClaimReference,
   sameCanonicalClaimIdentity,
   type CciTlsnDisposition,
 } from "../identity/index.js";
@@ -4235,7 +4236,7 @@ function nativeCciTlsnEvidenceFromDisposition(
       "proofHash",
       "resolutionObservedAt",
     ]) ||
-    binding.subject !== request.evaluatedParty ||
+    !sameCanonicalClaimIdentity(binding.subject, request.evaluatedParty) ||
     binding.jobId !== request.jobId ||
     binding.sessionNonce !== input.sessionNonce ||
     binding.expectedServer !== input.expectedServer ||
@@ -4350,9 +4351,21 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
   );
   const bundleHash = identityBundleHash(request.vet.identityBundle);
   const nonce = request.nativeCciTlsn[0]!.sessionNonce;
+  const parsedPresenter = parseCanonicalClaimReference(
+    request.vet.evaluatedParty,
+  );
+  if (parsedPresenter === null) {
+    throw new DacsError(
+      "party Vet native CCI requires a canonical bundle presenter",
+    );
+  }
+  // Preserve the legacy key bytes for parameter-free presenters while making
+  // advisory CF-3 qualifiers share that presenter's durable nonce namespace.
+  const noncePresenter =
+    `${parsedPresenter.identity.scheme}:${parsedPresenter.identity.identifier}`;
   const nonceKeyHash = exactArtifactHash({
     bindingVersion: "1",
-    subject: request.vet.evaluatedParty,
+    subject: noncePresenter,
     sessionNonce: nonce,
   });
   const nonceBinding = deepFreezeSnapshot({

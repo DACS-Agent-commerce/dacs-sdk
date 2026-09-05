@@ -1695,7 +1695,8 @@ describe("partyVetWithNativeCciTlsnCore", () => {
 
   test("exercises the positive path through the public Agent API", async () => {
     const harness = state();
-    const request = await nativeCciPartyRequest(DEMOS_CCI_SUBJECT);
+    const qualifiedSubject = `${DEMOS_CCI_SUBJECT}?network=testnet`;
+    const request = await nativeCciPartyRequest(qualifiedSubject);
     await activateEffectLease(harness, request.vet.jobId);
     let resolutions = 0;
     let nativeVerifications = 0;
@@ -1735,6 +1736,7 @@ describe("partyVetWithNativeCciTlsnCore", () => {
         verifyIdentityPresentation: () => true,
         verifyNativeTlsn: (input: Readonly<VerifyNativeCciTlsnInput>) => {
           nativeVerifications += 1;
+          expect(input.subject).toBe(DEMOS_CCI_SUBJECT);
           return {
             status: "verified",
             verifiedAt: input.evaluatedAt,
@@ -1759,8 +1761,9 @@ describe("partyVetWithNativeCciTlsnCore", () => {
       deps(harness),
     );
     expect(production.record.overallDecision).toBe("pass");
+    expect(production.record.evaluatedParty).toBe(qualifiedSubject);
     expect(production.nativeCciTlsn[0]).toMatchObject({
-      subject: DEMOS_CCI_SUBJECT,
+      subject: qualifiedSubject,
       jobId: NATIVE_CCI_JOB_ID,
       sessionNonce: NATIVE_CCI_SESSION_NONCE,
       evaluatedAt: NOW,
@@ -1833,7 +1836,7 @@ describe("partyVetWithNativeCciTlsnCore", () => {
     expect(harness.steps.size).toBe(0);
   });
 
-  test("durably rejects reuse of one presenter's nonce by a different job", async () => {
+  test("preserves a plain-reference nonce bind against a qualified replay", async () => {
     const first = state();
     const firstRequest = await nativeCciPartyRequest();
     await activateEffectLease(first, firstRequest.vet.jobId);
@@ -1847,13 +1850,21 @@ describe("partyVetWithNativeCciTlsnCore", () => {
       deps(first),
       qualifier,
     );
+    const legacyNonceKeyHash = sha256Hex(canonicalize({
+      bindingVersion: "1",
+      subject: "alpha:alice",
+      sessionNonce: NATIVE_CCI_SESSION_NONCE,
+    }));
+    expect(first.steps.has(
+      `dacs2:party-vet-native-cci-nonce:${legacyNonceKeyHash}\u0000method`,
+    )).toBe(true);
 
     const second = state();
     // A new role process/session uses the same durable operation journal.
     second.steps = first.steps;
     second.inflight = first.inflight;
     const secondRequest = await nativeCciPartyRequest(
-      "alpha:alice",
+      "alpha:alice?network=testnet",
       "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
     );
     await activateEffectLease(second, secondRequest.vet.jobId);
@@ -1865,6 +1876,83 @@ describe("partyVetWithNativeCciTlsnCore", () => {
     )).rejects.toThrow(/nonce was unavailable or already bound/);
     expect(qualifierCalls).toBe(1);
     expect(second.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test("durably rejects one nonce across differently qualified CF-3 presenters", async () => {
+    const first = state();
+    const firstRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=mainnet",
+    );
+    await activateEffectLease(first, firstRequest.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+    await partyVetWithNativeCciTlsnCore(
+      firstRequest,
+      deps(first),
+      qualifier,
+    );
+
+    const second = state();
+    second.steps = first.steps;
+    second.inflight = first.inflight;
+    const secondRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=testnet",
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    );
+    expect(identityBundleHash(secondRequest.vet.identityBundle)).not.toBe(
+      identityBundleHash(firstRequest.vet.identityBundle),
+    );
+    await activateEffectLease(second, secondRequest.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      secondRequest,
+      deps(second),
+      qualifier,
+    )).rejects.toThrow(/nonce was unavailable or already bound/);
+    expect(qualifierCalls).toBe(1);
+    expect(first.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(second.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test("keeps same-nonce durable namespaces separate for distinct parties", async () => {
+    const first = state();
+    const firstRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=testnet",
+    );
+    await activateEffectLease(first, firstRequest.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+    await partyVetWithNativeCciTlsnCore(
+      firstRequest,
+      deps(first),
+      qualifier,
+    );
+
+    const second = state();
+    second.steps = first.steps;
+    second.inflight = first.inflight;
+    const secondRequest = await nativeCciPartyRequest(
+      "alpha:bob?network=testnet",
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    );
+    await activateEffectLease(second, secondRequest.vet.jobId);
+
+    const production = await partyVetWithNativeCciTlsnCore(
+      secondRequest,
+      deps(second),
+      qualifier,
+    );
+    expect(production.record.evaluatedParty).toBe(
+      secondRequest.vet.evaluatedParty,
+    );
+    expect(qualifierCalls).toBe(2);
+    expect(second.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
   });
 
   test("rejects a stale signed-bundle timestamp before ordinary Vet effects", async () => {
