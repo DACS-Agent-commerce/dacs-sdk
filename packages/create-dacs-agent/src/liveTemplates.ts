@@ -3953,6 +3953,7 @@ async function main(): Promise<void> {
           recipeRegistryVersion: 1,
           finalityTag: "latest" as const,
           retryDelayMs: 5_000,
+          maximumServiceAmount: config.limits.maxServiceAmount.amount,
           confirmUnused: confirmX402Unused!,
           maxTimeoutSeconds: 120,
           minimumConfirmations: Number(finalityBlocks),

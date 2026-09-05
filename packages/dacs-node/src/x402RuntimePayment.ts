@@ -22,6 +22,8 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 } from
+  "./buyerReceivedRuntime.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -35,6 +37,8 @@ export interface DacsX402BuyerRuntimePreparationV1 {
 export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
+  /** Operator-consented maximum payment amount in the rail's base units. */
+  maximumServiceAmount: string;
   minimumConfirmations: number;
   authorizationSearchFromBlock: number;
   resolvePreparation(input: Readonly<{
@@ -51,9 +55,9 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
-  /** Defaults to the locked-down public HTTPS transport when omitted. */
+  /** Explicit trusted test seam; production callers must omit this override. */
   fetchImpl?: typeof fetch;
-  /** Finite bound for the built-in fetch, shared with the paid delivery read. */
+  /** Finite bound for challenge and paid-response bodies. */
   maxResponseBytes?: number;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
@@ -172,6 +176,11 @@ function preparationBindingsMatch(
     HASH_RE.test(authority.sessionBindingHash);
 }
 
+function amountWithinConsentedMaximum(amount: string, maximum: string): boolean {
+  return /^[1-9][0-9]*$/.test(amount) && /^[1-9][0-9]*$/.test(maximum) &&
+    BigInt(amount) <= BigInt(maximum);
+}
+
 /**
  * Compose the role-owned EVM signer/read client, immutable order input,
  * chain-authenticated authorization provider and retained paid HTTP request
@@ -185,6 +194,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       options.context.commerceStores.role !== "buyer" ||
       options.context.commerceStores.x402Settlement === undefined ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
+      !/^[1-9][0-9]*$/.test(options.maximumServiceAmount) ||
       !Number.isSafeInteger(options.minimumConfirmations) ||
       options.minimumConfirmations <= 0 ||
       !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
@@ -204,26 +214,44 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       commerceStores.x402Settlement === undefined) {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
+  // Capture operator authority before retaining or invoking caller callbacks.
+  // `Readonly` is shallow at runtime: rereading the caller-owned options object
+  // after an await would let a callback raise the consent ceiling mid-operation.
+  const workerId = options.workerId;
+  const maximumServiceAmount = options.maximumServiceAmount;
+  const resolvePreparation = options.resolvePreparation;
+  const authorizeIntent = options.authorizeIntent;
+  const authorizePreparedIntent = options.authorizePreparedIntent;
+  const confirmUnused = options.confirmUnused;
+  const effectLeaseDurationMs = options.effectLeaseDurationMs;
+  const settlementLeaseDurationMs = options.settlementLeaseDurationMs;
+  const retryDelayMs = options.retryDelayMs;
   const fetchImpl = options.fetchImpl;
-  const testTransport = fetchImpl === undefined
-    ? {}
-    : { fetchImpl, transportPolicy: { mode: "insecure-test" as const } };
+  const transportPolicy = Object.freeze({
+    maxResponseBytes: options.maxResponseBytes ??
+      DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+    ...(fetchImpl === undefined ? {} : { mode: "insecure-test" as const }),
+  });
+  const transportOptions = Object.freeze({
+    transportPolicy,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+  });
   const recoverDisclosure = options.recoverDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery(testTransport);
+    createX402BuyerRetainedDisclosureRecovery(transportOptions);
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
     authorizationSearchFromBlock: options.authorizationSearchFromBlock,
     client: evm.runtime.readClient,
-    authorizeIntent: options.authorizeIntent,
-    ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
+    authorizeIntent,
+    ...(confirmUnused === undefined ? {} : { confirmUnused }),
     recoverDisclosure,
   });
-  const transport = createX402BuyerPaidRequestTransport(testTransport);
+  const transport = createX402BuyerPaidRequestTransport(transportOptions);
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
-    workerId: options.workerId,
+    workerId,
     settlementStore: commerceStores.x402Settlement,
     authorizationProvider,
     transport,
@@ -233,7 +261,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
       try {
-        preparation = await options.resolvePreparation({ operation, retained });
+        preparation = await resolvePreparation({ operation, retained });
       } catch (error) {
         if (error instanceof DacsLiveEffectInputControlError) throw error;
         throw new DacsLiveEffectInputControlError(
@@ -245,6 +273,15 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
         throw new DacsLiveEffectInputControlError(
           "operator-action",
           "x402-preparation-authority-mismatch",
+        );
+      }
+      if (!amountWithinConsentedMaximum(
+        preparation.authority.amount,
+        maximumServiceAmount,
+      )) {
+        throw new DacsLiveEffectInputControlError(
+          "operator-action",
+          "x402-preparation-amount-exceeds-consented-maximum",
         );
       }
       let client;
@@ -265,7 +302,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           ? {} : { challengeHeaders: preparation.challengeHeaders }),
       }, {
         client,
-        ...testTransport,
+        ...transportOptions,
       });
       if (result.disposition === "prepared") return result.intent;
       throw new DacsLiveEffectInputControlError(
@@ -282,19 +319,17 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           bindingHash: order.bindingHash,
           localBindingHash: order.localBindingHash,
           track: "payment" as const,
-          owner: options.workerId,
+          owner: workerId,
           generation: 0,
           idempotencyKey: "authorization-read-only",
           assertCurrent: async () => undefined,
         },
       } satisfies FixedPriceX402TrackOperationInput;
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
-      return options.authorizePreparedIntent({ operation, retained, intent });
+      return authorizePreparedIntent({ operation, retained, intent });
     },
-    ...(options.effectLeaseDurationMs === undefined
-      ? {} : { effectLeaseDurationMs: options.effectLeaseDurationMs }),
-    ...(options.settlementLeaseDurationMs === undefined
-      ? {} : { settlementLeaseDurationMs: options.settlementLeaseDurationMs }),
-    ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
+    ...(effectLeaseDurationMs === undefined ? {} : { effectLeaseDurationMs }),
+    ...(settlementLeaseDurationMs === undefined ? {} : { settlementLeaseDurationMs }),
+    ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
   });
 }
