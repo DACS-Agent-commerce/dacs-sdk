@@ -18,7 +18,7 @@ import type {
 } from "../discovery/boundArtifactRepository.js";
 import type { VerifiedRead } from "../discovery/verifiedRead.js";
 import { DacsError } from "../errors.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import { isCanonicalClaimReference, sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 
 const EFFECT_KIND = "artifact-publication" as const;
 const EFFECT_SCHEMA = "dacs-rating-publication-effect/v1" as const;
@@ -349,7 +349,7 @@ function captureInput(input: DurableRatingPublicationInput): CapturedPublication
   if (
     !isCanonicalClaimReference(captured.buyer) ||
     !isCanonicalClaimReference(captured.seller) ||
-    captured.buyer === captured.seller
+    sameCanonicalClaimIdentity(captured.buyer, captured.seller)
   ) {
     throw new DacsError("durable RatingRecord publication parties are invalid");
   }
