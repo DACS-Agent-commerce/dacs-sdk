@@ -396,6 +396,20 @@ describe("durable DACS-5 RatingRecord publication", () => {
     expect(bound.state.writes).toBe(1);
   });
 
+  it("rejects CF-3-equivalent session parties before creating a durable intent", async () => {
+    const record = await buyerRating();
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    await expect(publishRatingRecordDurably({
+      record,
+      buyer: `${BUYER}?jurisdiction=GB`,
+      seller: `${BUYER}?jurisdiction=US`,
+      expectedOwner: BUYER_OWNER,
+    }, deps(effects, bound.repository))).rejects.toThrow(/parties are invalid/);
+    expect(effects.record).toBeUndefined();
+    expect(bound.state.writes).toBe(0);
+  });
+
   it("rejects role relabelling before creating a durable intent", async () => {
     const record = await buyerRating();
     const effects = new MemoryEffectStore();
