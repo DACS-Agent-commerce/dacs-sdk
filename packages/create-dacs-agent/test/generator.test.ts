@@ -386,6 +386,12 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
     expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).toContain(
+      "const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock",
+    );
+    expect(combined).toContain(
+      'throw new Error("x402 authorization search bound is unavailable")',
+    );
     expect(combined).toContain('finalityTag: "latest"');
     expect(combined).toContain('evmFinalityTag: "latest"');
     expect(combined).toContain("retryDelayMs: 5_000");
