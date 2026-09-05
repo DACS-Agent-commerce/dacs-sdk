@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   lstat,
+  link,
   mkdir,
   open,
   readFile,
@@ -8,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  unlink,
 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -448,6 +450,31 @@ export async function createFsWalletSpendStateStoreV1(
     }
   }
 
+  async function publishCompleteFileLock(
+    path: string,
+    owner: LockOwnerV1,
+  ): Promise<void> {
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    const handle = await open(candidate, "wx", FILE_MODE);
+    try {
+      await handle.writeFile(JSON.stringify(owner), "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      // A hard link is the exclusive publication primitive. Unlike rename, it
+      // cannot replace an existing legacy directory or a successor lock file.
+      await link(candidate, path);
+      await syncDirectory(locksDirectory);
+    } finally {
+      await unlink(candidate).catch((error: unknown) => {
+        if (nestedErrorCode(error) !== "ENOENT") throw error;
+      });
+    }
+    await assertPrivateOwnedPath(path, "file");
+  }
+
   function ownerIsLive(owner: LockOwnerV1): boolean {
     return owner.hostname !== hostname() || processAlive(owner.pid);
   }
@@ -640,14 +667,34 @@ export async function createFsWalletSpendStateStoreV1(
     return live;
   }
 
+  async function refuseLegacyCoordination(scope: string): Promise<void> {
+    const legacyQuarantinePrefix = `${scope}.lock.reclaim.`;
+    if ((await readdir(locksDirectory)).some((name) =>
+      name.startsWith(legacyQuarantinePrefix))) {
+      throw new DacsError(
+        "legacy wallet spend lock quarantine requires a quiesced upgrade",
+      );
+    }
+  }
+
   async function observeStaleLock(path: string): Promise<{
     metadata: Awaited<ReturnType<typeof lstat>>;
     owner: LockOwnerV1;
   } | null> {
     let metadata;
     try {
-      await assertPrivateOwnedPath(path, "directory");
       metadata = await lstat(path);
+      if (metadata.isDirectory()) {
+        // Version 1 directory locks are deliberately not reclaimed. A paused
+        // legacy publisher can resume after its directory is moved, and a
+        // legacy reclaimer ignores the new mutation gate. The file-form lock
+        // makes mixed writers fail closed; operators must stop old writers and
+        // remove a confirmed-abandoned legacy lock before upgrading.
+        throw new DacsError(
+          "legacy wallet spend directory lock requires a quiesced upgrade",
+        );
+      }
+      await assertPrivateOwnedPath(path, "file");
     } catch (error) {
       if (nestedErrorCode(error) === "ENOENT") return null;
       throw error;
@@ -671,7 +718,7 @@ export async function createFsWalletSpendStateStoreV1(
     if (await observeStaleLock(path) === null) return;
     // Repeat the authoritative observation under the mutation gate immediately
     // before rename; the post-rename inode and owner check closes the remaining
-    // replacement window even against a legacy participant that ignores it.
+    // replacement window between compatible file-lock participants.
     const observed = await observeStaleLock(path);
     if (observed === null) return;
     const quarantine = staleLockPath(scope);
@@ -724,8 +771,8 @@ export async function createFsWalletSpendStateStoreV1(
       }
     }
 
-    // If a legacy stale-reclaimer moved our live lock, remove only the unique
-    // quarantine whose complete owner record still carries this exact token.
+    // Recover only a unique compatible quarantine whose complete owner record
+    // still carries this exact token.
     const prefix = lockQuarantinePrefix(scope);
     for (const name of (await readdir(locksDirectory)).filter((item) =>
       item.startsWith(prefix) && item.endsWith(".stale"))) {
@@ -755,13 +802,15 @@ export async function createFsWalletSpendStateStoreV1(
         createdAt: Date.now(),
       };
       while (true) {
+        await refuseLegacyCoordination(scope);
         if ((await activeStaleLockQuarantines(scope)).length === 0) {
           try {
-            await publishCompleteDirectoryLock(path, owner);
+            await publishCompleteFileLock(path, owner);
             break;
           } catch (error) {
             const code = nestedErrorCode(error);
-            if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+            if (code !== "EEXIST" && code !== "ENOTEMPTY" &&
+                code !== "EISDIR" && code !== "ENOTDIR") throw error;
             await reclaimStaleLockUnderMutationGate(scope, path);
           }
         }
