@@ -424,6 +424,135 @@ describe("durable two-agent RFQ lifecycle", () => {
     expect(accepted.size).toBe(1);
   });
 
+  test.each([
+    ["acknowledged", undefined, "ready"],
+    ["rejected", "member transport refused packet", "rejected"],
+  ] as const)(
+    "preserves a concurrently terminal %s outbox entry over a late publish response",
+    async (reconciledDisposition, reconciledReason, expectedStatus) => {
+      let releasePublish!: () => void;
+      const publishGate = new Promise<void>((resolve) => {
+        releasePublish = resolve;
+      });
+      let publishStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        publishStarted = resolve;
+      });
+      const transport: DurableRfqLifecycleTransport<string> = {
+        async publish() {
+          publishStarted();
+          await publishGate;
+          return { disposition: "indeterminate", reason: "late lost response" };
+        },
+        async reconcile() {
+          return reconciledDisposition === "acknowledged"
+            ? { disposition: "acknowledged" }
+            : { disposition: "rejected", reason: reconciledReason! };
+        },
+      };
+      const store = createInMemoryDurableRfqLifecycleStore<string>();
+      const client = createDurableRfqLifecycleClient({
+        role: "buyer",
+        store,
+        transport,
+        reserveChannelId: durableReservation(),
+        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        verifyChannelMessage: verifyChannel,
+        agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+        verifyAgreementContribution: verifyAgreement,
+        nowMs: () => NOW,
+      });
+
+      const sending = client.open(openInput()).then(() => client.sendOffer(
+        JOB_ID,
+        {
+          rfqProposalVersion: "1",
+          price: { amount: "9", currency: "USDC" },
+        },
+      ));
+      await started;
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: expectedStatus,
+      });
+      releasePublish();
+      await expect(sending).resolves.toMatchObject({ status: expectedStatus });
+      const loaded = await store.load("buyer", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("record did not load");
+      expect(loaded.record.outbox[0]).toMatchObject({
+        state: reconciledDisposition,
+        ...(reconciledReason === undefined ? {} : { reason: reconciledReason }),
+      });
+      if (reconciledDisposition === "rejected") {
+        expect(loaded.record.failure).toMatchObject({
+          class: "transport",
+          packetId: loaded.record.outbox[0]!.packet.packetId,
+          reason: reconciledReason,
+        });
+      } else {
+        expect(loaded.record.failure).toBeUndefined();
+      }
+    },
+  );
+
+  test.each(["jobId", "channelId"] as const)(
+    "rejects an outbox packet with a foreign %s before reconciliation",
+    async (field) => {
+      const base = createInMemoryDurableRfqLifecycleStore<string>();
+      let tamper = false;
+      const store = {
+        async load(role: "buyer" | "seller", jobId: string) {
+          const loaded = await base.load(role, jobId);
+          if (!tamper || loaded.status !== "ok") return loaded;
+          const record = structuredClone(loaded.record);
+          const packet = record.outbox[0]?.packet;
+          if (!packet) throw new Error("outbox packet missing");
+          if (field === "jobId") {
+            packet.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+          } else {
+            packet.channelId = "foreign-private-channel";
+            if (packet.kind === "turn") {
+              packet.message.channelId = packet.channelId;
+            }
+          }
+          const { packetId: _packetId, ...unsigned } = packet;
+          packet.packetId = rfqLifecyclePacketId(unsigned);
+          return { status: "ok" as const, record };
+        },
+        create: base.create.bind(base),
+        compareAndSwap: base.compareAndSwap.bind(base),
+      };
+      const reconcile = vi.fn(async () => ({ disposition: "absent" as const }));
+      const client = createDurableRfqLifecycleClient({
+        role: "buyer",
+        store,
+        transport: {
+          async publish() {
+            return { disposition: "indeterminate", reason: "lost response" };
+          },
+          reconcile,
+        },
+        reserveChannelId: durableReservation(),
+        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        verifyChannelMessage: verifyChannel,
+        agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+        verifyAgreementContribution: verifyAgreement,
+        nowMs: () => NOW,
+      });
+      await client.open(openInput());
+      await client.sendOffer(JOB_ID, {
+        rfqProposalVersion: "1",
+        price: { amount: "9", currency: "USDC" },
+      });
+      tamper = true;
+
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "rejected",
+        reason: expect.stringContaining("outbox routing"),
+      });
+      expect(reconcile).not.toHaveBeenCalled();
+    },
+  );
+
   test("uses its trusted clock to persist timeout without signing or publishing a late turn", async () => {
     let now = NOW;
     const network = createInMemoryRfqLifecycleNetwork<string>();
