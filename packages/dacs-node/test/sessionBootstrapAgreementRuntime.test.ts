@@ -23,6 +23,7 @@ import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
   "../src/purchaseDemosBudget.js";
 import {
+  advanceDacsVetTerminalTrackV1,
   createDacsBuyerSessionBootstrapAgreementTrackV1,
   createDacsSellerSessionBootstrapAgreementTrackV1,
   loadDacsBuyerSessionAgreementFactsV1,
@@ -587,5 +588,29 @@ describe("session bootstrap agreement tracks", () => {
     expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
     expect(vet.produce).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
+  });
+
+  it("keeps a registered terminal pending when recursive authentication is unavailable", async () => {
+    const context = {
+      database: { readTime: () => 10_000 },
+    } as never;
+    const runtime = {
+      advanceRegisteredTerminal: vi.fn(async () => {
+        throw new DacsVetTerminalBundleTransportError(
+          "vet-terminal-production-indeterminate",
+        );
+      }),
+    } as never;
+
+    await expect(advanceDacsVetTerminalTrackV1(
+      runtime,
+      context,
+      1_000,
+      JOB_ID,
+    )).resolves.toEqual({
+      status: "indeterminate",
+      reasonCode: "vet-terminal-production-indeterminate",
+      retryAt: 11_000,
+    });
   });
 });

@@ -346,6 +346,15 @@ export async function advanceDacsVetTerminalTrackV1(
   } catch (error) {
     if (error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode === "vet-terminal-material-unavailable") return undefined;
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === "vet-terminal-production-indeterminate") {
+      return pending(
+        context,
+        delay,
+        error.reasonCode,
+        "indeterminate",
+      );
+    }
     return operator(error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
       ? "vet-terminal-finalization-conflict"
