@@ -1,9 +1,15 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   assertPositiveAmount,
   baseUnits,
   canonicalize,
   sha256Hex,
 } from "../canonical/index.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -286,21 +292,113 @@ function requireUInt(value: unknown, label: string, positive = false): number {
   return Number(value);
 }
 
+function stableDataProperty(
+  source: unknown,
+  key: PropertyKey,
+  label: string,
+): unknown {
+  if ((typeof source !== "object" && typeof source !== "function") ||
+      source === null || nodeTypes.isProxy(source)) {
+    throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+  }
+  try {
+    let cursor: object | null = source;
+    while (cursor !== null) {
+      if (nodeTypes.isProxy(cursor)) throw new TypeError("proxy prototype");
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+      if (descriptor !== undefined) {
+        if (!("value" in descriptor)) throw new TypeError("accessor property");
+        return descriptor.value;
+      }
+      cursor = Object.getPrototypeOf(cursor) as object | null;
+    }
+  } catch (cause) {
+    throw new DacsError(
+      `pay-cross-chain-liquidity-tank: ${label} must be stable data`,
+      { cause },
+    );
+  }
+  return undefined;
+}
+
+type LiquidityTankMethod = (...args: never[]) => unknown;
+
+function stableBoundMethod<T extends LiquidityTankMethod>(
+  source: unknown,
+  key: PropertyKey,
+  label: string,
+): T {
+  const method = stableDataProperty(source, key, label);
+  if (typeof method !== "function" || nodeTypes.isProxy(method)) {
+    throw new DacsError(
+      `pay-cross-chain-liquidity-tank: ${label} must be a stable method`,
+    );
+  }
+  return Function.prototype.bind.call(method, source) as T;
+}
+
 function successfulStoreWrite(value: unknown): boolean {
-  if (value === null || typeof value !== "object") return false;
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) return false;
   const status = Object.getOwnPropertyDescriptor(value, "status");
   return status !== undefined && "value" in status &&
     (status.value === "recorded" || status.value === "existing");
+}
+
+function snapshotOptionalCanonicalRead<T>(
+  value: T,
+  label: string,
+  optionalUndefined: ReadonlySet<string>,
+): T {
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        nodeTypes.isProxy(value)) {
+      throw new TypeError("value is not an ordinary object");
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) {
+      throw new TypeError("value has an exotic prototype");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const normalized: Record<string, unknown> = {};
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== "string") throw new TypeError("value has a symbol property");
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new TypeError("properties must be enumerable data");
+      }
+      if (descriptor.value === undefined) {
+        if (optionalUndefined.has(key)) continue;
+        throw new TypeError("value has an undefined required property");
+      }
+      Object.defineProperty(normalized, key, {
+        value: descriptor.value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return snapshotCanonicalJsonRead(normalized, label) as T;
+  } catch (cause) {
+    throw new DacsError(`${label} must be stable data`, { cause });
+  }
+}
+
+function snapshotStoreClaim(value: unknown): LiquidityTankStoreClaim {
+  return snapshotOptionalCanonicalRead(
+    value,
+    "liquidity-tank store claim",
+    new Set(["submission", "observation"]),
+  ) as LiquidityTankStoreClaim;
 }
 
 function captureSettlement(
   value: unknown,
   intent: Readonly<LiquidityTankIntent>,
 ): Readonly<LiquidityTankSettlement> {
-  if (value === null || typeof value !== "object") {
-    throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement must be an object");
-  }
-  const settlement = value as LiquidityTankSettlement;
+  const settlement = snapshotCanonicalJsonRead(
+    value,
+    "liquidity-tank stored settlement",
+  ) as LiquidityTankSettlement;
   if (settlement.txRef?.kind !== "liquidity-tank" ||
       !BRIDGE_ID_RE.test(settlement.txRef.bridgeId) ||
       settlement.txRef.sourceChainId !== intent.sourceChainId ||
@@ -337,6 +435,15 @@ export function liquidityTankSettlementKey(input: {
   railId: string;
   phaseIndex: number;
 }): string {
+  const captured = snapshotCanonicalJson(input, "liquidity-tank settlement key authority");
+  return liquidityTankSettlementKeyFromCaptured(captured);
+}
+
+function liquidityTankSettlementKeyFromCaptured(input: {
+  jobId: string;
+  railId: string;
+  phaseIndex: number;
+}): string {
   const phaseIndex = requireUInt(input.phaseIndex, "phaseIndex");
   return sha256Hex(
     `dacs-liquidity-tank:v1:${requireString(input.jobId, "jobId").normalize("NFC")}:` +
@@ -347,6 +454,8 @@ export function liquidityTankSettlementKey(input: {
 export function createLiquidityTankIntent(
   authority: Readonly<LiquidityTankAuthority>,
 ): Readonly<LiquidityTankIntent> {
+  const captured = snapshotCanonicalJson(authority, "liquidity-tank authority");
+  authority = captured;
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "liquidity-tank") {
     throw new DacsError("pay-cross-chain-liquidity-tank: selected rail mechanism mismatch");
@@ -393,7 +502,7 @@ export function createLiquidityTankIntent(
   const operationHash = sha256Hex(canonicalize(operation));
   const unsigned = {
     intentVersion: "1" as const,
-    settlementKey: liquidityTankSettlementKey(authority),
+    settlementKey: liquidityTankSettlementKeyFromCaptured(authority),
     operationHash,
     jobId: requireString(authority.jobId, "jobId").normalize("NFC"),
     phaseIndex: authority.phaseIndex,
@@ -429,6 +538,17 @@ function validateSubmission(
   value: Readonly<Omit<LiquidityTankPreparedSubmission, "submissionHash">>,
   intent: Readonly<LiquidityTankIntent>,
 ): Readonly<LiquidityTankPreparedSubmission> {
+  const captured = snapshotCanonicalJsonRead(
+    value,
+    "liquidity-tank prepared submission",
+  );
+  return validateCapturedSubmission(captured, intent);
+}
+
+function validateCapturedSubmission(
+  value: Readonly<Omit<LiquidityTankPreparedSubmission, "submissionHash">>,
+  intent: Readonly<LiquidityTankIntent>,
+): Readonly<LiquidityTankPreparedSubmission> {
   if (value.submissionVersion !== "1" || value.authorityHash !== intent.bindingHash ||
       value.operationHash !== intent.operationHash || !BRIDGE_ID_RE.test(value.bridgeId)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: prepared submission authority mismatch");
@@ -445,7 +565,52 @@ function validateSubmission(
   return Object.freeze({ ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) });
 }
 
+function validateRetainedSubmission(
+  value: Readonly<LiquidityTankPreparedSubmission>,
+  intent: Readonly<LiquidityTankIntent>,
+): Readonly<LiquidityTankPreparedSubmission> {
+  const captured = snapshotCanonicalJsonRead(
+    value,
+    "liquidity-tank retained submission",
+  );
+  const { submissionHash, ...unsigned } = captured;
+  const validated = validateCapturedSubmission(unsigned, intent);
+  if (validated.submissionHash !== submissionHash) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: retained submission integrity mismatch");
+  }
+  return validated;
+}
+
 function validateObservation(
+  value: Readonly<LiquidityTankObservation>,
+  intent: Readonly<LiquidityTankIntent>,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+): Exclude<LiquidityTankObservation, { status: "indeterminate" }> | LiquidityTankObservation {
+  const captured = snapshotOptionalCanonicalRead(
+    value,
+    "liquidity-tank observation",
+    new Set(["lockTxHash", "recoveryDeadline"]),
+  );
+  return validateCapturedObservation(captured, intent, submission);
+}
+
+function validateRetainedObservation(
+  value: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
+  intent: Readonly<LiquidityTankIntent>,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+): Exclude<LiquidityTankObservation, { status: "indeterminate" }> {
+  const captured = snapshotCanonicalJsonRead(
+    value,
+    "liquidity-tank retained observation",
+  );
+  const validated = validateCapturedObservation(captured, intent, submission);
+  if (validated.status === "indeterminate") {
+    throw new DacsError("pay-cross-chain-liquidity-tank: indeterminate durable observation");
+  }
+  return validated;
+}
+
+function validateCapturedObservation(
   value: Readonly<LiquidityTankObservation>,
   intent: Readonly<LiquidityTankIntent>,
   submission: Readonly<LiquidityTankPreparedSubmission>,
@@ -531,9 +696,19 @@ function progressFromDurableObservation(
 export async function advanceLiquidityTankSettlement(
   input: Readonly<AdvanceLiquidityTankInput>,
 ): Promise<LiquidityTankProgress> {
+  let authority: unknown;
+  try {
+    authority = stableDataProperty(input, "authority", "authority");
+  } catch (error) {
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: error instanceof Error ? error.message : "liquidity-tank-authority-invalid",
+    };
+  }
   let intent: Readonly<LiquidityTankIntent>;
   try {
-    intent = createLiquidityTankIntent(input.authority);
+    intent = createLiquidityTankIntent(authority as LiquidityTankAuthority);
   } catch (error) {
     return {
       status: "failed",
@@ -553,24 +728,66 @@ export async function advanceLiquidityTankSettlement(
   let broadcastRetained: LiquidityTankAdapter["broadcastRetained"];
   let observeSettlement: LiquidityTankAdapter["observe"];
   try {
-    owner = requireString(input.owner, "owner");
+    const ownerValue = stableDataProperty(input, "owner", "owner");
+    const leaseDurationValue = stableDataProperty(
+      input,
+      "leaseDurationMs",
+      "leaseDurationMs",
+    );
+    const nowValue = stableDataProperty(input, "now", "now");
+    const store = stableDataProperty(input, "store", "store");
+    const adapter = stableDataProperty(input, "adapter", "adapter");
+    owner = requireString(ownerValue, "owner");
     leaseDurationMs = requireUInt(
-      input.leaseDurationMs ?? DEFAULT_LEASE_MS,
+      leaseDurationValue ?? DEFAULT_LEASE_MS,
       "leaseDurationMs",
       true,
     );
-    now = input.now ?? Date.now;
-    if (typeof now !== "function") {
-      throw new DacsError("pay-cross-chain-liquidity-tank: now must be a function");
+    const nowCandidate = nowValue ?? Date.now;
+    if (typeof nowCandidate !== "function" || nodeTypes.isProxy(nowCandidate)) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: now must be a stable function");
     }
-    claimSettlement = input.store.claim.bind(input.store);
-    isCurrentSettlement = input.store.isCurrent.bind(input.store);
-    recordSubmission = input.store.recordSubmission.bind(input.store);
-    recordObservation = input.store.recordObservation.bind(input.store);
-    recordSettlement = input.store.recordSettlement.bind(input.store);
-    prepareSubmission = input.adapter.prepareSubmission.bind(input.adapter);
-    broadcastRetained = input.adapter.broadcastRetained.bind(input.adapter);
-    observeSettlement = input.adapter.observe.bind(input.adapter);
+    now = nowCandidate as () => number;
+    claimSettlement = stableBoundMethod<LiquidityTankStore["claim"]>(
+      store,
+      "claim",
+      "store.claim",
+    );
+    isCurrentSettlement = stableBoundMethod<LiquidityTankStore["isCurrent"]>(
+      store,
+      "isCurrent",
+      "store.isCurrent",
+    );
+    recordSubmission = stableBoundMethod<LiquidityTankStore["recordSubmission"]>(
+      store,
+      "recordSubmission",
+      "store.recordSubmission",
+    );
+    recordObservation = stableBoundMethod<LiquidityTankStore["recordObservation"]>(
+      store,
+      "recordObservation",
+      "store.recordObservation",
+    );
+    recordSettlement = stableBoundMethod<LiquidityTankStore["recordSettlement"]>(
+      store,
+      "recordSettlement",
+      "store.recordSettlement",
+    );
+    prepareSubmission = stableBoundMethod<LiquidityTankAdapter["prepareSubmission"]>(
+      adapter,
+      "prepareSubmission",
+      "adapter.prepareSubmission",
+    );
+    broadcastRetained = stableBoundMethod<LiquidityTankAdapter["broadcastRetained"]>(
+      adapter,
+      "broadcastRetained",
+      "adapter.broadcastRetained",
+    );
+    observeSettlement = stableBoundMethod<LiquidityTankAdapter["observe"]>(
+      adapter,
+      "observe",
+      "adapter.observe",
+    );
   } catch (error) {
     return {
       status: "failed",
@@ -580,29 +797,32 @@ export async function advanceLiquidityTankSettlement(
   }
   const readNow = (): number => requireUInt(now(), "clock");
   let claimNow: number;
-  let claimed: LiquidityTankStoreClaim;
+  let rawClaim: unknown;
   try {
     claimNow = readNow();
-    claimed = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
+    rawClaim = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-unavailable" };
   }
-  let claimStatus: unknown;
+  let claimed: LiquidityTankStoreClaim;
   try {
-    claimStatus = claimed !== null && typeof claimed === "object" ? claimed.status : undefined;
+    claimed = snapshotStoreClaim(rawClaim);
   } catch {
-    claimStatus = undefined;
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
+  const claimStatus: unknown = Object.hasOwn(claimed, "status") ? claimed.status : undefined;
   if (typeof claimStatus !== "string") {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
   const requiresIntent = claimStatus === "acquired" || claimStatus === "waiting" || claimStatus === "settled";
-  if (requiresIntent && !("intent" in claimed)) {
+  const hasIntent = Object.hasOwn(claimed, "intent");
+  if (requiresIntent && !hasIntent) {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
-  if ("intent" in claimed) {
+  if (hasIntent) {
     try {
-      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
+      const claimedIntent = (claimed as { intent: unknown }).intent;
+      if (canonicalize(claimedIntent) !== canonicalize(intent)) {
         return { status: "indeterminate", reason: "liquidity-tank-settlement-store-intent-mismatch" };
       }
     } catch {
@@ -670,13 +890,16 @@ export async function advanceLiquidityTankSettlement(
     owner: lease.owner,
     generation: lease.generation,
     assertCurrent: async () => {
-      if (!await isCurrentSettlement({
+      const current = await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: lease.owner,
         generation: lease.generation,
         now: readNow(),
-      })) throw new DacsError("pay-cross-chain-liquidity-tank: stale effect fence");
+      });
+      if (current !== true) {
+        throw new DacsError("pay-cross-chain-liquidity-tank: stale effect fence");
+      }
     },
   });
   let submission: Readonly<LiquidityTankPreparedSubmission> | undefined;
@@ -694,12 +917,7 @@ export async function advanceLiquidityTankSettlement(
   }
   if (submission) {
     try {
-      const { submissionHash, ...unsigned } = submission;
-      const validated = validateSubmission(unsigned, intent);
-      if (validated.submissionHash !== submissionHash) {
-        throw new DacsError("pay-cross-chain-liquidity-tank: retained submission integrity mismatch");
-      }
-      submission = validated;
+      submission = validateRetainedSubmission(submission, intent);
     } catch (error) {
       return { status: "failed", errorClass: "permanent", reason: String(error) };
     }
@@ -732,9 +950,7 @@ export async function advanceLiquidityTankSettlement(
   let durableObservation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined;
   if (retainedObservation) {
     try {
-      const captured = validateObservation(retainedObservation, intent, submission);
-      if (captured.status === "indeterminate") throw new DacsError("indeterminate durable observation");
-      durableObservation = captured;
+      durableObservation = validateRetainedObservation(retainedObservation, intent, submission);
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }

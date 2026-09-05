@@ -17,6 +17,25 @@ const AGREEMENT_HASH = "c".repeat(64);
 const SR5_HASH = "d".repeat(64);
 const BRIDGE_ID = "abc123def456gh78";
 
+function unreadableProxy<T extends object>(value: T, touched: () => void): T {
+  const reject = () => {
+    touched();
+    throw new Error("proxy trap must not run");
+  };
+  return new Proxy(value, {
+    // Promise resolution necessarily probes `then` before an async boundary
+    // can deliver a value. Permit only that engine-level probe.
+    get(_target, key) {
+      if (key === "then") return undefined;
+      return reject();
+    },
+    getOwnPropertyDescriptor: reject,
+    getPrototypeOf: reject,
+    has: reject,
+    ownKeys: reject,
+  });
+}
+
 function authority(overrides: Partial<LiquidityTankAuthority> = {}): LiquidityTankAuthority {
   return {
     jobId: "tank-job-1",
@@ -175,6 +194,21 @@ test("persistence status is captured before the post-write fence await", async (
   expect(h.broadcastRetained).not.toHaveBeenCalled();
 });
 
+test("persistence result proxies are rejected without invoking traps", async () => {
+  for (const method of ["recordSubmission", "recordObservation", "recordSettlement"] as const) {
+    const touched = vi.fn();
+    const result = unreadableProxy({ status: "recorded" }, touched);
+    const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
+    const store = createInMemoryLiquidityTankStore();
+    store[method] = async () => result as never;
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toMatchObject({ status: "indeterminate" });
+    expect(touched).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  }
+});
+
 describe("createLiquidityTankIntent", () => {
   test("binds the exact v0.1 route and per-chain base units", () => {
     expect(createLiquidityTankIntent(authority())).toMatchObject({
@@ -204,6 +238,36 @@ describe("createLiquidityTankIntent", () => {
     expect(result).toMatchObject({ status: "failed", errorClass: "permanent" });
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
+
+  test.each(["accessor", "proxy"] as const)(
+    "rejects %s authority without invoking caller code",
+    async (kind) => {
+      const touched = vi.fn();
+      let hostile: LiquidityTankAuthority;
+      if (kind === "accessor") {
+        hostile = authority();
+        Object.defineProperty(hostile, "agreementHash", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            touched();
+            return touched.mock.calls.length === 1 ? AGREEMENT_HASH : RAIL_HASH;
+          },
+        });
+      } else {
+        hostile = unreadableProxy(authority(), touched);
+      }
+      const h = harness();
+
+      expect(() => createLiquidityTankIntent(hostile)).toThrow();
+      await expect(advanceLiquidityTankSettlement(runner({
+        authority: hostile,
+        adapter: h.adapter,
+      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(touched).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("advanceLiquidityTankSettlement", () => {
@@ -249,6 +313,114 @@ describe("advanceLiquidityTankSettlement", () => {
     });
     await advanceLiquidityTankSettlement(runner({ adapter: h.adapter, store }).shared);
     expect(events).toEqual(["persist", "broadcast"]);
+  });
+
+  test.each(["accessor", "proxy"] as const)(
+    "rejects a prepared-submission %s before persistence and safely retries",
+    async (kind) => {
+      const touched = vi.fn();
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      let attempts = 0;
+      h.adapter.prepareSubmission = vi.fn(async (intent) => {
+        attempts += 1;
+        const prepared = {
+          submissionVersion: "1" as const,
+          authorityHash: intent.bindingHash,
+          operationHash: intent.operationHash,
+          bridgeId: BRIDGE_ID,
+          substrateTxHash: "demos-native-bridge-tx",
+          signedSubmissionBase64: Buffer.from("signed-native-bridge").toString("base64"),
+          preparedAt: 900,
+        };
+        if (attempts > 1) return prepared;
+        if (kind === "accessor") {
+          Object.defineProperty(prepared, "authorityHash", {
+            enumerable: true,
+            configurable: true,
+            get() {
+              touched();
+              return touched.mock.calls.length === 1 ? intent.bindingHash : RAIL_HASH;
+            },
+          });
+          return prepared;
+        }
+        return unreadableProxy(prepared, touched);
+      });
+      const run = runner({ store, adapter: h.adapter });
+
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-submission-preparation-unavailable",
+      });
+      expect(touched).not.toHaveBeenCalled();
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-status-transition-unresolved",
+      });
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(2);
+      expect(recordSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each(["accessor", "proxy"] as const)(
+    "rejects an observation %s before observation effects and reuses retained submission",
+    async (kind) => {
+      const touched = vi.fn();
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      let attempts = 0;
+      const observe = vi.fn<LiquidityTankAdapter["observe"]>(async () => {
+        attempts += 1;
+        if (attempts > 1) return pending(h.operationHash);
+        const observed = empty(h.operationHash);
+        if (kind === "accessor") {
+          Object.defineProperty(observed, "status", {
+            enumerable: true,
+            configurable: true,
+            get() {
+              touched();
+              return touched.mock.calls.length === 1 ? "empty" : "completed";
+            },
+          });
+          return observed;
+        }
+        return unreadableProxy(observed, touched);
+      });
+      h.adapter.observe = observe;
+      const run = runner({ store, adapter: h.adapter });
+
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-status-unavailable",
+      });
+      expect(touched).not.toHaveBeenCalled();
+      expect(recordObservation).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "liquidity-tank-pending",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(recordObservation).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+
+  test("accepts read-only observations with explicit undefined optional fields", async () => {
+    const h = harness();
+    h.adapter.observe = vi.fn(async () => Object.freeze(pending(h.operationHash)));
+
+    await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared))
+      .resolves.toEqual({ status: "waiting", reason: "liquidity-tank-pending" });
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
   test("ambiguous broadcast reuses the exact retained transaction", async () => {
@@ -535,10 +707,14 @@ describe("advanceLiquidityTankSettlement", () => {
     const replacement = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
       throw new Error("mutated callback must not run");
     });
+    const isCurrent = vi.fn(inner.isCurrent.bind(inner));
+    const replacementIsCurrent = vi.fn(async () => false);
     const store: LiquidityTankStore = {
       ...inner,
+      isCurrent,
       async claim(input) {
         h.adapter.prepareSubmission = replacement;
+        store.isCurrent = replacementIsCurrent;
         return inner.claim(input);
       },
     };
@@ -546,6 +722,66 @@ describe("advanceLiquidityTankSettlement", () => {
     await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
     expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     expect(replacement).not.toHaveBeenCalled();
+    expect(isCurrent).toHaveBeenCalled();
+    expect(replacementIsCurrent).not.toHaveBeenCalled();
+  });
+
+  test.each(["store accessor", "store proxy", "adapter accessor", "adapter proxy"] as const)(
+    "rejects a %s dependency without invoking it",
+    async (kind) => {
+      const touched = vi.fn();
+      const inner = createInMemoryLiquidityTankStore();
+      const h = harness();
+      let store: LiquidityTankStore = inner;
+      let adapter: LiquidityTankAdapter = h.adapter;
+      if (kind === "store accessor") {
+        store = { ...inner };
+        Object.defineProperty(store, "claim", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            touched();
+            return inner.claim;
+          },
+        });
+      } else if (kind === "store proxy") {
+        store = unreadableProxy(inner, touched);
+      } else if (kind === "adapter accessor") {
+        adapter = { ...h.adapter };
+        Object.defineProperty(adapter, "prepareSubmission", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            touched();
+            return h.prepareSubmission;
+          },
+        });
+      } else {
+        adapter = unreadableProxy(h.adapter, touched);
+      }
+      const claim = vi.spyOn(inner, "claim");
+
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter }).shared))
+        .resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(touched).not.toHaveBeenCalled();
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    },
+  );
+
+  test("requires the effect fence read to return the literal boolean true", async () => {
+    const store = createInMemoryLiquidityTankStore();
+    const recordSubmission = vi.spyOn(store, "recordSubmission");
+    store.isCurrent = vi.fn(async () => ({ current: true }) as never);
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-submission-preparation-unavailable",
+      });
+    expect(recordSubmission).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
   test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -598,6 +834,51 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
 
+  test.each(["accessor", "proxy"] as const)(
+    "rejects a stored settlement %s without invoking caller code",
+    async (kind) => {
+      const intent = createLiquidityTankIntent(authority());
+      const touched = vi.fn();
+      const settlement = {
+        txRef: {
+          kind: "liquidity-tank" as const,
+          bridgeId: BRIDGE_ID,
+          sourceChainId: intent.sourceChainId,
+          destChainId: intent.destinationChainId,
+          lockTxHash: "source-lock-tx",
+          releaseTxHash: "destination-release-tx",
+        },
+        paymentAmount: { amount: intent.amount, currency: "USDC" as const },
+        settlementFinality: { model: "liquidity-tank" as const, finalityObservedAt: 3_000 },
+        authenticationHash: AUTH_HASH,
+      };
+      let hostile = settlement;
+      if (kind === "accessor") {
+        Object.defineProperty(settlement, "authenticationHash", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            touched();
+            return touched.mock.calls.length === 1 ? AUTH_HASH : RAIL_HASH;
+          },
+        });
+      } else {
+        hostile = unreadableProxy(settlement, touched);
+      }
+      const inner = createInMemoryLiquidityTankStore();
+      const store: LiquidityTankStore = {
+        ...inner,
+        claim: vi.fn(async () => ({ status: "settled", intent, settlement: hostile }) as never),
+      };
+      const h = harness();
+
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toMatchObject({ status: "indeterminate" });
+      expect(touched).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    },
+  );
+
   test("rejects a claim carrying a different durable intent", async () => {
     const inner = createInMemoryLiquidityTankStore();
     const store: LiquidityTankStore = {
@@ -633,6 +914,48 @@ describe("advanceLiquidityTankSettlement", () => {
     });
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
+
+  test.each(["own accessor", "inherited", "proxy"] as const)(
+    "rejects a claim with %s status without invoking caller code",
+    async (kind) => {
+      const intent = createLiquidityTankIntent(authority());
+      const touched = vi.fn();
+      const fields = {
+        intent,
+        lease: { owner: "worker-a", generation: 1, expiresAt: 2_000 },
+      };
+      let claimValue: object;
+      if (kind === "own accessor") {
+        claimValue = { ...fields };
+        Object.defineProperty(claimValue, "status", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            touched();
+            return touched.mock.calls.length === 1 ? "acquired" : "settled";
+          },
+        });
+      } else if (kind === "inherited") {
+        claimValue = Object.assign(Object.create({ status: "acquired" }), fields);
+      } else {
+        claimValue = unreadableProxy({ status: "acquired", ...fields }, touched);
+      }
+      const inner = createInMemoryLiquidityTankStore();
+      const store: LiquidityTankStore = {
+        ...inner,
+        claim: vi.fn(async () => claimValue as never),
+      };
+      const h = harness();
+
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-settlement-store-claim-invalid",
+        });
+      expect(touched).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    },
+  );
 
   test("stateful store claims must carry the exact durable intent", async () => {
     const inner = createInMemoryLiquidityTankStore();
