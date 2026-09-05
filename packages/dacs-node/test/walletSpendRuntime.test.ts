@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   WalletSpendPolicyV1,
@@ -168,5 +168,70 @@ describe("wallet spend host runtime", () => {
       readBalance: async () => "1000",
       authenticateRecovery: async () => true,
     })).rejects.toMatchObject({ reasonCode: "wallet-spend-data-directory-unsafe" });
+  });
+
+  it("owns and freezes the complete policy before asynchronous initialization", async () => {
+    const paths = await fixture();
+    const input = policy();
+    const original = structuredClone(input);
+    const opening = createDacsWalletSpendAuthorityV1({
+      policy: input,
+      dataDirectory: paths.dataDirectory,
+      integrityKeyFilePath: paths.keyPath,
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+    });
+
+    input.wallet = "9".repeat(64);
+    input.chainId = "mutated-chain";
+    input.maximumConcurrentEffects = 9;
+    input.maximumRetainedReservations = 99;
+    input.assets[0]!.asset = "MUTATED";
+    input.assets[0]!.maximumPerOrderDebit = "999";
+    (input.assets as Array<WalletSpendPolicyV1["assets"][number]>).push({
+      ...input.assets[0]!, asset: "SECOND",
+    });
+
+    const authority = await opening;
+    expect(authority.policy).toEqual(original);
+    expect(Object.isFrozen(authority.policy)).toBe(true);
+    expect(Object.isFrozen(authority.policy.assets)).toBe(true);
+    expect(Object.isFrozen(authority.policy.assets[0])).toBe(true);
+  });
+
+  it("rejects nested accessors and proxies without invoking caller code", async () => {
+    const paths = await fixture();
+    const accessed = vi.fn(() => "DEM");
+    const accessorPolicy = policy();
+    Object.defineProperty(accessorPolicy.assets[0], "asset", {
+      enumerable: true,
+      get: accessed,
+    });
+    await expect(createDacsWalletSpendAuthorityV1({
+      policy: accessorPolicy,
+      dataDirectory: paths.dataDirectory,
+      integrityKeyFilePath: paths.keyPath,
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+    })).rejects.toThrow(/stable canonical data/);
+    expect(accessed).not.toHaveBeenCalled();
+
+    const trapped = vi.fn();
+    const proxyPolicy = policy();
+    (proxyPolicy.assets as Array<WalletSpendPolicyV1["assets"][number]>)[0] =
+      new Proxy(proxyPolicy.assets[0]!, {
+        get(target, key, receiver) {
+          trapped();
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    await expect(createDacsWalletSpendAuthorityV1({
+      policy: proxyPolicy,
+      dataDirectory: paths.dataDirectory,
+      integrityKeyFilePath: paths.keyPath,
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+    })).rejects.toThrow(/stable canonical data/);
+    expect(trapped).not.toHaveBeenCalled();
   });
 });

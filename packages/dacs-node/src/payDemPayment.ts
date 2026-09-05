@@ -5,9 +5,12 @@ import {
   type PayDemRail,
   type PayDemReconciledSettlement,
   type PayDemSettlementRecoveryContext,
+  type DemosTransferObservation,
   type SettleResult,
   type SettlementEffectFence,
+  type WalletSpendAuthorityDependenciesV1,
   type WalletSpendAuthorityV1,
+  type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
   type WalletSpendSettlementObservationV1,
 } from "@kynesyslabs/dacs";
@@ -114,6 +117,13 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
   }>): Promise<void> | void;
   effectLeaseDurationMs?: number;
   retryDelayMs?: number;
+}
+
+export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
+  /** Integrity-checked generated buyer effect/checkpoint store. */
+  database: DacsNodeSqliteDatabase;
+  /** Finalized Demos transfer observer for the exact prepared transaction hash. */
+  observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
 export class DacsPayDemBuyerPaymentError extends Error {
@@ -317,6 +327,102 @@ function walletSettlement(
             amount: settlement.networkFeeOs })]),
     ]),
   });
+}
+
+function generatedBuyerPaymentEffectId(
+  reservation: Readonly<WalletSpendReservationV1>,
+): string {
+  return sha256Hex(canonicalize({
+    localBindingHash: reservation.settlementBindingHash,
+    role: "buyer",
+    track: "payment",
+    roleLocalJob: `dacs-live:buyer:payment:${reservation.jobId}`,
+  }));
+}
+
+/**
+ * Authenticate generated native-DEM wallet recovery against both finalized
+ * chain facts and the pre-broadcast checkpoint's exact confirmed fee debit.
+ * Missing checkpoints or chain reads are not converted into invented fees.
+ */
+export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
+  options: Readonly<DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1>,
+): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
+  if (!plainObject(options) || !exactKeys(options, [
+    "database", "observeDemosTransfer",
+  ]) || options.database === null || typeof options.database !== "object" ||
+      typeof options.database.loadEffectInput !== "function" ||
+      typeof options.database.loadEffectCheckpoint !== "function" ||
+      typeof options.observeDemosTransfer !== "function") {
+    throw new TypeError("pay-dem wallet recovery authenticator options are invalid");
+  }
+  const database = options.database;
+  const observeDemosTransfer = options.observeDemosTransfer.bind(options);
+
+  return async (
+    reservation: Readonly<WalletSpendReservationV1>,
+    observation: Readonly<WalletSpendRecoveryObservationV1>,
+  ): Promise<boolean> => {
+    try {
+      const effectId = generatedBuyerPaymentEffectId(reservation);
+      const rawPayment = database.loadEffectInput("payment", effectId);
+      if (rawPayment === undefined) return false;
+      const payment = capturePaymentInput(rawPayment);
+      if (canonicalize(walletReservation(payment)) !== canonicalize(reservation)) {
+        return false;
+      }
+      const checkpoint = database.loadEffectCheckpoint(
+        "payment",
+        effectId,
+        PREPARED_CHECKPOINT,
+      );
+      if (observation.disposition !== "settled") {
+        const absenceProofHash = sha256Hex(canonicalize({
+          disposition: "no-prepared-transfer",
+          settlementKey: payment.settlementKey,
+          orderLocalBindingHash: payment.orderLocalBindingHash,
+        }));
+        return checkpoint === undefined &&
+          observation.evidenceHash === absenceProofHash;
+      }
+      if (checkpoint === undefined) return false;
+      const prepared = capturePrepared(checkpoint.value, payment);
+      if (prepared.txHash !== observation.evidenceHash ||
+          prepared.confirmedTotalDebitOs === undefined) {
+        return false;
+      }
+      const chain = await observeDemosTransfer(prepared.txHash);
+      if (chain.status !== "included" || chain.txHash !== prepared.txHash ||
+          chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
+          chain.amountOs !== payment.amountOs) {
+        return false;
+      }
+      const networkFeeOs = (
+        BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
+      ).toString();
+      const expected: WalletSpendSettlementObservationV1 = Object.freeze({
+        disposition: "settled",
+        evidenceHash: prepared.txHash,
+        debits: Object.freeze([
+          Object.freeze({
+            asset: "DEM",
+            purpose: "service" as const,
+            amount: payment.amountOs,
+          }),
+          ...(BigInt(payment.maxTotalDebitOs) === BigInt(payment.amountOs)
+            ? []
+            : [Object.freeze({
+                asset: "DEM",
+                purpose: "network-fee" as const,
+                amount: networkFeeOs,
+              })]),
+        ]),
+      });
+      return canonicalize(expected) === canonicalize(observation);
+    } catch {
+      return false;
+    }
+  };
 }
 
 function settlementFence(

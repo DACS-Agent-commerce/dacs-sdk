@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { resolve, sep } from "node:path";
+import { types as nodeTypes } from "node:util";
 
 import {
   createFsWalletSpendStateStoreV1,
@@ -48,11 +49,85 @@ export class DacsWalletSpendRuntimeError extends Error {
   }
 }
 
+function ownCanonicalData(
+  value: unknown,
+  ancestors = new Set<object>(),
+): unknown {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value) || Object.is(value, -0)) {
+      throw new TypeError();
+    }
+    return value;
+  }
+  if (typeof value !== "object" || nodeTypes.isProxy(value) || ancestors.has(value)) {
+    throw new TypeError();
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) throw new TypeError();
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype) throw new TypeError();
+      const length = descriptors.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 ||
+          keys.length !== length + 1) {
+        throw new TypeError();
+      }
+      const copy: unknown[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (descriptor === undefined || !("value" in descriptor) ||
+            !descriptor.enumerable || descriptor.value === undefined) {
+          throw new TypeError();
+        }
+        copy.push(ownCanonicalData(descriptor.value, ancestors));
+      }
+      return Object.freeze(copy);
+    }
+
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError();
+    const copy: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !("value" in descriptor) ||
+          !descriptor.enumerable || descriptor.value === undefined) {
+        throw new TypeError();
+      }
+      Object.defineProperty(copy, key, {
+        value: ownCanonicalData(descriptor.value, ancestors),
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return Object.freeze(copy);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function capturePolicySynchronously(
+  value: unknown,
+): Readonly<WalletSpendPolicyV1> {
+  try {
+    return ownCanonicalData(value) as Readonly<WalletSpendPolicyV1>;
+  } catch {
+    throw new TypeError("wallet spend policy must be stable canonical data");
+  }
+}
+
 function captureOptions(
   value: unknown,
 ): Readonly<DacsWalletSpendRuntimeOptionsV1> {
   try {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        nodeTypes.isProxy(value)) {
       throw new TypeError();
     }
     const prototype = Object.getPrototypeOf(value);
@@ -120,6 +195,9 @@ export async function createDacsWalletSpendAuthorityV1(
   options: Readonly<DacsWalletSpendRuntimeOptionsV1>,
 ): Promise<Readonly<WalletSpendAuthorityV1>> {
   const captured = captureOptions(options);
+  // Policy is authority, not late configuration. Own the complete JSON graph
+  // before directory, key, or store initialization yields to caller code.
+  const policy = capturePolicySynchronously(captured.policy);
   const dataDirectory = await admitDataDirectory(captured.dataDirectory);
   const stateDirectory = resolve(
     captured.stateDirectory ?? resolve(dataDirectory, "wallet-spend"),
@@ -144,7 +222,7 @@ export async function createDacsWalletSpendAuthorityV1(
       dir: stateDirectory,
       integrityKey: key,
     });
-    return createWalletSpendAuthorityV1(captured.policy, {
+    return createWalletSpendAuthorityV1(policy, {
       store,
       readBalance: captured.readBalance,
       authenticateRecovery: captured.authenticateRecovery,
