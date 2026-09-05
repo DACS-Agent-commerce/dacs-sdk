@@ -74,6 +74,19 @@ async function signatureStatus(
 }
 
 describe("DACS-5 RatingRecord production", () => {
+  it("rejects CF-3-equivalent parties before invoking either role signer", async () => {
+    for (const create of [createBuyerRatingRecord, createSellerRatingRecord]) {
+      const sign = vi.fn(buyerSigner.sign);
+      await expect(create(input({ buyer: `${BUYER}?jurisdiction=GB`, seller: `${BUYER}?jurisdiction=US` }), { ...buyerSigner, sign })).rejects.toThrow(/same session party/);
+      expect(sign).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects wire self-ratings whose ClaimReferences differ only in qualifiers", async () => {
+    const record = await createBuyerRatingRecord(input(), buyerSigner);
+    expect(isRatingRecord({ ...record, target: `${BUYER}?jurisdiction=US` })).toBe(false);
+  });
+
   it("produces and verifies the buyer-to-seller direction", async () => {
     const record = await createBuyerRatingRecord(input(), buyerSigner);
 

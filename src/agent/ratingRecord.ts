@@ -10,7 +10,7 @@ import {
 } from "../artifacts/index.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import { isCanonicalClaimReference, sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const INPUT_KEYS = Object.freeze([
@@ -69,7 +69,7 @@ function validateInput(input: CreateRatingRecordInput): void {
   if (!isCanonicalClaimReference(input.seller)) {
     throw new DacsError("RatingRecord seller must be a canonical ClaimReference");
   }
-  if (input.buyer === input.seller) {
+  if (sameCanonicalClaimIdentity(input.buyer, input.seller)) {
     throw new DacsError("RatingRecord cannot rate the same session party");
   }
   if (!Number.isInteger(input.value) || input.value < 1 || input.value > 5) {
