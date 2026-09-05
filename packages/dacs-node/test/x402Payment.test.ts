@@ -436,6 +436,19 @@ function constrainedWallet(
   });
 }
 
+function clockedSettlementStore(now: () => number): X402BuyerSettlementStore {
+  const store = createInMemoryX402BuyerSettlementStore();
+  const clocked: X402BuyerSettlementStore = {
+    load: (settlementKey) => store.load(settlementKey),
+    claim: (input) => store.claim({ ...input, now: now() }),
+    isCurrent: (input) => store.isCurrent({ ...input, now: now() }),
+    grantRecovery: (input) => store.grantRecovery({ ...input, now: now() }),
+    recordDisclosure: (input) => store.recordDisclosure({ ...input, now: now() }),
+    recordOutcome: (input) => store.recordOutcome({ ...input, now: now() }),
+  };
+  return Object.freeze(clocked);
+}
+
 function order(): FixedPriceX402OrderRecord {
   return {
     storeVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
@@ -547,6 +560,16 @@ describe("coordinator x402 buyer payment track", () => {
     });
     databases.push(opened);
     return opened;
+  }
+
+  async function waitPastRetry(
+    opened: DacsNodeSqliteDatabase,
+    retryAt: number | undefined,
+  ): Promise<void> {
+    if (retryAt === undefined) throw new Error("expected retry time");
+    while (opened.readTime() <= retryAt) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
   }
 
   afterEach(() => {
@@ -1024,7 +1047,8 @@ describe("coordinator x402 buyer payment track", () => {
       const opened = await database();
       const retained = intent();
       const reservation = recoveryReservation(retained);
-      const settlementStore = createInMemoryX402BuyerSettlementStore();
+      const walletClock = { value: 1_000 };
+      const settlementStore = clockedSettlementStore(() => walletClock.value);
       const client = terminalRecoveryReader(terminalDisposition);
       const proof = await authenticatedReconciliation(retained, client);
       if (proof.disposition !== "cancelled" &&
@@ -1042,7 +1066,6 @@ describe("coordinator x402 buyer payment track", () => {
           verifySignature: validSignature,
           confirmUnused: safeUnused,
         });
-      const walletClock = { value: 1_000 };
       const wallet = constrainedWallet(
         retained,
         authenticateRecovery,
@@ -1074,12 +1097,12 @@ describe("coordinator x402 buyer payment track", () => {
         finalityBlocks: 5,
         prepareIntent: async () => retained,
         authorizePreparedIntent: () => true,
-        effectLeaseDurationMs: 10,
         settlementLeaseDurationMs: 10,
         retryDelayMs: 1,
       });
 
-      await expect(track(operationInput())).resolves.toMatchObject({
+      const initial = await track(operationInput());
+      expect(initial).toMatchObject({
         status: "indeterminate",
         reasonCode: "effect-outcome-ambiguous",
       });
@@ -1093,7 +1116,7 @@ describe("coordinator x402 buyer payment track", () => {
       )).toMatchObject({ state: "reconciliation-required" });
 
       walletClock.value = 1_011;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
       await expect(track(operationInput())).resolves.toEqual({
         status: "operator-action",
         reasonCode: `x402-terminal-${terminalDisposition}`,
@@ -1119,7 +1142,17 @@ describe("coordinator x402 buyer payment track", () => {
     const opened = await database();
     const retained = intent();
     const reservation = recoveryReservation(retained);
-    const settlementStore = createInMemoryX402BuyerSettlementStore();
+    const walletClock = { value: 1_000 };
+    const innerSettlementStore = clockedSettlementStore(() => walletClock.value);
+    const settlementClaims: unknown[] = [];
+    const settlementStore: X402BuyerSettlementStore = Object.freeze({
+      ...innerSettlementStore,
+      async claim(input: Parameters<X402BuyerSettlementStore["claim"]>[0]) {
+        const claimed = await innerSettlementStore.claim(input);
+        settlementClaims.push(claimed);
+        return claimed;
+      },
+    });
     const liveUnusedHash = await authenticatedUnusedHash(
       retained,
       recoveryReader({ used: false }),
@@ -1135,7 +1168,11 @@ describe("coordinator x402 buyer payment track", () => {
         verifySignature: validSignature,
         confirmUnused: safeUnused,
       });
-    const wallet = constrainedWallet(retained, authenticateRecovery);
+    const wallet = constrainedWallet(
+      retained,
+      authenticateRecovery,
+      () => walletClock.value,
+    );
     const authorizationProvider = provider(retained, [
       { disposition: "indeterminate", reason: "chain-read-unavailable" },
       {
@@ -1159,12 +1196,12 @@ describe("coordinator x402 buyer payment track", () => {
       finalityBlocks: 5,
       prepareIntent: async () => retained,
       authorizePreparedIntent: () => true,
-      effectLeaseDurationMs: 10,
       settlementLeaseDurationMs: 10,
       retryDelayMs: 1,
     });
 
-    await expect(track(operationInput())).resolves.toMatchObject({
+    const initial = await track(operationInput());
+    expect(initial).toMatchObject({
       status: "indeterminate",
       reasonCode: "x402-chain-read-unavailable",
     });
@@ -1172,13 +1209,28 @@ describe("coordinator x402 buyer payment track", () => {
       activeEffects: 1,
       assets: [{ reservedWorstCaseDebit: "1000" }],
     });
+    expect(settlementClaims).toEqual([
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 1,
+          stage: "fresh",
+          expiresAt: 1_010,
+        }),
+      }),
+    ]);
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect(track(operationInput())).resolves.toMatchObject({
+    walletClock.value = 1_011;
+    await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
+    const liveUnused = await track(operationInput());
+    expect(liveUnused).toMatchObject({
       status: "indeterminate",
       reasonCode: "x402-live-unused-wallet-reservation-held",
     });
-    expect((await wallet.inspect()).activeEffects).toBe(1);
+    expect(await wallet.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ reservedWorstCaseDebit: "1000" }],
+    });
 
     await expect(wallet.reserve({
       ...reservation,
@@ -1189,7 +1241,10 @@ describe("coordinator x402 buyer payment track", () => {
       reason: "concurrency-limit",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 3));
+    await waitPastRetry(
+      opened,
+      "retryAt" in liveUnused ? liveUnused.retryAt : undefined,
+    );
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "final",
       authenticationHash: captured(retained).authenticationHash,
@@ -1201,6 +1256,25 @@ describe("coordinator x402 buyer payment track", () => {
         cumulativeSettledDebit: "1000",
       }],
     });
+    expect(settlementClaims).toEqual([
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 1,
+          stage: "fresh",
+          expiresAt: 1_010,
+        }),
+      }),
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 2,
+          stage: "reconcile",
+          expiresAt: 1_021,
+        }),
+      }),
+      expect.objectContaining({ status: "captured" }),
+    ]);
     expect(submitRetained).toHaveBeenCalledTimes(1);
   });
 
@@ -1210,7 +1284,8 @@ describe("coordinator x402 buyer payment track", () => {
       const opened = await database();
       const retained = intent();
       const reservation = recoveryReservation(retained);
-      const settlementStore = createInMemoryX402BuyerSettlementStore();
+      const walletClock = { value: 1_000 };
+      const settlementStore = clockedSettlementStore(() => walletClock.value);
       const client = terminalRecoveryReader(terminalDisposition);
       const proof = await authenticatedReconciliation(retained, client);
       if (proof.disposition !== "cancelled" &&
@@ -1229,7 +1304,11 @@ describe("coordinator x402 buyer payment track", () => {
           verifySignature: validSignature,
           confirmUnused: safeUnused,
         });
-      const wallet = constrainedWallet(retained, authenticateRecovery);
+      const wallet = constrainedWallet(
+        retained,
+        authenticateRecovery,
+        () => walletClock.value,
+      );
       const authorizationProvider = provider(retained, [
         { disposition: "indeterminate", reason: "chain-read-unavailable" },
         {
@@ -1252,15 +1331,16 @@ describe("coordinator x402 buyer payment track", () => {
         finalityBlocks: 5,
         prepareIntent: async () => retained,
         authorizePreparedIntent: () => true,
-        effectLeaseDurationMs: 10,
         settlementLeaseDurationMs: 10,
         retryDelayMs: 1,
       });
 
-      await expect(track(operationInput())).resolves.toMatchObject({
+      const initial = await track(operationInput());
+      expect(initial).toMatchObject({
         status: "indeterminate",
       });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      walletClock.value = 1_011;
+      await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
       await expect(track(operationInput())).resolves.toEqual({
         status: "operator-action",
         reasonCode: `x402-terminal-${terminalDisposition}`,
