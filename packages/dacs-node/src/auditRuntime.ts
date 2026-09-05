@@ -4,6 +4,7 @@ import {
   type BuyerBundleTransport,
   type DurableBuyerBundleFinalizationInput,
   type DurableBuyerBundleFinalizationProvider,
+  type DurableBuyerSessionCompletion,
   type DurableFinalizedBuyerBundle,
 } from "@kynesyslabs/dacs";
 import type {
@@ -103,6 +104,8 @@ export interface DacsBuyerAuditRuntimeOptionsV1
   authorizeFinalized(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
+    material: Readonly<DacsBuyerAuditMaterialV1>;
+    completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
   }>): Promise<boolean> | boolean;
 }
@@ -131,6 +134,8 @@ export interface DacsPayDemBuyerAuditRuntimeOptionsV1
   authorizeFinalized(input: Readonly<{
     operation: Readonly<FixedPricePayDemTrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    material: Readonly<DacsBuyerAuditMaterialV1>;
+    completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
   }>): Promise<boolean> | boolean;
 }
@@ -419,7 +424,7 @@ export function createDacsSellerAuditTrackV1(
       return Object.freeze({
         status: "final" as const,
         outcome: "success" as const,
-        reference: result.logicalAddress,
+        reference: result.nativeAddress,
         authenticationHash: result.bundleContentHash,
       });
     } catch {
@@ -591,6 +596,8 @@ export function createDacsBuyerAuditTrackV1(
       if (await options.authorizeFinalized({
         operation,
         retained,
+        material,
+        completion: progress.completion,
         result: progress.result,
       }) !== true) {
         throw new DacsAuditRuntimeError("buyer-audit-result-unauthorized");
@@ -599,7 +606,7 @@ export function createDacsBuyerAuditTrackV1(
       return Object.freeze({
         status: "final" as const,
         outcome: "success" as const,
-        reference: progress.result.logicalAddress,
+        reference: progress.result.nativeAddress,
         authenticationHash: progress.result.bundleContentHash,
       });
     } catch {
