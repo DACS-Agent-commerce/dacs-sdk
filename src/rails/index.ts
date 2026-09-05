@@ -251,6 +251,7 @@ export {
 export {
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   type X402BuyerChallengeClient,
   type X402BuyerPreparationAuthority,
   type PrepareX402BuyerSettlementInput,

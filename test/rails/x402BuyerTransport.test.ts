@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { sha256Hex } from "../../src/canonical/index.js";
 import {
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   prepareX402BuyerSettlement,
   type DacsPublicHttpsRequestV1,
   type PrepareX402BuyerSettlementInput,
@@ -188,7 +189,17 @@ describe("prepareX402BuyerSettlement", () => {
         authority: authority(),
         challengeHeaders: { "PAYMENT-SIGNATURE": "caller-bearer" },
       },
-      { client: client() },
+      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "x402-challenge-headers-invalid",
+    });
+    await expect(prepareX402BuyerSettlement(
+      {
+        authority: authority(),
+        challengeHeaders: { "X-API-Key": "internal-secret" },
+      },
+      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-headers-invalid",
@@ -240,14 +251,14 @@ describe("prepareX402BuyerSettlement", () => {
     });
     await expect(prepareX402BuyerSettlement(
       { authority: malformed as never },
-      { client: client(counters) },
+      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
     });
     await expect(prepareX402BuyerSettlement(
       { authority: new Proxy(authority(), {}) },
-      { client: client(counters) },
+      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
@@ -597,5 +608,79 @@ describe("createX402BuyerPaidRequestTransport", () => {
     });
     expect(reads).toBe(0);
     expect(resolveHost).not.toHaveBeenCalled();
+  });
+});
+
+describe("createX402BuyerRetainedDisclosureRecovery", () => {
+  test("replays the exact retained bearer and returns only the settlement disclosure", async () => {
+    const intent = await preparedIntent();
+    let assertions = 0;
+    let requests = 0;
+    const fence: X402BuyerEffectFence = {
+      owner: "buyer-worker",
+      generation: 4,
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      idempotencyKey: intent.settlementKey,
+      async assertCurrent() { assertions += 1; },
+    };
+    const recover = createX402BuyerRetainedDisclosureRecovery({
+      transportPolicy: { mode: "insecure-test" },
+      fetchImpl: async (url, init) => {
+        requests += 1;
+        expect(url).toBe(RESOURCE);
+        expect(init?.method).toBe("GET");
+        expect(init?.redirect).toBe("error");
+        expect(new Headers(init?.headers).get("PAYMENT-SIGNATURE"))
+          .toBe(intent.paymentHeader.value);
+        return new Response("ignored-deliverable", {
+          status: 200,
+          headers: { "PAYMENT-RESPONSE": "recovered-settlement-header" },
+        });
+      },
+    });
+
+    await expect(recover({
+      intent,
+      transactionHash: `0x${"ab".repeat(32)}`,
+      fence,
+    })).resolves.toEqual({
+      protocolVersion: "2",
+      headerName: "PAYMENT-RESPONSE",
+      encodedSettlementHeader: "recovered-settlement-header",
+      httpResource: RESOURCE,
+    });
+    expect(requests).toBe(1);
+    expect(assertions).toBe(1);
+  });
+
+  test("keeps lost or headerless recovery responses unavailable", async () => {
+    const intent = await preparedIntent();
+    const fence: X402BuyerEffectFence = {
+      owner: "buyer-worker",
+      generation: 4,
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      idempotencyKey: intent.settlementKey,
+      assertCurrent: async () => undefined,
+    };
+    const headerless = createX402BuyerRetainedDisclosureRecovery({
+      transportPolicy: { mode: "insecure-test" },
+      fetchImpl: async () => new Response(null, { status: 200 }),
+    });
+    await expect(headerless({
+      intent,
+      transactionHash: `0x${"ab".repeat(32)}`,
+      fence,
+    })).resolves.toBeUndefined();
+    const lost = createX402BuyerRetainedDisclosureRecovery({
+      transportPolicy: { mode: "insecure-test" },
+      fetchImpl: async () => { throw new Error("response lost"); },
+    });
+    await expect(lost({
+      intent,
+      transactionHash: `0x${"ab".repeat(32)}`,
+      fence,
+    })).resolves.toBeUndefined();
   });
 });

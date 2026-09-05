@@ -310,6 +310,33 @@ describe("x402 buyer EVM authorization provider", () => {
     expect(Object.isFrozen(authority.mock.calls[0]![0].intent)).toBe(true);
   });
 
+  test("authenticates standard Exact EVM wire requirements without a private method marker", async () => {
+    const draft = intentDraft();
+    delete (draft.chosenRequirements.extra as Record<string, unknown>).assetTransferMethod;
+    const payload = draft.signedPaymentPayload as {
+      accepted: { extra: Record<string, unknown> };
+    };
+    delete payload.accepted.extra.assetTransferMethod;
+    draft.paymentHeader = {
+      name: "PAYMENT-SIGNATURE",
+      value: encode(draft.signedPaymentPayload),
+    };
+    const intent = createX402BuyerSettlementIntent(draft);
+    const authority = vi.fn(async () => ({
+      disposition: "authorized" as const,
+      bindingHash: intent.bindingHash,
+    }));
+    const result = await provider(reader(), {
+      authorizeIntent: authority,
+      verifySignature: async ({ authorization }) => ({
+        disposition: "valid" as const,
+        signer: authorization.from,
+      }),
+    }).authorizeIntent(intent, fence());
+    expect(result).toEqual({ disposition: "authorized", bindingHash: intent.bindingHash });
+    expect(authority).toHaveBeenCalledOnce();
+  });
+
   test("rejects a non-EIP-3009 challenge before any authority callback", async () => {
     const draft = intentDraft();
     (draft.chosenRequirements.extra as Record<string, unknown>).assetTransferMethod = "permit2";

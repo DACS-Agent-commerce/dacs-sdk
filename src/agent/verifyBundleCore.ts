@@ -1192,10 +1192,12 @@ function requiredSignatureClaims(
     const orchestrator = bundle.parties.find(
       (party) => party.role === "orchestrator",
     )?.primaryClaim;
-    if (orchestrator && orchestrator !== buyer && orchestrator !== seller) {
+    if (orchestrator && !sameCanonicalClaimIdentity(orchestrator, buyer) &&
+        !sameCanonicalClaimIdentity(orchestrator, seller)) {
       claims.push(orchestrator);
     }
-    return [...new Set(claims)];
+    return claims.filter((claim, index) => claims.findIndex((candidate) =>
+      sameCanonicalClaimIdentity(candidate, claim)) === index);
   }
 
   const anchorClaim = bundle.anchoredByRole
@@ -1303,7 +1305,7 @@ export async function verifyBundleCore(
   const parties = isNormativeGraph
     ? validatedBundleParties(bundle as AnyAttestationBundle)
     : null;
-  if (isNormativeGraph && !parties) {
+  if (isNormativeGraph && canonicalBundleClaims && !parties) {
     return {
       ok: false,
       reason:

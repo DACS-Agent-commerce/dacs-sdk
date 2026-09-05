@@ -1,0 +1,80 @@
+name: Publish npm prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: Exact prerelease version from package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dacs-npm-prerelease
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-prerelease
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin supported npm publishing client
+        run: npm install --global --ignore-scripts npm@11.19.0
+
+      - name: Admit reviewed main-line prerelease tag
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "$CONFIRM_VERSION" = "$version"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "v$version"
+          case "$version" in *-*) ;; *) exit 1 ;; esac
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node -e 'const fs=require("node:fs"); const manifests=["package.json","packages/dacs-node/package.json","packages/create-dacs-agent/package.json"].map(f=>JSON.parse(fs.readFileSync(f))); if(manifests.some(p=>p.version!==process.argv[1]||p.publishConfig?.access!=="public"||p.publishConfig?.provenance!==true)) process.exit(1)' "$version"
+
+      - name: Install exact source lock
+        run: npm ci
+
+      - name: Conformance, types and tests
+        run: |
+          npm run conformance:sync
+          npm run typecheck
+          npm run host:typecheck
+          npm run generator:typecheck
+          npm test
+          npm run host:test
+          npm run generator:test
+
+      - name: Verify package lifecycle and exact release set
+        run: |
+          npm run package:lifecycle:verify
+          mkdir -p package-artifacts
+          npm run release:set:verify -- --output-dir package-artifacts/release-set
+
+      - name: Upload exact reviewed release set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-npm-prerelease-${{ github.sha }}
+          path: package-artifacts/release-set/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish or safely resume the exact release set
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
+        run: node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next

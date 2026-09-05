@@ -11,7 +11,6 @@
  */
 
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
-export { isDacsPublicAddressV1 } from "./agent/publicAddress.js";
 export * from "./commerce/index.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
@@ -62,6 +61,7 @@ export {
   createFixedPriceAgreementSigningPlan,
   fixedPriceAgreementSignedBytes,
   createFixedPriceAgreementSignatureContribution,
+  isFixedPriceAgreementSignatureContribution,
   finalizeFixedPriceAgreementContributions,
   type FixedPriceAgreementSigningRole,
   type FixedPriceAgreementRequiredSigner,
@@ -80,6 +80,8 @@ export {
   type DurableFixedPriceAgreementInput,
   type FixedPriceAgreementTransportIdentity,
   type FixedPriceAgreementProposal,
+  type FixedPriceAgreementProposalEnvelope,
+  isFixedPriceAgreementProposalEnvelope,
   type FixedPriceAgreementResolution,
   type FixedPriceAgreementEffectSubmission,
   type FixedPriceAgreementSignatureReconciliation,
@@ -437,6 +439,7 @@ export {
 
 // Public agent API (T4) — the headline surface a dApp dev uses.
 export {
+  isDacsPublicAddressV1,
   createAgent,
   createUnsafeManualAgent,
   type Agent,
@@ -1083,6 +1086,7 @@ export {
   createFsX402BuyerSettlementStore,
   prepareX402BuyerSettlement,
   createX402BuyerPaidRequestTransport,
+  createX402BuyerRetainedDisclosureRecovery,
   createDacsX402BuyerEvmChallengeClient,
   advanceX402BuyerSettlement,
   type X402BuyerJson,
@@ -1182,6 +1186,7 @@ export {
   type SellerFixedPriceAgreementContributionTransport,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFixedPriceAgreementResponse,
+  isDurableSellerFixedPriceAgreementResponse,
   type DurableSellerFixedPriceAgreementStage,
   type DurableSellerFixedPriceAgreementProgress,
   deriveX402ReceiptCommitment,

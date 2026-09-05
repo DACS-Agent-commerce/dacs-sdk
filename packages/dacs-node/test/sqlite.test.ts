@@ -47,6 +47,8 @@ import {
   DACS_NODE_SQLITE_MAX_PAGE_SIZE,
   DACS_NODE_SQLITE_SCHEMA_VERSION,
   DacsNodeSqliteError,
+  inspectDacsNodeSqliteUpgradeSafetyV1,
+  inspectExistingDacsNodeSqliteDatabaseV1,
   inspectDacsNodeSqliteLocation,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -555,6 +557,116 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(database), 1);
     const reopened = await open(databasePath);
     expect(reopened.metadata).toEqual(database.metadata);
+  });
+
+  it("blocks upgrades while an irreversible effect is unfinished", async () => {
+    const database = await open(join(temporaryRoot(), "upgrade-safety.sqlite"));
+    expect(database.upgradeSafety()).toEqual({
+      safe: true,
+      intentEffects: 0,
+      activeEffects: 0,
+      reconciliationEffects: 0,
+      operatorActionEffects: 0,
+      incompleteOrders: 0,
+    });
+    const effect = {
+      kind: "payment" as const,
+      effectId: "payment:upgrade-safety",
+      bindingHash: BINDING_HASH,
+      input: { amount: "1", asset: "USDC" },
+      idempotencyKey: "payment:idempotency:upgrade-safety",
+      jobId: JOB_ID,
+    };
+    database.putEffectIntent(effect);
+    expect(database.upgradeSafety()).toMatchObject({ safe: false, intentEffects: 1 });
+    const claim = database.claimEffect({
+      kind: effect.kind,
+      effectId: effect.effectId,
+      bindingHash: effect.bindingHash,
+      owner: "upgrade-safety-worker",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected effect claim");
+    expect(database.upgradeSafety()).toMatchObject({
+      safe: false,
+      intentEffects: 0,
+      activeEffects: 1,
+    });
+    database.recordEffectAmbiguous({
+      kind: effect.kind,
+      effectId: effect.effectId,
+      bindingHash: effect.bindingHash,
+      lease: claim.lease,
+      reasonCode: "settlement-unknown",
+    });
+    expect(database.upgradeSafety()).toMatchObject({
+      safe: false,
+      activeEffects: 0,
+      reconciliationEffects: 1,
+    });
+    const databasePath = database.databasePath;
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const before = statSync(databasePath);
+    expect(inspectDacsNodeSqliteUpgradeSafetyV1(options(databasePath))).toMatchObject({
+      status: "pass",
+      safety: { safe: false, reconciliationEffects: 1 },
+    });
+    const after = statSync(databasePath);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("blocks upgrades while a coordinator order awaits audit closure", async () => {
+    const database = await open(join(temporaryRoot(), "upgrade-order.sqlite"), {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    const order = liveOrder();
+    expect(await database.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order,
+      ...liveOrderBinding(order),
+    })).toMatchObject({ status: "created" });
+    expect(database.upgradeSafety()).toEqual({
+      safe: false,
+      intentEffects: 0,
+      activeEffects: 0,
+      reconciliationEffects: 0,
+      operatorActionEffects: 0,
+      incompleteOrders: 1,
+    });
+  });
+
+  it("inspects an existing actor store without creating or mutating it", async () => {
+    const root = temporaryRoot();
+    const missingPath = join(root, "missing.sqlite");
+    expect(inspectExistingDacsNodeSqliteDatabaseV1(options(missingPath))).toEqual({
+      status: "blocked",
+      reasonCode: "database-missing",
+      databasePath: missingPath,
+    });
+    expect(existsSync(missingPath)).toBe(false);
+
+    const databasePath = join(root, "buyer.sqlite");
+    const database = await open(databasePath);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const before = statSync(databasePath);
+    expect(inspectExistingDacsNodeSqliteDatabaseV1(options(databasePath))).toMatchObject({
+      status: "pass",
+      diagnostics: {
+        databasePath,
+        schemaVersion: DACS_NODE_SQLITE_SCHEMA_VERSION,
+        applicationId: DACS_NODE_SQLITE_APPLICATION_ID,
+        quickCheck: "ok",
+      },
+    });
+    const after = statSync(databasePath);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
   it("derives immutable SDK and Standard bindings and rejects caller labels", async () => {
@@ -2963,6 +3075,13 @@ describe("DACS Node SQLite durability foundation", () => {
     });
 
     const loaded = database.loadEffect("payment", "payment-effect-1")!;
+    const loadedInput = database.loadEffectInput("payment", "payment-effect-1") as {
+      amount: string;
+    };
+    loadedInput.amount = "mutated";
+    expect(database.loadEffectInput("payment", "payment-effect-1")).toEqual({
+      amount: "1",
+    });
     (loaded.result as { receipt: { reference: string } }).receipt.reference = "mutated";
     expect(database.loadEffect("payment", "payment-effect-1")?.result).toEqual({
       receipt: { reference: "receipt-1" },

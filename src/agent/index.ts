@@ -1,4 +1,6 @@
-export { isDacsPublicAddressV1 } from "./publicAddress.js";
+export {
+  isDacsPublicAddressV1,
+} from "./publicAddress.js";
 export {
   createAgent,
   createUnsafeManualAgent,

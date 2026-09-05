@@ -2,8 +2,7 @@
 
 Project generator for the DACS one-click quickstart.
 
-The first stacked work package supports only a single-process offline verifier
-simulation:
+The default remains the single-process offline verifier simulation:
 
 ```bash
 npm create dacs-agent@latest my-agent -- --yes --run
@@ -13,8 +12,24 @@ It generates a small application that calls the reviewed
 `@kynesyslabs/dacs-node` simulation. The mocked payment, provider authority,
 substrate anchors and finality are visibly non-normative; the project does not
 claim DACS conformance, commercial success, x402, Demos settlement, live
-readiness or real funds. Independent buyer/seller/verifier role services are
-not selectable until they exist.
+readiness or real funds.
+
+The generator also emits an authority-separated experimental live bootstrap:
+
+```bash
+npm create dacs-agent@latest my-agent -- \
+  --yes --mode live-demos \
+  --profile dacs-sdk:fixed-price-x402:v1 \
+  --deploy docker
+```
+
+Live generation runs the complete read-only pre-start doctor after install.
+Exit 5 is retained as a successful, visibly blocked bootstrap when credentials,
+funding, signed registries, endpoints or reviewed effect adapters are absent.
+It does not start services, publish or pay. Generated Docker services use the
+same reviewed host image with separate non-root buyer/seller processes, secret
+mounts and data volumes; the template contains only configuration, command
+wiring and the seller fulfilment callback.
 
 Runs use fresh job and presentation identifiers, but the simulation has neither
 the durable CORE §B.8 nonce ledger nor the DACS-4 §9.4.4 RAV-R5 rail authority
@@ -39,7 +54,10 @@ directory created concurrently, but never merges with or traverses it; a
 non-empty target fails. Docker output uses a deny-by-default `.dockerignore`,
 copies only explicit build inputs, installs from the generated lock, and places
 only compiled output, package manifests and pruned production dependencies in
-the non-root runtime stage.
+the non-root runtime stage. Live installation disables dependency lifecycle
+scripts globally and then explicitly rebuilds only the reviewed
+`better-sqlite3` host adapter.
 
-Live generation fails closed until the durable host, doctor and guarded command
-work packages have landed and passed their acceptance tests.
+Live services remain blocked until the lower Demos identity/registry and x402
+effect-adapter stack is installed and passes the generated doctor. This package
+does not turn missing production adapters into local substitutes.

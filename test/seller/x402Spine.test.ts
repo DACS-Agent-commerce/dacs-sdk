@@ -659,7 +659,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
               vetRecordRef: structuredClone(sellerVetRef),
               evaluatedParty: SELLER,
               requirement: { requirementVersion: "1" as const, required: [] },
-              verifier: SELLER,
+              verifier: BUYER,
               freshness: [],
               dealSpecific: [],
             },
@@ -1034,6 +1034,34 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.evidence).toBe(1);
     expect(harness.counts.final).toBe(1);
     expect(harness.counts.render).toBe(1);
+  });
+
+  it("recovers the exact post-settlement permit from the seller WAL without HTTP replay", async () => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    harness.retainSettlement(pre.authorization);
+
+    const first = await harness.spine.recoverPaymentAuthorization({
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    });
+    const replay = await harness.spine.recoverPaymentAuthorization({
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    });
+
+    expect(first).toMatchObject({
+      disposition: "authorized",
+      authorization: {
+        sessionAuthorization: { jobId: JOB_ID },
+        paymentAuthorization: {
+          settlementIdentity: { kind: "evm", txHash: EVM_TX },
+        },
+      },
+    });
+    expect(replay).toEqual(first);
+    expect(harness.counts.delivery).toBe(0);
   });
 
   it("runs real #119 and generation-fenced #120/#121 with one irreversible delivery", async () => {

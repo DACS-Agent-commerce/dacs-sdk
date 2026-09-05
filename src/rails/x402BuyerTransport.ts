@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
+import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
   x402BuyerSettlementStoreInternals,
@@ -49,7 +50,7 @@ export interface X402BuyerChallengeClient {
 export interface PrepareX402BuyerSettlementInput {
   /** Complete authenticated DACS authority, excluding challenge-derived fields. */
   authority: Readonly<X402BuyerPreparationAuthority>;
-  /** Optional non-authority request headers for the unpaid GET. */
+  /** Optional `Accept` header for the unpaid GET; every other caller header is refused. */
   challengeHeaders?: X402BuyerHeaderInit;
 }
 
@@ -505,9 +506,10 @@ export async function prepareX402BuyerSettlement(
 
 /**
  * Create the paid HTTP effect used by the durable buyer coordinator. It sends
- * only the retained bearer, refuses redirects, and treats the response header
- * as a candidate until the independent authorization provider authenticates
- * the chain event.
+ * only the retained bearer credential plus an optional caller `Accept` header
+ * and the safe transport's own representation/user-agent headers. It refuses
+ * redirects and treats the response header as a candidate until the independent
+ * authorization provider authenticates the chain event.
  */
 export function createX402BuyerPaidRequestTransport(
   options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
@@ -610,4 +612,21 @@ export function createX402BuyerPaidRequestTransport(
     },
   };
   return Object.freeze(transport);
+}
+
+/**
+ * Recover a lost PAYMENT-RESPONSE by replaying only the exact retained paid
+ * request. The EIP-3009 authorization provider invokes this callback only
+ * after it has observed the retained nonce as used on-chain, and it still
+ * authenticates the returned transaction against the canonical receipt.
+ * Reusing the same signed nonce cannot authorize a second token transfer.
+ */
+export function createX402BuyerRetainedDisclosureRecovery(
+  options: Readonly<X402BuyerPaidRequestTransportOptions>,
+): X402BuyerEvmDisclosureRecovery {
+  const transport = createX402BuyerPaidRequestTransport(options);
+  return async ({ intent, fence }) => {
+    const result = await transport.submitRetained(intent, fence);
+    return result.disposition === "response" ? result.disclosure : undefined;
+  };
 }

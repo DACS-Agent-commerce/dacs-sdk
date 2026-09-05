@@ -159,15 +159,16 @@ describe("create-dacs-agent", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  test("fails closed for live mode, run without install, and non-empty targets", async () => {
+  test("fails closed for incompatible profiles, run without install, and non-empty targets", async () => {
     const parent = await temporaryDirectory();
     await expect(
       createDacsAgentProject({
         targetDirectory: join(parent, "live"),
         mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-offline:v1",
         install: false,
       }),
-    ).rejects.toThrow(/not implemented/);
+    ).rejects.toThrow(/live-demos mode requires/);
     await expect(
       createDacsAgentProject({
         targetDirectory: join(parent, "run"),
@@ -194,6 +195,196 @@ describe("create-dacs-agent", () => {
     await expect(
       createDacsAgentProject({ targetDirectory: linked, install: false }),
     ).rejects.toThrow(/symbolic link/);
+  });
+
+  test("generates a guarded authority-separated live Docker bootstrap", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "live-agent");
+    const result = await createDacsAgentProject({
+      targetDirectory: target,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "docker",
+      install: false,
+    });
+    expect(result).toMatchObject({
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "docker",
+      installed: false,
+      doctor: "not-run",
+    });
+    expect(await filesBelow(target)).toEqual(expect.arrayContaining([
+      "src/cli.ts",
+      "src/doctor.ts",
+      "src/funded-doctor.ts",
+      "src/local-lifecycle.ts",
+      "src/purchase.ts",
+      "src/setup.ts",
+      "src/service.ts",
+      "src/upgrade.ts",
+      "test/live-bootstrap.test.ts",
+      "compose.yaml",
+      "Dockerfile",
+      "data/buyer/.gitkeep",
+      "data/seller/.gitkeep",
+    ]));
+    for (const role of ["buyer", "seller"] as const) {
+      const observed = await lstat(join(target, "data", role));
+      expect(observed.isDirectory()).toBe(true);
+      if (process.platform !== "win32") expect(observed.mode & 0o077).toBe(0);
+    }
+    const packageSource = JSON.parse(await readFile(join(target, "package.json"), "utf8"));
+    expect(packageSource.dependencies).toEqual({
+      "@kynesyslabs/dacs": "0.1.0-alpha.0",
+      "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+      "@kynesyslabs/demosdk": "4.0.16",
+      "@x402/core": "2.15.0",
+      "@x402/evm": "2.15.0",
+      "@x402/fetch": "2.15.0",
+      tsx: "4.23.12",
+      "viem": "2.55.19",
+    });
+    expect(packageSource.dacs).toEqual({
+      generatorVersion: "0.1.0-alpha.0",
+      releaseMetadataVersion: 1,
+      standardRevision: "662be1d4899a2cadf327fe2d5523e93a80334e5f",
+      configSchemaVersion: 1,
+      sqliteSchemaVersion: 6,
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      breakingConfigurationChanges: [],
+    });
+    expect(packageSource.scripts).toMatchObject({
+      "dacs:doctor": expect.any(String),
+      "dacs:doctor:funded": expect.any(String),
+      "dacs:up": expect.any(String),
+      "dacs:setup": expect.any(String),
+      "dacs:buy": expect.any(String),
+      "dacs:status": expect.any(String),
+      "dacs:down": expect.any(String),
+      "dacs:upgrade": expect.any(String),
+    });
+    for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
+      if (command.includes("dist/src/") || command.includes("dist/test/")) {
+        expect(command).toContain("node --import tsx");
+      }
+    }
+    const compose = await readFile(join(target, "compose.yaml"), "utf8");
+    expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
+    expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
+    expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
+    expect(compose).toContain("DACS_SELLER_DEMOS_SECRET_FILE");
+    expect(compose).toContain("read_only: true");
+    expect(compose).toContain("DACS_RUNTIME_UID");
+    expect(compose).toContain("no-new-privileges:true");
+    expect(compose).toContain("network_mode: host");
+    expect(compose).toContain("http://127.0.0.1:3101");
+    expect(compose).not.toContain("http://buyer:");
+    expect(compose).not.toContain("http://seller:");
+    expect(compose).not.toMatch(/(?:3306|5432|6379):/);
+    const environmentExample = await readFile(join(target, ".env.example"), "utf8");
+    const expectedRuntimeUid = typeof process.getuid === "function" && process.getuid() > 0
+      ? process.getuid() : 10001;
+    expect(environmentExample).toContain(`DACS_RUNTIME_UID=${expectedRuntimeUid}`);
+    expect(environmentExample).toContain("DACS_DEPLOYMENT=docker");
+    expect(environmentExample).not.toContain("DACS_SETUP_WRITE_CONFIRM");
+    expect(environmentExample).not.toContain("DACS_PURCHASE_CONFIRM");
+    expect(environmentExample).not.toContain("DACS_DOCTOR_FUNDED_CONFIRM");
+    const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
+    expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
+    expect(generatedConfig).toContain("dacs4:registry:v0.1");
+    expect(generatedConfig).not.toContain("dacs4:registry:x402");
+    const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
+    expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
+    expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
+    expect(dockerfile).toContain("--mode=0755 /app");
+    expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).toContain(
+      'CMD ["node", "--import", "tsx", "dist/src/service.js"]',
+    );
+    expect(dockerfile).not.toContain("COPY . .");
+    const combined = (await Promise.all(
+      (await filesBelow(target)).map((file) => readFile(join(target, file), "utf8")),
+    )).join("\n");
+    expect(combined).not.toContain("git+");
+    expect(combined).not.toContain("../../src/");
+    expect(JSON.stringify(packageSource)).not.toContain("file:");
+    expect(combined).not.toContain("reviewed-live-adapter-not-configured");
+    expect(combined).toContain("resolveDacsX402ExistingListingV1");
+    expect(combined).toContain("readDacsPublicJsonV1");
+    expect(combined).toContain("inspectDacsX402PurchaseCostV1");
+    expect(combined).toContain("inspectDacsDemosBalanceHeadroomV1");
+    expect(combined).toContain("inspectDacsX402AssetBalanceV1");
+    expect(combined).toContain("inspectDacsX402GasBalanceV1");
+    expect(combined).toContain("inspectDacsX402ListingDraftV1");
+    expect(combined).toContain("prepareDacsListingSetupV1");
+    expect(combined).toContain("createDacsListingSetupExecutorV1");
+    expect(combined).toContain("createDacsPurchaseQueueExecutorV1");
+    expect(combined).toContain("prepareDacsX402PurchaseV1");
+    expect(combined).toContain("dacs-generated-purchase-request/v1");
+    expect(combined).toContain("--resume-job");
+    expect(combined).toContain("resume: input.resume");
+    expect(combined).toContain("createDacsX402ExactRetainedReplayConfirmerV1");
+    expect(combined).toContain("startDacsLocalRoleServices");
+    expect(combined).not.toContain('adapterStatus: "not-configured"');
+    expect(combined).toContain("runDacsGuardedCommandV1");
+    expect(combined).toContain("openDacsListingDiscoveryStoreV1");
+    expect(combined).toContain("createDacsListingDiscoveryRequestHandlerV1");
+    expect(combined).toContain('writePolicy: "read-only"');
+    expect(combined).toContain("readDacsRoleServiceStatusesV1");
+    expect(combined).toContain("createDacsLiveRoleRuntimeV1");
+    expect(combined).not.toContain("createDacsUnavailableLiveCommerceGraphV1");
+    expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
+    expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
+    expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).toContain('finalityTag: "latest"');
+    expect(combined).toContain('evmFinalityTag: "latest"');
+    expect(combined).toContain("retryDelayMs: 5_000");
+    expect(combined).toContain("minimumConfirmations: Number(finalityBlocks)");
+    expect(combined).toContain("inspectDacsX402TokenDomainV1");
+    expect(combined).toContain("DACS_X402_TOKEN_NAME=USDC");
+    expect(combined).not.toContain("DACS_X402_TOKEN_NAME=USD Coin");
+    expect(combined).not.toContain('status: "not-configured"');
+    expect(combined).toContain("createCommerceGraph: async");
+    expect(combined).not.toContain("createOperations: () => Object.freeze({})");
+    expect(combined).toContain("post-start-doctor-required");
+    expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
+    expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");
+    expect(combined).toContain("DACS_DOCTOR_FUNDED_CONFIRM=1");
+    expect(combined).toContain("prepareDacsFundedDoctorV1");
+    expect(combined).toContain("createDacsFundedDoctorExecutorV1");
+    expect(combined).toContain("--resume-run");
+    expect(combined).toContain("reconciliation is read-only");
+    expect(combined).not.toContain("funded doctor adapter is not configured");
+    expect(combined).toContain("dacs-generated-upgrade-check/v1");
+    expect(combined).toContain("inspectDacsNodeSqliteUpgradeSafetyV1");
+    expect(combined).toContain("registry.npmjs.org");
+    expect(combined).toContain("automatic-upgrade-not-supported");
+    expect(combined).not.toContain('availableVersion: "not-queried"');
+  });
+
+  test("generates a real local role-service lifecycle when selected", async () => {
+    const parent = await temporaryDirectory();
+    const target = join(parent, "local-live-agent");
+    await createDacsAgentProject({
+      targetDirectory: target,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "local",
+      install: false,
+    });
+    const environmentExample = await readFile(join(target, ".env.example"), "utf8");
+    const lifecycle = await readFile(join(target, "src/local-lifecycle.ts"), "utf8");
+    const cli = await readFile(join(target, "src/cli.ts"), "utf8");
+    expect(environmentExample).toContain("DACS_DEPLOYMENT=local");
+    expect(lifecycle).toContain('DACS_ROLE: role');
+    expect(lifecycle).toContain('process.kill(record.pid, "SIGTERM")');
+    expect(lifecycle).toContain("local-runtime-process-identity-mismatch");
+    expect(cli).toContain("startDacsLocalRoleServices");
+    expect(cli).toContain("stopDacsLocalRoleServices");
   });
 
   test("publishes the complete tree atomically across a nested-symlink race", async () => {
@@ -282,16 +473,17 @@ describe("create-dacs-agent", () => {
     });
   });
 
-  test("rejects unimplemented independent role selections", () => {
-    for (const role of ["buyer", "seller", "verifier"]) {
-      expect(() =>
-        parseCreateDacsAgentArguments([
-          "my-agent",
-          "--yes",
-          "--role",
-          role,
-        ])
-      ).toThrow(/independent role services are not implemented/);
-    }
+  test("parses the documented non-interactive live bootstrap", () => {
+    expect(parseCreateDacsAgentArguments([
+      "my-agent", "--yes", "--mode", "live-demos", "--profile",
+      "dacs-sdk:fixed-price-x402:v1", "--role", "seller", "--deploy", "docker",
+    ])).toMatchObject({
+      targetDirectory: "my-agent",
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "seller",
+      deployment: "docker",
+      yes: true,
+    });
   });
 });

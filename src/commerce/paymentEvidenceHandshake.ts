@@ -436,6 +436,9 @@ export interface BuyerPaymentEvidenceHandshake {
   runPending(options?: Readonly<{
     cursor?: string;
     limit?: number;
+    /** Run one already-retained request without advancing unrelated orders. */
+    messageId?: string;
+    requestHash?: string;
     signal?: AbortSignal;
   }>): Promise<PaymentEvidencePage<PaymentEvidenceHandshakeRunResult>>;
   claimOutboundCompletions(options?: Readonly<{
@@ -2024,13 +2027,44 @@ export function createBuyerPaymentEvidenceHandshake(
     },
 
     async runPending(input = {}) {
-      if (!plainRecord(input) || !exactKeys(input, [], ["cursor", "limit", "signal"]) ||
+      if (!plainRecord(input) || !exactKeys(input, [], [
+        "cursor", "limit", "messageId", "requestHash", "signal",
+      ]) ||
           (input.signal !== undefined && !(input.signal instanceof AbortSignal))) {
         throw new DacsError("buyer handshake run options are malformed");
       }
-      const cursor = captureCursor(input.cursor);
-      const limit = captureLimit(input.limit);
-      const page = clone(await store.listBuyerRunnable({ scopeHash, cursor, limit }));
+      const exactRequest = input.messageId !== undefined || input.requestHash !== undefined;
+      if (exactRequest && (!nonEmpty(input.messageId) ||
+          typeof input.requestHash !== "string" || !HASH_RE.test(input.requestHash) ||
+          input.cursor !== undefined || input.limit !== undefined)) {
+        throw new DacsError("buyer handshake exact-request options are malformed");
+      }
+      const cursor = exactRequest ? undefined : captureCursor(input.cursor);
+      const limit = exactRequest ? 1 : captureLimit(input.limit);
+      let page: PaymentEvidencePage<Readonly<PaymentEvidenceHandshakeRecord>>;
+      if (exactRequest) {
+        const loaded = clone(await store.load("buyer", input.messageId!, scopeHash));
+        if (loaded.status === "corrupt") throw new DacsError(loaded.reason);
+        if (loaded.status === "unsupported") {
+          throw new DacsError(`payment-evidence store version ${loaded.version} is unsupported`);
+        }
+        if (loaded.status === "missing") {
+          page = { items: [] };
+        } else {
+          const record = requireHandshakeRecord(
+            loaded.record,
+            "buyer",
+            input.messageId,
+            scopeHash,
+          );
+          if (record.request.requestHash !== input.requestHash) {
+            throw new DacsError("buyer handshake exact request conflicts with retained state");
+          }
+          page = { items: [record] };
+        }
+      } else {
+        page = clone(await store.listBuyerRunnable({ scopeHash, cursor, limit }));
+      }
       if (!plainRecord(page) || !exactKeys(page, ["items"], ["nextCursor"]) ||
           !Array.isArray(page.items) || page.items.length > limit ||
           (page.nextCursor !== undefined && !nonEmpty(page.nextCursor))) {

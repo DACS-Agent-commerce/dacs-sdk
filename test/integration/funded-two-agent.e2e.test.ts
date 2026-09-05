@@ -1694,8 +1694,8 @@ async function prepareVetRecords(input: {
       jobId: input.jobId,
       evaluatedParty: input.preflight.env.SELLER_DID,
       bundle: input.sellerIdentity,
-      verifier: input.preflight.env.SELLER_DID,
-      signer: input.preflight.seller.adapter,
+      verifier: input.preflight.env.BUYER_DID,
+      signer: input.preflight.buyer.adapter,
       generatedAt: input.now,
     }),
   ]);
@@ -1719,7 +1719,7 @@ async function prepareVetRecords(input: {
       ),
     },
     contentHash: contentHash(sellerRecord as unknown as Record<string, unknown>),
-    signer: input.preflight.env.SELLER_DID,
+    signer: input.preflight.env.BUYER_DID,
   };
   // DACS Standard #331 has not yet defined authenticated provenance for a
   // complementary VPC requirement. This is an explicit, external, fail-closed
@@ -1732,7 +1732,7 @@ async function prepareVetRecords(input: {
     standardsGap: "DACS-Standard#331" as const,
     jobId: input.jobId,
     evaluatedParty: input.preflight.env.SELLER_DID,
-    verifier: input.preflight.env.SELLER_DID,
+    verifier: input.preflight.env.BUYER_DID,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
     vetRecordHash: sellerRef.contentHash,
   };
@@ -3140,7 +3140,7 @@ async function createSellerRuntime(input: {
                 vetRecordRef: structuredClone(vet.sellerRef),
                 evaluatedParty: preflight.env.SELLER_DID,
                 requirement: structuredClone(EMPTY_REQUIREMENT),
-                verifier: preflight.env.SELLER_DID,
+                verifier: preflight.env.BUYER_DID,
                 freshness: [],
                 dealSpecific: [],
               },
@@ -5003,9 +5003,10 @@ async function closeDurableDetachedRoleBundles(input: {
       isVerifyResultSignerAuthorized: (result: unknown, signature: { signer: string }) => {
         if (!result || typeof result !== "object" || Array.isArray(result)) return false;
         const evaluatedParty = (result as Record<string, unknown>).evaluatedParty;
-        return (evaluatedParty === input.preflight.env.BUYER_DID ||
-          evaluatedParty === input.preflight.env.SELLER_DID) &&
-          signature.signer === input.preflight.env.SELLER_DID;
+        return (evaluatedParty === input.preflight.env.BUYER_DID &&
+          signature.signer === input.preflight.env.SELLER_DID) ||
+          (evaluatedParty === input.preflight.env.SELLER_DID &&
+            signature.signer === input.preflight.env.BUYER_DID);
       },
       resolvePublicKey: async (signature: { signer: string; algorithm: string }) =>
         signature.algorithm === "ed25519" ? publicKey(signature.signer) : null,
@@ -5128,7 +5129,9 @@ async function closeDurableDetachedRoleBundles(input: {
           requirement.contentHash === input.vet.sellerRef.contentHash) {
         const vetRecord = requirement.contentHash === input.vet.buyerRef.contentHash
           ? input.vet.buyer : input.vet.seller;
-        const verifier = input.preflight.env.SELLER_DID;
+        const verifier = requirement.contentHash === input.vet.buyerRef.contentHash
+          ? input.preflight.env.SELLER_DID
+          : input.preflight.env.BUYER_DID;
         return canonicalize(record) === canonicalize(vetRecord) && verifyEd25519(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           vetRecord as unknown as Record<string, unknown>,
