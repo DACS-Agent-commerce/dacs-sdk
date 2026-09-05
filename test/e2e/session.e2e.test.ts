@@ -387,6 +387,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
               { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount, asset: TOKEN_EVM },
             ]),
             fetchImpl: fakeFetch(),
+            transportPolicy: { mode: "insecure-test" },
             payerAddress: BUYER_EVM,
             assertFinalityContext: async () => {},
             authenticateTransfer: async () => ({

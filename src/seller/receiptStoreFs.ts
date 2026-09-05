@@ -1,23 +1,23 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
 import {
-  chmod,
-  link,
-  lstat,
   mkdir,
   open,
-  readFile,
   readdir,
   rename,
   rm,
   stat,
-  unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   isSellerFulfilmentHandoff,
   isValidSellerReceiptClaim,
@@ -320,27 +320,17 @@ export async function createFsSellerReceiptStore(
     DEFAULT_LOCK_POLL_MS,
     "seller receipt lockPollMs",
   );
-  const root = capturedOptions.dir;
+  const root = await preparePrivateStoreDirectory(
+    capturedOptions.dir,
+    "filesystem seller receipt store",
+  );
   const statePath = join(root, STATE_FILE);
   const initializationPath = join(root, INITIALIZATION_FILE);
   const lockPath = join(root, LOCK_DIR);
   const reclaimGatePath = join(root, RECLAIM_GATE);
 
-  let rootMetadata;
-  try {
-    rootMetadata = await lstat(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(root, { recursive: true, mode: DIR_MODE });
-    rootMetadata = await lstat(root);
-  }
-  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
-    throw new DacsError("filesystem seller receipt store path is not a safe directory");
-  }
-  await chmod(root, DIR_MODE);
-
-  async function syncRoot(): Promise<void> {
-    const handle = await open(root, "r");
+  async function syncDirectory(path: string): Promise<void> {
+    const handle = await open(path, "r");
     try {
       await handle.sync();
     } finally {
@@ -348,19 +338,18 @@ export async function createFsSellerReceiptStore(
     }
   }
 
+  async function syncRoot(): Promise<void> {
+    await syncDirectory(root);
+  }
+
   async function readInitializationMarker(): Promise<"absent" | "present"> {
     let text: string;
-    let handle;
     try {
-      handle = await open(
+      text = await readPrivateFile(
         initializationPath,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        "utf8",
+        "filesystem seller receipt store marker",
       );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) {
-        throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
-      }
-      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
@@ -368,9 +357,13 @@ export async function createFsSellerReceiptStore(
           "filesystem seller receipt store initialization marker path is unsafe",
         );
       }
+      if (error instanceof DacsError && error.message.includes("not a regular file")) {
+        throw new DacsError(
+          "filesystem seller receipt store initialization marker is corrupt",
+          { cause: error },
+        );
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     if (text !== INITIALIZATION_TEXT) {
       throw new DacsError("filesystem seller receipt store initialization marker is corrupt");
@@ -381,71 +374,44 @@ export async function createFsSellerReceiptStore(
   /** Publish only after a state file has itself been renamed and directory-fsynced. */
   async function ensureInitializationMarker(): Promise<void> {
     if (await readInitializationMarker() === "present") return;
-    const temporary = join(root, `.${INITIALIZATION_FILE}.${randomUUID()}.tmp`);
     try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(INITIALIZATION_TEXT, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
+      await exclusiveWritePrivateFile(
+        initializationPath,
+        INITIALIZATION_TEXT,
+        "filesystem seller receipt store marker",
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await readInitializationMarker() !== "present") {
+        throw new DacsError(
+          "filesystem seller receipt store initialization marker is corrupt",
+        );
       }
-      try {
-        // A hard link is a no-overwrite publication point. An unexpected file
-        // at the marker path is validated rather than silently replaced.
-        await link(temporary, initializationPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        if (await readInitializationMarker() !== "present") {
-          throw new DacsError(
-            "filesystem seller receipt store initialization marker is corrupt",
-          );
-        }
-      }
-    } finally {
-      await unlink(temporary).catch(() => {});
     }
-    // This path began with no marker. Fsync even after a validated EEXIST race
-    // so a concurrent no-overwrite publication is durable before we return.
-    await syncRoot();
   }
 
   async function atomicWriteState(state: FsSellerReceiptState): Promise<void> {
     captureState(state);
     const text = JSON.stringify(state);
-    const temporary = join(root, `.${STATE_FILE}.${randomUUID()}.tmp`);
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(text, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, statePath);
-      await chmod(statePath, FILE_MODE);
-      await syncRoot();
-      // State durability is the precondition for publishing the marker. A
-      // crash between these operations leaves a migratable pre-marker state;
-      // the inverse order could falsely bless a missing state as initialized.
-      await ensureInitializationMarker();
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await atomicWritePrivateFile(
+      statePath,
+      text,
+      "filesystem seller receipt store",
+    );
+    // State durability is the precondition for publishing the marker. A crash
+    // between these operations leaves a migratable pre-marker state.
+    await ensureInitializationMarker();
   }
 
   async function readState(): Promise<FsSellerReceiptState> {
     const initialization = await readInitializationMarker();
     let text: string;
-    let handle;
     try {
-      handle = await open(
+      text = await readPrivateFile(
         statePath,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        "utf8",
+        "filesystem seller receipt store",
       );
-      const metadata = await handle.stat();
-      if (!metadata.isFile()) corruptState();
-      text = await handle.readFile("utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         if (initialization === "present") corruptState();
@@ -454,9 +420,10 @@ export async function createFsSellerReceiptStore(
       if ((error as NodeJS.ErrnoException).code === "ELOOP") {
         throw new DacsError("filesystem seller receipt store state path is unsafe");
       }
+      if (error instanceof DacsError && error.message.includes("not a regular file")) {
+        return corruptState();
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     let parsed: unknown;
     try {
@@ -477,7 +444,11 @@ export async function createFsSellerReceiptStore(
 
   async function readOwner(path: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(join(path, "owner.json"), "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        join(path, "owner.json"),
+        "utf8",
+        "filesystem seller receipt store lock",
+      )) as unknown;
       if (plainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
           (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
           parsed.token.length > 0) {
@@ -489,34 +460,23 @@ export async function createFsSellerReceiptStore(
     return null;
   }
 
-  async function readFileOwner(path: string): Promise<LockOwner | null> {
+  async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
+    const candidate = `${path}.${randomUUID()}.candidate`;
     try {
-      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-      if (plainRecord(parsed) && Number.isSafeInteger(parsed.pid) &&
-          (parsed.pid as number) > 0 && typeof parsed.token === "string" &&
-          parsed.token.length > 0) {
-        return { pid: parsed.pid as number, token: parsed.token };
-      }
-    } catch {
-      // Missing or malformed recovery gates remain authoritative until stale.
-    }
-    return null;
-  }
-
-  async function exclusiveWriteOwner(path: string, owner: LockOwner): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
+      await mkdir(candidate, { mode: DIR_MODE });
+      const handle = await open(join(candidate, "owner.json"), "wx", FILE_MODE);
       try {
         await handle.writeFile(JSON.stringify(owner), "utf8");
         await handle.sync();
       } finally {
         await handle.close();
       }
-      // The hard link is a no-overwrite atomic publication point.
-      await link(temporary, path);
+      await syncDirectory(candidate);
+      // A valid gate is non-empty, so rename is an atomic no-overwrite publish.
+      await rename(candidate, path);
+      await syncRoot();
     } finally {
-      await unlink(temporary).catch(() => {});
+      await rm(candidate, { recursive: true, force: true });
     }
   }
 
@@ -547,15 +507,14 @@ export async function createFsSellerReceiptStore(
       const path = join(root, name);
       try {
         const metadata = await stat(path);
-        const owner = await readFileOwner(path);
+        const owner = await readOwner(path);
         if (Date.now() - metadata.mtimeMs <= lockStaleMs ||
             (owner !== null && processAlive(owner.pid))) {
           live.push(path);
           continue;
         }
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
+        await rm(path, { recursive: true, force: true });
+        await syncRoot();
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -572,12 +531,13 @@ export async function createFsSellerReceiptStore(
       throw error;
     }
     if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
-    const observedOwner = await readFileOwner(reclaimGatePath);
+    const observedOwner = await readOwner(reclaimGatePath);
     if (observedOwner !== null && processAlive(observedOwner.pid)) return;
 
     const quarantine = reclaimQuarantinePath();
     try {
       await rename(reclaimGatePath, quarantine);
+      await syncRoot();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
@@ -589,30 +549,28 @@ export async function createFsSellerReceiptStore(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const movedOwner = await readFileOwner(quarantine);
+    const movedOwner = await readOwner(quarantine);
     if (moved.dev === observed.dev && moved.ino === observed.ino &&
         sameOwner(movedOwner, observedOwner) &&
         Date.now() - moved.mtimeMs > lockStaleMs &&
         (movedOwner === null || !processAlive(movedOwner.pid))) {
-      await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+      await rm(quarantine, { recursive: true, force: true });
+      await syncRoot();
     }
     // A moved replacement is left in its unique quarantine. It continues to
     // block reclaimers and its live owner can remove it by token on release.
   }
 
   async function releaseReclaimGate(owner: LockOwner): Promise<void> {
-    const observed = await readFileOwner(reclaimGatePath);
+    const observed = await readOwner(reclaimGatePath);
     if (observed?.pid === owner.pid && observed.token === owner.token) {
       const quarantine = reclaimQuarantinePath();
       try {
         await rename(reclaimGatePath, quarantine);
-        const moved = await readFileOwner(quarantine);
+        await syncRoot();
+        const moved = await readOwner(quarantine);
         if (moved?.pid === owner.pid && moved.token === owner.token) {
-          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") throw error;
-          });
+          await rm(quarantine, { recursive: true, force: true });
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -621,21 +579,21 @@ export async function createFsSellerReceiptStore(
     for (const name of (await readdir(root)).filter((item) =>
       item.startsWith(RECLAIM_QUARANTINE_PREFIX) && item.endsWith(".quarantine"))) {
       const path = join(root, name);
-      const quarantined = await readFileOwner(path);
+      const quarantined = await readOwner(path);
       if (quarantined?.pid === owner.pid && quarantined.token === owner.token) {
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
+        await rm(path, { recursive: true, force: true });
       }
     }
+    await syncRoot();
   }
 
   async function acquireReclaimGate(owner: LockOwner): Promise<boolean> {
     if ((await reclaimGateQuarantines()).length > 0) return false;
     try {
-      await exclusiveWriteOwner(reclaimGatePath, owner);
+      await publishCompleteOwner(reclaimGatePath, owner);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
       await quarantineStaleReclaimGate();
       return false;
     }
@@ -646,7 +604,7 @@ export async function createFsSellerReceiptStore(
     return true;
   }
 
-  async function maybeReclaimStale(path: string): Promise<void> {
+  async function maybeReclaimStale(path: string, deadline: number): Promise<void> {
     // This fast path never authorizes deletion. Every observation is repeated
     // after obtaining the cross-process recovery gate below.
     try {
@@ -659,9 +617,7 @@ export async function createFsSellerReceiptStore(
       throw error;
     }
 
-    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
-    if (!await acquireReclaimGate(gateOwner)) return;
-    try {
+    await withLockMutationGate(deadline, async () => {
       let observed;
       try {
         observed = await stat(path);
@@ -689,13 +645,35 @@ export async function createFsSellerReceiptStore(
         throw new DacsError("filesystem seller receipt lock changed during recovery");
       }
       await rm(quarantine, { recursive: true, force: true });
-    } finally {
-      await releaseReclaimGate(gateOwner);
-    }
+      await syncRoot();
+    });
   }
 
   async function wait(ms: number): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Publication, owner-checked release and stale quarantine must all use this
+   * gate. Gating reclaimers alone lets a normal successor replace the path
+   * between a reclaimer's observations and rename.
+   */
+  async function withLockMutationGate<T>(
+    deadline: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const owner: LockOwner = { pid: process.pid, token: randomUUID() };
+    while (!await acquireReclaimGate(owner)) {
+      if (Date.now() >= deadline) {
+        throw new DacsError("timed out acquiring seller receipt lock mutation gate");
+      }
+      await wait(lockPollMs);
+    }
+    try {
+      return await operation();
+    } finally {
+      await releaseReclaimGate(owner);
+    }
   }
 
   async function withLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -712,13 +690,17 @@ export async function createFsSellerReceiptStore(
         } finally {
           await handle.close();
         }
-        await rename(candidate, lockPath);
+        await syncDirectory(candidate);
+        await withLockMutationGate(deadline, async () => {
+          await rename(candidate, lockPath);
+          await syncRoot();
+        });
         break;
       } catch (error) {
         await rm(candidate, { recursive: true, force: true }).catch(() => {});
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
-        await maybeReclaimStale(lockPath);
+        await maybeReclaimStale(lockPath, deadline);
         if (Date.now() >= deadline) {
           throw new DacsError("timed out acquiring filesystem seller receipt store lock");
         }
@@ -728,22 +710,24 @@ export async function createFsSellerReceiptStore(
     try {
       return await operation();
     } finally {
-      const observed = await readOwner(lockPath);
-      if (observed?.pid === owner.pid && observed.token === owner.token) {
-        // Move the complete owned directory away in one rename before deleting
-        // it. Recursively deleting the published path creates an empty-directory
-        // window on platforms where a contender can replace that directory
-        // before the old holder's final rmdir, deleting or fencing its successor.
-        const released = `${lockPath}.${owner.token}.released`;
-        try {
-          await rename(lockPath, released);
-          const moved = await readOwner(released);
-          if (moved?.pid === owner.pid && moved.token === owner.token) {
-            await rm(released, { recursive: true, force: true });
+      let released: string | undefined;
+      await withLockMutationGate(Date.now() + lockTimeoutMs, async () => {
+        const observed = await readOwner(lockPath);
+        if (observed?.pid === owner.pid && observed.token === owner.token) {
+          // Move only the lock we still own away from the publication path.
+          released = `${lockPath}.${owner.token}.released`;
+          try {
+            await rename(lockPath, released);
+            await syncRoot();
+          } catch (error) {
+            released = undefined;
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
+      });
+      if (released !== undefined) {
+        await rm(released, { recursive: true, force: true });
+        await syncRoot();
       }
     }
   }

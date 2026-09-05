@@ -689,35 +689,39 @@ describe("filesystem seller receipt store", () => {
   });
 
   test("competing reclaimers recover one stale lock without fencing a successor", async () => {
-    const dir = await tempStoreDir();
-    const lock = join(dir, LOCK_DIR);
-    await mkdir(lock, { mode: 0o700 });
-    await writeFile(join(lock, "owner.json"), JSON.stringify({
-      pid: 999_999,
-      token: "dead-owner",
-    }), { mode: 0o600 });
-    const stale = new Date(Date.now() - 60_000);
-    await utimes(lock, stale, stale);
+    // Repeat the real filesystem schedule that can otherwise let a stale
+    // reclaimer displace a newly published successor.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const dir = await tempStoreDir();
+      const lock = join(dir, LOCK_DIR);
+      await mkdir(lock, { mode: 0o700 });
+      await writeFile(join(lock, "owner.json"), JSON.stringify({
+        pid: 999_999,
+        token: "dead-owner",
+      }), { mode: 0o600 });
+      const stale = new Date(Date.now() - 60_000);
+      await utimes(lock, stale, stale);
 
-    const stores = await Promise.all(Array.from(
-      { length: 4 },
-      () => createFsSellerReceiptStore({
-        dir,
-        lockTimeoutMs: 2_000,
-        lockStaleMs: 10,
-        lockPollMs: 2,
-      }),
-    ));
-    const results = await Promise.all(stores.map((store) => store.claim(receiptClaim())));
-    expect(results.filter((result) => result.status === "claimed")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "already-claimed")).toHaveLength(3);
-    const permits = results.flatMap((result) =>
-      result.status === "claimed" || result.status === "already-claimed"
-        ? [result.permitId]
-        : []);
-    expect(new Set(permits).size).toBe(1);
-    expect((await readdir(dir)).sort()).toEqual([INITIALIZATION_FILE, STATE_FILE]);
-  });
+      const stores = await Promise.all(Array.from(
+        { length: 8 },
+        () => createFsSellerReceiptStore({
+          dir,
+          lockTimeoutMs: 15_000,
+          lockStaleMs: 1,
+          lockPollMs: 1,
+        }),
+      ));
+      const results = await Promise.all(stores.map((store) => store.claim(receiptClaim())));
+      expect(results.filter((result) => result.status === "claimed")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "already-claimed")).toHaveLength(7);
+      const permits = results.flatMap((result) =>
+        result.status === "claimed" || result.status === "already-claimed"
+          ? [result.permitId]
+          : []);
+      expect(new Set(permits).size).toBe(1);
+      expect((await readdir(dir)).sort()).toEqual([INITIALIZATION_FILE, STATE_FILE]);
+    }
+  }, 90_000);
 
   test("fails closed on malformed and unsupported state without overwriting it", async () => {
     const dir = await tempStoreDir();
