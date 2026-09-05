@@ -2004,7 +2004,7 @@ export function isRatingRecord(v: unknown): v is RatingRecord {
     !isCanonicalJobId(v.jobId) ||
     !isCanonicalClaimReference(v.rater) ||
     !isCanonicalClaimReference(v.target) ||
-    v.rater === v.target ||
+    sameCanonicalClaimIdentity(v.rater, v.target) ||
     !isOneOf(["buyer", "seller"], v.targetRole) ||
     !Number.isInteger(v.value) ||
     (v.value as number) < 1 ||
