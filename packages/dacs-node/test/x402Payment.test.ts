@@ -1018,6 +1018,103 @@ describe("coordinator x402 buyer payment track", () => {
     expect(malformedFenceStore.isCurrent).toHaveBeenCalled();
   });
 
+  it.each(["cancelled", "expired-unused"] as const)(
+    "keeps a live wallet lease ambiguous on immediate finalized %s",
+    async (terminalDisposition) => {
+      const opened = await database();
+      const retained = intent();
+      const reservation = recoveryReservation(retained);
+      const settlementStore = createInMemoryX402BuyerSettlementStore();
+      const client = terminalRecoveryReader(terminalDisposition);
+      const proof = await authenticatedReconciliation(retained, client);
+      if (proof.disposition !== "cancelled" &&
+          proof.disposition !== "expired-unused") {
+        throw new Error("expected terminal absence proof");
+      }
+      const authenticateRecovery =
+        createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          settlementStore,
+          owner: "x402-wallet-recovery-test",
+          chainId: 84532,
+          minimumConfirmations: 5,
+          authorizationSearchFromBlock: 1,
+          client,
+          verifySignature: validSignature,
+          confirmUnused: safeUnused,
+        });
+      const walletClock = { value: 1_000 };
+      const wallet = constrainedWallet(
+        retained,
+        authenticateRecovery,
+        () => walletClock.value,
+      );
+      const authorizationProvider = provider(retained, [
+        {
+          disposition: terminalDisposition,
+          reason: `authenticated-${terminalDisposition}`,
+          authenticationHash: proof.authenticationHash,
+        },
+        {
+          disposition: terminalDisposition,
+          reason: `authenticated-${terminalDisposition}`,
+          authenticationHash: proof.authenticationHash,
+        },
+      ]);
+      const submitRetained = vi.fn(async () => ({
+        disposition: "response" as const,
+        disclosure: disclosure(),
+      }));
+      const track = createDacsX402BuyerPaymentTrackV1({
+        database: opened,
+        workerId: "buyer-payment-worker",
+        settlementStore,
+        authorizationProvider,
+        transport: { submitRetained },
+        walletSpendAuthority: wallet,
+        finalityBlocks: 5,
+        prepareIntent: async () => retained,
+        authorizePreparedIntent: () => true,
+        effectLeaseDurationMs: 10,
+        settlementLeaseDurationMs: 10,
+        retryDelayMs: 1,
+      });
+
+      await expect(track(operationInput())).resolves.toMatchObject({
+        status: "indeterminate",
+        reasonCode: "effect-outcome-ambiguous",
+      });
+      expect(await wallet.inspect()).toMatchObject({
+        activeEffects: 1,
+        assets: [{ reservedWorstCaseDebit: "1000" }],
+      });
+      expect(opened.loadEffect(
+        "payment",
+        operationInput().fence.idempotencyKey,
+      )).toMatchObject({ state: "reconciliation-required" });
+
+      walletClock.value = 1_011;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await expect(track(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: `x402-terminal-${terminalDisposition}`,
+      });
+      expect(await wallet.inspect()).toMatchObject({
+        activeEffects: 0,
+        assets: [{
+          reservedWorstCaseDebit: "0",
+          cumulativeSettledDebit: "0",
+        }],
+      });
+      expect(submitRetained).toHaveBeenCalledTimes(1);
+      expect(authorizationProvider.authenticate).toHaveBeenCalledTimes(2);
+      await expect(wallet.reserve({
+        ...reservation,
+        reservationId: `x402:${"9".repeat(64)}`,
+        settlementBindingHash: "9".repeat(64),
+      })).resolves.toMatchObject({ status: "reserved" });
+    },
+  );
+
   it("holds an in-flight wallet reservation through live-unused recovery", async () => {
     const opened = await database();
     const retained = intent();
