@@ -153,6 +153,20 @@ describe("DACS-5 RatingRecord production", () => {
     expect(sign).not.toHaveBeenCalled();
   });
 
+  it.each(["rating-job", JOB_ID.toLowerCase(), ` ${JOB_ID}`])(
+    "rejects non-canonical RatingRecord jobId %s before signing",
+    async (jobId) => {
+      const sign = vi.fn(buyerSigner.sign);
+      await expect(
+        createBuyerRatingRecord(input({ jobId }), {
+          algorithm: "ed25519",
+          sign,
+        }),
+      ).rejects.toThrow(/canonical uppercase ULID/);
+      expect(sign).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects caller-added authority fields before signing", async () => {
     const sign = vi.fn(buyerSigner.sign);
     await expect(
@@ -203,5 +217,6 @@ describe("DACS-5 RatingRecord production", () => {
     expect(isRatingRecord({ ...valid, value: 3.5 })).toBe(false);
     expect(isRatingRecord({ ...valid, freeText: "x".repeat(1_001) })).toBe(false);
     expect(isRatingRecord({ ...valid, dimensions: { quality: NaN } })).toBe(false);
+    expect(isRatingRecord({ ...valid, jobId: "rating-job" })).toBe(false);
   });
 });
