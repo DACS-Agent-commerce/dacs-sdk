@@ -194,6 +194,10 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
     algorithm: "ed25519",
     signature: "vector-signature",
   },
+  "terminal-bundle-proposal-buyer": { vector: "buyer-terminal-proposal" },
+  "terminal-bundle-proposal-seller": { vector: "seller-terminal-proposal" },
+  "terminal-bundle-contribution-buyer": { vector: "buyer-terminal-contribution" },
+  "terminal-bundle-contribution-seller": { vector: "seller-terminal-contribution" },
   "diagnostic-probe-buyer": {
     purpose: "transport-readiness",
     challenge: Buffer.alloc(32, 8).toString("base64url"),
@@ -212,7 +216,10 @@ const PAYLOADS: Readonly<Record<DacsHttpMessageType, unknown>> = Object.freeze({
 function roleFor(type: DacsHttpMessageType): "buyer" | "seller" {
   return type === "session-challenge" || type === "session-admission" ||
       type === "agreement-response" || type === "payment-evidence-request" ||
-      type === "bundle-signature-request" || type === "diagnostic-probe-seller"
+      type === "bundle-signature-request" ||
+      type === "terminal-bundle-proposal-seller" ||
+      type === "terminal-bundle-contribution-seller" ||
+      type === "diagnostic-probe-seller"
     ? "seller" : "buyer";
 }
 

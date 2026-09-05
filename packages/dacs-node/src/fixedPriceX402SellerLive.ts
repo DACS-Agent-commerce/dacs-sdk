@@ -15,6 +15,11 @@ import {
   createDacsSellerLiveCommerceAssemblyV1,
 } from "./liveCommerceAssembly.js";
 import type { DacsSellerLiveCommerceGraphV1 } from "./liveCommerceGraph.js";
+import type { DacsSessionVetRuntimeV1 } from "./sessionIdentityVetRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
+import { createDacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
 
 export interface DacsFixedPriceX402SellerLiveOptionsV1
   extends DacsFixedPriceX402SellerRuntimeOptionsV1 {
@@ -22,6 +27,11 @@ export interface DacsFixedPriceX402SellerLiveOptionsV1
   sellerPayee: string;
   maximumServiceAmount: string;
   maximumClockSkewMs?: number;
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /**
@@ -55,6 +65,11 @@ export async function createDacsFixedPriceX402SellerLiveV1(
     fulfilment: x402.fulfilment,
     ...(options.leaseTtlMs === undefined ? {} : { leaseTtlMs: options.leaseTtlMs }),
   });
+  const terminalInput = options.terminalBundle === undefined
+    ? undefined : createDacsFixedPriceVetTerminalInputFactoryV1({
+        rail: options.rail,
+        recipeRegistryVersion: options.recipeRegistryVersion,
+      });
 
   return createDacsSellerLiveCommerceAssemblyV1({
     context: options.context,
@@ -63,6 +78,7 @@ export async function createDacsFixedPriceX402SellerLiveV1(
       admitInit: session.admitInit,
       resolveBuyerRequirement: session.resolveBuyerRequirement,
       resolveSellerRequirement: session.resolveSellerRequirement,
+      ...(options.vet === undefined ? {} : { vet: options.vet }),
     },
     agreementTransport: { admitProposal: session.admitProposal },
     agreement,
@@ -70,5 +86,10 @@ export async function createDacsFixedPriceX402SellerLiveV1(
     paymentEvidence: paymentEvidence.paymentEvidence,
     settlement: paymentEvidence.settlement,
     audit,
+    ...(options.terminalBundle === undefined || terminalInput === undefined
+      ? {} : { terminalBundle: {
+          ...options.terminalBundle,
+          createInput: terminalInput,
+        } }),
   });
 }

@@ -25,6 +25,8 @@ const factories = vi.hoisted(() => ({
   buyerSessionAgreement: vi.fn(),
   sellerSessionAgreement: vi.fn(),
   authenticateSellerVet: vi.fn(),
+  terminalBundleTransport: vi.fn(),
+  advanceTerminal: vi.fn(),
 }));
 
 vi.mock("../src/agreementRuntime.js", async (importOriginal) => ({
@@ -91,6 +93,7 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
   ...(await importOriginal<typeof import("../src/sessionBootstrapAgreementRuntime.js")>()),
   createDacsPayDemBuyerSessionBootstrapAgreementTrackV1: factories.buyerSessionAgreement,
   createDacsPayDemSellerSessionBootstrapAgreementTrackV1: factories.sellerSessionAgreement,
+  advanceDacsVetTerminalTrackV1: factories.advanceTerminal,
   loadDacsPayDemBuyerSessionAgreementFactsV1: vi.fn(() => ({ session: true })),
   loadDacsPayDemBuyerSessionAgreementFactsForOrderV1: vi.fn(() => ({
     sellerVetRecord: "seller-vet-record",
@@ -101,6 +104,10 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
     sellerIdentity: { presentedBy: "seller" },
     session: true,
   })),
+}));
+vi.mock("../src/terminalBundleTransportRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/terminalBundleTransportRuntime.js")>()),
+  createDacsVetTerminalBundleTransportRuntimeV1: factories.terminalBundleTransport,
 }));
 vi.mock("../src/sessionIdentityVetRuntime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sessionIdentityVetRuntime.js")>()),
@@ -147,6 +154,8 @@ describe("native DEM one-factory live assembly", () => {
     factories.buyerSessionAgreement.mockReturnValue("buyer-session-agreement");
     factories.sellerSessionAgreement.mockReturnValue("seller-session-agreement");
     factories.authenticateSellerVet.mockResolvedValue("valid");
+    factories.terminalBundleTransport.mockReturnValue({ terminal: true });
+    factories.advanceTerminal.mockResolvedValue(undefined);
     factories.buyerGraph.mockImplementation((value) => ({ role: "buyer", value }));
     factories.sellerGraph.mockImplementation((value) => ({ role: "seller", value }));
   });
@@ -226,5 +235,54 @@ describe("native DEM one-factory live assembly", () => {
       workerId: "buyer-worker",
     } as never)).rejects.toThrow(/requires native wallet authority/);
     expect(factories.buyerPayment).not.toHaveBeenCalled();
+  });
+
+  it("projects a recovered Vet terminal result through seller audit without success material", async () => {
+    const context = { role: "seller", database: {} };
+    const normalAudit = vi.fn(async () => ({ status: "final", outcome: "success" }));
+    const terminalResult = Object.freeze({
+      status: "final",
+      outcome: "failure",
+      errorClass: "counterparty",
+      faultedParty: "buyer",
+      reference: "terminal-native-address",
+      authenticationHash: "terminal-plan-hash",
+    });
+    factories.sellerAudit.mockReturnValueOnce(normalAudit);
+    factories.advanceTerminal.mockResolvedValueOnce(terminalResult);
+
+    await createDacsSellerPayDemLiveCommerceAssemblyV1({
+      context,
+      workerId: "seller-worker",
+      sessionBootstrap: {
+        admitInit: vi.fn(),
+        resolveBuyerRequirement: vi.fn(),
+        resolveSellerRequirement: vi.fn(() => ({ requirementVersion: "1", required: [] })),
+      },
+      agreementTransport: { admitProposal: vi.fn() },
+      agreement: { resolveAuthenticatedAgreementContext: vi.fn() },
+      payment: { resolvePayerPayingKey: vi.fn(), intakeDeps: {} },
+      paymentEvidence: {},
+      settlement: { resolvePublication: vi.fn() },
+      fulfilment: { fulfilment: {} },
+      audit: { resolveMaterial: vi.fn(), retryDelayMs: 29 },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput: vi.fn(),
+      },
+    } as never);
+
+    const graph = factories.sellerGraph.mock.calls[0]![0];
+    await expect(graph.audit({ order: { jobId: "job-terminal" } }))
+      .resolves.toBe(terminalResult);
+    expect(factories.advanceTerminal).toHaveBeenCalledWith(
+      { terminal: true },
+      context,
+      29,
+      "job-terminal",
+    );
+    expect(normalAudit).not.toHaveBeenCalled();
+    expect(factories.sellerSessionAgreement.mock.calls[0]![0].terminalBundle)
+      .toMatchObject({ runtime: { terminal: true } });
   });
 });
