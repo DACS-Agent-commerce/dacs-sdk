@@ -320,6 +320,21 @@ export {
   type RatingRecordSigner,
 } from "./ratingRecord.js";
 export {
+  publishRatingRecordDurably,
+  type DurablePublishedRating,
+  type DurableRatingPublicationDeps,
+  type DurableRatingPublicationInput,
+  type DurableRatingPublicationProgress,
+  type DurableRatingPublicationStage,
+  type RatingAnchorAuthenticationVerdict,
+  type RatingAuthenticationVerdict,
+  type RatingPublicationEffectClaim,
+  type RatingPublicationEffectLease,
+  type RatingPublicationEffectRecord,
+  type RatingPublicationEffectStore,
+  type RatingPublicationEffectWrite,
+} from "./durableRatingPublication.js";
+export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
   createTerminalBundlePlan,

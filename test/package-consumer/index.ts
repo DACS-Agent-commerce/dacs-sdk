@@ -4,10 +4,12 @@ import {
   type DemosWriteJournal,
   type DeriveReputationDeps,
   type RatingRecord,
+  type RatingPublicationEffectStore,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
   isRatingRecord,
+  publishRatingRecordDurably,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -48,6 +50,9 @@ const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
 const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
+const durableRatingPublisher: typeof publishRatingRecordDurably =
+  publishRatingRecordDurably;
+declare const ratingEffectStore: RatingPublicationEffectStore;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
@@ -69,6 +74,8 @@ void fulfilment;
 void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
+void durableRatingPublisher;
+void ratingEffectStore;
 void adapter;
 void journal;
 void result;
