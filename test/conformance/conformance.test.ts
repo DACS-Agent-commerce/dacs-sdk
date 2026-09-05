@@ -18,6 +18,7 @@ import {
   paymentEvidenceAddress,
   ratingAddress,
   sha256Hex,
+  stripSignature,
 } from "../../src/canonical/index.js";
 import {
   SIGNATURE_DOMAIN_SEPARATORS,
@@ -28,12 +29,14 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   signArtifact,
+  signedBytes,
   verifyArtifact,
   type DomainSeparator,
 } from "../../src/crypto/index.js";
 import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
 import {
   bundleConsistency,
+  lookupBundleCopies,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
 import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
@@ -53,17 +56,25 @@ import {
   validateListingArtifact,
   type ListingValidationDeps,
 } from "../../src/agent/listingValidation.js";
-import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import {
+  validateSettlementEvidenceStructure,
+  verifySettlementEvidence,
+  type AuthenticatedEvidenceContext,
+} from "../../src/agent/verifySettlementEvidence.js";
+import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
   assignSealedEnvelopeRoles,
   buildSealedAgreement,
+  deriveFixedPriceAgreement,
+  isNegotiablePriceWithinBand,
   makeCommitment,
   resolveSealedEnvelopeMode,
   runSealedEnvelopeCore,
   validateSealedAgreementForCommit,
   validateSealedAgreementRoleAssignment,
+  validateFixedPriceAgreementBinding,
   type AnchoredCommit,
   type AnchoredReveal,
   type SealedBid,
@@ -73,8 +84,13 @@ import {
   deriveIdentityTier,
   type BundleClaimLike,
 } from "../../src/identity/tier.js";
+import {
+  siwdBundleResource,
+  siwdResourcesBindBundleHash,
+} from "../../src/identity/index.js";
 import type {
   AnyAttestationBundle,
+  AgreementArtifact,
   AttestationBundle,
   IdentityBundle,
   Listing,
@@ -270,6 +286,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       },
       {
         trustBundles: true,
+        trustBundlePartyRoles: true,
         // §10.5.1 guard (iv): a one-copy attribution needs authoritative
         // absence of the other role's copy. The current golden models NO
         // retained absence context, so every missing copy is indeterminate.
@@ -292,10 +309,43 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     structuredClone(
       read("conformance/fixtures/settlement-evidence-delivery-success.json").evidence,
     ) as any;
-  const verifyEvidence = (
+  const verifyEvidence = async (
     evidence: unknown,
-    context: Parameters<typeof verifySettlementEvidence>[1] = {},
-  ) => verifySettlementEvidence(evidence, context, {});
+    context: Parameters<typeof validateSettlementEvidenceStructure>[1] = {},
+  ) => {
+    const result = await validateSettlementEvidenceStructure(evidence, context);
+    return {
+      decision: result.decision === "valid"
+        ? "pass" as const
+        : result.decision === "invalid"
+          ? "fail" as const
+          : result.decision === "incomplete"
+            ? "indeterminate" as const
+            : "error" as const,
+      reasons: result.reasons,
+    };
+  };
+  const authenticatedPaymentContext = (): AuthenticatedEvidenceContext => {
+    const fx = read(
+      "conformance/fixtures/settlement-evidence-payment-success.json",
+    ) as any;
+    const price = fx.paymentInput.agreement.terms.price;
+    const rail = fx.paymentInput.rail;
+    return {
+      orchestrator: "did:demos:orchestrator",
+      attestationRef: fx.result.attestationRef,
+      result: { ok: fx.result.ok, txRefs: fx.result.txRefs },
+      agreement: { amount: price.amount, currency: price.currency },
+      rail: {
+        railId: rail.railId,
+        railType: rail.railType,
+        asset: rail.asset.symbol,
+        network: `eip155:${rail.network.chainId}`,
+        handler: rail.phaseHandler,
+      },
+      paymentAddress: { railId: rail.railId, phaseIndex: 0 },
+    };
+  };
   const verifyResult = (
     decision: VerificationDecision = "pass",
     method: VerifyResult["method"] = "self-signed",
@@ -498,6 +548,150 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       },
     );
     return { result, agreement: agreement! };
+  };
+
+  const NEGOTIATION_NOW = 1_780_000_000_000;
+  const NEGOTIATION_COMMITTED_AT = NEGOTIATION_NOW + 1_000;
+  const NEGOTIATION_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+  const NEGOTIATION_BUYER = `key:${"a".repeat(64)}`;
+  const NEGOTIATION_SELLER = `key:${"b".repeat(64)}`;
+  const NEGOTIATION_RAIL = {
+    railId: "x402:default",
+    railVersion: 1,
+    parameters: { network: "eip155:8453" },
+  } as const;
+  const negotiationIdentity = (presentedBy: string): IdentityBundle => ({
+    bundleVersion: "1",
+    presentedBy,
+    presentedAt: NEGOTIATION_NOW - 1_000,
+    claims: [{ ref: presentedBy }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: presentedBy, signature: "identity-proof" }],
+    },
+  });
+  const negotiationListing = (
+    pricing: Listing["pricing"] = {
+      kind: "fixed",
+      price: { amount: "100", currency: "USDC" },
+    },
+  ): Listing => ({
+    dacsVersion: "1",
+    listingVersion: 1,
+    listingId: "conformance-negotiation",
+    seller: {
+      identity: negotiationIdentity(NEGOTIATION_SELLER),
+      displayName: "Conformance seller",
+      publicEndpoint: "https://seller.example/dacs",
+    },
+    offering: {
+      title: "Conformance payload",
+      description: "Pinned DACS-3 agreement/listing validation input",
+      category: "data.test",
+      tags: ["conformance"],
+      deliverable: {
+        kind: "storage-program",
+        schemaUrl: "https://schema.example/result.json",
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: NEGOTIATION_RAIL.railId } },
+      { kind: "deliver-storage-program" },
+    ],
+    pricing,
+    acceptedRails: [structuredClone(NEGOTIATION_RAIL)],
+    terms: { deadlineSecAfterCommit: 600 },
+    validity: {
+      notBefore: NEGOTIATION_NOW - 60_000,
+      notAfter: NEGOTIATION_NOW + 60_000,
+    },
+    signature: {
+      algorithm: "ed25519",
+      signer: NEGOTIATION_SELLER,
+      value: Buffer.alloc(64, 1).toString("base64url"),
+    },
+  });
+  const negotiationFixture = (
+    pricing?: Listing["pricing"],
+  ): {
+    agreement: AgreementArtifact;
+    listing: Listing;
+    verifiedListing: {
+      disposition: "verified";
+      listing: Listing;
+      pin: { listingId: string; version: number; contentHash: string };
+    };
+  } => {
+    const listing = negotiationListing(pricing);
+    const pin = {
+      listingId: listing.listingId,
+      version: listing.listingVersion,
+      contentHash: contentHash(listing as unknown as Record<string, unknown>),
+    };
+    const verifiedListing = {
+      disposition: "verified" as const,
+      listing,
+      pin,
+    };
+    const draft = deriveFixedPriceAgreement({
+      jobId: NEGOTIATION_JOB,
+      verifiedListing,
+      buyer: {
+        identityBundle: negotiationIdentity(NEGOTIATION_BUYER),
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "stor-negotiation-buyer-vet" },
+          contentHash: "c".repeat(64),
+        },
+      },
+      seller: {
+        identityBundle: negotiationIdentity(NEGOTIATION_SELLER),
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "stor-negotiation-seller-vet" },
+          contentHash: "d".repeat(64),
+        },
+      },
+      selectedRail: structuredClone(NEGOTIATION_RAIL),
+      generatedAt: NEGOTIATION_NOW,
+    });
+    const agreement = {
+      ...draft,
+      signatures: draft.parties.map((party, index) => ({
+        party: party.primaryClaim,
+        algorithm: "ed25519" as const,
+        value: Buffer.alloc(64, index + 2).toString("base64url"),
+      })),
+    } as AgreementArtifact;
+    return { agreement, listing, verifiedListing };
+  };
+  const repinNegotiationFixture = (
+    fixture: ReturnType<typeof negotiationFixture>,
+  ): void => {
+    fixture.verifiedListing.pin = {
+      listingId: fixture.listing.listingId,
+      version: fixture.listing.listingVersion,
+      contentHash: contentHash(
+        fixture.listing as unknown as Record<string, unknown>,
+      ),
+    };
+    fixture.agreement.listingRef = structuredClone(fixture.verifiedListing.pin);
+  };
+  const fixedBindingPasses = (
+    fixture: ReturnType<typeof negotiationFixture>,
+    committedAt = NEGOTIATION_COMMITTED_AT,
+  ): boolean => {
+    try {
+      validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   // ── Per-case runners ──────────────────────────────────────────────────────
@@ -895,6 +1089,134 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       );
     },
 
+    // negotiate — DACS-3 §8.5.1/§8.5.2 agreement/listing binding.
+    "neg-band-inclusive": (want) => {
+      const pricing = {
+        kind: "negotiable" as const,
+        bandCenter: { amount: "100", currency: "USDC" },
+        minPct: 10,
+        maxPct: 10,
+      };
+      expect({
+        inBand: isNegotiablePriceWithinBand("95", pricing),
+        lowerEdge: isNegotiablePriceWithinBand("90", pricing),
+        upperEdge: isNegotiablePriceWithinBand("110", pricing),
+        below: isNegotiablePriceWithinBand("89.999", pricing),
+        above: isNegotiablePriceWithinBand("110.001", pricing),
+      }).toEqual(want);
+    },
+    "neg-currency-mismatch": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.price.currency = "EUR";
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/currency/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "currency" }).toEqual(want);
+    },
+    "neg-rail-reject": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.rail = { railId: "x402:other" };
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/acceptedRails/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "rail" }).toEqual(want);
+    },
+    "neg-deliverable": (want) => {
+      const conforming = negotiationFixture();
+      const typeMismatch = negotiationFixture();
+      typeMismatch.agreement.terms.deliverable.deliverableType = "attested-payload";
+      const hashMismatch = negotiationFixture();
+      hashMismatch.agreement.terms.deliverable.hash = "e".repeat(64);
+      const schemaMismatch = negotiationFixture();
+      schemaMismatch.agreement.terms.deliverable.schemaUrl =
+        "https://schema.example/other.json";
+      expect({
+        conforming: fixedBindingPasses(conforming),
+        typeMismatch: fixedBindingPasses(typeMismatch),
+        hashMismatch: fixedBindingPasses(hashMismatch),
+        schemaMismatch: fixedBindingPasses(schemaMismatch),
+      }).toEqual(want);
+    },
+    "neg-deadline-committedat": (want) => {
+      const within = negotiationFixture();
+      const beyond = negotiationFixture();
+      beyond.agreement.terms.deadline =
+        NEGOTIATION_COMMITTED_AT + 600 * 1_000 + 1;
+      expect({
+        within: fixedBindingPasses(within),
+        beyond: fixedBindingPasses(beyond),
+      }).toEqual(want);
+    },
+    "neg-notafter": (want) => {
+      const fixture = negotiationFixture();
+      fixture.listing.validity.notAfter = NEGOTIATION_COMMITTED_AT - 1;
+      repinNegotiationFixture(fixture);
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/authenticated finality time checks/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "notAfter" }).toEqual(want);
+    },
+    "neg-pattern-mismatch": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.derivedFromPattern = "rfq";
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/supports only fixed-price/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "pattern" }).toEqual(want);
+    },
+    "neg-ps3-fixed-over-negotiable": (want) => {
+      const pricing = {
+        kind: "negotiable" as const,
+        bandCenter: { amount: "100", currency: "USDC" },
+        minPct: 10,
+        maxPct: 10,
+      };
+      const exact = negotiationFixture(pricing);
+      const inBandNotExact = negotiationFixture(pricing);
+      inBandNotExact.agreement.terms.price.amount = "95";
+      expect(isNegotiablePriceWithinBand("95", pricing)).toBe(true);
+      expect({
+        exact: fixedBindingPasses(exact),
+        inBandNotExact: fixedBindingPasses(inBandNotExact),
+      }).toEqual(want);
+    },
+    "neg-priceanchor-absent-ok": (want) => {
+      expect(fixedBindingPasses(negotiationFixture())).toBe(want);
+    },
+    "neg-priceanchor-present": (want) => {
+      const valid = negotiationFixture();
+      valid.agreement.terms.priceAnchor = {
+        asset: "ETH",
+        quoteCurrency: "USDC",
+        price: "2000",
+        attestationRef: {
+          anchor: { kind: "storage-program", locator: "stor-price-anchor" },
+          contentHash: "f".repeat(64),
+        },
+        observedAt: NEGOTIATION_NOW,
+        sourceUrl: "https://oracle.example/eth-usdc",
+      };
+      const nonCanonical = structuredClone(valid);
+      nonCanonical.agreement.terms.priceAnchor!.price = "2000.00";
+      expect({
+        valid: fixedBindingPasses(valid),
+        nonCanonical: fixedBindingPasses(nonCanonical),
+      }).toEqual(want);
+    },
+    "neg-price-noncanonical": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.price.amount = "100.00";
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "price" }).toEqual(want);
+    },
+
     // negotiate — DACS-3 SE-8 role assignment and commit teeth.
     "neg-sealed-envelope-default-demand-winner-is-buyer": (want) => {
       const roles = assignSealedEnvelopeRoles({
@@ -1001,6 +1323,19 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         failedAt: want.failedAt,
         reason: want.reason,
       });
+    },
+
+    // dacs1 — exact SIWD Resources binding (§6.3.2). The Standard publishes
+    // the primitive bundle-hash input and all derived bytes in the manifest.
+    "dacs1-siwd-resource-binding": (want) => {
+      const bytes = signedBytes("dacs-bundle-presentation:v1:", want.bundleHash);
+      const resource = siwdBundleResource(want.bundleHash);
+      expect(Buffer.from(bytes).toString("utf8")).toBe(want.signedBytes);
+      expect(resource).toBe(want.resource);
+      expect(Buffer.from(resource.slice("dacs:".length), "hex").toString("utf8")).toBe(
+        want.decoded,
+      );
+      expect(siwdResourcesBindBundleHash([resource], want.bundleHash)).toBe(true);
     },
 
     // governance — DACS-2 §7.4.4 GOV-1..GOV-3. These primitive vectors
@@ -1233,19 +1568,92 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         {
           orchestrator: "did:demos:orchestrator",
           attestationRef: fx.result.attestationRef,
-          result: { ok: fx.result.ok, errorClass: fx.result.errorClass },
+          result: {
+            ok: fx.result.ok,
+            errorClass: fx.result.errorClass,
+            txRefs: fx.result.txRefs,
+          },
           agreement: { amount: price.amount, currency: price.currency },
           rail: {
             railId: rail.railId,
             railType: rail.railType,
             asset: rail.asset.symbol,
+            network: `eip155:${rail.network.chainId}`,
             handler: rail.phaseHandler,
           },
+          paymentAddress: { railId: rail.railId, phaseIndex: 0 },
         },
         settlementDeps(golden.settlement.publicKeys),
       );
       expect(r.reasons).toEqual([]);
       expect(r.decision).toBe(want);
+    },
+    "settlement-x402-pass": async (want) => {
+      const document = read(
+        "conformance/vectors/security/settlement-event-identity-v0.6.json",
+      ) as any;
+      const vector = document.vectors.find(
+        (entry: { name?: string }) => entry.name === "current-x402-event",
+      );
+      expect(vector).toBeDefined();
+      const evidence = structuredClone(vector.settlementEvidence);
+      const signer = evidence.signature.signer as string;
+      const publicKey = hex(document.publicKey);
+      const deps = {
+        resolvePublicKey: async (candidate: string) =>
+          candidate === signer ? publicKey : null,
+        verify: verifySig,
+      };
+      const semantic = await verifySettlementEvidence(
+        evidence,
+        {
+          orchestrator: signer,
+          attestationRef: {
+            anchor: {
+              kind: "storage-program",
+              locator: vector.anchorAddress,
+            },
+            contentHash: contentHash(stripSignature(evidence)),
+          },
+          result: { ok: true, txRefs: vector.settlementEvidence.paymentTxRefs },
+          agreement: vector.verificationContext.amount,
+          rail: {
+            railId: vector.verificationContext.railId,
+            railType: "x402",
+            asset: vector.verificationContext.amount.currency,
+            network: `eip155:${vector.verificationContext.x402Receipt.chainId}`,
+            handler: "pay-x402",
+          },
+          paymentAddress: {
+            railId: vector.verificationContext.railId,
+            phaseIndex: vector.phaseIndex,
+          },
+        },
+        deps,
+      );
+      expect(semantic.reasons).toEqual([]);
+      expect(semantic.decision).toBe(want);
+
+      const identity = await resolveSettlementEventIdentity(
+        evidence,
+        {
+          anchorAddress: vector.anchorAddress,
+          phaseIndex: vector.phaseIndex,
+          railId: vector.verificationContext.railId,
+          asset: vector.verificationContext.asset,
+          payer: vector.verificationContext.payer,
+          payee: vector.verificationContext.payee,
+          amount: vector.verificationContext.amount,
+          x402Receipt: vector.verificationContext.x402Receipt,
+          ledgerEvents: vector.ledgerEvents,
+          priorClaims: vector.priorClaims,
+        },
+        deps,
+      );
+      expect(identity.decision).toBe(want);
+      expect(identity).toMatchObject({
+        settlementId: vector.expectedSettlementTxId,
+      });
     },
     "settlement-delivery-pass": async (want) => {
       const fx = read("conformance/fixtures/settlement-evidence-delivery-success.json") as any;
@@ -1253,6 +1661,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         fx.evidence,
         {
           orchestrator: "did:demos:orchestrator",
+          agreement: { amount: "1", currency: "TEST" },
           attestationRef: fx.result.attestationRef,
           result: { ok: fx.result.ok, errorClass: fx.result.errorClass },
           expectedAnchorLocator: fx.evidence.deliverableAnchor.locator,
@@ -1305,6 +1714,29 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         ).decision,
       ).toBe(want);
     },
+    "settlement-wrong-anchor-fail": async (want) => {
+      const fx = read(
+        "conformance/fixtures/settlement-evidence-payment-success.json",
+      ) as any;
+      const wrongRef = structuredClone(fx.result.attestationRef);
+      wrongRef.anchor.locator =
+        `dacs4:payment:${fx.evidence.jobId}:polygon-amoy-usdc:1`;
+      expect((await verifyEvidence(fx.evidence, {
+        attestationRef: wrongRef,
+        rail: { railId: "polygon-amoy-usdc" },
+        paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 0 },
+      })).decision).toBe(want);
+    },
+    "settlement-txrefs-mismatch-fail": async (want) => {
+      const fx = read(
+        "conformance/fixtures/settlement-evidence-payment-success.json",
+      ) as any;
+      const handlerRefs = structuredClone(fx.result.txRefs);
+      handlerRefs[0].txHash = "polygon-amoy:0xdifferent";
+      expect((await verifyEvidence(fx.evidence, {
+        result: { ok: true, txRefs: handlerRefs },
+      })).decision).toBe(want);
+    },
     "settlement-attestationref-hash-mismatch-fail": async (want) => {
       expect(
         (
@@ -1324,24 +1756,36 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
     "settlement-wrong-signer-key-fail": async (want) => {
-      const result = await verifySettlementEvidence(paymentEvidence(), {}, {
+      const result = await verifySettlementEvidence(
+        paymentEvidence(),
+        authenticatedPaymentContext(),
+        {
         resolvePublicKey: async () => new Uint8Array(32),
         verify: () => false,
-      });
+        },
+      );
       expect(result.decision).toBe(want);
     },
     "settlement-malformed-key-error": async (want) => {
-      const result = await verifySettlementEvidence(paymentEvidence(), {}, {
+      const result = await verifySettlementEvidence(
+        paymentEvidence(),
+        authenticatedPaymentContext(),
+        {
         resolvePublicKey: async () => new Uint8Array(10),
         verify: () => true,
-      });
+        },
+      );
       expect(result.decision).toBe(want);
     },
     "settlement-unresolvable-key-indeterminate": async (want) => {
-      const result = await verifySettlementEvidence(paymentEvidence(), {}, {
+      const result = await verifySettlementEvidence(
+        paymentEvidence(),
+        authenticatedPaymentContext(),
+        {
         resolvePublicKey: async () => null,
         verify: () => true,
-      });
+        },
+      );
       expect(result.decision).toBe(want);
     },
     "settlement-phase-rail-mismatch-fail": async (want) => {
@@ -1410,6 +1854,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       evidence.deliverableContentHash = "not-a-hash";
       expect((await verifyEvidence(evidence)).decision).toBe(want);
     },
+    "settlement-storage-anchored-as-entitlement-fail": async (want) => {
+      const evidence = deliveryEvidence();
+      const expected = evidence.deliverableAnchor.locator;
+      evidence.deliverableAnchor.locator =
+        `dacs4:entitlement:${evidence.jobId}:0`;
+      expect((await verifyEvidence(evidence, {
+        expectedAnchorLocator: expected,
+      })).decision).toBe(want);
+    },
     "settlement-negative-fee-fail": async (want) => {
       const evidence = paymentEvidence();
       evidence.paymentFee = { amount: "-1", currency: "USDC" };
@@ -1437,6 +1890,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           })
         ).decision,
       ).toBe(want);
+    },
+    "settlement-rail-network-mismatch-fail": async (want) => {
+      expect((await verifyEvidence(paymentEvidence(), {
+        rail: {
+          railType: "evm-erc20",
+          assetSpec: { kind: "erc20", chainId: 80002 },
+          networkSpec: { kind: "solana", cluster: "devnet" },
+        },
+      })).decision).toBe(want);
     },
     "settlement-htlc-finality-params-pass": async (want) => {
       expect(
@@ -1534,6 +1996,46 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         bundleAddress("job-1", "orchestrator"),
       ];
       expect([b !== s, s !== o]).toEqual(want);
+    },
+    "verify-lookup-both": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) => ({
+        disposition: "present",
+        bundle: { jobId: "job-1", anchoredByRole: role },
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-one": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async (_address, role) =>
+        role === "buyer"
+          ? {
+              disposition: "present",
+              bundle: { jobId: "job-1", anchoredByRole: role },
+            }
+          : { disposition: "absent" },
+      );
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-none": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "absent",
+      }));
+      expect({
+        buyer: copies.buyer.disposition === "present",
+        seller: copies.seller.disposition === "present",
+      }).toEqual(want);
+    },
+    "verify-lookup-cross-session-jobid-ignored": async (want) => {
+      const copies = await lookupBundleCopies("job-1", async () => ({
+        disposition: "present",
+        bundle: { jobId: "job-other" },
+      }));
+      expect(await bundleConsistency(copies, { trustBundles: true })).toBe(want);
     },
     "verify-consume-absent": async (want) => {
       expect(await consume({ buyer: absent, seller: absent })).toBe(want.verdict);
@@ -1666,6 +2168,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1724,6 +2227,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1735,6 +2239,92 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
         want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
       );
+    },
+    "verify-reputation-relabel-attack-defeated": (want) => {
+      const fx = repFixture();
+      const relabelled = structuredClone(
+        fx.bundles.find((bundle) => bundle.outcome === "aborted-by-self")!,
+      );
+      relabelled.parties = relabelled.parties.map((party) => ({
+        ...party,
+        role: party.primaryClaim === fx.partyPrimaryClaim ? "seller" : "buyer",
+      }));
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [relabelled],
+        {
+          windowStart: fx.windowStart,
+          windowEnd: fx.windowEnd,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          // This vector isolates the metric boundary. The externally
+          // authenticated session binding, not the producer's relabelled
+          // parties[], fixes the scored party as buyer for this job.
+          trustBundles: true,
+          resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
+            jobId === relabelled.jobId &&
+            partyPrimaryClaim === fx.partyPrimaryClaim
+              ? "buyer"
+              : undefined,
+          copyAbsence: () => "absent",
+        },
+      );
+      expect({
+        bundleCount: derived.bundleCount,
+        counterpartyFaultRate: derived.metrics.counterpartyFaultRate,
+        completionRate: derived.metrics.completionRate,
+      }).toEqual(want);
+    },
+    "verify-one-sided-role-signature-binding": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const scope = structuredClone(original);
+      delete scope.signatures;
+      delete scope.anchoredByRole;
+      const sellerOnly = {
+        ...scope,
+        anchoredByRole: "buyer",
+        signatures: [{
+          party: "did:demos:seller",
+          algorithm: "ed25519",
+          value: Buffer.from(signArtifact(
+            "dacs-bundle:v1:",
+            scope,
+            hex(golden.verify.seeds.seller!),
+          )).toString("base64url"),
+        }],
+      };
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(sellerOnly, "buyer", {
+        resolvePublicKey: async (did) => keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("missing required signatures"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
+    },
+    "verify-one-sided-unverified-signature-absent": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(original, "buyer", {
+        resolvePublicKey: async (did) =>
+          did === "did:demos:buyer"
+            ? keys["did:demos:seller"] ?? null
+            : keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("failed verification"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
     },
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
@@ -1769,7 +2359,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "remaining §6.3.2/§6.3.3 requirement-matching, freshness, and control-gate inputs lack an independently exported policy surface",
     vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
-      "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
+      "all current DACS-3 negotiation goldens replay through exported SDK surfaces",
     governance: "all current GOV-1..3 goldens replay through the exported governance policy surface",
     dispute:
       "no DACS-X §11.2.1 dispute verifier in the SDK; vector inputs are constructed in dacs-verify run.ts, not shipped",
@@ -1778,9 +2368,14 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     settlement:
       "mutation/candidate inputs are constructed in dacs-verify run.ts, not shipped (only the two success fixtures are); PayeeBound (PB-1..3) has no SDK surface",
     verify:
-      "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
+      "remaining reputation/consumption cases need authenticated resolution context or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
+    "cf4-dacs2-attestation-address": "no exported dacs2 address builder (MVP anchor names deliberately unexported; #5/#48)",
+    "cf4-dacs2-composite-address": "no exported dacs2 composite address builder (#5/#48)",
+    "cf4-dacs4-payment-address": "no exported dacs4 payment address builder (#5/#48)",
+    "cf4-dacs5-rating-address": "no exported dacs5 rating address builder (#5/#48)",
+    "vet-cm2-address": "no exported dacs2 attestation address builder (#5/#48)",
     "settlement-wrong-anchor-fail":
       "EvidenceContext cannot validate the result.attestationRef payment-address id (PC-2)",
     "settlement-txrefs-mismatch-fail":
@@ -1790,7 +2385,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "settlement-rail-network-mismatch-fail":
       "EvidenceRailContext carries only opaque asset/network strings, not the categorical or chainId structure needed for RD-5 coherence",
     "settlement-cross-chainid-matching-kind-pass":
-      "EvidenceRailContext does not represent asset.chainId/network.chainId",
+      "blocked by DACS-Standard#352: RD-5 prose requires chainId equality while this golden expects a mismatch to pass",
   };
 
   // ── Drive the manifest ────────────────────────────────────────────────────
@@ -1836,12 +2431,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The parent has 84 non-vacuous SDK runners;
-    // DACS-5 state/outcome, DACS-2 Vet, Listing, and GOV-1..3 semantics raise
-    // coverage to 128.
+    // This pin has 236 cases. The updated parent provides 141 non-vacuous SDK
+    // runners; this PR adds eleven negotiation runners while retaining every
+    // parent runner, raising coverage to 152.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(128);
+    expect(Object.keys(RUNNERS)).toHaveLength(152);
     expect(manifest.cases).toHaveLength(236);
   });
 

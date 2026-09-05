@@ -14,13 +14,16 @@ import {
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
+  isNegotiablePriceWithinBand,
   generateCanonicalJobId,
   isCanonicalJobId,
   isAgreementDocument,
+  isPaymentRailRef,
   isPayeeBoundAgreementDocument,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  negotiablePriceBand,
   sha256Hex,
   signFixedPriceAgreement,
   signedBytes,
@@ -241,6 +244,63 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     };
     expect(deriveFixedPriceAgreement(input(value)).terms.price).toEqual(
       value.pricing.bandCenter,
+    );
+  });
+
+  test("derives inclusive negotiable bounds with exact half-up rounding", () => {
+    const pricing = {
+      kind: "negotiable" as const,
+      bandCenter: { amount: "1.23", currency: "USDC" },
+      minPct: 10,
+      maxPct: 10,
+    };
+    expect(negotiablePriceBand(pricing)).toEqual({ lower: "1.11", upper: "1.35" });
+    expect(isNegotiablePriceWithinBand("1.11", pricing)).toBe(true);
+    expect(isNegotiablePriceWithinBand("1.35", pricing)).toBe(true);
+    expect(isNegotiablePriceWithinBand("1.109", pricing)).toBe(false);
+    expect(isNegotiablePriceWithinBand("1.351", pricing)).toBe(false);
+
+    expect(negotiablePriceBand({
+      ...pricing,
+      bandCenter: { amount: "100", currency: "USDC" },
+      minPct: 12.5,
+      maxPct: 12.5,
+    })).toEqual({ lower: "88", upper: "113" });
+  });
+
+  test("rejects malformed negotiable band inputs before arithmetic", () => {
+    const pricing = {
+      kind: "negotiable" as const,
+      bandCenter: { amount: "1", currency: "USDC" },
+      minPct: 10,
+      maxPct: 10,
+    };
+    expect(() => isNegotiablePriceWithinBand("1.00", pricing)).toThrow(/CD-1/);
+    expect(() => negotiablePriceBand({ ...pricing, minPct: 100 })).toThrow(
+      /positive lower bound/,
+    );
+    expect(() => negotiablePriceBand({
+      ...pricing,
+      bandCenter: { amount: "01", currency: "USDC" },
+    })).toThrow(/CD-1/);
+    expect(() => negotiablePriceBand({ kind: "negotiable" } as never)).toThrow(
+      /requires negotiable pricing/,
+    );
+
+    let getterRuns = 0;
+    const accessor = Object.defineProperty({}, "kind", {
+      enumerable: true,
+      get() {
+        getterRuns += 1;
+        return "negotiable";
+      },
+    });
+    expect(() => negotiablePriceBand(accessor as never)).toThrow(
+      /stable canonical JSON|plain data|accessor/,
+    );
+    expect(getterRuns).toBe(0);
+    expect(() => negotiablePriceBand(new Proxy(pricing, {}) as never)).toThrow(
+      /stable canonical JSON|Proxy|plain data/,
     );
   });
 
@@ -891,6 +951,94 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       }),
     ).toBe(false);
     expect(coercions).toBe(0);
+
+    const unstableAdditionalTerms = {
+      poison: undefined,
+    };
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: {
+          ...signed.terms,
+          additionalTerms: unstableAdditionalTerms,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isPaymentRailRef({
+        ...rail,
+        parameters: { network: "eip155:8453", poison: undefined },
+      }),
+    ).toBe(false);
+
+    const cyclicTerms: Record<string, unknown> = {};
+    cyclicTerms.self = cyclicTerms;
+    const sparse = new Array<unknown>(1);
+    let accessorCalls = 0;
+    const accessorTerms = Object.defineProperty({}, "value", {
+      enumerable: true,
+      get() {
+        accessorCalls += 1;
+        return "not-data";
+      },
+    });
+    let proxyCalls = 0;
+    const proxyTerms = new Proxy({}, {
+      ownKeys() {
+        proxyCalls += 1;
+        return [];
+      },
+    });
+    const symbolTerms: Record<string | symbol, unknown> = { visible: true };
+    symbolTerms[Symbol("hidden")] = true;
+    const exoticTerms = Object.create({ inherited: true }) as Record<string, unknown>;
+    exoticTerms.visible = true;
+    const extraPropertyArray = ["item"] as string[] & { hidden?: boolean };
+    extraPropertyArray.hidden = true;
+    const overNested: Record<string, unknown> = {};
+    let nestedCursor = overNested;
+    for (let depth = 0; depth < 70; depth += 1) {
+      const next: Record<string, unknown> = {};
+      nestedCursor.next = next;
+      nestedCursor = next;
+    }
+    for (const additionalTerms of [
+      { negativeZero: -0 },
+      { nonFinite: Number.POSITIVE_INFINITY },
+      { unsafeNumber: Number.MAX_SAFE_INTEGER + 1 },
+      { loneSurrogate: "\ud800" },
+      { unsupported: 1n },
+      { unsupported: () => undefined },
+      { sparse },
+      { extraPropertyArray },
+      cyclicTerms,
+      accessorTerms,
+      proxyTerms,
+      symbolTerms,
+      exoticTerms,
+      overNested,
+    ]) {
+      expect(
+        isAgreementDocument({
+          ...signed,
+          terms: { ...signed.terms, additionalTerms },
+        }),
+      ).toBe(false);
+    }
+    expect(accessorCalls).toBe(0);
+    expect(proxyCalls).toBe(0);
+    const frozenTerms = Object.freeze({
+      tags: Object.freeze(["stable", "read-only"]),
+    });
+    expect(
+      isAgreementDocument({
+        ...signed,
+        terms: { ...signed.terms, additionalTerms: frozenTerms },
+      }),
+    ).toBe(true);
+    expect(() =>
+      contentHash(signed as unknown as Record<string, unknown>)
+    ).not.toThrow();
 
     let invoked = 0;
     await expect(

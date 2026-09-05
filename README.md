@@ -41,6 +41,13 @@ All five lifecycle stages run end to end:
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `advanceCrossChainHtlc` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
+Agreement readers can call `validateFixedPriceAgreementBinding()` with the
+authenticated commitment timestamp to re-check the complete fixed-price
+agreement/listing binding. RFQ or other negotiable-pattern implementations can
+use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
+§8.5.2's exact inclusive, half-up-rounded band arithmetic; both reject
+non-canonical CD-1 amounts instead of normalising them into acceptance.
+
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
@@ -94,6 +101,16 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
+Settlement evidence has two deliberately different public boundaries.
+`validateSettlementEvidenceStructure()` checks wire shape and any supplied
+comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
+an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
+operation and requires the authenticated agreement, pinned rail, phase
+orchestrator, evidence reference, phase result, PC-2 address (for payment),
+expected deliverable locator (for delivery), plus key resolution and signature
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
@@ -121,6 +138,15 @@ Non-intrinsic writer identities require
 adapter's actual key before signing.
 
 ## Public API
+
+`createAgent()` returns only the high-level DACS operations below. It does not
+expose the connected substrate adapter, raw demosdk client, signing primitive,
+or broadcast/transfer authority. Operator diagnostics and funded conformance
+tests that genuinely need the low-level adapter must opt into the clearly named
+`createUnsafeManualAgent()` escape hatch and must never pass that result to an
+application callback, plugin, or HTTP handler. In-process narrowing prevents
+accidental capability leakage; OS-level buyer/seller signer isolation remains a
+deployment responsibility of the generated role services.
 
 ```ts
 import {
@@ -157,8 +183,10 @@ const seller = await createAgent({
     ),
   // Required to accept bundles with SettlementEvidence. Resolve the exact
   // phase orchestrator and authenticated pinned-rail definition from trusted
-  // session/registry state; the SDK binds the Agreement and AttestationRef and
-  // performs the DACS-4 semantic and cryptographic verification itself.
+  // session/registry state, including the structured assetSpec/networkSpec
+  // needed for RD-5. The SDK derives the PC-2 phase index and exact handler
+  // txRefs from the authenticated bundle, binds the Agreement/AttestationRef,
+  // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
@@ -280,7 +308,14 @@ hold candidate bundle objects must use `deriveReputationWithValidation()` when
 their cryptographic verifier is asynchronous. The pure `deriveReputation()`
 helper accepts only a synchronous primitive-boolean predicate over copies that
 were authenticated upstream; a Promise-valued predicate is rejected rather
-than treated as truthy.
+than treated as truthy. Both helpers also require an independently authenticated
+per-job `resolvePartyRole({ jobId, partyPrimaryClaim })` mapping. Bundle-local
+`parties[]` labels cannot decide whether a copy is the scored party's own or its
+counterparty's: trusting those labels would let a relabelled self-abort become a
+false counterparty fault. Callers whose validation already authenticated the
+exact party map against the pinned agreement may instead make the explicit
+`trustBundlePartyRoles: true` compatibility assertion; it is not implied by
+`trustBundles` or by signature validation alone.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
@@ -363,9 +398,11 @@ settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
 when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Cached durable success is reauthenticated
-after every process restart before reuse; missing or contradictory recovery
-fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+non-final observation must throw. Even authoritative absence does not revoke a
+possibly-live old process or signed transaction and therefore does not authorize
+an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
+after every process restart before reuse; missing, absent, or contradictory
+recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
@@ -508,6 +545,14 @@ thrown authentication dependency cannot blame the counterparty. The returned
 authority contains no signing capability and is intended for the existing
 role-local `advanceTerminalBundleDurable(...)` path. Failed bundles remain
 co-signed; single-signature suppression is available only for an honest abort.
+
+`lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
+§10.4.3(a) read step for consumers. It fetches the buyer and seller logical
+bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
+ignores content returned for another job. Lookup is discovery, not trust: pass
+each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
+that returns its `.valid` boolean to `bundleConsistency` before using the
+resulting two-sided verdict.
 
 ### Normative artifact references
 
