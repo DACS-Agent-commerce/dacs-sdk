@@ -430,4 +430,40 @@ describe("RFQ transcript disclosure policy", () => {
     ).resolves.toMatchObject({ decision: "fail" });
     expect(verifyConsent).not.toHaveBeenCalled();
   });
+
+  test.each(["undefined", "throwing"] as const)(
+    "captures verifiers through the intrinsic bind with %s own bind properties",
+    async (bindKind) => {
+      const value = await disclosureFixture("encrypted-anchored-required");
+      const ownBind =
+        bindKind === "undefined"
+          ? undefined
+          : () => {
+              throw new Error("hostile own bind");
+            };
+      const verifyMessageSignature = Object.assign(
+        () => "pass" as const,
+        { bind: ownBind },
+      );
+      const verifyConsent = Object.assign(
+        () => "pass" as const,
+        { bind: ownBind },
+      );
+      await expect(
+        planRfqTranscriptDisclosure(
+          {
+            verifiedListing: verified(value.value),
+            session: value.session,
+            agreement: value.agreement,
+            transcript: value.transcript,
+            consents,
+          },
+          { verifyMessageSignature, verifyConsent },
+        ),
+      ).resolves.toMatchObject({
+        decision: "pass",
+        action: "publish-encrypted",
+      });
+    },
+  );
 });
