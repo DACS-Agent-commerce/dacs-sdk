@@ -160,6 +160,17 @@ export interface BundleEvidenceVerificationResult {
   authorizedSigner: string | null;
 }
 
+export interface AlternativePaymentBundleVerificationInput {
+  bundle: AnyAttestationBundle;
+  listing: Record<string, unknown>;
+  agreement: Record<string, unknown>;
+}
+
+export interface AlternativePaymentBundleVerificationResult {
+  decision: "pass" | "fail" | "error" | "indeterminate";
+  reason?: string;
+}
+
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
@@ -204,7 +215,7 @@ export interface VerifyBundleDeps {
   verify: Verifier;
   /**
    * Semantic and authority check of a hash-matched SettlementEvidence artifact
-   * (DACS-4 §9.7) — wire `verifySettlementEvidence` (with the caller's
+   * (DACS-4 §9.7) — wire authenticated `verifySettlementEvidence` (with the caller's
    * agreement/rail/orchestrator context) here. The second argument carries the
    * resolved agreement and exact attestation ref needed to build that context;
    * the result also returns the exact authenticated phase orchestrator used to
@@ -216,6 +227,15 @@ export interface VerifyBundleDeps {
     context: BundleEvidenceVerificationContext,
   ) => Promise<BundleEvidenceVerificationResult>;
   /**
+   * Required before evidence interpretation when the authenticated Listing
+   * contains `pay-alternative`. Compose the SDK APR listing, signed projection,
+   * replacement, and audit gates here; a caller-supplied projected step is not
+   * sufficient authority.
+   */
+  verifyAlternativePaymentProjection?: (
+    input: Readonly<AlternativePaymentBundleVerificationInput>,
+  ) => Promise<AlternativePaymentBundleVerificationResult>;
+  /**
    * Required whenever `vetRecords` is non-empty. This must run the strict
    * DACS-2 verifier with the session's exact bundle/requirement expectations.
    */
@@ -224,6 +244,9 @@ export interface VerifyBundleDeps {
     bundle: Readonly<ReadableAttestationBundle>,
   ) => Promise<StrictCompositeVerification>;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || typeof value !== "object" || seen.has(value as object)) {
@@ -422,6 +445,11 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
   const resolvePublicKey = ownDependency(deps, "resolvePublicKey", true);
   const verify = ownDependency(deps, "verify", true);
   const verifyEvidence = ownDependency(deps, "verifyEvidence", false);
+  const verifyAlternativePaymentProjection = ownDependency(
+    deps,
+    "verifyAlternativePaymentProjection",
+    false,
+  );
   const verifyCompositeRecord = ownDependency(
     deps,
     "verifyCompositeRecord",
@@ -451,6 +479,7 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     ["resolveListingRef", resolveListingRef],
     ["resolveRef", resolveRef],
     ["verifyEvidence", verifyEvidence],
+    ["verifyAlternativePaymentProjection", verifyAlternativePaymentProjection],
     ["verifyCompositeRecord", verifyCompositeRecord],
   ] as const) {
     if (
@@ -506,6 +535,16 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
       : {
           verifyEvidence: bindMethod(
             verifyEvidence as NonNullable<VerifyBundleDeps["verifyEvidence"]>,
+            deps,
+          ),
+        }),
+    ...(verifyAlternativePaymentProjection === undefined
+      ? {}
+      : {
+          verifyAlternativePaymentProjection: bindMethod(
+            verifyAlternativePaymentProjection as NonNullable<
+              VerifyBundleDeps["verifyAlternativePaymentProjection"]
+            >,
             deps,
           ),
         }),
@@ -964,6 +1003,45 @@ function isLegacyMvpListingScope(v: Record<string, unknown>): boolean {
   return isLegacyMvpListing(scope);
 }
 
+function exactListingPin(value: unknown): ListingPin | null {
+  if (!isExactJsonRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !Object.prototype.hasOwnProperty.call(value, "listingId") ||
+    !Object.prototype.hasOwnProperty.call(value, "version") ||
+    !Object.prototype.hasOwnProperty.call(value, "contentHash") ||
+    typeof value.listingId !== "string" ||
+    value.listingId.length === 0 ||
+    !Number.isSafeInteger(value.version) ||
+    (value.version as number) < 1 ||
+    typeof value.contentHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.contentHash)
+  ) {
+    return null;
+  }
+  return {
+    listingId: value.listingId,
+    version: value.version as number,
+    contentHash: value.contentHash,
+  };
+}
+
+/**
+ * Current runSession compatibility bundles still use legacy artifact refs, but
+ * their buyer-signed Agreement pins the normative Listing tuple explicitly.
+ * Recognize that narrow bridge without allowing an unpinned legacy bundle to
+ * upgrade a legacy Listing read into a normative one.
+ */
+function legacyAgreementNormativeListingPin(
+  agreement: Record<string, unknown> | null,
+): ListingPin | null {
+  if (!agreement) return null;
+  const scope = stripSignature(agreement);
+  if (!isLegacyMvpAgreementDocument(scope)) return null;
+  return exactListingPin(scope.dacsSdkListingPin);
+}
+
 function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
@@ -1337,6 +1415,8 @@ export async function verifyBundleCore(
   // ── Referenced-artifact integrity ──────────────────────────────────────────
   const refs: RefCheck[] = [];
   let agreementArtifact: Record<string, unknown> | null = null;
+  let agreementReferenceVerified = false;
+  let prefetchedNormativeListing: Record<string, unknown> | null | undefined;
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
@@ -1450,6 +1530,7 @@ export async function verifyBundleCore(
       agreement.check.verdict = "incoherent";
     }
     refs.push(agreement.check);
+    agreementReferenceVerified = agreement.check.verdict === "ok";
     agreementArtifact =
       agreement.value &&
       ![
@@ -1461,12 +1542,115 @@ export async function verifyBundleCore(
         ? agreement.value
         : null;
   }
+
+  // APR-7 runs before any SettlementEvidence callback. Resolve and authenticate
+  // the signed Listing now, then require the SDK-composed projection verifier
+  // whenever that exact Listing contains the listing-only placeholder.
+  if (isNormativeGraph && deps.resolveListingRef) {
+    prefetchedNormativeListing = snapshotDependencyRecord(
+      await deps.resolveListingRef(
+        structuredClone(bundle.listingRef),
+        structuredClone(bundle.parties),
+      ),
+      `resolved Listing ${bundle.listingRef.listingId}`,
+    );
+    let earlyListingCheck = checkArtifact(
+      "dacs-1-listing",
+      String(bundle.listingRef.listingId),
+      bundle.listingRef.contentHash,
+      isNormativeListingScope,
+      prefetchedNormativeListing,
+    );
+    if (earlyListingCheck.verdict === "ok" && prefetchedNormativeListing) {
+      const scope = stripSignature(prefetchedNormativeListing) as Record<
+        string,
+        unknown
+      >;
+      const publisher = isListingDraft(scope)
+        ? scope.seller.identity.presentedBy
+        : null;
+      earlyListingCheck = attachSignatureCheck(
+        earlyListingCheck,
+        await authenticateComponentReference(
+          prefetchedNormativeListing,
+          ARTIFACT_SEPARATORS.Listing,
+          publisher ? new Set([publisher]) : null,
+          deps,
+        ),
+      );
+      const containsAlternative =
+        earlyListingCheck.verdict === "ok" &&
+        isListingDraft(scope) &&
+        scope.pipeline.some((phase) => phase.kind === "pay-alternative");
+      if (containsAlternative) {
+        let aprDecision: AlternativePaymentBundleVerificationResult = {
+          decision: "indeterminate",
+          reason: "alternative-payment projection verifier unavailable",
+        };
+        if (
+          agreementReferenceVerified &&
+          agreementArtifact &&
+          deps.verifyAlternativePaymentProjection
+        ) {
+          try {
+            const rawDecision = await deps.verifyAlternativePaymentProjection(
+              deepFreezeSnapshot({
+                bundle: structuredClone(bundle as AnyAttestationBundle),
+                listing: structuredClone(prefetchedNormativeListing),
+                agreement: structuredClone(agreementArtifact),
+              }),
+            );
+            const capturedDecision = snapshotCanonicalJsonRead(
+              rawDecision,
+              "alternative-payment bundle verification result",
+            );
+            if (
+              isRecord(capturedDecision) &&
+              ["pass", "fail", "error", "indeterminate"].includes(
+                capturedDecision.decision as string,
+              ) &&
+              (capturedDecision.reason === undefined ||
+                typeof capturedDecision.reason === "string")
+            ) {
+              aprDecision = capturedDecision as AlternativePaymentBundleVerificationResult;
+            }
+          } catch {
+            // Keep the indeterminate default. Evidence callbacks remain inert.
+          }
+        }
+        if (aprDecision.decision !== "pass") {
+          return {
+            ok: false,
+            reason:
+              aprDecision.reason ??
+              `alternative-payment projection ${aprDecision.decision}`,
+            fullyVerified: false,
+            signatures,
+            refs: [
+              ...refs,
+              {
+                kind: "dacs-4-alternative-projection",
+                id: bundle.jobId,
+                verdict:
+                  aprDecision.decision === "fail"
+                    ? "invalid-binding"
+                    : "unresolved",
+              },
+            ],
+            bundle: structuredClone(bundle),
+          };
+        }
+      }
+    }
+  }
   for (const ev of bundle.settlementEvidence) {
     const evidence = await checkReadableRef(
       "dacs-4-evidence",
       ev,
       isLegacyMvpAttestationRef(ev)
-        ? isLegacyMvpSettlementEvidence
+        ? (value) =>
+            isLegacyMvpSettlementEvidence(value) ||
+            isSettlementEvidenceScope(value)
         : isSettlementEvidenceScope,
     );
     if (
@@ -1640,10 +1824,13 @@ export async function verifyBundleCore(
   // pre-commit abort with no Agreement. Only an explicit early-MVP bundle may
   // follow the historical Agreement address / kind+job resolver.
   const listingId = String(bundle.listingRef.listingId);
+  const legacyNormativeListingPin = isNormativeGraph
+    ? null
+    : legacyAgreementNormativeListingPin(agreementArtifact);
   const agreementListingPin =
     agreementArtifact && isAgreementArtifact(agreementArtifact)
       ? agreementArtifact.listingRef
-      : null;
+      : legacyNormativeListingPin;
   const legacyListingAddr =
     !isNormativeGraph &&
     agreementArtifact &&
@@ -1656,18 +1843,23 @@ export async function verifyBundleCore(
     (agreementListingPin.listingId === bundle.listingRef.listingId &&
       agreementListingPin.version === bundle.listingRef.version &&
       agreementListingPin.contentHash === bundle.listingRef.contentHash);
+  const listingUsesNormativeScope =
+    isNormativeGraph || legacyNormativeListingPin !== null;
   const canResolveListing = isNormativeGraph
     ? Boolean(deps.resolveListingRef)
     : Boolean(legacyListingAddr || deps.resolveRef);
   let listing: Record<string, unknown> | null = null;
   if (listingPinCoherent && isNormativeGraph && deps.resolveListingRef) {
-    listing = snapshotDependencyRecord(
-      await deps.resolveListingRef(
-        structuredClone(bundle.listingRef),
-        structuredClone(bundle.parties),
-      ),
-      `resolved Listing ${bundle.listingRef.listingId}`,
-    );
+    listing =
+      prefetchedNormativeListing !== undefined
+        ? prefetchedNormativeListing
+        : snapshotDependencyRecord(
+            await deps.resolveListingRef(
+              structuredClone(bundle.listingRef),
+              structuredClone(bundle.parties),
+            ),
+            `resolved Listing ${bundle.listingRef.listingId}`,
+          );
   } else if (listingPinCoherent && legacyListingAddr) {
     listing = snapshotDependencyRecord(
       await deps.readArtifact(legacyListingAddr),
@@ -1701,12 +1893,12 @@ export async function verifyBundleCore(
       "dacs-1-listing",
       listingId,
       bundle.listingRef.contentHash,
-      isNormativeGraph
+      listingUsesNormativeScope
         ? isNormativeListingScope
         : isLegacyMvpListingScope,
       listing,
     );
-    if (listingCheck.verdict === "ok" && listing && isNormativeGraph) {
+    if (listingCheck.verdict === "ok" && listing && listingUsesNormativeScope) {
       const listingScope = stripSignature(listing) as {
         listingId?: unknown;
         seller?: { identity?: { presentedBy?: unknown } };
@@ -1717,7 +1909,10 @@ export async function verifyBundleCore(
       if (
         listingScope.listingId !== listingId ||
         (sellerClaim !== undefined &&
-          listingScope.seller?.identity?.presentedBy !== sellerClaim)
+          !sameCanonicalClaimIdentity(
+            listingScope.seller?.identity?.presentedBy,
+            sellerClaim,
+          ))
       ) {
         listingCheck.verdict = "invalid-binding";
       }

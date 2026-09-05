@@ -1,7 +1,5 @@
-import { isIP } from "node:net";
-import { domainToASCII } from "node:url";
-
 import { DacsError } from "../errors.js";
+import { isCanonicalDomainHostname } from "./domainHost.js";
 
 /** CORE B.1 CF-3 identity. Parameters deliberately do not participate. */
 export interface CanonicalClaimIdentity {
@@ -83,25 +81,6 @@ function hasNonEmptyComponents(identifier: string, count: number): boolean {
   return start < identifier.length;
 }
 
-function canonicalDomainIdentifier(identifier: string): boolean {
-  let ascii: string;
-  try {
-    ascii = domainToASCII(identifier);
-  } catch {
-    return false;
-  }
-  if (identifier.length > 253 || identifier.endsWith(".") ||
-      isIP(identifier) !== 0 || ascii !== identifier) {
-    return false;
-  }
-  const labels = identifier.split(".");
-  return labels.every((label) =>
-    label.length >= 1 &&
-    label.length <= 63 &&
-    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
-  );
-}
-
 function canonicalRegisteredIdentifier(
   scheme: string,
   identifier: string,
@@ -129,7 +108,7 @@ function canonicalRegisteredIdentifier(
       // DACS-1 DCR-2 deliberately excludes URL query syntax from the
       // hostname-only profile, even though other ClaimReference schemes may
       // carry advisory parameters.
-      return !hasParameters && canonicalDomainIdentifier(identifier);
+      return !hasParameters && isCanonicalDomainHostname(identifier);
     case "key":
       return /^[0-9a-f]+$/.test(identifier);
     case "erc8004": {
