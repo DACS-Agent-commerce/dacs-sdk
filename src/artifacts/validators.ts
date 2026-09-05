@@ -29,6 +29,7 @@ import type {
   ReadableListing,
   RevocationBinding,
   RevocationMarker,
+  RatingRecord,
   SettlementEvidence,
   VerificationMethod,
   LegacyCompositeVerificationRecord,
@@ -50,7 +51,10 @@ import {
   isCanonicalBase64Url,
   isComponentSignature,
 } from "./signatures.js";
-import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import {
+  isCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
@@ -1976,6 +1980,52 @@ export function isSettlementEvidence(v: unknown): v is SettlementEvidence {
     return false;
   }
   return v.phase !== "deliver-attested-payload" || isAttestationRef(v.attestationRef);
+}
+
+/** DACS-5 §10.6/RT-1 strict standalone RatingRecord wire gate. */
+export function isRatingRecord(v: unknown): v is RatingRecord {
+  if (!isObj(v) || !isExactJsonRecord(v)) return false;
+  if (
+    !hasExactWireKeys(
+      v,
+      [
+        "ratingVersion",
+        "jobId",
+        "rater",
+        "target",
+        "targetRole",
+        "value",
+        "ratedAt",
+        "signature",
+      ],
+      ["freeText", "dimensions"],
+    ) ||
+    v.ratingVersion !== "1" ||
+    !isCanonicalJobId(v.jobId) ||
+    !isCanonicalClaimReference(v.rater) ||
+    !isCanonicalClaimReference(v.target) ||
+    sameCanonicalClaimIdentity(v.rater, v.target) ||
+    !isOneOf(["buyer", "seller"], v.targetRole) ||
+    !Number.isInteger(v.value) ||
+    (v.value as number) < 1 ||
+    (v.value as number) > 5 ||
+    !isNonNegativeSafeInt(v.ratedAt) ||
+    !isComponentSignature(v.signature) ||
+    v.signature.signer !== v.rater
+  ) {
+    return false;
+  }
+  if (
+    v.freeText !== undefined &&
+    (!isStr(v.freeText) || v.freeText.length > 1_000)
+  ) {
+    return false;
+  }
+  return v.dimensions === undefined ||
+    (isExactJsonRecord(v.dimensions) &&
+      Object.values(v.dimensions).every(
+        (value) => typeof value === "number" && Number.isFinite(value),
+      ));
 }
 
 function hasBundleFields(
