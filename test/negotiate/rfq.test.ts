@@ -361,6 +361,19 @@ describe("RFQ session opening", () => {
         reservation,
       ),
     ).resolves.toMatchObject({ decision: "error" });
+
+    await expect(
+      openRfqSession(
+        {
+          ...openInput(),
+          buyer: {
+            ...buyer,
+            identityBundle: identity(`${SELLER}?scope=buyer`),
+          },
+        },
+        reservation,
+      ),
+    ).resolves.toMatchObject({ decision: "error" });
     expect(reservation).not.toHaveBeenCalled();
   });
 });
@@ -528,6 +541,10 @@ describe("bounded RFQ turn reducer", () => {
     const impossibleTurn = structuredClone(original);
     impossibleTurn.turnCount = 1;
     cases.push(impossibleTurn);
+
+    const duplicateQualifiedParty = structuredClone(original);
+    duplicateQualifiedParty.buyer.primaryClaim = `${SELLER}?scope=buyer`;
+    cases.push(duplicateQualifiedParty);
 
     const extraField = structuredClone(original) as RfqSessionState & {
       callerAuthority?: boolean;
