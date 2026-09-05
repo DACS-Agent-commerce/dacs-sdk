@@ -9,19 +9,23 @@ import {
   identityBundleHash,
   isCompositeVerificationRecord,
   isVerifyResult,
+  PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
   partyVetCompositeAddress,
   partyVetCore,
+  partyVetWithNativeCciTlsnCore,
   partyVetPinScopeHash,
   privateKeyFromSeed,
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  readPartyVetNativeCciTlsnEvidence,
   sha256Hex,
   signComponentArtifact,
   signedBytes,
   verifyCompositeVerificationRecord,
   type AttestationRef,
   type CompositeBundleRequirement,
+  type CciTlsnDisposition,
   type FinalizedVetAnchor,
   type FinalizedVetAnchorReceipt,
   type FencedSessionStoreV2,
@@ -29,10 +33,15 @@ import {
   type IdentityBundle,
   type ExpectedVerifyResult,
   type PartyVetDeps,
+  type PartyVetNativeCciTlsnQualifier,
   type PartyVetRequest,
+  type PartyVetWithNativeCciTlsnRequest,
   type RecipeDescriptor,
+  type SubstrateAdapter,
+  type VerifyNativeCciTlsnInput,
   type VerifyResult,
 } from "../../src/index.js";
+import { buildAgent } from "../../src/agent/Agent.js";
 import { createPartyVetPins } from "./partyVetPins.js";
 
 const VERIFIER_SEED = new Uint8Array(32).fill(91);
@@ -507,11 +516,13 @@ async function bundle(
   presentedBy: string,
   refs: readonly string[],
   claims: IdentityBundle["claims"] = refs.map((ref) => ({ ref })),
+  sessionNonce?: string,
 ): Promise<IdentityBundle> {
   const unsigned: IdentityBundle = {
     bundleVersion: "1",
     presentedBy,
     presentedAt: NOW - 1_000,
+    ...(sessionNonce === undefined ? {} : { sessionNonce }),
     claims,
     presentation: {
       kind: "siwd",
@@ -695,6 +706,114 @@ async function singleClaimRequest(
       claimSubject: subject,
       recipe: signedRecipe,
     }]),
+  };
+}
+
+const NATIVE_CCI_JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+const NATIVE_CCI_PROOF_HASH = "ab".repeat(32);
+const NATIVE_CCI_SESSION_NONCE = "party-vet-session-nonce-1";
+const DEMOS_CCI_SUBJECT =
+  `did:demos:agent:${"11".repeat(32)}`;
+
+async function nativeCciPartyRequest(
+  subject = "alpha:alice",
+  jobId = NATIVE_CCI_JOB_ID,
+): Promise<PartyVetWithNativeCciTlsnRequest> {
+  const scheme = subject.slice(0, subject.indexOf(":"));
+  const nativeRef = `cci-tlsn:${NATIVE_CCI_PROOF_HASH}`;
+  const requirement: CompositeBundleRequirement = {
+    requirementVersion: "1",
+    required: [
+      { scheme, verificationRequired: true, recipeVersion: 1 },
+    ],
+  };
+  const identityBundle = await bundle(
+    subject,
+    [subject, nativeRef],
+    undefined,
+    NATIVE_CCI_SESSION_NONCE,
+  );
+  return {
+    vet: {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identityBundle,
+        requirement,
+        [{
+          requirementPath: { kind: "required", index: 0 },
+          claimSubject: subject,
+          recipe: await recipe(scheme),
+        }],
+      ),
+    },
+    nativeCciTlsn: [{
+      proofHash: NATIVE_CCI_PROOF_HASH,
+      sessionNonce: NATIVE_CCI_SESSION_NONCE,
+      expectedServer: "github.com",
+      maxResolutionAgeSec: 60,
+      maxProofAgeSec: 60,
+      maxPresentationAgeSec: 60,
+    }],
+  };
+}
+
+function nativeCciDisposition(
+  input: Parameters<PartyVetNativeCciTlsnQualifier>[0],
+  overrides: {
+    subject?: string;
+    jobId?: string;
+    sessionNonce?: string;
+    bundleHash?: string;
+    proofHash?: string;
+    claimObservedAt?: number;
+    resolutionObservedAt?: number;
+    verifiedAt?: number;
+    evaluatedAt?: number;
+  } = {},
+): CciTlsnDisposition {
+  const subject = overrides.subject ?? input.subject;
+  const jobId = overrides.jobId ?? input.context.jobId;
+  const sessionNonce = overrides.sessionNonce ?? input.context.sessionNonce;
+  const bundleHash = overrides.bundleHash ?? identityBundleHash(input.bundle);
+  const proofHash = overrides.proofHash ?? input.proofHash;
+  const claimObservedAt = overrides.claimObservedAt ?? NOW - 3_000;
+  const resolutionObservedAt = overrides.resolutionObservedAt ?? NOW - 2_000;
+  const verifiedAt = overrides.verifiedAt ?? NOW;
+  const evaluatedAt = overrides.evaluatedAt ?? input.context.evaluatedAt;
+  return {
+    status: "native-cci",
+    claim: {
+      kind: "tlsn",
+      context: "github",
+      username: "alice",
+      userId: "42",
+      proofHash,
+      observedAt: claimObservedAt,
+      ref: `cci-tlsn:${proofHash}`,
+    },
+    jobId,
+    sessionNonce,
+    bundleHash,
+    evaluatedAt,
+    verification: {
+      verifiedAt,
+      authority: "native-tlsn:testnet",
+      binding: {
+        subject,
+        jobId,
+        sessionNonce,
+        expectedServer: input.context.expectedServer,
+        bundleHash,
+        proofHash,
+        resolutionObservedAt,
+      },
+      evidence: { transcript: `tlsn:${proofHash}` },
+    },
   };
 }
 
@@ -1499,4 +1618,431 @@ describe("partyVetCore durable party-level producer", () => {
       );
     },
   );
+});
+
+describe("partyVetWithNativeCciTlsnCore", () => {
+  test("qualifies native CCI as a mandatory gate and retains exact signed CVR provenance", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    await activateEffectLease(harness, request.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      expect(input).toMatchObject({
+        subject: request.vet.evaluatedParty,
+        proofHash: NATIVE_CCI_PROOF_HASH,
+        context: {
+          jobId: NATIVE_CCI_JOB_ID,
+          expectedPresenter: request.vet.evaluatedParty,
+          sessionNonce: NATIVE_CCI_SESSION_NONCE,
+          expectedServer: "github.com",
+          evaluatedAt: NOW,
+        },
+      });
+      expect(Object.isFrozen(input)).toBe(true);
+      return nativeCciDisposition(input);
+    };
+
+    const production = await partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      qualifier,
+    );
+    expect(production.record.overallDecision).toBe("pass");
+    expect(production.record.supplementary).toHaveLength(1);
+    expect(production.record.supplementary[0]).toMatchObject({
+      source: "cci-tlsn",
+      signalType: PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
+      observedAt: NOW,
+    });
+    const retained = readPartyVetNativeCciTlsnEvidence(
+      production.record.supplementary[0],
+    );
+    expect(retained).toEqual(production.nativeCciTlsn[0]);
+    expect(retained).toMatchObject({
+      evidenceVersion: "1",
+      subject: request.vet.evaluatedParty,
+      claimRef: `cci-tlsn:${NATIVE_CCI_PROOF_HASH}`,
+      jobId: NATIVE_CCI_JOB_ID,
+      sessionNonce: NATIVE_CCI_SESSION_NONCE,
+      expectedServer: "github.com",
+      bundleHash: identityBundleHash(request.vet.identityBundle),
+      proofHash: NATIVE_CCI_PROOF_HASH,
+      evaluatedAt: NOW,
+      claimObservedAt: NOW - 3_000,
+      resolutionObservedAt: NOW - 2_000,
+      verifiedAt: NOW,
+      authority: "native-tlsn:testnet",
+      nativeEvidenceHash: sha256Hex(canonicalize({
+        transcript: `tlsn:${NATIVE_CCI_PROOF_HASH}`,
+      })),
+    });
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(qualifierCalls).toBe(1);
+
+    const replay = await partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      () => {
+        qualifierCalls += 1;
+        throw new Error("durable replay must not invoke the qualifier");
+      },
+    );
+    expect(canonicalize(replay)).toBe(canonicalize(production));
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(qualifierCalls).toBe(1);
+  });
+
+  test("exercises the positive path through the public Agent API", async () => {
+    const harness = state();
+    const qualifiedSubject = `${DEMOS_CCI_SUBJECT}?network=testnet`;
+    const request = await nativeCciPartyRequest(qualifiedSubject);
+    await activateEffectLease(harness, request.vet.jobId);
+    let resolutions = 0;
+    let nativeVerifications = 0;
+    const adapter = {
+      resolveIdentity: async (address: string) => {
+        resolutions += 1;
+        expect(address).toBe("11".repeat(32));
+        return {
+          ref: address,
+          boundTo: address,
+          raw: {
+            result: 200,
+            response: {
+              web2: {
+                github: [{
+                  username: "alice",
+                  userId: "42",
+                  proofType: "tlsn",
+                  proofHash: NATIVE_CCI_PROOF_HASH,
+                  timestamp: NOW - 3_000,
+                }],
+              },
+            },
+          },
+        };
+      },
+    } as unknown as SubstrateAdapter;
+    const agent = buildAgent(adapter, {
+      demosRpc: "https://node.example",
+      demosCci: {
+        authenticateResolution: ({ subject }) => ({
+          status: "authenticated",
+          subject,
+          observedAt: NOW - 2_000,
+          authority: "demos:testnet",
+        }),
+        verifyIdentityPresentation: () => true,
+        verifyNativeTlsn: (input: Readonly<VerifyNativeCciTlsnInput>) => {
+          nativeVerifications += 1;
+          expect(input.subject).toBe(DEMOS_CCI_SUBJECT);
+          return {
+            status: "verified",
+            verifiedAt: input.evaluatedAt,
+            authority: "native-tlsn:testnet",
+            binding: {
+              subject: input.subject,
+              jobId: input.jobId,
+              sessionNonce: input.sessionNonce,
+              expectedServer: input.expectedServer,
+              bundleHash: input.bundleHash,
+              proofHash: input.proofHash,
+              resolutionObservedAt: input.resolution.observedAt,
+            },
+          };
+        },
+        nowMs: () => NOW,
+      },
+    });
+
+    const production = await agent.partyVetWithNativeCciTlsn(
+      request,
+      deps(harness),
+    );
+    expect(production.record.overallDecision).toBe("pass");
+    expect(production.record.evaluatedParty).toBe(qualifiedSubject);
+    expect(production.nativeCciTlsn[0]).toMatchObject({
+      subject: qualifiedSubject,
+      jobId: NATIVE_CCI_JOB_ID,
+      sessionNonce: NATIVE_CCI_SESSION_NONCE,
+      evaluatedAt: NOW,
+      authority: "native-tlsn:testnet",
+    });
+    expect(resolutions).toBe(1);
+    expect(nativeVerifications).toBe(1);
+
+    await agent.partyVetWithNativeCciTlsn(request, deps(harness));
+    expect(resolutions).toBe(1);
+    expect(nativeVerifications).toBe(1);
+  });
+
+  test("recovers a committed native qualification after response loss without re-verifying", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    await activateEffectLease(harness, request.vet.jobId);
+    harness.loseAuthorizedResponseAt = "method-evidence";
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      qualifier,
+    )).rejects.toThrow(/qualification journal was unavailable/);
+    expect(qualifierCalls).toBe(1);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+
+    const production = await partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      qualifier,
+    );
+    const replay = await partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      qualifier,
+    );
+    expect(canonicalize(replay)).toBe(canonicalize(production));
+    expect(qualifierCalls).toBe(1);
+    const nativeSteps = [...harness.authorizedExecutions.entries()].filter(
+      ([key]) => key.startsWith("dacs2:party-vet-native-cci:") &&
+        key.endsWith("\u0000method-evidence"),
+    );
+    expect(nativeSteps).toHaveLength(1);
+    expect(nativeSteps[0]![1]).toBe(1);
+  });
+
+  test("rejects an old active-session nonce before qualification or Vet effects", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    request.nativeCciTlsn[0]!.sessionNonce = "old-session-nonce";
+    await activateEffectLease(harness, request.vet.jobId);
+    let qualifierCalls = 0;
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      () => {
+        qualifierCalls += 1;
+        throw new Error("unreachable");
+      },
+    )).rejects.toThrow(/session nonce does not match/);
+    expect(qualifierCalls).toBe(0);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.steps.size).toBe(0);
+  });
+
+  test("preserves a plain-reference nonce bind against a qualified replay", async () => {
+    const first = state();
+    const firstRequest = await nativeCciPartyRequest();
+    await activateEffectLease(first, firstRequest.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+    await partyVetWithNativeCciTlsnCore(
+      firstRequest,
+      deps(first),
+      qualifier,
+    );
+    const legacyNonceKeyHash = sha256Hex(canonicalize({
+      bindingVersion: "1",
+      subject: "alpha:alice",
+      sessionNonce: NATIVE_CCI_SESSION_NONCE,
+    }));
+    expect(first.steps.has(
+      `dacs2:party-vet-native-cci-nonce:${legacyNonceKeyHash}\u0000method`,
+    )).toBe(true);
+
+    const second = state();
+    // A new role process/session uses the same durable operation journal.
+    second.steps = first.steps;
+    second.inflight = first.inflight;
+    const secondRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=testnet",
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    );
+    await activateEffectLease(second, secondRequest.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      secondRequest,
+      deps(second),
+      qualifier,
+    )).rejects.toThrow(/nonce was unavailable or already bound/);
+    expect(qualifierCalls).toBe(1);
+    expect(second.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test("durably rejects one nonce across differently qualified CF-3 presenters", async () => {
+    const first = state();
+    const firstRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=mainnet",
+    );
+    await activateEffectLease(first, firstRequest.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+    await partyVetWithNativeCciTlsnCore(
+      firstRequest,
+      deps(first),
+      qualifier,
+    );
+
+    const second = state();
+    second.steps = first.steps;
+    second.inflight = first.inflight;
+    const secondRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=testnet",
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    );
+    expect(identityBundleHash(secondRequest.vet.identityBundle)).not.toBe(
+      identityBundleHash(firstRequest.vet.identityBundle),
+    );
+    await activateEffectLease(second, secondRequest.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      secondRequest,
+      deps(second),
+      qualifier,
+    )).rejects.toThrow(/nonce was unavailable or already bound/);
+    expect(qualifierCalls).toBe(1);
+    expect(first.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(second.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test("keeps same-nonce durable namespaces separate for distinct parties", async () => {
+    const first = state();
+    const firstRequest = await nativeCciPartyRequest(
+      "alpha:alice?network=testnet",
+    );
+    await activateEffectLease(first, firstRequest.vet.jobId);
+    let qualifierCalls = 0;
+    const qualifier: PartyVetNativeCciTlsnQualifier = (input) => {
+      qualifierCalls += 1;
+      return nativeCciDisposition(input);
+    };
+    await partyVetWithNativeCciTlsnCore(
+      firstRequest,
+      deps(first),
+      qualifier,
+    );
+
+    const second = state();
+    second.steps = first.steps;
+    second.inflight = first.inflight;
+    const secondRequest = await nativeCciPartyRequest(
+      "alpha:bob?network=testnet",
+      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    );
+    await activateEffectLease(second, secondRequest.vet.jobId);
+
+    const production = await partyVetWithNativeCciTlsnCore(
+      secondRequest,
+      deps(second),
+      qualifier,
+    );
+    expect(production.record.evaluatedParty).toBe(
+      secondRequest.vet.evaluatedParty,
+    );
+    expect(qualifierCalls).toBe(2);
+    expect(second.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+  });
+
+  test("rejects a stale signed-bundle timestamp before ordinary Vet effects", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    request.vet.identityBundle.presentedAt = NOW - 60_001;
+    await activateEffectLease(harness, request.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      (input) => nativeCciDisposition(input, {
+        claimObservedAt: NOW - 60_002,
+      }),
+    )).rejects.toThrow(/mismatched evidence/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test.each([
+    ["job", { jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" }],
+    ["session", { sessionNonce: "different-session" }],
+    ["presenter", { subject: "alpha:mallory" }],
+    ["bundle", { bundleHash: "cd".repeat(32) }],
+    ["proof", { proofHash: "ef".repeat(32) }],
+    ["stale proof", { claimObservedAt: NOW - 60_001 }],
+    [
+      "stale resolution",
+      {
+        claimObservedAt: NOW - 60_002,
+        resolutionObservedAt: NOW - 60_001,
+      },
+    ],
+    ["future verification", { verifiedAt: NOW + 1 }],
+    ["substituted evaluation time", { evaluatedAt: NOW - 1 }],
+  ] as const)("rejects %s substitution or stale evidence", async (_label, override) => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    await activateEffectLease(harness, request.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      (input) => nativeCciDisposition(input, override),
+    )).rejects.toThrow(/mismatched evidence/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+  });
+
+  test("bounds optional native verifier evidence before journalling", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    await activateEffectLease(harness, request.vet.jobId);
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      request,
+      deps(harness),
+      (input) => {
+        const disposition = nativeCciDisposition(input);
+        if (disposition.status !== "native-cci") throw new Error("unreachable");
+        return {
+          ...disposition,
+          verification: {
+            ...disposition.verification,
+            evidence: { blob: "x".repeat(256 * 1024) },
+          },
+        };
+      },
+    )).rejects.toThrow(/verifier evidence exceeds the size limit/);
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    const failed = [...harness.steps.values()].find(
+      (step) => step.state === "failed",
+    );
+    expect(failed?.value).toBeUndefined();
+    expect(failed?.error).not.toContain("xxxxx");
+  });
+
+  test("ordinary partyVetCore cannot inject the SDK-reserved native signal", async () => {
+    const harness = state();
+    const request = await nativeCciPartyRequest();
+    request.vet.supplementary = [{
+      source: "cci-tlsn",
+      signalType: PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
+      value: "{}",
+      observedAt: NOW,
+    }];
+    await activateEffectLease(harness, request.vet.jobId);
+
+    await expect(partyVetCore(request.vet, deps(harness))).rejects.toThrow(
+      /only be produced by the SDK qualification path/,
+    );
+    expect(harness.effects).toEqual({ methods: 0, signs: 0, anchors: 0 });
+    expect(harness.steps.size).toBe(0);
+  });
 });

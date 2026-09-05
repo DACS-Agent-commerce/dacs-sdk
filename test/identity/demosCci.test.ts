@@ -580,6 +580,7 @@ describe("native CCI TLSN disposition", () => {
       claim: { ref: `cci-tlsn:${PROOF_HASH}` },
       jobId: JOB_ID,
       sessionNonce: SESSION_NONCE,
+      evaluatedAt: context.evaluatedAt,
       verification: { authority: "native-tlsn:testnet" },
     });
     expect(verifyIdentityPresentation).toHaveBeenCalledWith(expect.objectContaining({
