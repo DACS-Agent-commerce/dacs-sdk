@@ -89,7 +89,7 @@ function x402Definition(
       resourceBaseUrl: "https://seller.example",
     },
     phaseHandler: "pay-x402",
-    parameters: { authorization: "eip-3009" },
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
     availability: "live",
     governance: RAIL_GOVERNANCE,
     ...over,
@@ -453,7 +453,10 @@ describe("registry resolution (T12/T13)", () => {
       railVersion: 1,
       availability: "live",
     });
-    expect(desc.parameters).toEqual({ authorization: "eip-3009" });
+    expect(desc.parameters).toEqual({
+      authorization: "eip-3009",
+      finalityBlocks: 1,
+    });
   });
 
   test("retains exact canonical index and definition provenance out of band", async () => {
@@ -1543,7 +1546,10 @@ describe("registry resolution (T12/T13)", () => {
       "x402:default",
       resolutionDeps,
     );
-    expect(resolved.parameters).toEqual({ authorization: "eip-3009" });
+    expect(resolved.parameters).toEqual({
+      authorization: "eip-3009",
+      finalityBlocks: 1,
+    });
     expect(resolved).not.toBe(sourceEntry);
     expect(resolved.parameters).not.toBe(sourceParameters);
     expect(Object.isFrozen(resolved)).toBe(true);
@@ -1682,6 +1688,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     const settle = await settleFromRail(descriptor, {
       evmPrivateKey: TEST_EVM_KEY,
       paywall,
+      rpcUrl: "https://sepolia.base.org",
     });
     expect(typeof settle).toBe("function");
   });
@@ -1701,6 +1708,58 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
         paywall: { ...paywall, url: "https://attacker.example/deliver" },
       }),
     ).rejects.toThrow(/outside authenticated base/);
+  });
+
+  test.each([
+    ["cleartext", "http://seller.example"],
+    ["loopback", "https://127.0.0.1"],
+    ["link-local metadata", "https://169.254.169.254"],
+  ])("x402 refuses a %s authenticated resource base before rail construction", async (
+    _label,
+    resourceBaseUrl,
+  ) => {
+    const descriptor = await authenticatedRail(x402Definition({
+      network: { kind: "x402-resource", resourceBaseUrl },
+    }));
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      payment: {
+        url: `${resourceBaseUrl}/deliver`,
+        network: paywall.network,
+        recipient: paywall.recipientEvm,
+      },
+      rpcUrl: "https://sepolia.base.org",
+    })).rejects.toThrow(/public HTTPS URLs/);
+  });
+
+  test("x402 refuses credentials and fragments in a selected resource", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    for (const url of [
+      "https://user:secret@seller.example/deliver",
+      "https://seller.example/deliver#fragment",
+    ]) {
+      await expect(settleFromRail(descriptor, {
+        evmPrivateKey: TEST_EVM_KEY,
+        payment: {
+          url,
+          network: paywall.network,
+          recipient: paywall.recipientEvm,
+        },
+        rpcUrl: "https://sepolia.base.org",
+      })).rejects.toThrow(/public HTTPS URLs/);
+    }
+  });
+
+  test("x402 registry dispatch refuses an implicit production fetch override", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    const fetchImpl = vi.fn(async () => new Response("must not run"));
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      paywall,
+      rpcUrl: "https://sepolia.base.org",
+      fetchImpl: fetchImpl as typeof fetch,
+    })).rejects.toThrow(/explicit insecure-test mode/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("evm-erc20 derives token and network from the signed definition", async () => {
@@ -1740,6 +1799,39 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     await expect(
       settleFromRail(descriptor, { demosRpc: "https://node.example" }),
     ).rejects.toThrow(/demosSecret/);
+  });
+
+  test("rail-neutral payment coordinates work for EVM rails", async () => {
+    const descriptor = await authenticatedRail(evmDefinition());
+    const settle = await settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      payment: {
+        network: paywall.network,
+        recipient: paywall.recipientEvm,
+      },
+      rpcUrl: "https://sepolia.base.org",
+    });
+    expect(typeof settle).toBe("function");
+  });
+
+  test("EVM-backed dispatch rejects a missing signed finality depth", async () => {
+    const descriptor = await authenticatedRail(x402Definition({
+      parameters: { authorization: "eip-3009" },
+    }));
+    await expect(
+      settleFromRail(descriptor, {
+        evmPrivateKey: TEST_EVM_KEY,
+        paywall,
+        rpcUrl: "https://sepolia.base.org",
+      }),
+    ).rejects.toThrow(/finalityBlocks/);
+  });
+
+  test("x402 without an independent finality rpc is rejected", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    await expect(
+      settleFromRail(descriptor, { evmPrivateKey: TEST_EVM_KEY, paywall }),
+    ).rejects.toThrow(/rpcUrl/);
   });
 
   test("a valid but unimplemented normative rail fails closed", async () => {

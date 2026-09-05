@@ -1,4 +1,14 @@
-import { mkdtemp, writeFile, stat, mkdir, readFile, open, utimes } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  stat,
+  mkdir,
+  readFile,
+  open,
+  symlink,
+  utimes,
+} from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,12 +20,32 @@ import type { SessionStore } from "../../src/agent/sessionStore.js";
 let dir: string;
 let store: SessionStore;
 
+async function exitedProcessId(): Promise<number> {
+  const child = spawn(process.execPath, ["-e", ""]);
+  if (child.pid === undefined) throw new Error("test worker pid missing");
+  const pid = child.pid;
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", () => resolve());
+  });
+  return pid;
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "dacs-sessionstore-"));
   store = await createFsSessionStore({ dir });
 });
 
 describe("createFsSessionStore (durable conformance #55)", () => {
+  test("rejects a store path below a symlinked ancestor", async () => {
+    const physical = join(dir, "physical");
+    const linked = join(dir, "linked");
+    await mkdir(physical, { mode: 0o700 });
+    await symlink(physical, linked, "dir");
+    await expect(createFsSessionStore({ dir: join(linked, "store") }))
+      .rejects.toThrow(/symbolic link/);
+  });
+
   test("core conformance: create + CAS + lease + anti-replay + immutable receipt", async () => {
     await store.create({ jobId: "j1", agreementHash: "0xagr", now: 0 });
     // CAS: two workers at revision 0, one wins.
@@ -140,14 +170,89 @@ describe("createFsSessionStore (durable conformance #55)", () => {
   test("a stale lock left by a crashed holder is reclaimed, not blocked forever (#67)", async () => {
     const staleStore = await createFsSessionStore({ dir, lockStaleMs: 50 });
     await staleStore.create({ jobId: "j1", now: 0 });
+    const deadPid = await exitedProcessId();
     // Simulate a crashed holder: plant a lock file and backdate it past the stale window.
     const lp = join(dir, "locks", `${encodeURIComponent("j1")}.lock`);
-    await (await open(lp, "wx")).close();
+    await writeFile(lp, JSON.stringify({
+      pid: deadPid,
+      token: "dead-lock-owner",
+      createdAt: Date.now() - 60_000,
+    }), { flag: "wx", mode: 0o600 });
     const old = new Date(Date.now() - 60_000);
     await utimes(lp, old, old);
     // The transition must reclaim the stale lock and succeed rather than time out.
     const r = await staleStore.transition({ jobId: "j1", expectedRevision: 0, phase: "settling", now: 1 });
     expect(r.ok).toBe(true);
+  });
+
+  test("stale recovery cannot remove a successor across repeated lock races (#306)", async () => {
+    const deadPid = await exitedProcessId();
+    const old = new Date(Date.now() - 60_000);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const jobId = `successor-race-${attempt}`;
+      const staleStore = await createFsSessionStore({ dir, lockStaleMs: 1 });
+      await staleStore.create({ jobId, now: 0 });
+      const lp = join(dir, "locks", `${encodeURIComponent(jobId)}.lock`);
+      await writeFile(lp, JSON.stringify({
+        pid: deadPid,
+        token: `dead-owner-${attempt}`,
+        createdAt: Date.now() - 60_000,
+      }), { flag: "wx", mode: 0o600 });
+      await utimes(lp, old, old);
+      const contenders = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          createFsSessionStore({ dir, lockStaleMs: 1 })),
+      );
+      const results = await Promise.all(
+        contenders.map((contender, index) => contender.transition({
+          jobId,
+          expectedRevision: 0,
+          phase: `contender-${index}`,
+          now: 1,
+        })),
+      );
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      const loaded = await staleStore.load(jobId);
+      expect(loaded).toMatchObject({ status: "ok", record: { revision: 1 } });
+    }
+  }, 30_000);
+
+  test("a live lock is not reclaimed merely because it exceeds lockStaleMs", async () => {
+    const liveStore = await createFsSessionStore({ dir, lockStaleMs: 1 });
+    await liveStore.create({ jobId: "j1", now: 0 });
+    const lp = join(dir, "locks", `${encodeURIComponent("j1")}.lock`);
+    await writeFile(lp, JSON.stringify({
+      pid: process.pid,
+      token: "live-lock-owner",
+      createdAt: 0,
+    }), { flag: "wx", mode: 0o600 });
+    await expect(liveStore.transition({
+      jobId: "j1",
+      expectedRevision: 0,
+      phase: "must-not-enter",
+    })).rejects.toThrow(/lock is contended/);
+    expect((await liveStore.load("j1"))).toMatchObject({
+      status: "ok",
+      record: { revision: 0, phase: "created" },
+    });
+  }, 10_000);
+
+  test("a pre-planted predictable temp symlink cannot overwrite its target", async () => {
+    await store.create({ jobId: "j1", now: 0 });
+    const statePath = join(dir, "sessions", `${encodeURIComponent("j1")}.json`);
+    const predictableTemporary = `${statePath}.tmp`;
+    const sentinel = join(dir, "sentinel.txt");
+    await writeFile(sentinel, "unchanged", { mode: 0o600 });
+    await symlink(sentinel, predictableTemporary);
+
+    const transitioned = await store.transition({
+      jobId: "j1",
+      expectedRevision: 0,
+      phase: "settling",
+      now: 1,
+    });
+    expect(transitioned.ok).toBe(true);
+    expect(await readFile(sentinel, "utf8")).toBe("unchanged");
   });
 
   test("a non-positive or non-finite stale-lock window is rejected", async () => {

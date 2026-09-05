@@ -1,17 +1,22 @@
 import {
-  link,
+  lstat,
   mkdir,
-  readFile,
+  open,
   readdir,
   rename,
-  stat,
+  rm,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { DacsError } from "../errors.js";
+import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
 import {
   assertCheckpointPayloadShape,
   assertSessionPaymentAuthorizationShape,
@@ -75,10 +80,8 @@ import {
  * recovery, so a hard crash cannot wedge the store or expose a replacement gate.
  */
 
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 const LOCK_RETRY_MS = 5;
-const LOCK_MAX_RETRIES = 400; // ~2s of contention before giving up
+const LOCK_TIMEOUT_MS = 2_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const safe = (s: string) => encodeURIComponent(s);
@@ -197,12 +200,16 @@ export async function createFsFencedSessionStore(
       `lockStaleMs must be a positive finite number, got ${lockStaleMs}`,
     );
   }
-  const sessionsDir = join(opts.dir, "sessions");
-  const hashesDir = join(opts.dir, "hashes");
-  const settlementsDir = join(opts.dir, "settlements");
-  const locksDir = join(opts.dir, "locks");
+  const root = await preparePrivateStoreDirectory(
+    opts.dir,
+    "filesystem fenced session store",
+  );
+  const sessionsDir = join(root, "sessions");
+  const hashesDir = join(root, "hashes");
+  const settlementsDir = join(root, "settlements");
+  const locksDir = join(root, "locks");
   for (const d of [sessionsDir, hashesDir, settlementsDir, locksDir]) {
-    await mkdir(d, { recursive: true, mode: DIR_MODE });
+    await preparePrivateStoreDirectory(d, "filesystem fenced session store");
   }
 
   const sessionPath = (jobId: string) => join(sessionsDir, `${safe(jobId)}.json`);
@@ -217,11 +224,17 @@ export async function createFsFencedSessionStore(
   };
   const reclaimQuarantinePath = (jobId: string) =>
     join(locksDir, `${reclaimQuarantinePrefix(jobId)}${randomUUID()}.quarantine`);
+  const releasedLockPath = (jobId: string, token: string) =>
+    join(locksDir, `${safe(jobId)}.${token}.released`);
+  const staleLockPath = (jobId: string) =>
+    join(locksDir, `${safe(jobId)}.${randomUUID()}.stale`);
 
   async function atomicWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, JSON.stringify(value), { mode: FILE_MODE });
-    await rename(tmp, path);
+    await atomicWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "filesystem fenced session store",
+    );
   }
 
   /**
@@ -230,16 +243,11 @@ export async function createFsFencedSessionStore(
    * binding, and concurrent creators cannot overwrite one another.
    */
   async function exclusiveWriteJson(path: string, value: unknown): Promise<void> {
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(value), {
-        mode: FILE_MODE,
-        flag: "wx",
-      });
-      await link(tmp, path);
-    } finally {
-      await unlink(tmp).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(
+      path,
+      JSON.stringify(value),
+      "filesystem fenced session store",
+    );
   }
 
   async function unlinkIfExists(path: string): Promise<void> {
@@ -250,10 +258,18 @@ export async function createFsFencedSessionStore(
     }
   }
 
+  async function removeIfExists(path: string): Promise<void> {
+    await rm(path, { recursive: true, force: true });
+  }
+
   async function readSession(jobId: string): Promise<SessionLoad> {
     let text: string;
     try {
-      text = await readFile(sessionPath(jobId), "utf8");
+      text = await readPrivateFile(
+        sessionPath(jobId),
+        "utf8",
+        "filesystem fenced session store",
+      );
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
       throw e;
@@ -297,9 +313,58 @@ export async function createFsFencedSessionStore(
     token: string;
   }
 
+  async function readGateOwner(path: string): Promise<LockOwner | null> {
+    try {
+      const metadata = await lstat(path);
+      const ownerPath = metadata.isDirectory() ? join(path, "owner.json") : path;
+      const parsed = JSON.parse(await readPrivateFile(
+        ownerPath,
+        "utf8",
+        "filesystem fenced session store mutation gate",
+      )) as unknown;
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "pid" in parsed &&
+        Number.isSafeInteger(parsed.pid) &&
+        (parsed.pid as number) > 0 &&
+        "token" in parsed &&
+        isNonEmpty(parsed.token)
+      ) {
+        return { pid: parsed.pid as number, token: parsed.token };
+      }
+    } catch {
+      // Missing or malformed gates remain authoritative until stale.
+    }
+    return null;
+  }
+
+  async function publishCompleteGate(path: string, owner: LockOwner): Promise<void> {
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: 0o700 });
+      const handle = await open(join(candidate, "owner.json"), "wx", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+      } finally {
+        await handle.close();
+      }
+      // A complete gate is non-empty, making rename an atomic no-overwrite
+      // publication on the supported POSIX filesystems. Locks are ephemeral
+      // process-coordination state, so they need visibility, not disk durability.
+      await rename(candidate, path);
+    } finally {
+      await removeIfExists(candidate);
+    }
+  }
+
   async function readLockOwner(lp: string): Promise<LockOwner | null> {
     try {
-      const parsed = JSON.parse(await readFile(lp, "utf8")) as unknown;
+      const parsed = JSON.parse(await readPrivateFile(
+        lp,
+        "utf8",
+        "filesystem fenced session store lock",
+      )) as unknown;
       if (
         typeof parsed === "object" &&
         parsed !== null &&
@@ -341,8 +406,8 @@ export async function createFsFencedSessionStore(
     for (const name of names) {
       const path = join(locksDir, name);
       try {
-        const metadata = await stat(path);
-        const owner = await readLockOwner(path);
+        const metadata = await lstat(path);
+        const owner = await readGateOwner(path);
         if (
           Date.now() - metadata.mtimeMs <= lockStaleMs ||
           (owner !== null && processIsAlive(owner.pid))
@@ -352,7 +417,7 @@ export async function createFsFencedSessionStore(
         }
         // Quarantine names contain a UUID and are never reused, so deleting a
         // dead quarantine cannot target a replacement at the canonical path.
-        await unlinkIfExists(path);
+        await removeIfExists(path);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -364,13 +429,13 @@ export async function createFsFencedSessionStore(
     const rp = reclaimPath(jobId);
     let observed;
     try {
-      observed = await stat(rp);
+      observed = await lstat(rp);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
     if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
-    const observedOwner = await readLockOwner(rp);
+    const observedOwner = await readGateOwner(rp);
     if (observedOwner !== null && processIsAlive(observedOwner.pid)) return;
 
     const quarantine = reclaimQuarantinePath(jobId);
@@ -384,12 +449,12 @@ export async function createFsFencedSessionStore(
     }
     let moved;
     try {
-      moved = await stat(quarantine);
+      moved = await lstat(quarantine);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const movedOwner = await readLockOwner(quarantine);
+    const movedOwner = await readGateOwner(quarantine);
     if (
       moved.dev === observed.dev &&
       moved.ino === observed.ino &&
@@ -397,7 +462,7 @@ export async function createFsFencedSessionStore(
       Date.now() - moved.mtimeMs > lockStaleMs &&
       (movedOwner === null || !processIsAlive(movedOwner.pid))
     ) {
-      await unlinkIfExists(quarantine);
+      await removeIfExists(quarantine);
     }
     // If a replacement was moved, leave its unique quarantine in place. It
     // continues to block other reclaimers and its live owner removes it below.
@@ -405,32 +470,37 @@ export async function createFsFencedSessionStore(
 
   async function releaseReclaimGate(jobId: string, token: string): Promise<void> {
     const rp = reclaimPath(jobId);
-    const owner = await readLockOwner(rp);
+    const owner = await readGateOwner(rp);
+    let releasedCanonical = false;
     if (owner?.pid === process.pid && owner.token === token) {
       const quarantine = reclaimQuarantinePath(jobId);
       try {
         await rename(rp, quarantine);
-        const movedOwner = await readLockOwner(quarantine);
+        const movedOwner = await readGateOwner(quarantine);
         if (movedOwner?.pid === process.pid && movedOwner.token === token) {
-          await unlinkIfExists(quarantine);
+          await removeIfExists(quarantine);
+          releasedCanonical = true;
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    // A concurrent stale-gate recovery may already have moved our gate. Unique
-    // quarantine paths are safe to inspect and conditionally remove by token.
-    const prefix = reclaimQuarantinePrefix(jobId);
-    for (const name of (await readdir(locksDir)).filter(
-      (item) => item.startsWith(prefix) && item.endsWith(".quarantine"),
-    )) {
-      const path = join(locksDir, name);
-      const quarantinedOwner = await readLockOwner(path);
-      if (
-        quarantinedOwner?.pid === process.pid &&
-        quarantinedOwner.token === token
-      ) {
-        await unlinkIfExists(path);
+    // A preceding SDK version can mistake the directory-form gate for a stale
+    // legacy file and move it before failing closed. Recover only this owner's
+    // unique quarantine so an in-place upgrade cannot wedge the session.
+    if (!releasedCanonical) {
+      const prefix = reclaimQuarantinePrefix(jobId);
+      for (const name of (await readdir(locksDir)).filter(
+        (item) => item.startsWith(prefix) && item.endsWith(".quarantine"),
+      )) {
+        const path = join(locksDir, name);
+        const quarantinedOwner = await readGateOwner(path);
+        if (
+          quarantinedOwner?.pid === process.pid &&
+          quarantinedOwner.token === token
+        ) {
+          await removeIfExists(path);
+        }
       }
     }
   }
@@ -438,12 +508,20 @@ export async function createFsFencedSessionStore(
   async function acquireReclaimGate(jobId: string, token: string): Promise<boolean> {
     if ((await reclaimQuarantines(jobId)).length > 0) return false;
     try {
-      await exclusiveWriteJson(reclaimPath(jobId), { pid: process.pid, token });
+      await publishCompleteGate(reclaimPath(jobId), { pid: process.pid, token });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "ENOTDIR") {
+        throw error;
+      }
       await quarantineStaleReclaimGate(jobId);
       return false;
     }
+    // A preceding SDK version can move the directory-form gate after our
+    // pre-publication scan and before it observes the gate's live owner. Do not
+    // enter the critical section if that legacy recovery left any live
+    // quarantine: release whichever location still contains our token and
+    // retry behind the authoritative holder.
     if ((await reclaimQuarantines(jobId)).length > 0) {
       await releaseReclaimGate(jobId, token);
       return false;
@@ -451,18 +529,38 @@ export async function createFsFencedSessionStore(
     return true;
   }
 
+  async function withLockMutationGate<T>(
+    jobId: string,
+    deadline: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const token = randomUUID();
+    while (!await acquireReclaimGate(jobId, token)) {
+      if (Date.now() >= deadline) {
+        throw new DacsError(`session ${jobId} lock mutation gate is contended (timed out)`);
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+    try {
+      return await operation();
+    } finally {
+      await releaseReclaimGate(jobId, token);
+    }
+  }
+
   /**
    * Reclaim only a lock whose owner is provably dead (or whose crash left no
    * readable owner after the stale window). Age alone is not proof of death: a
    * paused live writer must retain exclusion or it could overwrite a successor.
    */
-  async function reclaimIfStale(jobId: string, lp: string): Promise<void> {
-    // Safe read-only fast path: only a candidate that is both old and lacks a
-    // provably live owner needs the heavier cross-process reclamation protocol.
-    // These observations never authorize deletion; every destructive decision
-    // is repeated after acquiring the gate below.
+  async function reclaimIfStaleUnderMutationGate(
+    jobId: string,
+    lp: string,
+  ): Promise<void> {
+    // The caller holds the mutation gate for this complete check-and-quarantine
+    // operation. Repeat the authoritative observation immediately before rename.
     try {
-      const candidate = await stat(lp);
+      const candidate = await lstat(lp);
       if (Date.now() - candidate.mtimeMs <= lockStaleMs) return;
       const candidateOwner = await readLockOwner(lp);
       if (candidateOwner !== null && processIsAlive(candidateOwner.pid)) return;
@@ -471,74 +569,76 @@ export async function createFsFencedSessionStore(
       throw error;
     }
 
-    const reclaimToken = randomUUID();
-    if (!await acquireReclaimGate(jobId, reclaimToken)) return;
+    let observed;
     try {
-      let observed;
-      try {
-        observed = await stat(lp);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
-      const observedOwner = await readLockOwner(lp);
-      if (observedOwner && processIsAlive(observedOwner.pid)) return;
-
-      let current;
-      try {
-        current = await stat(lp);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      const currentOwner = await readLockOwner(lp);
-      if (
-        current.dev !== observed.dev ||
-        current.ino !== observed.ino ||
-        !sameLockOwner(currentOwner, observedOwner) ||
-        Date.now() - current.mtimeMs <= lockStaleMs ||
-        (currentOwner !== null && processIsAlive(currentOwner.pid))
-      ) {
-        return;
-      }
-      await unlink(lp).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
-    } finally {
-      await releaseReclaimGate(jobId, reclaimToken);
+      observed = await lstat(lp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
+    const observedOwner = await readLockOwner(lp);
+    if (observedOwner && processIsAlive(observedOwner.pid)) return;
+
+    const quarantine = staleLockPath(jobId);
+    try {
+      await rename(lp, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const moved = await lstat(quarantine);
+    const movedOwner = await readLockOwner(quarantine);
+    if (
+      moved.dev !== observed.dev ||
+      moved.ino !== observed.ino ||
+      !sameLockOwner(movedOwner, observedOwner) ||
+      Date.now() - moved.mtimeMs <= lockStaleMs ||
+      (movedOwner !== null && processIsAlive(movedOwner.pid))
+    ) {
+      throw new DacsError(`session ${jobId} lock changed during recovery`);
+    }
+    await unlinkIfExists(quarantine);
   }
 
   /** Serialise a read-modify-write for one session via an exclusive lock file. */
   async function withLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
     const lp = lockPath(jobId);
     const token = randomUUID();
-    for (let i = 0; ; i++) {
-      try {
-        // Publish complete ownership metadata as the same atomic hard-link used
-        // by other no-overwrite bindings. There is no visible empty-lock window.
-        await exclusiveWriteJson(lp, { pid: process.pid, token });
-        break;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-        // A hard-crashed holder can never release its lock; reclaim it only once
-        // stale and no live owner can be established (#67).
-        await reclaimIfStale(jobId, lp);
-        if (i >= LOCK_MAX_RETRIES) {
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    return withLockMutationGate(jobId, deadline, async () => {
+      for (;;) {
+        try {
+          // Publish complete ownership metadata as the same atomic hard-link
+          // used by other no-overwrite bindings. There is no empty-lock window.
+          await exclusiveWriteJson(lp, { pid: process.pid, token });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+        // A legacy holder does not use the mutation gate. Wait for a live one,
+        // or recover a dead one while every new-version mutation is excluded.
+        await reclaimIfStaleUnderMutationGate(jobId, lp);
+        if (Date.now() >= deadline) {
           throw new DacsError(`session ${jobId} lock is contended (timed out)`);
         }
         await sleep(LOCK_RETRY_MS);
       }
-    }
-    try {
-      return await fn();
-    } finally {
-      // Never delete a replacement lock if ownership somehow changed while this
-      // holder was unwinding (for example after external administrative cleanup).
-      const owner = await readLockOwner(lp);
-      if (owner?.token === token) await unlink(lp).catch(() => {});
-    }
+      try {
+        return await fn();
+      } finally {
+        const owner = await readLockOwner(lp);
+        if (owner?.pid === process.pid && owner.token === token) {
+          const released = releasedLockPath(jobId, token);
+          try {
+            await rename(lp, released);
+            await unlinkIfExists(released);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+    });
   }
 
   const readHashBinding = async (
@@ -549,7 +649,11 @@ export async function createFsFencedSessionStore(
   > => {
     let existing: { jobId?: unknown; kind?: unknown };
     try {
-      existing = JSON.parse(await readFile(hashPath(hash), "utf8")) as {
+      existing = JSON.parse(await readPrivateFile(
+        hashPath(hash),
+        "utf8",
+        "filesystem fenced session store",
+      )) as {
         jobId?: unknown;
         kind?: unknown;
       };
@@ -608,7 +712,11 @@ export async function createFsFencedSessionStore(
     let existing: Record<string, unknown>;
     try {
       existing = JSON.parse(
-        await readFile(settlementPath(settlementId), "utf8"),
+        await readPrivateFile(
+          settlementPath(settlementId),
+          "utf8",
+          "filesystem fenced session store",
+        ),
       ) as Record<string, unknown>;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -698,7 +806,11 @@ export async function createFsFencedSessionStore(
     for (const file of files) {
       let parsed: unknown;
       try {
-        parsed = JSON.parse(await readFile(join(sessionsDir, file), "utf8")) as unknown;
+        parsed = JSON.parse(await readPrivateFile(
+          join(sessionsDir, file),
+          "utf8",
+          "filesystem fenced session store",
+        )) as unknown;
       } catch (error) {
         throw new DacsError(
           `session file ${file} cannot be safely inspected for agreement ownership: ${String(error)}`,
@@ -1367,7 +1479,11 @@ export async function createFsFencedSessionStore(
       for (const f of files) {
         let parsed: unknown;
         try {
-          parsed = JSON.parse(await readFile(join(sessionsDir, f), "utf8")) as unknown;
+          parsed = JSON.parse(await readPrivateFile(
+            join(sessionsDir, f),
+            "utf8",
+            "filesystem fenced session store",
+          )) as unknown;
         } catch (error) {
           throw new DacsError(
             `session file ${f} cannot be safely listed: ${String(error)}`,

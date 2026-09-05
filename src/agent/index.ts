@@ -1,8 +1,14 @@
+export { isDacsPublicAddressV1 } from "./publicAddress.js";
 export {
   createAgent,
+  createUnsafeManualAgent,
   buildAgent,
+  buildUnsafeManualAgent,
   type Agent,
+  type UnsafeManualAgent,
   type AgentConfig,
+  type AgentDemosCciConfig,
+  type AgentNativeCciTlsnInput,
   type AgentSettlementEvidenceContext,
   type AgentSettlementEvidenceContextInput,
   type AgentSettlementEvidenceContextResolver,
@@ -54,23 +60,33 @@ export {
   type BundlePointerVerification,
 } from "./evidenceBoundBundle.js";
 export {
+  lookupBundleCopies,
   bundleConsistency,
   selectAuthoritativeBundleCopy,
   bundlesDiverge,
   type ConsistencyVerdict,
+  type BundleCopyRead,
+  type BundleCopyReader,
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
   type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
+  validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
+  type EvidenceStructureDecision,
+  type EvidenceStructureValidation,
   type EvidenceContext,
+  type AuthenticatedEvidenceContext,
   type EvidenceAgreementContext,
   type EvidenceRailContext,
+  type EvidenceRailAssetSpecContext,
+  type EvidenceRailNetworkSpecContext,
   type EvidenceDeps,
+  type AuthenticatedEvidenceDeps,
 } from "./verifySettlementEvidence.js";
 export {
   verifyBundleCopy,
@@ -87,11 +103,13 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,
   type ReputationWindow,
   type SessionOutcome,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,
@@ -100,6 +118,15 @@ export {
   type Dacs5ResumableSessionState,
   type Dacs5SessionTransitionContext,
 } from "./sessionSemantics.js";
+export {
+  classifyVerificationDecision,
+  isVerifyResultForMethod,
+  shouldRetryVerification,
+  vetPhaseFailureClass,
+  type VerificationRetryPolicy,
+  type VetPhaseFailureCause,
+  type VetPhaseFailureClass,
+} from "./vetSemantics.js";
 export {
   discoverListings,
   verifyReadableListingArtifact,
@@ -206,6 +233,8 @@ export {
   type ClaimQualificationProductionAuthority,
   type ClaimQualificationReplayAuthority,
   type ClaimQualificationAuthority,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
   type ClaimQualificationInput,
   type ClaimQualificationRecipeRegistry,
   type ClaimQualificationAuthentication,
@@ -357,6 +386,15 @@ export {
   type TerminalPhaseAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+export {
+  prepareVetTerminalBundle,
+  type PrepareVetTerminalBundleDeps,
+  type PrepareVetTerminalBundleInput,
+  type PreparedVetTerminalBundle,
+  type VetFailureTerminalSessionRecord,
+  type VetProductionAuthentication,
+  type VetTerminalSessionParty,
+} from "./vetTerminalBundle.js";
 export {
   advanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus,

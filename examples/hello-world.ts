@@ -14,6 +14,7 @@
  *   SELLER_IDENTITY_BUNDLE_JSON  verified DACS-1 §6.3.2 IdentityBundle JSON
  *   BUYER_DID          buyer agent id
  *   BUYER_EVM_KEY      buyer EVM private key (0x…) used to sign the x402 payment
+ *   BUYER_EVM_RPC      trusted independent RPC for settlement finality
  *   PAYWALL_URL        seller's paywalled delivery URL (returns HTTP 402)
  *   PAY_NETWORK        CAIP-2 network, e.g. eip155:84532 (Base Sepolia)
  *   PAY_TOKEN          ERC-20 contract address advertised by the x402 paywall
@@ -135,7 +136,11 @@ async function main(): Promise<void> {
   }
   console.log("listing admitted from its logical address", resolved.listingPin);
 
-  const rail = await createX402Rail({ evmPrivateKey: env("BUYER_EVM_KEY") });
+  const rail = await createX402Rail({
+    evmPrivateKey: env("BUYER_EVM_KEY"),
+    rpcUrl: env("BUYER_EVM_RPC"),
+    finalityBlocks: 1,
+  });
   const sellerEvm = env("SELLER_EVM");
 
   // Pass the authenticated selection so a changed record at the same native

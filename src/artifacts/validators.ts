@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import type {
   AgreementDocument,
   AgreementArtifact,
@@ -46,6 +48,7 @@ import {
   canonicalize,
   stripSignature,
 } from "../canonical/index.js";
+import { isSafeJsonString } from "../canonical/snapshot.js";
 import {
   isCanonicalBase64Url,
   isComponentSignature,
@@ -125,26 +128,39 @@ const isExactWireArray = (
 function isExactJsonValue(
   value: unknown,
   seen: WeakSet<object>,
+  depth: number,
 ): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return isSafeJsonString(value);
+  if (typeof value === "number") {
+    return Number.isFinite(value) &&
+      !Object.is(value, -0) &&
+      Math.abs(value) <= Number.MAX_SAFE_INTEGER;
   }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || seen.has(value)) return false;
+  if (
+    typeof value !== "object" ||
+    nodeTypes.isProxy(value) ||
+    seen.has(value) ||
+    depth >= 64
+  ) return false;
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return isExactWireArray(value, (entry) => isExactJsonValue(entry, seen));
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+      return isExactWireArray(
+        value,
+        (entry) => isExactJsonValue(entry, seen, depth + 1),
+      );
     }
     if (!isObj(value)) return false;
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return false;
     const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== "string")) return false;
+    if (
+      keys.some((key) =>
+        typeof key !== "string" || !isSafeJsonString(key)
+      )
+    ) return false;
     return (keys as string[]).every((key) => {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return (
@@ -152,7 +168,7 @@ function isExactJsonValue(
         descriptor.enumerable === true &&
         "value" in descriptor &&
         descriptor.value !== undefined &&
-        isExactJsonValue(descriptor.value, seen)
+        isExactJsonValue(descriptor.value, seen, depth + 1)
       );
     });
   } catch {
@@ -164,11 +180,11 @@ function isExactJsonValue(
   }
 }
 
-/** Exact JSON object tree used by signed generic data/parameter fields. */
+/** Exact canonical JSON object tree used by signed generic data/parameter fields. */
 export function isExactJsonRecord(
   value: unknown,
 ): value is Record<string, unknown> {
-  return isObj(value) && isExactJsonValue(value, new WeakSet<object>());
+  return isObj(value) && isExactJsonValue(value, new WeakSet<object>(), 0);
 }
 const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
 /** CORE §B.1 canonical logical-address spelling for session identifiers. */
@@ -190,6 +206,9 @@ const isCanonicalEvmEventHash = (v: unknown): v is string =>
 const isMinimalUnsignedDecimal = (v: unknown): v is string =>
   isStr(v) && /^(0|[1-9][0-9]*)$/.test(v);
 
+// DACS-3's pinned compatibility vectors still carry the historical prefixed
+// spelling. Keep reader compatibility until DACS-Standard#378 defines the
+// byte-exact cross-stage migration into DACS-5 terminal bundles.
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
 const hasValidOptionalComponentSignature = (
@@ -595,10 +614,11 @@ export function isDeliverableSpec(v: unknown): v is DeliverableSpec {
 
 export const isPaymentRailRef = (v: unknown): v is PaymentRailRef =>
   isObj(v) &&
+  isExactJsonRecord(v) &&
   isStr(v.railId) &&
   v.railId.length > 0 &&
   (v.railVersion === undefined || isPositiveSafeInt(v.railVersion)) &&
-  (v.parameters === undefined || isObj(v.parameters));
+  (v.parameters === undefined || isExactJsonRecord(v.parameters));
 
 const NO_PARAMETER_PHASES = new Set([
   "vet-credentials",
@@ -1344,7 +1364,7 @@ const hasAgreementCommon = (
         terms.feeSchedule,
         (terms.price as { currency: string }).currency,
       )) ||
-    (terms.additionalTerms !== undefined && !isObj(terms.additionalTerms)) ||
+    (terms.additionalTerms !== undefined && !isExactJsonRecord(terms.additionalTerms)) ||
     !isOneOf(["fixed-price", "rfq", "sealed-envelope"], v.derivedFromPattern) ||
     !isSafeUint(v.generatedAt) ||
     (v.derivedFromChannel !== undefined &&
@@ -1407,6 +1427,7 @@ const hasAgreementCommon = (
 export function isAgreementDocument(v: unknown): v is AgreementDocument {
   return (
     isObj(v) &&
+    isExactJsonRecord(v) &&
     v.agreementVersion === "1" &&
     v.payeeBoundAgreementVersion === undefined &&
     hasAgreementCommon(v, false)
@@ -1418,6 +1439,7 @@ export function isPayeeBoundAgreementDocument(
 ): v is PayeeBoundAgreementDocument {
   return (
     isObj(v) &&
+    isExactJsonRecord(v) &&
     v.payeeBoundAgreementVersion === "1" &&
     v.agreementVersion === undefined &&
     hasAgreementCommon(v, true)

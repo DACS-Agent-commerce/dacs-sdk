@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalize,
   contentHash,
+  sha256Hex,
   stripSignature,
 } from "../../src/canonical/index.js";
 import {
@@ -111,6 +113,7 @@ function verifyBundle(bundle: unknown): ClaimQualificationAuthentication {
 const deps: ClaimQualificationDeps = {
   resolveAuthenticatedSessionStart: (handle) =>
     vectors.authenticatedSessionStarts[handle] ?? null,
+  authenticateProductionQualification: () => "valid",
   authenticateReplayBundle: verifyBundle,
   authenticateCompositeRecord: ({ record, ref }) =>
     verifySigned(record, ref, "dacs-composite:v1:"),
@@ -182,5 +185,80 @@ describe("DACS-2 CRQ-1..CRQ-4 claim qualification", () => {
     );
     expect(result.decision).toBe("error");
     expect(touched).toBe(false);
+  });
+
+  it("rejects callable proxy dependencies without touching proxy traps", async () => {
+    let touched = false;
+    const callableProxy = new Proxy(() => null, {
+      get() {
+        touched = true;
+        throw new Error("callable proxy trap must remain inert");
+      },
+    });
+    const hostile = {
+      ...deps,
+      resolveAuthenticatedSessionStart: callableProxy,
+    } as unknown as ClaimQualificationDeps;
+    await expect(
+      evaluateClaimRequirementQualification(inputFor(vectors.vectors[0]), hostile),
+    ).resolves.toMatchObject({ decision: "error", reason: "authority-invalid" });
+    expect(touched).toBe(false);
+  });
+
+  it("requires trusted authentication of the complete production qualification", async () => {
+    const vector = vectors.vectors.find(
+      (item: any) => item.name === "vet-claim-requirement-parameters-mismatch-fail",
+    );
+    const trusted = inputFor(vector);
+    const trustedHash = sha256Hex(canonicalize(trusted));
+    const boundDeps: ClaimQualificationDeps = {
+      ...deps,
+      authenticateProductionQualification: (candidate) =>
+        sha256Hex(canonicalize(candidate)) === trustedHash ? "valid" : "invalid",
+    };
+    expect(
+      (await evaluateClaimRequirementQualification(trusted, boundDeps)).decision,
+    ).toBe("fail");
+
+    const forged = structuredClone(trusted);
+    forged.resolvedResults[0]!.data = { possessionVerified: true };
+    expect(
+      (await evaluateClaimRequirementQualification(forged, boundDeps)).decision,
+    ).toBe("error");
+  });
+
+  it("rejects malformed groups and future-dated projections without throwing", async () => {
+    const malformed = inputFor(vectors.vectors[0]);
+    (malformed.requirement as any).oneOf = "not-an-array";
+    await expect(
+      evaluateClaimRequirementQualification(malformed, deps),
+    ).resolves.toMatchObject({ decision: "error", reason: "qualification-invalid" });
+
+    const future = inputFor(vectors.vectors[0]);
+    future.resolvedResults[0]!.verifiedAt = future.generatedAt + 1;
+    await expect(
+      evaluateClaimRequirementQualification(future, deps),
+    ).resolves.toMatchObject({ decision: "error", reason: "qualification-invalid" });
+  });
+
+  it("binds captured dependency methods to their original receiver", async () => {
+    const receiverDeps = {
+      ...deps,
+      marker: "trusted",
+      resolveAuthenticatedSessionStart(this: { marker: string }, handle: string) {
+        return this.marker === "trusted"
+          ? vectors.authenticatedSessionStarts[handle] ?? null
+          : null;
+      },
+      authenticateProductionQualification(this: { marker: string }) {
+        return this.marker === "trusted" ? "valid" as const : "invalid" as const;
+      },
+    };
+    expect(
+      (await evaluateClaimRequirementQualification(
+        inputFor(vectors.vectors[0]),
+        receiverDeps,
+      )).decision,
+    ).toBe("pass");
   });
 });

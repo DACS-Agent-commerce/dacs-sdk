@@ -1,3 +1,5 @@
+import { bundleAddress } from "../canonical/addressing.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
 import {
@@ -43,10 +45,11 @@ export { bundlesDiverge };
  * copy. It must also enforce the address-role contract (a copy anchored by one
  * role must not be honoured at the other role's address).
  *
- * Wire {@link verifyBundleCopy} — it implements exactly that contract over the
- * fetched bundle OBJECT. Do NOT wire `verifyBundleCore` directly: it takes a
- * storage *ref* rather than the object supplied here, and does not establish the
- * signer-set / §10.11 / address-role contract on its own.
+ * Adapt {@link verifyBundleCopy} by returning its `.valid` boolean — it
+ * implements exactly that contract over the fetched bundle OBJECT. Do NOT pass
+ * its `CopyValidity` object directly, and do NOT wire `verifyBundleCore`: the
+ * latter takes a storage *ref* rather than the object supplied here and does not
+ * establish the signer-set / §10.11 / address-role contract on its own.
  *
  * `isValid` is awaited, and this function is ASYNC, precisely so a real
  * (asynchronous) validator can be wired safely. A sync gate would have silently
@@ -82,22 +85,134 @@ export type BundleRole = "buyer" | "seller";
 export type BundleCopyRead =
   | { disposition: "present"; bundle: Record<string, unknown> }
   | { disposition: "absent" }
-  | { disposition: "indeterminate" };
+  | { disposition: "indeterminate"; reason?: string };
 
 export interface BundleCopies {
   buyer: BundleCopyRead;
   seller: BundleCopyRead;
 }
 
+/**
+ * Transport/substrate seam for the DACS-5 §10.4.3(a) two-sided lookup.
+ * The return value is untrusted: the helper snapshots and validates it before
+ * exposing a copy to bundle consistency or signature verification.
+ */
+export type BundleCopyReader = (
+  logicalAddress: string,
+  role: BundleRole,
+) => BundleCopyRead | Promise<BundleCopyRead>;
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
+
+function captureBundleCopyRead(
+  value: unknown,
+  jobId: string,
+  role: BundleRole,
+): BundleCopyRead {
+  let captured: unknown;
+  try {
+    captured = snapshotCanonicalJsonRead(value, `${role} bundle lookup`);
+  } catch (error) {
+    return {
+      disposition: "indeterminate",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!isObj(captured) || typeof captured.disposition !== "string") {
+    return {
+      disposition: "indeterminate",
+      reason: `${role} bundle lookup returned an invalid disposition`,
+    };
+  }
+  if (captured.disposition === "absent") return { disposition: "absent" };
+  if (captured.disposition === "indeterminate") {
+    return {
+      disposition: "indeterminate",
+      ...(typeof captured.reason === "string" && captured.reason.length > 0
+        ? { reason: captured.reason }
+        : {}),
+    };
+  }
+  if (captured.disposition !== "present" || !isObj(captured.bundle)) {
+    return {
+      disposition: "indeterminate",
+      reason: `${role} bundle lookup returned an invalid present result`,
+    };
+  }
+  // §10.4.3(a): content returned from a role address for another session does
+  // not count as a copy of this session. Signature/address-role validation is
+  // deliberately the next, separate verifyBundleCopy gate.
+  if (
+    typeof captured.bundle.jobId !== "string" ||
+    captured.bundle.jobId.length === 0
+  ) {
+    return {
+      disposition: "indeterminate",
+      reason: `${role} bundle lookup returned content without a valid jobId`,
+    };
+  }
+  if (captured.bundle.jobId !== jobId) return { disposition: "absent" };
+  return { disposition: "present", bundle: captured.bundle };
+}
+
+/**
+ * Fetch both DACS-5 role-specific logical bundle addresses concurrently.
+ *
+ * This is lookup, not trust. Present content remains subject to
+ * {@link verifyBundleCopy}; then {@link bundleConsistency} classifies the two
+ * verified dispositions. A reader exception or malformed response is retained
+ * as `indeterminate`, never silently converted to authoritative absence.
+ */
+export async function lookupBundleCopies(
+  jobId: string,
+  read: BundleCopyReader,
+): Promise<BundleCopies> {
+  if (
+    typeof jobId !== "string" ||
+    jobId.length === 0 ||
+    jobId !== jobId.trim() ||
+    jobId !== jobId.normalize("NFC") ||
+    /[\u0000-\u001f\u007f]/.test(jobId)
+  ) {
+    throw new DacsError("bundle lookup jobId must be non-empty canonical text");
+  }
+  if (typeof read !== "function") {
+    throw new DacsError("bundle lookup requires a reader");
+  }
+
+  const lookup = async (role: BundleRole): Promise<BundleCopyRead> => {
+    try {
+      return captureBundleCopyRead(
+        await read(bundleAddress(jobId, role), role),
+        jobId,
+        role,
+      );
+    } catch (error) {
+      return {
+        disposition: "indeterminate",
+        reason: `${role} bundle lookup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+  };
+
+  const [buyer, seller] = await Promise.all([
+    lookup("buyer"),
+    lookup("seller"),
+  ]);
+  return { buyer, seller };
+}
 
 export interface BundleConsistencyDeps {
   /**
    * §10.4.1 signature/anchor validation (with the §10.11 single-signed-abort
    * exception and the address-role contract). Invalid returned content is
-   * rejected; it is never converted into an `absent` disposition. Wire
-   * {@link verifyBundleCopy}, NOT `verifyBundleCore`.
+   * rejected; it is never converted into an `absent` disposition. Adapt
+   * {@link verifyBundleCopy} as
+   * `(await verifyBundleCopy(bundle, role, deps)).valid`; do not return the
+   * result object itself, and do not wire `verifyBundleCore`.
    * May be async; the result is awaited. REQUIRED unless `trustBundles` is set.
    */
   isValid?: (
@@ -114,7 +229,8 @@ export interface BundleConsistencyDeps {
 
 /**
  * Classify the two-sided copies for a session (§10.4.3). `deps.isValid` gates
- * each present copy on signature/anchor validity (e.g. wire verifyBundleCopy);
+ * each present copy on signature/anchor validity (e.g. adapt
+ * `verifyBundleCopy(...).valid`);
  * invalid returned content is rejected. Supply `isValid` or an explicit
  * `trustBundles: true` — deriving a verdict from unvalidated copies is not a
  * safe default, so an absent gate throws.
@@ -140,10 +256,13 @@ export async function bundleConsistency(
     if (!isObj(read.bundle)) {
       throw new DacsError(`bundleConsistency received malformed present content for ${role}`);
     }
-    if (isValid && !(await isValid(read.bundle, role))) {
-      throw new DacsError(
-        `bundleConsistency rejected invalid content returned from the ${role} address`,
-      );
+    if (isValid) {
+      const validity = await isValid(read.bundle, role);
+      if (validity !== true) {
+        throw new DacsError(
+          `bundleConsistency rejected invalid content returned from the ${role} address`,
+        );
+      }
     }
     return read.bundle;
   };

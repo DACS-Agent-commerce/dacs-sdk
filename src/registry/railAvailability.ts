@@ -9,6 +9,7 @@ import {
   publicKeyFromRaw,
 } from "../crypto/index.js";
 import { isCanonicalBase64Url } from "../artifacts/signatures.js";
+import { isCanonicalClaimReference } from "../identity/index.js";
 import { isRailDefinitionWire } from "./resolve.js";
 
 /** DACS-2 §7.5.1 decision vocabulary used by RAV-R1..RAV-R5. */
@@ -37,7 +38,7 @@ export interface RailAvailabilityAuthority {
   /** Exact digest pinned by authenticated session/registry state. */
   pinnedRailDigest: string | null;
   sessionState: RailSessionState;
-  operatorContext?: TrustedRailOperatorContext;
+  operatorContext: TrustedRailOperatorContext;
   /** Trusted result of the local RAV-R3 preflight. */
   operatorPreflightOk: boolean;
 }
@@ -127,11 +128,23 @@ function malformedRail(value: unknown): boolean {
 
 function malformedAuthority(value: unknown): boolean {
   if (!isRecord(value) || nodeTypes.isProxy(value)) return true;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 6 ||
+    ![
+      "stewardClaim",
+      "stewardPublicKey",
+      "pinnedRailDigest",
+      "sessionState",
+      "operatorContext",
+      "operatorPreflightOk",
+    ].every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  ) return true;
   const sessionState = value.sessionState;
   const operatorContext = value.operatorContext;
   return (
     (value.stewardClaim !== null &&
-      (typeof value.stewardClaim !== "string" || value.stewardClaim.length === 0)) ||
+      !isCanonicalClaimReference(value.stewardClaim)) ||
     (value.stewardPublicKey !== null &&
       !isCanonicalBase64Url(value.stewardPublicKey)) ||
     (value.pinnedRailDigest !== null &&
@@ -140,6 +153,9 @@ function malformedAuthority(value: unknown): boolean {
     (sessionState !== "new" && sessionState !== "in-flight") ||
     typeof value.operatorPreflightOk !== "boolean" ||
     !isRecord(operatorContext) ||
+    Object.keys(operatorContext).length !== 2 ||
+    !Object.prototype.hasOwnProperty.call(operatorContext, "source") ||
+    !Object.prototype.hasOwnProperty.call(operatorContext, "production") ||
     operatorContext.source !== "local-operator-policy" ||
     typeof operatorContext.production !== "boolean"
   );
@@ -242,7 +258,7 @@ export function evaluateRailAvailabilitySelection(
   const availability = rail.availability as string;
   if (availability === "disabled") return result("fail", "disabled", railDigest);
   if (availability === "failed") return result("fail", "failed", railDigest);
-  if (availability === "mocked" && authority.operatorContext!.production) {
+  if (availability === "mocked" && authority.operatorContext.production) {
     return result("fail", "mocked-in-production", railDigest);
   }
   if (
