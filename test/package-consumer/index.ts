@@ -3,6 +3,8 @@ import {
   type DemosAdapterConfig,
   type DemosWriteJournal,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
   type RatingRecord,
   type RatingPublicationEffectStore,
   type SubstrateAdapter,
@@ -10,6 +12,7 @@ import {
   createSellerRatingRecord,
   isRatingRecord,
   publishRatingRecordDurably,
+  deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -52,6 +55,14 @@ const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRec
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
 const durableRatingPublisher: typeof publishRatingRecordDurably =
   publishRatingRecordDurably;
+const validatedReputationDeriver: typeof deriveReputationWithValidation =
+  deriveReputationWithValidation;
+declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
+const validatedReputationDeps: DeriveReputationValidationDeps = {
+  validate: async () => true,
+  trustBundlePartyRoles: true,
+  resolveAndAuthenticateRating: async () => authenticatedRatingResolution,
+};
 declare const ratingEffectStore: RatingPublicationEffectStore;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
@@ -75,6 +86,8 @@ void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
 void durableRatingPublisher;
+void validatedReputationDeriver;
+void validatedReputationDeps;
 void ratingEffectStore;
 void adapter;
 void journal;

@@ -320,6 +320,7 @@ RT-1 input before calling the wallet and return an isolated, signed wire record:
 import {
   createBuyerRatingRecord,
   createSellerRatingRecord,
+  deriveReputationWithValidation,
   isRatingRecord,
   publishRatingRecordDurably,
 } from "@kynesyslabs/dacs";
@@ -369,6 +370,21 @@ const publishedRating = await publishRatingRecordDurably(
 if (publishedRating.disposition !== "published") {
   throw new Error(`rating publication is ${publishedRating.disposition}`);
 }
+
+const reputation = await deriveReputationWithValidation(
+  sellerPrimaryClaim,
+  candidateBundles,
+  reputationWindow,
+  {
+    validate: authenticateCompleteBundle,
+    resolvePartyRole: resolveAuthenticatedSessionRole,
+    copyAbsence: resolveAuthoritativeBundleAbsence,
+    // This boundary must authenticate the rating's SR-2 anchor/binding and
+    // dacs-rating:v1 signature. The SDK then independently rechecks its exact
+    // ref hash, wire shape, RT-1/RT-2, job, parties, direction, and target role.
+    resolveAndAuthenticateRating,
+  },
+);
 ```
 
 The durable publisher writes the exact signed record to the actor-local effect
@@ -376,9 +392,12 @@ journal before invoking SR-2. A lost response moves the effect to
 reconciliation; retrying reuses the same immutable bytes, logical address, and
 idempotency identity. It returns a `ratingRef` only after authenticated finality,
 role-owned binding visibility, and exact independently authenticated readback.
-Optional/required rate-phase orchestration, terminal-bundle handoff, and
-reputation aggregation remain separate lifecycle operations; an application
-must not treat a locally signed record as an anchored rating.
+The asynchronous validated reputation path deduplicates one authenticated
+rating per `(rater, jobId, targetRole)`, selects the latest `ratedAt`, and
+computes role-specific averages. Invalid and indeterminate ratings are excluded,
+never clamped. Rate-phase orchestration and terminal-bundle handoff remain
+separate lifecycle operations; an application must not treat a locally signed
+record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already
