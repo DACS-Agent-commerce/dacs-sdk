@@ -4,6 +4,7 @@ import {
   advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
   createLiquidityTankIntent,
+  liquidityTankSettlementKey,
   type AdvanceLiquidityTankInput,
   type LiquidityTankAdapter,
   type LiquidityTankAuthority,
@@ -16,6 +17,9 @@ const RAIL_HASH = "b".repeat(64);
 const AGREEMENT_HASH = "c".repeat(64);
 const SR5_HASH = "d".repeat(64);
 const BRIDGE_ID = "abc123def456gh78";
+const JOB_ID = "01JZ0000000000000000000001";
+const SECOND_JOB_ID = "01JZ0000000000000000000002";
+const DIFFERENT_JOB_ID = "01JZ0000000000000000000003";
 
 function unreadableProxy<T extends object>(value: T, touched: () => void): T {
   const reject = () => {
@@ -38,7 +42,7 @@ function unreadableProxy<T extends object>(value: T, touched: () => void): T {
 
 function authority(overrides: Partial<LiquidityTankAuthority> = {}): LiquidityTankAuthority {
   return {
-    jobId: "tank-job-1",
+    jobId: JOB_ID,
     phaseIndex: 2,
     railId: "demos-tank-sepolia-amoy-usdc",
     railDescriptorHash: RAIL_HASH,
@@ -77,7 +81,10 @@ function empty(operationHash: string): LiquidityTankObservation {
   };
 }
 
-function pending(operationHash: string, locked = false): LiquidityTankObservation {
+function pending(
+  operationHash: string,
+  locked = false,
+): Extract<LiquidityTankObservation, { status: "pending" }> {
   return {
     status: "pending",
     bridgeId: BRIDGE_ID,
@@ -90,7 +97,9 @@ function pending(operationHash: string, locked = false): LiquidityTankObservatio
   };
 }
 
-function completed(operationHash: string): LiquidityTankObservation {
+function completed(
+  operationHash: string,
+): Extract<LiquidityTankObservation, { status: "completed" }> {
   return {
     status: "completed",
     bridgeId: BRIDGE_ID,
@@ -220,6 +229,19 @@ describe("createLiquidityTankIntent", () => {
       mechanism: "liquidity-tank",
     });
   });
+
+  test.each([JOB_ID.toLowerCase(), "tank-job-1"])(
+    "rejects non-canonical job identity %s in both exported derivation paths",
+    (jobId) => {
+      expect(() => createLiquidityTankIntent(authority({ jobId })))
+        .toThrow(/canonical uppercase ULID/);
+      expect(() => liquidityTankSettlementKey({
+        jobId,
+        railId: authority().railId,
+        phaseIndex: authority().phaseIndex,
+      })).toThrow(/canonical uppercase ULID/);
+    },
+  );
 
   test.each([
     ["asset kind", { assetKind: "erc20" }],
@@ -423,6 +445,29 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
+  test("rejects an unknown authenticated status before history persistence or broadcast", async () => {
+    const h = harness();
+    h.adapter.observe = vi.fn(async () => ({
+      status: "bogus",
+      bridgeId: BRIDGE_ID,
+      operationHash: h.operationHash,
+      history: ["empty", "failed"],
+      observedAt: 2_000,
+      authenticationHash: AUTH_HASH,
+      reason: "invented status",
+    }) as never);
+    const store = createInMemoryLiquidityTankStore();
+    const recordObservation = vi.spyOn(store, "recordObservation");
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-status-unavailable",
+      });
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("ambiguous broadcast reuses the exact retained transaction", async () => {
     const h = harness();
     h.failNextBroadcast();
@@ -554,6 +599,106 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  test.each([
+    ["drops the checkpoint", (operationHash: string) => pending(operationHash)],
+    ["replaces the lock hash", (operationHash: string) => ({
+      ...pending(operationHash, true),
+      lockTxHash: "replacement-lock-tx",
+    })],
+    ["extends the recovery deadline", (operationHash: string) => ({
+      ...pending(operationHash, true),
+      recoveryDeadline: 6_000,
+    })],
+    ["completes a replacement lock", (operationHash: string) => ({
+      ...completed(operationHash),
+      lockTxHash: "replacement-lock-tx",
+    })],
+  ] as const)("durable recovery checkpoint rejects a later observation that %s", async (_label, next) => {
+    const h = harness();
+    h.setAfterBroadcast(pending(h.operationHash, true));
+    const store = createInMemoryLiquidityTankStore();
+    const recordObservation = vi.spyOn(store, "recordObservation");
+    const run = runner({ adapter: h.adapter, store });
+    await advanceLiquidityTankSettlement(run.shared);
+    recordObservation.mockClear();
+    h.broadcastRetained.mockClear();
+    h.setObservation(next(h.operationHash) as LiquidityTankObservation);
+
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      reason: "tank-locked-unreleased",
+      recoveryDeadline: 5_000,
+      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: 5_000 },
+    });
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("rejects an unsafe recovery deadline without poisoning the durable checkpoint", async () => {
+    const h = harness();
+    h.setAfterBroadcast(pending(h.operationHash, true));
+    const store = createInMemoryLiquidityTankStore();
+    const recordObservation = vi.spyOn(store, "recordObservation");
+    const run = runner({ adapter: h.adapter, store });
+    await advanceLiquidityTankSettlement(run.shared);
+    recordObservation.mockClear();
+    h.setObservation({
+      ...pending(h.operationHash, true),
+      recoveryDeadline: Math.floor(Number.MAX_SAFE_INTEGER / 1_000) + 1,
+    });
+
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      recoveryDeadline: 5_000,
+      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: 5_000 },
+    });
+    expect(recordObservation).not.toHaveBeenCalled();
+  });
+
+  test("reference store preserves its recovery checkpoint after rejecting an extension", async () => {
+    const store = createInMemoryLiquidityTankStore();
+    const intent = createLiquidityTankIntent(authority());
+    const claim = await store.claim({
+      intent,
+      owner: "checkpoint-worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    });
+    expect(claim.status).toBe("acquired");
+    if (claim.status !== "acquired") throw new Error("expected acquired reference-store lease");
+    const writeAuthority = {
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      owner: claim.lease.owner,
+      generation: claim.lease.generation,
+    };
+    await expect(store.recordSubmission({
+      ...writeAuthority,
+      submission: {
+        submissionVersion: "1",
+        authorityHash: intent.bindingHash,
+        operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID,
+        substrateTxHash: "demos-native-bridge-tx",
+        signedSubmissionBase64: Buffer.from("signed-native-bridge").toString("base64"),
+        preparedAt: 900,
+        submissionHash: "e".repeat(64),
+      },
+    })).resolves.toEqual({ status: "recorded" });
+    await expect(store.recordObservation({
+      ...writeAuthority,
+      observation: pending(intent.operationHash, true),
+    })).resolves.toEqual({ status: "recorded" });
+    await expect(store.recordObservation({
+      ...writeAuthority,
+      observation: { ...pending(intent.operationHash, true), recoveryDeadline: 6_000 },
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.recordObservation({
+      ...writeAuthority,
+      observation: completed(intent.operationHash),
+    })).resolves.toEqual({ status: "recorded" });
+  });
+
   test("deterministic bridge failure is permanent", async () => {
     const operationHash = createLiquidityTankIntent(authority()).operationHash;
     const h = harness({
@@ -588,7 +733,7 @@ describe("advanceLiquidityTankSettlement", () => {
     await advanceLiquidityTankSettlement(runner({ store, adapter: firstHarness.adapter }).shared);
     const secondHarness = harness();
     const second = runner({
-      authority: authority({ jobId: "tank-job-2" }),
+      authority: authority({ jobId: SECOND_JOB_ID }),
       store,
       adapter: secondHarness.adapter,
       now: () => 2_000,
@@ -800,6 +945,69 @@ describe("advanceLiquidityTankSettlement", () => {
     },
   );
 
+  test("rejects an overflowing lease expiry before claiming", async () => {
+    const store = createInMemoryLiquidityTankStore();
+    const claim = vi.spyOn(store, "claim");
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({
+      store,
+      adapter: h.adapter,
+      now: () => Number.MAX_SAFE_INTEGER,
+      leaseDurationMs: 1,
+    }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-clock-invalid",
+    });
+    expect(claim).not.toHaveBeenCalled();
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("requires an acquired lease to have the exact authorized expiry", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      claim: vi.fn<LiquidityTankStore["claim"]>(async (input) => ({
+        status: "acquired" as const,
+        intent: input.intent,
+        lease: {
+          owner: input.owner,
+          generation: 1,
+          expiresAt: input.now + input.leaseDurationMs + 1,
+        },
+      })),
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-settlement-store-lease-invalid",
+      });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("reference store rejects unsafe lease arithmetic before retaining state", async () => {
+    const store = createInMemoryLiquidityTankStore();
+    const intent = createLiquidityTankIntent(authority());
+    await expect(store.claim({
+      intent,
+      owner: "overflow-worker",
+      now: Number.MAX_SAFE_INTEGER,
+      leaseDurationMs: 1,
+    })).rejects.toThrow(/lease expiry must be a safe integer/);
+
+    await expect(store.claim({
+      intent,
+      owner: "safe-worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    })).resolves.toMatchObject({
+      status: "acquired",
+      lease: { owner: "safe-worker", generation: 1, expiresAt: 1_100 },
+    });
+  });
+
   test("rejects a settled claim whose durable result does not match the intent", async () => {
     const intent = createLiquidityTankIntent(authority());
     const inner = createInMemoryLiquidityTankStore();
@@ -886,7 +1094,7 @@ describe("advanceLiquidityTankSettlement", () => {
       async claim() {
         return {
           status: "waiting" as const,
-          intent: createLiquidityTankIntent(authority({ jobId: "different-job" })),
+          intent: createLiquidityTankIntent(authority({ jobId: DIFFERENT_JOB_ID })),
           lease: { owner: "other-worker", generation: 1, expiresAt: 2_000 },
         };
       },

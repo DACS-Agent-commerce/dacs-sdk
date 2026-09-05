@@ -11,6 +11,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
@@ -292,6 +293,25 @@ function requireUInt(value: unknown, label: string, positive = false): number {
   return Number(value);
 }
 
+function leaseExpiry(now: number, leaseDurationMs: number): number {
+  if (now > Number.MAX_SAFE_INTEGER - leaseDurationMs) {
+    throw new DacsError(
+      "pay-cross-chain-liquidity-tank: lease expiry must be a safe integer",
+    );
+  }
+  return now + leaseDurationMs;
+}
+
+function recoveryDeadlineMs(value: unknown): number {
+  const seconds = requireUInt(value, "recoveryDeadline", true);
+  if (seconds > Math.floor(Number.MAX_SAFE_INTEGER / 1_000)) {
+    throw new DacsError(
+      "pay-cross-chain-liquidity-tank: recoveryDeadline cannot be represented in milliseconds",
+    );
+  }
+  return seconds * 1_000;
+}
+
 function stableDataProperty(
   source: unknown,
   key: PropertyKey,
@@ -446,7 +466,7 @@ function liquidityTankSettlementKeyFromCaptured(input: {
 }): string {
   const phaseIndex = requireUInt(input.phaseIndex, "phaseIndex");
   return sha256Hex(
-    `dacs-liquidity-tank:v1:${requireString(input.jobId, "jobId").normalize("NFC")}:` +
+    `dacs-liquidity-tank:v1:${requireCanonicalJobId(input.jobId)}:` +
       `${requireString(input.railId, "railId").normalize("NFC")}:${phaseIndex}`,
   );
 }
@@ -504,7 +524,7 @@ export function createLiquidityTankIntent(
     intentVersion: "1" as const,
     settlementKey: liquidityTankSettlementKeyFromCaptured(authority),
     operationHash,
-    jobId: requireString(authority.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(authority.jobId),
     phaseIndex: authority.phaseIndex,
     railId: requireString(authority.railId, "railId").normalize("NFC"),
     railDescriptorHash: authority.railDescriptorHash,
@@ -621,6 +641,11 @@ function validateCapturedObservation(
       reason: requireString(value.reason, "indeterminate reason"),
     });
   }
+  if (value.status !== "empty" && value.status !== "pending" &&
+      value.status !== "completed" && value.status !== "failed" &&
+      value.status !== "capacity-unavailable") {
+    throw new DacsError("pay-cross-chain-liquidity-tank: bridge status is invalid");
+  }
   if (value.bridgeId !== submission.bridgeId || value.operationHash !== intent.operationHash ||
       !HASH_RE.test(value.authenticationHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: unauthenticated bridge observation");
@@ -644,7 +669,7 @@ function validateCapturedObservation(
     }
     if (value.lockTxHash !== undefined) {
       requireString(value.lockTxHash, "lockTxHash");
-      requireUInt(value.recoveryDeadline, "recoveryDeadline", true);
+      recoveryDeadlineMs(value.recoveryDeadline);
     }
   }
   if (value.status === "completed") {
@@ -668,7 +693,7 @@ function progressFromDurableObservation(
 ): LiquidityTankProgress | null {
   if (!observation) return null;
   if (observation.status === "pending" && observation.lockTxHash && observation.recoveryDeadline) {
-    if (now >= observation.recoveryDeadline * 1_000) {
+    if (now >= recoveryDeadlineMs(observation.recoveryDeadline)) {
       return {
         status: "failed",
         errorClass: "failed-substrate",
@@ -691,6 +716,21 @@ function progressFromDurableObservation(
     };
   }
   return null;
+}
+
+function preservesRecoveryCheckpoint(
+  prior: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
+  next: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
+): boolean {
+  if (prior.status !== "pending" || prior.lockTxHash === undefined ||
+      prior.recoveryDeadline === undefined) {
+    return true;
+  }
+  if (next.status === "pending") {
+    return next.lockTxHash === prior.lockTxHash &&
+      next.recoveryDeadline === prior.recoveryDeadline;
+  }
+  return next.status === "completed" && next.lockTxHash === prior.lockTxHash;
 }
 
 export async function advanceLiquidityTankSettlement(
@@ -797,9 +837,15 @@ export async function advanceLiquidityTankSettlement(
   }
   const readNow = (): number => requireUInt(now(), "clock");
   let claimNow: number;
-  let rawClaim: unknown;
+  let expectedLeaseExpiry: number;
   try {
     claimNow = readNow();
+    expectedLeaseExpiry = leaseExpiry(claimNow, leaseDurationMs);
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-clock-invalid" };
+  }
+  let rawClaim: unknown;
+  try {
     rawClaim = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-unavailable" };
@@ -873,7 +919,7 @@ export async function advanceLiquidityTankSettlement(
   try {
     if (acquiredClaim.lease.owner !== owner ||
         !Number.isSafeInteger(acquiredClaim.lease.generation) || acquiredClaim.lease.generation <= 0 ||
-        !Number.isSafeInteger(acquiredClaim.lease.expiresAt) || acquiredClaim.lease.expiresAt <= claimNow) {
+        acquiredClaim.lease.expiresAt !== expectedLeaseExpiry) {
       throw new DacsError("invalid acquired lease");
     }
     lease = Object.freeze({
@@ -1003,6 +1049,13 @@ export async function advanceLiquidityTankSettlement(
         reason: observation.reason,
       };
     }
+    if (durableObservation &&
+        !preservesRecoveryCheckpoint(durableObservation, observation)) {
+      return durableProgress() ?? {
+        status: "indeterminate",
+        reason: "liquidity-tank-recovery-checkpoint-conflict",
+      };
+    }
     if (!await persistObservation(observation)) {
       return durableProgress() ?? {
         status: "indeterminate",
@@ -1109,6 +1162,10 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
     record.lease.generation === input.generation;
   return {
     async claim(input) {
+      const expiresAt = leaseExpiry(
+        requireUInt(input.now, "claim now"),
+        requireUInt(input.leaseDurationMs, "claim leaseDurationMs", true),
+      );
       const existing = records.get(input.intent.settlementKey);
       if (existing) {
         if (existing.intent.bindingHash !== input.intent.bindingHash) {
@@ -1126,22 +1183,27 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
             observation: existing.observation,
           };
         }
-        existing.lease = {
+        const generation = existing.lease.generation + 1;
+        if (!Number.isSafeInteger(generation)) {
+          return { status: "corrupt", reason: "liquidity-tank-lease-generation-exhausted" };
+        }
+        const lease = {
           owner: input.owner,
-          generation: existing.lease.generation + 1,
-          expiresAt: input.now + input.leaseDurationMs,
+          generation,
+          expiresAt,
         };
+        existing.lease = lease;
         return {
           status: "acquired",
           intent: existing.intent,
-          lease: { ...existing.lease },
+          lease: { ...lease },
           submission: existing.submission,
           observation: existing.observation,
         };
       }
       const record: MemoryTankRecord = {
         intent: input.intent,
-        lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs },
+        lease: { owner: input.owner, generation: 1, expiresAt },
       };
       records.set(input.intent.settlementKey, record);
       return { status: "acquired", intent: record.intent, lease: { ...record.lease } };
@@ -1175,10 +1237,8 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
       const prior = record.observation;
       if (prior) {
         if (canonicalize(prior) === canonicalize(input.observation)) return { status: "existing" };
-        if (observationRank(input.observation.status) < observationRank(prior.status) ||
-            (prior.status === "pending" && prior.lockTxHash &&
-             ((input.observation.status === "pending" && !input.observation.lockTxHash) ||
-              input.observation.status === "failed"))) {
+        if (!preservesRecoveryCheckpoint(prior, input.observation) ||
+            observationRank(input.observation.status) < observationRank(prior.status)) {
           return { status: "conflict", reason: "liquidity-tank-status-regression" };
         }
         if (observationRank(input.observation.status) === observationRank(prior.status) &&
