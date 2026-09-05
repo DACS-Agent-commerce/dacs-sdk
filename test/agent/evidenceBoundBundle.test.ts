@@ -10,6 +10,10 @@ import {
   buildEvidenceBoundTwoSidedBundle,
   buildTwoSidedBundle,
   ARTIFACT_SEPARATORS,
+  BUNDLE_BINDING_SEPARATOR,
+  EVIDENCE_BOUND_FAULT_BUNDLE_POINTER_SEPARATOR,
+  bundleAddress,
+  canonicalize,
   bundlesDiverge,
   evaluateEvidenceBoundSettlementSet,
   verifyEvidenceBoundFaultBundle,
@@ -57,6 +61,108 @@ function depsFor(publicKeys: Record<string, string>): EvidenceBoundBundleVerifie
   };
 }
 
+function testIdentity(label: string) {
+  const seed = Uint8Array.from(createHash("sha256").update(label).digest());
+  const privateKey = privateKeyFromSeed(seed);
+  const raw = rawPublicKey(publicKeyFromSeed(seed));
+  const claim = `did:demos:agent:${Buffer.from(raw).toString("hex")}`;
+  return { claim, privateKey, raw };
+}
+
+const AUTHORITY_BUYER = testIdentity("ebfab-authority-buyer");
+const AUTHORITY_SELLER = testIdentity("ebfab-authority-seller");
+const AUTHORITY_ATTACKER = testIdentity("ebfab-authority-attacker");
+
+function signatureValue(
+  separator: Parameters<typeof signedBytes>[0],
+  hash: string,
+  privateKey: ReturnType<typeof privateKeyFromSeed>,
+): string {
+  return Buffer.from(
+    ed25519Sign(signedBytes(separator, hash), privateKey),
+  ).toString("base64url");
+}
+
+async function compactAuthority(options: {
+  buyerClaim?: string;
+  sellerClaim?: string;
+  buyerSigningKey?: ReturnType<typeof privateKeyFromSeed>;
+  sellerSigningKey?: ReturnType<typeof privateKeyFromSeed>;
+  listingSellerClaim?: string;
+  listingSignerClaim?: string;
+  listingSigningKey?: ReturnType<typeof privateKeyFromSeed>;
+} = {}) {
+  const buyerClaim = options.buyerClaim ?? AUTHORITY_BUYER.claim;
+  const sellerClaim = options.sellerClaim ?? AUTHORITY_SELLER.claim;
+  const listingSellerClaim = options.listingSellerClaim ?? sellerClaim;
+  const listingSignerClaim = options.listingSignerClaim ?? listingSellerClaim;
+  const listingScope = {
+    listingId: "ebfab-compact-authority",
+    listingVersion: 1,
+    sellerPrimaryClaim: listingSellerClaim,
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "rate" },
+    ],
+  };
+  const listingHash = contentHash(listingScope);
+  const listing = {
+    ...listingScope,
+    signature: {
+      signer: listingSignerClaim,
+      algorithm: "ed25519" as const,
+      value: signatureValue(
+        ARTIFACT_SEPARATORS.Listing,
+        listingHash,
+        options.listingSigningKey ?? AUTHORITY_SELLER.privateKey,
+      ),
+    },
+  };
+  const copies = await buildEvidenceBoundTwoSidedBundle(
+    {
+      jobId: "ebfab-compact-authority-job",
+      outcome: "aborted-by-self",
+      faultedParty: "buyer",
+      listingRef: {
+        listingId: listing.listingId,
+        version: listing.listingVersion,
+        contentHash: listingHash,
+      },
+      phaseSummary: [
+        { index: 0, kind: "negotiate-fixed-price", outcome: "ok" },
+      ],
+      vetRecords: [],
+      settlementEvidence: [],
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+      finalisedAt: 1,
+      buyer: {
+        primaryClaim: buyerClaim,
+        bundleHash: "a".repeat(64),
+        signer: options.buyerSigningKey ?? AUTHORITY_BUYER.privateKey,
+      },
+      seller: {
+        primaryClaim: sellerClaim,
+        bundleHash: "b".repeat(64),
+        signer: options.sellerSigningKey ?? AUTHORITY_SELLER.privateKey,
+      },
+    },
+    { validateEvidenceSet: async () => ({ decision: "verified" }) },
+  );
+  return {
+    input: {
+      bundle: copies.buyerCopy!,
+      listing,
+      referenceValidationByCanonicalRef: {},
+      bundleLifecycle: { state: "included" as const },
+      sessionExecutionAuthorityByPhaseKey: {},
+      verifiedReceiptByCanonicalRef: {},
+    },
+    buyerClaim,
+    sellerClaim,
+  };
+}
+
 describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
   const corpus = read("bundle-settlement-evidence-bijection-v0.4.json");
   const deps = depsFor(corpus.publicKeys);
@@ -70,6 +176,321 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
         expect(result.decision, `${name}: ${result.reason}`).toBe("verified");
         expect(result.authority, name).toBeDefined();
       }
+    }
+  });
+
+  it("resolves qualified direct and pointer signers through parameter-free CF-3 identities", async () => {
+    const buyerClaim = `${AUTHORITY_BUYER.claim}?context=bundle`;
+    const sellerClaim = `${AUTHORITY_SELLER.claim}?context=bundle`;
+    const listingSellerClaim = `${AUTHORITY_SELLER.claim}?context=listing`;
+    const built = await compactAuthority({
+      buyerClaim,
+      sellerClaim,
+      listingSellerClaim,
+    });
+    const resolved: string[] = [];
+    const keys = new Map([
+      [AUTHORITY_BUYER.claim, AUTHORITY_BUYER.raw],
+      [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
+    ]);
+    const qualifiedDeps: EvidenceBoundBundleVerifierDeps = {
+      resolvePublicKey: async (claim) => {
+        resolved.push(claim);
+        return keys.get(claim) ?? null;
+      },
+      verify: async (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    };
+    const verified = await verifyEvidenceBoundFaultBundle(
+      built.input,
+      qualifiedDeps,
+    );
+    expect(verified.decision, verified.reason).toBe("verified");
+    expect(verified.authority).toBeDefined();
+
+    const pointerScope = {
+      evidenceBoundFaultBundleVersion: "1" as const,
+      pointerKind: "extended" as const,
+      fullBundleUrl: "https://example.test/ebfab.json",
+      fullBundleContentHash: attestationBundleHash(built.input.bundle),
+    };
+    const pointer = {
+      ...pointerScope,
+      signature: {
+        signer: `${AUTHORITY_BUYER.claim}?context=pointer`,
+        algorithm: "ed25519" as const,
+        value: signatureValue(
+          EVIDENCE_BOUND_FAULT_BUNDLE_POINTER_SEPARATOR,
+          contentHash(pointerScope),
+          AUTHORITY_BUYER.privateKey,
+        ),
+      },
+    };
+    const bindingSigner = `${AUTHORITY_BUYER.claim}?context=binding`;
+    const bindingScope = {
+      bindingVersion: "1" as const,
+      jobId: built.input.bundle.jobId,
+      role: "buyer" as const,
+      logicalAddress: bundleAddress(built.input.bundle.jobId, "buyer"),
+      nativeAddress: "stor-ebfab-qualified-bundle",
+      bundleContentHash: pointerScope.fullBundleContentHash,
+      signer: bindingSigner,
+    };
+    const binding = {
+      ...bindingScope,
+      signature: {
+        signer: bindingSigner,
+        algorithm: "ed25519" as const,
+        value: signatureValue(
+          BUNDLE_BINDING_SEPARATOR,
+          contentHash(bindingScope),
+          AUTHORITY_BUYER.privateKey,
+        ),
+      },
+    };
+    const pointerResult = await verifyFaultBundleExtendedPointer(
+      pointer,
+      built.input.bundle as unknown as Record<string, unknown>,
+      binding,
+      qualifiedDeps,
+      verified.authority,
+    );
+    expect(pointerResult.ok, pointerResult.reason).toBe(true);
+    expect(resolved.length).toBeGreaterThan(0);
+    expect(resolved.every((claim) => !claim.includes("?"))).toBe(true);
+  });
+
+  it("rejects CF-3 role aliases, noncanonical claims, and alias-selected cross-keys", async () => {
+    const buyerAlias = `${AUTHORITY_BUYER.claim}?role=seller`;
+    const duplicateRoles = await compactAuthority({
+      sellerClaim: buyerAlias,
+      sellerSigningKey: AUTHORITY_BUYER.privateKey,
+      listingSellerClaim: AUTHORITY_SELLER.claim,
+    });
+    const noncanonicalBuyer = `DID:${AUTHORITY_BUYER.claim.slice(4)}`;
+    const noncanonicalBundle = await compactAuthority({
+      buyerClaim: noncanonicalBuyer,
+    });
+    const crossKeyBuyer = `${AUTHORITY_BUYER.claim}?context=bundle`;
+    const crossKeyBundle = await compactAuthority({
+      buyerClaim: crossKeyBuyer,
+      buyerSigningKey: AUTHORITY_ATTACKER.privateKey,
+    });
+    const listingAlias = `${AUTHORITY_SELLER.claim}?context=listing`;
+    const crossKeyListing = await compactAuthority({
+      listingSellerClaim: listingAlias,
+      listingSigningKey: AUTHORITY_ATTACKER.privateKey,
+    });
+    const noncanonicalSeller = `DID:${AUTHORITY_SELLER.claim.slice(4)}`;
+    const noncanonicalListing = await compactAuthority({
+      listingSellerClaim: noncanonicalSeller,
+      listingSignerClaim: noncanonicalSeller,
+    });
+    const keys = new Map<string, Uint8Array>([
+      [AUTHORITY_BUYER.claim, AUTHORITY_BUYER.raw],
+      [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
+      [buyerAlias, AUTHORITY_BUYER.raw],
+      [noncanonicalBuyer, AUTHORITY_BUYER.raw],
+      [crossKeyBuyer, AUTHORITY_ATTACKER.raw],
+      [listingAlias, AUTHORITY_ATTACKER.raw],
+      [noncanonicalSeller, AUTHORITY_SELLER.raw],
+    ]);
+    const adversarialDeps: EvidenceBoundBundleVerifierDeps = {
+      resolvePublicKey: async (claim) => keys.get(claim) ?? null,
+      verify: async (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    };
+
+    for (const [name, authority] of [
+      ["buyer/seller qualified alias", duplicateRoles.input],
+      ["noncanonical bundle claim", noncanonicalBundle.input],
+      ["bundle alias-selected cross-key", crossKeyBundle.input],
+      ["compact Listing alias-selected cross-key", crossKeyListing.input],
+      ["noncanonical compact Listing signer", noncanonicalListing.input],
+    ] as const) {
+      const result = await verifyEvidenceBoundFaultBundle(
+        authority,
+        adversarialDeps,
+      );
+      expect(result.decision, `${name}: ${result.reason}`).toBe("rejected");
+      expect(result.reasonCode, name).toBe("execution-authority");
+    }
+  });
+
+  it("binds qualified SettlementEvidence authority to its parameter-free signer key", async () => {
+    const makeEvidenceAuthority = async (
+      signer: string,
+      phaseOrchestrator: string,
+      writer: string,
+      signingKey: ReturnType<typeof privateKeyFromSeed>,
+    ) => {
+      const jobId = "ebfab-qualified-evidence-job";
+      const listingScope = {
+        listingId: "ebfab-qualified-evidence-listing",
+        listingVersion: 1,
+        sellerPrimaryClaim: AUTHORITY_SELLER.claim,
+        pipeline: [{ kind: "deliver-entitlement" }],
+      };
+      const listingHash = contentHash(listingScope);
+      const listing = {
+        ...listingScope,
+        signature: {
+          signer: AUTHORITY_SELLER.claim,
+          algorithm: "ed25519" as const,
+          value: signatureValue(
+            ARTIFACT_SEPARATORS.Listing,
+            listingHash,
+            AUTHORITY_SELLER.privateKey,
+          ),
+        },
+      };
+      const recordScope = {
+        evidenceVersion: "1" as const,
+        jobId,
+        phase: "deliver-entitlement" as const,
+        outcome: "success" as const,
+        observedAt: 1,
+        deliverableContentHash: "c".repeat(64),
+      };
+      const recordHash = contentHash(recordScope);
+      const ref = {
+        anchor: {
+          kind: "storage-program" as const,
+          locator: "stor-ebfab-qualified-evidence",
+        },
+        contentHash: recordHash,
+      };
+      const record = {
+        ...recordScope,
+        signature: {
+          signer,
+          algorithm: "ed25519" as const,
+          value: signatureValue(
+            ARTIFACT_SEPARATORS.SettlementEvidence,
+            recordHash,
+            signingKey,
+          ),
+        },
+      };
+      const copies = await buildEvidenceBoundTwoSidedBundle(
+        {
+          jobId,
+          outcome: "completed",
+          listingRef: {
+            listingId: listing.listingId,
+            version: listing.listingVersion,
+            contentHash: listingHash,
+          },
+          agreementRef: {
+            anchor: { kind: "storage-program", locator: "agreement-qualified-evidence" },
+            contentHash: "d".repeat(64),
+          },
+          phaseSummary: [
+            {
+              index: 0,
+              kind: "deliver-entitlement",
+              outcome: "ok",
+              attestationRef: ref,
+            },
+          ],
+          vetRecords: [],
+          settlementEvidence: [ref],
+          recipeRegistryVersion: 1,
+          railRegistryVersion: 1,
+          finalisedAt: 2,
+          buyer: {
+            primaryClaim: AUTHORITY_BUYER.claim,
+            bundleHash: "e".repeat(64),
+            signer: AUTHORITY_BUYER.privateKey,
+          },
+          seller: {
+            primaryClaim: AUTHORITY_SELLER.claim,
+            bundleHash: "f".repeat(64),
+            signer: AUTHORITY_SELLER.privateKey,
+          },
+        },
+        { validateEvidenceSet: async () => ({ decision: "verified" }) },
+      );
+      const refKey = canonicalize(ref);
+      return {
+        bundle: copies.buyerCopy!,
+        listing,
+        referenceValidationByCanonicalRef: {
+          [refKey]: {
+            record,
+            lifecycle: { state: "finalized" as const, independentlyResolvable: true },
+          },
+        },
+        bundleLifecycle: { state: "finalized" as const, independentlyResolvable: true },
+        sessionExecutionAuthorityByPhaseKey: {
+          "0:deliver-entitlement": {
+            jobId,
+            phaseIndex: 0,
+            phaseKind: "deliver-entitlement",
+            phaseOrchestrator,
+            evidenceLogicalAddress: "dacs4:evidence:ebfab-qualified-evidence-job:0",
+          },
+        },
+        verifiedReceiptByCanonicalRef: {
+          [refKey]: {
+            logicalAddress: "dacs4:evidence:ebfab-qualified-evidence-job:0",
+            nativeAddress: ref.anchor.locator,
+            contentHash: ref.contentHash,
+            transaction: "demos-testnet:tx-qualified-evidence",
+            writer,
+            nonce: 0,
+          },
+        },
+      };
+    };
+
+    const evidenceSigner = `${AUTHORITY_SELLER.claim}?context=evidence`;
+    const receiptWriter = `${AUTHORITY_SELLER.claim}?context=receipt`;
+    const valid = await makeEvidenceAuthority(
+      evidenceSigner,
+      AUTHORITY_SELLER.claim,
+      receiptWriter,
+      AUTHORITY_SELLER.privateKey,
+    );
+    const baseKeys = new Map([
+      [AUTHORITY_BUYER.claim, AUTHORITY_BUYER.raw],
+      [AUTHORITY_SELLER.claim, AUTHORITY_SELLER.raw],
+    ]);
+    const baseDeps: EvidenceBoundBundleVerifierDeps = {
+      resolvePublicKey: async (claim) => baseKeys.get(claim) ?? null,
+      verify: async (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+    };
+    const verified = await verifyEvidenceBoundFaultBundle(valid, baseDeps);
+    expect(verified.decision, verified.reason).toBe("verified");
+
+    const crossKey = await makeEvidenceAuthority(
+      evidenceSigner,
+      evidenceSigner,
+      evidenceSigner,
+      AUTHORITY_ATTACKER.privateKey,
+    );
+    const noncanonicalSigner = `DID:${AUTHORITY_SELLER.claim.slice(4)}`;
+    const noncanonical = await makeEvidenceAuthority(
+      noncanonicalSigner,
+      noncanonicalSigner,
+      noncanonicalSigner,
+      AUTHORITY_SELLER.privateKey,
+    );
+    const adversarialKeys = new Map(baseKeys);
+    adversarialKeys.set(evidenceSigner, AUTHORITY_ATTACKER.raw);
+    adversarialKeys.set(noncanonicalSigner, AUTHORITY_SELLER.raw);
+    const adversarialDeps: EvidenceBoundBundleVerifierDeps = {
+      ...baseDeps,
+      resolvePublicKey: async (claim) => adversarialKeys.get(claim) ?? null,
+    };
+    for (const [name, authority] of [
+      ["SettlementEvidence alias-selected cross-key", crossKey],
+      ["noncanonical SettlementEvidence signer", noncanonical],
+    ] as const) {
+      const result = await verifyEvidenceBoundFaultBundle(authority, adversarialDeps);
+      expect(result.decision, `${name}: ${result.reason}`).toBe("rejected");
+      expect(result.reasonCode, name).toBe("exact-phase-mapping");
     }
   });
 
@@ -556,6 +977,33 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       }),
     ).toBe(false);
 
+    const standardRetry = corpus.executionAuthorities["transient-retry-exhausted"].bundle;
+    const retrySession = {
+      ...session,
+      jobId: standardRetry.jobId,
+      outcome: standardRetry.outcome as "failed-perm",
+      faultedParty: standardRetry.faultedParty as "seller",
+      listingRef: structuredClone(standardRetry.listingRef),
+      phaseSummary: structuredClone(standardRetry.phaseSummary),
+      settlementEvidence: structuredClone(standardRetry.settlementEvidence),
+    };
+    const admitted: unknown[] = [];
+    const retryCopies = await buildEvidenceBoundTwoSidedBundle(retrySession, {
+      validateEvidenceSet: async (candidate) => {
+        admitted.push(candidate);
+        return { decision: "verified" };
+      },
+    });
+    expect(retryCopies.sellerCopy?.phaseSummary).toEqual(
+      standardRetry.phaseSummary,
+    );
+    expect(retryCopies.sellerCopy?.phaseSummary[0]?.retryExhausted).toBe(true);
+    expect(admitted).toHaveLength(2);
+    expect(admitted.every(isEvidenceBoundFaultAttestationBundle)).toBe(true);
+    await expect(
+      buildTwoSidedBundle(retrySession as any),
+    ).rejects.toThrow(/valid FaultAttestationBundle/i);
+
     const keyByClaim = new Map([
       [buyerClaim, buyerRaw],
       [sellerClaim, sellerRaw],
@@ -587,6 +1035,7 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     expect((await verifyBundleCopy(replayedAsFab as any, "buyer", copyDeps)).valid).toBe(false);
 
     const fab = await buildTwoSidedBundle(session);
+    expect(Object.keys(fab).sort()).toEqual(["buyerCopy", "sellerCopy"]);
     const selection = await selectAuthoritativeBundleCopy(
       {
         buyer: { disposition: "present", bundle: copies.buyerCopy as any },
