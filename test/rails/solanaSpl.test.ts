@@ -402,6 +402,35 @@ describe("advanceSolanaSplSettlement", () => {
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
   });
 
+  test("lease loss during preflight cannot become a stale permanent outcome", async () => {
+    let clock = 1_000;
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        async preflight() {
+          clock = 1_101;
+          return preflight({ payerTokenBalanceBaseUnits: "0" });
+        },
+        prepareSignedTransfer,
+        broadcastRetained,
+      }),
+    }));
+
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-preflight-unavailable",
+    });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects invalid lease duration %s before durable or chain effects",
     async (leaseDurationMs) => {

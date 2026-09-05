@@ -763,6 +763,7 @@ export async function advanceSolanaSplSettlement(
   try {
     await fence.assertCurrent();
     preflight = await runPreflight(intent, fence);
+    await fence.assertCurrent();
   } catch {
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
