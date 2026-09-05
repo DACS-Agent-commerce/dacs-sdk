@@ -206,6 +206,18 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
+  // Capture operator authority before retaining or invoking caller callbacks.
+  // `Readonly` is shallow at runtime: rereading the caller-owned options object
+  // after an await would let a callback raise the consent ceiling mid-operation.
+  const workerId = options.workerId;
+  const maximumServiceAmount = options.maximumServiceAmount;
+  const resolvePreparation = options.resolvePreparation;
+  const authorizeIntent = options.authorizeIntent;
+  const authorizePreparedIntent = options.authorizePreparedIntent;
+  const confirmUnused = options.confirmUnused;
+  const effectLeaseDurationMs = options.effectLeaseDurationMs;
+  const settlementLeaseDurationMs = options.settlementLeaseDurationMs;
+  const retryDelayMs = options.retryDelayMs;
   const fetchImpl = options.fetchImpl;
   const transportPolicy = Object.freeze({
     maxResponseBytes: options.maxResponseBytes ??
@@ -223,15 +235,15 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     minimumConfirmations: options.minimumConfirmations,
     authorizationSearchFromBlock: options.authorizationSearchFromBlock,
     client: evm.runtime.readClient,
-    authorizeIntent: options.authorizeIntent,
-    ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
+    authorizeIntent,
+    ...(confirmUnused === undefined ? {} : { confirmUnused }),
     recoverDisclosure,
   });
   const transport = createX402BuyerPaidRequestTransport(transportOptions);
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
-    workerId: options.workerId,
+    workerId,
     settlementStore: commerceStores.x402Settlement,
     authorizationProvider,
     transport,
@@ -239,7 +251,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
       try {
-        preparation = await options.resolvePreparation({ operation, retained });
+        preparation = await resolvePreparation({ operation, retained });
       } catch (error) {
         if (error instanceof DacsLiveEffectInputControlError) throw error;
         throw new DacsLiveEffectInputControlError(
@@ -255,7 +267,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       }
       if (!amountWithinConsentedMaximum(
         preparation.authority.amount,
-        options.maximumServiceAmount,
+        maximumServiceAmount,
       )) {
         throw new DacsLiveEffectInputControlError(
           "operator-action",
@@ -297,19 +309,17 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           bindingHash: order.bindingHash,
           localBindingHash: order.localBindingHash,
           track: "payment" as const,
-          owner: options.workerId,
+          owner: workerId,
           generation: 0,
           idempotencyKey: "authorization-read-only",
           assertCurrent: async () => undefined,
         },
       } satisfies FixedPriceX402TrackOperationInput;
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
-      return options.authorizePreparedIntent({ operation, retained, intent });
+      return authorizePreparedIntent({ operation, retained, intent });
     },
-    ...(options.effectLeaseDurationMs === undefined
-      ? {} : { effectLeaseDurationMs: options.effectLeaseDurationMs }),
-    ...(options.settlementLeaseDurationMs === undefined
-      ? {} : { settlementLeaseDurationMs: options.settlementLeaseDurationMs }),
-    ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
+    ...(effectLeaseDurationMs === undefined ? {} : { effectLeaseDurationMs }),
+    ...(settlementLeaseDurationMs === undefined ? {} : { settlementLeaseDurationMs }),
+    ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
   });
 }

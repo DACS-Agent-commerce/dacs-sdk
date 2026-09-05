@@ -319,6 +319,55 @@ describe("buyer runtime x402 payment composition", () => {
     expect(createChallengeClient).toHaveBeenCalledOnce();
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
 
+    const changedAfterConstruction = {
+      context,
+      workerId: "buyer-worker",
+      maximumServiceAmount: "999",
+      minimumConfirmations: 1,
+      authorizationSearchFromBlock: 1,
+      resolvePreparation: () => preparation,
+      authorizeIntent: async ({ intent }: { intent: X402BuyerSettlementIntent }) => ({
+        disposition: "authorized" as const,
+        bindingHash: intent.bindingHash,
+      }),
+      authorizePreparedIntent: () => true,
+    };
+    const constructionSnapshotTrack = createDacsX402BuyerRuntimePaymentTrackV1(
+      changedAfterConstruction,
+    );
+    changedAfterConstruction.maximumServiceAmount = "1000";
+    await expect(constructionSnapshotTrack(operation())).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "x402-preparation-amount-exceeds-consented-maximum",
+    });
+
+    const changedDuringResolution = {
+      context,
+      workerId: "buyer-worker",
+      maximumServiceAmount: "999",
+      minimumConfirmations: 1,
+      authorizationSearchFromBlock: 1,
+      resolvePreparation: async () => {
+        changedDuringResolution.maximumServiceAmount = "1000";
+        await Promise.resolve();
+        return preparation;
+      },
+      authorizeIntent: async ({ intent }: { intent: X402BuyerSettlementIntent }) => ({
+        disposition: "authorized" as const,
+        bindingHash: intent.bindingHash,
+      }),
+      authorizePreparedIntent: () => true,
+    };
+    const resolutionSnapshotTrack = createDacsX402BuyerRuntimePaymentTrackV1(
+      changedDuringResolution,
+    );
+    await expect(resolutionSnapshotTrack(operation())).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "x402-preparation-amount-exceeds-consented-maximum",
+    });
+    expect(createChallengeClient).toHaveBeenCalledOnce();
+    expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
+
     const controlledTrack = createDacsX402BuyerRuntimePaymentTrackV1({
       context,
       workerId: "buyer-worker",
