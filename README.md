@@ -231,7 +231,17 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: { agentId: buyerId },
+  identity: {
+    agentId: buyerId,
+    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
+    // terminal bundle. A bare agent id is not an identity commitment.
+    bundle: buyerIdentityBundle,
+    // Presentation authentication is deliberately bundle-scoped so the same
+    // identity bundle can be reused. Session replay resistance is separate:
+    // its exact bundle hash is committed inside each signed Agreement.
+    verifyPresentation: ({ bundle, signedBytes }) =>
+      verifyBuyerIdentityPresentation(bundle, signedBytes),
+  },
   bindings: { index: bindings },
 });
 
@@ -321,6 +331,93 @@ const session = await buyer.runSession(resolved, {
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
+
+The public RatingRecord producers own the two permitted DACS-5 directions and
+do not accept a caller-selected rater or target role. They reject malformed
+RT-1 input before calling the wallet and return an isolated, signed wire record:
+
+```ts
+import {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  deriveReputationWithValidation,
+  isRatingRecord,
+  publishRatingRecordDurably,
+} from "@kynesyslabs/dacs";
+import { createSqliteRatingPublicationEffectStore } from "@kynesyslabs/dacs-node/sqlite";
+
+const buyerRating = await createBuyerRatingRecord(
+  {
+    jobId,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    value: 5,
+    dimensions: { timeliness: 5 },
+    ratedAt: Date.now(),
+  },
+  {
+    algorithm: "ed25519",
+    sign: signWithBuyerIdentityKey,
+  },
+);
+
+if (!isRatingRecord(buyerRating)) throw new Error("invalid RatingRecord");
+
+// The seller-owned direction uses the same session parties but necessarily
+// produces seller -> buyer with targetRole "buyer".
+const sellerRating = await createSellerRatingRecord(ratingInput, sellerSigner);
+
+const publishedRating = await publishRatingRecordDurably(
+  {
+    record: buyerRating,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    expectedOwner: buyerDemosWalletAddress,
+  },
+  {
+    effectStore: createSqliteRatingPublicationEffectStore(buyerDatabase),
+    workerId: processInstanceId,
+    leaseDurationMs: 30_000,
+    repository: buyerBoundArtifactRepository,
+    // Must authenticate both the rating signature and the exact rater -> Demos
+    // writer relationship from trusted IdentityBundle/session state.
+    authenticateRatingRecord,
+    // Must authenticate canonical anchor inclusion/finality and writer
+    // provenance; shape-only receipts are insufficient.
+    authenticateAnchor: authenticateRatingAnchor,
+  },
+);
+if (publishedRating.disposition !== "published") {
+  throw new Error(`rating publication is ${publishedRating.disposition}`);
+}
+
+const reputation = await deriveReputationWithValidation(
+  sellerPrimaryClaim,
+  candidateBundles,
+  reputationWindow,
+  {
+    validate: authenticateCompleteBundle,
+    resolvePartyRole: resolveAuthenticatedSessionRole,
+    copyAbsence: resolveAuthoritativeBundleAbsence,
+    // This boundary must authenticate the rating's SR-2 anchor/binding and
+    // dacs-rating:v1 signature. The SDK then independently rechecks its exact
+    // ref hash, wire shape, RT-1/RT-2, job, parties, direction, and target role.
+    resolveAndAuthenticateRating,
+  },
+);
+```
+
+The durable publisher writes the exact signed record to the actor-local effect
+journal before invoking SR-2. A lost response moves the effect to
+reconciliation; retrying reuses the same immutable bytes, logical address, and
+idempotency identity. It returns a `ratingRef` only after authenticated finality,
+role-owned binding visibility, and exact independently authenticated readback.
+The asynchronous validated reputation path deduplicates one authenticated
+rating per `(rater, jobId, targetRole)`, selects the latest `ratedAt`, and
+computes role-specific averages. Invalid and indeterminate ratings are excluded,
+never clamped. Rate-phase orchestration and terminal-bundle handoff remain
+separate lifecycle operations; an application must not treat a locally signed
+record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already
@@ -566,6 +663,16 @@ after the caller wires that complete evidence-set gate; completed publication
 still remains `audit-pending` until the bundle itself is finalized and
 independently resolvable under ST-11. EBFAB extended pointers require the same
 verified authority token; URL shape validation is not a deployment SSRF policy.
+
+For reputation that makes an explicit settlement-verification claim, use
+`deriveSettlementVerifiedReputation()` or its replayable counterpart. These
+emit the distinct DACS-5 v0.4 settlement-verified discriminators and never
+reinterpret the released `derivationVersion: "1"` type. The caller must supply
+independent bundle, SettlementEvidence, Agreement, role/binding, finality and
+SB-1..SB-3 authority. Any rejected or unavailable presented evidence excludes
+the whole job without assigning fresh fault. See the
+[settlement-verified reputation guide](./docs/settlement-verified-reputation.md)
+for the authority contract and replay boundary.
 
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's

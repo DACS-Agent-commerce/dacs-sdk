@@ -110,7 +110,34 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
   type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
+export {
+  DACS4_PAYMENT_PHASE_TYPES,
+  settlementEvidenceReferenceMultisetsEqual,
+  isSuccessfulDacs4PaymentProjection,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
+  isSettlementVerifiedReputationDerivation,
+  isReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerificationDisposition,
+  type ReputationRoleEvidence,
+  type ReputationBb6Context,
+  type ReputationAbsenceEvidenceRef,
+  type JobBoundResolutionContextEntry,
+  type SettlementVerifiedBundleInput,
+  type AuthenticatedSettlementBundle,
+  type AuthenticatedPresentedSettlement,
+  type AuthenticatedReputationAgreement,
+  type SettlementVerifiedRatingRecord,
+  type AuthenticatedReputationRating,
+  type CancellationAuthorityDisposition,
+  type SettlementVerifiedReputationDeps,
+  type SettlementVerifiedReputationDerivation,
+  type ReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerifiedReputationReplayResult,
+} from "./settlementVerifiedReputation.js";
 export {
   isDacs5SessionTransitionAllowed,
   dacs5BundleOutcomeForTerminalState,
@@ -359,6 +386,27 @@ export {
   type EvidenceBoundTwoSidedBundles,
   type EvidenceBoundBundleProducerDeps,
 } from "./twoSidedBundle.js";
+export {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  type CreateRatingRecordInput,
+  type RatingRecordSigner,
+} from "./ratingRecord.js";
+export {
+  publishRatingRecordDurably,
+  type DurablePublishedRating,
+  type DurableRatingPublicationDeps,
+  type DurableRatingPublicationInput,
+  type DurableRatingPublicationProgress,
+  type DurableRatingPublicationStage,
+  type RatingAnchorAuthenticationVerdict,
+  type RatingAuthenticationVerdict,
+  type RatingPublicationEffectClaim,
+  type RatingPublicationEffectLease,
+  type RatingPublicationEffectRecord,
+  type RatingPublicationEffectStore,
+  type RatingPublicationEffectWrite,
+} from "./durableRatingPublication.js";
 export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,

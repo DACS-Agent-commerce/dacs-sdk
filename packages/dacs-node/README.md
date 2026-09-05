@@ -15,7 +15,10 @@ import {
   createDacsHttpEnvelopeV1,
   validateDacsAgentConfig,
 } from "@kynesyslabs/dacs-node";
-import { openDacsNodeSqliteDatabase } from "@kynesyslabs/dacs-node/sqlite";
+import {
+  createSqliteRatingPublicationEffectStore,
+  openDacsNodeSqliteDatabase,
+} from "@kynesyslabs/dacs-node/sqlite";
 ```
 
 SQLite is an explicit subpath so importing the offline/root host surface never
@@ -114,6 +117,14 @@ performable again: the next worker receives a reconciliation claim. An
 indeterminate reconciliation remains reconciliation-only; only an authoritative
 absence proof permits another perform attempt with the original effect and
 idempotency identities.
+
+`createSqliteRatingPublicationEffectStore(database)` narrows that generic
+generation-fenced effect API to the SDK's DACS-5 RatingRecord publisher. It
+stores the complete public signed record as canonical effect input, rejects a
+different replacement under the same `(jobId, rater)` logical address, and
+retains the independently verified publication result for restart replay. The
+wrapper does not authenticate signatures, identity-to-wallet authority, anchor
+finality, or content readback; those remain mandatory publisher dependencies.
 
 Each effect's kind, effect ID, optional job ID, binding hash, input hash, and
 idempotency key are bound into both its row identity hash and its integrity-bound

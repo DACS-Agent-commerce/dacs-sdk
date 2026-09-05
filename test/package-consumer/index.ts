@@ -8,6 +8,9 @@ import {
   evaluateEvidenceBoundSettlementSet,
   verifyFaultBundleExtendedPointer,
   buildEvidenceBoundTwoSidedBundle,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
   type EvidenceBoundBundleAuthority,
   type EvidenceBoundBundleVerifierDeps,
   type ClaimQualificationDeps,
@@ -16,7 +19,16 @@ import {
   type ClaimQualificationInput,
   type RailAvailabilityAuthority,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
+  type RatingRecord,
+  type RatingPublicationEffectStore,
   type SubstrateAdapter,
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  isRatingRecord,
+  publishRatingRecordDurably,
+  deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -66,6 +78,27 @@ const verifyBundlePointer: typeof verifyFaultBundleExtendedPointer =
   verifyFaultBundleExtendedPointer;
 const buildEvidenceBound: typeof buildEvidenceBoundTwoSidedBundle =
   buildEvidenceBoundTwoSidedBundle;
+const deriveSettlementVerified: typeof deriveSettlementVerifiedReputation =
+  deriveSettlementVerifiedReputation;
+const deriveReplayableSettlementVerified:
+  typeof deriveReplayableSettlementVerifiedReputation =
+    deriveReplayableSettlementVerifiedReputation;
+const replaySettlementVerified: typeof replaySettlementVerifiedReputation =
+  replaySettlementVerifiedReputation;
+const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
+const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
+const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
+const durableRatingPublisher: typeof publishRatingRecordDurably =
+  publishRatingRecordDurably;
+const validatedReputationDeriver: typeof deriveReputationWithValidation =
+  deriveReputationWithValidation;
+declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
+const validatedReputationDeps: DeriveReputationValidationDeps = {
+  validate: async () => true,
+  trustBundlePartyRoles: true,
+  resolveAndAuthenticateRating: async () => authenticatedRatingResolution,
+};
+declare const ratingEffectStore: RatingPublicationEffectStore;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
@@ -99,6 +132,16 @@ void verifyEvidenceBound(ebfabAuthority, ebfabDeps);
 void evaluateExactSet;
 void verifyBundlePointer;
 void buildEvidenceBound;
+void deriveSettlementVerified;
+void deriveReplayableSettlementVerified;
+void replaySettlementVerified;
+void ratingValidator;
+void buyerRatingProducer;
+void sellerRatingProducer;
+void durableRatingPublisher;
+void validatedReputationDeriver;
+void validatedReputationDeps;
+void ratingEffectStore;
 void adapter;
 void journal;
 void result;
