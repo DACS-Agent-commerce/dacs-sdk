@@ -14,6 +14,8 @@ import {
   type EvidenceBoundBundleAuthority,
   type EvidenceBoundBundleVerifierDeps,
   type ClaimQualificationDeps,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
   type ClaimQualificationInput,
   type RailAvailabilityAuthority,
   type DeriveReputationDeps,
@@ -105,6 +107,8 @@ declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
+declare const qualificationMember: ClaimQualificationRequirement;
+declare const qualificationRequirement: ClaimQualificationBundleRequirement;
 declare const railAuthority: RailAvailabilityAuthority;
 declare const ebfabAuthority: EvidenceBoundBundleAuthority;
 declare const ebfabDeps: EvidenceBoundBundleVerifierDeps;
@@ -121,6 +125,8 @@ void priceAccepted;
 void canonical;
 void fulfilment;
 void qualify(qualificationInput, qualificationDeps);
+void qualificationMember;
+void qualificationRequirement;
 void selectRail({}, railAuthority);
 void verifyEvidenceBound(ebfabAuthority, ebfabDeps);
 void evaluateExactSet;

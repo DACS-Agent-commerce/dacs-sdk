@@ -260,6 +260,8 @@ export {
   type ClaimQualificationProductionAuthority,
   type ClaimQualificationReplayAuthority,
   type ClaimQualificationAuthority,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
   type ClaimQualificationInput,
   type ClaimQualificationRecipeRegistry,
   type ClaimQualificationAuthentication,
