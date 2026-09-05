@@ -364,7 +364,7 @@ jobs:
           node-version: "20.19.0"
 
       - name: Install source dependencies
-        run: npm ci
+        run: npm ci --no-audit
 
       - name: Pack exact three-package release set
         run: |
@@ -373,7 +373,7 @@ jobs:
           npm pack --pack-destination rail-smoke/packs
           npm pack --workspace @kynesyslabs/dacs-node --pack-destination rail-smoke/packs
           npm pack --workspace create-dacs-agent --pack-destination rail-smoke/packs
-          npm install --prefix rail-smoke/runner --ignore-scripts \
+          npm install --prefix rail-smoke/runner --no-audit --ignore-scripts \
             "$GITHUB_WORKSPACE"/rail-smoke/packs/create-dacs-agent-"$PACKAGE_VERSION".tgz
 
       - name: Generate, install and compile ${{ matrix.rail }} consumer
@@ -385,7 +385,7 @@ jobs:
             rail-smoke/generated --yes --mode live-demos \
             --profile dacs-sdk:fixed-price-x402:v1 --role buyer \
             --rails "$DACS_TEST_RAIL" --deploy docker --no-install
-          (cd rail-smoke/generated && npm install --no-save --ignore-scripts --omit=optional \
+          (cd rail-smoke/generated && npm install --no-audit --no-save --ignore-scripts --omit=optional \
             "$GITHUB_WORKSPACE"/rail-smoke/packs/kynesyslabs-dacs-"$PACKAGE_VERSION".tgz \
             "$GITHUB_WORKSPACE"/rail-smoke/packs/kynesyslabs-dacs-node-"$PACKAGE_VERSION".tgz \
             typescript@5.9.2 @types/node@20.19.1)

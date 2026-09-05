@@ -61,7 +61,10 @@ import {
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
 } from "../src/sqlite.js";
-import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
+import {
+  downgradeCoordinatorSchemaToV6,
+  downgradeHttpSchemaToV6,
+} from "./helpers/sqliteSchema.js";
 
 const BINDING_HASH = "a".repeat(64);
 const OTHER_BINDING_HASH = "b".repeat(64);
@@ -251,6 +254,9 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(current), 1);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;
@@ -305,6 +311,7 @@ describe("DACS Node SQLite durability foundation", () => {
         ON dacs_effect_history (effect_kind, effect_id, sequence);
       DROP TABLE dacs_coordinator_tracks;
       DROP TABLE dacs_coordinator_orders;
+      DELETE FROM dacs_migrations WHERE version = 8;
       DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
@@ -438,6 +445,9 @@ describe("DACS Node SQLite durability foundation", () => {
 
     const downgrade = raw.transaction(() => {
       raw.exec(`
+        DROP TABLE dacs_http_lifecycle;
+        DROP TABLE dacs_http_usage;
+        DROP TABLE dacs_http_policy;
         DROP TABLE dacs_http_inbox_history;
         DROP TABLE dacs_http_outbox_history;
         DROP TABLE dacs_http_inbox;
@@ -559,6 +569,7 @@ describe("DACS Node SQLite durability foundation", () => {
             profile, role, track, eligible, state, next_attempt_at,
             lease_expires_at, job_id
           );
+        DELETE FROM dacs_migrations WHERE version = 8;
         DELETE FROM dacs_migrations WHERE version = 7;
         DELETE FROM dacs_migrations WHERE version = 6;
         DELETE FROM dacs_migrations WHERE version = 5;
@@ -1411,7 +1422,7 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(raw.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
       .toEqual([
         { version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 },
-        { version: 6 }, { version: 7 },
+        { version: 6 }, { version: 7 }, { version: 8 },
       ]);
     raw.close();
   });
@@ -1571,6 +1582,9 @@ describe("DACS Node SQLite durability foundation", () => {
       retainedOrder.updated_at,
     );
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;
@@ -1579,6 +1593,7 @@ describe("DACS Node SQLite durability foundation", () => {
       DROP TABLE dacs_payment_evidence_history;
       DROP TABLE dacs_payment_evidence_reservations;
       DROP TABLE dacs_payment_evidence_handshakes;
+      DELETE FROM dacs_migrations WHERE version = 8;
       DELETE FROM dacs_migrations WHERE version = 7;
       DELETE FROM dacs_migrations WHERE version = 6;
       DELETE FROM dacs_migrations WHERE version = 5;
@@ -2425,7 +2440,9 @@ describe("DACS Node SQLite durability foundation", () => {
 
     const raw = new BetterSqlite3(databasePath);
     downgradeCoordinatorSchemaToV6(raw);
+    downgradeHttpSchemaToV6(raw);
     raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 8;
       DELETE FROM dacs_migrations WHERE version = 7;
       UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
       PRAGMA user_version = 6;
@@ -2443,6 +2460,52 @@ describe("DACS Node SQLite durability foundation", () => {
       order: payDem,
       ...payDemOrderBinding(payDem),
     })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
+  });
+
+  it("backs up and migrates an authenticated HTTP v7 database to native DEM v8", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const initial = await open(databasePath, liveOptions);
+    const x402 = liveOrder();
+    expect(await initial.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created" });
+    initial.checkpoint();
+    initial.close();
+    databases.splice(databases.indexOf(initial), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 8;
+      UPDATE dacs_store_metadata SET schema_version = 7 WHERE singleton = 1;
+      PRAGMA user_version = 7;
+    `);
+    raw.close();
+
+    const migrated = await open(databasePath, liveOptions);
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v7-")))
+      .toHaveLength(1);
+    expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
+    const payDem = payDemOrder(OTHER_JOB_ID);
+    expect(await migrated.createPayDemCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: payDem,
+      ...payDemOrderBinding(payDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
+    expect(migrated.diagnostics().httpTransport).toMatchObject({
+      policyBound: false,
+      retainedRows: 0,
+    });
   });
 
   it("enforces live DACS-5 terminal attribution and irreversible-effect rules", async () => {

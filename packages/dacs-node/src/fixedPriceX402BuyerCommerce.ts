@@ -96,7 +96,14 @@ async function verifyPeerAnchor(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   logicalAddress: string,
   expectedHash: string | undefined,
-): Promise<Readonly<Record<string, unknown>> | null> {
+): Promise<Readonly<{
+  artifact: Readonly<Record<string, unknown>>;
+  attestationRef: Readonly<{
+    anchor: Readonly<{ kind: "storage-program"; locator: string }>;
+    contentHash: string;
+    signer: string;
+  }>;
+}> | null> {
   const resolved = await context.demos.adapter.resolveAnchorByName(
     logicalAddress,
     owner(context.peerAuthority),
@@ -118,7 +125,14 @@ async function verifyPeerAnchor(
       receipt.observationDisposition === "established" &&
       (receipt.state === "included" || receipt.state === "finalized") &&
       await context.demos.adapter.verifyDemosAnchorReceipt(receipt) === true
-    ? artifact : null;
+    ? Object.freeze({
+        artifact,
+        attestationRef: Object.freeze({
+          anchor: Object.freeze({ kind: "storage-program" as const, locator: logicalAddress }),
+          contentHash: hash,
+          signer: context.peerAuthority,
+        }),
+      }) : null;
 }
 
 /**
@@ -199,10 +213,12 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           attestationRef: {
             anchor: { kind: "storage-program", locator: request.logicalAddress },
             contentHash: request.evidenceHash,
+            signer: context.peerAuthority,
           },
           paymentAddress: {
             railId: loaded.record.protocol.rail.railId,
             phaseIndex: 2,
+            resolved: false,
           },
           result: { ok: true, txRefs: [captured] },
         }, verifier());
@@ -250,12 +266,13 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           `dacs4:delivery-evidence:${operation.order.jobId}`;
         const deliverableLogicalAddress =
           `dacs4:deliverable:${operation.order.jobId}`;
-        const evidenceRaw = await verifyPeerAnchor(
+        const evidenceAnchor = await verifyPeerAnchor(
           context,
           evidenceLogicalAddress,
           undefined,
         );
-        if (evidenceRaw === null) return "indeterminate" as const;
+        if (evidenceAnchor === null) return "indeterminate" as const;
+        const evidenceRaw = evidenceAnchor.artifact;
         if (!isSettlementEvidence(evidenceRaw) ||
             evidenceRaw.jobId !== operation.order.jobId ||
             evidenceRaw.phase !== "deliver-storage-program" ||
@@ -267,10 +284,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
           agreement: price,
-          attestationRef: {
-            anchor: { kind: "storage-program", locator: evidenceLogicalAddress },
-            contentHash: contentHash(evidenceRaw),
-          },
+          attestationRef: evidenceAnchor.attestationRef,
           result: { ok: true },
           expectedAnchorLocator: deliverableLogicalAddress,
         }, verifier());

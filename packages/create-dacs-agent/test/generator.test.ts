@@ -257,7 +257,7 @@ describe("create-dacs-agent", () => {
       releaseMetadataVersion: 1,
       standardRevision: "662be1d4899a2cadf327fe2d5523e93a80334e5f",
       configSchemaVersion: 1,
-      sqliteSchemaVersion: 7,
+      sqliteSchemaVersion: 8,
       supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
       breakingConfigurationChanges: [],
     });
@@ -425,6 +425,7 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain("funded doctor adapter is not configured");
     expect(combined).toContain("dacs-generated-upgrade-check/v1");
     expect(combined).toContain("inspectDacsNodeSqliteUpgradeSafetyV1");
+    expect(combined.match(/httpTransport: Object\.freeze/g)).toHaveLength(2);
     expect(combined).toContain("registry.npmjs.org");
     expect(combined).toContain("automatic-upgrade-not-supported");
     expect(combined).not.toContain('availableVersion: "not-queried"');

@@ -781,7 +781,7 @@ describe("coordinator x402 buyer payment track", () => {
       status: "indeterminate",
     });
     forgeTerminal = true;
-    await new Promise((resolve) => setTimeout(resolve, 3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await expect(track(operationInput())).resolves.toMatchObject({
       status: "indeterminate",
       reasonCode: "x402-chain-read-unavailable",

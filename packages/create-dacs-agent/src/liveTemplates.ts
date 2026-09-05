@@ -15,7 +15,7 @@ const SDK_VERSION = "0.1.0-alpha.0";
 const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "662be1d4899a2cadf327fe2d5523e93a80334e5f";
 const CONFIG_SCHEMA_VERSION = 1;
-const SQLITE_SCHEMA_VERSION = 7;
+const SQLITE_SCHEMA_VERSION = 8;
 
 function packageJson(options: LiveProjectTemplateOptions): string {
   const x402 = options.rails !== "pay-dem";
@@ -2847,8 +2847,9 @@ export async function checkGeneratedUpgradeV1(
   const storesSafe = storeReports.every((store) => store.safe);
   const migrationSupported = availableMetadata !== undefined && storeReports.every((store) =>
     store.schemaVersion !== null &&
-    availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion) &&
-    store.schemaVersion <= availableMetadata.sqliteSchemaVersion);
+    (store.schemaVersion === availableMetadata.sqliteSchemaVersion ||
+      (store.schemaVersion < availableMetadata.sqliteSchemaVersion &&
+        availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion))));
   const standardChanged = availableMetadata !== undefined &&
     availableMetadata.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION;
   const configChanged = availableMetadata !== undefined &&
@@ -4456,6 +4457,19 @@ test("upgrade check proves compatible stores without writing", async () => {
         synchronous: "full" as const,
         quickCheck: "ok" as const,
         filesystemMagic: 1,
+        httpTransport: Object.freeze({
+          policyBound: true,
+          retainedRows: 0,
+          retainedBytes: 0,
+          reservedRows: 0,
+          reservedBytes: 0,
+          rejectedAdmissions: 0,
+          operatorActionRecords: 0,
+          purgeableRecords: 0,
+          purgedRecords: 0,
+          purgedRows: 0,
+          purgedBytes: 0,
+        }),
       }),
       safety: Object.freeze({
         safe: true,
@@ -4497,6 +4511,19 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
         synchronous: "full" as const,
         quickCheck: "ok" as const,
         filesystemMagic: 1,
+        httpTransport: Object.freeze({
+          policyBound: true,
+          retainedRows: 0,
+          retainedBytes: 0,
+          reservedRows: 0,
+          reservedBytes: 0,
+          rejectedAdmissions: 0,
+          operatorActionRecords: 0,
+          purgeableRecords: 0,
+          purgedRecords: 0,
+          purgedRows: 0,
+          purgedBytes: 0,
+        }),
       }),
       safety: Object.freeze({
         safe: role === "seller",

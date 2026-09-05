@@ -235,6 +235,8 @@ function captureInbox(source: DacsHttpInboxStoreV1): DacsHttpInboxStoreV1 {
     list: bindMethod(source.list, source),
     recordDisposition: bindMethod(source.recordDisposition, source),
     extendRetention: bindMethod(source.extendRetention, source),
+    diagnostics: bindMethod(source.diagnostics, source),
+    purge: bindMethod(source.purge, source),
   });
 }
 
@@ -254,6 +256,8 @@ function captureOutbox(source: DacsHttpOutboxStoreV1): DacsHttpOutboxStoreV1 {
     requireOperatorAction: bindMethod(source.requireOperatorAction, source),
     acknowledge: bindMethod(source.acknowledge, source),
     extendRetention: bindMethod(source.extendRetention, source),
+    diagnostics: bindMethod(source.diagnostics, source),
+    purge: bindMethod(source.purge, source),
   });
 }
 
@@ -964,12 +968,12 @@ export function createDacsHttpMessageClientV1(
       envelope: verified.envelope,
       retainUntil: safeRetentionDeadline(now, retentionMs),
     });
-    if (retained.status === "conflict") {
+    if (retained.status === "conflict" || retained.record === undefined) {
       throw new DacsHttpTransportError("outbox-envelope-conflict", false);
     }
     return Object.freeze({
       status: retained.status,
-      envelopeId: verified.envelope.envelopeId,
+      envelopeId: retained.record.envelope.envelopeId,
     });
   };
 
