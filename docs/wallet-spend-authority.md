@@ -64,6 +64,16 @@ accepts an exact finalized settlement or authoritative absence proof.
 - treats missing state after initialization as corruption, never a fresh
   budget.
 
+Current writers publish a fully written `0600` file at the canonical lock path
+with an exclusive hard link. This is intentionally incompatible in a
+fail-closed direction with the earlier directory-lock algorithm: an old writer
+cannot create, inspect, or reclaim through the file, and a current writer will
+not move or delete a legacy lock directory or `.lock.reclaim.*` quarantine.
+Upgrading a directory that contains either legacy coordination form therefore
+requires all old writers to be stopped and the abandoned coordination artifact
+to be inspected and removed by the operator before current writers start. Do
+not run the old and current lock algorithms concurrently.
+
 The integrity key must be loaded from the host secret provider and must not be
 stored inside the state directory. Multi-host wallets need a transactional
 shared implementation of `WalletSpendStateStore`; host-local filesystem locks
