@@ -961,7 +961,11 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
         buyerClaim,
         [copies.buyerCopy!],
         { windowStart: 0, windowEnd: 2, computedAt: 2 },
-        { trustBundles: true, copyAbsence: () => "absent" },
+        {
+          trustBundles: true,
+          trustBundlePartyRoles: true,
+          copyAbsence: () => "absent",
+        },
       ).bundleCount,
     ).toBe(0);
     expect(
