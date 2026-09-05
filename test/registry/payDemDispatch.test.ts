@@ -669,6 +669,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         recipient: "0x2222222222222222222222222222222222222222",
       },
       fetchImpl: firstFetch,
+      x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
     };
 
@@ -682,6 +683,46 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(firstFetch).toHaveBeenCalledTimes(1);
     expect(secondFetch).not.toHaveBeenCalled();
     expect(capturedOptions.rpcUrl).toBe("https://rpc.example");
+    expect(capturedOptions.transportPolicy).toEqual({ mode: "insecure-test" });
+  });
+
+  test("admits local x402 registry resources only under explicit insecure-test transport authority", async () => {
+    const definition = x402Definition();
+    definition.network = {
+      kind: "x402-resource",
+      resourceBaseUrl: "http://127.0.0.1:8787",
+    };
+    const descriptor = await authenticatedDefinition(definition);
+    const fetchImpl = vi.fn(async () => new Response("local")) as unknown as typeof fetch;
+    mocks.createX402Rail.mockResolvedValue({});
+    mocks.x402Settle.mockReturnValue(vi.fn());
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: "0x" + "11".repeat(32),
+      payment: {
+        url: "http://127.0.0.1:8787/pay",
+        network: "eip155:84532",
+        recipient: "0x2222222222222222222222222222222222222222",
+      },
+      fetchImpl,
+      x402FetchMode: "insecure-test",
+      rpcUrl: "https://rpc.example",
+    })).resolves.toEqual(expect.any(Function));
+    const captured = mocks.createX402Rail.mock.calls[0]![0];
+    expect(captured.transportPolicy).toEqual({ mode: "insecure-test" });
+    await captured.fetchImpl!("http://127.0.0.1:8787/pay");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+
+    mocks.createX402Rail.mockClear();
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: "0x" + "11".repeat(32),
+      payment: {
+        url: "http://127.0.0.1:8787/pay",
+        network: "eip155:84532",
+        recipient: "0x2222222222222222222222222222222222222222",
+      },
+      rpcUrl: "https://rpc.example",
+    })).rejects.toThrow(/public HTTPS URLs in production/);
+    expect(mocks.createX402Rail).not.toHaveBeenCalled();
   });
 
   test("captures the availability authority before awaiting its decision", async () => {
