@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   combineWalletSpendEffectFenceV1,
   settlementKey,
@@ -5,9 +7,12 @@ import {
   type PayDemRail,
   type PayDemReconciledSettlement,
   type PayDemSettlementRecoveryContext,
+  type DemosTransferObservation,
   type SettleResult,
   type SettlementEffectFence,
+  type WalletSpendAuthorityDependenciesV1,
   type WalletSpendAuthorityV1,
+  type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
   type WalletSpendSettlementObservationV1,
 } from "@kynesyslabs/dacs";
@@ -35,6 +40,57 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 const ADDRESS_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^[1-9][0-9]*$/;
 const PREPARED_CHECKPOINT = "pay-dem-prepared-transfer";
+
+function exactOwnRecoveryData(
+  value: unknown,
+  required: readonly string[],
+): Readonly<Record<string, unknown>> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== required.length ||
+        keys.some((key) => typeof key !== "string" || !required.includes(key)) ||
+        required.some((key) => !Object.hasOwn(descriptors, key))) return null;
+    const captured: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return null;
+      }
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return null;
+  }
+}
+
+function bindStableRecoveryCapability<T>(source: unknown, name: string): T | null {
+  if (source === null || (typeof source !== "object" && typeof source !== "function") ||
+      nodeTypes.isProxy(source)) return null;
+  try {
+    let cursor: object | null = source as object;
+    while (cursor !== null) {
+      if (nodeTypes.isProxy(cursor)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      if (descriptor) {
+        if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
+            nodeTypes.isProxy(descriptor.value)) return null;
+        const capability = descriptor.value as (...args: unknown[]) => unknown;
+        return Object.freeze((...args: unknown[]) =>
+          Reflect.apply(capability, source, args)) as T;
+      }
+      cursor = Object.getPrototypeOf(cursor) as object | null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 export interface DacsPayDemBuyerPaymentAuthorityV1 {
   authorityVersion: "1";
@@ -114,6 +170,13 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
   }>): Promise<void> | void;
   effectLeaseDurationMs?: number;
   retryDelayMs?: number;
+}
+
+export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
+  /** Integrity-checked generated buyer effect/checkpoint store. */
+  database: DacsNodeSqliteDatabase;
+  /** Finalized Demos transfer observer for the exact prepared transaction hash. */
+  observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
 export class DacsPayDemBuyerPaymentError extends Error {
@@ -316,6 +379,114 @@ function walletSettlement(
         : [Object.freeze({ asset: "DEM", purpose: "network-fee" as const,
             amount: settlement.networkFeeOs })]),
     ]),
+  });
+}
+
+function generatedBuyerPaymentEffectId(
+  reservation: Readonly<WalletSpendReservationV1>,
+): string {
+  return sha256Hex(canonicalize({
+    localBindingHash: reservation.settlementBindingHash,
+    role: "buyer",
+    track: "payment",
+    roleLocalJob: `dacs-live:buyer:payment:${reservation.jobId}`,
+  }));
+}
+
+/**
+ * Authenticate generated native-DEM wallet recovery against both finalized
+ * chain facts and the pre-broadcast checkpoint's exact confirmed fee debit.
+ * Missing checkpoints or chain reads are not converted into invented fees.
+ */
+export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
+  options: Readonly<DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1>,
+): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
+  const captured = exactOwnRecoveryData(options, [
+    "database", "observeDemosTransfer",
+  ]);
+  const loadEffectInput =
+    bindStableRecoveryCapability<DacsNodeSqliteDatabase["loadEffectInput"]>(
+      captured?.database,
+      "loadEffectInput",
+    );
+  const loadEffectCheckpoint =
+    bindStableRecoveryCapability<DacsNodeSqliteDatabase["loadEffectCheckpoint"]>(
+      captured?.database,
+      "loadEffectCheckpoint",
+    );
+  const observeDemosTransfer =
+    bindStableRecoveryCapability<
+      DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1["observeDemosTransfer"]
+    >(options, "observeDemosTransfer");
+  if (!captured || !loadEffectInput || !loadEffectCheckpoint ||
+      !observeDemosTransfer) {
+    throw new TypeError("pay-dem wallet recovery authenticator options are invalid");
+  }
+  const database = Object.freeze({ loadEffectInput, loadEffectCheckpoint });
+
+  return Object.freeze(async (
+    reservation: Readonly<WalletSpendReservationV1>,
+    observation: Readonly<WalletSpendRecoveryObservationV1>,
+  ): Promise<boolean> => {
+    try {
+      const effectId = generatedBuyerPaymentEffectId(reservation);
+      const rawPayment = database.loadEffectInput("payment", effectId);
+      if (rawPayment === undefined) return false;
+      const payment = capturePaymentInput(rawPayment);
+      if (canonicalize(walletReservation(payment)) !== canonicalize(reservation)) {
+        return false;
+      }
+      const checkpoint = database.loadEffectCheckpoint(
+        "payment",
+        effectId,
+        PREPARED_CHECKPOINT,
+      );
+      if (observation.disposition !== "settled") {
+        const absenceProofHash = sha256Hex(canonicalize({
+          disposition: "no-prepared-transfer",
+          settlementKey: payment.settlementKey,
+          orderLocalBindingHash: payment.orderLocalBindingHash,
+        }));
+        return checkpoint === undefined &&
+          observation.evidenceHash === absenceProofHash;
+      }
+      if (checkpoint === undefined) return false;
+      const prepared = capturePrepared(checkpoint.value, payment);
+      if (prepared.txHash !== observation.evidenceHash ||
+          prepared.confirmedTotalDebitOs === undefined) {
+        return false;
+      }
+      const chain = await observeDemosTransfer(prepared.txHash);
+      if (chain.status !== "included" || chain.txHash !== prepared.txHash ||
+          chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
+          chain.amountOs !== payment.amountOs) {
+        return false;
+      }
+      const networkFeeOs = (
+        BigInt(prepared.confirmedTotalDebitOs) - BigInt(payment.amountOs)
+      ).toString();
+      const expected: WalletSpendSettlementObservationV1 = Object.freeze({
+        disposition: "settled",
+        evidenceHash: prepared.txHash,
+        debits: Object.freeze([
+          Object.freeze({
+            asset: "DEM",
+            purpose: "service" as const,
+            amount: payment.amountOs,
+          }),
+          ...(BigInt(payment.maxTotalDebitOs) === BigInt(payment.amountOs)
+            ? []
+            : [Object.freeze({
+                asset: "DEM",
+                purpose: "network-fee" as const,
+                amount: networkFeeOs,
+              })]),
+        ]),
+      });
+      return canonicalize(expected) === canonicalize(observation);
+    } catch {
+      return false;
+    }
   });
 }
 

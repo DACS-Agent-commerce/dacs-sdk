@@ -311,6 +311,7 @@ export async function createFsSessionStore(
   ): Promise<void> {
     const gatePath = mutationGatePath(jobId);
     const observed = await readMutationGateOwner(gatePath);
+    let releasedCanonical = false;
     if (observed?.pid === owner.pid && observed.token === owner.token) {
       const quarantine = mutationQuarantinePath(jobId);
       try {
@@ -318,9 +319,28 @@ export async function createFsSessionStore(
         const movedOwner = await readMutationGateOwner(quarantine);
         if (movedOwner?.pid === owner.pid && movedOwner.token === owner.token) {
           await removeIfExists(quarantine);
+          releasedCanonical = true;
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    // A legacy reclaimer may already have moved our directory-form gate. Only
+    // remove a unique quarantine carrying this exact owner token; never touch a
+    // successor at the canonical path.
+    if (!releasedCanonical) {
+      const prefix = mutationQuarantinePrefix(jobId);
+      for (const name of (await readdir(locksDir)).filter(
+        (item) => item.startsWith(prefix) && item.endsWith(".quarantine"),
+      )) {
+        const path = join(locksDir, name);
+        const quarantinedOwner = await readMutationGateOwner(path);
+        if (
+          quarantinedOwner?.pid === owner.pid &&
+          quarantinedOwner.token === owner.token
+        ) {
+          await removeIfExists(path);
+        }
       }
     }
   }
@@ -338,6 +358,15 @@ export async function createFsSessionStore(
         throw error;
       }
       await quarantineStaleMutationGate(jobId);
+      return false;
+    }
+    // A preceding SDK version can move the directory-form gate after our
+    // pre-publication scan and before it observes the gate's live owner. Do not
+    // enter the critical section if that legacy recovery left any live
+    // quarantine: release whichever location still contains our token and
+    // retry behind the authoritative holder.
+    if ((await reclaimMutationQuarantines(jobId)).length > 0) {
+      await releaseMutationGate(jobId, owner);
       return false;
     }
     return true;
