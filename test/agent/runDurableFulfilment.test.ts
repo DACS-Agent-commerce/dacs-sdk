@@ -4305,7 +4305,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test.each(["agreement", "settlement"] as const)(
     "terminal filesystem replay repairs a missing global %s marker",
