@@ -43,6 +43,7 @@ describe.skipIf(!haveVectors)("§14 conformance — reputation (§10.5)", () => 
     },
     {
       trustBundles: true,
+      trustBundlePartyRoles: true,
       // Ordinary absence from this fixture is not authoritative SR-2 absence
       // evidence. Guard (iv) therefore excludes every one-copy record.
       copyAbsence: () => "indeterminate",
