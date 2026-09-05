@@ -549,4 +549,145 @@ describe("durable two-agent RFQ lifecycle", () => {
     const status = await sellerClient.getStatus(JOB_ID);
     expect(status.status === "ok" && status.record.agreement).toBeUndefined();
   });
+
+  test("owns a proposal before the first asynchronous store read", async () => {
+    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    let pauseLoads = false;
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const store = {
+      async load(role: "buyer" | "seller", jobId: string) {
+        if (pauseLoads) await loadGate;
+        return base.load(role, jobId);
+      },
+      create: base.create.bind(base),
+      compareAndSwap: base.compareAndSwap.bind(base),
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await client.open(openInput());
+    pauseLoads = true;
+    const proposal = {
+      rfqProposalVersion: "1" as const,
+      price: { amount: "9", currency: "USDC" },
+    };
+    const pending = client.sendOffer(JOB_ID, proposal);
+    proposal.price.amount = "50";
+    releaseLoad();
+    await expect(pending).resolves.toMatchObject({ status: "ready" });
+    const status = await client.getStatus(JOB_ID);
+    expect(
+      status.status === "ok" &&
+        status.record.session.standingProposal?.price.amount,
+    ).toBe("9");
+  });
+
+  test("captures receiver-bound dependencies once at client construction", async () => {
+    const baseStore = createInMemoryDurableRfqLifecycleStore<string>();
+    const store = {
+      backing: baseStore,
+      load(role: "buyer" | "seller", jobId: string) {
+        return this.backing.load(role, jobId);
+      },
+      create(record: Parameters<typeof baseStore.create>[0]) {
+        return this.backing.create(record);
+      },
+      compareAndSwap(
+        role: "buyer" | "seller",
+        jobId: string,
+        revision: number,
+        record: Parameters<typeof baseStore.compareAndSwap>[3],
+      ) {
+        return this.backing.compareAndSwap(role, jobId, revision, record);
+      },
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const options = {
+      role: "buyer" as const,
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    };
+    const client = createDurableRfqLifecycleClient(options);
+    store.load = () => {
+      throw new Error("swapped load");
+    };
+    options.signChannelMessage = () => {
+      throw new Error("swapped signer");
+    };
+    options.nowMs = () => Number.NaN;
+    network.transport.publish = async () => ({
+      disposition: "rejected",
+      reason: "swapped transport",
+    });
+    await expect(client.open(openInput())).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(
+      client.sendOffer(JOB_ID, {
+        rfqProposalVersion: "1",
+        price: { amount: "9", currency: "USDC" },
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(network.pending(SELLER)).toBe(1);
+  });
+
+  test("rejects malformed store success and distinct reopen authority", async () => {
+    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    let malformedLoad = false;
+    const store = {
+      load(role: "buyer" | "seller", jobId: string) {
+        return malformedLoad
+          ? ({ status: "ok", record: {} } as never)
+          : base.load(role, jobId);
+      },
+      create: base.create.bind(base),
+      compareAndSwap: base.compareAndSwap.bind(base),
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await expect(client.open(openInput())).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(
+      client.open({
+        ...openInput(),
+        selectedRail: {
+          railId: "future-authority",
+          railVersion: 1,
+        },
+      }),
+    ).resolves.toMatchObject({ status: "conflict" });
+    malformedLoad = true;
+    await expect(client.getStatus(JOB_ID)).resolves.toMatchObject({
+      status: "corrupt",
+    });
+  });
 });

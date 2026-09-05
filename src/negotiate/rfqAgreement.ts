@@ -9,6 +9,7 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import type {
   AgreementArtifact,
   AgreementParty,
@@ -279,8 +280,11 @@ export function deriveRfqAgreement(
   const buyer = agreementParty("buyer", input.buyer);
   const seller = agreementParty("seller", input.seller);
   if (
-    buyer.primaryClaim === seller.primaryClaim ||
-    seller.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
+    !sameCanonicalClaimIdentity(
+      seller.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError("RFQ agreement parties do not match Listing roles");
   }

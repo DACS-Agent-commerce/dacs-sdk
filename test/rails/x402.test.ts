@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
@@ -11,6 +11,7 @@ import {
   x402SettleCore,
   type X402ClientLike,
   type X402PaymentRequired,
+  type X402PaidEffectFence,
   type X402Rail,
   type X402SettleCoreDeps,
   type X402SettleParams,
@@ -92,6 +93,7 @@ describe("DACS EIP-3009 session binding", () => {
       evmPrivateKey: TEST_EVM_KEY,
       requireSessionBinding: true,
       fetchImpl: fakeFetch(),
+      transportPolicy: { mode: "insecure-test" },
       rpcUrl: "https://rpc.example",
       finalityBlocks: 2,
     });
@@ -102,6 +104,15 @@ describe("DACS EIP-3009 session binding", () => {
       amount: "1000000",
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     })).rejects.toThrow(/jobId\/phaseIndex/);
+  });
+
+  test("refuses a fetch override without explicit insecure-test authority", async () => {
+    await expect(createX402Rail({
+      evmPrivateKey: TEST_EVM_KEY,
+      fetchImpl: fakeFetch(),
+      rpcUrl: "https://rpc.example",
+      finalityBlocks: 2,
+    })).rejects.toThrow(/explicit insecure-test mode/);
   });
 });
 
@@ -231,7 +242,7 @@ function fakeFetch(opts: {
 
 function coreDeps(
   client: X402ClientLike,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch | undefined,
   authenticateTransfer: X402SettleCoreDeps["authenticateTransfer"] = async () => ({
     chainId: 84532,
     transactionHash: "a".repeat(64),
@@ -243,7 +254,9 @@ function coreDeps(
 ) {
   return {
     client,
-    fetchImpl,
+    ...(fetchImpl === undefined
+      ? {}
+      : { fetchImpl, transportPolicy: { mode: "insecure-test" as const } }),
     payerAddress: PAYER,
     assertFinalityContext: async () => {},
     authenticateTransfer,
@@ -307,10 +320,6 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       params,
       coreDeps(client, fetchImpl),
       {
-        owner: "worker",
-        generation: 2,
-        settlementKey: "x402:job:0",
-        bindingHash: "a".repeat(64),
         async assertCurrent() {
           fenceChecks += 1;
           throw new Error("stale effect generation");
@@ -319,6 +328,76 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     )).rejects.toThrow(/stale effect generation/);
     expect(fenceChecks).toBe(1);
     expect(paidRequests).toBe(0);
+  });
+
+  test("refuses paid redirects without forwarding the payment bearer", async () => {
+    let calls = 0;
+    let paidInit: RequestInit | undefined;
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ x402Version: 2 }), { status: 402 });
+      }
+      if (calls === 2) {
+        paidInit = init;
+        return new Response(null, {
+          status: 307,
+          headers: { location: "https://attacker.example/collect" },
+        });
+      }
+      throw new Error("payment bearer followed a redirect");
+    }) as typeof fetch;
+    const client = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+
+    await expect(x402SettleCore(params, coreDeps(client, fetchImpl)))
+      .rejects.toThrow("x402-redirect-refused");
+    expect(calls).toBe(2);
+    expect(paidInit?.redirect).toBe("error");
+    expect(paidInit?.credentials).toBe("omit");
+    expect(new Headers(paidInit?.headers).get("X-PAYMENT")).toBe("signed");
+  });
+
+  test("default core transport rejects private DNS before payment signing", async () => {
+    let signs = 0;
+    const base = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    const client: X402ClientLike = {
+      ...base,
+      async createPaymentPayload(paymentRequired) {
+        signs += 1;
+        return base.createPaymentPayload(paymentRequired);
+      },
+    };
+    let requests = 0;
+    await expect(x402SettleCore(params, {
+      ...coreDeps(client, undefined),
+      publicHttpsDependencies: {
+        resolveHost: async () => ["127.0.0.1"],
+        request: async () => {
+          requests += 1;
+          return new Response("must not connect");
+        },
+      },
+    })).rejects.toThrow("x402-outbound-address-unsafe");
+    expect(signs).toBe(0);
+    expect(requests).toBe(0);
+  });
+
+  test("core never selects a fetch override without explicit test authority", async () => {
+    const fetchImpl = vi.fn(async () => new Response("must not run"));
+    await expect(x402SettleCore(params, {
+      client: fakeClient([]),
+      fetchImpl: fetchImpl as typeof fetch,
+      payerAddress: PAYER,
+      assertFinalityContext: async () => undefined,
+      authenticateTransfer: async () => {
+        throw new Error("must not authenticate");
+      },
+    })).rejects.toThrow("x402-fetch-override-requires-insecure-mode");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("canonicalizes the durable transaction identity from authenticated chain data", async () => {
@@ -373,7 +452,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
   });
 
   test("pins negotiated params before any async finality or HTTP callback", async () => {
-    const entryHeaders = new Headers({ "X-Entry-Policy": "original" });
+    const entryHeaders = new Headers({ accept: "application/original+json" });
     const mutable: X402SettleParams = {
       ...params,
       requestInit: { headers: entryHeaders },
@@ -386,7 +465,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     ) => {
       requests.push({
         url: String(input),
-        policy: new Headers(init?.headers).get("X-Entry-Policy"),
+        policy: new Headers(init?.headers).get("accept"),
       });
       return underlyingFetch(input, init);
     }) as typeof fetch;
@@ -407,7 +486,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
         };
       }),
       assertFinalityContext: async () => {
-        entryHeaders.set("X-Entry-Policy", "mutated");
+        entryHeaders.set("accept", "application/mutated+json");
         Object.assign(mutable, {
           paywallUrl: "https://attacker.example/deliver",
           network: "eip155:8453",
@@ -415,14 +494,14 @@ describe("x402SettleCore (buyer 402-dance)", () => {
           amount: "1",
           asset: "0x4444444444444444444444444444444444444444",
           finalityBlocks: 1,
-          requestInit: { headers: { "X-Entry-Policy": "replacement" } },
+          requestInit: { headers: { accept: "application/replacement+json" } },
         });
       },
     });
 
     expect(requests).toEqual([
-      { url: params.paywallUrl, policy: "original" },
-      { url: params.paywallUrl, policy: "original" },
+      { url: params.paywallUrl, policy: "application/original+json" },
+      { url: params.paywallUrl, policy: "application/original+json" },
     ]);
     expect(authenticated).toEqual({
       chainId: 84532,
@@ -439,6 +518,108 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       finality: { model: "block-depth", finalityBlocks: 2 },
       txRef: { httpResource: params.paywallUrl },
     });
+  });
+
+  test("binds settlement dependencies and the paid-effect fence before the first await", async () => {
+    let releasePreflight!: () => void;
+    const preflightGate = new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    });
+    const originalClient = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    const originalFetch = fakeFetch();
+    const originalAuthenticate = vi.fn(async () => ({
+      chainId: 84532,
+      transactionHash: "a".repeat(64),
+      logIndex: 7,
+      blockNumber: 100,
+      confirmations: 2,
+      finalityObservedAt: 1_700_000_011_000,
+    }));
+    const deps: X402SettleCoreDeps = {
+      client: originalClient,
+      fetchImpl: originalFetch,
+      transportPolicy: { mode: "insecure-test" },
+      payerAddress: PAYER,
+      assertFinalityContext: async () => preflightGate,
+      authenticateTransfer: originalAuthenticate,
+    };
+    const originalFence = vi.fn(async () => undefined);
+    const substituted = vi.fn(() => {
+      throw new Error("substituted dependency must not run");
+    });
+    const fence: X402PaidEffectFence = { assertCurrent: originalFence };
+    const pending = x402SettleCore(params, deps, fence);
+    originalClient.getPaymentRequiredResponse = substituted;
+    originalClient.createPaymentPayload = substituted as never;
+    originalClient.encodePaymentSignatureHeader = substituted;
+    deps.fetchImpl = substituted as never;
+    deps.authenticateTransfer = substituted as never;
+    fence.assertCurrent = substituted as never;
+    releasePreflight();
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(originalAuthenticate).toHaveBeenCalledOnce();
+    expect(originalFence).toHaveBeenCalledOnce();
+    expect(substituted).not.toHaveBeenCalled();
+  });
+
+  test("rejects accessor-backed client methods and payment-header output without invoking getters", async () => {
+    let reads = 0;
+    const accessorClient = fakeClient([]) as unknown as Record<string, unknown>;
+    Object.defineProperty(accessorClient, "createPaymentPayload", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return async () => undefined;
+      },
+    });
+    const fetchImpl = vi.fn(fakeFetch());
+    await expect(x402SettleCore(params, {
+      ...coreDeps(accessorClient as unknown as X402ClientLike, fetchImpl as typeof fetch),
+    })).rejects.toThrow(/stable (?:data|method)/);
+    expect(reads).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const unsafeHeaderClient = fakeClient([
+      { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+    ]);
+    unsafeHeaderClient.encodePaymentSignatureHeader = () => {
+      const headers = {} as Record<string, string>;
+      Object.defineProperty(headers, "X-PAYMENT", {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return "signed";
+        },
+      });
+      return headers;
+    };
+    await expect(x402SettleCore(
+      params,
+      coreDeps(unsafeHeaderClient, fakeFetch()),
+    )).rejects.toThrow(/unsafe headers/);
+    expect(reads).toBe(0);
+  });
+
+  test("rejects accessor and proxy RequestInit before invoking their traps", async () => {
+    let reads = 0;
+    const accessor = {} as RequestInit;
+    Object.defineProperty(accessor, "headers", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { accept: "application/json" };
+      },
+    });
+    const deps = coreDeps(fakeClient([]), fakeFetch());
+    await expect(x402SettleCore({ ...params, requestInit: accessor }, deps))
+      .rejects.toThrow(/credential-free GET/);
+    await expect(x402SettleCore({
+      ...params,
+      requestInit: new Proxy({ headers: { accept: "application/json" } }, {}),
+    }, deps)).rejects.toThrow(/credential-free GET/);
+    expect(reads).toBe(0);
   });
 
   test("picks the matching requirement among several advertised", async () => {
@@ -531,6 +712,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       x402SettleCore(params, {
         client: fakeClient([]),
         fetchImpl,
+        transportPolicy: { mode: "insecure-test" },
         payerAddress: PAYER,
         assertFinalityContext: async () => {},
         authenticateTransfer: async () => { throw new Error("unused"); },
@@ -543,6 +725,7 @@ describe("x402SettleCore (buyer 402-dance)", () => {
       x402SettleCore(params, {
         client: fakeClient([]),
         fetchImpl: fakeFetch(),
+        transportPolicy: { mode: "insecure-test" },
         payerAddress: PAYER,
         assertFinalityContext: async () => {},
         authenticateTransfer: async () => { throw new Error("unused"); },

@@ -16,6 +16,7 @@ import {
   SubstrateError,
   TransientError,
 } from "../errors.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   COMPONENT_SIGNATURE_ALGORITHMS,
   isComponentSignature,
@@ -902,8 +903,14 @@ function validateAuthenticatedSessionBinding(
   if (
     !partyMatches(buyer, input.session.buyer) ||
     !partyMatches(seller, input.session.seller) ||
-    buyer!.primaryClaim === seller!.primaryClaim ||
-    seller!.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(
+      buyer!.primaryClaim,
+      seller!.primaryClaim,
+    ) ||
+    !sameCanonicalClaimIdentity(
+      seller!.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError(
       "authenticated commitment session parties do not match the signed agreement and Listing",
@@ -1140,8 +1147,11 @@ function validateAgreementBindingForPattern(
   if (
     !buyer ||
     !seller ||
-    buyer.primaryClaim === seller.primaryClaim ||
-    seller.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
+    !sameCanonicalClaimIdentity(
+      seller.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError(
       "agreement parties do not match the pinned Listing seller",
