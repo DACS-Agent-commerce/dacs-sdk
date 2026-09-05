@@ -14,8 +14,10 @@ import {
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  signAgreementArtifact,
   signRfqAgreement,
   signedBytes,
+  validateRfqAgreementBinding,
   type AttestationRef,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
@@ -515,6 +517,24 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
     await expect(
       signRfqAgreement(unbound, signer(BUYER), signer(SELLER)),
     ).rejects.toThrow(/bind its authenticated channel transcript/);
+    await expect(
+      signAgreementArtifact(unbound, signer(BUYER), signer(SELLER)),
+    ).rejects.toThrow(/exact DACS-3/);
+
+    const signed = await signRfqAgreement(
+      draft,
+      signer(BUYER),
+      signer(SELLER),
+    );
+    const unboundSigned = structuredClone(signed);
+    delete unboundSigned.derivedFromChannel;
+    expect(() =>
+      validateRfqAgreementBinding({
+        agreement: unboundSigned,
+        verifiedListing: verified(value),
+        committedAt: NOW + 4,
+      }),
+    ).toThrow(/non-normative Listing or agreement shape/);
   });
 
   test("anchors an authenticated RFQ commitment and derives time only from finality", async () => {
