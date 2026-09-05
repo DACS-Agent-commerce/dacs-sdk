@@ -110,7 +110,8 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
-    "release:set:publish": "node scripts/publish-release-set.mjs"
+    "release:set:publish": "node scripts/publish-release-set.mjs",
+    "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh"
   },
   "publishConfig": {
     "access": "public",
