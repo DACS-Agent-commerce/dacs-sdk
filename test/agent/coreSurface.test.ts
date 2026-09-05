@@ -36,6 +36,7 @@ import {
   createTerminalBundleSignatureMatrix,
   terminalBundleAuthorityHash,
   terminalBundleSignedBytes,
+  prepareVetTerminalBundle,
   advanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus,
   terminalBundleFinalizationCheckpointKey,
@@ -45,6 +46,8 @@ import {
   deriveReplayableSettlementVerifiedReputation,
   replaySettlementVerifiedReputation,
   createX402Paywall,
+  deriveReputationWithValidation,
+  lookupBundleCopies,
   x402PaywallCore,
   x402PaywallSettlementKey,
   runSessionCore,
@@ -73,8 +76,11 @@ import {
   type DurableTerminalBundleInput,
   type TerminalBundleFinalizationDurability,
   type TerminalBundleResolution,
+  type PrepareVetTerminalBundleInput,
 } from "../../src/index.js";
 import {
+  deriveReputationWithValidation as agentDeriveReputationWithValidation,
+  lookupBundleCopies as agentLookupBundleCopies,
   createCompletedCounterpartyBundleCounterSignature as agentCreateCompletedCounterpartyBundleCounterSignature,
   finalizeCompletedCounterpartyBundleCore as agentFinalizeCompletedCounterpartyBundleCore,
   assembleTerminalBundleForOwnRole as agentAssembleTerminalBundleForOwnRole,
@@ -84,6 +90,7 @@ import {
   createTerminalBundleSignatureMatrix as agentCreateTerminalBundleSignatureMatrix,
   terminalBundleAuthorityHash as agentTerminalBundleAuthorityHash,
   terminalBundleSignedBytes as agentTerminalBundleSignedBytes,
+  prepareVetTerminalBundle as agentPrepareVetTerminalBundle,
   advanceTerminalBundleDurable as agentAdvanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus as agentGetTerminalBundleFinalizationStatus,
   verifyFinalizedTerminalBundleReadOnly as agentVerifyFinalizedTerminalBundleReadOnly,
@@ -118,6 +125,18 @@ import {
 } from "../../src/rails/index.js";
 
 describe("public core surface (#14)", () => {
+  it("#6: two-sided bundle lookup is exported from root and agent surfaces", () => {
+    expect(typeof lookupBundleCopies).toBe("function");
+    expect(agentLookupBundleCopies).toBe(lookupBundleCopies);
+  });
+
+  it("#220: async reputation validation is exported from root and agent surfaces", () => {
+    expect(typeof deriveReputationWithValidation).toBe("function");
+    expect(agentDeriveReputationWithValidation).toBe(
+      deriveReputationWithValidation,
+    );
+  });
+
   it("F1: runSessionCore is exported from the barrel", () => {
     expect(typeof runSessionCore).toBe("function");
   });
@@ -308,6 +327,14 @@ describe("public core surface (#14)", () => {
     expect(input.authority).toBeUndefined();
     expect(durability.workerId).toBe("terminal-worker");
     expect(absent.disposition).toBe("authoritatively-absent");
+  });
+
+  it("#254: authenticated Vet failure bridge is public on both entrypoints", () => {
+    expect(agentPrepareVetTerminalBundle).toBe(prepareVetTerminalBundle);
+    const input: Partial<PrepareVetTerminalBundleInput> = {
+      evaluatedRole: "seller",
+    };
+    expect(input.evaluatedRole).toBe("seller");
   });
 
   it("#55: durable seller recovery and status are public on both entrypoints", () => {

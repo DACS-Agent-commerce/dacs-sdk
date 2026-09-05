@@ -48,6 +48,19 @@ export {
   type RailSessionState,
   type TrustedRailOperatorContext,
 } from "./railAvailability.js";
+export {
+  RECIPE_ANCHORING_PHASES,
+  classifyRecipeAnchoringPhase,
+  assessRegistryGovernanceDisclosure,
+  evaluatePinnedRecipeGovernance,
+  type RecipeAnchoringPhase,
+  type RecipeAnchoringPhaseClassification,
+  type RegistryGovernanceRepresentation,
+  type RegistryGovernanceDisclosureInput,
+  type RegistryGovernanceDisclosureDecision,
+  type PinnedRecipeGovernanceInput,
+  type PinnedRecipeGovernanceDecision,
+} from "./governance.js";
 export type {
   AssetSpec,
   Availability,

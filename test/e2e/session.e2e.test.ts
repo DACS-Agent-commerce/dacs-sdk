@@ -19,6 +19,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type { IdentityBundle } from "../../src/artifacts/types.js";
 import {
   signComponentArtifact,
   verifyComponentSignature,
@@ -50,6 +51,8 @@ const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 13));
 const NETWORK = "eip155:84532";
 const RECIPIENT_EVM = "0x1111111111111111111111111111111111111111";
 const BUYER_EVM = "0x2222222222222222222222222222222222222222";
+const TOKEN_EVM = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const SETTLEMENT_TX = `0x${"a".repeat(64)}`;
 
 function signerFor(seed: Uint8Array): Signer {
   const priv = privateKeyFromSeed(seed);
@@ -60,6 +63,16 @@ function didFor(seed: Uint8Array): string {
 }
 const sellerDid = didFor(SELLER_SEED);
 const buyerDid = didFor(BUYER_SEED);
+const buyerIdentity: IdentityBundle = {
+  bundleVersion: "1",
+  presentedBy: buyerDid,
+  presentedAt: 1_780_000_000_000,
+  claims: [{ ref: buyerDid }],
+  presentation: {
+    kind: "per-claim",
+    signatures: [{ ref: buyerDid, signature: "test-presentation" }],
+  },
+};
 const signSeller = signerFor(SELLER_SEED);
 const signBuyer = signerFor(BUYER_SEED);
 const sellerBundleHash = sha256Hex(`identity:${sellerDid}`);
@@ -249,7 +262,7 @@ function fakeClient(accepts: X402PaymentRequired["accepts"]): X402ClientLike {
     encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "signed" }),
     getPaymentSettleResponse: () => ({
       success: true,
-      transaction: "0xsettlement",
+      transaction: SETTLEMENT_TX,
       network: NETWORK,
       payer: BUYER_EVM,
       amount: "1000000",
@@ -262,7 +275,18 @@ function fakeFetch(): typeof fetch {
     n += 1;
     return n === 1
       ? new Response("{}", { status: 402 })
-      : new Response(JSON.stringify({ data: "deliverable" }), { status: 200 });
+      : new Response(JSON.stringify({ data: "deliverable" }), {
+          status: 200,
+          headers: {
+            "PAYMENT-RESPONSE": Buffer.from(JSON.stringify({
+              success: true,
+              transaction: SETTLEMENT_TX,
+              network: NETWORK,
+              payer: BUYER_EVM,
+              amount: "1000000",
+            })).toString("base64"),
+          },
+        });
   }) as unknown as typeof fetch;
 }
 
@@ -339,6 +363,8 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     // 2. Buyer runs the session: the x402 rail is the injected settle executor.
     const deps: SessionDeps = {
       buyerId: buyerDid,
+      buyerIdentityBundle: buyerIdentity,
+      authenticateBuyerIdentityBundle: () => true,
       expectedSettlementPayee: RECIPIENT_EVM,
       readListing: sub.read,
       sign: (artifact, sep) =>
@@ -353,14 +379,25 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
             network: NETWORK,
             recipientEvm: RECIPIENT_EVM,
             amount: req.amount,
-            asset: req.asset,
+            asset: TOKEN_EVM,
+            finalityBlocks: 1,
           },
           {
             client: fakeClient([
-              { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount, asset: req.asset },
+              { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount, asset: TOKEN_EVM },
             ]),
             fetchImpl: fakeFetch(),
+            transportPolicy: { mode: "insecure-test" },
             payerAddress: BUYER_EVM,
+            assertFinalityContext: async () => {},
+            authenticateTransfer: async () => ({
+              chainId: 84532,
+              transactionHash: "a".repeat(64),
+              logIndex: 0,
+              blockNumber: 1,
+              confirmations: 1,
+              finalityObservedAt: 1_700_000_000_000,
+            }),
           },
         ),
       // Vet the seller through an anchored, signed current VerifyResult.
@@ -570,13 +607,18 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
     expect(v.bundle?.agreementRef?.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
-    // Settlement evidence carries the rail's reported tx hash.
+    // Settlement evidence carries the exact authenticated log coordinate.
     const evidence = sub.store.get(result.settlementRef);
     // DACS-4 spec shape: outcome + payment txRefs (was the flat txHash/ok).
     expect(evidence).toMatchObject({
       evidenceVersion: "1",
       outcome: "success",
-      paymentTxRefs: [{ txHash: "0xsettlement", kind: "payment" }],
+      paymentTxRefs: [{
+        kind: "x402-event",
+        settlementTxHash: "a".repeat(64),
+        chainId: 84532,
+        logIndex: 0,
+      }],
     });
   });
 

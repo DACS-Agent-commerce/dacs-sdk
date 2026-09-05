@@ -28,6 +28,7 @@ import {
   isFaultAttestationBundle,
   isListing,
   isPhaseStep,
+  isRatingRecord,
   isSettlementEvidence,
   isVerifyResult,
   isCanonicalBase64Url,
@@ -1621,31 +1622,6 @@ function isSettlementAmendment(value: unknown): value is Record<string, unknown>
     isCanonicalPositiveDecimal(value.refundAmount.amount) &&
     typeof value.refundAmount.currency === "string" &&
     value.refundAmount.currency.length > 0
-  );
-}
-
-function isRatingRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  return (
-    value.ratingVersion === "1" &&
-    typeof value.jobId === "string" &&
-    value.jobId.length > 0 &&
-    typeof value.rater === "string" &&
-    value.rater.length > 0 &&
-    typeof value.target === "string" &&
-    value.target.length > 0 &&
-    (value.targetRole === "buyer" || value.targetRole === "seller") &&
-    Number.isInteger(value.value) &&
-    (value.value as number) >= 1 &&
-    (value.value as number) <= 5 &&
-    (value.freeText === undefined ||
-      (typeof value.freeText === "string" && value.freeText.length <= 1_000)) &&
-    (value.dimensions === undefined ||
-      (isRecord(value.dimensions) &&
-        Object.values(value.dimensions).every((score) => typeof score === "number" && Number.isFinite(score)))) &&
-    validUint(value.ratedAt) &&
-    isComponentSignature(value.signature) &&
-    (value.signature as ComponentSignature).signer === value.rater
   );
 }
 

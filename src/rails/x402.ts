@@ -1,4 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import { sha256Hex } from "../canonical/index.js";
+import { types as nodeTypes } from "node:util";
 import { CounterpartyError } from "../errors.js";
 import type {
   PaymentPayloadResult,
@@ -8,9 +10,26 @@ import type {
 import {
   createIdempotencyStore,
   settlementKey,
+  type SettlementBinding,
+  type SettlementEffectFence,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
+import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
+import {
+  verifyEvmTransferFinality,
+  type EvmTransferFinalityClient,
+  type EvmTransferFinalityObservation,
+  type EvmTransferFinalityRequest,
+} from "./evmTransferFinality.js";
+import {
+  captureX402OutboundHeadersV1,
+  requestX402OutboundV1,
+  snapshotDacsPublicHttpsDependenciesV1,
+  snapshotX402OutboundTransportPolicyV1,
+  type DacsPublicHttpsDependenciesV1,
+  type X402OutboundTransportPolicy,
+} from "./x402Outbound.js";
 
 /**
  * x402 settlement rail (DACS SR-4 / the reference-backed payment rail).
@@ -68,6 +87,8 @@ export interface X402SettleParams {
   recipientEvm: string;
   /** Negotiated price in integer base units (matching DACS Price.amount). */
   amount: string;
+  /** Signed rail-descriptor confirmation requirement. */
+  finalityBlocks: number;
   /**
    * Expected on-chain token id (the ERC-20 contract) the 402 must advertise —
    * the §4.1 asset guard compares this against the 402's `asset`. This is the
@@ -87,6 +108,73 @@ function sameAmount(a: string, b: string): boolean {
     return BigInt(a) === BigInt(b);
   } catch {
     return a === b;
+  }
+}
+
+function chainIdFromCaip2(network: string): number {
+  const match = /^eip155:([1-9][0-9]*)$/.exec(network);
+  if (!match) {
+    throw new CounterpartyError(
+      `x402: unsupported network ${network} (expected eip155:<positive id>)`,
+    );
+  }
+  const chainId = Number(match[1]);
+  if (!Number.isSafeInteger(chainId)) {
+    throw new CounterpartyError("x402: network chain id is outside the safe range");
+  }
+  return chainId;
+}
+
+function snapshotRequestInit(input: RequestInit | undefined): RequestInit | undefined {
+  if (input === undefined) return undefined;
+  if (nodeTypes.isProxy(input) ||
+      (Object.getPrototypeOf(input) !== Object.prototype &&
+        Object.getPrototypeOf(input) !== null) ||
+      Object.getOwnPropertySymbols(input).length !== 0) {
+    throw new CounterpartyError("x402: outbound request must be a credential-free GET");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const allowed = new Set(["method", "body", "redirect", "credentials", "headers"]);
+  if (Object.entries(descriptors).some(([name, descriptor]) =>
+    !allowed.has(name) || !descriptor.enumerable || !("value" in descriptor))) {
+    throw new CounterpartyError("x402: outbound request must be a credential-free GET");
+  }
+  const value = (name: string): unknown => descriptors[name]?.value;
+  const method = value("method");
+  const body = value("body");
+  const redirect = value("redirect");
+  const credentials = value("credentials");
+  const rawHeaders = value("headers");
+  if ((method !== undefined &&
+        (typeof method !== "string" || method.toUpperCase() !== "GET")) ||
+      (body !== undefined && body !== null) ||
+      (redirect !== undefined && redirect !== "error") ||
+      (credentials !== undefined && credentials !== "omit")) {
+    throw new CounterpartyError("x402: outbound request must be a credential-free GET");
+  }
+  let headers: Headers | undefined;
+  try {
+    headers = rawHeaders === undefined
+      ? undefined
+      : captureX402OutboundHeadersV1(rawHeaders as never, "forbid");
+  } catch (cause) {
+    throw new CounterpartyError("x402: outbound request headers are unsafe", { cause });
+  }
+  return headers === undefined
+    ? undefined
+    : { headers };
+}
+
+function capturePaymentHeaders(value: unknown): Headers {
+  try {
+    return captureX402OutboundHeadersV1(
+      value as Record<string, string>,
+      "require-one",
+    );
+  } catch (cause) {
+    throw new CounterpartyError("x402: payment client returned unsafe headers", {
+      cause,
+    });
   }
 }
 
@@ -157,9 +245,64 @@ export function termsMatch(
 
 export interface X402SettleCoreDeps {
   client: X402ClientLike;
-  fetchImpl: typeof fetch;
+  /** Explicit trusted custom/test transport. Omit for DNS-pinned public HTTPS. */
+  fetchImpl?: typeof fetch;
+  transportPolicy?: Readonly<X402OutboundTransportPolicy>;
+  publicHttpsDependencies?: Readonly<DacsPublicHttpsDependenciesV1>;
   /** The buyer's EVM address (recorded as `payer` on the result). */
   payerAddress: string;
+  /** Fail-closed RPC/chain preflight executed before payment authorization. */
+  assertFinalityContext(input: Readonly<{ chainId: number }>): Promise<void>;
+  /** Independent authenticated chain read; facilitator claims alone never succeed. */
+  authenticateTransfer(
+    request: Readonly<EvmTransferFinalityRequest>,
+  ): Promise<EvmTransferFinalityObservation>;
+}
+
+/** Structural generation fence supplied by the durable settlement owner. */
+export interface X402PaidEffectFence {
+  assertCurrent(): Promise<void>;
+}
+
+type X402DependencyMethod = (...args: never[]) => unknown;
+
+function stableX402Property(
+  source: unknown,
+  key: string,
+  label: string,
+): Readonly<{ found: boolean; value?: unknown }> {
+  if ((typeof source !== "object" && typeof source !== "function") ||
+      source === null || nodeTypes.isProxy(source)) {
+    throw new CounterpartyError(`${label} must be stable data`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new CounterpartyError(`${label} must be stable data`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) {
+        throw new CounterpartyError(`${label} must be stable data`);
+      }
+      return Object.freeze({ found: true, value: descriptor.value });
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  return Object.freeze({ found: false });
+}
+
+function stableX402Method<T extends X402DependencyMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T {
+  const property = stableX402Property(source, key, label);
+  if (!property.found || typeof property.value !== "function" ||
+      nodeTypes.isProxy(property.value)) {
+    throw new CounterpartyError(`${label} must be a stable method`);
+  }
+  return Function.prototype.bind.call(property.value, source) as T;
 }
 
 /**
@@ -169,18 +312,148 @@ export interface X402SettleCoreDeps {
 export async function x402SettleCore(
   params: X402SettleParams,
   deps: X402SettleCoreDeps,
+  effectFence?: Readonly<X402PaidEffectFence>,
 ): Promise<SettleResult> {
-  const { client, fetchImpl, payerAddress } = deps;
-
-  // 1. Initial request — expect a 402 with payment requirements.
-  const initial = await fetchImpl(params.paywallUrl, params.requestInit);
-  if (initial.status !== 402) {
+  // Snapshot caller-owned policy and transport scalars before the first
+  // callback. A callback may retain the original params object; it must not be
+  // able to change the amount, endpoint, token or confirmation depth after the
+  // corresponding entry checks have passed.
+  const paywallUrl = stableX402Property(
+    params,
+    "paywallUrl",
+    "x402 paywall URL",
+  ).value as string;
+  const network = stableX402Property(
+    params,
+    "network",
+    "x402 network",
+  ).value as string;
+  const recipientEvm = stableX402Property(
+    params,
+    "recipientEvm",
+    "x402 recipient",
+  ).value as string;
+  const requestedAmount = stableX402Property(
+    params,
+    "amount",
+    "x402 amount",
+  ).value as string;
+  const asset = stableX402Property(
+    params,
+    "asset",
+    "x402 asset",
+  ).value as string;
+  const finalityBlocks = stableX402Property(
+    params,
+    "finalityBlocks",
+    "x402 finality depth",
+  ).value as number;
+  const requestInit = snapshotRequestInit(stableX402Property(
+    params,
+    "requestInit",
+    "x402 request init",
+  ).value as RequestInit | undefined);
+  const client = stableX402Property(
+    deps,
+    "client",
+    "x402 payment client",
+  ).value;
+  const getPaymentRequiredResponse = stableX402Method<
+    X402ClientLike["getPaymentRequiredResponse"]
+  >(client, "getPaymentRequiredResponse", "x402 payment challenge decoder");
+  const createPaymentPayload = stableX402Method<
+    X402ClientLike["createPaymentPayload"]
+  >(client, "createPaymentPayload", "x402 payment payload signer");
+  const encodePaymentSignatureHeader = stableX402Method<
+    X402ClientLike["encodePaymentSignatureHeader"]
+  >(client, "encodePaymentSignatureHeader", "x402 payment header encoder");
+  const fetchImpl = stableX402Property(
+    deps,
+    "fetchImpl",
+    "x402 fetch implementation",
+  ).value as typeof fetch | undefined;
+  if (fetchImpl !== undefined &&
+      (typeof fetchImpl !== "function" || nodeTypes.isProxy(fetchImpl))) {
+    throw new CounterpartyError("x402 fetch implementation must be stable");
+  }
+  const transportPolicy = snapshotX402OutboundTransportPolicyV1(
+    stableX402Property(
+      deps,
+      "transportPolicy",
+      "x402 transport policy",
+    ).value as Readonly<X402OutboundTransportPolicy> | undefined,
+  );
+  const publicHttpsDependencies = snapshotDacsPublicHttpsDependenciesV1(
+    stableX402Property(
+      deps,
+      "publicHttpsDependencies",
+      "x402 public HTTPS dependencies",
+    ).value as Readonly<DacsPublicHttpsDependenciesV1> | undefined,
+  );
+  const payerAddress = stableX402Property(
+    deps,
+    "payerAddress",
+    "x402 payer address",
+  ).value as string;
+  const assertFinalityContext = stableX402Method<
+    X402SettleCoreDeps["assertFinalityContext"]
+  >(deps, "assertFinalityContext", "x402 finality context assertion");
+  const authenticateTransfer = stableX402Method<
+    X402SettleCoreDeps["authenticateTransfer"]
+  >(deps, "authenticateTransfer", "x402 transfer authenticator");
+  const assertPaidEffectCurrent = effectFence === undefined
+    ? undefined
+    : stableX402Method<X402PaidEffectFence["assertCurrent"]>(
+        effectFence,
+        "assertCurrent",
+        "x402 paid effect fence",
+      );
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new CounterpartyError(
-      `x402: expected HTTP 402 from ${params.paywallUrl}, got ${initial.status}`,
+      "x402: finalityBlocks must be a positive safe integer",
     );
   }
-  const body = await initial.json();
-  const paymentRequired = client.getPaymentRequiredResponse(
+  if (!/^0x[0-9a-fA-F]{40}$/.test(asset) ||
+      !/^0x[0-9a-fA-F]{40}$/.test(recipientEvm) ||
+      !/^0x[0-9a-fA-F]{40}$/.test(payerAddress)) {
+    throw new CounterpartyError("x402: EVM token, payer, or payee address is invalid");
+  }
+  let amount: bigint;
+  try {
+    amount = BigInt(requestedAmount);
+  } catch {
+    throw new CounterpartyError("x402: negotiated amount is not base-unit integer");
+  }
+  if (amount <= 0n) {
+    throw new CounterpartyError("x402: negotiated amount must be positive");
+  }
+  const chainId = chainIdFromCaip2(network);
+  await assertFinalityContext({ chainId });
+
+  // 1. Initial request — expect a 402 with payment requirements.
+  const initial = await requestX402OutboundV1({
+    url: paywallUrl,
+    headers: requestInit?.headers,
+    paymentHeaderMode: "forbid",
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(transportPolicy === undefined ? {} : { policy: transportPolicy }),
+    ...(publicHttpsDependencies === undefined
+      ? {}
+      : { dependencies: publicHttpsDependencies }),
+  });
+  if (initial.status !== 402) {
+    throw new CounterpartyError(
+      `x402: expected HTTP 402 from ${paywallUrl}, got ${initial.status}`,
+    );
+  }
+  let body: unknown;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(initial.bytes);
+    body = text.length === 0 ? undefined : JSON.parse(text) as unknown;
+  } catch {
+    throw new CounterpartyError("x402: payment-required response is invalid JSON");
+  }
+  const paymentRequired = getPaymentRequiredResponse(
     (name) => initial.headers.get(name),
     body,
   );
@@ -198,10 +471,10 @@ export async function x402SettleCore(
   for (const req of candidates) {
     const m = termsMatch(
       {
-        network: params.network,
-        recipientEvm: params.recipientEvm,
-        amount: params.amount,
-        asset: params.asset,
+        network,
+        recipientEvm,
+        amount: requestedAmount,
+        asset,
       },
       {
         network: String(req.network),
@@ -223,97 +496,131 @@ export async function x402SettleCore(
   }
 
   // 3. Sign the payment authorization (does not submit on-chain yet).
-  const payload = await client.createPaymentPayload({
+  const payload = await createPaymentPayload({
     ...paymentRequired,
     accepts: [chosen],
   });
 
   // 4. Retry with the X-PAYMENT header; the seller verifies + settles.
-  const headers = new Headers(params.requestInit?.headers);
-  for (const [k, v] of Object.entries(
-    client.encodePaymentSignatureHeader(payload),
-  )) {
-    headers.set(k, v);
-  }
-  const final = await fetchImpl(params.paywallUrl, {
-    ...params.requestInit,
+  const headers = new Headers(requestInit?.headers);
+  capturePaymentHeaders(encodePaymentSignatureHeader(payload)).forEach(
+    (value, name) => headers.set(name, value),
+  );
+  const final = await requestX402OutboundV1({
+    url: paywallUrl,
     headers,
+    paymentHeaderMode: "require-one",
+    ...(assertPaidEffectCurrent === undefined
+      ? {}
+      : { beforeConnect: () => assertPaidEffectCurrent() }),
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(transportPolicy === undefined ? {} : { policy: transportPolicy }),
+    ...(publicHttpsDependencies === undefined
+      ? {}
+      : { dependencies: publicHttpsDependencies }),
   });
 
-  // 5. Decode and consistency-check the provider's settlement response. HTTP
-  //    success alone does not prove settlement. This header is not independently
-  //    authenticated and does not establish chain finality; the checks below
-  //    only bind its claims back to the requested network, buyer, and (when the
-  //    facilitator reports it) exact base-unit amount. Full receipt/finality
-  //    authentication remains tracked by #102.
-  let settlement: X402SettlementResponse | undefined;
-  try {
-    settlement = client.getPaymentSettleResponse((name) =>
-      final.headers.get(name),
+  // 5. Preserve and commit the exact raw v2 settlement response. Decoding an
+  // SDK projection loses unknown members and therefore cannot establish X402-2.
+  const headerValue = final.headers.get("PAYMENT-RESPONSE");
+  if (final.status < 200 || final.status >= 300 || headerValue === null) {
+    throw new CounterpartyError(
+      `x402: paid response returned HTTP ${final.status} ` +
+        `${headerValue === null ? "without" : "with"} PAYMENT-RESPONSE`,
     );
-  } catch {
-    settlement = undefined;
   }
-
-  const txHash =
-    typeof settlement?.transaction === "string" ? settlement.transaction : "";
-  const txHashValid =
-    txHash.length > 0 && txHash.trim() === txHash;
-  const reportedNetwork = settlement?.network;
-  const networkValid =
-    typeof reportedNetwork === "string" &&
-    reportedNetwork.length > 0 &&
-    reportedNetwork.trim() === reportedNetwork;
-  const responseNetwork =
-    networkValid ? reportedNetwork : params.network;
-  const reportedPayer = settlement?.payer;
-  const payerValid =
-    typeof reportedPayer === "string" &&
-    reportedPayer.length > 0 &&
-    reportedPayer.trim() === reportedPayer;
-  const responsePayer =
-    payerValid ? reportedPayer : payerAddress;
-  const payerMatches =
-    reportedPayer === undefined ||
-    (payerValid && responsePayer.toLowerCase() === payerAddress.toLowerCase());
-  const reportedAmount = settlement?.amount;
-  const amountMatches =
-    reportedAmount === undefined ||
-    (typeof reportedAmount === "string" &&
-      reportedAmount.length > 0 &&
-      reportedAmount.trim() === reportedAmount &&
-      sameAmount(reportedAmount, params.amount));
-  const receiptMatches =
-    settlement?.success === true &&
-    txHashValid &&
-    networkValid &&
-    responseNetwork === params.network &&
-    payerMatches &&
-    amountMatches;
+  const commitment = deriveX402ReceiptCommitment({
+    protocolVersion: "2",
+    responseHeader: { name: "PAYMENT-RESPONSE", value: headerValue },
+  });
+  if (commitment.disposition !== "pass" || !commitment.receipt ||
+      !commitment.computedPaymentReceiptHash) {
+    throw new CounterpartyError(
+      `x402: settlement response is not conforming (${commitment.reason})`,
+    );
+  }
+  const receipt = commitment.receipt;
+  const txHash = receipt.transaction;
+  const reportedNetwork = receipt.network;
+  const reportedPayer = receipt.payer;
+  const reportedAmount = receipt.amount;
+  if (typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash) ||
+      reportedNetwork !== network ||
+      typeof reportedPayer !== "string" ||
+      reportedPayer.toLowerCase() !== payerAddress.toLowerCase() ||
+      (reportedAmount !== undefined &&
+        (typeof reportedAmount !== "string" ||
+          !sameAmount(reportedAmount, requestedAmount)))) {
+    throw new CounterpartyError(
+      "x402: settlement response does not match the negotiated payment",
+    );
+  }
+  const observed = await authenticateTransfer({
+    chainId,
+    transactionHash: txHash,
+    tokenAddress: asset,
+    payerAddress,
+    payeeAddress: recipientEvm,
+    amount,
+    minimumConfirmations: finalityBlocks,
+  });
 
   return {
-    ok: final.ok && receiptMatches,
-    txHash,
-    chainId: responseNetwork,
-    payer: responsePayer,
-    payee: params.recipientEvm,
+    ok: true,
+    // Keep the durable outer identity byte-consistent with the independently
+    // authenticated event even when a conforming receipt used upper-case hex.
+    txHash: `0x${observed.transactionHash}`,
+    chainId: network,
+    payer: payerAddress,
+    payee: recipientEvm,
+    finality: { model: "block-depth", finalityBlocks },
+    finalityObservedAt: observed.finalityObservedAt,
+    blockNumber: observed.blockNumber,
+    txRef: {
+      kind: "x402-event",
+      httpResource: paywallUrl,
+      paymentReceiptHash: commitment.computedPaymentReceiptHash,
+      settlementTxHash: observed.transactionHash,
+      chainId: observed.chainId,
+      logIndex: observed.logIndex,
+      protocolVersion: "2",
+    },
+    x402Receipt: {
+      protocolVersion: "2",
+      headerName: "PAYMENT-RESPONSE",
+      headerValue,
+      paymentReceiptHash: commitment.computedPaymentReceiptHash,
+    },
   };
 }
 
 export interface X402RailConfig {
   /** Buyer EVM private key (`0x…`) used to sign the EIP-3009 authorization. */
   evmPrivateKey: string;
-  /** Override fetch (tests / custom transport). Defaults to global fetch. */
+  /** Explicit trusted fetch override for tests/custom transports. */
   fetchImpl?: typeof fetch;
+  /** Bounds and explicit local-test admission for the outbound HTTP exchange. */
+  transportPolicy?: Readonly<X402OutboundTransportPolicy>;
+  /** Trusted platform seam used to test or host the pinned HTTPS primitive. */
+  publicHttpsDependencies?: Readonly<DacsPublicHttpsDependenciesV1>;
   /** Refuse to create a random-nonce authorization without DACS session binding. */
   requireSessionBinding?: boolean;
+  /** Trusted EVM JSON-RPC used independently of the x402 facilitator. */
+  rpcUrl: string;
+  /** Signed rail-descriptor confirmation requirement. */
+  finalityBlocks: number;
 }
 
 export interface X402Rail {
   /** The buyer's EVM address derived from the configured key. */
   readonly address: string;
+  /** Signed descriptor finality policy retained in the idempotency binding. */
+  readonly finalityBlocks: number;
   /** Settle one session's payment via the x402 402-dance. */
-  settle(params: X402SettleParams): Promise<SettleResult>;
+  settle(
+    params: Omit<X402SettleParams, "finalityBlocks">,
+    effectFence?: Readonly<X402PaidEffectFence>,
+  ): Promise<SettleResult>;
 }
 
 /** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
@@ -362,6 +669,39 @@ export async function verifyDacsX402AuthorizationNonce(
  * SDK core stays importable without the rail's chain deps installed.
  */
 export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> {
+  const evmPrivateKey = config.evmPrivateKey;
+  const configuredFetchImpl = config.fetchImpl;
+  const configuredTransportPolicy = snapshotX402OutboundTransportPolicyV1(
+    config.transportPolicy,
+  );
+  const configuredPublicHttpsDependencies = snapshotDacsPublicHttpsDependenciesV1(
+    config.publicHttpsDependencies,
+  );
+  if ((configuredFetchImpl !== undefined &&
+        configuredTransportPolicy?.mode !== "insecure-test") ||
+      (configuredFetchImpl === undefined &&
+        configuredTransportPolicy?.mode === "insecure-test")) {
+    throw new CounterpartyError(
+      "createX402Rail fetch overrides require explicit insecure-test mode",
+    );
+  }
+  const requireSessionBinding = config.requireSessionBinding === true;
+  const requestedRpcUrl = config.rpcUrl;
+  const finalityBlocks = config.finalityBlocks;
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
+    throw new CounterpartyError(
+      "createX402Rail requires a positive finalityBlocks value",
+    );
+  }
+  let rpcUrl: URL;
+  try {
+    rpcUrl = new URL(requestedRpcUrl);
+  } catch {
+    throw new CounterpartyError("createX402Rail requires an absolute RPC URL");
+  }
+  if (rpcUrl.protocol !== "https:" && rpcUrl.protocol !== "http:") {
+    throw new CounterpartyError("createX402Rail RPC URL must use HTTP(S)");
+  }
   const accounts = await import("viem/accounts").catch(() => {
     throw new CounterpartyError(
       "createX402Rail requires the optional peer viem",
@@ -381,21 +721,62 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
   const { x402Client, x402HTTPClient } = x402Fetch;
   const { ExactEvmScheme } = x402Evm;
 
-  const account = privateKeyToAccount(config.evmPrivateKey as `0x${string}`);
-  const fetchImpl = config.fetchImpl ?? fetch;
+  const account = privateKeyToAccount(evmPrivateKey as `0x${string}`);
+  const chainClients = new Map<number, EvmTransferFinalityClient>();
+
+  const finalityClient = async (chainId: number): Promise<EvmTransferFinalityClient> => {
+    const existing = chainClients.get(chainId);
+    if (existing) return existing;
+    const viem = await import("viem").catch(() => {
+      throw new CounterpartyError("createX402Rail requires the optional peer viem");
+    });
+    const chain = viem.defineChain({
+      id: chainId,
+      name: `eip155:${chainId}`,
+      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: { default: { http: [requestedRpcUrl] } },
+    });
+    const publicClient = viem.createPublicClient({
+      chain,
+      transport: viem.http(requestedRpcUrl),
+    });
+    const created: EvmTransferFinalityClient = {
+      getChainId: () => publicClient.getChainId(),
+      waitForTransactionReceipt: ({ hash, confirmations }) =>
+        publicClient.waitForTransactionReceipt({
+          hash: hash as `0x${string}`,
+          confirmations,
+        }),
+      getTransactionReceipt: ({ hash }) => publicClient.getTransactionReceipt({
+        hash: hash as `0x${string}`,
+      }),
+      getBlock: ({ blockNumber }) => publicClient.getBlock({ blockNumber }),
+    };
+    chainClients.set(chainId, created);
+    return created;
+  };
 
   return {
     address: account.address,
-    settle: async (params) => {
-      if (config.requireSessionBinding && (params.jobId === undefined || params.phaseIndex === undefined)) {
+    finalityBlocks,
+    settle: async (params, effectFence) => {
+      const paywallUrl = params.paywallUrl;
+      const network = params.network;
+      const recipientEvm = params.recipientEvm;
+      const amount = params.amount;
+      const asset = params.asset;
+      const jobId = params.jobId;
+      const phaseIndex = params.phaseIndex;
+      const requestInit = snapshotRequestInit(params.requestInit);
+      if (requireSessionBinding && (jobId === undefined || phaseIndex === undefined)) {
         throw new Error("pay-x402 requires the DACS jobId/phaseIndex authorization binding");
       }
 
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
-      if (params.jobId !== undefined && params.phaseIndex !== undefined) {
+      if (jobId !== undefined && phaseIndex !== undefined) {
         const nonce = await dacsX402AuthorizationNonce({
-          jobId: params.jobId,
-          phaseIndex: params.phaseIndex,
+          jobId,
+          phaseIndex,
         });
         scheme = {
           scheme: "exact",
@@ -458,7 +839,39 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
       // usable across base / base-sepolia / future EVM networks.
       const core = new x402Client().register("eip155:*", scheme);
       const client = new x402HTTPClient(core) as unknown as X402ClientLike;
-      return x402SettleCore(params, { client, fetchImpl, payerAddress: account.address });
+      return x402SettleCore({
+        paywallUrl,
+        network,
+        recipientEvm,
+        amount,
+        asset,
+        finalityBlocks,
+        ...(jobId === undefined ? {} : { jobId }),
+        ...(phaseIndex === undefined ? {} : { phaseIndex }),
+        ...(requestInit === undefined ? {} : { requestInit }),
+      }, {
+        client,
+        ...(configuredFetchImpl === undefined
+          ? {}
+          : { fetchImpl: configuredFetchImpl }),
+        ...(configuredTransportPolicy === undefined
+          ? {}
+          : { transportPolicy: configuredTransportPolicy }),
+        ...(configuredPublicHttpsDependencies === undefined
+          ? {}
+          : { publicHttpsDependencies: configuredPublicHttpsDependencies }),
+        payerAddress: account.address,
+        assertFinalityContext: async ({ chainId }) => {
+          const authenticated = await finalityClient(chainId);
+          if (await authenticated.getChainId() !== chainId) {
+            throw new CounterpartyError(
+              "x402: RPC chain id does not match the negotiated network",
+            );
+          }
+        },
+        authenticateTransfer: async (request) =>
+          verifyEvmTransferFinality(request, await finalityClient(request.chainId)),
+      }, effectFence);
     },
   };
 }
@@ -493,8 +906,13 @@ export function x402Settle(
   const asset = paywall.asset;
   const configuredPhaseIndex = paywall.phaseIndex;
   const reconcile = opts.reconcile;
+  const payerAddress = rail.address;
+  const finalityBlocks = rail.finalityBlocks;
+  if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
+    throw new CounterpartyError("x402 rail must expose its positive finality policy");
+  }
   return (req) => {
-    const { amount, expectedPayee, jobId, rail: railId } = req;
+    const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
         `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
@@ -509,7 +927,25 @@ export function x402Settle(
     // `requireSessionBinding` path throw whenever the paywall omitted it, even
     // though the session carried a phase.)
     const phaseIndex = req.phaseIndex ?? configuredPhaseIndex ?? 0;
-    const submit = () =>
+    const binding = Object.freeze({
+      bindingVersion: "1",
+      railId,
+      jobId,
+      phaseIndex,
+      phase,
+      amount,
+      agreementAsset,
+      settlementAsset: asset,
+      payer: payerAddress,
+      payee: recipientEvm,
+      network,
+      finality: Object.freeze({ model: "block-depth", finalityBlocks }),
+      effectIdentity: `0x${sha256Hex(
+        `dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
+      )}`,
+      resource: paywallUrl,
+    }) satisfies Readonly<SettlementBinding>;
+    const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
       rail.settle({
         paywallUrl,
         network,
@@ -518,14 +954,16 @@ export function x402Settle(
         asset,
         jobId,
         phaseIndex,
-      });
+      }, effectFence);
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
     // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
-    // on a reconciled resubmit is the SB-3 work in #33 — supplied via `reconcile`;
-    // absent it, an unresolved intent fails closed instead of resubmitting.
+    // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
+    // replay only when `reconcile` returns an authorization bound to this exact
+    // deterministic EIP-3009 nonce; absence alone still fails closed.
     return store.once(
       settlementKey(railId, jobId, phaseIndex),
+      binding,
       submit,
       reconcile,
     );

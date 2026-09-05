@@ -17,8 +17,10 @@ import type {
   ListingRef,
   PaymentAmount,
   Price,
+  ChainTxRef,
   SettlementFinality,
 } from "./types.js";
+import { isChainTxRef } from "./validators.js";
 
 /** Pre-normative buyer-only agreement emitted by early runSessionCore releases. */
 export interface LegacyMvpAgreementDocument {
@@ -39,12 +41,18 @@ export interface LegacyMvpAttestationRef {
   contentHash: string;
 }
 
-export interface LegacyMvpTxRef {
+export interface LegacyMvpFlatTxRef {
   rail: string;
   txHash: string;
   kind: string;
   blockNumber?: number;
 }
+
+/** Frozen pre-normative transaction reference used by legacy evidence. */
+export type LegacyMvpTxRef = LegacyMvpFlatTxRef;
+
+/** Transitional bundle summaries may copy a current evidence coordinate. */
+export type LegacyMvpPhaseTxRef = LegacyMvpTxRef | ChainTxRef;
 
 interface LegacyMvpSettlementEvidenceBase {
   evidenceVersion: "1";
@@ -74,7 +82,7 @@ export interface LegacyMvpPhaseSummaryEntry {
   kind: string;
   outcome: BundlePhaseOutcome;
   errorClass?: BundlePhaseErrorClass;
-  txRefs?: LegacyMvpTxRef[];
+  txRefs?: LegacyMvpPhaseTxRef[];
   attestationRef?: LegacyMvpAttestationRef;
 }
 
@@ -212,6 +220,10 @@ export function isLegacyMvpTxRef(value: unknown): value is LegacyMvpTxRef {
   );
 }
 
+function isLegacyMvpPhaseTxRef(value: unknown): value is LegacyMvpPhaseTxRef {
+  return isLegacyMvpTxRef(value) || isChainTxRef(value);
+}
+
 export function isLegacyMvpSettlementEvidence(
   value: unknown,
 ): value is LegacyMvpSettlementEvidence {
@@ -258,7 +270,7 @@ function hasLegacyMvpBundleFields(value: Record<string, unknown>): boolean {
         (phase.outcome === "ok" || phase.outcome === "fail") &&
         (phase.txRefs === undefined ||
           (Array.isArray(phase.txRefs) &&
-            phase.txRefs.every(isLegacyMvpTxRef))) &&
+            phase.txRefs.every(isLegacyMvpPhaseTxRef))) &&
         (phase.attestationRef === undefined ||
           isLegacyMvpAttestationRef(phase.attestationRef)),
     ) &&
