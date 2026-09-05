@@ -27,19 +27,35 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, sealed-bid auctions, RFQ, private channels, AP2, and dispute (DACS-X) are deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2 safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a bundled live AP2 provider integration, and dispute execution (DACS-X) remain deferred.
 
 ## What's implemented
 
-All five lifecycle stages run end to end:
+The modern role-separated fixed-price coordinators cover all five lifecycle
+stages. The older `Agent.runSession()` convenience method remains a
+settlement-only compatibility API; it does not claim fulfilment or audit
+completion.
+
+The exported `SignedArtifact`, `buildSignedArtifact()` and
+`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
+surfaces used by that quarantined path and historical readers. New producers
+and readers must use `ComponentSignedArtifact`,
+`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` | fixed-price |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
+
+Agreement readers can call `validateFixedPriceAgreementBinding()` with the
+authenticated commitment timestamp to re-check the complete fixed-price
+agreement/listing binding. RFQ or other negotiable-pattern implementations can
+use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
+§8.5.2's exact inclusive, half-up-rounded band arithmetic; both reject
+non-canonical CD-1 amounts instead of normalising them into acceptance.
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
 
@@ -204,7 +220,17 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: { agentId: buyerId },
+  identity: {
+    agentId: buyerId,
+    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
+    // terminal bundle. A bare agent id is not an identity commitment.
+    bundle: buyerIdentityBundle,
+    // Presentation authentication is deliberately bundle-scoped so the same
+    // identity bundle can be reused. Session replay resistance is separate:
+    // its exact bundle hash is committed inside each signed Agreement.
+    verifyPresentation: ({ bundle, signedBytes }) =>
+      verifyBuyerIdentityPresentation(bundle, signedBytes),
+  },
   bindings: { index: bindings },
 });
 
@@ -288,6 +314,11 @@ const session = await buyer.runSession(resolved, {
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
 
+// Legacy compatibility only: payment settlement is not commerce completion.
+if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
+  throw new Error("unexpected legacy session result");
+}
+
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callbacks above) every normative vet closure and
 // SettlementEvidence record
@@ -301,7 +332,14 @@ hold candidate bundle objects must use `deriveReputationWithValidation()` when
 their cryptographic verifier is asynchronous. The pure `deriveReputation()`
 helper accepts only a synchronous primitive-boolean predicate over copies that
 were authenticated upstream; a Promise-valued predicate is rejected rather
-than treated as truthy.
+than treated as truthy. Both helpers also require an independently authenticated
+per-job `resolvePartyRole({ jobId, partyPrimaryClaim })` mapping. Bundle-local
+`parties[]` labels cannot decide whether a copy is the scored party's own or its
+counterparty's: trusting those labels would let a relabelled self-abort become a
+false counterparty fault. Callers whose validation already authenticated the
+exact party map against the pinned agreement may instead make the explicit
+`trustBundlePartyRoles: true` compatibility assertion; it is not implied by
+`trustBundles` or by signature validation alone.
 
 For native DEM, sellers can supply the standard read-only observer directly to
 `verifySellerPaymentIntake`:
@@ -556,6 +594,18 @@ each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
 
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
+
 ### Normative artifact references
 
 Public `AttestationRef` values use the DACS-2 §7.5.2
@@ -645,7 +695,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected AP2 safety core |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |

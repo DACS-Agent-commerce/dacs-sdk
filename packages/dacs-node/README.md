@@ -299,10 +299,14 @@ fault-classification decision before it can become a normative failure.
 with the buyer's role-local signer, chain-finality read client, durable x402
 settlement store and paid-request transport. Challenge acquisition is a
 read-only preparation step: a transient challenge failure creates no effect
-intent and is retryable. Once a bearer is retained and a paid request may have
-been sent, the existing payment effect fence and chain-authenticated
-reconciliation path remain authoritative; an unknown result never causes a new
-authorization or a blind paid-request replay.
+intent and is retryable. The track independently checks the authenticated
+preparation amount against `maximumServiceAmount` in rail base units before it
+creates a challenge client or effect intent; the fixed-price live composition
+accepts that ceiling in canonical major units and performs the asset-decimal
+conversion. Once a bearer is retained and a paid request may have been sent,
+the existing payment effect fence and chain-authenticated reconciliation path
+remain authoritative; an unknown result never causes a new authorization or a
+blind paid-request replay.
 
 `loadDacsSecretV1()` applies file, injected OS-secret-manager, then explicit
 environment-variable precedence. Live files must be absolute, regular,

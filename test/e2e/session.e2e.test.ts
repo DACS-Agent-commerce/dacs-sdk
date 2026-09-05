@@ -19,6 +19,7 @@ import {
   type VerifyBundleDeps,
 } from "../../src/agent/verifyBundleCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import type { IdentityBundle } from "../../src/artifacts/types.js";
 import {
   signComponentArtifact,
   verifyComponentSignature,
@@ -62,6 +63,16 @@ function didFor(seed: Uint8Array): string {
 }
 const sellerDid = didFor(SELLER_SEED);
 const buyerDid = didFor(BUYER_SEED);
+const buyerIdentity: IdentityBundle = {
+  bundleVersion: "1",
+  presentedBy: buyerDid,
+  presentedAt: 1_780_000_000_000,
+  claims: [{ ref: buyerDid }],
+  presentation: {
+    kind: "per-claim",
+    signatures: [{ ref: buyerDid, signature: "test-presentation" }],
+  },
+};
 const signSeller = signerFor(SELLER_SEED);
 const signBuyer = signerFor(BUYER_SEED);
 const sellerBundleHash = sha256Hex(`identity:${sellerDid}`);
@@ -352,6 +363,8 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     // 2. Buyer runs the session: the x402 rail is the injected settle executor.
     const deps: SessionDeps = {
       buyerId: buyerDid,
+      buyerIdentityBundle: buyerIdentity,
+      authenticateBuyerIdentityBundle: () => true,
       expectedSettlementPayee: RECIPIENT_EVM,
       readListing: sub.read,
       sign: (artifact, sep) =>
@@ -374,6 +387,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
               { network: NETWORK, payTo: RECIPIENT_EVM, amount: req.amount, asset: TOKEN_EVM },
             ]),
             fetchImpl: fakeFetch(),
+            transportPolicy: { mode: "insecure-test" },
             payerAddress: BUYER_EVM,
             assertFinalityContext: async () => {},
             authenticateTransfer: async () => ({

@@ -497,6 +497,7 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
           {
             client: x402Client(),
             fetchImpl: fetch,
+            transportPolicy: { mode: "insecure-test" },
             payerAddress: buyerAccount.address,
             assertFinalityContext: async ({ chainId }) => {
               expect(await publicClient.getChainId()).toBe(chainId);
