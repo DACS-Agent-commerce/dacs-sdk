@@ -174,6 +174,66 @@ atomic compare-and-swap, and generation fencing when multiple hosts can write.
 implementations. The in-memory store is not a production authenticity or
 restart boundary.
 
+## Carrying RFQ packets over Demos L2PS
+
+`createDemosL2psRfqTransport()` adapts a structurally compatible demosdk
+`L2PSMessagingPeer` to the durable lifecycle transport. It encrypts canonical
+packet bytes with fresh-nonce AES-256-GCM, binds the sender peer, recipient
+peer, and exact packet hash as authenticated data, and uses the packet ID as
+the Demos message deduplication hash. The Demos subnet UID and reciprocal
+ClaimReference/peer-key mapping are checked during history recovery.
+
+```ts
+const transport = createDemosL2psRfqTransport({
+  peer: connectedAndRegisteredL2psMessagingPeer,
+  codec: createDemosL2psRfqAesGcmCodec({ sharedKey: subnetKey }),
+  l2psUid,
+  localClaim: buyerClaim,
+  localPeerKey: buyerPeerKey,
+  peerForClaim,
+  claimForPeer,
+  onError: recordChannelFailure,
+  operationTimeoutMs: 20_000,
+});
+
+const buyerRfq = createDurableRfqLifecycleClient({
+  // ...buyer authority, signers, authenticated store and trusted clock
+  transport,
+});
+
+transport.start((packet) => buyerRfq.receive(packet));
+
+// On every process start, reconcile both directions before new policy work.
+await transport.resumeInbound(sellerClaim);
+await buyerRfq.resumeOutbox(jobId);
+```
+
+A Demos `submitted` or offline `queued` response acknowledges the exact packet.
+After an ambiguous response, `resumeOutbox()` searches authenticated Demos
+conversation history, decrypts the stored frame, and compares the complete
+canonical packet and route. It returns `absent` only when one unpaginated
+history response is exhaustive. Timestamp-paginated history can prove presence
+but cannot safely prove absence, so it remains `indeterminate` and never
+authorizes a resend. `resumeInbound()` similarly replays history through the
+normal lifecycle verifier; duplicate packets are harmless. Peer and codec
+operations are bounded (20 seconds by default); a send timeout is
+`indeterminate`, because the server may accept the packet after the local wait
+ends.
+
+Use a dedicated RFQ subnet/peer conversation. The Demos messaging envelope has
+no application content-type discriminator, so sharing the same encrypted
+conversation with unrelated codecs makes history recovery ambiguous.
+
+The SDK accepts a structural peer instead of importing a private demosdk path.
+At demosdk 4.0.16, the only public `instantMessaging` export is the eager package
+root, whose clean import currently fails on an undeclared dependency; the
+focused public subpath fix is tracked in
+[kynesyslabs/sdks#125](https://github.com/kynesyslabs/sdks/issues/125). Until
+that package fix lands, the companion host must supply the connected peer. This
+transport still delegates DACS channel signing and verification to the
+lifecycle callbacks because the normative framing remains open in
+DACS-Standard#349.
+
 ## Finalizing and committing an accepted agreement
 
 `deriveRfqAgreement()` accepts only a validated `accepted` checkpoint and the
@@ -232,7 +292,9 @@ policy never invokes the verifier and retains the transcript privately;
 recommended publication may be omitted, while required publication fails
 closed.
 
-The SDK does not yet invent a ciphertext or transcript-signature wire format.
+The SDK does not invent the still-undefined encrypted transcript publication
+envelope or transcript-signature wire format. Live L2PS RFQ message encryption
+is an SR-4 implementation choice and is handled separately above.
 DACS-Standard#351 tracks the missing normative `TranscriptSignature`, consent,
 encryption-envelope, SR-2 address and receipt-binding definitions. Once that is
 resolved, the verified transcript and disclosure plan can feed the conforming

@@ -477,6 +477,16 @@ function capturePacket<TSignature>(value: unknown): RfqLifecyclePacket<TSignatur
   return packet;
 }
 
+/** Parse and fully validate an exact durable RFQ transport packet. */
+export function parseRfqLifecyclePacket<TSignature = unknown>(
+  value: unknown,
+): Readonly<RfqLifecyclePacket<TSignature>> {
+  return snapshot(
+    capturePacket<TSignature>(value),
+    "RFQ lifecycle packet",
+  );
+}
+
 function validContribution(
   value: unknown,
   role: "buyer" | "seller",
