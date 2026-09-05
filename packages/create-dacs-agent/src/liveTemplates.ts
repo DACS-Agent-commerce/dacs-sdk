@@ -400,7 +400,7 @@ export function configuredX402WalletSpendPolicy(input: Readonly<{
     chainId: input.chainId,
     maximumConcurrentEffects: common.maximumConcurrentEffects,
     maximumRetainedReservations: common.maximumRetainedReservations,
-    assets: [Object.freeze({
+    assets: Object.freeze([Object.freeze({
       asset: input.asset,
       maximumPerOrderDebit: baseUnits(
         loadRoleConfig("buyer").limits.maxServiceAmount.amount,
@@ -421,7 +421,7 @@ export function configuredX402WalletSpendPolicy(input: Readonly<{
       maximumCounterpartyDebit: baseUnits(decimalEnvironment(
         "DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT", "25",
       ), input.decimals),
-    })],
+    })]),
   });
 }
 
@@ -436,7 +436,7 @@ export function configuredPayDemWalletSpendPolicy(
     chainId: "demos",
     maximumConcurrentEffects: common.maximumConcurrentEffects,
     maximumRetainedReservations: common.maximumRetainedReservations,
-    assets: [Object.freeze({
+    assets: Object.freeze([Object.freeze({
       asset: "DEM",
       maximumPerOrderDebit: baseUnits(configuredMaximumPayDemTotalDebit(), 9),
       maximumNetworkFeeDebit: baseUnits(
@@ -456,7 +456,7 @@ export function configuredPayDemWalletSpendPolicy(
       maximumCounterpartyDebit: baseUnits(decimalEnvironment(
         "DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT", "25",
       ), 9),
-    })],
+    })]),
   });
 }
 
@@ -3718,7 +3718,9 @@ import {
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
+  createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
   createDacsWalletSpendAuthorityV1,
+  createDacsX402WalletSpendRecoveryAuthenticatorV1,
   createViemDacsX402BalanceReadClientV1,
   dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
@@ -3851,10 +3853,24 @@ async function main(): Promise<void> {
       }
       const workerId = role + "-" + String(process.pid);
       if (role === "buyer") {
+        const confirmX402Unused = x402Rail === undefined ? undefined :
+          createDacsX402ExactRetainedReplayConfirmerV1({
+            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
+              throw new Error("seller x402 endpoint configuration is unavailable");
+            })(),
+          });
         const x402WalletSpendAuthority = x402Rail === undefined ? undefined :
           await (async () => {
             if (context.evm?.role !== "buyer") {
               throw new Error("x402 buyer wallet authority is unavailable");
+            }
+            const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock;
+            if (x402AuthorizationSearchFromBlock === undefined) {
+              throw new Error("x402 authorization search bound is unavailable");
+            }
+            if (context.commerceStores.role !== "buyer" ||
+                context.commerceStores.x402Settlement === undefined) {
+              throw new Error("x402 buyer settlement evidence is unavailable");
             }
             const client = await createViemDacsX402BalanceReadClientV1({
               rpcUrl: evmRpcUrl!,
@@ -3882,9 +3898,16 @@ async function main(): Promise<void> {
                   owner: input.wallet,
                 }));
               },
-              // Only the SDK's chain-authenticated payment track owns this
-              // capability; HTTP and application callbacks never receive it.
-              authenticateRecovery: async () => true,
+              authenticateRecovery:
+                createDacsX402WalletSpendRecoveryAuthenticatorV1({
+                  settlementStore: context.commerceStores.x402Settlement,
+                  owner: workerId + "-x402-wallet-recovery",
+                  chainId: context.evm.runtime.chainId,
+                  minimumConfirmations: Number(finalityBlocks),
+                  authorizationSearchFromBlock: x402AuthorizationSearchFromBlock,
+                  client: context.evm.runtime.readClient,
+                  confirmUnused: confirmX402Unused!,
+                }),
             });
           })();
         const payDemObserver = payDemRail === undefined ? undefined :
@@ -3919,16 +3942,11 @@ async function main(): Promise<void> {
                   balance < 0n) throw new Error("Demos wallet balance is unavailable");
               return (activated ? balance : balance * 1000000000n).toString();
             },
-            authenticateRecovery: async (reservation, observation) => {
-              if (observation.disposition !== "settled") return true;
-              const transfer = await payDemObserver!(observation.evidenceHash);
-              return transfer.status === "included" &&
-                transfer.payer === reservation.wallet &&
-                transfer.payee === reservation.payee &&
-                transfer.amountOs === reservation.debits.find(
-                  (debit) => debit.purpose === "service"
-                )?.maximumAmount;
-            },
+            authenticateRecovery:
+              createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+                database: context.database,
+                observeDemosTransfer: payDemObserver!,
+              }),
           });
         const x402 = x402Rail === undefined ? undefined : {
           context,
@@ -3941,11 +3959,8 @@ async function main(): Promise<void> {
           recipeRegistryVersion: 1,
           finalityTag: "latest" as const,
           retryDelayMs: 5_000,
-          confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
-            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
-              throw new Error("seller x402 endpoint configuration is unavailable");
-            })(),
-          }),
+          maximumServiceAmount: config.limits.maxServiceAmount.amount,
+          confirmUnused: confirmX402Unused!,
           maxTimeoutSeconds: 120,
           minimumConfirmations: Number(finalityBlocks),
         };

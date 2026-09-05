@@ -67,11 +67,14 @@ import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
   assignSealedEnvelopeRoles,
   buildSealedAgreement,
+  deriveFixedPriceAgreement,
+  isNegotiablePriceWithinBand,
   makeCommitment,
   resolveSealedEnvelopeMode,
   runSealedEnvelopeCore,
   validateSealedAgreementForCommit,
   validateSealedAgreementRoleAssignment,
+  validateFixedPriceAgreementBinding,
   type AnchoredCommit,
   type AnchoredReveal,
   type SealedBid,
@@ -87,6 +90,7 @@ import {
 } from "../../src/identity/index.js";
 import type {
   AnyAttestationBundle,
+  AgreementArtifact,
   AttestationBundle,
   IdentityBundle,
   Listing,
@@ -282,6 +286,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       },
       {
         trustBundles: true,
+        trustBundlePartyRoles: true,
         // §10.5.1 guard (iv): a one-copy attribution needs authoritative
         // absence of the other role's copy. The current golden models NO
         // retained absence context, so every missing copy is indeterminate.
@@ -543,6 +548,150 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       },
     );
     return { result, agreement: agreement! };
+  };
+
+  const NEGOTIATION_NOW = 1_780_000_000_000;
+  const NEGOTIATION_COMMITTED_AT = NEGOTIATION_NOW + 1_000;
+  const NEGOTIATION_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+  const NEGOTIATION_BUYER = `key:${"a".repeat(64)}`;
+  const NEGOTIATION_SELLER = `key:${"b".repeat(64)}`;
+  const NEGOTIATION_RAIL = {
+    railId: "x402:default",
+    railVersion: 1,
+    parameters: { network: "eip155:8453" },
+  } as const;
+  const negotiationIdentity = (presentedBy: string): IdentityBundle => ({
+    bundleVersion: "1",
+    presentedBy,
+    presentedAt: NEGOTIATION_NOW - 1_000,
+    claims: [{ ref: presentedBy }],
+    presentation: {
+      kind: "per-claim",
+      signatures: [{ ref: presentedBy, signature: "identity-proof" }],
+    },
+  });
+  const negotiationListing = (
+    pricing: Listing["pricing"] = {
+      kind: "fixed",
+      price: { amount: "100", currency: "USDC" },
+    },
+  ): Listing => ({
+    dacsVersion: "1",
+    listingVersion: 1,
+    listingId: "conformance-negotiation",
+    seller: {
+      identity: negotiationIdentity(NEGOTIATION_SELLER),
+      displayName: "Conformance seller",
+      publicEndpoint: "https://seller.example/dacs",
+    },
+    offering: {
+      title: "Conformance payload",
+      description: "Pinned DACS-3 agreement/listing validation input",
+      category: "data.test",
+      tags: ["conformance"],
+      deliverable: {
+        kind: "storage-program",
+        schemaUrl: "https://schema.example/result.json",
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: NEGOTIATION_RAIL.railId } },
+      { kind: "deliver-storage-program" },
+    ],
+    pricing,
+    acceptedRails: [structuredClone(NEGOTIATION_RAIL)],
+    terms: { deadlineSecAfterCommit: 600 },
+    validity: {
+      notBefore: NEGOTIATION_NOW - 60_000,
+      notAfter: NEGOTIATION_NOW + 60_000,
+    },
+    signature: {
+      algorithm: "ed25519",
+      signer: NEGOTIATION_SELLER,
+      value: Buffer.alloc(64, 1).toString("base64url"),
+    },
+  });
+  const negotiationFixture = (
+    pricing?: Listing["pricing"],
+  ): {
+    agreement: AgreementArtifact;
+    listing: Listing;
+    verifiedListing: {
+      disposition: "verified";
+      listing: Listing;
+      pin: { listingId: string; version: number; contentHash: string };
+    };
+  } => {
+    const listing = negotiationListing(pricing);
+    const pin = {
+      listingId: listing.listingId,
+      version: listing.listingVersion,
+      contentHash: contentHash(listing as unknown as Record<string, unknown>),
+    };
+    const verifiedListing = {
+      disposition: "verified" as const,
+      listing,
+      pin,
+    };
+    const draft = deriveFixedPriceAgreement({
+      jobId: NEGOTIATION_JOB,
+      verifiedListing,
+      buyer: {
+        identityBundle: negotiationIdentity(NEGOTIATION_BUYER),
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "stor-negotiation-buyer-vet" },
+          contentHash: "c".repeat(64),
+        },
+      },
+      seller: {
+        identityBundle: negotiationIdentity(NEGOTIATION_SELLER),
+        vetRecordRef: {
+          anchor: { kind: "storage-program", locator: "stor-negotiation-seller-vet" },
+          contentHash: "d".repeat(64),
+        },
+      },
+      selectedRail: structuredClone(NEGOTIATION_RAIL),
+      generatedAt: NEGOTIATION_NOW,
+    });
+    const agreement = {
+      ...draft,
+      signatures: draft.parties.map((party, index) => ({
+        party: party.primaryClaim,
+        algorithm: "ed25519" as const,
+        value: Buffer.alloc(64, index + 2).toString("base64url"),
+      })),
+    } as AgreementArtifact;
+    return { agreement, listing, verifiedListing };
+  };
+  const repinNegotiationFixture = (
+    fixture: ReturnType<typeof negotiationFixture>,
+  ): void => {
+    fixture.verifiedListing.pin = {
+      listingId: fixture.listing.listingId,
+      version: fixture.listing.listingVersion,
+      contentHash: contentHash(
+        fixture.listing as unknown as Record<string, unknown>,
+      ),
+    };
+    fixture.agreement.listingRef = structuredClone(fixture.verifiedListing.pin);
+  };
+  const fixedBindingPasses = (
+    fixture: ReturnType<typeof negotiationFixture>,
+    committedAt = NEGOTIATION_COMMITTED_AT,
+  ): boolean => {
+    try {
+      validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   // ── Per-case runners ──────────────────────────────────────────────────────
@@ -938,6 +1087,134 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(isChainTxRef(legacy?.value) ? "pass" : "fail").toBe(
         want.legacyRailTxHashKind,
       );
+    },
+
+    // negotiate — DACS-3 §8.5.1/§8.5.2 agreement/listing binding.
+    "neg-band-inclusive": (want) => {
+      const pricing = {
+        kind: "negotiable" as const,
+        bandCenter: { amount: "100", currency: "USDC" },
+        minPct: 10,
+        maxPct: 10,
+      };
+      expect({
+        inBand: isNegotiablePriceWithinBand("95", pricing),
+        lowerEdge: isNegotiablePriceWithinBand("90", pricing),
+        upperEdge: isNegotiablePriceWithinBand("110", pricing),
+        below: isNegotiablePriceWithinBand("89.999", pricing),
+        above: isNegotiablePriceWithinBand("110.001", pricing),
+      }).toEqual(want);
+    },
+    "neg-currency-mismatch": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.price.currency = "EUR";
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/currency/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "currency" }).toEqual(want);
+    },
+    "neg-rail-reject": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.rail = { railId: "x402:other" };
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/acceptedRails/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "rail" }).toEqual(want);
+    },
+    "neg-deliverable": (want) => {
+      const conforming = negotiationFixture();
+      const typeMismatch = negotiationFixture();
+      typeMismatch.agreement.terms.deliverable.deliverableType = "attested-payload";
+      const hashMismatch = negotiationFixture();
+      hashMismatch.agreement.terms.deliverable.hash = "e".repeat(64);
+      const schemaMismatch = negotiationFixture();
+      schemaMismatch.agreement.terms.deliverable.schemaUrl =
+        "https://schema.example/other.json";
+      expect({
+        conforming: fixedBindingPasses(conforming),
+        typeMismatch: fixedBindingPasses(typeMismatch),
+        hashMismatch: fixedBindingPasses(hashMismatch),
+        schemaMismatch: fixedBindingPasses(schemaMismatch),
+      }).toEqual(want);
+    },
+    "neg-deadline-committedat": (want) => {
+      const within = negotiationFixture();
+      const beyond = negotiationFixture();
+      beyond.agreement.terms.deadline =
+        NEGOTIATION_COMMITTED_AT + 600 * 1_000 + 1;
+      expect({
+        within: fixedBindingPasses(within),
+        beyond: fixedBindingPasses(beyond),
+      }).toEqual(want);
+    },
+    "neg-notafter": (want) => {
+      const fixture = negotiationFixture();
+      fixture.listing.validity.notAfter = NEGOTIATION_COMMITTED_AT - 1;
+      repinNegotiationFixture(fixture);
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/authenticated finality time checks/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "notAfter" }).toEqual(want);
+    },
+    "neg-pattern-mismatch": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.derivedFromPattern = "rfq";
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: NEGOTIATION_COMMITTED_AT,
+      })).toThrow(/supports only fixed-price/);
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "pattern" }).toEqual(want);
+    },
+    "neg-ps3-fixed-over-negotiable": (want) => {
+      const pricing = {
+        kind: "negotiable" as const,
+        bandCenter: { amount: "100", currency: "USDC" },
+        minPct: 10,
+        maxPct: 10,
+      };
+      const exact = negotiationFixture(pricing);
+      const inBandNotExact = negotiationFixture(pricing);
+      inBandNotExact.agreement.terms.price.amount = "95";
+      expect(isNegotiablePriceWithinBand("95", pricing)).toBe(true);
+      expect({
+        exact: fixedBindingPasses(exact),
+        inBandNotExact: fixedBindingPasses(inBandNotExact),
+      }).toEqual(want);
+    },
+    "neg-priceanchor-absent-ok": (want) => {
+      expect(fixedBindingPasses(negotiationFixture())).toBe(want);
+    },
+    "neg-priceanchor-present": (want) => {
+      const valid = negotiationFixture();
+      valid.agreement.terms.priceAnchor = {
+        asset: "ETH",
+        quoteCurrency: "USDC",
+        price: "2000",
+        attestationRef: {
+          anchor: { kind: "storage-program", locator: "stor-price-anchor" },
+          contentHash: "f".repeat(64),
+        },
+        observedAt: NEGOTIATION_NOW,
+        sourceUrl: "https://oracle.example/eth-usdc",
+      };
+      const nonCanonical = structuredClone(valid);
+      nonCanonical.agreement.terms.priceAnchor!.price = "2000.00";
+      expect({
+        valid: fixedBindingPasses(valid),
+        nonCanonical: fixedBindingPasses(nonCanonical),
+      }).toEqual(want);
+    },
+    "neg-price-noncanonical": (want) => {
+      const fixture = negotiationFixture();
+      fixture.agreement.terms.price.amount = "100.00";
+      expect({ ok: fixedBindingPasses(fixture), failedAt: "price" }).toEqual(want);
     },
 
     // negotiate — DACS-3 SE-8 role assignment and commit teeth.
@@ -1891,6 +2168,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1949,6 +2227,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
         },
         {
           isValid: (bundle) => validated.has(bundle),
+          trustBundlePartyRoles: true,
           copyAbsence: () => "absent",
         },
       );
@@ -1960,6 +2239,92 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(derived.bundleRefs.map((ref) => ref.anchor.locator)).toEqual(
         want.bundleRefs.map((jobId: string) => bundleAddress(jobId, "buyer")),
       );
+    },
+    "verify-reputation-relabel-attack-defeated": (want) => {
+      const fx = repFixture();
+      const relabelled = structuredClone(
+        fx.bundles.find((bundle) => bundle.outcome === "aborted-by-self")!,
+      );
+      relabelled.parties = relabelled.parties.map((party) => ({
+        ...party,
+        role: party.primaryClaim === fx.partyPrimaryClaim ? "seller" : "buyer",
+      }));
+      const derived = deriveReputation(
+        fx.partyPrimaryClaim,
+        [relabelled],
+        {
+          windowStart: fx.windowStart,
+          windowEnd: fx.windowEnd,
+          computedAt: fx.computedAt,
+          windowingBasis: fx.windowingBasis,
+        },
+        {
+          // This vector isolates the metric boundary. The externally
+          // authenticated session binding, not the producer's relabelled
+          // parties[], fixes the scored party as buyer for this job.
+          trustBundles: true,
+          resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
+            jobId === relabelled.jobId &&
+            partyPrimaryClaim === fx.partyPrimaryClaim
+              ? "buyer"
+              : undefined,
+          copyAbsence: () => "absent",
+        },
+      );
+      expect({
+        bundleCount: derived.bundleCount,
+        counterpartyFaultRate: derived.metrics.counterpartyFaultRate,
+        completionRate: derived.metrics.completionRate,
+      }).toEqual(want);
+    },
+    "verify-one-sided-role-signature-binding": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const scope = structuredClone(original);
+      delete scope.signatures;
+      delete scope.anchoredByRole;
+      const sellerOnly = {
+        ...scope,
+        anchoredByRole: "buyer",
+        signatures: [{
+          party: "did:demos:seller",
+          algorithm: "ed25519",
+          value: Buffer.from(signArtifact(
+            "dacs-bundle:v1:",
+            scope,
+            hex(golden.verify.seeds.seller!),
+          )).toString("base64url"),
+        }],
+      };
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(sellerOnly, "buyer", {
+        resolvePublicKey: async (did) => keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("missing required signatures"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
+    },
+    "verify-one-sided-unverified-signature-absent": async (want) => {
+      const original = read(
+        "conformance/fixtures/session-bundle-one-sided.json",
+      );
+      const keys = keysFromSeeds(golden.verify.seeds);
+      const validity = await verifyBundleCopy(original, "buyer", {
+        resolvePublicKey: async (did) =>
+          did === "did:demos:buyer"
+            ? keys["did:demos:seller"] ?? null
+            : keys[did] ?? null,
+        verify: verifySig,
+      });
+      expect(validity).toMatchObject({
+        valid: false,
+        reason: expect.stringContaining("failed verification"),
+      });
+      expect(validity.valid ? "one-sided" : "absent").toBe(want);
     },
     "verify-reputation-unqualified-one-copy-excluded": (want) => {
       // Guard (iv): the same one-copy fixture with NO retained
@@ -1994,7 +2359,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       "remaining §6.3.2/§6.3.3 requirement-matching, freshness, and control-gate inputs lack an independently exported policy surface",
     vet: "remaining §6.3.3 matching/freshness inputs and §7.7.1 companion error-class provenance are constructed in dacs-verify run.ts but not shipped",
     negotiate:
-      "remaining §8.5.1/§8.5.2 price, fee, listing, and commitment checks need richer constructed inputs or focused SDK surfaces",
+      "all current DACS-3 negotiation goldens replay through exported SDK surfaces",
     governance: "all current GOV-1..3 goldens replay through the exported governance policy surface",
     dispute:
       "no DACS-X §11.2.1 dispute verifier in the SDK; vector inputs are constructed in dacs-verify run.ts, not shipped",
@@ -2003,7 +2368,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     settlement:
       "mutation/candidate inputs are constructed in dacs-verify run.ts, not shipped (only the two success fixtures are); PayeeBound (PB-1..3) has no SDK surface",
     verify:
-      "needs surfaces the SDK does not export (ST-1 transition legality, phase-error→outcome mapping, two-sided address lookup) or inputs not shipped",
+      "remaining reputation/consumption cases need authenticated resolution context or inputs not shipped",
   };
   const TODO_CASE_REASON: Record<string, string> = {
     "cf4-dacs2-attestation-address": "no exported dacs2 address builder (MVP anchor names deliberately unexported; #5/#48)",
@@ -2066,11 +2431,12 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. Current main provides 137 non-vacuous SDK
-    // runners; this PR adds SIWD resource binding, raising coverage to 138.
+    // This pin has 236 cases. The updated parent provides 141 non-vacuous SDK
+    // runners; this PR adds eleven negotiation runners while retaining every
+    // parent runner, raising coverage to 152.
     // deleting a runner must fail loudly instead of quietly
     // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(138);
+    expect(Object.keys(RUNNERS)).toHaveLength(152);
     expect(manifest.cases).toHaveLength(236);
   });
 

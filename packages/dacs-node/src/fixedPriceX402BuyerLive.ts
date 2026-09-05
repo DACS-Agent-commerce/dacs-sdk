@@ -1,7 +1,8 @@
-import type {
-  AuthenticatedRailDefinition,
-  X402BuyerEvmDisclosureRecovery,
-  X402BuyerEvmUnusedConfirmer,
+import {
+  baseUnits,
+  type AuthenticatedRailDefinition,
+  type X402BuyerEvmDisclosureRecovery,
+  type X402BuyerEvmUnusedConfirmer,
 } from "@kynesyslabs/dacs";
 
 import {
@@ -29,6 +30,8 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   rail: Readonly<AuthenticatedRailDefinition>;
   walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   tokenDomain: Readonly<{ name: string; version: string }>;
+  /** Operator-consented service ceiling in canonical major units. */
+  maximumServiceAmount: string;
   maxTimeoutSeconds: number;
   minimumConfirmations: number;
   authorizationSearchFromBlock: number;
@@ -54,6 +57,14 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
 export async function createDacsFixedPriceX402BuyerLiveV1(
   options: Readonly<DacsFixedPriceX402BuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsBuyerLiveCommerceGraphV1>> {
+  const asset = options.rail.asset;
+  if (asset.kind !== "erc20") {
+    throw new TypeError("fixed-price x402 buyer requires an ERC-20 rail asset");
+  }
+  const maximumServiceAmount = baseUnits(
+    options.maximumServiceAmount,
+    asset.decimals,
+  );
   const agreement = createDacsFixedPriceX402BuyerAgreementPolicyV1({
     context: options.context,
   });
@@ -100,6 +111,7 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
     payment: {
       ...payment,
       walletSpendAuthority: options.walletSpendAuthority,
+      maximumServiceAmount,
       minimumConfirmations: options.minimumConfirmations,
       authorizationSearchFromBlock: options.authorizationSearchFromBlock,
       ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),

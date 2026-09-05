@@ -495,6 +495,13 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
     expect(combined).toContain("createDacsWalletSpendAuthorityV1");
+    expect(combined).toContain("createDacsX402WalletSpendRecoveryAuthenticatorV1");
+    expect(combined).toContain("createDacsPayDemWalletSpendRecoveryAuthenticatorV1");
+    expect(combined).not.toContain("authenticateRecovery: async () => true");
+    expect(combined).not.toContain(
+      'if (observation.disposition !== "settled") return true',
+    );
+    expect(combined).toContain("assets: Object.freeze([Object.freeze({");
     expect(combined).toContain('stateDirectory: context.config.dataDirectory + "/wallet-spend-x402"');
     expect(combined).toContain('stateDirectory: context.config.dataDirectory + "/wallet-spend-pay-dem"');
     expect(combined).toContain('walletPolicyStatus: "post-start-inspection-required"');
@@ -519,6 +526,12 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
     expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).toContain(
+      "const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock",
+    );
+    expect(combined).toContain(
+      'throw new Error("x402 authorization search bound is unavailable")',
+    );
     expect(combined).toContain('finalityTag: "latest"');
     expect(combined).toContain('evmFinalityTag: "latest"');
     expect(combined).toContain("retryDelayMs: 5_000");

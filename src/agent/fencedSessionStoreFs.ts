@@ -517,6 +517,15 @@ export async function createFsFencedSessionStore(
       await quarantineStaleReclaimGate(jobId);
       return false;
     }
+    // A preceding SDK version can move the directory-form gate after our
+    // pre-publication scan and before it observes the gate's live owner. Do not
+    // enter the critical section if that legacy recovery left any live
+    // quarantine: release whichever location still contains our token and
+    // retry behind the authoritative holder.
+    if ((await reclaimQuarantines(jobId)).length > 0) {
+      await releaseReclaimGate(jobId, token);
+      return false;
+    }
     return true;
   }
 
