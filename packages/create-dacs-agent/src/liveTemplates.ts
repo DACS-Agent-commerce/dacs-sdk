@@ -3584,6 +3584,7 @@ async function main(): Promise<void> {
           recipeRegistryVersion: 1,
           finalityTag: "latest" as const,
           retryDelayMs: 5_000,
+          maximumServiceAmount: config.limits.maxServiceAmount.amount,
           confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
             publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
               throw new Error("seller x402 endpoint configuration is unavailable");

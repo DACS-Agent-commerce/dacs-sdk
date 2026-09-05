@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -74,6 +76,14 @@ function nativeTransferRecord(generation: number): DemosWriteJournalRecord {
     },
     updatedAt: 2,
   };
+}
+
+function walletLockDigest(chainIdentity: string, wallet: string): string {
+  return createHash("sha256")
+    .update(chainIdentity)
+    .update("\0")
+    .update(wallet)
+    .digest("hex");
 }
 
 afterEach(async () => {
@@ -289,6 +299,51 @@ describe("filesystem Demos write journal", () => {
     await expect(journal.acquire(key)).rejects.toThrow(/timed out acquiring/);
     await lease.release();
   });
+
+  it("serializes competing stale-lock reclaimers without displacing a successor", async () => {
+    const key = { chainIdentity: "genesis-race", wallet: "0xrace" };
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const dir = await temporaryDirectory();
+      const journals = await Promise.all(Array.from({ length: 8 }, () =>
+        createFsDemosWriteJournal({
+          dir,
+          lockStaleMs: 1,
+          lockTimeoutMs: 10_000,
+        })));
+      const locksDir = join(dir, "locks");
+      const staleLock = join(
+        locksDir,
+        `${walletLockDigest(key.chainIdentity, key.wallet)}.lock`,
+      );
+      await mkdir(staleLock, { mode: 0o700 });
+      await writeFile(join(staleLock, "owner.json"), "not-json", { mode: 0o600 });
+      const old = new Date(Date.now() - 10_000);
+      await utimes(staleLock, old, old);
+
+      let active = 0;
+      let maximumActive = 0;
+      const generations = await Promise.all(journals.map(async (journal) => {
+        const lease = await journal.acquire(key);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        try {
+          await lease.assertCurrent();
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          await lease.assertCurrent();
+          return lease.generation;
+        } finally {
+          active -= 1;
+          await lease.release();
+        }
+      }));
+
+      expect(maximumActive).toBe(1);
+      expect(generations.sort((left, right) => left - right)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8,
+      ]);
+      expect(await readdir(locksDir)).toEqual([]);
+    }
+  }, 90_000);
 
   it("recovers an unresolved write after a real child process is hard-killed", async () => {
     const dir = await temporaryDirectory();

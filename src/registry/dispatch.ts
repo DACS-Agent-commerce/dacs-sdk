@@ -4,6 +4,7 @@ import { DacsError } from "../errors.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
+import { assertDacsX402OutboundUrlV1 } from "../rails/x402Outbound.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import {
   createPayDemRail,
@@ -92,6 +93,8 @@ export interface RailDispatchOptions {
   };
   /** Override fetch (tests / custom transport). */
   fetchImpl?: typeof fetch;
+  /** Required with fetchImpl; never valid as implicit production transport. */
+  x402FetchMode?: "insecure-test";
 }
 
 function bindDescriptorRequest(
@@ -214,6 +217,7 @@ interface CapturedRailDispatchOptions {
   demosSecret?: string;
   payDem?: Readonly<CapturedPayDemOptions>;
   fetchImpl?: typeof fetch;
+  x402FetchMode?: "insecure-test";
 }
 
 type DispatchMethod = (...args: never[]) => unknown;
@@ -426,6 +430,11 @@ function captureDispatchOptions(
         "x402 EVM RPC URL",
       ),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
+      x402FetchMode: optionalDispatchValue<"insecure-test">(
+        opts,
+        "x402FetchMode",
+        "x402 fetch mode",
+      ),
     });
   }
   if (railType === "evm-erc20") {
@@ -628,12 +637,33 @@ export async function settleFromRail(
         );
       }
       const url = requiredCoordinate(payment.url, "x402", "url");
+      const transportMode = capturedOptions.x402FetchMode ?? "production";
+      try {
+        assertDacsX402OutboundUrlV1(
+          capturedDescriptor.network.resourceBaseUrl,
+          transportMode,
+        );
+        assertDacsX402OutboundUrlV1(url, transportMode);
+      } catch (cause) {
+        throw new DacsError(
+          "x402 resource and authenticated base must be public HTTPS URLs in production and safe for the selected transport mode",
+          { cause },
+        );
+      }
       if (!resourceIsWithinBase(
         url,
         capturedDescriptor.network.resourceBaseUrl,
       )) {
         throw new DacsError(
           `x402 resource "${url}" is outside authenticated base "${capturedDescriptor.network.resourceBaseUrl}"`,
+        );
+      }
+      if ((capturedOptions.fetchImpl !== undefined &&
+            capturedOptions.x402FetchMode !== "insecure-test") ||
+          (capturedOptions.fetchImpl === undefined &&
+            capturedOptions.x402FetchMode !== undefined)) {
+        throw new DacsError(
+          "x402 fetch overrides require explicit insecure-test mode",
         );
       }
       const network = requireMatchingNetwork(
@@ -655,6 +685,9 @@ export async function settleFromRail(
           "x402",
         ),
         fetchImpl: capturedOptions.fetchImpl,
+        ...(capturedOptions.x402FetchMode === undefined
+          ? {}
+          : { transportPolicy: { mode: capturedOptions.x402FetchMode } }),
         requireSessionBinding: true,
         rpcUrl: capturedOptions.rpcUrl,
         finalityBlocks: requiredFinalityBlocks(capturedDescriptor),
