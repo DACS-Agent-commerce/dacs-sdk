@@ -38,7 +38,7 @@ export interface RailAvailabilityAuthority {
   /** Exact digest pinned by authenticated session/registry state. */
   pinnedRailDigest: string | null;
   sessionState: RailSessionState;
-  operatorContext?: TrustedRailOperatorContext;
+  operatorContext: TrustedRailOperatorContext;
   /** Trusted result of the local RAV-R3 preflight. */
   operatorPreflightOk: boolean;
 }
@@ -258,7 +258,7 @@ export function evaluateRailAvailabilitySelection(
   const availability = rail.availability as string;
   if (availability === "disabled") return result("fail", "disabled", railDigest);
   if (availability === "failed") return result("fail", "failed", railDigest);
-  if (availability === "mocked" && authority.operatorContext!.production) {
+  if (availability === "mocked" && authority.operatorContext.production) {
     return result("fail", "mocked-in-production", railDigest);
   }
   if (

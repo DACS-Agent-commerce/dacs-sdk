@@ -187,6 +187,24 @@ describe("DACS-2 CRQ-1..CRQ-4 claim qualification", () => {
     expect(touched).toBe(false);
   });
 
+  it("rejects callable proxy dependencies without touching proxy traps", async () => {
+    let touched = false;
+    const callableProxy = new Proxy(() => null, {
+      get() {
+        touched = true;
+        throw new Error("callable proxy trap must remain inert");
+      },
+    });
+    const hostile = {
+      ...deps,
+      resolveAuthenticatedSessionStart: callableProxy,
+    } as unknown as ClaimQualificationDeps;
+    await expect(
+      evaluateClaimRequirementQualification(inputFor(vectors.vectors[0]), hostile),
+    ).resolves.toMatchObject({ decision: "error", reason: "authority-invalid" });
+    expect(touched).toBe(false);
+  });
+
   it("requires trusted authentication of the complete production qualification", async () => {
     const vector = vectors.vectors.find(
       (item: any) => item.name === "vet-claim-requirement-parameters-mismatch-fail",

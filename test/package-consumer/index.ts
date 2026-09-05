@@ -5,6 +5,7 @@ import {
   evaluateClaimRequirementQualification,
   evaluateRailAvailabilitySelection,
   type ClaimQualificationDeps,
+  type ClaimQualificationRequirement,
   type ClaimQualificationBundleRequirement,
   type ClaimQualificationInput,
   type RailAvailabilityAuthority,
@@ -59,6 +60,7 @@ declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
+declare const qualificationMember: ClaimQualificationRequirement;
 declare const qualificationRequirement: ClaimQualificationBundleRequirement;
 declare const railAuthority: RailAvailabilityAuthority;
 declare const ap2Store: Ap2BindingStore;
@@ -74,6 +76,7 @@ void priceAccepted;
 void canonical;
 void fulfilment;
 void qualify(qualificationInput, qualificationDeps);
+void qualificationMember;
 void qualificationRequirement;
 void selectRail({}, railAuthority);
 void adapter;

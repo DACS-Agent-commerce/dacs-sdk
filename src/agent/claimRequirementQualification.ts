@@ -62,10 +62,15 @@ export type ClaimQualificationAuthority =
   | ClaimQualificationProductionAuthority
   | ClaimQualificationReplayAuthority;
 
+export interface ClaimQualificationRequirement
+  extends Omit<CompositeClaimRequirement, "verificationRequired"> {
+  verificationRequired: true;
+}
+
 /** Exact CRQ projection used by the adopted conformance operation. */
 export interface ClaimQualificationBundleRequirement {
-  required: CompositeClaimRequirement[];
-  oneOf?: CompositeClaimRequirement[][];
+  required: ClaimQualificationRequirement[];
+  oneOf?: ClaimQualificationRequirement[][];
 }
 
 export interface ClaimQualificationInput {
@@ -167,11 +172,19 @@ function capturedFunction<T extends (...args: never[]) => unknown>(
   source: unknown,
   key: string,
 ): T | null {
-  if (!isRecord(source) || nodeTypes.isProxy(source)) return null;
-  const descriptor = Object.getOwnPropertyDescriptor(source, key);
-  return descriptor && "value" in descriptor && typeof descriptor.value === "function"
-    ? (Function.prototype.bind.call(descriptor.value, source) as T)
-    : null;
+  try {
+    if (!isRecord(source) || nodeTypes.isProxy(source)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (
+      !descriptor ||
+      !("value" in descriptor) ||
+      typeof descriptor.value !== "function" ||
+      nodeTypes.isProxy(descriptor.value)
+    ) return null;
+    return Function.prototype.bind.call(descriptor.value, source) as T;
+  } catch {
+    return null;
+  }
 }
 
 function captureDeps(source: ClaimQualificationDeps): ClaimQualificationDeps | null {
@@ -258,7 +271,7 @@ function hasExactKeys(
 
 function isQualificationRequirement(
   value: unknown,
-): value is CompositeClaimRequirement {
+): value is ClaimQualificationRequirement {
   return (
     hasExactKeys(
       value,

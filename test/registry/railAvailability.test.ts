@@ -32,9 +32,7 @@ const authority = (ctx: Record<string, unknown>): RailAvailabilityAuthority => (
   pinnedRailDigest: (ctx.pinnedRailDigest as string | null) ?? null,
   sessionState: ctx.sessionState as "new" | "in-flight",
   operatorPreflightOk: ctx.operatorPreflightOk as boolean,
-  ...(ctx.operatorContext === undefined
-    ? {}
-    : { operatorContext: ctx.operatorContext as RailAvailabilityAuthority["operatorContext"] }),
+  operatorContext: ctx.operatorContext as RailAvailabilityAuthority["operatorContext"],
 });
 
 describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
