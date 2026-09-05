@@ -680,6 +680,8 @@ function recordViolation<TSignature>(value: unknown): string | null {
     }
     if (
       packetIds.has(packet.packetId) ||
+      packet.jobId !== record.jobId ||
+      packet.channelId !== record.channelId ||
       packet.sender !== roleClaim(record, record.role) ||
       packet.recipient !== roleClaim(record, otherRole(record.role)) ||
       !["pending", "indeterminate", "acknowledged", "rejected"].includes(entry.state) ||
@@ -692,6 +694,18 @@ function recordViolation<TSignature>(value: unknown): string | null {
       return "outbox routing or state is inconsistent";
     }
     packetIds.add(packet.packetId);
+  }
+  const rejectedOutbox = record.outbox.filter((entry) => entry.state === "rejected");
+  if (
+    (record.failure?.class === "transport" &&
+      (record.failure.packetId === undefined ||
+        rejectedOutbox.length !== 1 ||
+        rejectedOutbox[0]!.packet.packetId !== record.failure.packetId ||
+        rejectedOutbox[0]!.reason !== record.failure.reason ||
+        rejectedOutbox[0]!.updatedAt !== record.failure.recordedAt)) ||
+    (record.failure?.class !== "transport" && rejectedOutbox.length !== 0)
+  ) {
+    return "terminal transport failure does not match the rejected outbox entry";
   }
   if (record.agreement !== undefined) {
     try {
@@ -1357,6 +1371,26 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       );
       if (index < 0) {
         return { status: "rejected", reason: "RFQ outbox packet is missing" };
+      }
+      if (loaded.record.failure !== undefined) {
+        return {
+          status: "rejected",
+          reason: loaded.record.failure.reason,
+          record: loaded.record,
+        };
+      }
+      const currentEntry = loaded.record.outbox[index]!;
+      if (currentEntry.state === "acknowledged") {
+        return { status: "ready", record: loaded.record };
+      }
+      if (currentEntry.state === "rejected") {
+        return {
+          status: "rejected",
+          reason:
+            currentEntry.reason ??
+            "RFQ transport permanently rejected the packet",
+          record: loaded.record,
+        };
       }
       const outbox = structuredClone(loaded.record.outbox);
       let observedAt: number;
