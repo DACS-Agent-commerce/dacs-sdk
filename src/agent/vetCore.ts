@@ -3,6 +3,7 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize, contentHash, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 import type {
   AttestationRef,
+  BundleClaim,
   ComponentSignature,
   CompositeVerificationRecord,
   IdentityBundle,
@@ -29,6 +30,7 @@ import { ed25519Verify, publicKeyFromRaw, signedBytes } from "../crypto/index.js
 import { DacsError } from "../errors.js";
 import {
   identityBundleHash,
+  parseCanonicalClaimReference,
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
 import {
@@ -62,7 +64,9 @@ import {
   type PartyVetRequirementPath,
 } from "./partyVetPlan.js";
 import {
+  isDurableSessionRecipeRegistrySnapshot,
   isDurableSessionRecipePin,
+  type DurableSessionRecipeRegistrySnapshot,
   type DurableSessionRecipePin,
 } from "./durableRecipePin.js";
 import {
@@ -1002,6 +1006,8 @@ export interface PartyVetRequest {
   identityBundle: IdentityBundle;
   requirement: CompositeBundleRequirement;
   attempts: PartyVetAttemptRequest[];
+  /** PCR-6/CRQ-1 job-wide registry authority, including pure presence runs. */
+  sessionRecipeRegistrySnapshot?: DurableSessionRecipeRegistrySnapshot;
   supplementary?: SupplementarySignal[];
   warnings?: VerificationWarning[];
 }
@@ -1013,6 +1019,11 @@ export interface PartyVetDeps<TKey> extends VetDeps {
   verifyIdentityPresentation: (input: {
     bundle: Readonly<IdentityBundle>;
     signedBytes: Uint8Array;
+  }) => Promise<boolean> | boolean;
+  /** Optional scheme-specific DACS-1 step (6) proof for a non-key selector. */
+  isPresentedClaimControlled?: (input: {
+    bundle: Readonly<IdentityBundle>;
+    claim: Readonly<BundleClaim>;
   }) => Promise<boolean> | boolean;
   /** Role policy, key resolution and cryptographic verifier for signed components. */
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
@@ -1164,7 +1175,7 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       "requirement",
       "attempts",
     ],
-    ["supplementary", "warnings"],
+    ["sessionRecipeRegistrySnapshot", "supplementary", "warnings"],
     "party Vet request",
   );
   const attempts = denseOwnArrayValues(
@@ -1196,6 +1207,15 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       ),
     }) as PartyVetAttemptRequest;
   });
+  const sessionSnapshot = descriptors.sessionRecipeRegistrySnapshot?.value;
+  if (
+    sessionSnapshot !== undefined &&
+    !isDurableSessionRecipeRegistrySnapshot(sessionSnapshot)
+  ) {
+    throw new DacsError(
+      "party Vet requires a runtime-authenticated session registry snapshot",
+    );
+  }
   return deepFreezeSnapshot({
     jobId: descriptors.jobId!.value,
     evaluatedParty: descriptors.evaluatedParty!.value,
@@ -1208,6 +1228,9 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       "party Vet BundleRequirement",
     ),
     attempts,
+    ...(sessionSnapshot !== undefined
+      ? { sessionRecipeRegistrySnapshot: sessionSnapshot }
+      : {}),
     ...(descriptors.supplementary
       ? {
           supplementary: snapshot(
@@ -1231,6 +1254,7 @@ interface CapturedPartyVetDeps<TKey> {
   vet: VetDeps;
   runOnceAuthorized: PartyVetOperationStore["runOnceAuthorized"];
   verifyIdentityPresentation: PartyVetDeps<TKey>["verifyIdentityPresentation"];
+  isPresentedClaimControlled?: PartyVetDeps<TKey>["isPresentedClaimControlled"];
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
   sessionEffectAuthority: {
     claimCheckpoint: FencedSessionStoreV2["claimCheckpoint"];
@@ -1264,7 +1288,7 @@ function capturePartyVetDeps<TKey>(
         "componentVerifier",
         "sessionEffectAuthority",
       ],
-      optionalBaseKeys,
+      [...optionalBaseKeys, "isPresentedClaimControlled"],
       "party Vet dependencies",
     );
     const baseSource = Object.create(null) as Record<string, unknown>;
@@ -1297,6 +1321,12 @@ function capturePartyVetDeps<TKey>(
       descriptors.verifyIdentityPresentation!.value,
       "party Vet identity presentation verifier",
     );
+    const rawIsPresentedClaimControlled = descriptors.isPresentedClaimControlled
+      ? exactCallback<NonNullable<PartyVetDeps<TKey>["isPresentedClaimControlled"]>>(
+          descriptors.isPresentedClaimControlled.value,
+          "party Vet presented-claim control verifier",
+        )
+      : undefined;
     const componentSource = descriptors.componentVerifier!.value;
     const componentDescriptors = exactOwnDataDescriptors(
       componentSource,
@@ -1379,6 +1409,18 @@ function capturePartyVetDeps<TKey>(
         INERT_VET_RECEIVER,
         [input],
       ),
+      ...(rawIsPresentedClaimControlled
+        ? {
+            isPresentedClaimControlled: (input: {
+              bundle: Readonly<IdentityBundle>;
+              claim: Readonly<BundleClaim>;
+            }) => Reflect.apply(
+              rawIsPresentedClaimControlled,
+              INERT_VET_RECEIVER,
+              [input],
+            ),
+          }
+        : {}),
       componentVerifier: Object.freeze({
         isSignerAuthorized: (
           artifact: Parameters<
@@ -3440,6 +3482,41 @@ export async function partyVetCore<TKey>(
     throw new DacsError("party Vet IdentityBundle presentation is not authenticated");
   }
 
+  let presentedClaimControlled: boolean | undefined;
+  if (request.requirement.primaryClaimSelector !== undefined) {
+    const presentedIdentity = parseCanonicalClaimReference(
+      request.identityBundle.presentedBy,
+    );
+    const presentedClaims = request.identityBundle.claims.filter((claim) =>
+      sameCanonicalClaimIdentity(claim.ref, request.identityBundle.presentedBy)
+    );
+    presentedClaimControlled = false;
+    if (
+      presentedClaims.length === 1 &&
+      presentedIdentity?.identity.scheme ===
+        request.requirement.primaryClaimSelector &&
+      presentedIdentity.identity.scheme !== "key" &&
+      deps.isPresentedClaimControlled
+    ) {
+      try {
+        presentedClaimControlled = (
+          await deps.isPresentedClaimControlled(deepFreezeSnapshot({
+            bundle: snapshot(
+              request.identityBundle,
+              "party Vet selector-control bundle",
+            ),
+            claim: snapshot(
+              presentedClaims[0]!,
+              "party Vet selector-control claim",
+            ),
+          }))
+        ) === true;
+      } catch {
+        presentedClaimControlled = false;
+      }
+    }
+  }
+
   const classificationCache = new Map<
     string,
     "freshness" | "dealSpecific"
@@ -3474,6 +3551,15 @@ export async function partyVetCore<TKey>(
       signer: deps.vet.componentSigner.signer,
     },
     attempts: preparedAttempts,
+    ...(request.sessionRecipeRegistrySnapshot !== undefined
+      ? {
+          sessionRecipeRegistrySnapshot:
+            request.sessionRecipeRegistrySnapshot,
+        }
+      : {}),
+    ...(presentedClaimControlled !== undefined
+      ? { presentedClaimControlled }
+      : {}),
     ...(request.supplementary !== undefined
       ? { supplementary: request.supplementary }
       : {}),

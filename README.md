@@ -36,7 +36,7 @@ All five lifecycle stages run end to end:
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
+| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
@@ -100,6 +100,17 @@ filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
+
+`partyVetCore` evaluates DACS-1 presence-only members directly against the
+exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
+not resolve an optional `verifiedBy` merely to prove presence. Mixed
+presence/verified production must supply the durable
+`sessionRecipeRegistrySnapshot` pinned at session start. A strict consumer must
+provide the same bundle and snapshot hash through
+`CompositeVerificationExpectations.presence`, authenticate both, and re-run
+the mixed decision and exact-claim selector-control rules. A temporarily
+unavailable result is retained as indeterminate evidence; an independently
+conclusive failure still has the Standard's fail-first precedence.
 
 Settlement evidence has two deliberately different public boundaries.
 `validateSettlementEvidenceStructure()` checks wire shape and any supplied
