@@ -141,9 +141,23 @@ const committed = await commitRfqAgreement(
 
 ## Current boundary
 
-Optional all-party-consented encrypted transcript anchoring and the live Demos
-L2PS adapter remain separate layers. Until those land, the SDK supplies the
-complete transport-neutral RFQ agreement/commitment core but not a complete
-live `negotiate-rfq` phase handler. DACS-Standard#349 must resolve the current
-channel signature-framing conflict before the adapter can safely choose a wire
-format.
+`prepareRfqTranscript()` re-verifies the complete ordered private message set,
+member turns, proposal bounds, exact acceptance and final-message hook against
+the accepted session and signed Agreement. `planRfqTranscriptDisclosure()`
+then applies the Listing policy and permits encrypted publication only when
+every member's injected consent verifier returns `pass`. The default `none`
+policy never invokes the verifier and retains the transcript privately;
+recommended publication may be omitted, while required publication fails
+closed.
+
+The SDK does not yet invent a ciphertext or transcript-signature wire format.
+DACS-Standard#351 tracks the missing normative `TranscriptSignature`, consent,
+encryption-envelope, SR-2 address and receipt-binding definitions. Once that is
+resolved, the verified transcript and disclosure plan can feed the conforming
+encrypted publisher.
+
+The live Demos L2PS adapter also remains separate. Until it lands, the SDK
+supplies the complete transport-neutral RFQ agreement/commitment and transcript
+policy core but not a complete live `negotiate-rfq` phase handler.
+DACS-Standard#349 must resolve the current channel signature-framing conflict
+before the adapter can safely choose a normative wire format.
