@@ -86,7 +86,7 @@ export interface DacsX402WalletSpendRecoveryAuthenticatorOptionsV1 {
   client: X402BuyerEvmReadClient;
   /** Defaults to the SDK's production viem EIP-712 verifier. */
   verifySignature?: X402BuyerEvmSignatureVerifier;
-  /** Required before a live authorization can be authenticated as unused. */
+  /** Required to authenticate live-unused replay safety; never proves terminal absence. */
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   /** Defaults to the SDK's locked-down retained disclosure recovery. */
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
@@ -212,7 +212,7 @@ function walletSettlementForIntent(
 
 /**
  * Re-authenticate generated x402 wallet recovery from the retained exact intent
- * through the SDK's EIP-3009 event, receipt, ancestry, and unused-state checks.
+ * through the SDK's EIP-3009 event, receipt, ancestry, and terminal-state checks.
  * Local settlement records are candidates only; they never become proof alone.
  */
 export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
@@ -352,7 +352,8 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
           canonicalize(walletSettlementForIntent(intent, recovered.settlement)) ===
             canonicalize(observation);
       }
-      return recovered.disposition === "unused" &&
+      return (recovered.disposition === "cancelled" ||
+          recovered.disposition === "expired-unused") &&
         recovered.authenticationHash === observation.evidenceHash;
     } catch {
       return false;
@@ -444,6 +445,24 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     } catch {
       return false;
     }
+  }
+
+  async function reconcileWalletTerminalAbsence(
+    paymentInput: Readonly<DacsX402BuyerPaymentInputV1>,
+    proof: Readonly<{
+      disposition: "cancelled" | "expired-unused";
+      authenticationHash: string;
+    }>,
+  ): Promise<boolean> {
+    if (!HASH_RE.test(proof.authenticationHash)) return false;
+    await walletSpendAuthority.reconcile(
+      walletReservation(paymentInput, finalityBlocks),
+      Object.freeze({
+        disposition: "terminal-absent",
+        evidenceHash: proof.authenticationHash,
+      }),
+    );
+    return true;
   }
 
   async function persistAuthenticatedSettlement(
@@ -605,24 +624,32 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
         return persisted;
       }
       if (recovered.disposition === "unused") {
-        if (!HASH_RE.test(recovered.authenticationHash)) {
+        // Live unused permits only an exact retained replay inside the x402
+        // state machine. An already-submitted request may still consume the
+        // authorization, and wallet core has no atomic release/regrant API.
+        // Keep the original reservation until terminal rail evidence arrives.
+        return {
+          status: "indeterminate",
+          reasonCode: "x402-live-unused-wallet-reservation-held",
+        };
+      }
+      if (recovered.disposition === "cancelled" ||
+          recovered.disposition === "expired-unused") {
+        if (!await reconcileWalletTerminalAbsence(paymentInput, {
+          disposition: recovered.disposition,
+          authenticationHash: recovered.authenticationHash,
+        })) {
           return { status: "indeterminate", reasonCode: "x402-absence-proof-invalid" };
         }
-        await walletSpendAuthority.reconcile(
-          walletReservation(paymentInput, finalityBlocks),
-          Object.freeze({
-            disposition: "terminal-absent",
-            evidenceHash: recovered.authenticationHash,
-          }),
-        );
-        return { status: "absent", absenceProofHash: recovered.authenticationHash };
-      }
-      if (recovered.disposition === "used-different" ||
-          recovered.disposition === "cancelled" ||
-          recovered.disposition === "expired-unused") {
         return {
           status: "operator-action",
           reasonCode: `x402-terminal-${recovered.disposition}`,
+        };
+      }
+      if (recovered.disposition === "used-different") {
+        return {
+          status: "operator-action",
+          reasonCode: "x402-terminal-used-different",
         };
       }
       return {
@@ -702,6 +729,14 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
         );
       }
       if (progress.status === "failed") {
+        if ((progress.outcome.failure === "cancelled" ||
+            progress.outcome.failure === "expired-unused") &&
+            !await reconcileWalletTerminalAbsence(paymentInput, {
+              disposition: progress.outcome.failure,
+              authenticationHash: progress.outcome.authenticationHash,
+            })) {
+          return control("indeterminate", "x402-absence-proof-invalid");
+        }
         return control("operator-action", `x402-terminal-${progress.outcome.failure}`);
       }
       return control(
