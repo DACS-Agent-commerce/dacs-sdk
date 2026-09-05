@@ -80,7 +80,9 @@ function bindStableRecoveryCapability<T>(source: unknown, name: string): T | nul
       if (descriptor) {
         if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
             nodeTypes.isProxy(descriptor.value)) return null;
-        return Reflect.apply(Function.prototype.bind, descriptor.value, [source]) as T;
+        const capability = descriptor.value as (...args: unknown[]) => unknown;
+        return Object.freeze((...args: unknown[]) =>
+          Reflect.apply(capability, source, args)) as T;
       }
       cursor = Object.getPrototypeOf(cursor) as object | null;
     }

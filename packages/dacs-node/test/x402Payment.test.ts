@@ -841,9 +841,15 @@ describe("coordinator x402 buyer payment track", () => {
       verifySignature: validSignature,
       confirmUnused: safeUnused,
     };
+    const metadataGetter = vi.fn(() => 0);
+    Object.defineProperty(store.load, "length", {
+      configurable: true,
+      get: metadataGetter,
+    });
     const authenticateRecovery =
       createDacsX402WalletSpendRecoveryAuthenticatorV1(options);
     expect(Object.isFrozen(authenticateRecovery)).toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
     Object.assign(store, {
       load: vi.fn(async () => ({ status: "absent" as const })),
       claim: vi.fn(async () => ({ status: "corrupt" as const, reason: "swapped" })),
@@ -871,6 +877,7 @@ describe("coordinator x402 buyer payment track", () => {
     };
     await expect(authenticateRecovery(recoveryReservation(retained), exact))
       .resolves.toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
   });
 
   it("rejects accessors, proxies, and non-literal current-fence results", async () => {

@@ -554,9 +554,15 @@ describe("native DEM buyer payment track", () => {
         return chain;
       },
     };
+    const metadataGetter = vi.fn(() => "swapped");
+    Object.defineProperty(options.observeDemosTransfer, "name", {
+      configurable: true,
+      get: metadataGetter,
+    });
     const authenticateRecovery =
       createDacsPayDemWalletSpendRecoveryAuthenticatorV1(options);
     expect(Object.isFrozen(authenticateRecovery)).toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
     Object.assign(database, {
       loadEffectInput: vi.fn(() => undefined),
       loadEffectCheckpoint: vi.fn(() => undefined),
@@ -579,6 +585,7 @@ describe("native DEM buyer payment track", () => {
 
     await expect(authenticateRecovery(recoveryReservation(payment), exact))
       .resolves.toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
   });
 
   it("rejects DEM recovery option accessors and proxies without invoking them", () => {
