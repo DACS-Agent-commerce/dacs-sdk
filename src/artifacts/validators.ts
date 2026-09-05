@@ -1363,6 +1363,7 @@ const hasAgreementCommon = (
       )) ||
     (terms.additionalTerms !== undefined && !isExactJsonRecord(terms.additionalTerms)) ||
     !isOneOf(["fixed-price", "rfq", "sealed-envelope"], v.derivedFromPattern) ||
+    (v.derivedFromPattern === "rfq" && v.derivedFromChannel === undefined) ||
     !isSafeUint(v.generatedAt) ||
     (v.derivedFromChannel !== undefined &&
       (!isObj(v.derivedFromChannel) ||
