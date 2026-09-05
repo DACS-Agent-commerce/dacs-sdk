@@ -21,7 +21,6 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
-import { createDacsPublicHttpsFetchV1 } from "./publicFetch.js";
 import { DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1 } from
   "./buyerReceivedRuntime.js";
 import { createDacsX402BuyerPaymentTrackV1 } from "./x402Payment.js";
@@ -54,9 +53,9 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   }>): Promise<boolean> | boolean;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
-  /** Defaults to the locked-down public HTTPS transport when omitted. */
+  /** Explicit trusted test seam; production callers must omit this override. */
   fetchImpl?: typeof fetch;
-  /** Finite bound for the built-in fetch, shared with the paid delivery read. */
+  /** Finite bound for challenge and paid-response bodies. */
   maxResponseBytes?: number;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
@@ -207,12 +206,18 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
-  const fetchImpl = options.fetchImpl ?? createDacsPublicHttpsFetchV1({
-    maxBytes: options.maxResponseBytes ??
+  const fetchImpl = options.fetchImpl;
+  const transportPolicy = Object.freeze({
+    maxResponseBytes: options.maxResponseBytes ??
       DACS_BUYER_RECEIVED_DEFAULT_MAX_BODY_BYTES_V1,
+    ...(fetchImpl === undefined ? {} : { mode: "insecure-test" as const }),
+  });
+  const transportOptions = Object.freeze({
+    transportPolicy,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
   const recoverDisclosure = options.recoverDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery({ fetchImpl });
+    createX402BuyerRetainedDisclosureRecovery(transportOptions);
   const authorizationProvider = createX402BuyerEvmAuthorizationProvider({
     chainId: evm.runtime.chainId,
     minimumConfirmations: options.minimumConfirmations,
@@ -222,7 +227,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     ...(options.confirmUnused === undefined ? {} : { confirmUnused: options.confirmUnused }),
     recoverDisclosure,
   });
-  const transport = createX402BuyerPaidRequestTransport({ fetchImpl });
+  const transport = createX402BuyerPaidRequestTransport(transportOptions);
 
   return createDacsX402BuyerPaymentTrackV1({
     database: context.database,
@@ -275,7 +280,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
           ? {} : { challengeHeaders: preparation.challengeHeaders }),
       }, {
         client,
-        fetchImpl,
+        ...transportOptions,
       });
       if (result.disposition === "prepared") return result.intent;
       throw new DacsLiveEffectInputControlError(

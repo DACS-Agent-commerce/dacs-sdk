@@ -4,6 +4,7 @@ import { sha256Hex } from "../canonical/index.js";
 import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
+  x402BuyerSettlementStoreInternals,
   type X402BuyerJson,
   type X402BuyerEffectFence,
   type X402BuyerPaidRequestTransport,
@@ -11,8 +12,16 @@ import {
   type X402BuyerSettlementIntent,
   type X402BuyerSettlementIntentDraft,
 } from "./x402BuyerSettlement.js";
+import {
+  captureX402OutboundHeadersV1,
+  requestX402OutboundV1,
+  snapshotDacsPublicHttpsDependenciesV1,
+  snapshotX402OutboundTransportPolicyV1,
+  X402OutboundTransportError,
+  type DacsPublicHttpsDependenciesV1,
+  type X402OutboundTransportPolicy,
+} from "./x402Outbound.js";
 
-const MAX_CHALLENGE_CHARACTERS = 1_048_576;
 const PAYMENT_SIGNATURE = "PAYMENT-SIGNATURE";
 const PAYMENT_RESPONSE = "PAYMENT-RESPONSE";
 
@@ -47,8 +56,10 @@ export interface PrepareX402BuyerSettlementInput {
 
 export interface PrepareX402BuyerSettlementDeps {
   client: X402BuyerChallengeClient;
-  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
-  fetchImpl: typeof fetch;
+  /** Explicit trusted custom/test capability. Production callers should omit. */
+  fetchImpl?: typeof fetch;
+  transportPolicy?: Readonly<X402OutboundTransportPolicy>;
+  publicHttpsDependencies?: Readonly<DacsPublicHttpsDependenciesV1>;
 }
 
 export type X402BuyerSettlementPreparation =
@@ -59,10 +70,12 @@ export type X402BuyerSettlementPreparation =
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
 export interface X402BuyerPaidRequestTransportOptions {
-  /** Caller-supplied transport that must enforce the DACS-1 §6.3.6 boundary. */
-  fetchImpl: typeof fetch;
-  /** Optional `Accept` header; every other base header is refused before payment is added. */
+  /** Explicit trusted custom/test capability. Production callers should omit. */
+  fetchImpl?: typeof fetch;
+  /** Captured once; payment and legacy payment headers are forbidden. */
   headers?: X402BuyerHeaderInit;
+  transportPolicy?: Readonly<X402OutboundTransportPolicy>;
+  publicHttpsDependencies?: Readonly<DacsPublicHttpsDependenciesV1>;
 }
 
 export type X402BuyerHeaderInit =
@@ -70,10 +83,82 @@ export type X402BuyerHeaderInit =
   | Record<string, string>
   | Array<[string, string]>;
 
-const ALLOWED_X402_BUYER_BASE_HEADERS = new Set(["accept"]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+type BuyerTransportMethod = (...args: never[]) => unknown;
+
+function stableDataProperty(
+  source: unknown,
+  key: string,
+  label: string,
+): Readonly<{ found: boolean; value?: unknown }> {
+  if ((typeof source !== "object" && typeof source !== "function") ||
+      source === null || nodeTypes.isProxy(source)) {
+    throw new TypeError(`${label} must be stable data`);
+  }
+  let cursor: object | null = source;
+  while (cursor !== null) {
+    if (nodeTypes.isProxy(cursor)) {
+      throw new TypeError(`${label} must be stable data`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+    if (descriptor !== undefined) {
+      if (!("value" in descriptor)) {
+        throw new TypeError(`${label} must be stable data`);
+      }
+      return Object.freeze({ found: true, value: descriptor.value });
+    }
+    cursor = Object.getPrototypeOf(cursor) as object | null;
+  }
+  return Object.freeze({ found: false });
+}
+
+function stableBoundMethod<T extends BuyerTransportMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T {
+  const property = stableDataProperty(source, key, label);
+  if (!property.found || typeof property.value !== "function" ||
+      nodeTypes.isProxy(property.value)) {
+    throw new TypeError(`${label} must be a stable method`);
+  }
+  return Function.prototype.bind.call(property.value, source) as T;
+}
+
+function optionalStableBoundMethod<T extends BuyerTransportMethod>(
+  source: unknown,
+  key: string,
+  label: string,
+): T | undefined {
+  const property = stableDataProperty(source, key, label);
+  if (!property.found || property.value === undefined) return undefined;
+  if (typeof property.value !== "function" || nodeTypes.isProxy(property.value)) {
+    throw new TypeError(`${label} must be a stable method`);
+  }
+  return Function.prototype.bind.call(property.value, source) as T;
+}
+
+function captureChallengeClient(value: unknown): Readonly<X402BuyerChallengeClient> {
+  const isPaymentRequirementsAuthorized = optionalStableBoundMethod<
+    NonNullable<X402BuyerChallengeClient["isPaymentRequirementsAuthorized"]>
+  >(value, "isPaymentRequirementsAuthorized", "x402 requirement authorizer");
+  return Object.freeze({
+    ...(isPaymentRequirementsAuthorized === undefined
+      ? {}
+      : { isPaymentRequirementsAuthorized }),
+    getPaymentRequiredResponse: stableBoundMethod<
+      X402BuyerChallengeClient["getPaymentRequiredResponse"]
+    >(value, "getPaymentRequiredResponse", "x402 challenge decoder"),
+    createPaymentPayload: stableBoundMethod<
+      X402BuyerChallengeClient["createPaymentPayload"]
+    >(value, "createPaymentPayload", "x402 payment signer"),
+    encodePaymentSignatureHeader: stableBoundMethod<
+      X402BuyerChallengeClient["encodePaymentSignatureHeader"]
+    >(value, "encodePaymentSignatureHeader", "x402 payment header encoder"),
+  });
 }
 
 function hasOnlyUnicodeScalars(value: string): boolean {
@@ -216,39 +301,37 @@ function expectedNonce(jobId: string, phaseIndex: number): `0x${string}` {
 }
 
 function captureHeaders(value: X402BuyerHeaderInit | undefined): Headers {
-  const headers = new Headers(value);
-  if (headers.has(PAYMENT_SIGNATURE) || headers.has("X-PAYMENT")) {
-    throw new TypeError("x402 buyer base headers cannot contain payment authorization");
+  try {
+    return captureX402OutboundHeadersV1(value, "forbid");
+  } catch (cause) {
+    throw new TypeError(
+      "x402 buyer base headers must contain only a stable Accept header",
+      { cause },
+    );
   }
-  // `keys()` is declared only by DOM.Iterable. The parser engine's XPath
-  // types load base `lib.dom`, so using it here makes otherwise-compatible
-  // feature branches fail to compile together. `forEach()` is part of the
-  // base Fetch Headers contract and preserves the same allowlist gate.
-  headers.forEach((_value, name) => {
-    if (!ALLOWED_X402_BUYER_BASE_HEADERS.has(name)) {
-      throw new TypeError("x402 buyer base headers must be allowlisted and non-credentialed");
-    }
-  });
-  return headers;
 }
 
-function capturePaymentHeader(headers: Record<string, string>): string | null {
+function capturePaymentHeader(headers: unknown): string | null {
+  if (!isRecord(headers) || nodeTypes.isProxy(headers) ||
+      (Object.getPrototypeOf(headers) !== Object.prototype &&
+        Object.getPrototypeOf(headers) !== null) ||
+      Object.getOwnPropertySymbols(headers).length !== 0) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(headers);
   let found: string | null = null;
-  for (const [name, value] of Object.entries(headers)) {
+  for (const [name, descriptor] of Object.entries(descriptors)) {
+    if (!descriptor.enumerable || !("value" in descriptor) ||
+        typeof descriptor.value !== "string") return null;
     if (name.toUpperCase() !== PAYMENT_SIGNATURE) continue;
+    const value = descriptor.value;
     if (found !== null || typeof value !== "string" || value.length === 0) return null;
     found = value;
   }
   return found;
 }
 
-async function challengeBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (text.length > MAX_CHALLENGE_CHARACTERS) {
-    throw new TypeError("x402 challenge body exceeds the retained input limit");
-  }
-  if (text.length === 0) return undefined;
-  return JSON.parse(text) as unknown;
+function challengeBody(bytes: Uint8Array): unknown {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return text.length === 0 ? undefined : JSON.parse(text) as unknown;
 }
 
 /**
@@ -260,34 +343,111 @@ export async function prepareX402BuyerSettlement(
   input: Readonly<PrepareX402BuyerSettlementInput>,
   deps: Readonly<PrepareX402BuyerSettlementDeps>,
 ): Promise<X402BuyerSettlementPreparation> {
-  const authority = captureX402BuyerPreparationAuthority(input?.authority);
+  let rawAuthority: unknown;
+  let rawChallengeHeaders: unknown;
+  try {
+    rawAuthority = stableDataProperty(
+      input,
+      "authority",
+      "x402 preparation authority",
+    ).value;
+    rawChallengeHeaders = stableDataProperty(
+      input,
+      "challengeHeaders",
+      "x402 challenge headers",
+    ).value;
+  } catch {
+    return { disposition: "rejected", reason: "x402-settlement-authority-invalid" };
+  }
+  const authority = captureX402BuyerPreparationAuthority(rawAuthority);
   if (!authority) {
     return { disposition: "rejected", reason: "x402-settlement-authority-invalid" };
   }
   let challengeHeaders: Headers;
   try {
-    challengeHeaders = captureHeaders(input?.challengeHeaders);
+    challengeHeaders = captureHeaders(rawChallengeHeaders as X402BuyerHeaderInit | undefined);
   } catch {
     return { disposition: "rejected", reason: "x402-challenge-headers-invalid" };
   }
-  const fetchImpl = deps?.fetchImpl;
-  if (typeof fetchImpl !== "function" || !deps?.client ||
-      (deps.client.isPaymentRequirementsAuthorized !== undefined &&
-        typeof deps.client.isPaymentRequirementsAuthorized !== "function") ||
-      typeof deps.client.getPaymentRequiredResponse !== "function" ||
-      typeof deps.client.createPaymentPayload !== "function" ||
-      typeof deps.client.encodePaymentSignatureHeader !== "function") {
+  let client: Readonly<X402BuyerChallengeClient>;
+  let fetchImpl: typeof fetch | undefined;
+  let transportPolicy: Readonly<X402OutboundTransportPolicy> | undefined;
+  let publicHttpsDependencies: Readonly<DacsPublicHttpsDependenciesV1> | undefined;
+  try {
+    client = captureChallengeClient(stableDataProperty(
+      deps,
+      "client",
+      "x402 challenge client",
+    ).value);
+    const rawFetch = stableDataProperty(
+      deps,
+      "fetchImpl",
+      "x402 challenge fetch",
+    ).value;
+    if (rawFetch !== undefined &&
+        (typeof rawFetch !== "function" || nodeTypes.isProxy(rawFetch))) {
+      throw new TypeError("x402 challenge fetch must be a stable method");
+    }
+    fetchImpl = rawFetch as typeof fetch | undefined;
+    transportPolicy = snapshotX402OutboundTransportPolicyV1(
+      stableDataProperty(
+        deps,
+        "transportPolicy",
+        "x402 challenge transport policy",
+      ).value as Readonly<X402OutboundTransportPolicy> | undefined,
+    );
+    publicHttpsDependencies = snapshotDacsPublicHttpsDependenciesV1(
+      stableDataProperty(
+        deps,
+        "publicHttpsDependencies",
+        "x402 challenge HTTPS dependencies",
+      ).value as Readonly<DacsPublicHttpsDependenciesV1> | undefined,
+    );
+  } catch {
+    return { disposition: "rejected", reason: "x402-challenge-dependencies-invalid" };
+  }
+  if ((fetchImpl !== undefined && transportPolicy?.mode !== "insecure-test") ||
+      (fetchImpl === undefined && transportPolicy?.mode === "insecure-test") ||
+      !client) {
     return { disposition: "rejected", reason: "x402-challenge-dependencies-invalid" };
   }
 
-  let response: Response;
+  let response: Awaited<ReturnType<typeof requestX402OutboundV1>>;
   try {
-    response = await fetchImpl(authority.httpResource, {
-      method: "GET",
+    response = await requestX402OutboundV1({
+      url: authority.httpResource,
       headers: challengeHeaders,
-      redirect: "error",
+      paymentHeaderMode: "forbid",
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+      ...(transportPolicy === undefined ? {} : { policy: transportPolicy }),
+      ...(publicHttpsDependencies === undefined
+        ? {}
+        : { dependencies: publicHttpsDependencies }),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof X402OutboundTransportError && [
+      "x402-outbound-url-invalid",
+      "x402-outbound-url-unsafe",
+      "x402-outbound-address-unsafe",
+      "x402-outbound-header-refused",
+      "x402-outbound-headers-too-large",
+      "x402-insecure-mode-requires-fetch-override",
+      "x402-fetch-override-requires-insecure-mode",
+      "x402-redirect-refused",
+    ].includes(error.reasonCode)) {
+      return { disposition: "rejected", reason: "x402-challenge-resource-unsafe" };
+    }
+    if (error instanceof X402OutboundTransportError && [
+      "x402-response-too-large",
+      "x402-response-headers-too-large",
+      "x402-response-encoding-refused",
+      "x402-response-status-invalid",
+    ].includes(error.reasonCode)) {
+      return {
+        disposition: "rejected",
+        reason: "x402-payment-required-response-invalid",
+      };
+    }
     return { disposition: "indeterminate", reason: "x402-challenge-unavailable" };
   }
   if (response.status !== 402) {
@@ -296,15 +456,15 @@ export async function prepareX402BuyerSettlement(
 
   let paymentRequired: unknown;
   try {
-    const body = await challengeBody(response);
-    paymentRequired = deps.client.getPaymentRequiredResponse(
+    const body = challengeBody(response.bytes);
+    paymentRequired = client.getPaymentRequiredResponse(
       (name) => response.headers.get(name),
       body,
     );
   } catch {
     return { disposition: "rejected", reason: "x402-payment-required-response-invalid" };
   }
-  const selected = chosenRequirements(paymentRequired, authority, deps.client);
+  const selected = chosenRequirements(paymentRequired, authority, client);
   if (!selected) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
@@ -313,10 +473,10 @@ export async function prepareX402BuyerSettlement(
   let paymentHeader: string | null;
   try {
     signedPaymentPayload = structuredClone(
-      await deps.client.createPaymentPayload(selected.paymentRequired),
+      await client.createPaymentPayload(selected.paymentRequired),
     );
     paymentHeader = capturePaymentHeader(
-      deps.client.encodePaymentSignatureHeader(signedPaymentPayload),
+      client.encodePaymentSignatureHeader(signedPaymentPayload),
     );
   } catch {
     return { disposition: "indeterminate", reason: "x402-payment-signing-unavailable" };
@@ -352,28 +512,82 @@ export async function prepareX402BuyerSettlement(
  * authorization provider authenticates the chain event.
  */
 export function createX402BuyerPaidRequestTransport(
-  options: Readonly<X402BuyerPaidRequestTransportOptions>,
+  options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
 ): X402BuyerPaidRequestTransport {
-  const fetchImpl = options?.fetchImpl;
-  if (typeof fetchImpl !== "function") {
-    throw new TypeError("x402 buyer paid transport requires fetch");
+  const fetchImpl = stableDataProperty(
+    options,
+    "fetchImpl",
+    "x402 buyer paid transport fetch",
+  ).value as typeof fetch | undefined;
+  if (fetchImpl !== undefined &&
+      (typeof fetchImpl !== "function" || nodeTypes.isProxy(fetchImpl))) {
+    throw new TypeError("x402 buyer paid transport fetch override is invalid");
   }
-  const retainedHeaders = captureHeaders(options.headers);
+  const transportPolicy = snapshotX402OutboundTransportPolicyV1(
+    stableDataProperty(
+      options,
+      "transportPolicy",
+      "x402 buyer paid transport policy",
+    ).value as Readonly<X402OutboundTransportPolicy> | undefined,
+  );
+  if ((fetchImpl !== undefined && transportPolicy?.mode !== "insecure-test") ||
+      (fetchImpl === undefined && transportPolicy?.mode === "insecure-test")) {
+    throw new TypeError(
+      "x402 buyer paid transport overrides require explicit insecure-test mode",
+    );
+  }
+  const publicHttpsDependencies = snapshotDacsPublicHttpsDependenciesV1(
+    stableDataProperty(
+      options,
+      "publicHttpsDependencies",
+      "x402 buyer paid HTTPS dependencies",
+    ).value as Readonly<DacsPublicHttpsDependenciesV1> | undefined,
+  );
+  const retainedHeaders = captureHeaders(stableDataProperty(
+    options,
+    "headers",
+    "x402 buyer paid transport headers",
+  ).value as X402BuyerHeaderInit | undefined);
   const transport: X402BuyerPaidRequestTransport = {
     async submitRetained(
       intent: Readonly<X402BuyerSettlementIntent>,
       fence: Readonly<X402BuyerEffectFence>,
     ) {
-      const headers = new Headers(retainedHeaders);
-      headers.set(PAYMENT_SIGNATURE, intent.paymentHeader.value);
-      let response: Response;
+      let assertCurrent: X402BuyerEffectFence["assertCurrent"];
+      let retainedIntent: Readonly<X402BuyerSettlementIntent>;
       try {
-        // This must remain immediately adjacent to the irreversible request.
-        await fence.assertCurrent();
-        response = await fetchImpl(intent.httpResource, {
-          method: "GET",
+        // Rebuild the caller-owned durable record before any await. Every
+        // nested value used below therefore comes from validated frozen data,
+        // not from an accessor, proxy or object that can change during DNS.
+        retainedIntent = x402BuyerSettlementStoreInternals.captureIntent(intent);
+        // Capture and bind before requestX402OutboundV1 can enter DNS. The
+        // beforeConnect callback below closes over only this exact method, so a
+        // caller cannot swap fence.assertCurrent while resolution is pending.
+        assertCurrent = stableBoundMethod<X402BuyerEffectFence["assertCurrent"]>(
+          fence,
+          "assertCurrent",
+          "x402 buyer paid effect fence",
+        );
+      } catch {
+        return {
+          disposition: "indeterminate" as const,
+          reason: "x402-paid-request-response-indeterminate",
+        };
+      }
+      const headers = new Headers(retainedHeaders);
+      headers.set(PAYMENT_SIGNATURE, retainedIntent.paymentHeader.value);
+      let response: Awaited<ReturnType<typeof requestX402OutboundV1>>;
+      try {
+        response = await requestX402OutboundV1({
+          url: retainedIntent.httpResource,
           headers,
-          redirect: "error",
+          paymentHeaderMode: "require-one",
+          beforeConnect: () => assertCurrent(),
+          ...(fetchImpl === undefined ? {} : { fetchImpl }),
+          ...(transportPolicy === undefined ? {} : { policy: transportPolicy }),
+          ...(publicHttpsDependencies === undefined
+            ? {}
+            : { dependencies: publicHttpsDependencies }),
         });
       } catch {
         return {
@@ -391,7 +605,7 @@ export function createX402BuyerPaidRequestTransport(
                 protocolVersion: "2" as const,
                 headerName: PAYMENT_RESPONSE as "PAYMENT-RESPONSE",
                 encodedSettlementHeader,
-                httpResource: intent.httpResource,
+                httpResource: retainedIntent.httpResource,
               },
             }),
       };
