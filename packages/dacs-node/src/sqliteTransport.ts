@@ -50,6 +50,9 @@ const DEMOS_AGENT_IDENTIFIER_RE = /^demos:agent:[0-9a-f]{64}$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const MAX_PAGE_SIZE = 1_000;
 const MAX_LEASE_OWNER_BYTES = 256;
+// Every non-NUL JSON control character is one UTF-8 input byte but six bytes
+// when escaped in canonical JSON. This is the largest admitted representation.
+const MAXIMUM_JSON_LEASE_OWNER = "\u0001".repeat(MAX_LEASE_OWNER_BYTES);
 
 export interface DacsHttpSqliteContext {
   database: BetterSqlite3.Database;
@@ -454,6 +457,12 @@ function exactKeys(
     keys.every((key) => allowed.has(key));
 }
 
+function validLease(value: unknown): value is DacsHttpOutboxLeaseV1 {
+  return exactKeys(value, ["owner", "generation", "expiresAt"]) &&
+    leaseOwner(value.owner) && safeUint(value.generation) && value.generation > 0 &&
+    safeUint(value.expiresAt);
+}
+
 function ownJson(value: unknown, seen = new WeakSet<object>()): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean" ||
       typeof value === "number") return value;
@@ -612,7 +621,7 @@ function maximumOutboxSendingRecord(value: Readonly<StoredOutbox>): StoredOutbox
     attempts: Number.MAX_SAFE_INTEGER,
     nextAttemptAt: Number.MAX_SAFE_INTEGER,
     lease: {
-      owner: "z".repeat(MAX_LEASE_OWNER_BYTES),
+      owner: MAXIMUM_JSON_LEASE_OWNER,
       generation: Number.MAX_SAFE_INTEGER,
       expiresAt: Number.MAX_SAFE_INTEGER,
     },
@@ -1032,8 +1041,8 @@ function outboxStored(
       !safeUint(value.revision) || value.revision === 0 || !safeUint(value.createdAt) ||
       !safeUint(value.updatedAt) || value.updatedAt < value.createdAt ||
       ((value.state === "sending") !== (value.lease !== undefined)) ||
-      (value.lease !== undefined && (!nonEmpty(value.lease.owner) ||
-        value.lease.generation !== value.generation || !safeUint(value.lease.expiresAt))) ||
+      (value.lease !== undefined && (!validLease(value.lease) ||
+        value.lease.generation !== value.generation)) ||
       ((value.state === "acknowledged") !== (value.acknowledgement !== undefined)) ||
       ((value.acknowledgement !== undefined) !==
         (value.acknowledgementRetentionMs !== undefined)) ||
@@ -1216,6 +1225,8 @@ function verifyOutboxTransitions(
         !safeUint(record.createdAt) || !safeUint(record.updatedAt) ||
         !["pending", "sending", "acknowledged", "operator-action"].includes(record.state) ||
         ((record.state === "sending") !== (record.lease !== undefined)) ||
+        (record.lease !== undefined && (!validLease(record.lease) ||
+          record.lease.generation !== record.generation)) ||
         ((record.state === "acknowledged") !== (record.acknowledgement !== undefined)) ||
         ((record.acknowledgement !== undefined) !==
           (record.acknowledgementRetentionMs !== undefined)) ||
@@ -1707,17 +1718,13 @@ function leaseMatches(
 }
 
 function captureLease(value: unknown): DacsHttpOutboxLeaseV1 | undefined {
-  let captured: DacsHttpOutboxLeaseV1;
+  let captured: unknown;
   try {
-    captured = snapshot(value) as DacsHttpOutboxLeaseV1;
+    captured = snapshot(value);
   } catch {
     return undefined;
   }
-  return exactKeys(captured, ["owner", "generation", "expiresAt"]) &&
-      leaseOwner(captured.owner) && safeUint(captured.generation) && captured.generation > 0 &&
-      safeUint(captured.expiresAt)
-    ? captured
-    : undefined;
+  return validLease(captured) ? captured : undefined;
 }
 
 function retentionDeadline(receivedAt: number, configuredRetentionMs: number): number | undefined {

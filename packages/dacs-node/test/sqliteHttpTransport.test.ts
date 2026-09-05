@@ -1288,6 +1288,37 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     });
   });
 
+  it("reserves exact byte headroom for a maximally escaped lease owner", async () => {
+    const baseline = await open(join(root(), "baseline-outbox.sqlite"), BUYER, "buyer");
+    const baselineStore = baseline.createHttpOutboxStore();
+    const now = await baselineStore.readTime();
+    const signed = await envelope("buyer", 116, now, "escaped-owner-headroom");
+    const retainUntil = now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000;
+    await baselineStore.put({ envelope: signed, retainUntil });
+    const baselineUsage = (await baselineStore.diagnostics()).global;
+    const exactMaximum = baselineUsage.retainedBytes + baselineUsage.reservedBytes;
+
+    const constrained = await open(
+      join(root(), "constrained-outbox.sqlite"),
+      BUYER,
+      "buyer",
+    );
+    const store = constrained.createHttpOutboxStore({
+      limits: { global: { maxRows: 4, maxBytes: exactMaximum } },
+    });
+    const put = await store.put({ envelope: signed, retainUntil });
+    if (!put.record) throw new Error("expected outbox record");
+    const claim = await store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "\u0001".repeat(256),
+      leaseDurationMs: 10_000,
+    });
+    expect(claim).toMatchObject({ status: "acquired", lease: { generation: 1 } });
+    const usage = (await store.diagnostics()).global;
+    expect(usage.retainedBytes + usage.reservedBytes).toBeLessThanOrEqual(exactMaximum);
+  });
+
   it("keeps quota admission atomic across contending processes", async () => {
     const directory = root();
     const databasePath = join(directory, "seller.sqlite");
@@ -1399,6 +1430,163 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     await expect(store.load(signed.envelopeId)).resolves.toMatchObject({
       state: "pending",
       revision: 1,
+    });
+  });
+
+  it("rejects an oversized lease owner retained in the current projection", async () => {
+    const databasePath = join(root(), "oversized-projection-owner.sqlite");
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore();
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 118, now, "projected-lease-owner");
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const claim = await store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "valid-owner",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected outbox lease");
+    database.checkpoint();
+    close(database);
+
+    const raw = new BetterSqlite3(databasePath);
+    const row = raw.prepare(`
+      SELECT record_json FROM dacs_http_outbox WHERE envelope_id = ?
+    `).get(signed.envelopeId) as { record_json: string };
+    const history = raw.prepare(`
+      SELECT revision, occurred_at, previous_entry_hash
+      FROM dacs_http_outbox_history
+      WHERE envelope_id = ? AND revision = 2
+    `).get(signed.envelopeId) as {
+      revision: number;
+      occurred_at: number;
+      previous_entry_hash: string | null;
+    };
+    const record = JSON.parse(row.record_json) as {
+      lease: { owner: string };
+    };
+    const oversizedOwner = "x".repeat(257);
+    record.lease.owner = oversizedOwner;
+    const oversizedJson = canonicalize(record);
+    const oversizedHash = sha256Hex(oversizedJson);
+    const oversizedEntryHash = outboxHistoryEntryHash({
+      identity: signed.envelopeId,
+      revision: history.revision,
+      occurredAt: history.occurred_at,
+      recordHash: oversizedHash,
+      previousEntryHash: history.previous_entry_hash,
+    });
+    raw.transaction(() => {
+      raw.prepare(`
+        UPDATE dacs_http_outbox
+        SET owner = ?, record_hash = ?, record_json = ?
+        WHERE envelope_id = ?
+      `).run(oversizedOwner, oversizedHash, oversizedJson, signed.envelopeId);
+      raw.prepare(`
+        UPDATE dacs_http_outbox_history
+        SET record_hash = ?, record_json = ?, entry_hash = ?
+        WHERE envelope_id = ? AND revision = 2
+      `).run(oversizedHash, oversizedJson, oversizedEntryHash, signed.envelopeId);
+    })();
+    raw.close();
+
+    await expect(open(databasePath, BUYER, "buyer")).rejects.toMatchObject({
+      reasonCode: "http-outbox-record-corrupt",
+    });
+  });
+
+  it("rejects an oversized lease owner retained in authenticated history", async () => {
+    const databasePath = join(root(), "oversized-history-owner.sqlite");
+    const database = await open(databasePath, BUYER, "buyer");
+    const store = database.createHttpOutboxStore({ retryJitter: () => 0 });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 117, now, "retained-lease-owner");
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const claim = await store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "valid-owner",
+      leaseDurationMs: 10_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected outbox lease");
+    await store.recordSendFailure({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      lease: claim.lease,
+      reasonCode: "response-ambiguous",
+    });
+    database.checkpoint();
+    close(database);
+
+    const raw = new BetterSqlite3(databasePath);
+    const rows = raw.prepare(`
+      SELECT revision, occurred_at, record_hash, record_json,
+        previous_entry_hash, entry_hash
+      FROM dacs_http_outbox_history
+      WHERE envelope_id = ? ORDER BY revision
+    `).all(signed.envelopeId) as Array<{
+      revision: number;
+      occurred_at: number;
+      record_hash: string;
+      record_json: string;
+      previous_entry_hash: string | null;
+      entry_hash: string;
+    }>;
+    const sending = rows[1]!;
+    const final = rows[2]!;
+    const record = JSON.parse(sending.record_json) as {
+      lease: { owner: string };
+    };
+    record.lease.owner = "x".repeat(257);
+    const oversizedJson = canonicalize(record);
+    const oversizedHash = sha256Hex(oversizedJson);
+    const oversizedEntryHash = outboxHistoryEntryHash({
+      identity: signed.envelopeId,
+      revision: sending.revision,
+      occurredAt: sending.occurred_at,
+      recordHash: oversizedHash,
+      previousEntryHash: sending.previous_entry_hash,
+    });
+    const retainedByteDelta = Buffer.byteLength(oversizedJson) -
+      Buffer.byteLength(sending.record_json);
+    raw.transaction(() => {
+      raw.prepare(`
+        UPDATE dacs_http_outbox_history
+        SET record_hash = ?, record_json = ?, entry_hash = ?
+        WHERE envelope_id = ? AND revision = 2
+      `).run(oversizedHash, oversizedJson, oversizedEntryHash, signed.envelopeId);
+      raw.prepare(`
+        UPDATE dacs_http_outbox_history
+        SET previous_entry_hash = ?, entry_hash = ?
+        WHERE envelope_id = ? AND revision = 3
+      `).run(
+        oversizedEntryHash,
+        outboxHistoryEntryHash({
+          identity: signed.envelopeId,
+          revision: final.revision,
+          occurredAt: final.occurred_at,
+          recordHash: final.record_hash,
+          previousEntryHash: oversizedEntryHash,
+        }),
+        signed.envelopeId,
+      );
+      raw.prepare(`
+        UPDATE dacs_http_usage SET retained_bytes = retained_bytes + ?
+      `).run(retainedByteDelta);
+    })();
+    raw.close();
+
+    await expect(open(databasePath, BUYER, "buyer")).rejects.toMatchObject({
+      reasonCode: "http-store-history-corrupt",
     });
   });
 
