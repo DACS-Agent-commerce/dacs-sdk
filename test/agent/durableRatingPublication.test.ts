@@ -36,6 +36,7 @@ import {
   createInMemoryBindingStore,
   type BoundArtifactAdapter,
   type BoundArtifactRepository,
+  type BoundArtifactWriteResult,
 } from "../../src/discovery/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -546,5 +547,88 @@ describe("durable DACS-5 RatingRecord publication", () => {
     expect(swappedAuthentication).not.toHaveBeenCalled();
     expect(swappedEffects.record).toBeUndefined();
     expect(trustedEffects.record?.state).toBe("completed");
+  });
+
+  it("owns the publication result across asynchronous anchor authentication", async () => {
+    const record = await buyerRating();
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    let returnedPublication!: BoundArtifactWriteResult;
+    let authenticationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authenticationStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mutableRepository: BoundArtifactRepository = {
+      async write(...args) {
+        returnedPublication = structuredClone(await bound.repository.write(...args));
+        return returnedPublication;
+      },
+      read: bound.repository.read.bind(bound.repository),
+    };
+    const pending = publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      {
+        ...deps(effects, mutableRepository),
+        authenticateAnchor: async () => {
+          authenticationStarted();
+          await gate;
+          return { disposition: "valid" as const };
+        },
+      },
+    );
+    await started;
+    returnedPublication.binding.nativeAddress = "stor-swapped";
+    returnedPublication.anchor.address = "stor-swapped";
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      disposition: "published",
+      result: {
+        nativeAddress: "stor-rating-1",
+        ref: { anchor: { locator: "stor-rating-1" } },
+      },
+    });
+  });
+
+  it("recovers when the durable completion response is lost after commit", async () => {
+    const record = await buyerRating();
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    const complete = effects.recordEffectCompleted.bind(effects);
+    let loseResponse = true;
+    effects.recordEffectCompleted = (input) => {
+      const completed = complete(input);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("completion response lost");
+      }
+      return completed;
+    };
+
+    const first = await publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      deps(effects, bound.repository),
+    );
+    expect(first).toMatchObject({
+      disposition: "indeterminate",
+      stage: "completion",
+      reason: "completion response lost",
+    });
+    expect(effects.record?.state).toBe("completed");
+
+    const recovered = await publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      deps(effects, bound.repository),
+    );
+    expect(recovered).toMatchObject({
+      disposition: "published",
+      recovered: true,
+      result: { nativeAddress: "stor-rating-1" },
+    });
+    expect(bound.state.writes).toBe(1);
   });
 });

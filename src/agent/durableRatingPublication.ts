@@ -618,13 +618,16 @@ export async function publishRatingRecordDurably(
 
   let claim: RatingPublicationEffectClaim;
   try {
-    claim = await capturedDeps.effectStore.claimEffect({
-      kind: EFFECT_KIND,
-      effectId: identity.logicalAddress,
-      bindingHash: identity.bindingHash,
-      owner: capturedDeps.workerId,
-      leaseDurationMs: capturedDeps.leaseDurationMs,
-    });
+    claim = deepFreeze(snapshotCanonicalJsonRead(
+      await capturedDeps.effectStore.claimEffect({
+        kind: EFFECT_KIND,
+        effectId: identity.logicalAddress,
+        bindingHash: identity.bindingHash,
+        owner: capturedDeps.workerId,
+        leaseDurationMs: capturedDeps.leaseDurationMs,
+      }),
+      "RatingRecord publication effect claim",
+    )) as RatingPublicationEffectClaim;
   } catch (error) {
     return {
       disposition: "indeterminate",
@@ -686,13 +689,16 @@ export async function publishRatingRecordDurably(
 
   let publication: BoundArtifactWriteResult;
   try {
-    publication = await capturedDeps.repository.write(
-      identity.logicalAddress,
-      deepFreeze(snapshotCanonicalJson(
-        captured.record as unknown as Record<string, unknown>,
-        "RatingRecord anchor input",
-      )),
-    );
+    publication = deepFreeze(snapshotCanonicalJsonRead(
+      await capturedDeps.repository.write(
+        identity.logicalAddress,
+        deepFreeze(snapshotCanonicalJson(
+          captured.record as unknown as Record<string, unknown>,
+          "RatingRecord anchor input",
+        )),
+      ),
+      "RatingRecord publication result",
+    )) as BoundArtifactWriteResult;
   } catch (error) {
     await markAmbiguous(
       capturedDeps.effectStore,
@@ -910,13 +916,25 @@ export async function publishRatingRecordDurably(
       signer: captured.record.rater,
     },
   };
-  const completed = await capturedDeps.effectStore.recordEffectCompleted({
-    kind: EFFECT_KIND,
-    effectId: identity.logicalAddress,
-    bindingHash: identity.bindingHash,
-    lease: claim.lease,
-    result: deepFreeze(snapshotCanonicalJson(result, "RatingRecord publication result")),
-  });
+  let completed: RatingPublicationEffectWrite;
+  try {
+    completed = deepFreeze(snapshotCanonicalJsonRead(
+      await capturedDeps.effectStore.recordEffectCompleted({
+        kind: EFFECT_KIND,
+        effectId: identity.logicalAddress,
+        bindingHash: identity.bindingHash,
+        lease: claim.lease,
+        result: deepFreeze(snapshotCanonicalJson(result, "RatingRecord publication result")),
+      }),
+      "RatingRecord publication completion",
+    )) as RatingPublicationEffectWrite;
+  } catch (error) {
+    return {
+      disposition: "indeterminate",
+      stage: "completion",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
   if (completed.status !== "recorded" && completed.status !== "existing") {
     return {
       disposition: "indeterminate",
@@ -924,9 +942,21 @@ export async function publishRatingRecordDurably(
       reason: `RatingRecord publication completion was ${completed.status}`,
     };
   }
+  const retainedResult = captureCompletedResult(
+    completed.record.result,
+    captured,
+    identity,
+  );
+  if (!retainedResult) {
+    return {
+      disposition: "rejected",
+      stage: "completion",
+      reason: "durable RatingRecord publication result was not retained exactly",
+    };
+  }
   return {
     disposition: "published",
-    result: deepFreeze(snapshotCanonicalJson(result, "RatingRecord publication result")),
+    result: deepFreeze(retainedResult),
     recovered,
   };
 }
