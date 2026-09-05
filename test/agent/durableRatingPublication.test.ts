@@ -6,6 +6,7 @@ import {
 } from "../../src/agent/ratingRecord.js";
 import {
   publishRatingRecordDurably,
+  type DurableRatingPublicationDeps,
   type RatingPublicationEffectLease,
   type RatingPublicationEffectRecord,
   type RatingPublicationEffectStore,
@@ -488,5 +489,62 @@ describe("durable DACS-5 RatingRecord publication", () => {
       result: { record: { value: 5, freeText: "Would buy again." } },
     });
     expect(authentication).toHaveBeenCalled();
+  });
+
+  it("captures every executable dependency before asynchronous authentication", async () => {
+    const record = await buyerRating();
+    const trustedEffects = new MemoryEffectStore();
+    const swappedEffects = new MemoryEffectStore();
+    const trustedRepository = repository();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let authenticationCalls = 0;
+    const trustedAuthentication = vi.fn(async (input: {
+      record: Readonly<RatingRecord>;
+      expectedOwner: string;
+    }) => {
+      authenticationCalls += 1;
+      if (authenticationCalls === 1) await gate;
+      return authenticateRecord(input);
+    });
+    const swappedWrite = vi.fn(async () => {
+      throw new Error("swapped repository write was invoked");
+    });
+    const swappedRead = vi.fn(async () => {
+      throw new Error("swapped repository read was invoked");
+    });
+    const swappedAuthentication = vi.fn(async () => ({
+      disposition: "invalid" as const,
+      reason: "swapped authentication capability",
+    }));
+    const dependencies: DurableRatingPublicationDeps = {
+      ...deps(trustedEffects, trustedRepository.repository),
+      authenticateRatingRecord: trustedAuthentication,
+    };
+    const pending = publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      dependencies,
+    );
+
+    dependencies.effectStore = swappedEffects;
+    dependencies.repository = { write: swappedWrite, read: swappedRead };
+    dependencies.workerId = "swapped-worker";
+    dependencies.leaseDurationMs = 1;
+    dependencies.authenticateRatingRecord = swappedAuthentication;
+    dependencies.authenticateAnchor = swappedAuthentication;
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      disposition: "published",
+      result: { record },
+    });
+    expect(authenticationCalls).toBe(2);
+    expect(swappedWrite).not.toHaveBeenCalled();
+    expect(swappedRead).not.toHaveBeenCalled();
+    expect(swappedAuthentication).not.toHaveBeenCalled();
+    expect(swappedEffects.record).toBeUndefined();
+    expect(trustedEffects.record?.state).toBe("completed");
   });
 });

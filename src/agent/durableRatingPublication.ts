@@ -179,6 +179,94 @@ export interface DurableRatingPublicationDeps {
   }>): RatingAnchorAuthenticationVerdict | Promise<RatingAnchorAuthenticationVerdict>;
 }
 
+function bindCaptured<T>(callback: T, owner: unknown, label: string): T {
+  if (typeof callback !== "function") {
+    throw new DacsError(`durable RatingRecord publication ${label} is unavailable`);
+  }
+  return Function.prototype.bind.call(
+    callback as unknown as Function,
+    owner,
+  ) as T;
+}
+
+/** Capture every executable authority exactly once before the first await. */
+function captureDependencies(
+  source: DurableRatingPublicationDeps,
+): Readonly<DurableRatingPublicationDeps> {
+  const effectStoreSource = source.effectStore;
+  const repositorySource = source.repository;
+  const workerId = source.workerId;
+  const leaseDurationMs = source.leaseDurationMs;
+  const authenticateRatingRecordSource = source.authenticateRatingRecord;
+  const authenticateAnchorSource = source.authenticateAnchor;
+  if (!effectStoreSource || typeof effectStoreSource !== "object") {
+    throw new DacsError("durable RatingRecord publication effect store is unavailable");
+  }
+  if (!repositorySource || typeof repositorySource !== "object") {
+    throw new DacsError("durable RatingRecord publication repository is unavailable");
+  }
+  const effectStore = Object.freeze({
+    putEffectIntent: bindCaptured(
+      effectStoreSource.putEffectIntent,
+      effectStoreSource,
+      "effect intent capability",
+    ),
+    claimEffect: bindCaptured(
+      effectStoreSource.claimEffect,
+      effectStoreSource,
+      "effect claim capability",
+    ),
+    isCurrentEffect: bindCaptured(
+      effectStoreSource.isCurrentEffect,
+      effectStoreSource,
+      "effect lease capability",
+    ),
+    recordEffectCompleted: bindCaptured(
+      effectStoreSource.recordEffectCompleted,
+      effectStoreSource,
+      "effect completion capability",
+    ),
+    recordEffectAmbiguous: bindCaptured(
+      effectStoreSource.recordEffectAmbiguous,
+      effectStoreSource,
+      "effect reconciliation capability",
+    ),
+    requireEffectOperatorAction: bindCaptured(
+      effectStoreSource.requireEffectOperatorAction,
+      effectStoreSource,
+      "effect operator-action capability",
+    ),
+  });
+  const repository = Object.freeze({
+    write: bindCaptured(
+      repositorySource.write,
+      repositorySource,
+      "repository write capability",
+    ),
+    read: bindCaptured(
+      repositorySource.read,
+      repositorySource,
+      "repository read capability",
+    ),
+  });
+  return Object.freeze({
+    effectStore,
+    repository,
+    workerId,
+    leaseDurationMs,
+    authenticateRatingRecord: bindCaptured(
+      authenticateRatingRecordSource,
+      source,
+      "record authentication capability",
+    ),
+    authenticateAnchor: bindCaptured(
+      authenticateAnchorSource,
+      source,
+      "anchor authentication capability",
+    ),
+  });
+}
+
 export interface DurablePublishedRating {
   publicationVersion: "1";
   logicalAddress: string;
@@ -467,12 +555,13 @@ export async function publishRatingRecordDurably(
 ): Promise<DurableRatingPublicationProgress> {
   const captured = captureInput(input);
   const identity = effectIdentity(captured);
+  const capturedDeps = captureDependencies(deps);
   if (
-    typeof deps.workerId !== "string" ||
-    deps.workerId.length === 0 ||
-    deps.workerId.trim() !== deps.workerId ||
-    !Number.isSafeInteger(deps.leaseDurationMs) ||
-    deps.leaseDurationMs <= 0
+    typeof capturedDeps.workerId !== "string" ||
+    capturedDeps.workerId.length === 0 ||
+    capturedDeps.workerId.trim() !== capturedDeps.workerId ||
+    !Number.isSafeInteger(capturedDeps.leaseDurationMs) ||
+    capturedDeps.leaseDurationMs <= 0
   ) {
     throw new DacsError("durable RatingRecord publication worker lease is invalid");
   }
@@ -480,7 +569,7 @@ export async function publishRatingRecordDurably(
   let initialAuthentication: RatingAuthenticationVerdict;
   try {
     initialAuthentication = captureVerdict(
-      await deps.authenticateRatingRecord(deepFreeze({
+      await capturedDeps.authenticateRatingRecord(deepFreeze({
         record: snapshotCanonicalJson(captured.record, "RatingRecord authentication input"),
         expectedOwner: captured.expectedOwner,
       })),
@@ -505,7 +594,7 @@ export async function publishRatingRecordDurably(
 
   let intent;
   try {
-    intent = await deps.effectStore.putEffectIntent({
+    intent = await capturedDeps.effectStore.putEffectIntent({
       kind: EFFECT_KIND,
       effectId: identity.logicalAddress,
       bindingHash: identity.bindingHash,
@@ -529,12 +618,12 @@ export async function publishRatingRecordDurably(
 
   let claim: RatingPublicationEffectClaim;
   try {
-    claim = await deps.effectStore.claimEffect({
+    claim = await capturedDeps.effectStore.claimEffect({
       kind: EFFECT_KIND,
       effectId: identity.logicalAddress,
       bindingHash: identity.bindingHash,
-      owner: deps.workerId,
-      leaseDurationMs: deps.leaseDurationMs,
+      owner: capturedDeps.workerId,
+      leaseDurationMs: capturedDeps.leaseDurationMs,
     });
   } catch (error) {
     return {
@@ -578,7 +667,7 @@ export async function publishRatingRecordDurably(
   const recovered = claim.mode === "reconcile";
   let current: boolean;
   try {
-    current = await deps.effectStore.isCurrentEffect({
+    current = await capturedDeps.effectStore.isCurrentEffect({
       kind: EFFECT_KIND,
       effectId: identity.logicalAddress,
       bindingHash: identity.bindingHash,
@@ -597,7 +686,7 @@ export async function publishRatingRecordDurably(
 
   let publication: BoundArtifactWriteResult;
   try {
-    publication = await deps.repository.write(
+    publication = await capturedDeps.repository.write(
       identity.logicalAddress,
       deepFreeze(snapshotCanonicalJson(
         captured.record as unknown as Record<string, unknown>,
@@ -606,7 +695,7 @@ export async function publishRatingRecordDurably(
     );
   } catch (error) {
     await markAmbiguous(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-publication-response-lost",
@@ -619,7 +708,7 @@ export async function publishRatingRecordDurably(
   }
   if (publication.status === "conflict") {
     await requireOperatorAction(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-publication-conflict",
@@ -632,7 +721,7 @@ export async function publishRatingRecordDurably(
   }
   if (publication.status === "indeterminate") {
     await markAmbiguous(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-publication-indeterminate",
@@ -651,7 +740,7 @@ export async function publishRatingRecordDurably(
     publication.binding.nativeAddress !== publication.anchor.address
   ) {
     await requireOperatorAction(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-binding-mismatch",
@@ -666,7 +755,7 @@ export async function publishRatingRecordDurably(
   let anchorAuthentication: RatingAnchorAuthenticationVerdict;
   try {
     anchorAuthentication = captureVerdict(
-      await deps.authenticateAnchor(deepFreeze({
+      await capturedDeps.authenticateAnchor(deepFreeze({
         logicalAddress: identity.logicalAddress,
         record: snapshotCanonicalJson(captured.record, "rating anchor authentication record"),
         publication: snapshotCanonicalJsonRead(
@@ -678,7 +767,7 @@ export async function publishRatingRecordDurably(
     );
   } catch (error) {
     await markAmbiguous(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-anchor-authentication-indeterminate",
@@ -692,14 +781,14 @@ export async function publishRatingRecordDurably(
   if (anchorAuthentication.disposition !== "valid") {
     if (anchorAuthentication.disposition === "invalid") {
       await requireOperatorAction(
-        deps.effectStore,
+        capturedDeps.effectStore,
         identity,
         claim.lease,
         "rating-anchor-invalid",
       ).catch(() => {});
     } else {
       await markAmbiguous(
-        deps.effectStore,
+        capturedDeps.effectStore,
         identity,
         claim.lease,
         "rating-anchor-indeterminate",
@@ -717,7 +806,7 @@ export async function publishRatingRecordDurably(
   let readAuthentication: RatingAuthenticationVerdict | undefined;
   let readback: VerifiedRead;
   try {
-    readback = await deps.repository.read(
+    readback = await capturedDeps.repository.read(
       identity.logicalAddress,
       captured.expectedOwner,
       async (candidate, binding) => {
@@ -732,7 +821,7 @@ export async function publishRatingRecordDurably(
         }
         try {
           readAuthentication = captureVerdict(
-            await deps.authenticateRatingRecord(deepFreeze({
+            await capturedDeps.authenticateRatingRecord(deepFreeze({
               record: snapshotCanonicalJsonRead(
                 candidate,
                 "RatingRecord exact readback",
@@ -753,7 +842,7 @@ export async function publishRatingRecordDurably(
     );
   } catch (error) {
     await markAmbiguous(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-readback-threw",
@@ -772,14 +861,14 @@ export async function publishRatingRecordDurably(
       : readbackFailure(readback);
     if (failure.permanent) {
       await requireOperatorAction(
-        deps.effectStore,
+        capturedDeps.effectStore,
         identity,
         claim.lease,
         failure.reason,
       ).catch(() => {});
     } else {
       await markAmbiguous(
-        deps.effectStore,
+        capturedDeps.effectStore,
         identity,
         claim.lease,
         failure.reason,
@@ -793,7 +882,7 @@ export async function publishRatingRecordDurably(
   }
   if (!exactValue(readback.record, captured.record)) {
     await requireOperatorAction(
-      deps.effectStore,
+      capturedDeps.effectStore,
       identity,
       claim.lease,
       "rating-readback-byte-mismatch",
@@ -821,7 +910,7 @@ export async function publishRatingRecordDurably(
       signer: captured.record.rater,
     },
   };
-  const completed = await deps.effectStore.recordEffectCompleted({
+  const completed = await capturedDeps.effectStore.recordEffectCompleted({
     kind: EFFECT_KIND,
     effectId: identity.logicalAddress,
     bindingHash: identity.bindingHash,
