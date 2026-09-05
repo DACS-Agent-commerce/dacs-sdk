@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   advanceX402BuyerSettlement,
   assertX402BuyerSettlementIntent,
@@ -34,6 +36,56 @@ import {
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
+
+function exactOwnData(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    const allowed = new Set([...required, ...optional]);
+    if (keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
+        required.some((key) => !Object.hasOwn(descriptors, key))) return null;
+    const captured: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return null;
+      }
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return null;
+  }
+}
+
+function bindStableCapability<T>(source: unknown, name: string): T | null {
+  if (source === null || (typeof source !== "object" && typeof source !== "function") ||
+      nodeTypes.isProxy(source)) return null;
+  try {
+    let cursor: object | null = source as object;
+    while (cursor !== null) {
+      if (nodeTypes.isProxy(cursor)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      if (descriptor) {
+        if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
+            nodeTypes.isProxy(descriptor.value)) return null;
+        return Reflect.apply(Function.prototype.bind, descriptor.value, [source]) as T;
+      }
+      cursor = Object.getPrototypeOf(cursor) as object | null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 export interface DacsX402BuyerPaymentInputV1 {
   paymentInputVersion: "1";
@@ -218,36 +270,89 @@ function walletSettlementForIntent(
 export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
   options: Readonly<DacsX402WalletSpendRecoveryAuthenticatorOptionsV1>,
 ): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
-  if (options === null || typeof options !== "object" ||
-      !options.settlementStore || typeof options.settlementStore.load !== "function" ||
-      typeof options.settlementStore.claim !== "function" ||
-      typeof options.settlementStore.isCurrent !== "function" ||
-      typeof options.owner !== "string" || options.owner.length === 0 ||
-      !Number.isSafeInteger(options.chainId) || options.chainId <= 0 ||
-      !Number.isSafeInteger(options.minimumConfirmations) ||
-      options.minimumConfirmations <= 0 ||
-      !Number.isSafeInteger(options.authorizationSearchFromBlock) ||
-      options.authorizationSearchFromBlock < 0 || !options.client ||
-      (options.verifySignature !== undefined &&
-        typeof options.verifySignature !== "function") ||
-      (options.confirmUnused !== undefined &&
-        typeof options.confirmUnused !== "function") ||
-      (options.recoverDisclosure !== undefined &&
-        typeof options.recoverDisclosure !== "function")) {
+  const captured = exactOwnData(options, [
+    "settlementStore", "owner", "chainId", "minimumConfirmations",
+    "authorizationSearchFromBlock", "client",
+  ], ["verifySignature", "confirmUnused", "recoverDisclosure"]);
+  const load = bindStableCapability<X402BuyerSettlementStore["load"]>(
+    captured?.settlementStore,
+    "load",
+  );
+  const claim = bindStableCapability<X402BuyerSettlementStore["claim"]>(
+    captured?.settlementStore,
+    "claim",
+  );
+  const isCurrent = bindStableCapability<X402BuyerSettlementStore["isCurrent"]>(
+    captured?.settlementStore,
+    "isCurrent",
+  );
+  const getFinalityHead = bindStableCapability<X402BuyerEvmReadClient["getFinalityHead"]>(
+    captured?.client,
+    "getFinalityHead",
+  );
+  const getLogs = bindStableCapability<X402BuyerEvmReadClient["getLogs"]>(
+    captured?.client,
+    "getLogs",
+  );
+  const getTransactionReceipt =
+    bindStableCapability<X402BuyerEvmReadClient["getTransactionReceipt"]>(
+      captured?.client,
+      "getTransactionReceipt",
+    );
+  const readAuthorizationState =
+    bindStableCapability<X402BuyerEvmReadClient["readAuthorizationState"]>(
+      captured?.client,
+      "readAuthorizationState",
+    );
+  const confirmBlockAncestor =
+    bindStableCapability<X402BuyerEvmReadClient["confirmBlockAncestor"]>(
+      captured?.client,
+      "confirmBlockAncestor",
+    );
+  const verifySignature = captured?.verifySignature === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmSignatureVerifier>(options, "verifySignature");
+  const confirmUnused = captured?.confirmUnused === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmUnusedConfirmer>(options, "confirmUnused");
+  const recoveredDisclosure = captured?.recoverDisclosure === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmDisclosureRecovery>(options, "recoverDisclosure");
+  if (!captured || !load || !claim || !isCurrent || !getFinalityHead ||
+      !getLogs || !getTransactionReceipt || !readAuthorizationState ||
+      !confirmBlockAncestor ||
+      typeof captured.owner !== "string" || captured.owner.length === 0 ||
+      !Number.isSafeInteger(captured.chainId) || (captured.chainId as number) <= 0 ||
+      !Number.isSafeInteger(captured.minimumConfirmations) ||
+      (captured.minimumConfirmations as number) <= 0 ||
+      !Number.isSafeInteger(captured.authorizationSearchFromBlock) ||
+      (captured.authorizationSearchFromBlock as number) < 0 ||
+      (captured.verifySignature !== undefined && !verifySignature) ||
+      (captured.confirmUnused !== undefined && !confirmUnused) ||
+      (captured.recoverDisclosure !== undefined && !recoveredDisclosure)) {
     throw new TypeError("x402 wallet recovery authenticator options are invalid");
   }
-  const settlementStore = options.settlementStore;
-  const owner = options.owner;
-  const chainId = options.chainId;
-  const minimumConfirmations = options.minimumConfirmations;
-  const authorizationSearchFromBlock = options.authorizationSearchFromBlock;
-  const client = options.client;
-  const verifySignature = options.verifySignature;
-  const confirmUnused = options.confirmUnused;
-  const recoverDisclosure = options.recoverDisclosure ??
+  const settlementStore = Object.freeze({ load, claim, isCurrent });
+  const owner = captured.owner;
+  const chainId = captured.chainId as number;
+  const minimumConfirmations = captured.minimumConfirmations as number;
+  const authorizationSearchFromBlock =
+    captured.authorizationSearchFromBlock as number;
+  const client: X402BuyerEvmReadClient = Object.freeze({
+    getFinalityHead,
+    getLogs,
+    getTransactionReceipt,
+    readAuthorizationState,
+    confirmBlockAncestor,
+  });
+  const stableVerifySignature: X402BuyerEvmSignatureVerifier | undefined =
+    verifySignature ?? undefined;
+  const stableConfirmUnused: X402BuyerEvmUnusedConfirmer | undefined =
+    confirmUnused ?? undefined;
+  const recoverDisclosure = recoveredDisclosure ??
     createX402BuyerRetainedDisclosureRecovery({});
 
-  return async (
+  return Object.freeze(async (
     reservation: Readonly<WalletSpendReservationV1>,
     observation: Readonly<WalletSpendRecoveryObservationV1>,
   ): Promise<boolean> => {
@@ -293,12 +398,12 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
           bindingHash: intent.bindingHash,
           idempotencyKey: intent.settlementKey,
           async assertCurrent() {
-            if (!await settlementStore.isCurrent({
+            if (await settlementStore.isCurrent({
               settlementKey: intent.settlementKey,
               bindingHash: intent.bindingHash,
               lease: claimed.lease,
               now: Date.now(),
-            })) {
+            }) !== true) {
               throw new DacsX402BuyerPaymentError("x402-wallet-recovery-stale");
             }
           },
@@ -335,8 +440,12 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
           canonicalize(candidateIntent) === canonicalize(intent)
           ? { disposition: "authorized" as const, bindingHash: candidateIntent.bindingHash }
           : { disposition: "rejected" as const, reason: "wallet-reservation-mismatch" },
-        ...(verifySignature === undefined ? {} : { verifySignature }),
-        ...(confirmUnused === undefined ? {} : { confirmUnused }),
+        ...(stableVerifySignature === undefined
+          ? {}
+          : { verifySignature: stableVerifySignature }),
+        ...(stableConfirmUnused === undefined
+          ? {}
+          : { confirmUnused: stableConfirmUnused }),
         recoverDisclosure,
       });
       const lookup = await provider.lookup(intent, candidate, fence);
@@ -357,7 +466,7 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
     } catch {
       return false;
     }
-  };
+  });
 }
 
 function combinedFence(

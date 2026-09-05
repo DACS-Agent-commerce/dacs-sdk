@@ -523,6 +523,86 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
+  it("captures DEM recovery capabilities once with their original receivers", async () => {
+    const payment = recoveryPayment();
+    const retained = recoveryEvidenceDatabase(payment, true);
+    const database = {
+      loadEffectInput(...args: Parameters<DacsNodeSqliteDatabase["loadEffectInput"]>) {
+        expect(this).toBe(database);
+        return retained.loadEffectInput(...args);
+      },
+      loadEffectCheckpoint(
+        ...args: Parameters<DacsNodeSqliteDatabase["loadEffectCheckpoint"]>
+      ) {
+        expect(this).toBe(database);
+        return retained.loadEffectCheckpoint(...args);
+      },
+    } as unknown as DacsNodeSqliteDatabase;
+    const chain: DemosTransferObservation = {
+      status: "included",
+      txHash: TX_HASH,
+      payer: PAYER,
+      payee: PAYEE,
+      amountOs: payment.amountOs,
+      blockNumber: 42,
+      includedAt: 1_780_000_000_000,
+    };
+    const options = {
+      database,
+      async observeDemosTransfer() {
+        expect(this).toBe(options);
+        return chain;
+      },
+    };
+    const authenticateRecovery =
+      createDacsPayDemWalletSpendRecoveryAuthenticatorV1(options);
+    expect(Object.isFrozen(authenticateRecovery)).toBe(true);
+    Object.assign(database, {
+      loadEffectInput: vi.fn(() => undefined),
+      loadEffectCheckpoint: vi.fn(() => undefined),
+    });
+    Object.assign(options, {
+      observeDemosTransfer: vi.fn(async () => ({
+        status: "unavailable" as const,
+        reason: "swapped",
+      })),
+    });
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service" as const, amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee" as const,
+          amount: (BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs)).toString() },
+      ],
+    };
+
+    await expect(authenticateRecovery(recoveryReservation(payment), exact))
+      .resolves.toBe(true);
+  });
+
+  it("rejects DEM recovery option accessors and proxies without invoking them", () => {
+    const getter = vi.fn(() => recoveryEvidenceDatabase(recoveryPayment(), true));
+    const accessorOptions = {
+      observeDemosTransfer: vi.fn(),
+    } as Record<string, unknown>;
+    Object.defineProperty(accessorOptions, "database", {
+      enumerable: true,
+      get: getter,
+    });
+    expect(() => createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
+      accessorOptions as unknown as Parameters<
+        typeof createDacsPayDemWalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(() => createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
+      new Proxy(accessorOptions, {}) as unknown as Parameters<
+        typeof createDacsPayDemWalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+  });
+
   it("releases only the exact no-checkpoint DEM absence proof", async () => {
     const payment = recoveryPayment();
     const reservation = recoveryReservation(payment);

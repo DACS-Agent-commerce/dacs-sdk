@@ -783,6 +783,162 @@ describe("coordinator x402 buyer payment track", () => {
     await expect(unavailable(reservation, exact)).resolves.toBe(false);
   });
 
+  it("captures recovery capabilities once with their original receivers", async () => {
+    const retained = intent();
+    const innerStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(innerStore, retained, undefined, captured(retained));
+    const store = {
+      load(settlementKey: string) {
+        expect(this).toBe(store);
+        return innerStore.load(settlementKey);
+      },
+      claim(input: Parameters<X402BuyerSettlementStore["claim"]>[0]) {
+        expect(this).toBe(store);
+        return innerStore.claim(input);
+      },
+      isCurrent(input: Parameters<X402BuyerSettlementStore["isCurrent"]>[0]) {
+        expect(this).toBe(store);
+        return innerStore.isCurrent(input);
+      },
+      grantRecovery: (input: Parameters<X402BuyerSettlementStore["grantRecovery"]>[0]) =>
+        innerStore.grantRecovery(input),
+      recordDisclosure: (
+        input: Parameters<X402BuyerSettlementStore["recordDisclosure"]>[0],
+      ) => innerStore.recordDisclosure(input),
+      recordOutcome: (input: Parameters<X402BuyerSettlementStore["recordOutcome"]>[0]) =>
+        innerStore.recordOutcome(input),
+    };
+    const innerClient = recoveryReader();
+    const client: X402BuyerEvmReadClient = {
+      getFinalityHead() {
+        expect(this).toBe(client);
+        return innerClient.getFinalityHead();
+      },
+      getLogs(input) {
+        expect(this).toBe(client);
+        return innerClient.getLogs(input);
+      },
+      getTransactionReceipt(transactionHash) {
+        expect(this).toBe(client);
+        return innerClient.getTransactionReceipt(transactionHash);
+      },
+      readAuthorizationState(input) {
+        expect(this).toBe(client);
+        return innerClient.readAuthorizationState(input);
+      },
+      confirmBlockAncestor(input) {
+        expect(this).toBe(client);
+        return innerClient.confirmBlockAncestor(input);
+      },
+    };
+    const options = {
+      settlementStore: store,
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client,
+      verifySignature: validSignature,
+      confirmUnused: safeUnused,
+    };
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1(options);
+    expect(Object.isFrozen(authenticateRecovery)).toBe(true);
+    Object.assign(store, {
+      load: vi.fn(async () => ({ status: "absent" as const })),
+      claim: vi.fn(async () => ({ status: "corrupt" as const, reason: "swapped" })),
+      isCurrent: vi.fn(async () => false),
+    });
+    Object.assign(client, {
+      getFinalityHead: vi.fn(async () => { throw new Error("swapped"); }),
+      getLogs: vi.fn(async () => []),
+      getTransactionReceipt: vi.fn(async () => { throw new Error("swapped"); }),
+      readAuthorizationState: vi.fn(async () => { throw new Error("swapped"); }),
+      confirmBlockAncestor: vi.fn(async () => { throw new Error("swapped"); }),
+    });
+    Object.assign(options, {
+      verifySignature: vi.fn(async () => ({ disposition: "invalid" as const })),
+    });
+
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{
+        asset: retained.asset.toLowerCase(),
+        purpose: "service" as const,
+        amount: retained.amount,
+      }],
+    };
+    await expect(authenticateRecovery(recoveryReservation(retained), exact))
+      .resolves.toBe(true);
+  });
+
+  it("rejects accessors, proxies, and non-literal current-fence results", async () => {
+    const getter = vi.fn(() => createInMemoryX402BuyerSettlementStore());
+    const accessorOptions = {
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader(),
+    } as Record<string, unknown>;
+    Object.defineProperty(accessorOptions, "settlementStore", {
+      enumerable: true,
+      get: getter,
+    });
+    expect(() => createDacsX402WalletSpendRecoveryAuthenticatorV1(
+      accessorOptions as unknown as Parameters<
+        typeof createDacsX402WalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(() => createDacsX402WalletSpendRecoveryAuthenticatorV1(
+      new Proxy(accessorOptions, {}) as unknown as Parameters<
+        typeof createDacsX402WalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+
+    const retained = intent();
+    const innerStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(innerStore, retained);
+    const malformedFenceStore = {
+      load: (settlementKey: string) => innerStore.load(settlementKey),
+      claim: (input: Parameters<X402BuyerSettlementStore["claim"]>[0]) =>
+        innerStore.claim(input),
+      isCurrent: vi.fn(async () => ({} as unknown as boolean)),
+      grantRecovery: (input: Parameters<X402BuyerSettlementStore["grantRecovery"]>[0]) =>
+        innerStore.grantRecovery(input),
+      recordDisclosure: (
+        input: Parameters<X402BuyerSettlementStore["recordDisclosure"]>[0],
+      ) => innerStore.recordDisclosure(input),
+      recordOutcome: (input: Parameters<X402BuyerSettlementStore["recordOutcome"]>[0]) =>
+        innerStore.recordOutcome(input),
+    };
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        settlementStore: malformedFenceStore,
+        owner: "x402-wallet-recovery-test",
+        chainId: 84532,
+        minimumConfirmations: 5,
+        authorizationSearchFromBlock: 1,
+        client: recoveryReader(),
+        verifySignature: validSignature,
+        confirmUnused: safeUnused,
+      });
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{
+        asset: retained.asset.toLowerCase(),
+        purpose: "service" as const,
+        amount: retained.amount,
+      }],
+    };
+    await expect(authenticateRecovery(recoveryReservation(retained), exact))
+      .resolves.toBe(false);
+    expect(malformedFenceStore.isCurrent).toHaveBeenCalled();
+  });
+
   it("releases x402 spend only for a current authenticated unused proof", async () => {
     const retained = intent();
     const reservation = recoveryReservation(retained);

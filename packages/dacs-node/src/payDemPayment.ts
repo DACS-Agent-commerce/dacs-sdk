@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   combineWalletSpendEffectFenceV1,
   settlementKey,
@@ -38,6 +40,55 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 const ADDRESS_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^[1-9][0-9]*$/;
 const PREPARED_CHECKPOINT = "pay-dem-prepared-transfer";
+
+function exactOwnRecoveryData(
+  value: unknown,
+  required: readonly string[],
+): Readonly<Record<string, unknown>> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== required.length ||
+        keys.some((key) => typeof key !== "string" || !required.includes(key)) ||
+        required.some((key) => !Object.hasOwn(descriptors, key))) return null;
+    const captured: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return null;
+      }
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return null;
+  }
+}
+
+function bindStableRecoveryCapability<T>(source: unknown, name: string): T | null {
+  if (source === null || (typeof source !== "object" && typeof source !== "function") ||
+      nodeTypes.isProxy(source)) return null;
+  try {
+    let cursor: object | null = source as object;
+    while (cursor !== null) {
+      if (nodeTypes.isProxy(cursor)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      if (descriptor) {
+        if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
+            nodeTypes.isProxy(descriptor.value)) return null;
+        return Reflect.apply(Function.prototype.bind, descriptor.value, [source]) as T;
+      }
+      cursor = Object.getPrototypeOf(cursor) as object | null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 export interface DacsPayDemBuyerPaymentAuthorityV1 {
   authorityVersion: "1";
@@ -348,18 +399,30 @@ function generatedBuyerPaymentEffectId(
 export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
   options: Readonly<DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1>,
 ): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
-  if (!plainObject(options) || !exactKeys(options, [
+  const captured = exactOwnRecoveryData(options, [
     "database", "observeDemosTransfer",
-  ]) || options.database === null || typeof options.database !== "object" ||
-      typeof options.database.loadEffectInput !== "function" ||
-      typeof options.database.loadEffectCheckpoint !== "function" ||
-      typeof options.observeDemosTransfer !== "function") {
+  ]);
+  const loadEffectInput =
+    bindStableRecoveryCapability<DacsNodeSqliteDatabase["loadEffectInput"]>(
+      captured?.database,
+      "loadEffectInput",
+    );
+  const loadEffectCheckpoint =
+    bindStableRecoveryCapability<DacsNodeSqliteDatabase["loadEffectCheckpoint"]>(
+      captured?.database,
+      "loadEffectCheckpoint",
+    );
+  const observeDemosTransfer =
+    bindStableRecoveryCapability<
+      DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1["observeDemosTransfer"]
+    >(options, "observeDemosTransfer");
+  if (!captured || !loadEffectInput || !loadEffectCheckpoint ||
+      !observeDemosTransfer) {
     throw new TypeError("pay-dem wallet recovery authenticator options are invalid");
   }
-  const database = options.database;
-  const observeDemosTransfer = options.observeDemosTransfer.bind(options);
+  const database = Object.freeze({ loadEffectInput, loadEffectCheckpoint });
 
-  return async (
+  return Object.freeze(async (
     reservation: Readonly<WalletSpendReservationV1>,
     observation: Readonly<WalletSpendRecoveryObservationV1>,
   ): Promise<boolean> => {
@@ -422,7 +485,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
     } catch {
       return false;
     }
-  };
+  });
 }
 
 function settlementFence(
