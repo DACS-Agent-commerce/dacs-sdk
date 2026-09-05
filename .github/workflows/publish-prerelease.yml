@@ -62,13 +62,14 @@ jobs:
       - name: Verify package lifecycle and exact release set
         run: |
           npm run package:lifecycle:verify
-          npm run release:set:verify -- --output-dir release-set
+          mkdir -p package-artifacts
+          npm run release:set:verify -- --output-dir package-artifacts/release-set
 
       - name: Upload exact reviewed release set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dacs-npm-prerelease-${{ github.sha }}
-          path: release-set/
+          path: package-artifacts/release-set/
           if-no-files-found: error
           retention-days: 90
 
@@ -76,4 +77,4 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
-        run: node scripts/publish-release-set.mjs --artifact-dir release-set --tag next
+        run: node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next

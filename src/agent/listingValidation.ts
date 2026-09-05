@@ -30,7 +30,6 @@ import {
   publicKeyFromRaw,
   signedBytes,
 } from "../crypto/index.js";
-import { isDacsPublicAddressV1 } from "./publicAddress.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
@@ -38,6 +37,7 @@ import {
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
 import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import { isDacsPublicAddressV1 } from "./publicAddress.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
