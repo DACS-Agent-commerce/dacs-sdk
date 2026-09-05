@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402** and **direct ERC-20** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, sealed-bid auctions, RFQ, private channels, AP2, and dispute (DACS-X) are deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2 safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, a bundled live AP2 provider integration, and dispute execution (DACS-X) remain deferred.
 
 ## What's implemented
 
@@ -47,7 +47,7 @@ and readers must use `ComponentSignedArtifact`,
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
@@ -110,6 +110,16 @@ content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
 
+Settlement evidence has two deliberately different public boundaries.
+`validateSettlementEvidenceStructure()` checks wire shape and any supplied
+comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
+an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
+operation and requires the authenticated agreement, pinned rail, phase
+orchestrator, evidence reference, phase result, PC-2 address (for payment),
+expected deliverable locator (for delivery), plus key resolution and signature
+verification. Missing trust inputs fail as configuration errors rather than
+being silently skipped.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
@@ -137,6 +147,15 @@ Non-intrinsic writer identities require
 adapter's actual key before signing.
 
 ## Public API
+
+`createAgent()` returns only the high-level DACS operations below. It does not
+expose the connected substrate adapter, raw demosdk client, signing primitive,
+or broadcast/transfer authority. Operator diagnostics and funded conformance
+tests that genuinely need the low-level adapter must opt into the clearly named
+`createUnsafeManualAgent()` escape hatch and must never pass that result to an
+application callback, plugin, or HTTP handler. In-process narrowing prevents
+accidental capability leakage; OS-level buyer/seller signer isolation remains a
+deployment responsibility of the generated role services.
 
 ```ts
 import {
@@ -173,8 +192,10 @@ const seller = await createAgent({
     ),
   // Required to accept bundles with SettlementEvidence. Resolve the exact
   // phase orchestrator and authenticated pinned-rail definition from trusted
-  // session/registry state; the SDK binds the Agreement and AttestationRef and
-  // performs the DACS-4 semantic and cryptographic verification itself.
+  // session/registry state, including the structured assetSpec/networkSpec
+  // needed for RD-5. The SDK derives the PC-2 phase index and exact handler
+  // txRefs from the authenticated bundle, binds the Agreement/AttestationRef,
+  // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
   bindings: { index: bindings, publisher: bindings },
@@ -204,6 +225,9 @@ const buyer = await createAgent({
     // The exact authenticated DACS-1 bundle is hashed into the Agreement and
     // terminal bundle. A bare agent id is not an identity commitment.
     bundle: buyerIdentityBundle,
+    // Presentation authentication is deliberately bundle-scoped so the same
+    // identity bundle can be reused. Session replay resistance is separate:
+    // its exact bundle hash is committed inside each signed Agreement.
     verifyPresentation: ({ bundle, signedBytes }) =>
       verifyBuyerIdentityPresentation(bundle, signedBytes),
   },
@@ -655,7 +679,7 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
-| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, plus evm-erc20 settlement |
+| `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, and the provider-injected AP2 safety core |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
 | `@kynesyslabs/dacs/commerce` | no | role-local fixed-price x402 coordination and payment-evidence handshake |
 | `@kynesyslabs/dacs/canonical` | no | JCS / decimals / content hashing / CF-4 addressing |

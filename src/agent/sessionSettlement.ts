@@ -903,6 +903,11 @@ export async function verifyFinalizedSessionSettlement(
           handler: context.rail.handler,
         },
         attestationRef: structuredClone(settlement.evidenceRef),
+        paymentAddress: {
+          railId: context.rail.railId,
+          phaseIndex: context.paymentPhaseIndex,
+          resolved: settlement.evidenceRef.anchor.locator.endsWith(":resolved"),
+        },
         result: settlement.outcome === "success"
           ? { ok: true }
           : { ok: false, errorClass: settlement.evidence.reason },
