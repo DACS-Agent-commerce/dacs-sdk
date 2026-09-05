@@ -112,6 +112,12 @@ a complete live Demos L2PS phase handler; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream signature-format dependency.
 
+`createFsDurableRfqLifecycleStore()` provides the single-host production
+restart boundary for one RFQ role: keyed record authentication, strict local
+permissions, synchronized atomic writes, cross-process locking, and monotonic
+compare-and-swap validation. Buyer and seller require separate directories and
+separate integrity keys; the in-memory RFQ store remains test-only.
+
 Settlement evidence has two deliberately different public boundaries.
 `validateSettlementEvidenceStructure()` checks wire shape and any supplied
 comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never

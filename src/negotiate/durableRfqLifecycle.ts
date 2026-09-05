@@ -147,20 +147,20 @@ export type DurableRfqRecordLoad<TSignature = unknown> =
   | { status: "missing" }
   | { status: "ok"; record: Readonly<DurableRfqLifecycleRecord<TSignature>> }
   | { status: "unsupported"; version: number }
-  | { status: "corrupt"; reason: string };
+  | { status: "corrupt" | "unavailable"; reason: string };
 
 export type DurableRfqRecordCreate<TSignature = unknown> =
   | {
       status: "created" | "existing";
       record: Readonly<DurableRfqLifecycleRecord<TSignature>>;
     }
-  | { status: "conflict" | "corrupt"; reason: string }
+  | { status: "conflict" | "corrupt" | "unavailable"; reason: string }
   | { status: "unsupported"; version: number };
 
 export type DurableRfqRecordWrite<TSignature = unknown> =
   | { status: "written"; record: Readonly<DurableRfqLifecycleRecord<TSignature>> }
   | { status: "missing" | "stale" }
-  | { status: "corrupt"; reason: string }
+  | { status: "corrupt" | "unavailable"; reason: string }
   | { status: "unsupported"; version: number };
 
 export interface DurableRfqLifecycleStore<TSignature = unknown> {
@@ -348,6 +348,11 @@ function lifecycleBindingMaterial(
     listingPin: session.listingPin,
     buyer: session.buyer,
     seller: session.seller,
+    pricing: session.pricing,
+    initiator: session.initiator,
+    maxTurns: session.maxTurns,
+    timeoutMs: session.timeoutMs,
+    startedAt: session.startedAt,
     authority,
   };
 }
@@ -540,6 +545,7 @@ function authorityBindsSession(
       isListing(listing) &&
       canonicalize(pin) === canonicalize(session.listingPin) &&
       pin.contentHash === contentHash(listing as unknown as DataRecord) &&
+      canonicalize(listing.pricing) === canonicalize(session.pricing) &&
       authority.buyer.identityBundle.presentedBy === session.buyer.primaryClaim &&
       identityBundleHash(authority.buyer.identityBundle) === session.buyer.bundleHash &&
       isAttestationRef(authority.buyer.vetRecordRef) &&
@@ -556,7 +562,9 @@ function authorityBindsSession(
   }
 }
 
-function recordViolation<TSignature>(value: unknown): string | null {
+export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
+  value: unknown,
+): string | null {
   let record: DurableRfqLifecycleRecord<TSignature>;
   try {
     record = snapshot(value, "RFQ lifecycle record") as
@@ -784,10 +792,103 @@ function recordViolation<TSignature>(value: unknown): string | null {
   return null;
 }
 
+function arrayPrefix(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return (
+    right.length >= left.length &&
+    left.every((value, index) => canonicalize(value) === canonicalize(right[index]))
+  );
+}
+
+/** Append-only/monotonic CAS gate shared by every persistent store adapter. */
+export function durableRfqLifecycleTransitionViolation<TSignature = unknown>(
+  priorValue: unknown,
+  nextValue: unknown,
+): string | null {
+  const priorViolation = durableRfqLifecycleRecordViolation<TSignature>(priorValue);
+  if (priorViolation !== null) return `prior record: ${priorViolation}`;
+  const nextViolation = durableRfqLifecycleRecordViolation<TSignature>(nextValue);
+  if (nextViolation !== null) return `next record: ${nextViolation}`;
+  const prior = priorValue as DurableRfqLifecycleRecord<TSignature>;
+  const next = nextValue as DurableRfqLifecycleRecord<TSignature>;
+  if (
+    next.role !== prior.role ||
+    next.jobId !== prior.jobId ||
+    next.channelId !== prior.channelId ||
+    next.bindingHash !== prior.bindingHash ||
+    canonicalize(next.authority) !== canonicalize(prior.authority) ||
+    next.revision !== prior.revision + 1 ||
+    next.createdAt !== prior.createdAt ||
+    next.updatedAt < prior.updatedAt
+  ) {
+    return "static authority or revision is non-monotonic";
+  }
+  if (
+    !arrayPrefix(prior.transcript, next.transcript) ||
+    next.transcript.length > prior.transcript.length + 1 ||
+    !arrayPrefix(prior.inboxPacketIds, next.inboxPacketIds) ||
+    next.inboxPacketIds.length > prior.inboxPacketIds.length + 1 ||
+    next.outbox.length < prior.outbox.length ||
+    next.outbox.length > prior.outbox.length + 1
+  ) {
+    return "transcript, inbox, or outbox history is not append-only";
+  }
+  for (let index = 0; index < prior.outbox.length; index += 1) {
+    const before = prior.outbox[index]!;
+    const after = next.outbox[index]!;
+    if (
+      canonicalize(before.packet) !== canonicalize(after.packet) ||
+      after.attempts < before.attempts ||
+      after.updatedAt < before.updatedAt ||
+      ((before.state === "acknowledged" || before.state === "rejected") &&
+        canonicalize(before) !== canonicalize(after)) ||
+      (before.state === "indeterminate" && after.state === "pending")
+    ) {
+      return "an existing outbox entry was replaced or rolled back";
+    }
+  }
+  if (next.outbox.length === prior.outbox.length + 1) {
+    const added = next.outbox.at(-1)!;
+    if (added.state !== "pending" || added.attempts !== 0) {
+      return "a new outbox entry did not begin as an unattempted intent";
+    }
+  }
+  if (
+    next.session.turnCount < prior.session.turnCount ||
+    next.session.lastSequence < prior.session.lastSequence ||
+    next.session.awaitingSince < prior.session.awaitingSince ||
+    (prior.session.status !== "open" &&
+      canonicalize(next.session) !== canonicalize(prior.session))
+  ) {
+    return "RFQ session checkpoint was rolled back or reopened";
+  }
+  if (
+    prior.failure !== undefined &&
+    canonicalize(next.failure) !== canonicalize(prior.failure)
+  ) {
+    return "terminal lifecycle failure was removed or replaced";
+  }
+  if (prior.agreement !== undefined) {
+    if (
+      next.agreement === undefined ||
+      canonicalize(next.agreement.plan) !== canonicalize(prior.agreement.plan) ||
+      !arrayPrefix(
+        prior.agreement.contributions,
+        next.agreement.contributions,
+      ) ||
+      (prior.agreement.finalized !== undefined &&
+        canonicalize(next.agreement.finalized) !==
+          canonicalize(prior.agreement.finalized))
+    ) {
+      return "agreement signing state was removed or replaced";
+    }
+  }
+  return null;
+}
+
 function captureRecord<TSignature>(
   value: unknown,
 ): Readonly<DurableRfqLifecycleRecord<TSignature>> {
-  const violation = recordViolation<TSignature>(value);
+  const violation = durableRfqLifecycleRecordViolation<TSignature>(value);
   if (violation) throw new DacsError(`RFQ lifecycle ${violation}`);
   return snapshot(value, "RFQ lifecycle record") as Readonly<
     DurableRfqLifecycleRecord<TSignature>
@@ -816,11 +917,11 @@ function captureLoadResult<TSignature>(
     return { status: "unsupported", version: result.version as number };
   }
   if (
-    result.status === "corrupt" &&
+    (result.status === "corrupt" || result.status === "unavailable") &&
     exactKeys(result, ["status", "reason"]) &&
     isNonEmptyCanonical(result.reason)
   ) {
-    return { status: "corrupt", reason: result.reason };
+    return { status: result.status, reason: result.reason };
   }
   throw new DacsError("RFQ lifecycle store load result is malformed");
 }
@@ -839,7 +940,9 @@ function captureCreateResult<TSignature>(
     return { status: result.status, record: captureRecord<TSignature>(result.record) };
   }
   if (
-    (result.status === "conflict" || result.status === "corrupt") &&
+    (result.status === "conflict" ||
+      result.status === "corrupt" ||
+      result.status === "unavailable") &&
     exactKeys(result, ["status", "reason"]) &&
     isNonEmptyCanonical(result.reason)
   ) {
@@ -873,11 +976,11 @@ function captureWriteResult<TSignature>(
     return { status: result.status };
   }
   if (
-    result.status === "corrupt" &&
+    (result.status === "corrupt" || result.status === "unavailable") &&
     exactKeys(result, ["status", "reason"]) &&
     isNonEmptyCanonical(result.reason)
   ) {
-    return { status: "corrupt", reason: result.reason };
+    return { status: result.status, reason: result.reason };
   }
   if (
     result.status === "unsupported" &&
@@ -987,6 +1090,13 @@ export function createInMemoryDurableRfqLifecycleStore<TSignature = unknown>():
       ) {
         return { status: "corrupt", reason: "CAS attempted a non-monotonic write" };
       }
+      const transitionViolation = durableRfqLifecycleTransitionViolation<TSignature>(
+        existing,
+        next,
+      );
+      if (transitionViolation !== null) {
+        return { status: "corrupt", reason: transitionViolation };
+      }
       records.set(key, structuredClone(next));
       return { status: "written", record: next };
     },
@@ -1065,6 +1175,9 @@ function loadFailure<TSignature>(
 ): DurableRfqLifecycleResult<TSignature> {
   if (loaded.status === "missing") {
     return { status: "rejected", reason: "RFQ lifecycle job does not exist" };
+  }
+  if (loaded.status === "unavailable") {
+    return { status: "indeterminate", reason: loaded.reason };
   }
   return {
     status: "rejected",
@@ -1288,15 +1401,24 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
   }
 
   async function load(jobId: string) {
+    let raw: unknown;
     try {
-      return captureLoadResult<TSignature>(await storeLoad(role, jobId));
+      raw = await storeLoad(role, jobId);
+    } catch {
+      return {
+        status: "unavailable" as const,
+        reason: "RFQ lifecycle store load failed",
+      };
+    }
+    try {
+      return captureLoadResult<TSignature>(raw);
     } catch (cause) {
       return {
         status: "corrupt" as const,
         reason:
           cause instanceof Error
             ? cause.message
-            : "RFQ lifecycle store load failed",
+            : "RFQ lifecycle store load result is malformed",
       };
     }
   }
@@ -1306,10 +1428,17 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     expectedRevision: number,
     next: Readonly<DurableRfqLifecycleRecord<TSignature>>,
   ): Promise<DurableRfqRecordWrite<TSignature>> {
+    let raw: unknown;
     try {
-      const result = captureWriteResult<TSignature>(
-        await storeCompareAndSwap(role, jobId, expectedRevision, next),
-      );
+      raw = await storeCompareAndSwap(role, jobId, expectedRevision, next);
+    } catch {
+      return {
+        status: "unavailable",
+        reason: "RFQ lifecycle store write failed",
+      };
+    }
+    try {
+      const result = captureWriteResult<TSignature>(raw);
       if (
         result.status === "written" &&
         canonicalize(result.record) !== canonicalize(next)
@@ -1326,7 +1455,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         reason:
           cause instanceof Error
             ? cause.message
-            : "RFQ lifecycle store write failed",
+            : "RFQ lifecycle store write result is malformed",
       };
     }
   }
@@ -1348,6 +1477,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         status: "rejected",
         reason: `RFQ lifecycle store version ${result.version} is unsupported`,
       };
+    }
+    if (result.status === "unavailable") {
+      return { status: "indeterminate", reason: result.reason };
     }
     return {
       status: "rejected",
@@ -1450,6 +1582,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
           status: "rejected",
           reason: `RFQ lifecycle store version ${written.version} is unsupported`,
         };
+      }
+      if (written.status === "unavailable") {
+        return { status: "indeterminate", reason: written.reason };
       }
       return {
         status: "rejected",
@@ -1797,15 +1932,24 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         updatedAt: session.startedAt,
       };
       let created: DurableRfqRecordCreate<TSignature>;
+      let rawCreated: unknown;
       try {
-        created = captureCreateResult<TSignature>(await storeCreate(record));
+        rawCreated = await storeCreate(record);
+      } catch {
+        return {
+          status: "indeterminate",
+          reason: "RFQ lifecycle store create failed",
+        };
+      }
+      try {
+        created = captureCreateResult<TSignature>(rawCreated);
       } catch (cause) {
         return {
           status: "rejected",
           reason:
             cause instanceof Error
               ? cause.message
-              : "RFQ lifecycle store create failed",
+              : "RFQ lifecycle store create result is malformed",
         };
       }
       if (created.status === "created" || created.status === "existing") {
@@ -1828,6 +1972,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
           status: "rejected",
           reason: `RFQ lifecycle store version ${created.version} is unsupported`,
         };
+      }
+      if (created.status === "unavailable") {
+        return { status: "indeterminate", reason: created.reason };
       }
       return {
         status: created.status === "conflict" ? "conflict" : "rejected",
