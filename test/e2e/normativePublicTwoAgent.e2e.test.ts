@@ -2022,6 +2022,7 @@ async function prepareSettlementIntent(input: {
   }, {
     client: challengeClient(),
     fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
+    transportPolicy: { mode: "insecure-test" },
   });
   expect(prepared.disposition).toBe("prepared");
   if (prepared.disposition !== "prepared") throw new Error(prepared.reason);
@@ -2050,6 +2051,7 @@ async function settleAndRecover(input: {
   });
   const intent = await prepareSettlementIntent(input);
   const paidTransport = createX402BuyerPaidRequestTransport({
+    transportPolicy: { mode: "insecure-test" },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("retained payment header absent");
@@ -3620,6 +3622,7 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
   const transport = createX402BuyerPaidRequestTransport({
+    transportPolicy: { mode: "insecure-test" },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("process A lost its retained payment header");
@@ -3926,6 +3929,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       },
     }, {
       client,
+      transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => new Response(JSON.stringify({
         x402Version: 2,
         resource: { url: HTTP_RESOURCE },
