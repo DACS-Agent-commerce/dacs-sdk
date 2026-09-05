@@ -12,6 +12,10 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
+  advanceLiquidityTankSettlement,
+  createLiquidityTankIntent,
+  type LiquidityTankAdapter,
+  type LiquidityTankStore,
   advanceAp2Settlement,
   deriveAp2IdempotencyKey,
   type Ap2BindingStore,
@@ -41,12 +45,16 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
+const tankIntent: typeof createLiquidityTankIntent = createLiquidityTankIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const tankAdapter: LiquidityTankAdapter;
+declare const tankStore: LiquidityTankStore;
 declare const ap2Store: Ap2BindingStore;
 declare const ap2Verifier: Ap2MandateVerifier;
 declare const ap2Provider: Ap2ProviderAdapter;
@@ -62,6 +70,10 @@ void fulfilment;
 void adapter;
 void journal;
 void result;
+void tankAdvance;
+void tankIntent;
+void tankAdapter;
+void tankStore;
 void ap2Advance;
 void ap2IdempotencyKey;
 void ap2Store;
