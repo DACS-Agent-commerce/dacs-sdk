@@ -20,7 +20,12 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import {
+  isCanonicalClaimReference,
+  requireCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import type { DurablePublishedRating } from "./durableRatingPublication.js";
 
 export type RatingPartyRole = "buyer" | "seller";
@@ -147,7 +152,13 @@ export interface CompleteRatingPhaseDeps {
   ) =>
     | RatingPhaseAuthenticationVerdict
     | Promise<RatingPhaseAuthenticationVerdict>;
-  /** Re-authenticate the remote or replayed publication before its ref is used. */
+  /**
+   * Re-authenticate the remote or replayed publication before its ref is used.
+   * A valid verdict MUST establish the RatingRecord signature, finalized
+   * anchor/binding, and the rater-to-publication.expectedOwner authority
+   * relation from trusted identity/session state; expectedOwner is not
+   * self-authenticating publication metadata.
+   */
   authenticatePublication: (input: Readonly<{
     plan: Readonly<RatingPhasePlan>;
     role: RatingPartyRole;
@@ -239,9 +250,7 @@ function captureAuthority(
       "pipeline",
       "phaseResults",
     ]) ||
-    typeof captured.jobId !== "string" ||
-    captured.jobId.length === 0 ||
-    captured.jobId.trim() !== captured.jobId ||
+    !isCanonicalJobId(captured.jobId) ||
     !HASH.test(captured.sessionRecordHash) ||
     captured.state !== "rate-pending" ||
     !Array.isArray(captured.parties) ||
@@ -267,17 +276,25 @@ function derivePlan(authority: RatingPhaseAuthorityInput): RatingPhasePlan {
       ]) ||
       !["buyer", "seller", "orchestrator"].includes(party.role) ||
       !isCanonicalClaimReference(party.primaryClaim) ||
-      parties.has(party.role) ||
-      claims.has(party.primaryClaim)
+      parties.has(party.role)
     ) {
       throw new DacsError("rating phase parties are malformed or duplicated");
     }
+    const parsedClaim = requireCanonicalClaimReference(
+      party.primaryClaim,
+      `rating phase ${party.role} party`,
+    );
+    const claimIdentity =
+      `${parsedClaim.identity.scheme}:${parsedClaim.identity.identifier}`;
+    if (claims.has(claimIdentity)) {
+      throw new DacsError("rating phase parties are malformed or duplicated");
+    }
     parties.set(party.role, party.primaryClaim);
-    claims.add(party.primaryClaim);
+    claims.add(claimIdentity);
   }
   const buyer = parties.get("buyer");
   const seller = parties.get("seller");
-  if (!buyer || !seller || buyer === seller) {
+  if (!buyer || !seller || sameCanonicalClaimIdentity(buyer, seller)) {
     throw new DacsError("rating phase requires distinct buyer and seller parties");
   }
   if (
@@ -366,16 +383,12 @@ function capturePlan(value: Readonly<RatingPhasePlan>): RatingPhasePlan {
       "planHash",
     ]) ||
     captured.planVersion !== "1" ||
-    typeof captured.jobId !== "string" ||
-    captured.jobId.length === 0 ||
-    captured.jobId.trim() !== captured.jobId ||
-    captured.jobId.normalize("NFC") !== captured.jobId ||
-    /[\u0000-\u001f\u007f]/.test(captured.jobId) ||
+    !isCanonicalJobId(captured.jobId) ||
     !HASH.test(captured.sessionRecordHash) ||
     !HASH.test(captured.planHash) ||
     !isCanonicalClaimReference(captured.buyer) ||
     !isCanonicalClaimReference(captured.seller) ||
-    captured.buyer === captured.seller ||
+    sameCanonicalClaimIdentity(captured.buyer, captured.seller) ||
     !Number.isSafeInteger(captured.phaseIndex) ||
     captured.phaseIndex < 0 ||
     !isPhaseStep(captured.step) ||
@@ -409,10 +422,14 @@ export async function createRatingPhasePlan(
 ): Promise<Readonly<RatingPhasePlan>> {
   const authority = captureAuthority(input);
   const plan = derivePlan(authority);
-  if (!deps || typeof deps.authenticateAuthority !== "function") {
+  if (!deps) {
     throw new DacsError("rating phase requires authority authentication");
   }
-  const authenticateAuthority = deps.authenticateAuthority;
+  const authenticateAuthoritySource = deps.authenticateAuthority;
+  if (typeof authenticateAuthoritySource !== "function") {
+    throw new DacsError("rating phase requires authority authentication");
+  }
+  const authenticateAuthority = authenticateAuthoritySource.bind(deps);
   let verdict: RatingPhaseAuthenticationVerdict;
   try {
     verdict = captureVerdict(
@@ -462,6 +479,9 @@ function capturePublication(
     publication.publicationVersion !== "1" ||
     typeof publication.expectedOwner !== "string" ||
     publication.expectedOwner.length === 0 ||
+    publication.expectedOwner.trim() !== publication.expectedOwner ||
+    publication.expectedOwner.normalize("NFC") !== publication.expectedOwner ||
+    /[\u0000-\u001f\u007f]/.test(publication.expectedOwner) ||
     typeof publication.nativeAddress !== "string" ||
     publication.nativeAddress.length === 0 ||
     !HASH.test(publication.bindingContentHash) ||
@@ -579,15 +599,22 @@ export async function completeRatingPhase(
   if (!Number.isSafeInteger(invokedAt) || invokedAt < 0) {
     throw new DacsError("rating phase invokedAt must be a non-negative safe integer");
   }
+  if (!deps) {
+    throw new DacsError("rating phase requires plan and publication authentication");
+  }
+  const authenticatePlanSource = deps.authenticatePlan;
+  const authenticatePublicationSource = deps.authenticatePublication;
   if (
-    !deps ||
-    typeof deps.authenticatePlan !== "function" ||
-    typeof deps.authenticatePublication !== "function"
+    typeof authenticatePlanSource !== "function" ||
+    typeof authenticatePublicationSource !== "function"
   ) {
     throw new DacsError("rating phase requires plan and publication authentication");
   }
-  const authenticatePlan = deps.authenticatePlan;
-  const authenticatePublication = deps.authenticatePublication;
+  const authenticatePlan = authenticatePlanSource.bind(deps);
+  const authenticatePublication = authenticatePublicationSource.bind(deps);
+  // Own the exact role submissions before plan authentication yields. The
+  // external publication authenticator later sees only these bound snapshots.
+  const submissions = captureSubmissions(submissionsInput, plan);
   let planVerdict: RatingPhaseAuthenticationVerdict;
   try {
     planVerdict = captureVerdict(
@@ -618,7 +645,6 @@ export async function completeRatingPhase(
   if (planVerdict.disposition === "invalid") {
     throw new DacsError(`rating phase plan is invalid: ${planVerdict.reason}`);
   }
-  const submissions = captureSubmissions(submissionsInput, plan);
   const roleResults: RatingPhaseRoleResult[] = [];
   const ratingRefs: AttestationRef[] = [];
   const pendingRoles: RatingPartyRole[] = [];
