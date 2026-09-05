@@ -24,6 +24,7 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   admitChannelMessage,
   type ChannelMessage,
@@ -509,8 +510,11 @@ function rfqAuthority(input: OpenRfqSessionInput): {
   const buyer = partyBinding("buyer", input.buyer);
   const seller = partyBinding("seller", input.seller);
   if (
-    buyer.primaryClaim === seller.primaryClaim ||
-    seller.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
+    !sameCanonicalClaimIdentity(
+      seller.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError(
       "RFQ members do not match the buyer/seller Listing authority",
@@ -818,7 +822,10 @@ function validateStoredState(value: RfqSessionState): boolean {
     return false;
   }
   if (
-    value.buyer.primaryClaim === value.seller.primaryClaim ||
+    sameCanonicalClaimIdentity(
+      value.buyer.primaryClaim,
+      value.seller.primaryClaim,
+    ) ||
     (value.initiator !== "buyer" && value.initiator !== "seller") ||
     (value.expectedSender === value.buyer.primaryClaim ||
       value.expectedSender === value.seller.primaryClaim) === false ||

@@ -3,11 +3,8 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { constants } from "node:fs";
 import {
-  link,
   lstat,
-  mkdir,
   open,
   readdir,
   rename,
@@ -20,6 +17,12 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import {
+  atomicWritePrivateFile,
+  exclusiveWritePrivateFile,
+  preparePrivateStoreDirectory,
+  readPrivateFile,
+} from "../filesystem/privateStore.js";
+import {
   DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
@@ -31,8 +34,8 @@ import {
   type DurableRfqRecordWrite,
 } from "./durableRfqLifecycle.js";
 
-const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
 const ENVELOPE_VERSION = 1 as const;
 const MAC_DOMAIN = "dacs-rfq-lifecycle-local-store:v1:";
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
@@ -40,6 +43,7 @@ const DEFAULT_LOCK_STALE_MS = 30_000;
 const DEFAULT_LOCK_POLL_MS = 5;
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 const MAC = /^[0-9a-f]{64}$/;
+const FILESYSTEM_LABEL = "RFQ filesystem lifecycle store";
 
 export interface FsDurableRfqLifecycleStoreOptions {
   /** Absolute, role-local directory owned exclusively by this store. */
@@ -178,26 +182,19 @@ function currentUid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-async function requireSafeDirectory(path: string, create: boolean): Promise<void> {
-  try {
-    const metadata = await lstat(path);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new DacsError("RFQ filesystem store path is not a real directory");
-    }
-    if ((metadata.mode & 0o777) !== DIR_MODE) {
-      throw new DacsError("RFQ filesystem store rejects unsafe existing directory permissions");
-    }
-    const uid = currentUid();
-    if (uid !== undefined && metadata.uid !== uid) {
-      throw new DacsError("RFQ filesystem store directory has a different owner");
-    }
-    return;
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+async function requireExactPrivateDirectory(path: string): Promise<void> {
+  const metadata = await lstat(path);
+  const uid = currentUid();
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (metadata.mode & 0o777) !== DIR_MODE ||
+    (uid !== undefined && metadata.uid !== uid)
+  ) {
+    throw new DacsError(
+      "RFQ filesystem store rejects unsafe existing directory permissions",
+    );
   }
-  if (!create) throw new DacsError("RFQ filesystem store directory is missing");
-  await mkdir(path, { recursive: false, mode: DIR_MODE });
-  await requireSafeDirectory(path, false);
 }
 
 function processAlive(pid: number): boolean {
@@ -217,11 +214,21 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
   options: FsDurableRfqLifecycleStoreOptions,
 ): Promise<DurableRfqLifecycleStore<TSignature>> {
   const captured = captureOptions(options);
-  await requireSafeDirectory(captured.dir, true);
-  const recordsDir = join(captured.dir, "records");
-  const locksDir = join(captured.dir, "locks");
-  await requireSafeDirectory(recordsDir, true);
-  await requireSafeDirectory(locksDir, true);
+  const root = await preparePrivateStoreDirectory(
+    captured.dir,
+    FILESYSTEM_LABEL,
+  );
+  const recordsDir = await preparePrivateStoreDirectory(
+    join(root, "records"),
+    FILESYSTEM_LABEL,
+  );
+  const locksDir = await preparePrivateStoreDirectory(
+    join(root, "locks"),
+    FILESYSTEM_LABEL,
+  );
+  await requireExactPrivateDirectory(root);
+  await requireExactPrivateDirectory(recordsDir);
+  await requireExactPrivateDirectory(locksDir);
 
   const jobKeyHash = (role: DurableRfqLifecycleRole, jobId: string) =>
     sha256Hex(`${role}\u0000${jobId}`);
@@ -280,23 +287,23 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
   }
 
   async function safeReadText(path: string): Promise<"missing" | string> {
-    let handle;
     try {
-      handle = await open(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      const metadata = await handle.stat();
+      const metadata = await lstat(path);
       const uid = currentUid();
       if (
         !metadata.isFile() ||
+        metadata.isSymbolicLink() ||
         (metadata.mode & 0o777) !== FILE_MODE ||
         (uid !== undefined && metadata.uid !== uid) ||
         metadata.size > MAX_RECORD_BYTES
       ) {
         throw new DacsError("RFQ filesystem record has unsafe metadata");
       }
-      return await handle.readFile("utf8");
+      const text = await readPrivateFile(path, "utf8", FILESYSTEM_LABEL);
+      if (Buffer.byteLength(text, "utf8") > MAX_RECORD_BYTES) {
+        throw new DacsError("RFQ filesystem record exceeds the size limit");
+      }
+      return text;
     } catch (cause) {
       const code = (cause as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return "missing";
@@ -304,8 +311,6 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
         throw new DacsError("RFQ filesystem record path is a symbolic link");
       }
       throw cause;
-    } finally {
-      await handle?.close();
     }
   }
 
@@ -370,42 +375,22 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     return { status: "ok", record: structuredClone(record) };
   }
 
-  async function writeTemporary(path: string, text: string): Promise<string> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    const handle = await open(temporary, "wx", FILE_MODE);
-    try {
-      await handle.writeFile(text, "utf8");
-      await handle.sync();
-      await handle.close();
-      return temporary;
-    } catch (cause) {
-      await handle.close().catch(() => {});
-      await unlink(temporary).catch(() => {});
-      throw cause;
-    }
-  }
-
   async function createRecordFile(
     role: DurableRfqLifecycleRole,
     jobId: string,
     record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
   ): Promise<"created" | "exists"> {
     const path = recordPath(role, jobId);
-    const temporary = await writeTemporary(
-      path,
-      canonicalize(envelope(role, jobId, record)),
-    );
     try {
-      try {
-        await link(temporary, path);
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "EEXIST") return "exists";
-        throw cause;
-      }
-      await syncDirectory(recordsDir);
+      await exclusiveWritePrivateFile(
+        path,
+        canonicalize(envelope(role, jobId, record)),
+        FILESYSTEM_LABEL,
+      );
       return "created";
-    } finally {
-      await unlink(temporary).catch(() => {});
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+      throw cause;
     }
   }
 
@@ -415,36 +400,19 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
   ): Promise<void> {
     const path = recordPath(role, jobId);
-    const temporary = await writeTemporary(
+    await atomicWritePrivateFile(
       path,
       canonicalize(envelope(role, jobId, record)),
+      FILESYSTEM_LABEL,
     );
-    try {
-      await rename(temporary, path);
-      await syncDirectory(recordsDir);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
   }
 
   async function readLockOwner(path: string): Promise<LockOwner | null> {
-    let handle;
     try {
-      handle = await open(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      const metadata = await handle.stat();
-      const uid = currentUid();
-      if (
-        !metadata.isFile() ||
-        (metadata.mode & 0o777) !== FILE_MODE ||
-        (uid !== undefined && metadata.uid !== uid) ||
-        metadata.size > 4_096
-      ) {
-        return null;
-      }
-      const text = await handle.readFile("utf8");
+      const metadata = await lstat(path);
+      if (metadata.size > 4_096) return null;
+      const text = await readPrivateFile(path, "utf8", FILESYSTEM_LABEL);
+      if (Buffer.byteLength(text, "utf8") > 4_096) return null;
       const parsed = JSON.parse(text) as unknown;
       return plainRecord(parsed) &&
         Number.isSafeInteger(parsed.pid) &&
@@ -455,8 +423,6 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
         : null;
     } catch {
       return null;
-    } finally {
-      await handle?.close();
     }
   }
 
@@ -484,15 +450,11 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
   }
 
   async function exclusiveWriteOwner(path: string, owner: LockOwner): Promise<void> {
-    const temporary = await writeTemporary(path, canonicalize(owner));
-    try {
-      // The hard link is the no-overwrite publication point. Contenders never
-      // observe an empty or partially-written ownership record.
-      await link(temporary, path);
-      await syncDirectory(locksDir);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+    await exclusiveWritePrivateFile(
+      path,
+      canonicalize(owner),
+      FILESYSTEM_LABEL,
+    );
   }
 
   async function reclaimGateQuarantines(): Promise<string[]> {
@@ -692,24 +654,33 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       return readRecord(role, jobId);
     },
     async create(candidate): Promise<DurableRfqRecordCreate<TSignature>> {
-      if (candidate.role !== captured.role) {
+      let ownedCandidate: DurableRfqLifecycleRecord<TSignature>;
+      try {
+        ownedCandidate = snapshotCanonicalJsonRead(
+          candidate,
+          "RFQ filesystem create candidate",
+        ) as DurableRfqLifecycleRecord<TSignature>;
+      } catch {
+        return { status: "corrupt", reason: "RFQ create candidate is not canonical JSON" };
+      }
+      if (ownedCandidate.role !== captured.role) {
         return { status: "corrupt", reason: "RFQ store role isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(candidate);
+      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
-        return await withLock(candidate.role, candidate.jobId, async () => {
-          const loaded = await readRecord(candidate.role, candidate.jobId);
+        return await withLock(ownedCandidate.role, ownedCandidate.jobId, async () => {
+          const loaded = await readRecord(ownedCandidate.role, ownedCandidate.jobId);
           if (loaded.status === "ok") {
-            return loaded.record.bindingHash === candidate.bindingHash
+            return loaded.record.bindingHash === ownedCandidate.bindingHash
               ? { status: "existing", record: loaded.record }
               : { status: "conflict", reason: "jobId already binds another RFQ" };
           }
           if (loaded.status !== "missing") return loaded;
           const created = await createRecordFile(
-            candidate.role,
-            candidate.jobId,
-            candidate,
+            ownedCandidate.role,
+            ownedCandidate.jobId,
+            ownedCandidate,
           );
           if (created !== "created") {
             return {
@@ -717,7 +688,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
               reason: "RFQ record appeared during exclusive creation",
             };
           }
-          return { status: "created", record: structuredClone(candidate) };
+          return { status: "created", record: structuredClone(ownedCandidate) };
         });
       } catch {
         return { status: "unavailable", reason: "RFQ filesystem create failed" };
@@ -729,10 +700,23 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       expectedRevision,
       candidate,
     ): Promise<DurableRfqRecordWrite<TSignature>> {
-      if (role !== captured.role || candidate.role !== role || candidate.jobId !== jobId) {
+      let ownedCandidate: DurableRfqLifecycleRecord<TSignature>;
+      try {
+        ownedCandidate = snapshotCanonicalJsonRead(
+          candidate,
+          "RFQ filesystem CAS candidate",
+        ) as DurableRfqLifecycleRecord<TSignature>;
+      } catch {
+        return { status: "corrupt", reason: "RFQ CAS candidate is not canonical JSON" };
+      }
+      if (
+        role !== captured.role ||
+        ownedCandidate.role !== role ||
+        ownedCandidate.jobId !== jobId
+      ) {
         return { status: "corrupt", reason: "RFQ store role/path isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(candidate);
+      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
         return await withLock(role, jobId, async () => {
@@ -740,23 +724,23 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
           if (loaded.status !== "ok") return loaded;
           if (loaded.record.revision !== expectedRevision) return { status: "stale" };
           if (
-            candidate.revision !== expectedRevision + 1 ||
-            candidate.bindingHash !== loaded.record.bindingHash ||
-            candidate.createdAt !== loaded.record.createdAt ||
-            candidate.updatedAt < loaded.record.updatedAt
+            ownedCandidate.revision !== expectedRevision + 1 ||
+            ownedCandidate.bindingHash !== loaded.record.bindingHash ||
+            ownedCandidate.createdAt !== loaded.record.createdAt ||
+            ownedCandidate.updatedAt < loaded.record.updatedAt
           ) {
             return { status: "corrupt", reason: "RFQ CAS write is non-monotonic" };
           }
           const transitionViolation =
             durableRfqLifecycleTransitionViolation<TSignature>(
               loaded.record,
-              candidate,
+              ownedCandidate,
             );
           if (transitionViolation !== null) {
             return { status: "corrupt", reason: transitionViolation };
           }
-          await replaceRecordFile(role, jobId, candidate);
-          return { status: "written", record: structuredClone(candidate) };
+          await replaceRecordFile(role, jobId, ownedCandidate);
+          return { status: "written", record: structuredClone(ownedCandidate) };
         });
       } catch {
         return { status: "unavailable", reason: "RFQ filesystem CAS failed" };

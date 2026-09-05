@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -441,7 +442,126 @@ describe("keyed durable RFQ filesystem store", () => {
     await symlink(target, path);
     await expect(first.load("buyer", JOB_ID)).resolves.toMatchObject({
       status: "corrupt",
-      reason: "RFQ filesystem record path is a symbolic link",
+      reason: expect.stringContaining("unsafe metadata"),
     });
+  });
+
+  test("snapshots CAS candidates before filesystem awaits", async () => {
+    const parent = await root();
+    const dir = join(parent, "buyer-rfq");
+    const store = await createFsDurableRfqLifecycleStore<string>({
+      dir,
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+    const transport: DurableRfqLifecycleTransport<string> = {
+      async publish() {
+        return { disposition: "acknowledged" };
+      },
+      async reconcile() {
+        return { disposition: "absent" };
+      },
+    };
+    await createDurableRfqLifecycleClient(clientOptions(store, transport)).open(
+      openInput(),
+    );
+    const loaded = await store.load("buyer", JOB_ID);
+    if (loaded.status !== "ok") throw new Error("record did not load");
+    const next: DurableRfqLifecycleRecord<string> = {
+      ...structuredClone(loaded.record),
+      revision: loaded.record.revision + 1,
+      updatedAt: loaded.record.updatedAt + 1,
+    };
+    const expected = structuredClone(next);
+
+    const pending = store.compareAndSwap(
+      "buyer",
+      JOB_ID,
+      loaded.record.revision,
+      next,
+    );
+    next.updatedAt += 100;
+    next.bindingHash = "f".repeat(64);
+
+    await expect(pending).resolves.toEqual({ status: "written", record: expected });
+    await expect(store.load("buyer", JOB_ID)).resolves.toEqual({
+      status: "ok",
+      record: expected,
+    });
+  });
+
+  test("snapshots create candidates before lock and read awaits", async () => {
+    const parent = await root();
+    const sourceDir = join(parent, "source-rfq");
+    const destinationDir = join(parent, "destination-rfq");
+    const source = await createFsDurableRfqLifecycleStore<string>({
+      dir: sourceDir,
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+    const destination = await createFsDurableRfqLifecycleStore<string>({
+      dir: destinationDir,
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+    const transport: DurableRfqLifecycleTransport<string> = {
+      async publish() {
+        return { disposition: "acknowledged" };
+      },
+      async reconcile() {
+        return { disposition: "absent" };
+      },
+    };
+    await createDurableRfqLifecycleClient(clientOptions(source, transport)).open(
+      openInput(),
+    );
+    const loaded = await source.load("buyer", JOB_ID);
+    if (loaded.status !== "ok") throw new Error("record did not load");
+    const candidate = structuredClone(loaded.record) as
+      DurableRfqLifecycleRecord<string>;
+    const expected = structuredClone(candidate);
+
+    const pending = destination.create(candidate);
+    candidate.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+    candidate.role = "seller";
+    candidate.bindingHash = "f".repeat(64);
+
+    await expect(pending).resolves.toEqual({ status: "created", record: expected });
+    await expect(destination.load("buyer", JOB_ID)).resolves.toEqual({
+      status: "ok",
+      record: expected,
+    });
+  });
+
+  test("rejects record files with an unexpected hard-link alias", async () => {
+    const parent = await root();
+    const dir = join(parent, "buyer-rfq");
+    const store = await createFsDurableRfqLifecycleStore<string>({
+      dir,
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+    const transport: DurableRfqLifecycleTransport<string> = {
+      async publish() {
+        return { disposition: "acknowledged" };
+      },
+      async reconcile() {
+        return { disposition: "absent" };
+      },
+    };
+    await createDurableRfqLifecycleClient(clientOptions(store, transport)).open(
+      openInput(),
+    );
+    const [filename] = await readdir(join(dir, "records"));
+    if (filename === undefined) throw new Error("record was not created");
+    const recordPath = join(dir, "records", filename);
+    const aliasPath = join(parent, "record-alias.json");
+    await link(recordPath, aliasPath);
+
+    await expect(store.load("buyer", JOB_ID)).resolves.toMatchObject({
+      status: "corrupt",
+      reason: expect.stringContaining("hard links"),
+    });
+    await unlink(aliasPath);
   });
 });

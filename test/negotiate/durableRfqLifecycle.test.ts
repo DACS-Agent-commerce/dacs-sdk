@@ -424,6 +424,135 @@ describe("durable two-agent RFQ lifecycle", () => {
     expect(accepted.size).toBe(1);
   });
 
+  test.each([
+    ["acknowledged", undefined, "ready"],
+    ["rejected", "member transport refused packet", "rejected"],
+  ] as const)(
+    "preserves a concurrently terminal %s outbox entry over a late publish response",
+    async (reconciledDisposition, reconciledReason, expectedStatus) => {
+      let releasePublish!: () => void;
+      const publishGate = new Promise<void>((resolve) => {
+        releasePublish = resolve;
+      });
+      let publishStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        publishStarted = resolve;
+      });
+      const transport: DurableRfqLifecycleTransport<string> = {
+        async publish() {
+          publishStarted();
+          await publishGate;
+          return { disposition: "indeterminate", reason: "late lost response" };
+        },
+        async reconcile() {
+          return reconciledDisposition === "acknowledged"
+            ? { disposition: "acknowledged" }
+            : { disposition: "rejected", reason: reconciledReason! };
+        },
+      };
+      const store = createInMemoryDurableRfqLifecycleStore<string>();
+      const client = createDurableRfqLifecycleClient({
+        role: "buyer",
+        store,
+        transport,
+        reserveChannelId: durableReservation(),
+        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        verifyChannelMessage: verifyChannel,
+        agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+        verifyAgreementContribution: verifyAgreement,
+        nowMs: () => NOW,
+      });
+
+      const sending = client.open(openInput()).then(() => client.sendOffer(
+        JOB_ID,
+        {
+          rfqProposalVersion: "1",
+          price: { amount: "9", currency: "USDC" },
+        },
+      ));
+      await started;
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: expectedStatus,
+      });
+      releasePublish();
+      await expect(sending).resolves.toMatchObject({ status: expectedStatus });
+      const loaded = await store.load("buyer", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("record did not load");
+      expect(loaded.record.outbox[0]).toMatchObject({
+        state: reconciledDisposition,
+        ...(reconciledReason === undefined ? {} : { reason: reconciledReason }),
+      });
+      if (reconciledDisposition === "rejected") {
+        expect(loaded.record.failure).toMatchObject({
+          class: "transport",
+          packetId: loaded.record.outbox[0]!.packet.packetId,
+          reason: reconciledReason,
+        });
+      } else {
+        expect(loaded.record.failure).toBeUndefined();
+      }
+    },
+  );
+
+  test.each(["jobId", "channelId"] as const)(
+    "rejects an outbox packet with a foreign %s before reconciliation",
+    async (field) => {
+      const base = createInMemoryDurableRfqLifecycleStore<string>();
+      let tamper = false;
+      const store = {
+        async load(role: "buyer" | "seller", jobId: string) {
+          const loaded = await base.load(role, jobId);
+          if (!tamper || loaded.status !== "ok") return loaded;
+          const record = structuredClone(loaded.record);
+          const packet = record.outbox[0]?.packet;
+          if (!packet) throw new Error("outbox packet missing");
+          if (field === "jobId") {
+            packet.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+          } else {
+            packet.channelId = "foreign-private-channel";
+            if (packet.kind === "turn") {
+              packet.message.channelId = packet.channelId;
+            }
+          }
+          const { packetId: _packetId, ...unsigned } = packet;
+          packet.packetId = rfqLifecyclePacketId(unsigned);
+          return { status: "ok" as const, record };
+        },
+        create: base.create.bind(base),
+        compareAndSwap: base.compareAndSwap.bind(base),
+      };
+      const reconcile = vi.fn(async () => ({ disposition: "absent" as const }));
+      const client = createDurableRfqLifecycleClient({
+        role: "buyer",
+        store,
+        transport: {
+          async publish() {
+            return { disposition: "indeterminate", reason: "lost response" };
+          },
+          reconcile,
+        },
+        reserveChannelId: durableReservation(),
+        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        verifyChannelMessage: verifyChannel,
+        agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+        verifyAgreementContribution: verifyAgreement,
+        nowMs: () => NOW,
+      });
+      await client.open(openInput());
+      await client.sendOffer(JOB_ID, {
+        rfqProposalVersion: "1",
+        price: { amount: "9", currency: "USDC" },
+      });
+      tamper = true;
+
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "rejected",
+        reason: expect.stringContaining("outbox routing"),
+      });
+      expect(reconcile).not.toHaveBeenCalled();
+    },
+  );
+
   test("uses its trusted clock to persist timeout without signing or publishing a late turn", async () => {
     let now = NOW;
     const network = createInMemoryRfqLifecycleNetwork<string>();
@@ -548,5 +677,146 @@ describe("durable two-agent RFQ lifecycle", () => {
     });
     const status = await sellerClient.getStatus(JOB_ID);
     expect(status.status === "ok" && status.record.agreement).toBeUndefined();
+  });
+
+  test("owns a proposal before the first asynchronous store read", async () => {
+    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    let pauseLoads = false;
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const store = {
+      async load(role: "buyer" | "seller", jobId: string) {
+        if (pauseLoads) await loadGate;
+        return base.load(role, jobId);
+      },
+      create: base.create.bind(base),
+      compareAndSwap: base.compareAndSwap.bind(base),
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await client.open(openInput());
+    pauseLoads = true;
+    const proposal = {
+      rfqProposalVersion: "1" as const,
+      price: { amount: "9", currency: "USDC" },
+    };
+    const pending = client.sendOffer(JOB_ID, proposal);
+    proposal.price.amount = "50";
+    releaseLoad();
+    await expect(pending).resolves.toMatchObject({ status: "ready" });
+    const status = await client.getStatus(JOB_ID);
+    expect(
+      status.status === "ok" &&
+        status.record.session.standingProposal?.price.amount,
+    ).toBe("9");
+  });
+
+  test("captures receiver-bound dependencies once at client construction", async () => {
+    const baseStore = createInMemoryDurableRfqLifecycleStore<string>();
+    const store = {
+      backing: baseStore,
+      load(role: "buyer" | "seller", jobId: string) {
+        return this.backing.load(role, jobId);
+      },
+      create(record: Parameters<typeof baseStore.create>[0]) {
+        return this.backing.create(record);
+      },
+      compareAndSwap(
+        role: "buyer" | "seller",
+        jobId: string,
+        revision: number,
+        record: Parameters<typeof baseStore.compareAndSwap>[3],
+      ) {
+        return this.backing.compareAndSwap(role, jobId, revision, record);
+      },
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const options = {
+      role: "buyer" as const,
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    };
+    const client = createDurableRfqLifecycleClient(options);
+    store.load = () => {
+      throw new Error("swapped load");
+    };
+    options.signChannelMessage = () => {
+      throw new Error("swapped signer");
+    };
+    options.nowMs = () => Number.NaN;
+    network.transport.publish = async () => ({
+      disposition: "rejected",
+      reason: "swapped transport",
+    });
+    await expect(client.open(openInput())).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(
+      client.sendOffer(JOB_ID, {
+        rfqProposalVersion: "1",
+        price: { amount: "9", currency: "USDC" },
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(network.pending(SELLER)).toBe(1);
+  });
+
+  test("rejects malformed store success and distinct reopen authority", async () => {
+    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    let malformedLoad = false;
+    const store = {
+      load(role: "buyer" | "seller", jobId: string) {
+        return malformedLoad
+          ? ({ status: "ok", record: {} } as never)
+          : base.load(role, jobId);
+      },
+      create: base.create.bind(base),
+      compareAndSwap: base.compareAndSwap.bind(base),
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await expect(client.open(openInput())).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(
+      client.open({
+        ...openInput(),
+        selectedRail: {
+          railId: "future-authority",
+          railVersion: 1,
+        },
+      }),
+    ).resolves.toMatchObject({ status: "conflict" });
+    malformedLoad = true;
+    await expect(client.getStatus(JOB_ID)).resolves.toMatchObject({
+      status: "corrupt",
+    });
   });
 });

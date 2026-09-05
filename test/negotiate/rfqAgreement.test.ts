@@ -14,8 +14,10 @@ import {
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
+  signAgreementArtifact,
   signRfqAgreement,
   signedBytes,
+  validateRfqAgreementBinding,
   type AttestationRef,
   type CommitmentSignatureVerifier,
   type FinalityCommitmentProvider,
@@ -144,13 +146,14 @@ async function acceptedSession(
   value: Listing,
   amount = "9.5",
   meteredQuantity?: { quantity: string; unit: string },
+  parties = { buyer, seller },
 ): Promise<RfqSessionState> {
   const opened = await openRfqSession(
     {
       jobId: JOB_ID,
       verifiedListing: verified(value),
-      buyer,
-      seller,
+      buyer: parties.buyer,
+      seller: parties.seller,
       channelId: "l2ps-rfq-channel-01",
       startedAt: NOW,
     },
@@ -160,7 +163,7 @@ async function acceptedSession(
   const offer = {
     channelId: opened.state.channelId,
     sequence: 1,
-    sender: BUYER,
+    sender: parties.buyer.identityBundle.presentedBy,
     sentAt: NOW + 1,
     type: "offer" as const,
     body: {
@@ -191,7 +194,7 @@ async function acceptedSession(
     {
       channelId: offered.state.channelId,
       sequence: 2,
-      sender: SELLER,
+      sender: parties.seller.identityBundle.presentedBy,
       sentAt: NOW + 2,
       type: "accept",
       body: { rfqBodyVersion: "1", acceptedSequence: 1 },
@@ -205,12 +208,16 @@ async function acceptedSession(
   return accepted.state as RfqSessionState;
 }
 
-function agreementInput(value: Listing, session: RfqSessionState) {
+function agreementInput(
+  value: Listing,
+  session: RfqSessionState,
+  parties = { buyer, seller },
+) {
   return {
     session,
     verifiedListing: verified(value),
-    buyer,
-    seller,
+    buyer: parties.buyer,
+    seller: parties.seller,
     selectedRail: rail,
     generatedAt: NOW + 3,
   };
@@ -342,6 +349,21 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
     expect(Object.prototype.hasOwnProperty.call(draft, "signatures")).toBe(
       false,
     );
+  });
+
+  test("matches the Listing seller by CF-3 identity while retaining exact party refs", async () => {
+    const value = listing();
+    const qualifiedSeller = {
+      ...seller,
+      identityBundle: identity(`${SELLER}?scope=rfq`),
+    };
+    const parties = { buyer, seller: qualifiedSeller };
+    const session = await acceptedSession(value, "9.5", undefined, parties);
+
+    const draft = deriveRfqAgreement(agreementInput(value, session, parties));
+
+    expect(draft.parties.find(({ role }) => role === "seller")?.primaryClaim)
+      .toBe(`${SELLER}?scope=rfq`);
   });
 
   test("rejects non-accepted, corrupted, rebound, or substituted authority", async () => {
@@ -495,6 +517,24 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
     await expect(
       signRfqAgreement(unbound, signer(BUYER), signer(SELLER)),
     ).rejects.toThrow(/bind its authenticated channel transcript/);
+    await expect(
+      signAgreementArtifact(unbound, signer(BUYER), signer(SELLER)),
+    ).rejects.toThrow(/exact DACS-3/);
+
+    const signed = await signRfqAgreement(
+      draft,
+      signer(BUYER),
+      signer(SELLER),
+    );
+    const unboundSigned = structuredClone(signed);
+    delete unboundSigned.derivedFromChannel;
+    expect(() =>
+      validateRfqAgreementBinding({
+        agreement: unboundSigned,
+        verifiedListing: verified(value),
+        committedAt: NOW + 4,
+      }),
+    ).toThrow(/non-normative Listing or agreement shape/);
   });
 
   test("anchors an authenticated RFQ commitment and derives time only from finality", async () => {

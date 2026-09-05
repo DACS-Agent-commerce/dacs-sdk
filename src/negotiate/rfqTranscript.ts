@@ -4,7 +4,7 @@ import type {
   AgreementArtifact,
   VerificationDecision,
 } from "../artifacts/types.js";
-import { isAgreementArtifact } from "../artifacts/validators.js";
+import { isAgreementArtifact, isListing } from "../artifacts/validators.js";
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
@@ -54,6 +54,14 @@ export interface RfqTranscriptConsentVerificationInput {
 export type RfqTranscriptConsentVerifier = (
   input: Readonly<RfqTranscriptConsentVerificationInput>,
 ) => Promise<VerificationDecision> | VerificationDecision;
+
+export interface RfqTranscriptDisclosureVerifiers<TSignature = unknown> {
+  verifyMessageSignature: ChannelMessageSignatureVerifier<
+    RfqTurnBody,
+    TSignature
+  >;
+  verifyConsent: RfqTranscriptConsentVerifier;
+}
 
 export type RfqTranscriptDisclosureAction =
   | "retain-private"
@@ -171,6 +179,16 @@ function transcriptBindsSession<TSignature>(
   transcript: VerifiedRfqTranscript<TSignature>,
   session: RfqSessionState,
 ): boolean {
+  if (
+    transcript === null ||
+    typeof transcript !== "object" ||
+    transcript.transcriptVersion !== "1" ||
+    !Array.isArray(transcript.members) ||
+    !Array.isArray(transcript.messages) ||
+    !Number.isSafeInteger(transcript.generatedAt)
+  ) {
+    return false;
+  }
   const last = transcript.messages.at(-1);
   if (last === undefined) return false;
   let lastHash: string;
@@ -181,7 +199,6 @@ function transcriptBindsSession<TSignature>(
     return false;
   }
   return (
-    transcript.transcriptVersion === "1" &&
     transcript.channelId === session.channelId &&
     transcript.members.length === 2 &&
     transcript.members[0] === session.buyer.primaryClaim &&
@@ -228,6 +245,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
     !agreementBindsSession(agreement, session) ||
     !Number.isSafeInteger(input.generatedAt) ||
     input.generatedAt < agreement.generatedAt ||
+    !Array.isArray(input.messages) ||
     input.messages.length !== session.turnCount ||
     input.messages.length < 2
   ) {
@@ -243,6 +261,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
       ? session.buyer.primaryClaim
       : session.seller.primaryClaim;
   let standingSequence: number | undefined;
+  let standingProposal: RfqSessionState["standingProposal"];
   let lastHash: string | undefined;
   for (let index = 0; index < input.messages.length; index += 1) {
     const admitted = await admitChannelMessage<RfqTurnBody, TSignature>(
@@ -278,8 +297,13 @@ export async function prepareRfqTranscript<TSignature = unknown>(
         ) {
           throw new DacsError("RFQ transcript proposal body is malformed");
         }
-        validateRfqProposal(body.proposal, session.pricing);
+        const proposal = validateRfqProposal(body.proposal, session.pricing);
         standingSequence = message.sequence;
+        standingProposal = {
+          ...proposal,
+          sequence: message.sequence,
+          proposer: message.sender,
+        };
       } else if (
         message.type !== "accept" ||
         standingSequence === undefined ||
@@ -306,6 +330,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
   if (
     priorSequence !== session.lastSequence ||
     standingSequence !== session.standingProposal?.sequence ||
+    !exact(standingProposal, session.standingProposal) ||
     lastHash !== session.lastMessageHash
   ) {
     return {
@@ -332,8 +357,48 @@ export async function prepareRfqTranscript<TSignature = unknown>(
  */
 export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   callerInput: PlanRfqTranscriptDisclosureInput<TSignature>,
-  verifyConsent: RfqTranscriptConsentVerifier,
+  verifiers: RfqTranscriptDisclosureVerifiers<TSignature>,
 ): Promise<RfqTranscriptDisclosureResult> {
+  if (
+    verifiers === null ||
+    typeof verifiers !== "object" ||
+    nodeTypes.isProxy(verifiers)
+  ) {
+    return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
+  }
+  let messageVerifier: RfqTranscriptDisclosureVerifiers<TSignature>["verifyMessageSignature"];
+  let consentVerifier: RfqTranscriptConsentVerifier;
+  try {
+    messageVerifier = verifiers.verifyMessageSignature;
+    consentVerifier = verifiers.verifyConsent;
+  } catch {
+    return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
+  }
+  if (
+    typeof messageVerifier !== "function" ||
+    nodeTypes.isProxy(messageVerifier) ||
+    typeof consentVerifier !== "function" ||
+    nodeTypes.isProxy(consentVerifier)
+  ) {
+    return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
+  }
+  let verifyMessageSignature: ChannelMessageSignatureVerifier<
+    RfqTurnBody,
+    TSignature
+  >;
+  let verifyConsent: RfqTranscriptConsentVerifier;
+  try {
+    verifyMessageSignature = Function.prototype.bind.call(
+      messageVerifier,
+      verifiers,
+    ) as ChannelMessageSignatureVerifier<RfqTurnBody, TSignature>;
+    verifyConsent = Function.prototype.bind.call(
+      consentVerifier,
+      verifiers,
+    ) as RfqTranscriptConsentVerifier;
+  } catch {
+    return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
+  }
   let input: PlanRfqTranscriptDisclosureInput<TSignature>;
   try {
     input = snapshotCanonicalJsonRead(
@@ -343,14 +408,24 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   } catch {
     return { decision: "error", reason: "RFQ disclosure input is malformed" };
   }
-  const { listing, pin } = input.verifiedListing;
+  const verifiedListing = input.verifiedListing;
+  if (
+    verifiedListing === null ||
+    typeof verifiedListing !== "object" ||
+    verifiedListing.pin === null ||
+    typeof verifiedListing.pin !== "object"
+  ) {
+    return { decision: "error", reason: "RFQ disclosure authority is invalid" };
+  }
+  const { listing, pin } = verifiedListing;
   try {
     rfqSessionCheckpointHash(input.session);
   } catch {
     return { decision: "error", reason: "RFQ disclosure session is malformed" };
   }
   if (
-    input.verifiedListing.disposition !== "verified" ||
+    verifiedListing.disposition !== "verified" ||
+    !isListing(listing) ||
     pin.listingId !== listing.listingId ||
     pin.version !== listing.listingVersion ||
     pin.contentHash !== contentHash(listing as unknown as DataRecord) ||
@@ -361,8 +436,21 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   ) {
     return { decision: "error", reason: "RFQ disclosure authority is invalid" };
   }
+  const prepared = await prepareRfqTranscript(
+    {
+      session: input.session,
+      agreement: input.agreement,
+      messages: input.transcript.messages,
+      generatedAt: input.transcript.generatedAt,
+    },
+    verifyMessageSignature,
+  );
+  if (prepared.decision !== "pass") return prepared;
+  if (!exact(prepared.transcript, input.transcript)) {
+    return { decision: "error", reason: "RFQ disclosure transcript is malformed" };
+  }
   const policy = listing.terms.transcriptDisclosurePolicy ?? "none";
-  const transcriptHash = sha256Hex(canonicalize(input.transcript));
+  const transcriptHash = sha256Hex(canonicalize(prepared.transcript));
   if (policy === "none") {
     return {
       decision: "pass",
@@ -372,12 +460,10 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
       reason: "Listing policy keeps the transcript private",
     };
   }
-  if (typeof verifyConsent !== "function" || nodeTypes.isProxy(verifyConsent)) {
-    return { decision: "error", reason: "RFQ consent verifier is unsafe" };
-  }
   const consents = input.consents ?? [];
-  const members = input.transcript.members;
+  const members = prepared.transcript.members;
   if (
+    !Array.isArray(consents) ||
     consents.some(
       (consent) =>
         consent === null ||
@@ -415,7 +501,7 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
       decision = await verifyConsent(
         deepFreeze({
           member,
-          channelId: input.transcript.channelId,
+          channelId: prepared.transcript.channelId,
           transcriptHash,
           evidence: consent.evidence,
         }),

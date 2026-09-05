@@ -229,6 +229,19 @@ describe("RFQ private transcript verification", () => {
         },
         value.messages[1]!,
       ],
+      [
+        {
+          ...value.messages[0]!,
+          body: {
+            rfqBodyVersion: "1" as const,
+            proposal: {
+              rfqProposalVersion: "1" as const,
+              price: { amount: "9.6", currency: "USDC" },
+            },
+          },
+        },
+        value.messages[1]!,
+      ],
     ];
     for (const messages of candidates) {
       await expect(
@@ -282,7 +295,7 @@ describe("RFQ transcript disclosure policy", () => {
 
   test("defaults to private and never consults a consent verifier", async () => {
     const value = await disclosureFixture();
-    const verifier = vi.fn(() => "pass" as const);
+    const verifyConsent = vi.fn(() => "pass" as const);
     await expect(
       planRfqTranscriptDisclosure(
         {
@@ -292,14 +305,17 @@ describe("RFQ transcript disclosure policy", () => {
           transcript: value.transcript,
           consents,
         },
-        verifier,
+        {
+          verifyMessageSignature: () => "pass",
+          verifyConsent,
+        },
       ),
     ).resolves.toMatchObject({
       decision: "pass",
       action: "retain-private",
       policy: "none",
     });
-    expect(verifier).not.toHaveBeenCalled();
+    expect(verifyConsent).not.toHaveBeenCalled();
   });
 
   test("publishes a recommended transcript only after unanimous authenticated consent", async () => {
@@ -313,7 +329,10 @@ describe("RFQ transcript disclosure policy", () => {
           transcript: value.transcript,
           consents,
         },
-        () => "pass",
+        {
+          verifyMessageSignature: () => "pass",
+          verifyConsent: () => "pass",
+        },
       ),
     ).resolves.toMatchObject({
       decision: "pass",
@@ -328,7 +347,10 @@ describe("RFQ transcript disclosure policy", () => {
           transcript: value.transcript,
           consents: consents.slice(0, 1),
         },
-        () => "pass",
+        {
+          verifyMessageSignature: () => "pass",
+          verifyConsent: () => "pass",
+        },
       ),
     ).resolves.toMatchObject({
       decision: "pass",
@@ -357,7 +379,10 @@ describe("RFQ transcript disclosure policy", () => {
             transcript: value.transcript,
             consents,
           },
-          decision,
+          {
+            verifyMessageSignature: () => "pass",
+            verifyConsent: decision,
+          },
         ),
       ).resolves.toMatchObject({ decision: expected });
     },
@@ -375,9 +400,70 @@ describe("RFQ transcript disclosure policy", () => {
           transcript: value.transcript,
           consents: [],
         },
-        verifier,
+        {
+          verifyMessageSignature: () => "pass",
+          verifyConsent: verifier,
+        },
       ),
     ).resolves.toMatchObject({ decision: "fail" });
     expect(verifier).not.toHaveBeenCalled();
   });
+
+  test("re-authenticates a supplied transcript before permitting disclosure", async () => {
+    const value = await disclosureFixture("encrypted-anchored-required");
+    const verifyConsent = vi.fn(() => "pass" as const);
+    await expect(
+      planRfqTranscriptDisclosure(
+        {
+          verifiedListing: verified(value.value),
+          session: value.session,
+          agreement: value.agreement,
+          transcript: value.transcript,
+          consents,
+        },
+        {
+          verifyMessageSignature: ({ message }) =>
+            message.signature === "buyer-channel-signature" ? "pass" : "fail",
+          verifyConsent,
+        },
+      ),
+    ).resolves.toMatchObject({ decision: "fail" });
+    expect(verifyConsent).not.toHaveBeenCalled();
+  });
+
+  test.each(["undefined", "throwing"] as const)(
+    "captures verifiers through the intrinsic bind with %s own bind properties",
+    async (bindKind) => {
+      const value = await disclosureFixture("encrypted-anchored-required");
+      const ownBind =
+        bindKind === "undefined"
+          ? undefined
+          : () => {
+              throw new Error("hostile own bind");
+            };
+      const verifyMessageSignature = Object.assign(
+        () => "pass" as const,
+        { bind: ownBind },
+      );
+      const verifyConsent = Object.assign(
+        () => "pass" as const,
+        { bind: ownBind },
+      );
+      await expect(
+        planRfqTranscriptDisclosure(
+          {
+            verifiedListing: verified(value.value),
+            session: value.session,
+            agreement: value.agreement,
+            transcript: value.transcript,
+            consents,
+          },
+          { verifyMessageSignature, verifyConsent },
+        ),
+      ).resolves.toMatchObject({
+        decision: "pass",
+        action: "publish-encrypted",
+      });
+    },
+  );
 });
