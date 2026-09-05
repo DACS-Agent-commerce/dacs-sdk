@@ -3862,6 +3862,10 @@ async function main(): Promise<void> {
             if (context.evm?.role !== "buyer") {
               throw new Error("x402 buyer wallet authority is unavailable");
             }
+            const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock;
+            if (x402AuthorizationSearchFromBlock === undefined) {
+              throw new Error("x402 authorization search bound is unavailable");
+            }
             if (context.commerceStores.role !== "buyer" ||
                 context.commerceStores.x402Settlement === undefined) {
               throw new Error("x402 buyer settlement evidence is unavailable");
@@ -3898,7 +3902,7 @@ async function main(): Promise<void> {
                   owner: workerId + "-x402-wallet-recovery",
                   chainId: context.evm.runtime.chainId,
                   minimumConfirmations: Number(finalityBlocks),
-                  authorizationSearchFromBlock,
+                  authorizationSearchFromBlock: x402AuthorizationSearchFromBlock,
                   client: context.evm.runtime.readClient,
                   confirmUnused: confirmX402Unused!,
                 }),
