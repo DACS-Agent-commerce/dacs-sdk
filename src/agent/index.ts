@@ -338,6 +338,7 @@ export {
 export {
   createRatingPhasePlan,
   completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
   type RatingPartyRole,
   type RatingPhaseParty,
   type RatingPhasePriorResult,
@@ -352,6 +353,18 @@ export {
   type RatingPhaseCompletion,
   type CompleteRatingPhaseDeps,
 } from "./ratingPhase.js";
+export {
+  RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
+  type RatingPhaseHandoffAuthenticationInput,
+  type AuthenticateRatingPhaseHandoff,
+  type PersistRatingPhaseHandoffDeps,
+  type RecoverRatingPhaseHandoffDeps,
+  type RatingPhaseHandoffStage,
+  type PersistRatingPhaseHandoffResult,
+  type RecoverRatingPhaseHandoffResult,
+} from "./durableRatingPhaseHandoff.js";
 export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
