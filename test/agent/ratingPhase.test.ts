@@ -22,7 +22,8 @@ import {
 
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
 const SELLER = `did:demos:agent:${"22".repeat(32)}`;
-const JOB = "rating-phase-job";
+const JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+const OTHER_JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const SESSION_HASH = "a".repeat(64);
 
 function authority(required = false): RatingPhaseAuthorityInput {
@@ -144,6 +145,12 @@ describe("DACS-5 ST-4/ST-5 rating phase handoff", () => {
       primaryClaim: SELLER,
     };
     cases.push(duplicate);
+    const duplicateIdentity = authority();
+    duplicateIdentity.parties[1]!.primaryClaim = `${BUYER}?jurisdiction=US`;
+    cases.push(duplicateIdentity);
+    const nonCanonicalJob = authority();
+    nonCanonicalJob.jobId = "rating-phase-job";
+    cases.push(nonCanonicalJob);
     const nonFinal = authority();
     nonFinal.pipeline = [
       ...nonFinal.pipeline.slice(0, -1),
@@ -462,7 +469,7 @@ describe("DACS-5 ST-4/ST-5 rating phase handoff", () => {
       completeDeps(),
     )).rejects.toThrow(/invokedAt/);
     await expect(completeRatingPhase(
-      { ...current, jobId: "tampered" },
+      { ...current, jobId: OTHER_JOB },
       [],
       1_100,
       completeDeps(),
@@ -499,5 +506,70 @@ describe("DACS-5 ST-4/ST-5 rating phase handoff", () => {
     if (result.disposition !== "ready") throw new Error("unreachable");
     expect(result.ratingRefs[0]?.contentHash).not.toBe("0".repeat(64));
     expect(Object.isFrozen(result.ratingRefs[0])).toBe(true);
+  });
+
+  test("owns submissions before asynchronous plan authentication", async () => {
+    const publication = published("buyer", 5, 1_000);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const verifierStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const pending = completeRatingPhase(
+      await plan(),
+      [{ role: "buyer", disposition: "published", publication }],
+      1_100,
+      {
+        authenticatePlan: async () => {
+          started();
+          await gate;
+          return { disposition: "valid" };
+        },
+        authenticatePublication: validPublication,
+      },
+    );
+    await verifierStarted;
+    (publication.record as RatingRecord).value = 1;
+    (publication.ref as AttestationRef).contentHash = "0".repeat(64);
+    release();
+
+    const result = await pending;
+    expect(result.disposition).toBe("ready");
+    if (result.disposition !== "ready") throw new Error("unreachable");
+    expect(result.roleResults[0]?.disposition).toBe("published");
+    expect(result.ratingRefs[0]?.contentHash).not.toBe("0".repeat(64));
+  });
+
+  test("preserves the receiver of captured authentication methods", async () => {
+    const dependencies = {
+      allowed: true,
+      authenticatePlan() {
+        return this.allowed
+          ? { disposition: "valid" as const }
+          : { disposition: "invalid" as const, reason: "disabled" };
+      },
+      authenticatePublication() {
+        return this.allowed
+          ? { disposition: "valid" as const }
+          : { disposition: "invalid" as const, reason: "disabled" };
+      },
+    };
+    const result = await completeRatingPhase(
+      await plan(),
+      [{
+        role: "buyer",
+        disposition: "published",
+        publication: published("buyer", 5, 1_000),
+      }],
+      1_100,
+      dependencies,
+    );
+
+    expect(result.disposition).toBe("ready");
+    if (result.disposition !== "ready") throw new Error("unreachable");
+    expect(result.roleResults[0]?.disposition).toBe("published");
   });
 });

@@ -469,6 +469,16 @@ function exactObjectKeys(
     keys.every((key, index) => key === expected[index]);
 }
 
+function deepFreeze<T>(value: T): Readonly<T> {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
+}
+
 function capturedAuthenticatedRating(
   value: unknown,
 ): RatingRecord | null {
@@ -500,7 +510,15 @@ function capturedAuthenticatedRating(
 }
 
 function ratingTuple(record: Readonly<RatingRecord>): string {
-  return canonicalize([record.rater, record.jobId, record.targetRole]);
+  const rater = requireCanonicalClaimReference(
+    record.rater,
+    "RatingRecord rater",
+  );
+  return canonicalize([
+    `${rater.identity.scheme}:${rater.identity.identifier}`,
+    record.jobId,
+    record.targetRole,
+  ]);
 }
 
 function ratingWins(
@@ -617,20 +635,33 @@ export async function deriveReputationWithValidation(
   window: ReputationWindow,
   deps: DeriveReputationValidationDeps,
 ): Promise<ReputationDerivation> {
-  if (!deps || typeof deps.validate !== "function") {
+  if (!deps) {
     throw new DacsError(
       "deriveReputationWithValidation requires deps.validate",
     );
   }
   // Capture every dependency before the first await. A caller cannot change
   // role/absence/rating authority while bundle validation is in flight.
-  const validate = deps.validate;
-  const resolvePartyRole = deps.resolvePartyRole;
+  const validateSource = deps.validate;
+  const resolvePartyRoleSource = deps.resolvePartyRole;
   const trustBundlePartyRoles = deps.trustBundlePartyRoles;
-  const copyAbsence = deps.copyAbsence;
+  const copyAbsenceSource = deps.copyAbsence;
+  const ratingResolverSource = deps.resolveAndAuthenticateRating;
+  if (typeof validateSource !== "function") {
+    throw new DacsError(
+      "deriveReputationWithValidation requires deps.validate",
+    );
+  }
+  const validate = validateSource.bind(deps);
+  const resolvePartyRole = typeof resolvePartyRoleSource === "function"
+    ? resolvePartyRoleSource.bind(deps)
+    : undefined;
+  const copyAbsence = typeof copyAbsenceSource === "function"
+    ? copyAbsenceSource.bind(deps)
+    : undefined;
   const resolveAndAuthenticateRating =
-    typeof deps.resolveAndAuthenticateRating === "function"
-      ? deps.resolveAndAuthenticateRating
+    typeof ratingResolverSource === "function"
+      ? ratingResolverSource.bind(deps)
       : undefined;
   if (!resolvePartyRole && trustBundlePartyRoles !== true) {
     throw new DacsError(
@@ -639,17 +670,29 @@ export async function deriveReputationWithValidation(
     );
   }
 
-  const accepted: AnyAttestationBundle[] = [];
+  const capturedWindow = deepFreeze(snapshotCanonicalJsonRead(
+    window,
+    "reputation validation window",
+  )) as ReputationWindow;
+  const capturedBundles: AnyAttestationBundle[] = [];
   for (const bundle of bundles) {
+    try {
+      capturedBundles.push(deepFreeze(snapshotCanonicalJsonRead(
+        bundle,
+        "untrusted reputation bundle",
+      )) as AnyAttestationBundle);
+    } catch {
+      // A candidate that cannot be captured as inert canonical JSON is not a
+      // stable object a validator can authenticate and the scorer can reuse.
+    }
+  }
+
+  const accepted: AnyAttestationBundle[] = [];
+  for (const bundle of capturedBundles) {
     try {
       const decision: unknown = await validate(bundle);
       if (decision === true) {
-        accepted.push(
-          snapshotCanonicalJsonRead(
-            bundle,
-            "validated reputation bundle",
-          ),
-        );
+        accepted.push(bundle);
       }
     } catch {
       // Verification transport errors, rejected Promises, and hostile inputs are
@@ -657,7 +700,7 @@ export async function deriveReputationWithValidation(
     }
   }
 
-  const core = deriveReputationCore(party, accepted, window, {
+  const core = deriveReputationCore(party, accepted, capturedWindow, {
     isValid: () => true,
     ...(resolvePartyRole
       ? { resolvePartyRole }

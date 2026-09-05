@@ -11,6 +11,7 @@ import {
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { isCanonicalClaimReference } from "../identity/claimReference.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const INPUT_KEYS = Object.freeze([
   "jobId",
@@ -61,14 +62,7 @@ function validateInput(input: CreateRatingRecordInput): void {
   if (!exactInputKeys(record)) {
     throw new DacsError("RatingRecord input contains missing or unexpected fields");
   }
-  if (
-    typeof input.jobId !== "string" ||
-    input.jobId.length === 0 ||
-    input.jobId.trim() !== input.jobId ||
-    /[\u0000-\u001f\u007f]/.test(input.jobId)
-  ) {
-    throw new DacsError("RatingRecord jobId must be an exact non-empty identifier");
-  }
+  requireCanonicalJobId(input.jobId, "RatingRecord jobId");
   if (!isCanonicalClaimReference(input.buyer)) {
     throw new DacsError("RatingRecord buyer must be a canonical ClaimReference");
   }

@@ -780,7 +780,14 @@ function evidenceContext(authorization: SellerPaymentAuthorization) {
         : `eip155:${identity.kind === "evm" ? identity.chainId : "invalid"}`,
       handler: input.phase,
     },
-    result: { ok: true as const },
+    paymentAddress: {
+      railId: authorization.railId,
+      phaseIndex: authorization.phaseIndex,
+    },
+    result: {
+      ok: true as const,
+      txRefs: structuredClone(input.paymentTxRefs),
+    },
   };
 }
 
@@ -1059,8 +1066,20 @@ export async function publishSellerSessionSettlement(
     }
   }
 
-  const context = evidenceContext(request.authorization);
-  context.orchestrator = deps.signer.signer;
+  const logicalAddress =
+    `dacs4:payment:${request.authorization.jobId}:` +
+    `${encodeAddressSegment(request.authorization.railId)}:` +
+    `${request.authorization.phaseIndex}`;
+  const context = {
+    ...evidenceContext(request.authorization),
+    orchestrator: deps.signer.signer,
+    // The content-addressed target is deterministic before publication. The
+    // finalized receipt and readback below must independently reproduce it.
+    attestationRef: {
+      anchor: { kind: "storage-program" as const, locator: logicalAddress },
+      contentHash: evidenceHash,
+    },
+  };
   let signatureCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
     signatureCheck = await verifySettlementEvidence(evidence, context, deps.evidence);
@@ -1079,10 +1098,6 @@ export async function publishSellerSessionSettlement(
     );
   }
 
-  const logicalAddress =
-    `dacs4:payment:${request.authorization.jobId}:` +
-    `${encodeAddressSegment(request.authorization.railId)}:` +
-    `${request.authorization.phaseIndex}`;
   const anchorInput = deepFreeze({
     effectId,
     logicalAddress,
