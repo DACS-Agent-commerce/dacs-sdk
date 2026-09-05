@@ -213,6 +213,7 @@ export {
   type ClaimQualificationProductionAuthority,
   type ClaimQualificationReplayAuthority,
   type ClaimQualificationAuthority,
+  type ClaimQualificationBundleRequirement,
   type ClaimQualificationInput,
   type ClaimQualificationRecipeRegistry,
   type ClaimQualificationAuthentication,

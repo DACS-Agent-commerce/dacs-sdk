@@ -4,7 +4,6 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { AttestationRef } from "../artifacts/types.js";
 import type {
-  CompositeBundleRequirement,
   CompositeClaimRequirement,
 } from "./compositeVerification.js";
 
@@ -63,10 +62,16 @@ export type ClaimQualificationAuthority =
   | ClaimQualificationProductionAuthority
   | ClaimQualificationReplayAuthority;
 
+/** Exact CRQ projection used by the adopted conformance operation. */
+export interface ClaimQualificationBundleRequirement {
+  required: CompositeClaimRequirement[];
+  oneOf?: CompositeClaimRequirement[][];
+}
+
 export interface ClaimQualificationInput {
   generatedAt: number;
   recordJobId: string;
-  requirement: CompositeBundleRequirement;
+  requirement: ClaimQualificationBundleRequirement;
   resolvedResults: ClaimQualificationResultProjection[];
   resultReuse?: ClaimQualificationResultReuse[];
   aggregationAuthority: ClaimQualificationAuthority;
@@ -94,6 +99,14 @@ export interface ClaimQualificationDeps {
     | Promise<{ jobId: string; recipeRegistryVersion: number } | null>
     | { jobId: string; recipeRegistryVersion: number }
     | null;
+  /**
+   * Authenticate the complete production qualification closure. Session-start
+   * authority selects the registry, but cannot by itself authenticate the
+   * caller-supplied requirement, results, freshness time, or reuse metadata.
+   */
+  authenticateProductionQualification: (
+    input: Readonly<ClaimQualificationInput>,
+  ) => Promise<ClaimQualificationAuthentication> | ClaimQualificationAuthentication;
   /** Authenticate the replay bundle's exact discriminator/domain/signers. */
   authenticateReplayBundle: (
     bundle: Readonly<Record<string, unknown>>,
@@ -144,6 +157,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const isSafeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value);
+const isSafeUint = (value: unknown): value is number =>
+  isSafeInteger(value) && value >= 0;
 const exact = (left: unknown, right: unknown): boolean =>
   canonicalize(left) === canonicalize(right);
 const canonicalRef = (ref: unknown): string => canonicalize(ref);
@@ -155,7 +170,7 @@ function capturedFunction<T extends (...args: never[]) => unknown>(
   if (!isRecord(source) || nodeTypes.isProxy(source)) return null;
   const descriptor = Object.getOwnPropertyDescriptor(source, key);
   return descriptor && "value" in descriptor && typeof descriptor.value === "function"
-    ? (descriptor.value as T)
+    ? (Function.prototype.bind.call(descriptor.value, source) as T)
     : null;
 }
 
@@ -166,6 +181,9 @@ function captureDeps(source: ClaimQualificationDeps): ClaimQualificationDeps | n
   const authenticateReplayBundle = capturedFunction<
     ClaimQualificationDeps["authenticateReplayBundle"]
   >(source, "authenticateReplayBundle");
+  const authenticateProductionQualification = capturedFunction<
+    ClaimQualificationDeps["authenticateProductionQualification"]
+  >(source, "authenticateProductionQualification");
   const authenticateCompositeRecord = capturedFunction<
     ClaimQualificationDeps["authenticateCompositeRecord"]
   >(source, "authenticateCompositeRecord");
@@ -177,6 +195,7 @@ function captureDeps(source: ClaimQualificationDeps): ClaimQualificationDeps | n
   >(source, "resolveRecipeRegistry");
   if (
     !resolveAuthenticatedSessionStart ||
+    !authenticateProductionQualification ||
     !authenticateReplayBundle ||
     !authenticateCompositeRecord ||
     !authenticateVerifyResult ||
@@ -186,6 +205,7 @@ function captureDeps(source: ClaimQualificationDeps): ClaimQualificationDeps | n
   }
   return {
     resolveAuthenticatedSessionStart,
+    authenticateProductionQualification,
     authenticateReplayBundle,
     authenticateCompositeRecord,
     authenticateVerifyResult,
@@ -219,8 +239,125 @@ function isResultProjection(value: unknown): value is ClaimQualificationResultPr
     isDecision(value.decision) &&
     isSafeInteger(value.recipeVersion) &&
     (value.recipeVersion as number) > 0 &&
-    isSafeInteger(value.verifiedAt) &&
+    isSafeUint(value.verifiedAt) &&
     (value.data === undefined || isRecord(value.data))
+  );
+}
+
+function hasExactKeys(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
+    keys.every((key) => allowed.has(key));
+}
+
+function isQualificationRequirement(
+  value: unknown,
+): value is CompositeClaimRequirement {
+  return (
+    hasExactKeys(
+      value,
+      ["scheme", "verificationRequired"],
+      ["maxAge", "recipeVersion", "parameters"],
+    ) &&
+    typeof value.scheme === "string" &&
+    value.scheme.length > 0 &&
+    value.verificationRequired === true &&
+    (value.maxAge === undefined || isSafeUint(value.maxAge)) &&
+    (value.recipeVersion === undefined ||
+      (isSafeInteger(value.recipeVersion) && value.recipeVersion > 0)) &&
+    (value.parameters === undefined || isRecord(value.parameters))
+  );
+}
+
+function isQualificationBundleRequirement(
+  value: unknown,
+): value is ClaimQualificationBundleRequirement {
+  return (
+    hasExactKeys(value, ["required"], ["oneOf"]) &&
+    Array.isArray(value.required) &&
+    value.required.every(isQualificationRequirement) &&
+    (value.oneOf === undefined ||
+      (Array.isArray(value.oneOf) &&
+        value.oneOf.every(
+          (group) =>
+            Array.isArray(group) &&
+            group.length > 0 &&
+            group.every(isQualificationRequirement),
+        )))
+  );
+}
+
+function isResultReuseEntry(value: unknown): value is ClaimQualificationResultReuse {
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  if (value.kind === "current-session") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  return (
+    value.kind === "cross-session" &&
+    hasExactKeys(
+      value,
+      ["kind"],
+      [
+        "originatingParametersAuthenticated",
+        "originatingParameters",
+        "rerunResult",
+      ],
+    ) &&
+    (value.originatingParametersAuthenticated === undefined ||
+      typeof value.originatingParametersAuthenticated === "boolean") &&
+    (value.originatingParameters === undefined ||
+      isRecord(value.originatingParameters)) &&
+    (value.rerunResult === undefined || isResultProjection(value.rerunResult))
+  );
+}
+
+function isProductionAuthority(
+  value: unknown,
+): value is ClaimQualificationProductionAuthority {
+  if (!hasExactKeys(value, ["kind", "sessionStart", "vetInput"])) return false;
+  if (
+    value.kind !== "production" ||
+    typeof value.sessionStart !== "string" ||
+    value.sessionStart.length === 0 ||
+    !hasExactKeys(value.vetInput, ["jobId", "recipeRegistryVersion", "sessionContext"])
+  ) return false;
+  const vetInput = value.vetInput;
+  return (
+    typeof vetInput.jobId === "string" &&
+    vetInput.jobId.length > 0 &&
+    isSafeInteger(vetInput.recipeRegistryVersion) &&
+    vetInput.recipeRegistryVersion > 0 &&
+    hasExactKeys(vetInput.sessionContext, ["jobId", "recipeRegistryVersion"]) &&
+    typeof vetInput.sessionContext.jobId === "string" &&
+    vetInput.sessionContext.jobId.length > 0 &&
+    isSafeInteger(vetInput.sessionContext.recipeRegistryVersion) &&
+    vetInput.sessionContext.recipeRegistryVersion > 0
+  );
+}
+
+function isReplayAuthority(
+  value: unknown,
+): value is ClaimQualificationReplayAuthority {
+  return (
+    hasExactKeys(value, ["kind", "bundle", "recordRef", "record", "results"]) &&
+    value.kind === "replay" &&
+    isRecord(value.bundle) &&
+    isRecord(value.recordRef) &&
+    isRecord(value.record) &&
+    Array.isArray(value.results) &&
+    value.results.every(
+      (entry) =>
+        hasExactKeys(entry, ["ref", "result"]) &&
+        isRecord(entry.ref) &&
+        isRecord(entry.result),
+    )
   );
 }
 
@@ -238,6 +375,14 @@ async function replayAuthorityVersion(
   authority: Readonly<ClaimQualificationReplayAuthority>,
   deps: ClaimQualificationDeps,
 ): Promise<number | null> {
+  // A rerun projection is not part of the authenticated replay closure. It may
+  // only be admitted by the explicit production authenticator below.
+  if (input.resultReuse?.some(
+    (entry) =>
+      entry !== null &&
+      entry.kind === "cross-session" &&
+      entry.rerunResult !== undefined,
+  )) return null;
   if (
     (await deps.authenticateReplayBundle(
       structuredClone(authority.bundle),
@@ -321,9 +466,17 @@ async function authorityVersion(
           rawAuthenticated,
           "authenticated session-start context",
         );
-    return authenticated !== null && exact(authenticated, vetInput.sessionContext)
-      ? vetInput.sessionContext.recipeRegistryVersion
-      : null;
+    if (authenticated === null || !exact(authenticated, vetInput.sessionContext)) {
+      return null;
+    }
+    if (
+      (await deps.authenticateProductionQualification(
+        structuredClone(input),
+      )) !== "valid"
+    ) {
+      return null;
+    }
+    return vetInput.sessionContext.recipeRegistryVersion;
   }
   return authority.kind === "replay"
     ? replayAuthorityVersion(input, authority, deps)
@@ -371,7 +524,9 @@ function prepareResults(
     }
     prepared.push(metadata.rerunResult);
   }
-  return prepared;
+  return prepared.every((result) => result.verifiedAt <= input.generatedAt)
+    ? prepared
+    : null;
 }
 
 interface QualificationContext {
@@ -525,12 +680,29 @@ export async function evaluateClaimRequirementQualification(
     return outcome("error", "qualification-invalid");
   }
   if (
-    !isSafeInteger(input.generatedAt) ||
+    !hasExactKeys(
+      input,
+      [
+        "generatedAt",
+        "recordJobId",
+        "requirement",
+        "resolvedResults",
+        "aggregationAuthority",
+      ],
+      ["resultReuse"],
+    ) ||
+    !isSafeUint(input.generatedAt) ||
     typeof input.recordJobId !== "string" ||
     input.recordJobId.length === 0 ||
-    !isRecord(input.requirement) ||
+    !isQualificationBundleRequirement(input.requirement) ||
     !Array.isArray(input.resolvedResults) ||
-    !isRecord(input.aggregationAuthority)
+    !input.resolvedResults.every(isResultProjection) ||
+    (input.resultReuse !== undefined &&
+      (!Array.isArray(input.resultReuse) ||
+        input.resultReuse.length !== input.resolvedResults.length ||
+        !input.resultReuse.every(isResultReuseEntry))) ||
+    (!isProductionAuthority(input.aggregationAuthority) &&
+      !isReplayAuthority(input.aggregationAuthority))
   ) {
     return outcome("error", "qualification-invalid");
   }

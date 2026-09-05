@@ -55,8 +55,9 @@ authenticates and pins the complete RailDefinition before applying local
 production/preflight policy; discovery and counterparty availability hints are
 never authority. Use `evaluateClaimRequirementQualification` when consuming
 the DACS-2 CRQ projection outside `partyVetCore`: it authenticates either the
-orchestrator-owned active SessionContext or the signed replay bundle/CVR/result
-closure before recipe-family qualification and four-state aggregation.
+orchestrator-owned active SessionContext plus the exact production
+requirement/result/reuse closure, or the signed replay bundle/CVR/result closure,
+before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII

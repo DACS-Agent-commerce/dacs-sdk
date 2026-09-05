@@ -82,6 +82,16 @@ describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
     }
   });
 
+  it("rejects extra caller authority fields instead of normalising them away", () => {
+    const vector = fixture.vectors.find((item) => item.name === "live-signed-pinned")!;
+    expect(
+      evaluateRailAvailabilitySelection(vector.rail, {
+        ...authority(vector.ctx),
+        discoveryAvailabilityHint: "failed",
+      }).decision,
+    ).toBe("error");
+  });
+
   it("fails closed on accessor and proxy authority inputs without invoking them", () => {
     let touched = false;
     const source = {
