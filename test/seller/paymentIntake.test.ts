@@ -1373,6 +1373,10 @@ describe("verifySellerPaymentIntake", () => {
 
     const wrongPattern = makeContext("pay-dem");
     wrongPattern.agreement.derivedFromPattern = "rfq";
+    wrongPattern.agreement.derivedFromChannel = {
+      subnet: "rfq-payment-intake",
+      lastMessageHash: "0".repeat(64),
+    };
     refreshCommitment(wrongPattern);
     await expect(verifySellerPaymentIntake(wrongPattern.input, wrongPattern.deps))
       .resolves.toMatchObject({

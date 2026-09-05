@@ -1165,11 +1165,15 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "neg-pattern-mismatch": (want) => {
       const fixture = negotiationFixture();
       fixture.agreement.derivedFromPattern = "rfq";
+      fixture.agreement.derivedFromChannel = {
+        subnet: "rfq-conformance",
+        lastMessageHash: "0".repeat(64),
+      };
       expect(() => validateFixedPriceAgreementBinding({
         agreement: fixture.agreement,
         verifiedListing: fixture.verifiedListing,
         committedAt: NEGOTIATION_COMMITTED_AT,
-      })).toThrow(/supports only fixed-price/);
+      })).toThrow(/fixed-price/);
       expect({ ok: fixedBindingPasses(fixture), failedAt: "pattern" }).toEqual(want);
     },
     "neg-ps3-fixed-over-negotiable": (want) => {
