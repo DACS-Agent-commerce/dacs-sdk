@@ -31,13 +31,22 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 ## What's implemented
 
-All five lifecycle stages run end to end:
+The modern role-separated fixed-price coordinators cover all five lifecycle
+stages. The older `Agent.runSession()` convenience method remains a
+settlement-only compatibility API; it does not claim fulfilment or audit
+completion.
+
+The exported `SignedArtifact`, `buildSignedArtifact()` and
+`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
+surfaces used by that quarantined path and historical readers. New producers
+and readers must use `ComponentSignedArtifact`,
+`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` | fixed-price |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -304,6 +313,11 @@ const session = await buyer.runSession(resolved, {
   // the §4.1 guard compares against it, not the Price.asset symbol.
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
+
+// Legacy compatibility only: payment settlement is not commerce completion.
+if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
+  throw new Error("unexpected legacy session result");
+}
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callbacks above) every normative vet closure and

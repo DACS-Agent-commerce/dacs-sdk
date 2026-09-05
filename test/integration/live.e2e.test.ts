@@ -529,7 +529,8 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         expect(verdict.signatures.some((item) => item.verdict === "valid")).toBe(true);
         expect(verdict.refs.length).toBeGreaterThan(0);
         expect(verdict.refs.every((item) => item.verdict === "ok")).toBe(true);
-        // runSessionCore still emits its documented buyer-only MVP bundle.
+        // runSessionCore still emits its explicitly quarantined buyer-only MVP
+        // bundle and reports commerceComplete:false.
         // Strict two-sided finality must honestly remain false until the seller
         // co-signature is wired into orchestration.
         expect(verdict.ok).toBe(false);
