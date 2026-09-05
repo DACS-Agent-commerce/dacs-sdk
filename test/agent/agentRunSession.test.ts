@@ -459,6 +459,36 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(store.size).toBe(anchorsBefore);
   });
 
+  test("rejects a genuinely forged buyer presentation before any session effect", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const forgedBuyerIdentity = signedIdentityBundle(buyerDid, sellerPriv);
+    const settle = vi.fn(async () => ({
+      ok: true,
+      txHash: "tx-must-not-run",
+      chainId: "demos:testnet",
+      payer: buyerDid,
+      payee: sellerDid,
+    }));
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: {
+        agentId: buyerDid,
+        bundle: forgedBuyerIdentity,
+        verifyPresentation: identityPresentationVerifier(buyerPublicKey),
+      },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    const anchorsBefore = store.size;
+
+    await expect(
+      agent.runSession(ref, { terms: TERMS, settle }),
+    ).rejects.toThrow(/presentation could not be authenticated/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(store.size).toBe(anchorsBefore);
+  });
+
   test("defaults a normative pay-dem session to the seller Demos claim", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(
