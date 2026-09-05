@@ -420,4 +420,207 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(first).resolves.toMatchObject({ status: "indeterminate" });
     expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(1);
   });
+
+  test("lease loss during preparation cannot persist or broadcast stale bytes", async () => {
+    let clock = 1_000;
+    const inner = createInMemoryLiquidityTankStore();
+    const recordSubmission = vi.spyOn(inner, "recordSubmission");
+    const h = harness();
+    h.adapter.prepareSubmission = vi.fn(async (intent) => {
+      clock = 1_101;
+      return {
+        submissionVersion: "1",
+        authorityHash: intent.bindingHash,
+        operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID,
+        substrateTxHash: "stale-prepared-transaction",
+        signedSubmissionBase64: Buffer.from("stale-signed-transaction").toString("base64"),
+        preparedAt: 1_000,
+      };
+    });
+
+    await expect(advanceLiquidityTankSettlement(runner({
+      store: inner,
+      adapter: h.adapter,
+      now: () => clock,
+      leaseDurationMs: 100,
+    }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-submission-preparation-unavailable",
+    });
+    expect(recordSubmission).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("lease loss during observation cannot become a stale permanent outcome", async () => {
+    let clock = 1_000;
+    const inner = createInMemoryLiquidityTankStore();
+    const recordObservation = vi.spyOn(inner, "recordObservation");
+    const h = harness();
+    h.adapter.observe = vi.fn(async (_intent, submission) => {
+      clock = 1_101;
+      return {
+        status: "failed",
+        bridgeId: submission.bridgeId,
+        operationHash: submission.operationHash,
+        history: ["empty", "failed"],
+        observedAt: 1_000,
+        authenticationHash: AUTH_HASH,
+        reason: "stale permanent failure",
+      };
+    });
+
+    await expect(advanceLiquidityTankSettlement(runner({
+      store: inner,
+      adapter: h.adapter,
+      now: () => clock,
+      leaseDurationMs: 100,
+    }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-status-unavailable",
+    });
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("lease loss during broadcast stops before a stale follow-up observation", async () => {
+    let clock = 1_000;
+    const h = harness();
+    const staleBroadcast = vi.fn(async () => { clock = 1_101; });
+    h.adapter.broadcastRetained = staleBroadcast;
+
+    await expect(advanceLiquidityTankSettlement(runner({
+      adapter: h.adapter,
+      now: () => clock,
+      leaseDurationMs: 100,
+    }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-broadcast-outcome-uncertain",
+    });
+    expect(staleBroadcast).toHaveBeenCalledTimes(1);
+    expect(h.observe).toHaveBeenCalledTimes(1);
+  });
+
+  test("captures store and adapter callbacks before the claim await", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const h = harness();
+    const replacement = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
+      throw new Error("mutated callback must not run");
+    });
+    const store: LiquidityTankStore = {
+      ...inner,
+      async claim(input) {
+        h.adapter.prepareSubmission = replacement;
+        return inner.claim(input);
+      },
+    };
+
+    await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
+    expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+    expect(replacement).not.toHaveBeenCalled();
+  });
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid lease duration %s before store or adapter access",
+    async (leaseDurationMs) => {
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      await expect(advanceLiquidityTankSettlement(runner({
+        store,
+        adapter: h.adapter,
+        leaseDurationMs,
+      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects a settled claim whose durable result does not match the intent", async () => {
+    const intent = createLiquidityTankIntent(authority());
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      async claim() {
+        return {
+          status: "settled" as const,
+          intent,
+          settlement: {
+            txRef: {
+              kind: "liquidity-tank",
+              bridgeId: BRIDGE_ID,
+              sourceChainId: intent.sourceChainId,
+              destChainId: 1,
+              lockTxHash: "source-lock-tx",
+              releaseTxHash: "destination-release-tx",
+            },
+            paymentAmount: { amount: intent.amount, currency: "USDC" },
+            settlementFinality: { model: "liquidity-tank", finalityObservedAt: 3_000 },
+            authenticationHash: AUTH_HASH,
+          },
+        };
+      },
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-stored-settlement-mismatch",
+    });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("rejects a claim carrying a different durable intent", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      async claim() {
+        return {
+          status: "waiting" as const,
+          intent: createLiquidityTankIntent(authority({ jobId: "different-job" })),
+          lease: { owner: "other-worker", generation: 1, expiresAt: 2_000 },
+        };
+      },
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-settlement-store-intent-mismatch",
+    });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("malformed store claims fail closed", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      claim: vi.fn(async () => null as never),
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-settlement-store-claim-invalid",
+    });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("stateful store claims must carry the exact durable intent", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      claim: vi.fn(async () => ({
+        status: "acquired",
+        lease: { owner: "worker-a", generation: 1, expiresAt: 2_000 },
+      }) as never),
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-settlement-store-claim-invalid",
+    });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+  });
 });

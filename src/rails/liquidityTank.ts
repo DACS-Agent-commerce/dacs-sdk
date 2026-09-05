@@ -286,6 +286,45 @@ function requireUInt(value: unknown, label: string, positive = false): number {
   return Number(value);
 }
 
+function captureSettlement(
+  value: unknown,
+  intent: Readonly<LiquidityTankIntent>,
+): Readonly<LiquidityTankSettlement> {
+  if (value === null || typeof value !== "object") {
+    throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement must be an object");
+  }
+  const settlement = value as LiquidityTankSettlement;
+  if (settlement.txRef?.kind !== "liquidity-tank" ||
+      !BRIDGE_ID_RE.test(settlement.txRef.bridgeId) ||
+      settlement.txRef.sourceChainId !== intent.sourceChainId ||
+      settlement.txRef.destChainId !== intent.destinationChainId ||
+      settlement.paymentAmount?.amount !== intent.amount ||
+      settlement.paymentAmount.currency !== intent.currency ||
+      settlement.settlementFinality?.model !== "liquidity-tank" ||
+      !HASH_RE.test(settlement.authenticationHash)) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement authority mismatch");
+  }
+  return Object.freeze({
+    txRef: Object.freeze({
+      kind: "liquidity-tank" as const,
+      bridgeId: settlement.txRef.bridgeId,
+      sourceChainId: settlement.txRef.sourceChainId,
+      destChainId: settlement.txRef.destChainId,
+      lockTxHash: requireString(settlement.txRef.lockTxHash, "stored lockTxHash"),
+      releaseTxHash: requireString(settlement.txRef.releaseTxHash, "stored releaseTxHash"),
+    }),
+    paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
+    settlementFinality: Object.freeze({
+      model: "liquidity-tank" as const,
+      finalityObservedAt: requireUInt(
+        settlement.settlementFinality.finalityObservedAt,
+        "stored finalityObservedAt",
+      ),
+    }),
+    authenticationHash: settlement.authenticationHash,
+  });
+}
+
 export function liquidityTankSettlementKey(input: {
   jobId: string;
   railId: string;
@@ -404,7 +443,12 @@ function validateObservation(
   intent: Readonly<LiquidityTankIntent>,
   submission: Readonly<LiquidityTankPreparedSubmission>,
 ): Exclude<LiquidityTankObservation, { status: "indeterminate" }> | LiquidityTankObservation {
-  if (value.status === "indeterminate") return value;
+  if (value.status === "indeterminate") {
+    return Object.freeze({
+      status: "indeterminate" as const,
+      reason: requireString(value.reason, "indeterminate reason"),
+    });
+  }
   if (value.bridgeId !== submission.bridgeId || value.operationHash !== intent.operationHash ||
       !HASH_RE.test(value.authenticationHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: unauthenticated bridge observation");
@@ -439,7 +483,10 @@ function validateObservation(
   if (value.status === "failed" || value.status === "capacity-unavailable") {
     requireString(value.reason, "reason");
   }
-  return value;
+  return Object.freeze({
+    ...value,
+    history: Object.freeze([...value.history]),
+  }) as Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 }
 
 function progressFromDurableObservation(
@@ -487,40 +534,157 @@ export async function advanceLiquidityTankSettlement(
       reason: error instanceof Error ? error.message : "liquidity-tank-authority-invalid",
     };
   }
-  const now = input.now ?? Date.now;
   let owner: string;
+  let leaseDurationMs: number;
+  let now: () => number;
+  let claimSettlement: LiquidityTankStore["claim"];
+  let isCurrentSettlement: LiquidityTankStore["isCurrent"];
+  let recordSubmission: LiquidityTankStore["recordSubmission"];
+  let recordObservation: LiquidityTankStore["recordObservation"];
+  let recordSettlement: LiquidityTankStore["recordSettlement"];
+  let prepareSubmission: LiquidityTankAdapter["prepareSubmission"];
+  let broadcastRetained: LiquidityTankAdapter["broadcastRetained"];
+  let observeSettlement: LiquidityTankAdapter["observe"];
   try {
     owner = requireString(input.owner, "owner");
+    leaseDurationMs = requireUInt(
+      input.leaseDurationMs ?? DEFAULT_LEASE_MS,
+      "leaseDurationMs",
+      true,
+    );
+    now = input.now ?? Date.now;
+    if (typeof now !== "function") {
+      throw new DacsError("pay-cross-chain-liquidity-tank: now must be a function");
+    }
+    claimSettlement = input.store.claim.bind(input.store);
+    isCurrentSettlement = input.store.isCurrent.bind(input.store);
+    recordSubmission = input.store.recordSubmission.bind(input.store);
+    recordObservation = input.store.recordObservation.bind(input.store);
+    recordSettlement = input.store.recordSettlement.bind(input.store);
+    prepareSubmission = input.adapter.prepareSubmission.bind(input.adapter);
+    broadcastRetained = input.adapter.broadcastRetained.bind(input.adapter);
+    observeSettlement = input.adapter.observe.bind(input.adapter);
   } catch (error) {
-    return { status: "failed", errorClass: "permanent", reason: String(error) };
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: error instanceof Error ? error.message : "liquidity-tank-runtime-policy-invalid",
+    };
   }
-  const claimed = await input.store.claim({
-    intent,
-    owner,
-    now: now(),
-    leaseDurationMs: input.leaseDurationMs ?? DEFAULT_LEASE_MS,
-  });
-  if (claimed.status === "waiting") return { status: "waiting", reason: "liquidity-tank-settlement-held" };
-  if (claimed.status === "settled") return { status: "settled", settlement: claimed.settlement };
-  if (claimed.status !== "acquired") {
-    return { status: "failed", errorClass: "permanent", reason: claimed.reason };
+  const readNow = (): number => requireUInt(now(), "clock");
+  let claimNow: number;
+  let claimed: LiquidityTankStoreClaim;
+  try {
+    claimNow = readNow();
+    claimed = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-unavailable" };
+  }
+  let claimStatus: unknown;
+  try {
+    claimStatus = claimed !== null && typeof claimed === "object" ? claimed.status : undefined;
+  } catch {
+    claimStatus = undefined;
+  }
+  if (typeof claimStatus !== "string") {
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
+  }
+  const requiresIntent = claimStatus === "acquired" || claimStatus === "waiting" || claimStatus === "settled";
+  if (requiresIntent && !("intent" in claimed)) {
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
+  }
+  if ("intent" in claimed) {
+    try {
+      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
+        return { status: "indeterminate", reason: "liquidity-tank-settlement-store-intent-mismatch" };
+      }
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-settlement-store-intent-invalid" };
+    }
+  }
+  if (claimStatus === "settled") {
+    const settledClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "settled" }>;
+    try {
+      return { status: "settled", settlement: captureSettlement(settledClaim.settlement, intent) };
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-stored-settlement-mismatch" };
+    }
+  }
+  if (claimStatus === "waiting") {
+    const waitingClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "waiting" }>;
+    try {
+      if (!Number.isSafeInteger(waitingClaim.lease.generation) || waitingClaim.lease.generation <= 0 ||
+          !Number.isSafeInteger(waitingClaim.lease.expiresAt) || waitingClaim.lease.expiresAt <= claimNow ||
+          typeof waitingClaim.lease.owner !== "string" || waitingClaim.lease.owner.length === 0) {
+        throw new DacsError("invalid waiting lease");
+      }
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid" };
+    }
+    return { status: "waiting", reason: "liquidity-tank-settlement-held" };
+  }
+  if (claimStatus === "conflict" || claimStatus === "corrupt") {
+    const failedClaim = claimed as Extract<
+      LiquidityTankStoreClaim,
+      { status: "conflict" | "corrupt" }
+    >;
+    try {
+      return {
+        status: "failed",
+        errorClass: "permanent",
+        reason: requireString(failedClaim.reason, "claim reason"),
+      };
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
+    }
+  }
+  if (claimStatus !== "acquired") {
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
+  }
+  const acquiredClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "acquired" }>;
+  let lease: Readonly<LiquidityTankLease>;
+  try {
+    if (acquiredClaim.lease.owner !== owner ||
+        !Number.isSafeInteger(acquiredClaim.lease.generation) || acquiredClaim.lease.generation <= 0 ||
+        !Number.isSafeInteger(acquiredClaim.lease.expiresAt) || acquiredClaim.lease.expiresAt <= claimNow) {
+      throw new DacsError("invalid acquired lease");
+    }
+    lease = Object.freeze({
+      owner: acquiredClaim.lease.owner,
+      generation: acquiredClaim.lease.generation,
+      expiresAt: acquiredClaim.lease.expiresAt,
+    });
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid" };
   }
   const fence: Readonly<LiquidityTankEffectFence> = Object.freeze({
     settlementKey: intent.settlementKey,
     bindingHash: intent.bindingHash,
-    owner: claimed.lease.owner,
-    generation: claimed.lease.generation,
+    owner: lease.owner,
+    generation: lease.generation,
     assertCurrent: async () => {
-      if (!await input.store.isCurrent({
+      if (!await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
-        owner: claimed.lease.owner,
-        generation: claimed.lease.generation,
-        now: now(),
+        owner: lease.owner,
+        generation: lease.generation,
+        now: readNow(),
       })) throw new DacsError("pay-cross-chain-liquidity-tank: stale effect fence");
     },
   });
-  let submission = claimed.submission;
+  let submission: Readonly<LiquidityTankPreparedSubmission> | undefined;
+  let retainedObservation:
+    | Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>
+    | undefined;
+  try {
+    submission = acquiredClaim.submission;
+    retainedObservation = acquiredClaim.observation;
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+  }
+  if (retainedObservation && !submission) {
+    return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+  }
   if (submission) {
     try {
       const { submissionHash, ...unsigned } = submission;
@@ -535,26 +699,50 @@ export async function advanceLiquidityTankSettlement(
   } else {
     try {
       await fence.assertCurrent();
-      submission = validateSubmission(await input.adapter.prepareSubmission(intent, fence), intent);
+      submission = validateSubmission(await prepareSubmission(intent, fence), intent);
+      await fence.assertCurrent();
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-submission-preparation-unavailable" };
     }
-    const stored = await input.store.recordSubmission({
-      settlementKey: intent.settlementKey,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      submission,
-    });
+    let stored: LiquidityTankStoreWrite;
+    try {
+      stored = await recordSubmission({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        submission,
+      });
+      await fence.assertCurrent();
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+    }
     if (stored.status !== "recorded" && stored.status !== "existing") {
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+    }
+  }
+
+  let durableObservation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined;
+  if (retainedObservation) {
+    try {
+      const captured = validateObservation(retainedObservation, intent, submission);
+      if (captured.status === "indeterminate") throw new DacsError("indeterminate durable observation");
+      durableObservation = captured;
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
   }
 
   const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
     try {
       await fence.assertCurrent();
-      return validateObservation(await input.adapter.observe(intent, submission, fence), intent, submission);
+      const observed = validateObservation(
+        await observeSettlement(intent, submission, fence),
+        intent,
+        submission,
+      );
+      await fence.assertCurrent();
+      return observed;
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-status-unavailable" };
     }
@@ -562,26 +750,38 @@ export async function advanceLiquidityTankSettlement(
   const persistObservation = async (
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
   ): Promise<boolean> => {
-    const stored = await input.store.recordObservation({
-      settlementKey: intent.settlementKey,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      observation,
-    });
-    return stored.status === "recorded" || stored.status === "existing";
+    try {
+      const stored = await recordObservation({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        observation,
+      });
+      await fence.assertCurrent();
+      return stored.status === "recorded" || stored.status === "existing";
+    } catch {
+      return false;
+    }
+  };
+  const durableProgress = (): LiquidityTankProgress | null => {
+    try {
+      return progressFromDurableObservation(intent, durableObservation, readNow());
+    } catch {
+      return null;
+    }
   };
   const finalize = async (
     observation: Readonly<LiquidityTankObservation>,
   ): Promise<LiquidityTankProgress | null> => {
     if (observation.status === "indeterminate") {
-      return progressFromDurableObservation(intent, claimed.observation, now()) ?? {
+      return durableProgress() ?? {
         status: "indeterminate",
         reason: observation.reason,
       };
     }
     if (!await persistObservation(observation)) {
-      return progressFromDurableObservation(intent, claimed.observation, now()) ?? {
+      return durableProgress() ?? {
         status: "indeterminate",
         reason: "liquidity-tank-observation-persistence-uncertain",
       };
@@ -593,7 +793,13 @@ export async function advanceLiquidityTankSettlement(
       return { status: "failed", errorClass: "permanent", reason: observation.reason };
     }
     if (observation.status === "pending") {
-      return progressFromDurableObservation(intent, observation, now()) ?? {
+      let durablePending: LiquidityTankProgress | null = null;
+      try {
+        durablePending = progressFromDurableObservation(intent, observation, readNow());
+      } catch {
+        return { status: "indeterminate", reason: "liquidity-tank-clock-invalid" };
+      }
+      return durablePending ?? {
         status: "waiting",
         reason: "liquidity-tank-pending",
       };
@@ -615,13 +821,18 @@ export async function advanceLiquidityTankSettlement(
         }),
         authenticationHash: observation.authenticationHash,
       });
-      const stored = await input.store.recordSettlement({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        settlement,
-      });
+      let stored: LiquidityTankStoreWrite;
+      try {
+        stored = await recordSettlement({
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          owner: fence.owner,
+          generation: fence.generation,
+          settlement,
+        });
+      } catch {
+        return { status: "indeterminate", reason: "liquidity-tank-settlement-persistence-uncertain" };
+      }
       return stored.status === "recorded" || stored.status === "existing"
         ? { status: "settled", settlement }
         : { status: "indeterminate", reason: "liquidity-tank-settlement-persistence-uncertain" };
@@ -634,9 +845,10 @@ export async function advanceLiquidityTankSettlement(
   if (terminal) return terminal;
   try {
     await fence.assertCurrent();
-    await input.adapter.broadcastRetained(submission, fence);
+    await broadcastRetained(submission, fence);
+    await fence.assertCurrent();
   } catch {
-    return progressFromDurableObservation(intent, claimed.observation, now()) ?? {
+    return durableProgress() ?? {
       status: "indeterminate",
       reason: "liquidity-tank-broadcast-outcome-uncertain",
     };
