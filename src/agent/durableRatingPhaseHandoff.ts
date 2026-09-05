@@ -514,6 +514,15 @@ export async function persistRatingPhaseHandoffDurably(
         reason: "session is already bound to a different rating handoff",
       });
     }
+    try {
+      recovered = committedHandoff(initial.record, expectedData);
+    } catch (error) {
+      return deepFreeze({
+        disposition: "indeterminate" as const,
+        stage: "commit" as const,
+        reason: reason(error),
+      });
+    }
     const authentication = await authenticateForResult(
       recovered,
       initial.record,
@@ -571,8 +580,10 @@ export async function persistRatingPhaseHandoffDurably(
   };
   const acquiredRecord = captureRecord(acquired.record);
   if (
+    acquired.lease.owner !== deps.workerId ||
     acquiredRecord.jobId !== handoff.jobId ||
     !acquiredRecord.lease ||
+    acquiredRecord.lease.owner !== deps.workerId ||
     acquiredRecord.lease.owner !== leaseToken.owner ||
     acquiredRecord.lease.generation !== leaseToken.generation ||
     acquired.lease.owner !== leaseToken.owner ||
@@ -605,12 +616,31 @@ export async function persistRatingPhaseHandoffDurably(
         reason: "session was concurrently bound to a different rating handoff",
       });
     }
+    await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
+    let committedRecord: SessionRecord;
+    try {
+      const reloaded = await loadRecord(deps.store, handoff.jobId);
+      if (reloaded.disposition !== "loaded") {
+        return deepFreeze({
+          disposition: "indeterminate" as const,
+          stage: "commit" as const,
+          reason: reloaded.reason,
+        });
+      }
+      committedRecord = reloaded.record;
+      persisted = committedHandoff(committedRecord, expectedData);
+    } catch (error) {
+      return deepFreeze({
+        disposition: "indeterminate" as const,
+        stage: "commit" as const,
+        reason: reason(error),
+      });
+    }
     const racedAuthentication = await authenticateForResult(
       persisted,
-      acquiredRecord,
+      committedRecord,
       deps.authenticateHandoff,
     );
-    await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
     if (racedAuthentication.disposition !== "valid") {
       return deepFreeze({
         disposition: racedAuthentication.disposition,
@@ -670,14 +700,32 @@ export async function persistRatingPhaseHandoffDurably(
         });
       }
       if (claimed.reason === "completed") {
-        const persisted = decodeCheckpoint(existing);
-        const completedRecord = captureRecord(claimed.record);
+        let persisted = decodeCheckpoint(existing);
+        await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
+        let completedRecord: SessionRecord;
+        try {
+          const reloaded = await loadRecord(deps.store, handoff.jobId);
+          if (reloaded.disposition !== "loaded") {
+            return deepFreeze({
+              disposition: "indeterminate" as const,
+              stage: "commit" as const,
+              reason: reloaded.reason,
+            });
+          }
+          completedRecord = reloaded.record;
+          persisted = committedHandoff(completedRecord, expectedData);
+        } catch (error) {
+          return deepFreeze({
+            disposition: "indeterminate" as const,
+            stage: "commit" as const,
+            reason: reason(error),
+          });
+        }
         const completedAuthentication = await authenticateForResult(
           persisted,
           completedRecord,
           deps.authenticateHandoff,
         );
-        await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
         if (completedAuthentication.disposition !== "valid") {
           return deepFreeze({
             disposition: completedAuthentication.disposition,
@@ -701,12 +749,21 @@ export async function persistRatingPhaseHandoffDurably(
       }
       const checkpoint = latestCheckpoint(current.record);
       if (checkpoint?.stage === "outcome") {
-        const persisted = decodeCheckpoint(checkpoint);
+        let persisted = decodeCheckpoint(checkpoint);
         if (persisted.handoffHash !== handoff.handoffHash) {
           return deepFreeze({
             disposition: "rejected" as const,
             stage: "checkpoint" as const,
             reason: "rating handoff outcome changed during commit",
+          });
+        }
+        try {
+          persisted = committedHandoff(current.record, expectedData);
+        } catch (error) {
+          return deepFreeze({
+            disposition: "indeterminate" as const,
+            stage: "commit" as const,
+            reason: reason(error),
           });
         }
         const completedAuthentication = await authenticateForResult(
@@ -728,6 +785,19 @@ export async function persistRatingPhaseHandoffDurably(
           disposition: "indeterminate" as const,
           stage: "checkpoint" as const,
           reason: "rating handoff intent disappeared or changed",
+        });
+      }
+      const currentAuthentication = await authenticateForResult(
+        handoff,
+        current.record,
+        deps.authenticateHandoff,
+      );
+      if (currentAuthentication.disposition !== "valid") {
+        await releaseLease(deps.store, handoff.jobId, leaseToken, deps.nowMs).catch(() => {});
+        return deepFreeze({
+          disposition: currentAuthentication.disposition,
+          stage: "authentication" as const,
+          reason: currentAuthentication.reason,
         });
       }
       const committed = await deps.store.transition({
@@ -821,6 +891,7 @@ export async function recoverRatingPhaseHandoff(
   let handoff: Readonly<RatingPhaseReadyHandoff>;
   try {
     handoff = decodeCheckpoint(checkpoint);
+    handoff = committedHandoff(loaded.record, checkpointData(handoff));
   } catch (error) {
     return deepFreeze({
       disposition: "indeterminate" as const,

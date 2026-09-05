@@ -26,6 +26,7 @@ import {
 } from "../../src/agent/fencedSessionStore.js";
 import { createFsFencedSessionStore } from "../../src/agent/fencedSessionStoreFs.js";
 import {
+  canonicalize,
   contentHash,
   ratingAddress,
   stripSignature,
@@ -156,7 +157,7 @@ describe("durable DACS-5 rating-to-audit handoff", () => {
     );
 
     expect(result).toEqual({ disposition: "persisted", handoff: ready, recovered: false });
-    expect(authenticateHandoff).toHaveBeenCalledOnce();
+    expect(authenticateHandoff).toHaveBeenCalledTimes(2);
     const loaded = await store.load(JOB);
     expect(loaded.status).toBe("ok");
     if (loaded.status !== "ok") throw new Error("session missing");
@@ -394,6 +395,129 @@ describe("durable DACS-5 rating-to-audit handoff", () => {
       stage: "commit",
       reason: expect.stringContaining("atomically advance"),
     });
+  });
+
+  test("re-authenticates every exact revision before the atomic commit", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    let leaseToken: SessionLeaseToken | undefined;
+    const racingStore: FencedSessionStoreV2 = {
+      ...store,
+      acquireLease: async (input) => {
+        const acquired = await store.acquireLease(input);
+        if (acquired.ok) {
+          leaseToken = {
+            owner: acquired.lease.owner,
+            generation: acquired.lease.generation,
+          };
+        }
+        return acquired;
+      },
+    };
+    const authenticatedRevisions: number[] = [];
+
+    const result = await persistRatingPhaseHandoffDurably(
+      await handoff(),
+      deps(racingStore, {
+        authenticateHandoff: async ({ session }) => {
+          authenticatedRevisions.push(session.revision);
+          if (authenticatedRevisions.length === 2) {
+            if (!leaseToken) throw new Error("lease missing");
+            const changed = await store.transition({
+              jobId: JOB,
+              expectedRevision: session.revision,
+              leaseToken,
+              now: 1,
+            });
+            if (!changed.ok) throw new Error("concurrent revision change failed");
+          }
+          return { disposition: "valid" };
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ disposition: "persisted", recovered: false });
+    expect(authenticatedRevisions).toHaveLength(3);
+    expect(authenticatedRevisions[2]).toBeGreaterThan(authenticatedRevisions[1] ?? -1);
+  });
+
+  test("rejects an internally consistent lease owned by another worker", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    const wrongOwnerStore: FencedSessionStoreV2 = {
+      ...store,
+      acquireLease: (input) => store.acquireLease({
+        ...input,
+        owner: "substituted-worker",
+      }),
+    };
+
+    await expect(persistRatingPhaseHandoffDurably(
+      await handoff(),
+      deps(wrongOwnerStore, { workerId: "requested-worker" }),
+    )).resolves.toMatchObject({
+      disposition: "indeterminate",
+      stage: "lease",
+      reason: expect.stringContaining("contradictory lease"),
+    });
+  });
+
+  test("never accepts an orphan outcome while the session remains rate-pending", async () => {
+    const store = createInMemoryFencedSessionStore();
+    await store.create({ jobId: JOB, phase: "rate-pending", now: 0 });
+    const ready = await handoff();
+    const data = {
+      schema: "dacs-rating-phase-handoff/v1",
+      jobId: ready.jobId,
+      sessionRecordHash: ready.sessionRecordHash,
+      planHash: ready.planHash,
+      handoffHash: ready.handoffHash,
+      payload: canonicalize(ready),
+    };
+    const acquired = await store.acquireLease({
+      jobId: JOB,
+      owner: "orphan-writer",
+      ttlMs: 100,
+      now: 0,
+    });
+    if (!acquired.ok) throw new Error("lease missing");
+    const claimed = await store.claimCheckpoint({
+      jobId: JOB,
+      key: RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+      data,
+      leaseToken: acquired.lease,
+      now: 1,
+    });
+    if (!claimed.ok) throw new Error("checkpoint claim failed");
+    const orphaned = await store.transition({
+      jobId: JOB,
+      expectedRevision: claimed.record.revision,
+      leaseToken: acquired.lease,
+      checkpoint: {
+        key: RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+        stage: "outcome",
+        data,
+      },
+      lease: null,
+      now: 2,
+    });
+    if (!orphaned.ok) throw new Error("orphan outcome setup failed");
+    expect(orphaned.record.phase).toBe("rate-pending");
+
+    await expect(recoverRatingPhaseHandoff(JOB, {
+      store,
+      authenticateHandoff: validAuthentication,
+    })).resolves.toMatchObject({
+      disposition: "indeterminate",
+      stage: "checkpoint",
+      reason: expect.stringContaining("atomically advance"),
+    });
+    await expect(persistRatingPhaseHandoffDurably(ready, deps(store)))
+      .resolves.toMatchObject({
+        disposition: "indeterminate",
+        stage: "commit",
+        reason: expect.stringContaining("atomically advance"),
+      });
   });
 
   test("re-authenticates an outcome discovered while claiming the checkpoint", async () => {
