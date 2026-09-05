@@ -382,8 +382,23 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   ) {
     return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
   }
-  const verifyMessageSignature = messageVerifier.bind(verifiers);
-  const verifyConsent = consentVerifier.bind(verifiers);
+  let verifyMessageSignature: ChannelMessageSignatureVerifier<
+    RfqTurnBody,
+    TSignature
+  >;
+  let verifyConsent: RfqTranscriptConsentVerifier;
+  try {
+    verifyMessageSignature = Function.prototype.bind.call(
+      messageVerifier,
+      verifiers,
+    ) as ChannelMessageSignatureVerifier<RfqTurnBody, TSignature>;
+    verifyConsent = Function.prototype.bind.call(
+      consentVerifier,
+      verifiers,
+    ) as RfqTranscriptConsentVerifier;
+  } catch {
+    return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
+  }
   let input: PlanRfqTranscriptDisclosureInput<TSignature>;
   try {
     input = snapshotCanonicalJsonRead(
