@@ -200,6 +200,88 @@ describe("DemosAdapter", () => {
     ).rejects.toThrow(/not connected/);
   });
 
+  it("keeps Bearer credentials out of DAHR anchored request headers", async () => {
+    const statusCredential = ["rk", "test", "StatusCredential456"].join("_");
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    const status = vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "included",
+      blockNumber: 7,
+    } as never);
+    const transaction = vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      hash: "0xdahr",
+      status: "confirmed",
+      blockNumber: 7,
+    } as never);
+    const block = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
+      number: 7,
+      status: "confirmed",
+      content: { ordered_transactions: ["0xdahr"] },
+      validation_data: { signature: "bft" },
+    } as never);
+    const startProxy = vi.fn(async () => ({
+      data: "ok",
+      status: 200,
+      responseHash: "a".repeat(64),
+      txHash: "0xdahr",
+      timestamp: 1,
+    }));
+    const stopProxy = vi.fn(async () => undefined);
+    vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+      "createDahr").mockResolvedValue({ startProxy, stopProxy });
+
+    await adapter.proxyFetch({
+      url: "https://api.stripe.com/v1/payment_intents/pi_test",
+      headers: { Authorization: `Bearer ${statusCredential}`, Accept: "json" },
+    });
+
+    expect(startProxy).toHaveBeenCalledWith({
+      url: "https://api.stripe.com/v1/payment_intents/pi_test",
+      method: "GET",
+      options: {
+        headers: { Accept: "json" },
+        authorization: statusCredential,
+      },
+    });
+    expect(status).toHaveBeenCalledWith("getTransactionStatus", { hash: "0xdahr" });
+    expect(transaction).toHaveBeenCalledWith("0xdahr");
+    expect(block).toHaveBeenCalledWith(7);
+    expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a DAHR response whose anchor transaction failed", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "failed",
+      blockNumber: 8,
+    } as never);
+    vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      hash: "0xdahr-failed",
+      status: "failed",
+      blockNumber: 8,
+    } as never);
+    const stopProxy = vi.fn(async () => undefined);
+    vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+      "createDahr").mockResolvedValue({
+        startProxy: async () => ({
+          data: "error",
+          status: 502,
+          responseHash: "b".repeat(64),
+          txHash: "0xdahr-failed",
+          timestamp: 2,
+        }),
+        stopProxy,
+      });
+
+    await expect(
+      adapter.proxyFetch({ url: "https://example.com/status" }),
+    ).rejects.toThrow(/DAHR anchor transaction 0xdahr-failed failed on chain/);
+    expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
     const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
