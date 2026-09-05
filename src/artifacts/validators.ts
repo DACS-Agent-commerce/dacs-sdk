@@ -2001,9 +2001,7 @@ export function isRatingRecord(v: unknown): v is RatingRecord {
       ["freeText", "dimensions"],
     ) ||
     v.ratingVersion !== "1" ||
-    !isCanonicalNonBlankStr(v.jobId) ||
-    (v.jobId as string).normalize("NFC") !== v.jobId ||
-    /[\u0000-\u001f\u007f]/.test(v.jobId as string) ||
+    !isCanonicalJobId(v.jobId) ||
     !isCanonicalClaimReference(v.rater) ||
     !isCanonicalClaimReference(v.target) ||
     v.rater === v.target ||

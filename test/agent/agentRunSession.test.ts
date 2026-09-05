@@ -459,6 +459,36 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(store.size).toBe(anchorsBefore);
   });
 
+  test("rejects a genuinely forged buyer presentation before any session effect", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store);
+    const forgedBuyerIdentity = signedIdentityBundle(buyerDid, sellerPriv);
+    const settle = vi.fn(async () => ({
+      ok: true,
+      txHash: "tx-must-not-run",
+      chainId: "demos:testnet",
+      payer: buyerDid,
+      payee: sellerDid,
+    }));
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: {
+        agentId: buyerDid,
+        bundle: forgedBuyerIdentity,
+        verifyPresentation: identityPresentationVerifier(buyerPublicKey),
+      },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    const anchorsBefore = store.size;
+
+    await expect(
+      agent.runSession(ref, { terms: TERMS, settle }),
+    ).rejects.toThrow(/presentation could not be authenticated/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(store.size).toBe(anchorsBefore);
+  });
+
   test("defaults a normative pay-dem session to the seller Demos claim", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(
@@ -1209,7 +1239,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const evidenceRef = {
       anchor: {
         kind: "storage-program" as const,
-        locator: "stor:settlement-evidence",
+        locator:
+          "dacs4:payment:01J8ME0SXKQ4T9V2RC5HJ6WX7E:x402%3Adefault:0",
       },
       contentHash: contentHash(stripSignature(evidence)),
     };
@@ -1226,6 +1257,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
         },
         attestationRef: evidenceRef,
+        paymentAddress: {
+          railId: "x402:default",
+          phaseIndex: 0,
+        },
+        result: { ok: true, txRefs: evidence.paymentTxRefs },
       },
       {
         resolvePublicKey: async () => sellerPublicKey,
@@ -1283,7 +1319,15 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         { role: "buyer", bundleHash: "a".repeat(64), primaryClaim: normativeBuyerDid },
         { role: "seller", bundleHash: "b".repeat(64), primaryClaim: sellerDid },
       ],
-      phaseSummary: [],
+      phaseSummary: [
+        {
+          index: 0,
+          kind: "pay-x402" as const,
+          outcome: "ok" as const,
+          txRefs: structuredClone(evidence.paymentTxRefs),
+          attestationRef: evidenceRef,
+        },
+      ],
       vetRecords: [
         {
           anchor: {
@@ -1471,7 +1515,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       }),
     });
     const aliasVerdict = await aliasAgent.verifyBundle("stor:aliased-bundle");
-    expect(aliasKeyResolutions).toBe(2);
+    // Suffix-key aliases are rejected before the external resolver is invoked.
+    expect(aliasKeyResolutions).toBe(0);
     expect(aliasVerdict.ok).toBe(false);
     expect(
       aliasVerdict.refs.find((entry) => entry.kind === "dacs-4-evidence"),

@@ -6,6 +6,7 @@ import {
 } from "../../src/agent/ratingRecord.js";
 import {
   publishRatingRecordDurably,
+  type DurableRatingPublicationDeps,
   type RatingPublicationEffectLease,
   type RatingPublicationEffectRecord,
   type RatingPublicationEffectStore,
@@ -35,6 +36,7 @@ import {
   createInMemoryBindingStore,
   type BoundArtifactAdapter,
   type BoundArtifactRepository,
+  type BoundArtifactWriteResult,
 } from "../../src/discovery/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -488,5 +490,145 @@ describe("durable DACS-5 RatingRecord publication", () => {
       result: { record: { value: 5, freeText: "Would buy again." } },
     });
     expect(authentication).toHaveBeenCalled();
+  });
+
+  it("captures every executable dependency before asynchronous authentication", async () => {
+    const record = await buyerRating();
+    const trustedEffects = new MemoryEffectStore();
+    const swappedEffects = new MemoryEffectStore();
+    const trustedRepository = repository();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let authenticationCalls = 0;
+    const trustedAuthentication = vi.fn(async (input: {
+      record: Readonly<RatingRecord>;
+      expectedOwner: string;
+    }) => {
+      authenticationCalls += 1;
+      if (authenticationCalls === 1) await gate;
+      return authenticateRecord(input);
+    });
+    const swappedWrite = vi.fn(async () => {
+      throw new Error("swapped repository write was invoked");
+    });
+    const swappedRead = vi.fn(async () => {
+      throw new Error("swapped repository read was invoked");
+    });
+    const swappedAuthentication = vi.fn(async () => ({
+      disposition: "invalid" as const,
+      reason: "swapped authentication capability",
+    }));
+    const dependencies: DurableRatingPublicationDeps = {
+      ...deps(trustedEffects, trustedRepository.repository),
+      authenticateRatingRecord: trustedAuthentication,
+    };
+    const pending = publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      dependencies,
+    );
+
+    dependencies.effectStore = swappedEffects;
+    dependencies.repository = { write: swappedWrite, read: swappedRead };
+    dependencies.workerId = "swapped-worker";
+    dependencies.leaseDurationMs = 1;
+    dependencies.authenticateRatingRecord = swappedAuthentication;
+    dependencies.authenticateAnchor = swappedAuthentication;
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      disposition: "published",
+      result: { record },
+    });
+    expect(authenticationCalls).toBe(2);
+    expect(swappedWrite).not.toHaveBeenCalled();
+    expect(swappedRead).not.toHaveBeenCalled();
+    expect(swappedAuthentication).not.toHaveBeenCalled();
+    expect(swappedEffects.record).toBeUndefined();
+    expect(trustedEffects.record?.state).toBe("completed");
+  });
+
+  it("owns the publication result across asynchronous anchor authentication", async () => {
+    const record = await buyerRating();
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    let returnedPublication!: BoundArtifactWriteResult;
+    let authenticationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authenticationStarted = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mutableRepository: BoundArtifactRepository = {
+      async write(...args) {
+        returnedPublication = structuredClone(await bound.repository.write(...args));
+        return returnedPublication;
+      },
+      read: bound.repository.read.bind(bound.repository),
+    };
+    const pending = publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      {
+        ...deps(effects, mutableRepository),
+        authenticateAnchor: async () => {
+          authenticationStarted();
+          await gate;
+          return { disposition: "valid" as const };
+        },
+      },
+    );
+    await started;
+    returnedPublication.binding.nativeAddress = "stor-swapped";
+    returnedPublication.anchor.address = "stor-swapped";
+    release();
+
+    await expect(pending).resolves.toMatchObject({
+      disposition: "published",
+      result: {
+        nativeAddress: "stor-rating-1",
+        ref: { anchor: { locator: "stor-rating-1" } },
+      },
+    });
+  });
+
+  it("recovers when the durable completion response is lost after commit", async () => {
+    const record = await buyerRating();
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    const complete = effects.recordEffectCompleted.bind(effects);
+    let loseResponse = true;
+    effects.recordEffectCompleted = (input) => {
+      const completed = complete(input);
+      if (loseResponse) {
+        loseResponse = false;
+        throw new Error("completion response lost");
+      }
+      return completed;
+    };
+
+    const first = await publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      deps(effects, bound.repository),
+    );
+    expect(first).toMatchObject({
+      disposition: "indeterminate",
+      stage: "completion",
+      reason: "completion response lost",
+    });
+    expect(effects.record?.state).toBe("completed");
+
+    const recovered = await publishRatingRecordDurably(
+      { record, buyer: BUYER, seller: SELLER, expectedOwner: BUYER_OWNER },
+      deps(effects, bound.repository),
+    );
+    expect(recovered).toMatchObject({
+      disposition: "published",
+      recovered: true,
+      result: { nativeAddress: "stor-rating-1" },
+    });
+    expect(bound.state.writes).toBe(1);
   });
 });
