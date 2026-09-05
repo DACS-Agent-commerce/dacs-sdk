@@ -88,6 +88,7 @@
     "docs/pay-ap2.md",
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
+    "docs/wallet-spend-authority.md",
     "LICENSE"
   ],
   "scripts": {

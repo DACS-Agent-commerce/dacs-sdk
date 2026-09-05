@@ -15,6 +15,7 @@ import {
 import {
   createDacsFixedPricePayDemBuyerAgreementPolicyV1,
 } from "./fixedPricePayDemProfile.js";
+import type { WalletSpendAuthorityV1 } from "@kynesyslabs/dacs";
 import {
   captureDacsFixedPriceX402ApplicationV1,
   DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
@@ -29,6 +30,7 @@ export interface DacsFixedPricePayDemBuyerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
   rail: Readonly<AuthenticatedRailDefinition>;
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   demosRpcUrl: string;
   recipeRegistryVersion: number;
   observeDemosTransfer?(txHash: string): Promise<DemosTransferObservation>;
@@ -94,6 +96,7 @@ export async function createDacsFixedPricePayDemBuyerLiveV1(
     payment: {
       resolveAuthority: payment.resolveAuthority,
       reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(observer),
+      walletSpendAuthority: options.walletSpendAuthority,
       ...(options.effectLeaseDurationMs === undefined
         ? {} : { effectLeaseDurationMs: options.effectLeaseDurationMs }),
       ...(options.retryDelayMs === undefined

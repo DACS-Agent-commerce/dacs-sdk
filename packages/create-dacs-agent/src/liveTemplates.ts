@@ -178,6 +178,7 @@ export default selectedGeneratedRoleConfig;
 
 const CONFIG_SOURCE = `import { resolve } from "node:path";
 
+import { baseUnits, type WalletSpendPolicyV1 } from "@kynesyslabs/dacs";
 import {
   dacsLiveRailProfiles,
   validateDacsAgentConfig,
@@ -196,6 +197,7 @@ const SECRET_NAMES = Object.freeze({
   buyer: Object.freeze([
     "DACS_BUYER_DEMOS_SECRET_FILE",
     "DACS_BUYER_EVM_SECRET_FILE",
+    "DACS_BUYER_WALLET_POLICY_KEY_FILE",
   ]),
   seller: Object.freeze([
     "DACS_SELLER_DEMOS_SECRET_FILE",
@@ -344,6 +346,119 @@ export function actorSecretPath(
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
 }
 
+export function configuredWalletSpendIntegrityKeyPath(): string | undefined {
+  const value = process.env.DACS_BUYER_WALLET_POLICY_KEY_FILE;
+  return value === undefined || value.trim() === "" ? undefined : resolve(value);
+}
+
+function positiveIntegerEnvironment(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(name + " must be a positive integer");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error(name + " is outside the safe range");
+  return value;
+}
+
+function decimalEnvironment(name: string, fallback: string): string {
+  const value = process.env[name] ?? fallback;
+  if (!/^(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$/.test(value)) {
+    throw new Error(name + " must be a canonical non-negative decimal");
+  }
+  return value;
+}
+
+function walletPolicyLimits() {
+  return Object.freeze({
+    maximumConcurrentEffects: positiveIntegerEnvironment(
+      "DACS_WALLET_MAX_CONCURRENT_EFFECTS", 1,
+    ),
+    maximumRetainedReservations: positiveIntegerEnvironment(
+      "DACS_WALLET_MAX_RETAINED_RESERVATIONS", 10000,
+    ),
+    rollingWindowMs: positiveIntegerEnvironment(
+      "DACS_WALLET_ROLLING_WINDOW_MS", 86400000,
+    ),
+    maximumRollingEffects: positiveIntegerEnvironment(
+      "DACS_WALLET_MAX_ROLLING_EFFECTS", 10,
+    ),
+  });
+}
+
+export function configuredX402WalletSpendPolicy(input: Readonly<{
+  wallet: string;
+  chainId: string;
+  asset: string;
+  decimals: number;
+}>): Readonly<WalletSpendPolicyV1> {
+  const common = walletPolicyLimits();
+  return Object.freeze({
+    policyVersion: "1",
+    policyId: "generated-fixed-price-x402-v1",
+    wallet: input.wallet,
+    chainId: input.chainId,
+    maximumConcurrentEffects: common.maximumConcurrentEffects,
+    maximumRetainedReservations: common.maximumRetainedReservations,
+    assets: Object.freeze([Object.freeze({
+      asset: input.asset,
+      maximumPerOrderDebit: baseUnits(
+        loadRoleConfig("buyer").limits.maxServiceAmount.amount,
+        input.decimals,
+      ),
+      maximumNetworkFeeDebit: "0",
+      minimumReserve: baseUnits(decimalEnvironment(
+        "DACS_X402_WALLET_MINIMUM_RESERVE", "0",
+      ), input.decimals),
+      rollingWindowMs: common.rollingWindowMs,
+      maximumRollingEffects: common.maximumRollingEffects,
+      maximumRollingDebit: baseUnits(decimalEnvironment(
+        "DACS_X402_WALLET_MAX_ROLLING_DEBIT", "10",
+      ), input.decimals),
+      maximumCumulativeDebit: baseUnits(decimalEnvironment(
+        "DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT", "100",
+      ), input.decimals),
+      maximumCounterpartyDebit: baseUnits(decimalEnvironment(
+        "DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT", "25",
+      ), input.decimals),
+    })]),
+  });
+}
+
+export function configuredPayDemWalletSpendPolicy(
+  wallet: string,
+): Readonly<WalletSpendPolicyV1> {
+  const common = walletPolicyLimits();
+  return Object.freeze({
+    policyVersion: "1",
+    policyId: "generated-fixed-price-pay-dem-v1",
+    wallet,
+    chainId: "demos",
+    maximumConcurrentEffects: common.maximumConcurrentEffects,
+    maximumRetainedReservations: common.maximumRetainedReservations,
+    assets: Object.freeze([Object.freeze({
+      asset: "DEM",
+      maximumPerOrderDebit: baseUnits(configuredMaximumPayDemTotalDebit(), 9),
+      maximumNetworkFeeDebit: baseUnits(
+        loadRoleConfig("buyer").limits.maxDemosNetworkFeeDem, 9,
+      ),
+      minimumReserve: baseUnits(decimalEnvironment(
+        "DACS_PAY_DEM_WALLET_MINIMUM_RESERVE", "5",
+      ), 9),
+      rollingWindowMs: common.rollingWindowMs,
+      maximumRollingEffects: common.maximumRollingEffects,
+      maximumRollingDebit: baseUnits(decimalEnvironment(
+        "DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT", "25",
+      ), 9),
+      maximumCumulativeDebit: baseUnits(decimalEnvironment(
+        "DACS_PAY_DEM_WALLET_MAX_CUMULATIVE_DEBIT", "100",
+      ), 9),
+      maximumCounterpartyDebit: baseUnits(decimalEnvironment(
+        "DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT", "25",
+      ), 9),
+    })]),
+  });
+}
+
 export function configuredFundedDoctorAuthority(): string | undefined {
   const value = process.env.DACS_FUNDED_DOCTOR_AUTHORITY;
   return value === undefined || value.trim() === "" ? undefined : value;
@@ -381,6 +496,7 @@ import {
   VERSION,
   createViemX402BuyerEvmReadClient,
   resolveRail,
+  type WalletSpendStatusV1,
 } from "@kynesyslabs/dacs";
 import { canonicalizeDecimal, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
@@ -396,6 +512,7 @@ import {
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
+  createDacsWalletSpendAuthorityV1,
   createViemDacsX402BalanceReadClientV1,
   dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
@@ -440,6 +557,7 @@ import {
   configuredListingDraftFile,
   configuredMaximumPayDemServiceAmount,
   configuredMaximumPayDemTotalDebit,
+  configuredPayDemWalletSpendPolicy,
   configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
@@ -447,6 +565,8 @@ import {
   configuredX402FacilitatorUrl,
   configuredX402RailId,
   configuredX402TokenDomain,
+  configuredX402WalletSpendPolicy,
+  configuredWalletSpendIntegrityKeyPath,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -660,7 +780,7 @@ async function diskSpace() {
 
 async function secrets() {
   const paths = ROLES.flatMap((role) => actorSecretPaths(role));
-  const expected = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402") ? 4 : 2;
+  const expected = dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402") ? 5 : 3;
   if (paths.length !== expected) return blocked("role-secret-file-missing");
   const hashes: string[] = [];
   try {
@@ -914,6 +1034,142 @@ function baseProbes(
       return Object.freeze({ asset, gas, tokenDomain });
     })();
     return fundingTask;
+  };
+  const walletSpendTasks: Partial<Record<
+    GeneratedRailProfile,
+    Promise<Readonly<WalletSpendStatusV1>>
+  >> = {};
+  const selectedWalletSpendStatus = (profile: GeneratedRailProfile) => {
+    if (actors === undefined) throw new Error("wallet spend actor unavailable");
+    const integrityKeyFilePath = configuredWalletSpendIntegrityKeyPath();
+    if (integrityKeyFilePath === undefined) {
+      throw new Error("wallet spend integrity key unavailable");
+    }
+    walletSpendTasks[profile] ??= (async () => {
+      const buyer = actors.buyer;
+      const dataDirectory = loadRoleConfig("buyer").dataDirectory;
+      if (profile === "x402") {
+        const rail = await selectedRail("x402");
+        if (rail.asset.kind !== "erc20" ||
+            rail.asset.chainId !== buyer.evmIdentity.chainId) {
+          throw new Error("x402 wallet policy asset is incompatible");
+        }
+        const rpcUrl = configuredEvmRpcUrl();
+        if (rpcUrl === undefined) throw new Error("x402 wallet RPC unavailable");
+        const client = await createViemDacsX402BalanceReadClientV1({
+          rpcUrl,
+          chainId: buyer.evmIdentity.chainId,
+        });
+        const wallet = buyer.evmIdentity.address.toLowerCase();
+        const chainId = loadRoleConfig("buyer").rail.requestedNetwork;
+        const asset = rail.asset.contract.toLowerCase();
+        const authority = await createDacsWalletSpendAuthorityV1({
+          dataDirectory,
+          stateDirectory: dataDirectory + "/wallet-spend-x402",
+          integrityKeyFilePath,
+          owner: "buyer-doctor-x402-" + String(process.pid),
+          policy: configuredX402WalletSpendPolicy({
+            wallet,
+            chainId,
+            asset,
+            decimals: rail.asset.decimals,
+          }),
+          readBalance: async (input) => {
+            if (input.wallet !== wallet || input.chainId !== chainId ||
+                input.asset !== asset) {
+              throw new Error("x402 wallet status request is unbound");
+            }
+            return String(await client.getAssetBalance({ asset, owner: wallet }));
+          },
+          // Doctor is read-only and never receives authority to reconcile.
+          authenticateRecovery: async () => false,
+        });
+        return authority.inspect();
+      }
+
+      const wallet = buyer.runtime.walletAddress;
+      const authority = await createDacsWalletSpendAuthorityV1({
+        dataDirectory,
+        stateDirectory: dataDirectory + "/wallet-spend-pay-dem",
+        integrityKeyFilePath,
+        owner: "buyer-doctor-pay-dem-" + String(process.pid),
+        policy: configuredPayDemWalletSpendPolicy(wallet),
+        readBalance: async (input) => {
+          if (input.wallet !== wallet || input.chainId !== "demos" ||
+              input.asset !== "DEM") {
+            throw new Error("pay-dem wallet status request is unbound");
+          }
+          const [network, account] = await Promise.all([
+            buyer.runtime.networkInfo(), buyer.runtime.addressInfo(),
+          ]);
+          const activated = network !== null && typeof network === "object" &&
+            "forks" in network && network.forks !== null &&
+            typeof network.forks === "object" && "osDenomination" in network.forks &&
+            network.forks.osDenomination !== null &&
+            typeof network.forks.osDenomination === "object" &&
+            "activated" in network.forks.osDenomination
+            ? network.forks.osDenomination.activated : undefined;
+          const balance = account !== null && typeof account === "object" &&
+            "balance" in account ? account.balance : undefined;
+          if (typeof activated !== "boolean" || typeof balance !== "bigint" ||
+              balance < 0n) throw new Error("Demos wallet balance is unavailable");
+          return (activated ? balance : balance * 1000000000n).toString();
+        },
+        // Doctor is read-only and never receives authority to reconcile.
+        authenticateRecovery: async () => false,
+      });
+      return authority.inspect();
+    })();
+    return walletSpendTasks[profile]!;
+  };
+  const inspectWalletSpendPolicy = async (
+    profile: GeneratedRailProfile,
+  ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> => {
+    try {
+      const status = await selectedWalletSpendStatus(profile);
+      if (status.assets.length !== 1) {
+        return fail("wallet-spend-policy-asset-count-invalid");
+      }
+      const asset = status.assets[0]!;
+      const facts = Object.freeze({
+        wallet: status.wallet,
+        chainId: status.chainId,
+        policyId: status.policyId,
+        policyHash: status.policyHash,
+        asset: asset.asset,
+        maximumPerOrderDebit: asset.maximumPerOrderDebit,
+        maximumNetworkFeeDebit: asset.maximumNetworkFeeDebit,
+        minimumReserve: asset.minimumReserve,
+        maximumRollingEffects: asset.maximumRollingEffects,
+        maximumRollingDebit: asset.maximumRollingDebit,
+        maximumCumulativeDebit: asset.maximumCumulativeDebit,
+        maximumCounterpartyDebit: asset.maximumCounterpartyDebit,
+        balance: asset.balance,
+        reservedWorstCaseDebit: asset.reservedWorstCaseDebit,
+        availableHeadroom: asset.availableHeadroom,
+        activeEffects: status.activeEffects,
+        retainedReservations: status.retainedReservations,
+        maximumRetainedReservations: status.maximumRetainedReservations,
+        operatorActionCount: status.operatorActionReservations.length,
+      });
+      if (status.operatorActionReservations.length > 0) {
+        return Object.freeze({
+          status: "fail" as const,
+          reasonCode: "wallet-spend-operator-action-required",
+          facts,
+        });
+      }
+      if (asset.balance === null || asset.availableHeadroom === null) {
+        return Object.freeze({
+          status: "blocked" as const,
+          reasonCode: "wallet-spend-balance-unavailable",
+          facts,
+        });
+      }
+      return pass(facts);
+    } catch {
+      return blocked("wallet-spend-policy-status-unavailable");
+    }
   };
   let x402ListingTask: ReturnType<typeof resolveDacsX402ExistingListingV1> | undefined;
   let payDemListingTask: ReturnType<typeof resolveDacsPayDemExistingListingV1> | undefined;
@@ -1262,10 +1518,15 @@ function baseProbes(
       try { return (await selectedFunding()).gas; }
       catch { return blocked("x402-funding-prerequisite-unavailable"); }
     },
-    "x402.service-limit": !enabledProfiles.includes("x402") ? x402Disabled : () => pass({
-      asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
-      amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
-    }),
+    "x402.service-limit": !enabledProfiles.includes("x402") ? x402Disabled
+      : actors === undefined ? actorUnavailable
+      : (probeContext) => probeContext.phase === "post-start"
+        ? inspectWalletSpendPolicy("x402")
+        : pass({
+            asset: loadRoleConfig("buyer").limits.maxServiceAmount.asset,
+            amount: loadRoleConfig("buyer").limits.maxServiceAmount.amount,
+            walletPolicyStatus: "post-start-inspection-required",
+          }),
     "x402.cost-estimate": !enabledProfiles.includes("x402") ? x402Disabled
       : actors === undefined ? actorUnavailable
       : x402Cost === undefined ? () => blocked("purchase-cost-context-missing")
@@ -1307,10 +1568,15 @@ function baseProbes(
           actors.seller.runtime.authority === actors.seller.authority
         ? pass({ payee }) : fail("pay-dem-payee-binding-mismatch");
     },
-    "pay-dem.service-limit": !enabledProfiles.includes("pay-dem") ? payDemDisabled : () => pass({
-      asset: "DEM",
-      amount: configuredMaximumPayDemServiceAmount(),
-    }),
+    "pay-dem.service-limit": !enabledProfiles.includes("pay-dem") ? payDemDisabled
+      : actors === undefined ? actorUnavailable
+      : (probeContext) => probeContext.phase === "post-start"
+        ? inspectWalletSpendPolicy("pay-dem")
+        : pass({
+            asset: "DEM",
+            amount: configuredMaximumPayDemServiceAmount(),
+            walletPolicyStatus: "post-start-inspection-required",
+          }),
     "pay-dem.total-debit": !enabledProfiles.includes("pay-dem") ? payDemDisabled
       : actors === undefined ? actorUnavailable
       : payDemCost === undefined ? () => blocked("pay-dem-cost-context-missing")
@@ -3435,6 +3701,7 @@ main().catch(() => {
 const SERVICE_SOURCE = `import {
   RAIL_REGISTRY_INDEX_ADDRESS,
   baseUnits,
+  createPayDemSellerObserver,
   resolveRail,
 } from "@kynesyslabs/dacs";
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
@@ -3449,6 +3716,10 @@ import {
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
+  createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
+  createDacsWalletSpendAuthorityV1,
+  createDacsX402WalletSpendRecoveryAuthenticatorV1,
+  createViemDacsX402BalanceReadClientV1,
   dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
@@ -3461,6 +3732,7 @@ import {
   configuredAuthority,
   configuredFixedPriceAmount,
   configuredMaximumPayDemServiceAmount,
+  configuredPayDemWalletSpendPolicy,
   configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
@@ -3468,6 +3740,8 @@ import {
   configuredX402FacilitatorUrl,
   configuredX402RailId,
   configuredX402TokenDomain,
+  configuredX402WalletSpendPolicy,
+  configuredWalletSpendIntegrityKeyPath,
   listingDiscoveryDirectory,
   loadRoleConfig,
   serviceEndpoint,
@@ -3501,11 +3775,14 @@ async function main(): Promise<void> {
   const profiles = dacsLiveRailProfiles(config);
   const x402Enabled = profiles.includes("x402");
   const payDemEnabled = profiles.includes("pay-dem");
+  const walletSpendIntegrityKeyPath = role === "buyer"
+    ? configuredWalletSpendIntegrityKeyPath() : undefined;
   if (authority === undefined || peerAuthority === undefined ||
       demosIdentityFilePath === undefined || railStewardAuthority === undefined ||
       railStewardPublicKey === null ||
       (x402Enabled && (evmPrivateKeyFilePath === undefined || evmRpcUrl === undefined ||
-        authorizationSearchFromBlock === undefined))) {
+        authorizationSearchFromBlock === undefined)) ||
+      (role === "buyer" && walletSpendIntegrityKeyPath === undefined)) {
     throw new Error("role, rail, Demos identity, EVM identity or RPC is unavailable");
   }
   const ownEndpoint = new URL(serviceEndpoint(role));
@@ -3574,10 +3851,106 @@ async function main(): Promise<void> {
       }
       const workerId = role + "-" + String(process.pid);
       if (role === "buyer") {
+        const confirmX402Unused = x402Rail === undefined ? undefined :
+          createDacsX402ExactRetainedReplayConfirmerV1({
+            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
+              throw new Error("seller x402 endpoint configuration is unavailable");
+            })(),
+          });
+        const x402WalletSpendAuthority = x402Rail === undefined ? undefined :
+          await (async () => {
+            if (context.evm?.role !== "buyer") {
+              throw new Error("x402 buyer wallet authority is unavailable");
+            }
+            const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock;
+            if (x402AuthorizationSearchFromBlock === undefined) {
+              throw new Error("x402 authorization search bound is unavailable");
+            }
+            if (context.commerceStores.role !== "buyer" ||
+                context.commerceStores.x402Settlement === undefined) {
+              throw new Error("x402 buyer settlement evidence is unavailable");
+            }
+            const client = await createViemDacsX402BalanceReadClientV1({
+              rpcUrl: evmRpcUrl!,
+              chainId: context.evm.runtime.chainId,
+            });
+            const asset = x402Asset!.contract.toLowerCase();
+            const decimals = x402Asset!.decimals;
+            const chainId = config.rail.requestedNetwork;
+            const wallet = context.evm.address.toLowerCase();
+            return createDacsWalletSpendAuthorityV1({
+              dataDirectory: context.config.dataDirectory,
+              stateDirectory: context.config.dataDirectory + "/wallet-spend-x402",
+              integrityKeyFilePath: walletSpendIntegrityKeyPath!,
+              owner: workerId + "-x402",
+              policy: configuredX402WalletSpendPolicy({
+                wallet, chainId, asset, decimals,
+              }),
+              readBalance: async (input) => {
+                if (input.asset !== asset || input.chainId !== chainId ||
+                    input.wallet !== wallet) {
+                  throw new Error("x402 wallet balance request is unbound");
+                }
+                return String(await client.getAssetBalance({
+                  asset,
+                  owner: input.wallet,
+                }));
+              },
+              authenticateRecovery:
+                createDacsX402WalletSpendRecoveryAuthenticatorV1({
+                  settlementStore: context.commerceStores.x402Settlement,
+                  owner: workerId + "-x402-wallet-recovery",
+                  chainId: context.evm.runtime.chainId,
+                  minimumConfirmations: Number(finalityBlocks),
+                  authorizationSearchFromBlock: x402AuthorizationSearchFromBlock,
+                  client: context.evm.runtime.readClient,
+                  confirmUnused: confirmX402Unused!,
+                }),
+            });
+          })();
+        const payDemObserver = payDemRail === undefined ? undefined :
+          createPayDemSellerObserver({ rpc: config.demos.rpcUrl }).observeDemosTransfer;
+        const payDemWalletSpendAuthority = payDemRail === undefined ? undefined :
+          await createDacsWalletSpendAuthorityV1({
+            dataDirectory: context.config.dataDirectory,
+            stateDirectory: context.config.dataDirectory + "/wallet-spend-pay-dem",
+            integrityKeyFilePath: walletSpendIntegrityKeyPath!,
+            owner: workerId + "-pay-dem",
+            policy: configuredPayDemWalletSpendPolicy(
+              context.demos.walletAddress,
+            ),
+            readBalance: async (input) => {
+              if (input.asset !== "DEM" || input.chainId !== "demos" ||
+                  input.wallet !== context.demos.walletAddress) {
+                throw new Error("pay-dem wallet balance request is unbound");
+              }
+              const [network, account] = await Promise.all([
+                context.demos.networkInfo(), context.demos.addressInfo(),
+              ]);
+              const activated = network !== null && typeof network === "object" &&
+                "forks" in network && network.forks !== null &&
+                typeof network.forks === "object" && "osDenomination" in network.forks &&
+                network.forks.osDenomination !== null &&
+                typeof network.forks.osDenomination === "object" &&
+                "activated" in network.forks.osDenomination
+                ? network.forks.osDenomination.activated : undefined;
+              const balance = account !== null && typeof account === "object" &&
+                "balance" in account ? account.balance : undefined;
+              if (typeof activated !== "boolean" || typeof balance !== "bigint" ||
+                  balance < 0n) throw new Error("Demos wallet balance is unavailable");
+              return (activated ? balance : balance * 1000000000n).toString();
+            },
+            authenticateRecovery:
+              createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+                database: context.database,
+                observeDemosTransfer: payDemObserver!,
+              }),
+          });
         const x402 = x402Rail === undefined ? undefined : {
           context,
           workerId,
           rail: x402Rail,
+          walletSpendAuthority: x402WalletSpendAuthority!,
           tokenDomain: configuredX402TokenDomain(),
           evmRpcUrl: evmRpcUrl!,
           authorizationSearchFromBlock: authorizationSearchFromBlock!,
@@ -3585,11 +3958,7 @@ async function main(): Promise<void> {
           finalityTag: "latest" as const,
           retryDelayMs: 5_000,
           maximumServiceAmount: config.limits.maxServiceAmount.amount,
-          confirmUnused: createDacsX402ExactRetainedReplayConfirmerV1({
-            publicBaseUrl: loadRoleConfig("seller").publicBaseUrl ?? (() => {
-              throw new Error("seller x402 endpoint configuration is unavailable");
-            })(),
-          }),
+          confirmUnused: confirmX402Unused!,
           maxTimeoutSeconds: 120,
           minimumConfirmations: Number(finalityBlocks),
         };
@@ -3597,6 +3966,8 @@ async function main(): Promise<void> {
           context,
           workerId,
           rail: payDemRail,
+          walletSpendAuthority: payDemWalletSpendAuthority!,
+          observeDemosTransfer: payDemObserver!,
           demosRpcUrl: config.demos.rpcUrl,
           recipeRegistryVersion: 1,
           retryDelayMs: 5_000,
@@ -4243,6 +4614,7 @@ services:
       DACS_BUYER_DATA_DIRECTORY: /var/lib/dacs
       DACS_BUYER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_BUYER_EVM_SECRET_FILE: /run/secrets/evm-wallet
+      DACS_BUYER_WALLET_POLICY_KEY_FILE: /run/secrets/wallet-spend-integrity
       DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
@@ -4250,6 +4622,7 @@ services:
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
+      - \${DACS_BUYER_WALLET_POLICY_KEY_FILE:?set DACS_BUYER_WALLET_POLICY_KEY_FILE}:/run/secrets/wallet-spend-integrity:ro
       - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
   seller:
     <<: *dacs-role
@@ -4329,6 +4702,18 @@ DACS_MAX_SERVICE_AMOUNT=1
 DACS_MAX_SETUP_SPEND_DEM=10
 DACS_MAX_DEMOS_NETWORK_FEE_DEM=2
 DACS_MAX_EVM_NETWORK_FEE_ETH=0.001
+DACS_WALLET_MAX_CONCURRENT_EFFECTS=1
+DACS_WALLET_MAX_RETAINED_RESERVATIONS=10000
+DACS_WALLET_ROLLING_WINDOW_MS=86400000
+DACS_WALLET_MAX_ROLLING_EFFECTS=10
+DACS_X402_WALLET_MINIMUM_RESERVE=0
+DACS_X402_WALLET_MAX_ROLLING_DEBIT=10
+DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT=100
+DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT=25
+DACS_PAY_DEM_WALLET_MINIMUM_RESERVE=5
+DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT=25
+DACS_PAY_DEM_WALLET_MAX_CUMULATIVE_DEBIT=100
+DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT=25
 DACS_BUYER_SERVICE_URL=http://127.0.0.1:3101
 DACS_SELLER_SERVICE_URL=http://127.0.0.1:3102
 DACS_BUYER_AUTHORITY=
@@ -4336,6 +4721,7 @@ DACS_SELLER_AUTHORITY=
 DACS_SELLER_EVM_PAYEE=
 DACS_BUYER_DEMOS_SECRET_FILE=
 DACS_BUYER_EVM_SECRET_FILE=
+DACS_BUYER_WALLET_POLICY_KEY_FILE=
 DACS_SELLER_DEMOS_SECRET_FILE=
 DACS_SELLER_EVM_SECRET_FILE=
 DACS_FUNDED_DOCTOR_AUTHORITY=
@@ -4392,6 +4778,12 @@ generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
 The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
+The buyer also requires \`DACS_BUYER_WALLET_POLICY_KEY_FILE\`. Store exactly 32
+random bytes as 64 hexadecimal characters in a third buyer-owned file; for
+example, \`openssl rand -hex 32 > /secure/path/buyer-wallet-policy.key\`, then
+set mode 0600. This key authenticates the durable wallet-wide spend journal. It
+is not a protocol signing key and must not be reused as any identity, wallet or
+backup key.
 Backup and restore require a separate operator-owned
 \`DACS_BACKUP_AUTH_KEY_FILE\`. Store exactly 32 random bytes as 64 hexadecimal
 characters, keep the file outside this project, and set mode 0600. It
@@ -4469,6 +4861,15 @@ authenticated confirmed fee against the role-local aggregate ceiling; a
 definitively failed attempt still consumes that reservation. The reported ceiling
 does not cover custom extensions or unrelated concurrent orders using the same
 wallets.
+
+Buyer service payments have a second, wallet-wide authority covering all
+concurrent orders in this generated process. It reserves the exact x402 token
+debit, or the native DEM service amount plus maximum network fee, before the
+irreversible boundary. It enforces per-order, reserve, rolling, cumulative,
+counterparty and concurrency limits from the \`DACS_*_WALLET_*\` settings. A
+settled debit remains permanently accounted; a retry is possible only after the
+same rail cryptographically establishes terminal absence. Protect and back up
+the separate wallet-policy key together with the buyer data directory.
 
 The purchase request file is closed, versioned JSON:
 

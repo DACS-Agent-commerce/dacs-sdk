@@ -125,7 +125,9 @@ function chainIdFromCaip2(network: string): number {
   return chainId;
 }
 
-function snapshotRequestInit(input: RequestInit | undefined): RequestInit | undefined {
+function snapshotRequestInit(
+  input: RequestInit | undefined,
+): Readonly<{ headers: Headers }> | undefined {
   if (input === undefined) return undefined;
   if (nodeTypes.isProxy(input) ||
       (Object.getPrototypeOf(input) !== Object.prototype &&

@@ -170,6 +170,8 @@ export interface SettleResult {
   txRef?: ChainTxRef;
   /** Authoritative rail finality observation time, not local wall-clock time. */
   finalityObservedAt?: number;
+  /** Authenticated native DEM network fee paid by the payer, in integer OS. */
+  networkFeeOs?: string;
   /** Durable raw x402 settlement-response input used to re-derive its receipt hash. */
   x402Receipt?: {
     protocolVersion: "2";

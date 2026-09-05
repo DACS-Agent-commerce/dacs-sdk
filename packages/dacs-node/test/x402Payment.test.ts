@@ -7,17 +7,30 @@ import {
   FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  EIP3009_AUTHORIZATION_CANCELED_TOPIC,
+  EIP3009_AUTHORIZATION_USED_TOPIC,
+  ERC20_TRANSFER_TOPIC,
+  createInMemoryWalletSpendStateStore,
   createInMemoryX402BuyerSettlementStore,
+  createWalletSpendAuthorityV1,
+  createX402BuyerEvmAuthorizationProvider,
   createX402BuyerSettlementIntent,
   x402BuyerSettlementAuthenticationHash,
   type FixedPriceX402EffectFence,
   type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperationInput,
   type X402BuyerAuthorizationProvider,
+  type X402BuyerAuthorizationReconciliation,
   type X402BuyerCapturedSettlement,
+  type X402BuyerEffectFence,
+  type X402BuyerEvmLog,
+  type X402BuyerEvmReadClient,
+  type X402BuyerEvmTransactionReceipt,
   type X402BuyerPaidRequestTransport,
   type X402BuyerSettlementIntent,
   type X402BuyerSettlementStore,
+  type WalletSpendAuthorityDependenciesV1,
+  type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,11 +38,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsX402BuyerPaymentTrackV1,
+  createDacsX402WalletSpendRecoveryAuthenticatorV1,
 } from "../src/index.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import {
+  createAccountingTestWalletSpendAuthorityV1,
+  createPermissiveTestWalletSpendAuthorityV1,
+} from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
@@ -40,6 +58,8 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAYEE = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX = `0x${"aa".repeat(32)}`;
+const BLOCK_HASH = `0x${"bb".repeat(32)}`;
+const HEAD_HASH = `0x${"cc".repeat(32)}`;
 const RESOURCE = "https://seller.example/deliver/test";
 const PHASE_INDEX = 2;
 
@@ -145,6 +165,290 @@ function captured(retained: Readonly<X402BuyerSettlementIntent>): X402BuyerCaptu
   };
 }
 
+function addressTopic(address: string): string {
+  return `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
+}
+
+function uintData(value: string): string {
+  return `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+}
+
+function authorizationLog(
+  overrides: Partial<X402BuyerEvmLog> = {},
+): X402BuyerEvmLog {
+  return {
+    address: ASSET,
+    topics: [EIP3009_AUTHORIZATION_USED_TOPIC, addressTopic(PAYER), nonce()],
+    data: "0x",
+    transactionHash: TX,
+    blockNumber: 100,
+    blockHash: BLOCK_HASH,
+    logIndex: 5,
+    removed: false,
+    ...overrides,
+  };
+}
+
+function transferLog(
+  overrides: Partial<X402BuyerEvmLog> = {},
+): X402BuyerEvmLog {
+  return authorizationLog({
+    topics: [ERC20_TRANSFER_TOPIC, addressTopic(PAYER), addressTopic(PAYEE)],
+    data: uintData("1000"),
+    logIndex: 7,
+    ...overrides,
+  });
+}
+
+function transactionReceipt(
+  overrides: Partial<X402BuyerEvmTransactionReceipt> = {},
+): X402BuyerEvmTransactionReceipt {
+  return {
+    transactionHash: TX,
+    blockNumber: 100,
+    blockHash: BLOCK_HASH,
+    status: "success",
+    logs: [authorizationLog(), transferLog()],
+    ...overrides,
+  };
+}
+
+interface RecoveryReaderState {
+  headBlock: number;
+  timestamp: number;
+  used: boolean;
+  cancelled: boolean;
+  throwAt?: "head" | "logs" | "state" | "receipt" | "ancestry";
+}
+
+function recoveryReader(
+  overrides: Partial<RecoveryReaderState> = {},
+): X402BuyerEvmReadClient {
+  const state: RecoveryReaderState = {
+    headBlock: 110,
+    timestamp: 2_000,
+    used: true,
+    cancelled: false,
+    ...overrides,
+  };
+  const cancelledLog = () => authorizationLog({
+    topics: [EIP3009_AUTHORIZATION_CANCELED_TOPIC, addressTopic(PAYER), nonce()],
+  });
+  return {
+    async getFinalityHead() {
+      if (state.throwAt === "head") throw new Error("head unavailable");
+      return {
+        chainId: 84532,
+        blockNumber: state.headBlock,
+        blockHash: HEAD_HASH,
+        timestamp: state.timestamp,
+      };
+    },
+    async getLogs(input) {
+      if (state.throwAt === "logs") throw new Error("logs unavailable");
+      if (input.topics[0] === EIP3009_AUTHORIZATION_CANCELED_TOPIC) {
+        return state.cancelled ? [cancelledLog()] : [];
+      }
+      return state.used && !state.cancelled ? [authorizationLog()] : [];
+    },
+    async getTransactionReceipt() {
+      if (state.throwAt === "receipt") throw new Error("receipt unavailable");
+      return state.cancelled
+        ? transactionReceipt({ logs: [cancelledLog()] })
+        : transactionReceipt();
+    },
+    async readAuthorizationState(input) {
+      if (state.throwAt === "state") throw new Error("state unavailable");
+      return {
+        used: state.used || state.cancelled,
+        blockNumber: input.blockNumber,
+        blockHash: input.blockHash,
+      };
+    },
+    async confirmBlockAncestor(input) {
+      if (state.throwAt === "ancestry") throw new Error("ancestry unavailable");
+      return { canonical: true, ...input };
+    },
+  };
+}
+
+function recoveryReservation(
+  retained = intent(),
+): WalletSpendReservationV1 {
+  return {
+    reservationVersion: "1",
+    reservationId: `x402:${retained.settlementKey}`,
+    jobId: retained.jobId,
+    phaseIndex: retained.phaseIndex,
+    phase: "pay-x402",
+    agreementHash: retained.agreementHash,
+    settlementBindingHash: retained.bindingHash,
+    railId: retained.railId,
+    railDefinitionHash: retained.railDescriptorHash,
+    wallet: retained.payer.toLowerCase(),
+    chainId: retained.network,
+    payee: retained.payee.toLowerCase(),
+    finality: { model: "confirmation-depth", finalityBlocks: 5 },
+    debits: [{
+      asset: retained.asset.toLowerCase(),
+      purpose: "service",
+      expectedAmount: retained.amount,
+      maximumAmount: retained.amount,
+    }],
+  };
+}
+
+async function retainRecoveryIntent(
+  store: X402BuyerSettlementStore,
+  retained: Readonly<X402BuyerSettlementIntent>,
+  candidate?: ReturnType<typeof disclosure>,
+  settlement?: Readonly<X402BuyerCapturedSettlement>,
+): Promise<void> {
+  const claim = await store.claim({
+    intent: retained,
+    owner: "wallet-recovery-fixture",
+    now: 1_000,
+    leaseDurationMs: 10_000,
+  });
+  if (claim.status !== "acquired") throw new Error("expected x402 settlement lease");
+  if (settlement !== undefined) {
+    const write = await store.recordOutcome({
+      settlementKey: retained.settlementKey,
+      bindingHash: retained.bindingHash,
+      lease: claim.lease,
+      outcome: {
+        outcomeVersion: "1",
+        status: "captured",
+        settlement,
+      },
+      now: 1_000,
+    });
+    if (write.status !== "recorded") throw new Error("expected captured settlement");
+    return;
+  }
+  if (candidate === undefined) return;
+  const write = await store.recordDisclosure({
+    settlementKey: retained.settlementKey,
+    bindingHash: retained.bindingHash,
+    lease: claim.lease,
+    disclosure: candidate,
+    now: 1_000,
+  });
+  if (write.status !== "recorded") throw new Error("expected retained disclosure");
+}
+
+const validSignature = async (input: Readonly<{
+  authorization: Readonly<{ from: string }>;
+}>) => ({
+  disposition: "valid" as const,
+  signer: input.authorization.from,
+});
+
+const safeUnused = async (input: Readonly<{
+  intent: Readonly<X402BuyerSettlementIntent>;
+}>) => ({
+  disposition: "safe" as const,
+  bindingHash: input.intent.bindingHash,
+});
+
+async function authenticatedUnusedHash(
+  retained: Readonly<X402BuyerSettlementIntent>,
+  client: X402BuyerEvmReadClient,
+): Promise<string> {
+  const recovered = await authenticatedReconciliation(retained, client);
+  if (recovered.disposition !== "unused") throw new Error("expected unused proof");
+  return recovered.authenticationHash;
+}
+
+async function authenticatedReconciliation(
+  retained: Readonly<X402BuyerSettlementIntent>,
+  client: X402BuyerEvmReadClient,
+): Promise<X402BuyerAuthorizationReconciliation> {
+  const provider = createX402BuyerEvmAuthorizationProvider({
+    chainId: 84532,
+    minimumConfirmations: 5,
+    authorizationSearchFromBlock: 1,
+    client,
+    authorizeIntent: async ({ intent: candidate }) => ({
+      disposition: "authorized",
+      bindingHash: candidate.bindingHash,
+    }),
+    verifySignature: validSignature,
+    confirmUnused: safeUnused,
+  });
+  const fence: Readonly<X402BuyerEffectFence> = Object.freeze({
+    owner: "proof-fixture",
+    generation: 1,
+    settlementKey: retained.settlementKey,
+    bindingHash: retained.bindingHash,
+    idempotencyKey: retained.settlementKey,
+    assertCurrent: async () => undefined,
+  });
+  const lookup = await provider.lookup(retained, undefined, fence);
+  if (lookup.disposition !== "observed") throw new Error("expected observation");
+  return provider.authenticate(retained, lookup, undefined, fence);
+}
+
+function terminalRecoveryReader(
+  disposition: "cancelled" | "expired-unused",
+  overrides: Partial<RecoveryReaderState> = {},
+): X402BuyerEvmReadClient {
+  return disposition === "cancelled"
+    ? recoveryReader({ cancelled: true, ...overrides })
+    : recoveryReader({
+        used: false,
+        timestamp: 4_102_444_800,
+        ...overrides,
+      });
+}
+
+function constrainedWallet(
+  retained: Readonly<X402BuyerSettlementIntent>,
+  authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"],
+  now: () => number = Date.now,
+) {
+  const ceiling = "999999999999999999999999";
+  return createWalletSpendAuthorityV1({
+    policyVersion: "1",
+    policyId: "x402-recovery-test",
+    wallet: retained.payer.toLowerCase(),
+    chainId: retained.network,
+    maximumConcurrentEffects: 1,
+    maximumRetainedReservations: 10,
+    assets: [{
+      asset: retained.asset.toLowerCase(),
+      maximumPerOrderDebit: ceiling,
+      maximumNetworkFeeDebit: "0",
+      minimumReserve: "0",
+      rollingWindowMs: 86_400_000,
+      maximumRollingEffects: 10,
+      maximumRollingDebit: ceiling,
+      maximumCumulativeDebit: ceiling,
+      maximumCounterpartyDebit: ceiling,
+    }],
+  }, {
+    store: createInMemoryWalletSpendStateStore(),
+    readBalance: async () => ceiling,
+    authenticateRecovery,
+    now,
+    owner: "x402-wallet-recovery-test",
+    leaseDurationMs: 10,
+  });
+}
+
+function clockedSettlementStore(now: () => number): X402BuyerSettlementStore {
+  const store = createInMemoryX402BuyerSettlementStore();
+  const clocked: X402BuyerSettlementStore = {
+    load: (settlementKey) => store.load(settlementKey),
+    claim: (input) => store.claim({ ...input, now: now() }),
+    isCurrent: (input) => store.isCurrent({ ...input, now: now() }),
+    grantRecovery: (input) => store.grantRecovery({ ...input, now: now() }),
+    recordDisclosure: (input) => store.recordDisclosure({ ...input, now: now() }),
+    recordOutcome: (input) => store.recordOutcome({ ...input, now: now() }),
+  };
+  return Object.freeze(clocked);
+}
+
 function order(): FixedPriceX402OrderRecord {
   return {
     storeVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
@@ -209,6 +513,11 @@ function provider(
     | { disposition: "settled-same"; settlement: X402BuyerCapturedSettlement }
     | { disposition: "indeterminate"; reason: string }
     | { disposition: "unused"; reason: string; authenticationHash: string }
+    | {
+        disposition: "used-different" | "cancelled" | "expired-unused";
+        reason: string;
+        authenticationHash: string;
+      }
   >,
 ): X402BuyerAuthorizationProvider<{ exact: true }> {
   return {
@@ -253,6 +562,16 @@ describe("coordinator x402 buyer payment track", () => {
     return opened;
   }
 
+  async function waitPastRetry(
+    opened: DacsNodeSqliteDatabase,
+    retryAt: number | undefined,
+  ): Promise<void> {
+    if (retryAt === undefined) throw new Error("expected retry time");
+    while (opened.readTime() <= retryAt) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+  }
+
   afterEach(() => {
     for (const opened of databases.splice(0).reverse()) opened.close();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -267,7 +586,14 @@ describe("coordinator x402 buyer payment track", () => {
       disposition: "response" as const,
       disclosure: disclosure(),
     }));
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER.toLowerCase(),
+      chainId: "eip155:84532",
+      asset: ASSET.toLowerCase(),
+    });
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority,
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -300,6 +626,11 @@ describe("coordinator x402 buyer payment track", () => {
       "payment",
       "dacs-fixed-price-x402:v1:buyer:payment:test",
     )).toMatchObject({ intent: { paymentHeader: retained.paymentHeader } });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 1,
+      assets: [{ cumulativeSettledDebit: "1000" }],
+    });
   });
 
   it("recovers an ambiguous paid response from chain without submitting again", async () => {
@@ -315,6 +646,8 @@ describe("coordinator x402 buyer payment track", () => {
       { disposition: "settled-same", settlement: captured(retained) },
     ]);
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -365,6 +698,8 @@ describe("coordinator x402 buyer payment track", () => {
       recordOutcome,
     };
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -427,6 +762,8 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      finalityBlocks: 1,
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -451,4 +788,660 @@ describe("coordinator x402 buyer payment track", () => {
     });
     expect(submitRetained).toHaveBeenCalledTimes(1);
   });
+
+  it("re-authenticates the exact finalized x402 transfer and complete debit", async () => {
+    const retained = intent();
+    const settlementStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(
+      settlementStore,
+      retained,
+      undefined,
+      captured(retained),
+    );
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        settlementStore,
+        owner: "x402-wallet-recovery-test",
+        chainId: 84532,
+        minimumConfirmations: 5,
+        authorizationSearchFromBlock: 1,
+        client: recoveryReader(),
+        verifySignature: validSignature,
+        confirmUnused: safeUnused,
+      });
+    const reservation = recoveryReservation(retained);
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{
+        asset: retained.asset.toLowerCase(),
+        purpose: "service" as const,
+        amount: retained.amount,
+      }],
+    };
+
+    await expect(authenticateRecovery(reservation, exact)).resolves.toBe(true);
+    await expect(authenticateRecovery(reservation, {
+      ...exact,
+      evidenceHash: "0".repeat(64),
+    })).resolves.toBe(false);
+    await expect(authenticateRecovery(reservation, {
+      ...exact,
+      debits: [{ ...exact.debits[0]!, amount: "999" }],
+    })).resolves.toBe(false);
+    await expect(authenticateRecovery({
+      ...reservation,
+      payee: `0x${"99".repeat(20)}`,
+    }, exact)).resolves.toBe(false);
+
+    const absent = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore: createInMemoryX402BuyerSettlementStore(),
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader(),
+      verifySignature: validSignature,
+      confirmUnused: safeUnused,
+    });
+    await expect(absent(reservation, exact)).resolves.toBe(false);
+
+    const activeStore = createInMemoryX402BuyerSettlementStore();
+    await expect(activeStore.claim({
+      intent: retained,
+      owner: "paid-request-worker",
+      now: Date.now(),
+      leaseDurationMs: 10_000,
+    })).resolves.toMatchObject({ status: "acquired" });
+    const active = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore: activeStore,
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader(),
+      verifySignature: validSignature,
+      confirmUnused: safeUnused,
+    });
+    await expect(active(reservation, exact)).resolves.toBe(false);
+
+    const unavailable = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore,
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader({ throwAt: "head" }),
+      verifySignature: validSignature,
+      confirmUnused: safeUnused,
+    });
+    await expect(unavailable(reservation, exact)).resolves.toBe(false);
+  });
+
+  it("captures recovery capabilities once with their original receivers", async () => {
+    const retained = intent();
+    const innerStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(innerStore, retained, undefined, captured(retained));
+    const store = {
+      load(settlementKey: string) {
+        expect(this).toBe(store);
+        return innerStore.load(settlementKey);
+      },
+      claim(input: Parameters<X402BuyerSettlementStore["claim"]>[0]) {
+        expect(this).toBe(store);
+        return innerStore.claim(input);
+      },
+      isCurrent(input: Parameters<X402BuyerSettlementStore["isCurrent"]>[0]) {
+        expect(this).toBe(store);
+        return innerStore.isCurrent(input);
+      },
+      grantRecovery: (input: Parameters<X402BuyerSettlementStore["grantRecovery"]>[0]) =>
+        innerStore.grantRecovery(input),
+      recordDisclosure: (
+        input: Parameters<X402BuyerSettlementStore["recordDisclosure"]>[0],
+      ) => innerStore.recordDisclosure(input),
+      recordOutcome: (input: Parameters<X402BuyerSettlementStore["recordOutcome"]>[0]) =>
+        innerStore.recordOutcome(input),
+    };
+    const innerClient = recoveryReader();
+    const client: X402BuyerEvmReadClient = {
+      getFinalityHead() {
+        expect(this).toBe(client);
+        return innerClient.getFinalityHead();
+      },
+      getLogs(input) {
+        expect(this).toBe(client);
+        return innerClient.getLogs(input);
+      },
+      getTransactionReceipt(transactionHash) {
+        expect(this).toBe(client);
+        return innerClient.getTransactionReceipt(transactionHash);
+      },
+      readAuthorizationState(input) {
+        expect(this).toBe(client);
+        return innerClient.readAuthorizationState(input);
+      },
+      confirmBlockAncestor(input) {
+        expect(this).toBe(client);
+        return innerClient.confirmBlockAncestor(input);
+      },
+    };
+    const options = {
+      settlementStore: store,
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client,
+      verifySignature: validSignature,
+      confirmUnused: safeUnused,
+    };
+    const metadataGetter = vi.fn(() => 0);
+    Object.defineProperty(store.load, "length", {
+      configurable: true,
+      get: metadataGetter,
+    });
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1(options);
+    expect(Object.isFrozen(authenticateRecovery)).toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
+    Object.assign(store, {
+      load: vi.fn(async () => ({ status: "absent" as const })),
+      claim: vi.fn(async () => ({ status: "corrupt" as const, reason: "swapped" })),
+      isCurrent: vi.fn(async () => false),
+    });
+    Object.assign(client, {
+      getFinalityHead: vi.fn(async () => { throw new Error("swapped"); }),
+      getLogs: vi.fn(async () => []),
+      getTransactionReceipt: vi.fn(async () => { throw new Error("swapped"); }),
+      readAuthorizationState: vi.fn(async () => { throw new Error("swapped"); }),
+      confirmBlockAncestor: vi.fn(async () => { throw new Error("swapped"); }),
+    });
+    Object.assign(options, {
+      verifySignature: vi.fn(async () => ({ disposition: "invalid" as const })),
+    });
+
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{
+        asset: retained.asset.toLowerCase(),
+        purpose: "service" as const,
+        amount: retained.amount,
+      }],
+    };
+    await expect(authenticateRecovery(recoveryReservation(retained), exact))
+      .resolves.toBe(true);
+    expect(metadataGetter).not.toHaveBeenCalled();
+  });
+
+  it("rejects accessors, proxies, and non-literal current-fence results", async () => {
+    const getter = vi.fn(() => createInMemoryX402BuyerSettlementStore());
+    const accessorOptions = {
+      owner: "x402-wallet-recovery-test",
+      chainId: 84532,
+      minimumConfirmations: 5,
+      authorizationSearchFromBlock: 1,
+      client: recoveryReader(),
+    } as Record<string, unknown>;
+    Object.defineProperty(accessorOptions, "settlementStore", {
+      enumerable: true,
+      get: getter,
+    });
+    expect(() => createDacsX402WalletSpendRecoveryAuthenticatorV1(
+      accessorOptions as unknown as Parameters<
+        typeof createDacsX402WalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(() => createDacsX402WalletSpendRecoveryAuthenticatorV1(
+      new Proxy(accessorOptions, {}) as unknown as Parameters<
+        typeof createDacsX402WalletSpendRecoveryAuthenticatorV1
+      >[0],
+    )).toThrow(/options are invalid/);
+
+    const retained = intent();
+    const innerStore = createInMemoryX402BuyerSettlementStore();
+    await retainRecoveryIntent(innerStore, retained);
+    const malformedFenceStore = {
+      load: (settlementKey: string) => innerStore.load(settlementKey),
+      claim: (input: Parameters<X402BuyerSettlementStore["claim"]>[0]) =>
+        innerStore.claim(input),
+      isCurrent: vi.fn(async () => ({} as unknown as boolean)),
+      grantRecovery: (input: Parameters<X402BuyerSettlementStore["grantRecovery"]>[0]) =>
+        innerStore.grantRecovery(input),
+      recordDisclosure: (
+        input: Parameters<X402BuyerSettlementStore["recordDisclosure"]>[0],
+      ) => innerStore.recordDisclosure(input),
+      recordOutcome: (input: Parameters<X402BuyerSettlementStore["recordOutcome"]>[0]) =>
+        innerStore.recordOutcome(input),
+    };
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        settlementStore: malformedFenceStore,
+        owner: "x402-wallet-recovery-test",
+        chainId: 84532,
+        minimumConfirmations: 5,
+        authorizationSearchFromBlock: 1,
+        client: recoveryReader(),
+        verifySignature: validSignature,
+        confirmUnused: safeUnused,
+      });
+    const exact = {
+      disposition: "settled" as const,
+      evidenceHash: captured(retained).authenticationHash,
+      debits: [{
+        asset: retained.asset.toLowerCase(),
+        purpose: "service" as const,
+        amount: retained.amount,
+      }],
+    };
+    await expect(authenticateRecovery(recoveryReservation(retained), exact))
+      .resolves.toBe(false);
+    expect(malformedFenceStore.isCurrent).toHaveBeenCalled();
+  });
+
+  it.each(["cancelled", "expired-unused"] as const)(
+    "keeps a live wallet lease ambiguous on immediate finalized %s",
+    async (terminalDisposition) => {
+      const opened = await database();
+      const retained = intent();
+      const reservation = recoveryReservation(retained);
+      const walletClock = { value: 1_000 };
+      const settlementStore = clockedSettlementStore(() => walletClock.value);
+      const client = terminalRecoveryReader(terminalDisposition);
+      const proof = await authenticatedReconciliation(retained, client);
+      if (proof.disposition !== "cancelled" &&
+          proof.disposition !== "expired-unused") {
+        throw new Error("expected terminal absence proof");
+      }
+      const authenticateRecovery =
+        createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          settlementStore,
+          owner: "x402-wallet-recovery-test",
+          chainId: 84532,
+          minimumConfirmations: 5,
+          authorizationSearchFromBlock: 1,
+          client,
+          verifySignature: validSignature,
+          confirmUnused: safeUnused,
+        });
+      const wallet = constrainedWallet(
+        retained,
+        authenticateRecovery,
+        () => walletClock.value,
+      );
+      const authorizationProvider = provider(retained, [
+        {
+          disposition: terminalDisposition,
+          reason: `authenticated-${terminalDisposition}`,
+          authenticationHash: proof.authenticationHash,
+        },
+        {
+          disposition: terminalDisposition,
+          reason: `authenticated-${terminalDisposition}`,
+          authenticationHash: proof.authenticationHash,
+        },
+      ]);
+      const submitRetained = vi.fn(async () => ({
+        disposition: "response" as const,
+        disclosure: disclosure(),
+      }));
+      const track = createDacsX402BuyerPaymentTrackV1({
+        database: opened,
+        workerId: "buyer-payment-worker",
+        settlementStore,
+        authorizationProvider,
+        transport: { submitRetained },
+        walletSpendAuthority: wallet,
+        finalityBlocks: 5,
+        prepareIntent: async () => retained,
+        authorizePreparedIntent: () => true,
+        settlementLeaseDurationMs: 10,
+        retryDelayMs: 1,
+      });
+
+      const initial = await track(operationInput());
+      expect(initial).toMatchObject({
+        status: "indeterminate",
+        reasonCode: "effect-outcome-ambiguous",
+      });
+      expect(await wallet.inspect()).toMatchObject({
+        activeEffects: 1,
+        assets: [{ reservedWorstCaseDebit: "1000" }],
+      });
+      expect(opened.loadEffect(
+        "payment",
+        operationInput().fence.idempotencyKey,
+      )).toMatchObject({ state: "reconciliation-required" });
+
+      walletClock.value = 1_011;
+      await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
+      await expect(track(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: `x402-terminal-${terminalDisposition}`,
+      });
+      expect(await wallet.inspect()).toMatchObject({
+        activeEffects: 0,
+        assets: [{
+          reservedWorstCaseDebit: "0",
+          cumulativeSettledDebit: "0",
+        }],
+      });
+      expect(submitRetained).toHaveBeenCalledTimes(1);
+      expect(authorizationProvider.authenticate).toHaveBeenCalledTimes(2);
+      await expect(wallet.reserve({
+        ...reservation,
+        reservationId: `x402:${"9".repeat(64)}`,
+        settlementBindingHash: "9".repeat(64),
+      })).resolves.toMatchObject({ status: "reserved" });
+    },
+  );
+
+  it("holds an in-flight wallet reservation through live-unused recovery", async () => {
+    const opened = await database();
+    const retained = intent();
+    const reservation = recoveryReservation(retained);
+    const walletClock = { value: 1_000 };
+    const innerSettlementStore = clockedSettlementStore(() => walletClock.value);
+    const settlementClaims: unknown[] = [];
+    const settlementStore: X402BuyerSettlementStore = Object.freeze({
+      ...innerSettlementStore,
+      async claim(input: Parameters<X402BuyerSettlementStore["claim"]>[0]) {
+        const claimed = await innerSettlementStore.claim(input);
+        settlementClaims.push(claimed);
+        return claimed;
+      },
+    });
+    const liveUnusedHash = await authenticatedUnusedHash(
+      retained,
+      recoveryReader({ used: false }),
+    );
+    const authenticateRecovery =
+      createDacsX402WalletSpendRecoveryAuthenticatorV1({
+        settlementStore,
+        owner: "x402-wallet-recovery-test",
+        chainId: 84532,
+        minimumConfirmations: 5,
+        authorizationSearchFromBlock: 1,
+        client: recoveryReader(),
+        verifySignature: validSignature,
+        confirmUnused: safeUnused,
+      });
+    const wallet = constrainedWallet(
+      retained,
+      authenticateRecovery,
+      () => walletClock.value,
+    );
+    const authorizationProvider = provider(retained, [
+      { disposition: "indeterminate", reason: "chain-read-unavailable" },
+      {
+        disposition: "unused",
+        reason: "authenticated-unused-and-replay-safe",
+        authenticationHash: liveUnusedHash,
+      },
+      { disposition: "settled-same", settlement: captured(retained) },
+    ]);
+    const submitRetained = vi.fn(async () => ({
+      disposition: "response" as const,
+      disclosure: disclosure(),
+    }));
+    const track = createDacsX402BuyerPaymentTrackV1({
+      database: opened,
+      workerId: "buyer-payment-worker",
+      settlementStore,
+      authorizationProvider,
+      transport: { submitRetained },
+      walletSpendAuthority: wallet,
+      finalityBlocks: 5,
+      prepareIntent: async () => retained,
+      authorizePreparedIntent: () => true,
+      settlementLeaseDurationMs: 10,
+      retryDelayMs: 1,
+    });
+
+    const initial = await track(operationInput());
+    expect(initial).toMatchObject({
+      status: "indeterminate",
+      reasonCode: "x402-chain-read-unavailable",
+    });
+    expect(await wallet.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ reservedWorstCaseDebit: "1000" }],
+    });
+    expect(settlementClaims).toEqual([
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 1,
+          stage: "fresh",
+          expiresAt: 1_010,
+        }),
+      }),
+    ]);
+
+    walletClock.value = 1_011;
+    await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
+    const liveUnused = await track(operationInput());
+    expect(liveUnused).toMatchObject({
+      status: "indeterminate",
+      reasonCode: "x402-live-unused-wallet-reservation-held",
+    });
+    expect(await wallet.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ reservedWorstCaseDebit: "1000" }],
+    });
+
+    await expect(wallet.reserve({
+      ...reservation,
+      reservationId: `x402:${"9".repeat(64)}`,
+      settlementBindingHash: "9".repeat(64),
+    })).resolves.toMatchObject({
+      status: "denied",
+      reason: "concurrency-limit",
+    });
+
+    await waitPastRetry(
+      opened,
+      "retryAt" in liveUnused ? liveUnused.retryAt : undefined,
+    );
+    await expect(track(operationInput())).resolves.toMatchObject({
+      status: "final",
+      authenticationHash: captured(retained).authenticationHash,
+    });
+    expect(await wallet.inspect()).toMatchObject({
+      activeEffects: 0,
+      assets: [{
+        reservedWorstCaseDebit: "0",
+        cumulativeSettledDebit: "1000",
+      }],
+    });
+    expect(settlementClaims).toEqual([
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 1,
+          stage: "fresh",
+          expiresAt: 1_010,
+        }),
+      }),
+      expect.objectContaining({
+        status: "acquired",
+        lease: expect.objectContaining({
+          generation: 2,
+          stage: "reconcile",
+          expiresAt: 1_021,
+        }),
+      }),
+      expect.objectContaining({ status: "captured" }),
+    ]);
+    expect(submitRetained).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["cancelled", "expired-unused"] as const)(
+    "releases wallet budget for finalized %s proof and makes the effect terminal",
+    async (terminalDisposition) => {
+      const opened = await database();
+      const retained = intent();
+      const reservation = recoveryReservation(retained);
+      const walletClock = { value: 1_000 };
+      const settlementStore = clockedSettlementStore(() => walletClock.value);
+      const client = terminalRecoveryReader(terminalDisposition);
+      const proof = await authenticatedReconciliation(retained, client);
+      if (proof.disposition !== "cancelled" &&
+          proof.disposition !== "expired-unused") {
+        throw new Error("expected terminal absence proof");
+      }
+      expect(proof.disposition).toBe(terminalDisposition);
+      const authenticateRecovery =
+        createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          settlementStore,
+          owner: "x402-wallet-recovery-test",
+          chainId: 84532,
+          minimumConfirmations: 5,
+          authorizationSearchFromBlock: 1,
+          client,
+          verifySignature: validSignature,
+          confirmUnused: safeUnused,
+        });
+      const wallet = constrainedWallet(
+        retained,
+        authenticateRecovery,
+        () => walletClock.value,
+      );
+      const authorizationProvider = provider(retained, [
+        { disposition: "indeterminate", reason: "chain-read-unavailable" },
+        {
+          disposition: terminalDisposition,
+          reason: `authenticated-${terminalDisposition}`,
+          authenticationHash: proof.authenticationHash,
+        },
+      ]);
+      const submitRetained = vi.fn(async () => ({
+        disposition: "response" as const,
+        disclosure: disclosure(),
+      }));
+      const track = createDacsX402BuyerPaymentTrackV1({
+        database: opened,
+        workerId: "buyer-payment-worker",
+        settlementStore,
+        authorizationProvider,
+        transport: { submitRetained },
+        walletSpendAuthority: wallet,
+        finalityBlocks: 5,
+        prepareIntent: async () => retained,
+        authorizePreparedIntent: () => true,
+        settlementLeaseDurationMs: 10,
+        retryDelayMs: 1,
+      });
+
+      const initial = await track(operationInput());
+      expect(initial).toMatchObject({
+        status: "indeterminate",
+      });
+      walletClock.value = 1_011;
+      await waitPastRetry(opened, "retryAt" in initial ? initial.retryAt : undefined);
+      await expect(track(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: `x402-terminal-${terminalDisposition}`,
+      });
+      expect(await wallet.inspect()).toMatchObject({
+        activeEffects: 0,
+        assets: [{
+          reservedWorstCaseDebit: "0",
+          cumulativeSettledDebit: "0",
+        }],
+      });
+      await expect(wallet.reserve({
+        ...reservation,
+        reservationId: `x402:${"9".repeat(64)}`,
+        settlementBindingHash: "9".repeat(64),
+      })).resolves.toMatchObject({ status: "reserved" });
+      await expect(track(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: `x402-terminal-${terminalDisposition}`,
+      });
+      expect(authorizationProvider.authenticate).toHaveBeenCalledTimes(2);
+      expect(submitRetained).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["cancelled", "expired-unused"] as const)(
+    "authenticates only exact finalized %s as terminal wallet absence",
+    async (terminalDisposition) => {
+      const retained = intent();
+      const reservation = recoveryReservation(retained);
+      const settlementStore = createInMemoryX402BuyerSettlementStore();
+      await retainRecoveryIntent(settlementStore, retained);
+      const owner = "x402-wallet-recovery-test";
+      const client = terminalRecoveryReader(terminalDisposition);
+      const authenticateRecovery =
+        createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          settlementStore,
+          owner,
+          chainId: 84532,
+          minimumConfirmations: 5,
+          authorizationSearchFromBlock: 1,
+          client,
+          verifySignature: validSignature,
+          confirmUnused: safeUnused,
+        });
+      const authenticateLiveUnused =
+        createDacsX402WalletSpendRecoveryAuthenticatorV1({
+          settlementStore,
+          owner,
+          chainId: 84532,
+          minimumConfirmations: 5,
+          authorizationSearchFromBlock: 1,
+          client: recoveryReader({ used: false }),
+          verifySignature: validSignature,
+          confirmUnused: safeUnused,
+        });
+      const now = { value: 1_000 };
+      const wallet = constrainedWallet(retained, authenticateRecovery, () => now.value);
+      const claim = await wallet.reserve(reservation);
+      if (claim.status !== "reserved") throw new Error("expected wallet reservation");
+      await claim.permit.beginEffect();
+      now.value = 1_011;
+
+      const liveUnusedHash = await authenticatedUnusedHash(
+        retained,
+        recoveryReader({ used: false }),
+      );
+      await expect(authenticateLiveUnused(reservation, {
+        disposition: "terminal-absent",
+        evidenceHash: liveUnusedHash,
+      })).resolves.toBe(false);
+
+      const staleProof = await authenticatedReconciliation(
+        retained,
+        terminalRecoveryReader(terminalDisposition, { headBlock: 109 }),
+      );
+      if (staleProof.disposition !== "cancelled" &&
+          staleProof.disposition !== "expired-unused") {
+        throw new Error("expected stale terminal absence proof");
+      }
+      await expect(wallet.reconcile(reservation, {
+        disposition: "terminal-absent",
+        evidenceHash: staleProof.authenticationHash,
+      })).rejects.toThrow(/authentication failed/);
+      await expect(wallet.reconcile(reservation, {
+        disposition: "terminal-absent",
+        evidenceHash: "9".repeat(64),
+      })).rejects.toThrow(/authentication failed/);
+      expect((await wallet.inspect()).activeEffects).toBe(1);
+
+      const exactProof = await authenticatedReconciliation(retained, client);
+      if (exactProof.disposition !== "cancelled" &&
+          exactProof.disposition !== "expired-unused") {
+        throw new Error("expected exact terminal absence proof");
+      }
+      expect(exactProof.disposition).toBe(terminalDisposition);
+      await expect(wallet.reconcile(reservation, {
+        disposition: "terminal-absent",
+        evidenceHash: exactProof.authenticationHash,
+      })).resolves.toBe("released");
+      expect((await wallet.inspect()).activeEffects).toBe(0);
+    },
+  );
 });
