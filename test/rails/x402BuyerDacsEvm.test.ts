@@ -114,7 +114,11 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
 
     const result = await prepareX402BuyerSettlement(
       { authority: authority() },
-      { client, fetchImpl: transport.fetchImpl },
+      {
+        client,
+        fetchImpl: transport.fetchImpl,
+        transportPolicy: { mode: "insecure-test" },
+      },
     );
 
     expect(result.disposition).toBe("prepared");
@@ -186,6 +190,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       {
         client: stockChallengeClient,
         fetchImpl: challengeFetch(paymentRequired).fetchImpl,
+        transportPolicy: { mode: "insecure-test" },
       },
     );
     expect(result).toEqual({
@@ -225,6 +230,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         {
           client,
           fetchImpl: challengeFetch(paymentRequired).fetchImpl,
+          transportPolicy: { mode: "insecure-test" },
         },
       );
       expect(result, label).toEqual({
@@ -259,6 +265,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       {
         client,
         fetchImpl: challengeFetch(paymentRequired).fetchImpl,
+        transportPolicy: { mode: "insecure-test" },
       },
     );
     expect(result.disposition).toBe("prepared");

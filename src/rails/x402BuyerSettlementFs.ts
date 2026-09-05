@@ -6,7 +6,6 @@ import {
   rename,
   rm,
   stat,
-  unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { types as nodeTypes } from "node:util";
@@ -298,31 +297,24 @@ export async function createFsX402BuyerSettlementStore(
       : right !== null && left.pid === right.pid && left.token === right.token;
   }
 
-  async function readFileOwner(path: string): Promise<LockOwner | null> {
-    try {
-      const parsed = JSON.parse(await readPrivateFile(
-        path,
-        "utf8",
-        "x402 buyer filesystem lock",
-      )) as unknown;
-      if (typeof parsed === "object" && parsed !== null &&
-          "pid" in parsed && Number.isSafeInteger(parsed.pid) &&
-          (parsed.pid as number) > 0 && "token" in parsed &&
-          typeof parsed.token === "string" && parsed.token.length > 0) {
-        return { pid: parsed.pid as number, token: parsed.token };
-      }
-    } catch {
-      // Missing or malformed recovery gates remain authoritative until stale.
-    }
-    return null;
-  }
-
   async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
-    await exclusiveWritePrivateFile(
-      path,
-      JSON.stringify(owner),
-      "x402 buyer filesystem lock",
-    );
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: DIR_MODE });
+      const handle = await open(join(candidate, "owner.json"), "wx", FILE_MODE);
+      try {
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await syncDirectory(candidate);
+      // The non-empty directory makes rename an atomic no-overwrite publish.
+      await rename(candidate, path);
+      await syncDirectory(locksDir);
+    } finally {
+      await rm(candidate, { recursive: true, force: true });
+    }
   }
 
   const reclaimQuarantinePath = (): string =>
@@ -336,15 +328,13 @@ export async function createFsX402BuyerSettlementStore(
       const path = join(locksDir, name);
       try {
         const metadata = await stat(path);
-        const owner = await readFileOwner(path);
+        const owner = await readOwner(path);
         if (Date.now() - metadata.mtimeMs <= lockStaleMs ||
             (owner !== null && processAlive(owner.pid))) {
           live.push(path);
           continue;
         }
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
+        await rm(path, { recursive: true, force: true });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -361,7 +351,7 @@ export async function createFsX402BuyerSettlementStore(
       throw error;
     }
     if (Date.now() - observed.mtimeMs <= lockStaleMs) return;
-    const observedOwner = await readFileOwner(reclaimGatePath);
+    const observedOwner = await readOwner(reclaimGatePath);
     if (observedOwner !== null && processAlive(observedOwner.pid)) return;
 
     const quarantine = reclaimQuarantinePath();
@@ -379,29 +369,25 @@ export async function createFsX402BuyerSettlementStore(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const movedOwner = await readFileOwner(quarantine);
+    const movedOwner = await readOwner(quarantine);
     if (moved.dev === observed.dev && moved.ino === observed.ino &&
         sameOwner(movedOwner, observedOwner) &&
         Date.now() - moved.mtimeMs > lockStaleMs &&
         (movedOwner === null || !processAlive(movedOwner.pid))) {
-      await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+      await rm(quarantine, { recursive: true, force: true });
     }
     // A moved replacement remains quarantined and blocks later reclaimers.
   }
 
   async function releaseReclaimGate(owner: LockOwner): Promise<void> {
-    const observed = await readFileOwner(reclaimGatePath);
+    const observed = await readOwner(reclaimGatePath);
     if (observed?.pid === owner.pid && observed.token === owner.token) {
       const quarantine = reclaimQuarantinePath();
       try {
         await rename(reclaimGatePath, quarantine);
-        const moved = await readFileOwner(quarantine);
+        const moved = await readOwner(quarantine);
         if (moved?.pid === owner.pid && moved.token === owner.token) {
-          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") throw error;
-          });
+          await rm(quarantine, { recursive: true, force: true });
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -410,11 +396,9 @@ export async function createFsX402BuyerSettlementStore(
     for (const name of (await readdir(locksDir)).filter((item) =>
       item.startsWith(reclaimQuarantinePrefix) && item.endsWith(".quarantine"))) {
       const path = join(locksDir, name);
-      const quarantined = await readFileOwner(path);
+      const quarantined = await readOwner(path);
       if (quarantined?.pid === owner.pid && quarantined.token === owner.token) {
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
+        await rm(path, { recursive: true, force: true });
       }
     }
     await syncDirectory(locksDir);
@@ -425,7 +409,8 @@ export async function createFsX402BuyerSettlementStore(
     try {
       await publishCompleteOwner(reclaimGatePath, owner);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
       await quarantineStaleReclaimGate();
       return false;
     }
@@ -436,7 +421,7 @@ export async function createFsX402BuyerSettlementStore(
     return true;
   }
 
-  async function maybeReclaimStale(path: string): Promise<boolean> {
+  async function maybeReclaimStale(path: string, deadline: number): Promise<boolean> {
     try {
       const metadata = await stat(path);
       if (Date.now() - metadata.mtimeMs <= lockStaleMs) return false;
@@ -447,9 +432,7 @@ export async function createFsX402BuyerSettlementStore(
       throw error;
     }
 
-    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
-    if (!await acquireReclaimGate(gateOwner)) return false;
-    try {
+    return withLockMutationGate(deadline, async () => {
       let observed;
       try {
         observed = await stat(path);
@@ -480,13 +463,36 @@ export async function createFsX402BuyerSettlementStore(
       await rm(quarantine, { recursive: true, force: true });
       await syncDirectory(locksDir);
       return true;
-    } finally {
-      await releaseReclaimGate(gateOwner);
-    }
+    });
   }
 
   async function wait(ms: number): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Every publication, release and stale quarantine of an authoritative lock
+   * path must pass through the same mutation gate. Merely gating reclaimers is
+   * insufficient: a normal successor can otherwise replace the path between a
+   * reclaimer's observations and rename, allowing the reclaimer to displace a
+   * live holder before it detects that the inode changed.
+   */
+  async function withLockMutationGate<T>(
+    deadline: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const owner: LockOwner = { pid: process.pid, token: randomUUID() };
+    while (!await acquireReclaimGate(owner)) {
+      if (Date.now() >= deadline) {
+        throw new DacsError("timed out acquiring x402 buyer lock mutation gate");
+      }
+      await wait(lockPollMs);
+    }
+    try {
+      return await operation();
+    } finally {
+      await releaseReclaimGate(owner);
+    }
   }
 
   async function withLock<T>(settlementKey: string, operation: () => Promise<T>): Promise<T> {
@@ -509,8 +515,10 @@ export async function createFsX402BuyerSettlementStore(
           await handle.close();
         }
         await syncDirectory(candidate);
-        await rename(candidate, path);
-        await syncDirectory(locksDir);
+        await withLockMutationGate(deadline, async () => {
+          await rename(candidate, path);
+          await syncDirectory(locksDir);
+        });
         break;
       } catch (error) {
         await rm(candidate, { recursive: true, force: true }).catch(() => {});
@@ -518,7 +526,7 @@ export async function createFsX402BuyerSettlementStore(
         if (code !== "EEXIST" && code !== "ENOTEMPTY") {
           throw error;
         }
-        await maybeReclaimStale(path);
+        await maybeReclaimStale(path, deadline);
         if (Date.now() >= deadline) {
           throw new DacsError("timed out acquiring x402 buyer settlement lock");
         }
@@ -529,16 +537,22 @@ export async function createFsX402BuyerSettlementStore(
       return await operation();
     } finally {
       // Move only the lock we still own off the publication path before delete.
-      const observed = await readOwner(path);
-      if (observed?.pid === owner.pid && observed.token === owner.token) {
-        const released = `${path}.${owner.token}.released`;
-        try {
-          await rename(path, released);
-          await syncDirectory(locksDir);
-          await rm(released, { recursive: true, force: true });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      let released: string | undefined;
+      await withLockMutationGate(Date.now() + lockTimeoutMs, async () => {
+        const observed = await readOwner(path);
+        if (observed?.pid === owner.pid && observed.token === owner.token) {
+          released = `${path}.${owner.token}.released`;
+          try {
+            await rename(path, released);
+            await syncDirectory(locksDir);
+          } catch (error) {
+            released = undefined;
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
         }
+      });
+      if (released !== undefined) {
+        await rm(released, { recursive: true, force: true });
       }
     }
   }

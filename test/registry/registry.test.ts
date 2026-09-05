@@ -1710,6 +1710,58 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     ).rejects.toThrow(/outside authenticated base/);
   });
 
+  test.each([
+    ["cleartext", "http://seller.example"],
+    ["loopback", "https://127.0.0.1"],
+    ["link-local metadata", "https://169.254.169.254"],
+  ])("x402 refuses a %s authenticated resource base before rail construction", async (
+    _label,
+    resourceBaseUrl,
+  ) => {
+    const descriptor = await authenticatedRail(x402Definition({
+      network: { kind: "x402-resource", resourceBaseUrl },
+    }));
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      payment: {
+        url: `${resourceBaseUrl}/deliver`,
+        network: paywall.network,
+        recipient: paywall.recipientEvm,
+      },
+      rpcUrl: "https://sepolia.base.org",
+    })).rejects.toThrow(/public HTTPS URLs/);
+  });
+
+  test("x402 refuses credentials and fragments in a selected resource", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    for (const url of [
+      "https://user:secret@seller.example/deliver",
+      "https://seller.example/deliver#fragment",
+    ]) {
+      await expect(settleFromRail(descriptor, {
+        evmPrivateKey: TEST_EVM_KEY,
+        payment: {
+          url,
+          network: paywall.network,
+          recipient: paywall.recipientEvm,
+        },
+        rpcUrl: "https://sepolia.base.org",
+      })).rejects.toThrow(/public HTTPS URLs/);
+    }
+  });
+
+  test("x402 registry dispatch refuses an implicit production fetch override", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    const fetchImpl = vi.fn(async () => new Response("must not run"));
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      paywall,
+      rpcUrl: "https://sepolia.base.org",
+      fetchImpl: fetchImpl as typeof fetch,
+    })).rejects.toThrow(/explicit insecure-test mode/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test("evm-erc20 derives token and network from the signed definition", async () => {
     const descriptor = await authenticatedRail(evmDefinition());
     const settle = await settleFromRail(descriptor, {
