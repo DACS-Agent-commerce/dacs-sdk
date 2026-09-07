@@ -2,8 +2,10 @@ import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import type {
   AttestationAnchor,
   AttestationRef,
+  BundleClaim,
   ComponentSignature,
   CompositeVerificationRecord,
+  IdentityBundle,
   VerificationDecision,
   VerificationMethodKind,
   VerifyResult,
@@ -12,6 +14,7 @@ import type {
 import {
   isAttestationRef,
   isCompositeVerificationRecord,
+  isIdentityBundle,
   isLegacyCompositeVerificationRecord,
   isExactJsonRecord,
   isVerifyResult,
@@ -23,6 +26,12 @@ import {
 } from "../artifacts/signatures.js";
 import { isRecipeDescriptor } from "../registry/resolve.js";
 import type { RecipeDescriptor } from "../registry/types.js";
+import {
+  identityBundleHash,
+  isRegisteredClaimReferenceScheme,
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/index.js";
 
 /** Exact DACS-1 §6.3.3 subset consumed by DACS-2 §7.7.1 aggregation. */
 export interface CompositeClaimRequirement {
@@ -73,6 +82,16 @@ export interface CompositeVerificationExpectations {
   verifier: string;
   freshness: ExpectedVerifyResult[];
   dealSpecific: ExpectedVerifyResult[];
+  /**
+   * PCR-6 companion authority. Required whenever the requirement contains a
+   * presence-only member. `bundle: null` represents a temporarily unavailable
+   * exact bundle and therefore produces an unresolved, never valid, replay.
+   */
+  presence?: {
+    bundle: IdentityBundle | null;
+    /** Exact authenticated job-wide registry snapshot selected at session start. */
+    sessionRecipeRegistrySnapshotHash: string;
+  };
 }
 
 /** Bytes as stored at an AttestationRef, with the hashing mode made explicit. */
@@ -128,6 +147,24 @@ export interface VerifyCompositeVerificationDeps<TKey> {
   verifyRequirementParameters?: (
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
+  /** Authenticate CRQ-1 even when no verification recipe is invoked. */
+  isSessionRecipeRegistrySnapshotAuthenticated?: (
+    snapshotHash: string,
+  ) => Promise<boolean> | boolean;
+  /** Authenticate BP-4 over the exact PCR-6 companion bundle. */
+  verifyIdentityPresentation?: (input: {
+    bundle: Readonly<IdentityBundle>;
+    bundleHash: string;
+  }) => Promise<boolean> | boolean;
+  /**
+   * Optional scheme-specific DACS-1 §6.3.2 step (6) control proof. A verified
+   * bundle presentation controls its exact `key:` presentedBy without this
+   * callback; existence-only schemes fail closed when it is absent.
+   */
+  isPresentedClaimControlled?: (input: {
+    bundle: Readonly<IdentityBundle>;
+    claim: Readonly<BundleClaim>;
+  }) => Promise<boolean> | boolean;
 }
 
 export type CompositeVerificationInvalidCode =
@@ -155,6 +192,10 @@ export type CompositeVerificationInvalidCode =
   | "authority-hash"
   | "authority-signature"
   | "requirement-parameters"
+  | "recipe-registry"
+  | "identity-bundle"
+  | "identity-presentation"
+  | "presence-evidence"
   | "aggregation-mismatch";
 
 export type CompositeVerificationUnresolvedCode =
@@ -167,18 +208,34 @@ export type CompositeVerificationUnresolvedCode =
   | "verify-result-signature"
   | "authority-resolution"
   | "authority-signature"
-  | "requirement-parameters";
+  | "requirement-parameters"
+  | "identity-bundle";
 
 export type StrictCompositeVerification =
   | {
       status: "valid";
       record: CompositeVerificationRecord;
+      /** Successfully resolved and authenticated freshness results. */
       freshness: VerifyResult[];
+      /** Successfully resolved and authenticated deal-specific results. */
       dealSpecific: VerifyResult[];
-      /** Authenticated recipes aligned with `freshness`, including RAV-2 availability. */
+      /** Authenticated recipes aligned with the returned `freshness` results. */
       freshnessRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }>;
-      /** Authenticated recipes aligned with `dealSpecific`, including RAV-2 availability. */
+      /** Authenticated recipes aligned with the returned `dealSpecific` results. */
       dealSpecificRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }>;
+      /**
+       * Referenced result bodies that were unavailable during replay. Their
+       * authenticated recipe family was still preflighted and their member
+       * outcome was `indeterminate`. A record can remain valid only when its
+       * signed aggregate reproduces that outcome (for example an independent
+       * selector failure has the global fail-first precedence).
+       */
+      indeterminateEvidence?: Array<{
+        collection: "freshness" | "dealSpecific";
+        index: number;
+        ref: VerifyResultRef;
+        detail?: string;
+      }>;
     }
   | {
       status: "invalid";
@@ -325,6 +382,12 @@ function captureVerificationDeps<TKey>(
       deps.verifyAuthorityAttestation.bind(deps);
     const verifyRequirementParameters =
       deps.verifyRequirementParameters?.bind(deps);
+    const authenticateRegistry =
+      deps.isSessionRecipeRegistrySnapshotAuthenticated?.bind(deps);
+    const verifyIdentityPresentation =
+      deps.verifyIdentityPresentation?.bind(deps);
+    const isPresentedClaimControlled =
+      deps.isPresentedClaimControlled?.bind(deps);
     const isVerifyResultSignerAuthorized: VerifyCompositeVerificationDeps<TKey>["isVerifyResultSignerAuthorized"] =
       async (result, signature, expected) =>
         (await authorizeVerifyResult(result, signature, expected)) === true;
@@ -343,6 +406,28 @@ function captureVerificationDeps<TKey>(
       verify,
       verifyAuthorityAttestation,
       ...(verifyRequirementParameters ? { verifyRequirementParameters } : {}),
+      ...(authenticateRegistry
+        ? {
+            isSessionRecipeRegistrySnapshotAuthenticated: async (hash: string) =>
+              (await authenticateRegistry(hash)) === true,
+          }
+        : {}),
+      ...(verifyIdentityPresentation
+        ? {
+            verifyIdentityPresentation: async (input: {
+              bundle: Readonly<IdentityBundle>;
+              bundleHash: string;
+            }) => (await verifyIdentityPresentation(input)) === true,
+          }
+        : {}),
+      ...(isPresentedClaimControlled
+        ? {
+            isPresentedClaimControlled: async (input: {
+              bundle: Readonly<IdentityBundle>;
+              claim: Readonly<BundleClaim>;
+            }) => (await isPresentedClaimControlled(input)) === true,
+          }
+        : {}),
     });
   } catch {
     return null;
@@ -408,6 +493,91 @@ export function isCompositeBundleRequirement(
   );
 }
 
+export type PresenceClaimDecision = "pass" | "fail" | "error";
+
+/** PCR-1/CRQ-1 preflight over every member before any OR short-circuit. */
+export function presenceRequirementPreflight(
+  requirement: Readonly<CompositeBundleRequirement>,
+): string | null {
+  const members = [
+    ...requirement.required,
+    ...(requirement.oneOf ?? []).flat(),
+  ];
+  for (const member of members) {
+    if (!isRegisteredClaimReferenceScheme(member.scheme)) {
+      return `unknown or non-canonical claim scheme ${member.scheme}`;
+    }
+    if (
+      member.verificationRequired === false &&
+      (member.maxAge !== undefined || member.recipeVersion !== undefined)
+    ) {
+      return `presence-only ${member.scheme} cannot select freshness or recipe fields`;
+    }
+  }
+  return null;
+}
+
+function presenceParametersMatch(
+  claim: Readonly<BundleClaim>,
+  parameters: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  if (parameters === undefined) return true;
+  if (claim.metadata === undefined) return false;
+  for (const [key, expected] of Object.entries(parameters)) {
+    if (!Object.prototype.hasOwnProperty.call(claim.metadata, key)) return false;
+    try {
+      if (canonicalize(claim.metadata[key]) !== canonicalize(expected)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * DACS-1 PCR-2/PCR-3 presence predicate. It deliberately never dereferences a
+ * well-shaped optional `verifiedBy` and never treats `issuedAt` as authority.
+ */
+export function classifyPresenceClaimRequirement(
+  bundle: Readonly<IdentityBundle>,
+  requirement: Readonly<CompositeClaimRequirement>,
+  evaluatedAt: number,
+  exactClaimRef?: string,
+): PresenceClaimDecision {
+  if (
+    requirement.verificationRequired !== false ||
+    !isSafeUint(evaluatedAt) ||
+    !isRegisteredClaimReferenceScheme(requirement.scheme) ||
+    requirement.maxAge !== undefined ||
+    requirement.recipeVersion !== undefined
+  ) {
+    return "error";
+  }
+  for (const claim of bundle.claims) {
+    const parsed = parseCanonicalClaimReference(claim.ref);
+    if (!parsed || parsed.schemeStatus !== "registered") {
+      if (typeof claim.ref === "string" && claim.ref.startsWith(`${requirement.scheme}:`)) {
+        return "error";
+      }
+      continue;
+    }
+    if (parsed.identity.scheme !== requirement.scheme) continue;
+    if (
+      exactClaimRef !== undefined &&
+      !sameCanonicalClaimIdentity(claim.ref, exactClaimRef)
+    ) {
+      continue;
+    }
+    if (claim.verifiedBy !== undefined && !isVerifyResultRef(claim.verifiedBy)) {
+      return "error";
+    }
+    if (claim.expiresAt !== undefined && evaluatedAt > claim.expiresAt) continue;
+    if (!presenceParametersMatch(claim, requirement.parameters)) continue;
+    return "pass";
+  }
+  return "fail";
+}
+
 function exactRef(left: VerifyResultRef, right: VerifyResultRef): boolean {
   return canonicalize(left) === canonicalize(right);
 }
@@ -440,6 +610,7 @@ function expectedListMatches(
           !isScheme(item.scheme) ||
           !METHODS.includes(item.method as VerificationMethodKind) ||
           !isClaimRequirement(item.requirement) ||
+          item.requirement.verificationRequired !== true ||
           item.requirement.scheme !== item.scheme ||
           (item.requirement.parameters?.verificationMethod !== undefined &&
             item.requirement.parameters.verificationMethod !== item.method) ||
@@ -477,7 +648,7 @@ function isCompositeVerificationExpectations(
       "verifier",
       "freshness",
       "dealSpecific",
-    ]) ||
+    ], ["presence"]) ||
     typeof value.jobId !== "string" ||
     value.jobId.length === 0 ||
     typeof value.evaluatedParty !== "string" ||
@@ -490,6 +661,18 @@ function isCompositeVerificationExpectations(
     return false;
   }
   const requirement = value.requirement;
+  if (
+    value.presence !== undefined &&
+    (!isRecord(value.presence) ||
+      !hasExactWireKeys(value.presence, [
+        "bundle",
+        "sessionRecipeRegistrySnapshotHash",
+      ]) ||
+      (value.presence.bundle !== null && !isIdentityBundle(value.presence.bundle)) ||
+      !isSha256(value.presence.sessionRecipeRegistrySnapshotHash))
+  ) {
+    return false;
+  }
   const entriesAreExact = (entries: unknown): boolean =>
     isExactWireArray(entries, (item) => {
       if (
@@ -508,6 +691,7 @@ function isCompositeVerificationExpectations(
         item.identifier.normalize("NFC") !== item.identifier ||
         !METHODS.includes(item.method as VerificationMethodKind) ||
         !isClaimRequirement(item.requirement) ||
+        item.requirement.verificationRequired !== true ||
         item.requirement.scheme !== item.scheme ||
         (item.requirement.parameters?.verificationMethod !== undefined &&
           item.requirement.parameters.verificationMethod !== item.method)
@@ -679,8 +863,7 @@ export function aggregateCompositeVerification(
 
 function aggregateBoundCompositeVerification(
   entries: readonly {
-    result: Readonly<VerifyResult>;
-    expected: Readonly<ExpectedVerifyResult>;
+    requirement: Readonly<CompositeClaimRequirement>;
     effectiveDecision: VerificationDecision;
   }[],
   requirement: Readonly<CompositeBundleRequirement>,
@@ -693,7 +876,7 @@ function aggregateBoundCompositeVerification(
     claim: CompositeClaimRequirement,
   ): VerificationDecision[] =>
     entries
-      .filter((entry) => exactRequirement(entry.expected.requirement, claim))
+      .filter((entry) => exactRequirement(entry.requirement, claim))
       .map((entry) => entry.effectiveDecision);
   const failures: string[] = [];
   const errors: string[] = [];
@@ -730,6 +913,131 @@ function aggregateBoundCompositeVerification(
   return "pass";
 }
 
+export interface PresenceAwareVerifiedEvidence {
+  requirement: CompositeClaimRequirement;
+  decision: VerificationDecision;
+  /** Exact claim whose authenticated VerifyResult supplied this decision. */
+  claimRef: string;
+  /** Exact record-committed result reference, when selector authorization uses it. */
+  ref?: VerifyResultRef;
+}
+
+export interface PresenceAwareAggregationInput {
+  bundle: IdentityBundle;
+  requirement: CompositeBundleRequirement;
+  evaluatedAt: number;
+  verified: PresenceAwareVerifiedEvidence[];
+  /** Scheme-specific DACS-1 control result; exact key control is inferred. */
+  presentedClaimControlled?: boolean;
+}
+
+/** Pure PCR-1..PCR-6 mixed-mode decision after signatures/refs are authenticated. */
+export function aggregatePresenceAwareCompositeVerification(
+  input: Readonly<PresenceAwareAggregationInput>,
+): VerificationDecision {
+  const preflightFailure = presenceRequirementPreflight(input.requirement);
+  if (preflightFailure || !isSafeUint(input.evaluatedAt)) return "error";
+  const presenceMembers = [
+    ...input.requirement.required,
+    ...(input.requirement.oneOf ?? []).flat(),
+  ].filter((member) => member.verificationRequired === false);
+  const entries: Array<{
+    requirement: CompositeClaimRequirement;
+    effectiveDecision: VerificationDecision;
+  }> = input.verified.map((entry) => ({
+    requirement: entry.requirement,
+    effectiveDecision: entry.decision,
+  }));
+  for (const member of presenceMembers) {
+    entries.push({
+      requirement: member,
+      effectiveDecision: classifyPresenceClaimRequirement(
+        input.bundle,
+        member,
+        input.evaluatedAt,
+      ),
+    });
+  }
+  let decision = aggregateBoundCompositeVerification(entries, input.requirement);
+  const selector = input.requirement.primaryClaimSelector;
+  if (selector === undefined) return decision;
+  const parsedPresented = parseCanonicalClaimReference(input.bundle.presentedBy);
+  const presentedMatches = input.bundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, input.bundle.presentedBy)
+  );
+  if (
+    !parsedPresented ||
+    parsedPresented.identity.scheme !== selector ||
+    presentedMatches.length !== 1
+  ) {
+    return "fail";
+  }
+  const presented = presentedMatches[0]!;
+  const controlled = parsedPresented.identity.scheme === "key" ||
+    input.presentedClaimControlled === true;
+  const verifiedSelector = presented.verifiedBy !== undefined &&
+    input.verified.some((entry) =>
+      entry.decision === "pass" &&
+      entry.ref !== undefined &&
+      sameCanonicalClaimIdentity(entry.claimRef, presented.ref) &&
+      exactRef(entry.ref, presented.verifiedBy!)
+    );
+  const presencePassesExact = (member: CompositeClaimRequirement): boolean =>
+    member.scheme === selector &&
+    member.verificationRequired === false &&
+    classifyPresenceClaimRequirement(
+      input.bundle,
+      member,
+      input.evaluatedAt,
+      presented.ref,
+    ) === "pass";
+  const allMembers = [
+    ...input.requirement.required,
+    ...(input.requirement.oneOf ?? []).flat(),
+  ];
+  let presenceSelector = allMembers.some(presencePassesExact);
+  if (input.requirement.required.some(
+    (member) => member.scheme === selector && member.verificationRequired === true,
+  )) {
+    presenceSelector = false;
+  }
+  const verifiedDecision = (
+    member: CompositeClaimRequirement,
+  ): VerificationDecision => {
+    const matches = input.verified
+      .filter((entry) => {
+        try {
+          return canonicalize(entry.requirement) === canonicalize(member);
+        } catch {
+          return false;
+        }
+      })
+      .map((entry) => entry.decision);
+    if (matches.includes("pass")) return "pass";
+    if (matches.includes("fail") || matches.length === 0) return "fail";
+    if (matches.includes("error")) return "error";
+    return "indeterminate";
+  };
+  for (const group of input.requirement.oneOf ?? []) {
+    if (!group.some(
+      (member) => member.scheme === selector && member.verificationRequired === true,
+    )) {
+      continue;
+    }
+    if (
+      !group.some(presencePassesExact) &&
+      !group.some(
+        (member) =>
+          member.scheme !== selector && verifiedDecision(member) === "pass",
+      )
+    ) {
+      presenceSelector = false;
+    }
+  }
+  if (!controlled || (!verifiedSelector && !presenceSelector)) decision = "fail";
+  return decision;
+}
+
 function invalid(
   code: CompositeVerificationInvalidCode,
   detail?: string,
@@ -754,6 +1062,108 @@ function componentFailure(
   return invalid(kind, status.reason);
 }
 
+interface MixedVerificationEntry {
+  requirement: Readonly<CompositeClaimRequirement>;
+  effectiveDecision: VerificationDecision;
+  expected?: Readonly<ExpectedVerifyResult>;
+  result?: Readonly<VerifyResult>;
+}
+
+function decisionForExactRequirement(
+  requirement: Readonly<CompositeClaimRequirement>,
+  entries: readonly MixedVerificationEntry[],
+): VerificationDecision {
+  let target: string;
+  try {
+    target = canonicalize(requirement);
+  } catch {
+    return "error";
+  }
+  const decisions = entries
+    .filter((entry) => {
+      try {
+        return canonicalize(entry.requirement) === target;
+      } catch {
+        return false;
+      }
+    })
+    .map((entry) => entry.effectiveDecision);
+  if (decisions.includes("pass")) return "pass";
+  if (decisions.includes("fail") || decisions.length === 0) return "fail";
+  if (decisions.includes("error")) return "error";
+  return "indeterminate";
+}
+
+async function exactPresenceSelectorAuthorized<TKey>(
+  bundle: Readonly<IdentityBundle>,
+  requirement: Readonly<CompositeBundleRequirement>,
+  entries: readonly MixedVerificationEntry[],
+  evaluatedAt: number,
+  deps: VerifyCompositeVerificationDeps<TKey>,
+): Promise<boolean> {
+  const selector = requirement.primaryClaimSelector;
+  if (selector === undefined) return true;
+  const parsedPresented = parseCanonicalClaimReference(bundle.presentedBy);
+  if (!parsedPresented || parsedPresented.identity.scheme !== selector) return false;
+  const presentedMatches = bundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, bundle.presentedBy)
+  );
+  if (presentedMatches.length !== 1) return false;
+  const presented = presentedMatches[0]!;
+  let controlled = parsedPresented.identity.scheme === "key";
+  if (!controlled && deps.isPresentedClaimControlled) {
+    try {
+      controlled = (await deps.isPresentedClaimControlled({ bundle, claim: presented })) === true;
+    } catch {
+      controlled = false;
+    }
+  }
+
+  const verifiedSelector = presented.verifiedBy !== undefined && entries.some((entry) =>
+    entry.expected !== undefined &&
+    entry.result !== undefined &&
+    entry.effectiveDecision === "pass" &&
+    exactRef(entry.expected.ref, presented.verifiedBy!) &&
+    entry.result.scheme === parsedPresented.identity.scheme &&
+    entry.result.identifier === parsedPresented.identity.identifier
+  );
+
+  const presencePassesExact = (member: CompositeClaimRequirement): boolean =>
+    member.scheme === selector &&
+    member.verificationRequired === false &&
+    classifyPresenceClaimRequirement(
+      bundle,
+      member,
+      evaluatedAt,
+      presented.ref,
+    ) === "pass";
+  const members = [
+    ...requirement.required,
+    ...(requirement.oneOf ?? []).flat(),
+  ];
+  let presenceSelector = members.some(presencePassesExact);
+  if (requirement.required.some(
+    (member) => member.scheme === selector && member.verificationRequired === true,
+  )) {
+    presenceSelector = false;
+  }
+  for (const group of requirement.oneOf ?? []) {
+    if (!group.some(
+      (member) => member.scheme === selector && member.verificationRequired === true,
+    )) {
+      continue;
+    }
+    const exactPresenceInGroup = group.some(presencePassesExact);
+    const passingOtherScheme = group.some(
+      (member) =>
+        member.scheme !== selector &&
+        decisionForExactRequirement(member, entries) === "pass",
+    );
+    if (!exactPresenceInGroup && !passingOtherScheme) presenceSelector = false;
+  }
+  return controlled && (verifiedSelector || presenceSelector);
+}
+
 async function resolveResult<TKey>(
   ref: VerifyResultRef,
   expected: ExpectedVerifyResult,
@@ -767,48 +1177,35 @@ async function resolveResult<TKey>(
       /** RAV-3 aggregation verdict without rewriting signed evidence. */
       effectiveDecision: VerificationDecision;
     }
+  | {
+      status: "indeterminate";
+      recipe: RecipeDescriptor & { signature: ComponentSignature };
+      detail?: string;
+    }
 > {
-  let rawResolved: ResolvedVerificationContent | null;
+  // Snapshot resolver-owned evidence before invoking any further callback. We
+  // still defer its availability/shape classification until after CRQ-1 recipe
+  // authentication so an invalid registry cannot be masked by missing data.
+  let resolvedSnapshot: ResolvedVerificationContent | null = null;
+  let resolutionDetail: string | undefined;
+  let resolutionReturnedValue = false;
   try {
-    rawResolved = await deps.resolve(
+    const rawResolved = await deps.resolve(
       deepFreezeSnapshot(structuredClone(ref)),
     );
+    if (rawResolved) {
+      resolutionReturnedValue = true;
+      resolvedSnapshot = cloneResolvedContent(rawResolved);
+    } else {
+      resolutionDetail = ref.anchor.locator;
+    }
   } catch (error) {
-    return unresolved("verify-result-resolution", String(error));
-  }
-  if (!rawResolved) return unresolved("verify-result-resolution", ref.anchor.locator);
-  const resolved = cloneResolvedContent(rawResolved);
-  if (
-    !resolved ||
-    resolved.encoding !== "canonical-json" ||
-    !isVerifyResult(resolved.value)
-  ) {
-    return invalid("verify-result-shape", ref.anchor.locator);
-  }
-  const result = deepFreezeSnapshot(resolved.value);
-  let hash: string;
-  try {
-    hash = contentHash(result);
-  } catch (error) {
-    return invalid("verify-result-shape", String(error));
-  }
-  if (hash !== ref.contentHash) return invalid("verify-result-hash", ref.anchor.locator);
-  if (result.recipeVersion !== ref.recipeVersion) {
-    return invalid("verify-result-recipe", ref.anchor.locator);
-  }
-  if (
-    expected.requirement.recipeVersion !== undefined &&
-    result.recipeVersion !== expected.requirement.recipeVersion
-  ) {
-    return invalid("verify-result-recipe", ref.anchor.locator);
-  }
-  if (result.method !== expected.method) {
-    return invalid("verify-result-method", ref.anchor.locator);
-  }
-  if (result.scheme !== expected.scheme || result.identifier !== expected.identifier) {
-    return invalid("verify-result-claim", ref.anchor.locator);
+    resolutionDetail = String(error);
   }
 
+  // CRQ-1 authenticates the selected recipe family before evidence
+  // availability is classified. An unavailable result therefore cannot mask
+  // an invalid or unavailable session-pinned registry entry.
   let rawRecipe: (RecipeDescriptor & { signature: ComponentSignature }) | null;
   try {
     rawRecipe = await deps.resolveRecipe(
@@ -873,6 +1270,44 @@ async function resolveResult<TKey>(
       "recipe-signature",
       recipeSignature.status === "missing" ? "missing" : recipeSignature.reason,
     );
+  }
+
+  if (!resolutionReturnedValue) {
+    return {
+      status: "indeterminate",
+      recipe: structuredClone(recipe),
+      ...(resolutionDetail ? { detail: resolutionDetail } : {}),
+    };
+  }
+  if (
+    !resolvedSnapshot ||
+    resolvedSnapshot.encoding !== "canonical-json" ||
+    !isVerifyResult(resolvedSnapshot.value)
+  ) {
+    return invalid("verify-result-shape", ref.anchor.locator);
+  }
+  const result = deepFreezeSnapshot(resolvedSnapshot.value);
+  let hash: string;
+  try {
+    hash = contentHash(result);
+  } catch (error) {
+    return invalid("verify-result-shape", String(error));
+  }
+  if (hash !== ref.contentHash) return invalid("verify-result-hash", ref.anchor.locator);
+  if (result.recipeVersion !== ref.recipeVersion) {
+    return invalid("verify-result-recipe", ref.anchor.locator);
+  }
+  if (
+    expected.requirement.recipeVersion !== undefined &&
+    result.recipeVersion !== expected.requirement.recipeVersion
+  ) {
+    return invalid("verify-result-recipe", ref.anchor.locator);
+  }
+  if (result.method !== expected.method) {
+    return invalid("verify-result-method", ref.anchor.locator);
+  }
+  if (result.scheme !== expected.scheme || result.identifier !== expected.identifier) {
+    return invalid("verify-result-claim", ref.anchor.locator);
   }
 
   const signature = await verifyComponentSignature(
@@ -1022,6 +1457,20 @@ export async function verifyCompositeVerificationRecord<TKey>(
     return invalid("expectation-shape");
   }
 
+  const presenceMembers = [
+    ...expectedSnapshot.requirement.required,
+    ...(expectedSnapshot.requirement.oneOf ?? []).flat(),
+  ].filter((member) => member.verificationRequired === false);
+  if (presenceMembers.length > 0) {
+    if (expectedSnapshot.presence === undefined) {
+      return invalid("expectation-shape", "presence authority is required");
+    }
+    const preflightFailure = presenceRequirementPreflight(
+      expectedSnapshot.requirement,
+    );
+    if (preflightFailure) return invalid("expectation-shape", preflightFailure);
+  }
+
   if (record.jobId !== expectedSnapshot.jobId) return invalid("job-mismatch");
   if (record.evaluatedParty !== expectedSnapshot.evaluatedParty) {
     return invalid("evaluated-party-mismatch");
@@ -1068,34 +1517,137 @@ export async function verifyCompositeVerificationRecord<TKey>(
     return componentFailure("record-signature", recordSignature);
   }
 
+  let presenceBundle: IdentityBundle | null = null;
+  if (presenceMembers.length > 0) {
+    const presence = expectedSnapshot.presence!;
+    if (!capturedDeps.isSessionRecipeRegistrySnapshotAuthenticated) {
+      return invalid("recipe-registry", "registry authentication is unavailable");
+    }
+    let registryAuthenticated = false;
+    try {
+      registryAuthenticated = (
+        await capturedDeps.isSessionRecipeRegistrySnapshotAuthenticated(
+          presence.sessionRecipeRegistrySnapshotHash,
+        )
+      ) === true;
+    } catch {
+      registryAuthenticated = false;
+    }
+    if (!registryAuthenticated) {
+      return invalid("recipe-registry", "session-pinned registry is unavailable or invalid");
+    }
+    if (presence.bundle === null) {
+      return unresolved("identity-bundle", "exact PCR-6 companion bundle is unavailable");
+    }
+    presenceBundle = presence.bundle;
+    if (
+      identityBundleHash(presenceBundle) !== record.bundleHash ||
+      identityBundleHash(presenceBundle) !== expectedSnapshot.bundleHash
+    ) {
+      return invalid("bundle-hash-mismatch");
+    }
+    if (!sameCanonicalClaimIdentity(
+      presenceBundle.presentedBy,
+      record.evaluatedParty,
+    )) {
+      return invalid("identity-bundle", "bundle presenter differs from evaluated party");
+    }
+    if (!capturedDeps.verifyIdentityPresentation) {
+      return invalid("identity-presentation", "presentation verifier is unavailable");
+    }
+    let presentationValid = false;
+    try {
+      presentationValid = (
+        await capturedDeps.verifyIdentityPresentation({
+          bundle: presenceBundle,
+          bundleHash: record.bundleHash,
+        })
+      ) === true;
+    } catch {
+      presentationValid = false;
+    }
+    if (!presentationValid) return invalid("identity-presentation");
+  }
+
   const freshness: VerifyResult[] = [];
   const freshnessRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }> = [];
-  const freshnessEffectiveDecisions: VerificationDecision[] = [];
+  const freshnessExpected: ExpectedVerifyResult[] = [];
+  const mixedEntries: MixedVerificationEntry[] = [];
+  const indeterminateEvidence: Array<{
+    collection: "freshness" | "dealSpecific";
+    index: number;
+    ref: VerifyResultRef;
+    detail?: string;
+  }> = [];
   for (let index = 0; index < record.freshness.length; index += 1) {
+    const ref = record.freshness[index]!;
+    const expected = expectedSnapshot.freshness[index]!;
     const resolution = await resolveResult(
-      record.freshness[index]!,
-      expectedSnapshot.freshness[index]!,
+      ref,
+      expected,
       capturedDeps,
     );
+    if (resolution.status === "indeterminate") {
+      mixedEntries.push({
+        requirement: expected.requirement,
+        expected,
+        effectiveDecision: "indeterminate",
+      });
+      indeterminateEvidence.push({
+        collection: "freshness",
+        index,
+        ref: structuredClone(ref),
+        ...(resolution.detail ? { detail: resolution.detail } : {}),
+      });
+      continue;
+    }
     if (resolution.status !== "resolved") return resolution;
     freshness.push(resolution.result);
     freshnessRecipes.push(resolution.recipe);
-    freshnessEffectiveDecisions.push(resolution.effectiveDecision);
+    freshnessExpected.push(expected);
+    mixedEntries.push({
+      requirement: expected.requirement,
+      expected,
+      result: resolution.result,
+      effectiveDecision: resolution.effectiveDecision,
+    });
   }
 
   const dealSpecific: VerifyResult[] = [];
   const dealSpecificRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }> = [];
-  const dealSpecificEffectiveDecisions: VerificationDecision[] = [];
+  const dealSpecificExpected: ExpectedVerifyResult[] = [];
   for (let index = 0; index < record.dealSpecific.length; index += 1) {
+    const ref = record.dealSpecific[index]!;
+    const expected = expectedSnapshot.dealSpecific[index]!;
     const resolution = await resolveResult(
-      record.dealSpecific[index]!,
-      expectedSnapshot.dealSpecific[index]!,
+      ref,
+      expected,
       capturedDeps,
     );
+    if (resolution.status === "indeterminate") {
+      mixedEntries.push({
+        requirement: expected.requirement,
+        expected,
+        effectiveDecision: "indeterminate",
+      });
+      indeterminateEvidence.push({
+        collection: "dealSpecific",
+        index,
+        ref: structuredClone(ref),
+        ...(resolution.detail ? { detail: resolution.detail } : {}),
+      });
+      continue;
+    }
     if (resolution.status !== "resolved") return resolution;
     dealSpecific.push(resolution.result);
     dealSpecificRecipes.push(resolution.recipe);
-    dealSpecificEffectiveDecisions.push(resolution.effectiveDecision);
+    dealSpecificExpected.push(expected);
+    mixedEntries.push({
+      requirement: expected.requirement,
+      expected,
+      result: resolution.result,
+      effectiveDecision: resolution.effectiveDecision,
+    });
   }
 
   let acceptanceTime: number;
@@ -1113,7 +1665,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
   for (let index = 0; index < freshness.length; index += 1) {
     const timeFailure = validateResultTime(
       freshness[index]!,
-      expectedSnapshot.freshness[index]!,
+      freshnessExpected[index]!,
       freshnessRecipes[index]!,
       acceptanceTime,
     );
@@ -1122,7 +1674,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
   for (let index = 0; index < dealSpecific.length; index += 1) {
     const timeFailure = validateResultTime(
       dealSpecific[index]!,
-      expectedSnapshot.dealSpecific[index]!,
+      dealSpecificExpected[index]!,
       dealSpecificRecipes[index]!,
       acceptanceTime,
     );
@@ -1148,21 +1700,34 @@ export async function verifyCompositeVerificationRecord<TKey>(
     );
   }
 
-  const aggregated = aggregateBoundCompositeVerification(
-    [
-      ...freshness.map((result, index) => ({
-        result,
-        expected: expectedSnapshot.freshness[index]!,
-        effectiveDecision: freshnessEffectiveDecisions[index]!,
-      })),
-      ...dealSpecific.map((result, index) => ({
-        result,
-        expected: expectedSnapshot.dealSpecific[index]!,
-        effectiveDecision: dealSpecificEffectiveDecisions[index]!,
-      })),
-    ],
+  if (presenceBundle) {
+    for (const member of presenceMembers) {
+      mixedEntries.push({
+        requirement: member,
+        effectiveDecision: classifyPresenceClaimRequirement(
+          presenceBundle,
+          member,
+          acceptanceTime,
+        ),
+      });
+    }
+  }
+  let aggregated = aggregateBoundCompositeVerification(
+    mixedEntries,
     expectedSnapshot.requirement,
   );
+  if (
+    presenceBundle &&
+    !(await exactPresenceSelectorAuthorized(
+      presenceBundle,
+      expectedSnapshot.requirement,
+      mixedEntries,
+      acceptanceTime,
+      capturedDeps,
+    ))
+  ) {
+    aggregated = "fail";
+  }
   if (!DECISIONS.includes(record.overallDecision) || record.overallDecision !== aggregated) {
     return invalid(
       "aggregation-mismatch",
@@ -1177,6 +1742,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
     dealSpecific,
     freshnessRecipes,
     dealSpecificRecipes,
+    ...(indeterminateEvidence.length > 0 ? { indeterminateEvidence } : {}),
   });
 }
 
