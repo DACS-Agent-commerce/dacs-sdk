@@ -17,6 +17,7 @@ import {
   isAgreementArtifact,
   isAttestationRef,
   isChainTxRef,
+  isIdentityBundle,
   isLegacyMvpListing,
   isListing,
   readListingArtifact,
@@ -458,8 +459,22 @@ export interface AgentConfig {
   wallet?: string;
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
-  /** Optional identity metadata (e.g. the agent's DID / primary claim). */
-  identity?: { agentId?: string };
+  /**
+   * Local identity authority. Session-capable agents must provide the exact
+   * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
+   * (or an explicitly configured listing-validation fallback); the SDK
+   * computes every session party hash from these bytes rather than `agentId`.
+   */
+  identity?: {
+    agentId?: string;
+    bundle?: IdentityBundle;
+    /**
+     * Authenticate this agent's exact DACS-1 bundle presentation before any
+     * session effect. Keep this authority independent from seller Listing
+     * validation when the two identities use different keys or claim methods.
+     */
+    verifyPresentation?: ListingValidationDeps["verifyIdentityPresentation"];
+  };
   /**
    * DACS-1 §6.3.1 / CORE §B.1: explicit Ed25519 resolver for canonical
    * current ClaimReference methods that are not the self-certifying
@@ -808,6 +823,52 @@ function capturedCreateConfigValue(
   return stableAgentData(config, key, `AgentConfig.${key}`);
 }
 
+function captureAgentIdentityConfig(
+  value: unknown,
+): AgentConfig["identity"] {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError("AgentConfig.identity must be stable data");
+  }
+  const agentId = stableAgentData(
+    value,
+    "agentId",
+    "AgentConfig.identity.agentId",
+  );
+  const bundle = stableAgentData(
+    value,
+    "bundle",
+    "AgentConfig.identity.bundle",
+  );
+  const verifyPresentation = stableAgentMethod<
+    NonNullable<AgentConfig["identity"]>["verifyPresentation"]
+  >(
+    value,
+    "verifyPresentation",
+    "AgentConfig.identity.verifyPresentation",
+    true,
+  );
+  if (agentId !== undefined && typeof agentId !== "string") {
+    throw new DacsError("AgentConfig.identity.agentId must be a string");
+  }
+  const retainedBundle = bundle === undefined
+    ? undefined
+    : snapshotCanonicalJson(
+        bundle,
+        "AgentConfig.identity.bundle",
+      );
+  if (retainedBundle !== undefined && !isIdentityBundle(retainedBundle)) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  return Object.freeze({
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(retainedBundle === undefined ? {} : { bundle: retainedBundle }),
+    ...(verifyPresentation === undefined ? {} : { verifyPresentation }),
+  });
+}
+
 /**
  * Snapshot every retained construction capability before the first await. The
  * wallet bytes are deliberately absent: buildAgent needs only the fact that a
@@ -822,8 +883,18 @@ function captureAgentRuntimeConfig(
     demosRpc: String(capturedCreateConfigValue(config, "demosRpc") ?? ""),
     ...(hasWallet ? { wallet: "connected-signer" } : {}),
   };
+  const identity = captureAgentIdentityConfig(
+    capturedCreateConfigValue(config, "identity"),
+  );
+  if (identity !== undefined) {
+    Object.defineProperty(runtimeConfig, "identity", {
+      value: identity,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
   for (const key of [
-    "identity",
     "resolveIdentitySigningPublicKey",
     "loadListingRailResolution",
     "resolvePayloadVerificationCapability",
@@ -1083,6 +1154,45 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
+  const identityBundleInput =
+    identity === undefined
+      ? undefined
+      : stableAgentData(identity, "bundle", "AgentConfig.identity.bundle");
+  const configuredBuyerIdentityBundle =
+    identityBundleInput === undefined
+      ? undefined
+      : snapshotCanonicalJson(
+          identityBundleInput,
+          "AgentConfig.identity.bundle",
+        );
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    !isIdentityBundle(configuredBuyerIdentityBundle)
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    configuredBuyerId !== undefined &&
+    configuredBuyerIdentityBundle.presentedBy !== configuredBuyerId
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle.presentedBy must equal AgentConfig.identity.agentId",
+    );
+  }
+  const configuredBuyerIdentityPresentationVerifier =
+    identity === undefined
+      ? undefined
+      : stableAgentMethod<
+          NonNullable<AgentConfig["identity"]>["verifyPresentation"]
+        >(
+          identity,
+          "verifyPresentation",
+          "AgentConfig.identity.verifyPresentation",
+          true,
+        );
   const resolveCanonicalSigningKey = async (
     claim: string,
   ): Promise<Uint8Array | null> => {
@@ -1862,7 +1972,27 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
-      if (parseCanonicalClaimReference(buyerId) === null) {
+      const buyerIdentityBundle = configuredBuyerIdentityBundle;
+      if (!buyerIdentityBundle) {
+        throw new DacsError(
+          "runSession requires createAgent({ identity: { agentId, bundle } })",
+        );
+      }
+      const buyerIdentityPresentationVerifier =
+        configuredBuyerIdentityPresentationVerifier ??
+        sessionListingValidationDeps?.verifyIdentityPresentation ??
+        configuredListingValidationDeps?.verifyIdentityPresentation;
+      if (!buyerIdentityPresentationVerifier) {
+        throw new DacsError(
+          "runSession requires a configured DACS-1 identity presentation verifier",
+        );
+      }
+      if (
+        buyerId.normalize("NFC") !== buyerId ||
+        buyerId.trim() !== buyerId ||
+        /[\u0000-\u001f\u007f]/.test(buyerId) ||
+        parseCanonicalClaimReference(buyerId) === null
+      ) {
         throw new DacsError(
           "runSession buyer identity must use exact CORE B.1 CF-2 ClaimReference bytes",
         );
@@ -2011,6 +2141,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         options.terms,
         {
           buyerId,
+          buyerIdentityBundle,
+          authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
+            buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
           readListing: (ref) => publicReads.readAnchor(ref),
           // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
           // migration is owned by #98; it is deliberately not coerced into a
