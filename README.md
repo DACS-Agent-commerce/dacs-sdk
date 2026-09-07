@@ -45,7 +45,7 @@ and readers must use `ComponentSignedArtifact`,
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `settleFromRail` | registry-selected buyer rails plus transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
@@ -109,6 +109,17 @@ filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
+
+`partyVetCore` evaluates DACS-1 presence-only members directly against the
+exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
+not resolve an optional `verifiedBy` merely to prove presence. Mixed
+presence/verified production must supply the durable
+`sessionRecipeRegistrySnapshot` pinned at session start. A strict consumer must
+provide the same bundle and snapshot hash through
+`CompositeVerificationExpectations.presence`, authenticate both, and re-run
+the mixed decision and exact-claim selector-control rules. A temporarily
+unavailable result is retained as indeterminate evidence; an independently
+conclusive failure still has the Standard's fail-first precedence.
 
 Settlement evidence has two deliberately different public boundaries.
 `validateSettlementEvidenceStructure()` checks wire shape and any supplied
@@ -691,6 +702,12 @@ the retained payer authorization before durable fulfilment, while PC-7 payment-
 evidence anchoring catches up independently. See
 [the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
 ordering, recovery, and post-settlement failure contract.
+
+Funded unattended buyers should place every rail behind the shared
+[wallet-wide spend authority](./docs/wallet-spend-authority.md). It durably
+enforces balance reserve, fee, rate, rolling, cumulative, counterparty,
+concurrency and approval limits across jobs, rails and processes; ambiguous
+effects remain charged until rail-authenticated reconciliation.
 
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
