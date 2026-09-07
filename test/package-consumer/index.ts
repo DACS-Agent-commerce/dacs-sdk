@@ -12,6 +12,10 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
+  advanceCrossChainHtlc,
+  deriveHtlcPreimage,
+  type CrossChainHtlcAdapter,
+  type CrossChainHtlcStore,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -45,6 +49,8 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
+const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
@@ -53,6 +59,8 @@ const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const htlcAdapter: CrossChainHtlcAdapter;
+declare const htlcStore: CrossChainHtlcStore;
 declare const solanaAdapter: SolanaSplAdapter;
 declare const solanaStore: SolanaSplSettlementStore;
 declare const ap2Store: Ap2BindingStore;
@@ -70,6 +78,10 @@ void fulfilment;
 void adapter;
 void journal;
 void result;
+void htlcAdvance;
+void htlcPreimage;
+void htlcAdapter;
+void htlcStore;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;
