@@ -6,6 +6,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import type { AttestationRef } from "../artifacts/types.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BASE64URL_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -254,6 +255,7 @@ export interface Ap2VerifiedPaymentMandate {
   payee: string;
   amount: string;
   currency: string;
+  paymentInstrumentId: string;
 }
 
 export type Ap2MandateVerification<T> =
@@ -288,12 +290,14 @@ export interface Ap2SettlementIntent {
   amount: string;
   currency: string;
   protocolVersion: string;
+  paymentInstrumentId: string;
 }
 
-export interface Ap2ReceiptAttestation {
+export type Ap2ReceiptAttestation = AttestationRef;
+
+export interface Ap2ReceiptTransactionRef {
   kind: string;
-  id: string;
-  contentHash: string;
+  value: string;
 }
 
 export interface Ap2CapturedSettlement {
@@ -301,6 +305,7 @@ export interface Ap2CapturedSettlement {
   mandateId: string;
   protocolVersion: string;
   receiptAttestation: Readonly<Ap2ReceiptAttestation>;
+  receiptTransactionRef?: Readonly<Ap2ReceiptTransactionRef>;
   payee: string;
   amount: string;
   currency: string;
@@ -385,6 +390,7 @@ export type Ap2AttestedProviderStatus =
       currency: string;
       metadata: Readonly<Record<string, string>>;
       receiptAttestation: Readonly<Ap2ReceiptAttestation>;
+      receiptTransactionRef?: Readonly<Ap2ReceiptTransactionRef>;
       capturedAt: number;
     }
   | { disposition: "pending"; reason: string }
@@ -478,6 +484,10 @@ function intentFrom(input: {
     amount,
     currency: requireString(input.verifiedPayment.currency, "currency"),
     protocolVersion: requireString(input.protocolVersion, "protocolVersion"),
+    paymentInstrumentId: requireString(
+      input.verifiedPayment.paymentInstrumentId,
+      "paymentInstrumentId",
+    ),
   };
   return Object.freeze({
     ...unsigned,
@@ -486,9 +496,19 @@ function intentFrom(input: {
 }
 
 function validAttestation(value: Ap2ReceiptAttestation): boolean {
-  return typeof value.kind === "string" && value.kind.length > 0 &&
-    typeof value.id === "string" && value.id.length > 0 &&
-    HASH_RE.test(value.contentHash);
+  return value !== null && typeof value === "object" &&
+    value.anchor !== null && typeof value.anchor === "object" &&
+    ["storage-program", "ipfs", "https"].includes(value.anchor.kind) &&
+    typeof value.anchor.locator === "string" && value.anchor.locator.length > 0 &&
+    HASH_RE.test(value.contentHash) &&
+    (value.signer === undefined ||
+      (typeof value.signer === "string" && value.signer.length > 0));
+}
+
+function validReceiptTransactionRef(value: Ap2ReceiptTransactionRef): boolean {
+  return value !== null && typeof value === "object" &&
+    typeof value.kind === "string" && value.kind.length > 0 &&
+    typeof value.value === "string" && value.value.length > 0;
 }
 
 function deepFreeze<T>(value: T, seen = new Set<object>()): Readonly<T> {
@@ -823,6 +843,8 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     status.metadata.dacs_job_id !== intent.jobId ||
     status.metadata.dacs_agreement_hash !== intent.agreementHash ||
     !validAttestation(status.receiptAttestation) ||
+    (status.receiptTransactionRef !== undefined &&
+      !validReceiptTransactionRef(status.receiptTransactionRef)) ||
     !Number.isSafeInteger(status.capturedAt) ||
     status.capturedAt < 0
   ) {
@@ -833,7 +855,18 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
     providerRef,
     mandateId: intent.mandateId,
     protocolVersion: intent.protocolVersion,
-    receiptAttestation: Object.freeze({ ...status.receiptAttestation }),
+    receiptAttestation: snapshotArtifact(
+      status.receiptAttestation,
+      "receiptAttestation",
+    ),
+    ...(status.receiptTransactionRef === undefined
+      ? {}
+      : {
+          receiptTransactionRef: snapshotArtifact(
+            status.receiptTransactionRef,
+            "receiptTransactionRef",
+          ),
+        }),
     payee: intent.payee,
     amount: intent.amount,
     currency: intent.currency,

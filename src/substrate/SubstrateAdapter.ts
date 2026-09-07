@@ -177,9 +177,9 @@ export interface ProxyFetchResult {
   /** Raw response body, returned inline to the caller. */
   body: string;
   status: number;
-  /** sha256 of the body, asserted by the validator set. */
+  /** sha256 of the exact body bytes committed by the selected SR-3 binding. */
   responseHash: string;
-  /** Anchoring tx the validators co-signed over (url, time, bodyHash). */
+  /** Native transaction carrying the binding's request/response commitment. */
   anchorTxRef?: string;
   /** Epoch-millis the fetch was performed. */
   fetchedAt: number;
