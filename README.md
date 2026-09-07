@@ -668,6 +668,12 @@ evidence anchoring catches up independently. See
 [the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
 ordering, recovery, and post-settlement failure contract.
 
+Funded unattended buyers should place every rail behind the shared
+[wallet-wide spend authority](./docs/wallet-spend-authority.md). It durably
+enforces balance reserve, fee, rate, rolling, cumulative, counterparty,
+concurrency and approval limits across jobs, rails and processes; ambiguous
+effects remain charged until rail-authenticated reconciliation.
+
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
 `@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,

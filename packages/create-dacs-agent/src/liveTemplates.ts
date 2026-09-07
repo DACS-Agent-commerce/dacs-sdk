@@ -10,7 +10,7 @@ const SDK_VERSION = "0.1.0-alpha.0";
 const TSX_VERSION = "4.23.12";
 const STANDARD_REVISION = "662be1d4899a2cadf327fe2d5523e93a80334e5f";
 const CONFIG_SCHEMA_VERSION = 1;
-const SQLITE_SCHEMA_VERSION = 6;
+const SQLITE_SCHEMA_VERSION = 7;
 
 function packageJson(packageName: string): string {
   return JSON.stringify({
@@ -53,7 +53,7 @@ function packageJson(packageName: string): string {
       standardRevision: STANDARD_REVISION,
       configSchemaVersion: CONFIG_SCHEMA_VERSION,
       sqliteSchemaVersion: SQLITE_SCHEMA_VERSION,
-      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6],
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
       breakingConfigurationChanges: [],
     },
     devDependencies: {
@@ -2960,7 +2960,7 @@ const releaseMetadata = Object.freeze({
   standardRevision: "${STANDARD_REVISION}",
   configSchemaVersion: ${CONFIG_SCHEMA_VERSION},
   sqliteSchemaVersion: ${SQLITE_SCHEMA_VERSION},
-  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6]),
+  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6, 7]),
   breakingConfigurationChanges: Object.freeze([]),
 });
 
