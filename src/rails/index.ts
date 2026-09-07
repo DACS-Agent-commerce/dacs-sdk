@@ -153,6 +153,7 @@ export {
   type SolanaSplPreflight,
   type SolanaSplTransferPlan,
   type SolanaSplSignedAttempt,
+  type SolanaSplExpiryEvidence,
   type SolanaSplObservedTransfer,
   type SolanaSplReconciliation,
   type SolanaSplBroadcastResult,

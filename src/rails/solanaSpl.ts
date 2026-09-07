@@ -90,6 +90,13 @@ export interface SolanaSplSignedAttempt {
   attemptHash: string;
 }
 
+export interface SolanaSplExpiryEvidence {
+  signature: string;
+  observedBlockHeight: number;
+  commitmentLevel: "confirmed";
+  authenticationHash: string;
+}
+
 export interface SolanaSplObservedTransfer {
   cluster: SolanaCluster;
   signature: string;
@@ -109,7 +116,12 @@ export type SolanaSplReconciliation =
   | { disposition: "settled-same"; transfer: Readonly<SolanaSplObservedTransfer> }
   | { disposition: "pending"; reason: string }
   | { disposition: "absent-valid"; authenticationHash: string }
-  | { disposition: "absent-expired"; authenticationHash: string }
+  | {
+      disposition: "absent-expired";
+      authenticationHash: string;
+      observedBlockHeight?: number;
+      commitmentLevel?: SolanaCommitmentLevel;
+    }
   | { disposition: "settled-different"; reason: string; authenticationHash: string }
   | { disposition: "indeterminate"; reason: string };
 
@@ -127,7 +139,10 @@ export interface SolanaSplEffectFence {
 
 /**
  * Wallet/RPC boundary. Implementations must inspect the exact retained signed
- * transaction and authenticate reconciliation against Solana ledger state.
+ * transaction and authenticate reconciliation against Solana ledger state. An
+ * absent-expired result must derive absence and block height from one coherent
+ * confirmed view, and its authentication hash must bind the cluster,
+ * signature, last-valid bound, observed height and commitment level.
  */
 export interface SolanaSplAdapter {
   preflight(
@@ -179,6 +194,7 @@ export type SolanaSplStoreClaim =
       lease: Readonly<SolanaSplLease>;
       attempts: readonly Readonly<SolanaSplSignedAttempt>[];
       expiredSignatures: readonly string[];
+      expiryEvidence?: readonly Readonly<SolanaSplExpiryEvidence>[];
     }
   | {
       status: "waiting";
@@ -186,6 +202,7 @@ export type SolanaSplStoreClaim =
       lease: Readonly<SolanaSplLease>;
       attempts: readonly Readonly<SolanaSplSignedAttempt>[];
       expiredSignatures: readonly string[];
+      expiryEvidence?: readonly Readonly<SolanaSplExpiryEvidence>[];
     }
   | {
       status: "settled";
@@ -195,7 +212,11 @@ export type SolanaSplStoreClaim =
   | { status: "conflict" | "corrupt"; reason: string };
 
 export type SolanaSplStoreWrite =
-  | { status: "recorded" | "existing" }
+  | {
+      status: "recorded" | "existing";
+      /** Required for markAttemptExpired: exact evidence durably retained. */
+      expiryEvidence?: Readonly<SolanaSplExpiryEvidence>;
+    }
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
 /** Atomic durable retained-transaction store. */
@@ -226,6 +247,8 @@ export interface SolanaSplSettlementStore {
     owner: string;
     generation: number;
     signature: string;
+    observedBlockHeight: number;
+    commitmentLevel: "confirmed";
     authenticationHash: string;
   }): Promise<SolanaSplStoreWrite>;
   recordSettlement(input: {
@@ -497,6 +520,69 @@ function captureRetainedAttempts(
   }));
 }
 
+function captureExpiryEvidence(
+  value: Readonly<{
+    signature: unknown;
+    observedBlockHeight: unknown;
+    commitmentLevel: unknown;
+    authenticationHash: unknown;
+  }>,
+  attempt: Readonly<SolanaSplSignedAttempt>,
+): Readonly<SolanaSplExpiryEvidence> {
+  if (value.signature !== attempt.signature) {
+    throw new DacsError("pay-solana-spl: expiry evidence signature mismatch");
+  }
+  if (typeof value.observedBlockHeight !== "number" ||
+      !Number.isSafeInteger(value.observedBlockHeight) ||
+      value.observedBlockHeight < 0 ||
+      value.observedBlockHeight <= attempt.lastValidBlockHeight) {
+    throw new DacsError("pay-solana-spl: expiry evidence block height is invalid");
+  }
+  if (value.commitmentLevel !== "confirmed") {
+    throw new DacsError("pay-solana-spl: expiry evidence must be confirmed");
+  }
+  if (typeof value.authenticationHash !== "string" ||
+      !HASH_RE.test(value.authenticationHash)) {
+    throw new DacsError("pay-solana-spl: expiry evidence authentication hash is invalid");
+  }
+  return Object.freeze({
+    signature: attempt.signature,
+    observedBlockHeight: value.observedBlockHeight,
+    commitmentLevel: value.commitmentLevel,
+    authenticationHash: value.authenticationHash,
+  });
+}
+
+function captureRetainedExpiryEvidence(
+  values: readonly Readonly<SolanaSplExpiryEvidence>[] | undefined,
+  attempts: readonly Readonly<SolanaSplSignedAttempt>[],
+  expiredSignatures: readonly string[],
+): ReadonlyMap<string, Readonly<SolanaSplExpiryEvidence>> {
+  if (values === undefined) return new Map();
+  if (!Array.isArray(values)) {
+    throw new DacsError("pay-solana-spl: retained expiry evidence must be an array");
+  }
+  const captured = new Map<string, Readonly<SolanaSplExpiryEvidence>>();
+  for (const value of values) {
+    if (typeof value !== "object" || value === null) {
+      throw new DacsError("pay-solana-spl: retained expiry evidence is invalid");
+    }
+    const candidate = value as unknown as Record<string, unknown>;
+    const attempt = attempts.find((retained) => retained.signature === candidate.signature);
+    if (!attempt || !expiredSignatures.includes(attempt.signature) ||
+        captured.has(attempt.signature)) {
+      throw new DacsError("pay-solana-spl: retained expiry evidence is inconsistent");
+    }
+    captured.set(attempt.signature, captureExpiryEvidence({
+      signature: candidate.signature,
+      observedBlockHeight: candidate.observedBlockHeight,
+      commitmentLevel: candidate.commitmentLevel,
+      authenticationHash: candidate.authenticationHash,
+    }, attempt));
+  }
+  return captured;
+}
+
 function storedSettlementMatchesIntent(
   settlement: Readonly<SolanaSplSettlementResult>,
   intent: Readonly<SolanaSplSettlementIntent>,
@@ -628,6 +714,7 @@ export async function advanceSolanaSplSettlement(
   }
   let attempts: readonly Readonly<SolanaSplSignedAttempt>[];
   let expiredSignatures: readonly string[];
+  let expiryEvidence: ReadonlyMap<string, Readonly<SolanaSplExpiryEvidence>>;
   try {
     attempts = captureRetainedAttempts(claimed.attempts, intent);
     if (!Array.isArray(claimed.expiredSignatures) ||
@@ -637,6 +724,14 @@ export async function advanceSolanaSplSettlement(
       throw new DacsError("pay-solana-spl: retained expiry set is invalid");
     }
     expiredSignatures = Object.freeze([...claimed.expiredSignatures]);
+    expiryEvidence = captureRetainedExpiryEvidence(
+      claimed.expiryEvidence,
+      attempts,
+      expiredSignatures,
+    );
+    if (attempts.slice(0, -1).some((attempt) => !expiryEvidence.has(attempt.signature))) {
+      throw new DacsError("pay-solana-spl: predecessor expiry evidence is missing");
+    }
   } catch {
     return { status: "indeterminate", reason: "solana-spl-retained-state-corrupt" };
   }
@@ -663,13 +758,27 @@ export async function advanceSolanaSplSettlement(
       await fence.assertCurrent();
       const result = await reconcileTransfer(intent, attempt, fence);
       await fence.assertCurrent();
-      if ((result.disposition === "absent-valid" ||
-          result.disposition === "absent-expired") &&
+      if (result.disposition === "absent-valid" &&
           !HASH_RE.test(result.authenticationHash)) {
         return {
           disposition: "indeterminate",
           reason: "solana-spl-absence-proof-invalid",
         };
+      }
+      if (result.disposition === "absent-expired") {
+        try {
+          captureExpiryEvidence({
+            signature: attempt.signature,
+            observedBlockHeight: result.observedBlockHeight,
+            commitmentLevel: result.commitmentLevel,
+            authenticationHash: result.authenticationHash,
+          }, attempt);
+        } catch {
+          return {
+            disposition: "indeterminate",
+            reason: "solana-spl-expiry-proof-invalid",
+          };
+        }
       }
       return result;
     } catch {
@@ -709,9 +818,47 @@ export async function advanceSolanaSplSettlement(
     if (result.disposition === "indeterminate") return { status: "indeterminate", reason: result.reason };
     return null;
   };
+  const persistExpiry = async (
+    attempt: Readonly<SolanaSplSignedAttempt>,
+    result: Extract<SolanaSplReconciliation, { disposition: "absent-expired" }>,
+  ): Promise<SolanaSplProgress | null> => {
+    let evidence: Readonly<SolanaSplExpiryEvidence>;
+    try {
+      evidence = captureExpiryEvidence({
+        signature: attempt.signature,
+        observedBlockHeight: result.observedBlockHeight,
+        commitmentLevel: result.commitmentLevel,
+        authenticationHash: result.authenticationHash,
+      }, attempt);
+    } catch {
+      return { status: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
+    }
+    let marked: SolanaSplStoreWrite;
+    try {
+      marked = await markAttemptExpired({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        ...evidence,
+      });
+    } catch {
+      return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
+    }
+    if (marked.status === "recorded" || marked.status === "existing") {
+      try {
+        if (marked.expiryEvidence &&
+            canonicalize(captureExpiryEvidence(marked.expiryEvidence, attempt)) ===
+              canonicalize(evidence)) return null;
+      } catch {
+        // An invalid acknowledgement cannot authorize a replacement.
+      }
+    }
+    return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
+  };
 
-  let latest = attempts.at(-1);
-  if (latest && !expiredSignatures.includes(latest.signature)) {
+  const latest = attempts.at(-1);
+  if (latest && !expiryEvidence.has(latest.signature)) {
     let state = await reconcile(latest);
     const terminal = await finalize(latest, state);
     if (terminal) return terminal;
@@ -728,7 +875,12 @@ export async function advanceSolanaSplSettlement(
       }
       state = await reconcile(latest);
       const afterBroadcast = await finalize(latest, state);
-      return afterBroadcast ?? {
+      if (afterBroadcast) return afterBroadcast;
+      if (state.disposition === "absent-expired") {
+        const persistenceFailure = await persistExpiry(latest, state);
+        if (persistenceFailure) return persistenceFailure;
+      }
+      return {
         status: state.disposition === "absent-valid" ? "waiting" : "indeterminate",
         reason: state.disposition === "absent-valid"
           ? "solana-spl-broadcast-not-yet-visible"
@@ -736,26 +888,8 @@ export async function advanceSolanaSplSettlement(
       };
     }
     if (state.disposition === "absent-expired") {
-      if (!HASH_RE.test(state.authenticationHash)) {
-        return { status: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
-      }
-      let marked: SolanaSplStoreWrite;
-      try {
-        marked = await markAttemptExpired({
-          settlementKey: intent.settlementKey,
-          bindingHash: intent.bindingHash,
-          owner: fence.owner,
-          generation: fence.generation,
-          signature: latest.signature,
-          authenticationHash: state.authenticationHash,
-        });
-      } catch {
-        return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
-      }
-      if (marked.status !== "recorded" && marked.status !== "existing") {
-        return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
-      }
-      latest = undefined;
+      const persistenceFailure = await persistExpiry(latest, state);
+      if (persistenceFailure) return persistenceFailure;
     }
   }
 
@@ -822,7 +956,7 @@ interface MemoryRecord {
   intent: Readonly<SolanaSplSettlementIntent>;
   lease: SolanaSplLease;
   attempts: SolanaSplSignedAttempt[];
-  expired: Map<string, string>;
+  expired: Map<string, Readonly<SolanaSplExpiryEvidence>>;
   settlement?: Readonly<SolanaSplSettlementResult>;
 }
 
@@ -853,6 +987,8 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
             lease: { ...existing.lease },
             attempts: existing.attempts.map((attempt) => Object.freeze({ ...attempt })),
             expiredSignatures: [...existing.expired.keys()],
+            expiryEvidence: [...existing.expired.values()]
+              .map((evidence) => Object.freeze({ ...evidence })),
           };
         }
         existing.lease = {
@@ -866,6 +1002,8 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           lease: { ...existing.lease },
           attempts: existing.attempts.map((attempt) => Object.freeze({ ...attempt })),
           expiredSignatures: [...existing.expired.keys()],
+          expiryEvidence: [...existing.expired.values()]
+            .map((evidence) => Object.freeze({ ...evidence })),
         };
       }
       const record: MemoryRecord = {
@@ -881,6 +1019,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
         lease: { ...record.lease },
         attempts: [],
         expiredSignatures: [],
+        expiryEvidence: [],
       };
     },
     async isCurrent(input) {
@@ -910,22 +1049,29 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
     async markAttemptExpired(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (!HASH_RE.test(input.authenticationHash) ||
-          !record.attempts.some((attempt) => attempt.signature === input.signature)) {
+      const attempt = record.attempts.find(
+        (retained) => retained.signature === input.signature,
+      );
+      if (!attempt) {
+        return { status: "conflict", reason: "solana-expiry-proof-or-signature-invalid" };
+      }
+      let evidence: Readonly<SolanaSplExpiryEvidence>;
+      try {
+        evidence = captureExpiryEvidence(input, attempt);
+      } catch {
         return { status: "conflict", reason: "solana-expiry-proof-or-signature-invalid" };
       }
       const prior = record.expired.get(input.signature);
-      if (prior && prior !== input.authenticationHash) {
+      if (prior && canonicalize(prior) !== canonicalize(evidence)) {
         return { status: "conflict", reason: "solana-expiry-proof-conflict" };
       }
-      record.expired.set(input.signature, input.authenticationHash);
-      return { status: prior ? "existing" : "recorded" };
+      record.expired.set(input.signature, evidence);
+      return { status: prior ? "existing" : "recorded", expiryEvidence: evidence };
     },
     async recordSettlement(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (!record.attempts.some((attempt) => attempt.signature === input.signature) ||
-          record.expired.has(input.signature)) {
+      if (!record.attempts.some((attempt) => attempt.signature === input.signature)) {
         return { status: "conflict", reason: "solana-settlement-attempt-not-live" };
       }
       if (record.settlement) {

@@ -16,7 +16,8 @@ The core:
 - checks token, network-fee and optional rent balances before signing;
 - persists the complete signed transaction before any broadcast;
 - reconciles the retained signature before rebroadcast or replacement;
-- permits a replacement signature only after authenticated blockhash expiry;
+- permits a replacement signature only after authenticated, confirmed
+  blockhash-expiry evidence is durably recorded;
 - checks the durable generation fence before and after each wallet/RPC call,
   while requiring adapters to recheck the supplied fence immediately before
   each authority-bearing side effect; and
@@ -57,11 +58,29 @@ const result = await advanceSolanaSplSettlement({
 
 `waiting` and `indeterminate` never authorize a fresh payment. Resume the same
 authority after the lease expires. A production store must atomically retain
-the signed wire bytes, lease generation, authenticated expiry proof and final
-settlement across process restart. The exported in-memory store is for tests
-and development only.
+the signed wire bytes, lease generation, complete `SolanaSplExpiryEvidence` and
+final settlement across process restart. The evidence binds the retained
+signature to a non-negative safe-integer `observedBlockHeight` strictly greater
+than its `lastValidBlockHeight`, the literal `confirmed` commitment and an
+authentication hash. `expiredSignatures` remains in the store claim for source
+compatibility, but a hash-only legacy marker is never replacement authority: it
+causes the retained attempt to be reconciled again. A store must allow a later
+authenticated `settled-same` observation to supersede such an expiry marker.
+A successful `markAttemptExpired` write must acknowledge the exact complete
+record through `expiryEvidence`; a status-only legacy acknowledgement refuses
+replacement. Every predecessor of a retained attempt must also have complete
+expiry evidence. If historical state lacks that evidence, recovery returns
+`indeterminate` and requires store migration/reconciliation before continuing.
+The exported in-memory store is for tests and development only.
 
-The adapter must authenticate reconciliation from Solana ledger state. A
-transport response or an unverified signature string is not settlement
-evidence. A live wallet/RPC adapter and funded public-network proof remain a
-separate integration deliverable.
+The adapter must authenticate reconciliation from Solana ledger state. For
+`absent-expired`, absence and height must come from one coherent authenticated
+confirmed ledger view. Its `authenticationHash` must bind the cluster,
+signature, retained last-valid bound, observed height and commitment; hash
+format alone is not authentication. Adapters that omit the optional expiry
+fields remain source-compatible but produce an `indeterminate` result at
+runtime. The durable store is part of the trusted implementation boundary and
+must return exactly the evidence it accepted. A transport response or an
+unverified signature string is not settlement evidence. A live wallet/RPC
+adapter and funded public-network proof remain a separate integration
+deliverable.
