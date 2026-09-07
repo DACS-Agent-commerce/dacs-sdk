@@ -66,8 +66,14 @@ HTTP transport, wallet, secret loader, or role service.
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical
 signed envelope, authentication and identity-evidence hashes before an action
-is invoked. An exact replay is distinguished from a still-pending crash window;
+is invoked. Exact and payload-equivalent fresh-nonce replay are distinguished
+from a still-pending crash window without allocating an unbounded alias row.
+Semantic replay returns the original retained record plus the newly received
+envelope ID, because any acknowledgement must bind the newly received ID;
 only a durably recorded disposition may be projected into an acknowledgement.
+An expired, unacknowledged outbox message may be renewed with a new signed
+validity window, while the receiving inbox still collapses that renewal to the
+same semantic action and binds its acknowledgement to the newly received ID.
 The outbox retains the exact signed envelope across retries, claims work with a
 generation-fenced lease, applies one-second exponential backoff capped at sixty
 seconds, and never manufactures a replacement after envelope expiry. A valid
@@ -78,10 +84,27 @@ the outbox.
 Both transport stores reject retention shorter than seven days, support a
 terminal-session retention extension, use stable bounded cursors, and keep a
 complete hash-chained canonical transition history. Their durable monotonic
-clock prevents a backwards host clock from reviving a lease. These stores do
-not open a socket or perform a request; admission, bounded HTTP parsing, TLS,
-rate limiting, payload validation and role dispatch belong to the next host
-unit.
+clock prevents a backwards host clock from reviving a lease. A database-wide,
+durably bound policy places finite row and canonical-byte quotas on global,
+peer, job, and message-type usage and caps revisions per message. Equivalent
+acknowledgements are O(1): a new transport nonce or later receipt cannot extend
+retention or append history. The explicit job retention transition is required
+for that change. Admission charges explicit row and byte headroom for the
+largest valid terminal transition, and active updates preserve the last revision
+for an acknowledgement, disposition, or operator-action transition. Quota
+pressure therefore cannot wedge active work in an unpurgeable state.
+
+`diagnostics()` reports durable pressure, rejection, oldest-item,
+operator-action, expiry-cursor, and purge progress. `purge()` deletes only a
+bounded page of disposed inbox or acknowledged outbox records after their
+retention deadline; pending, sending, and operator-action records are never
+eligible. Projection, history, usage accounting, and cursor advancement share
+one transaction, so a crash either commits the whole page or none of it. These
+scans advance over a bounded physical index page even when nothing is expired
+or purgeable, avoiding an unbounded sparse-table scan under the write lock. These
+stores do not open a socket or perform a request; admission, bounded HTTP
+parsing, TLS, rate limiting, payload validation and role dispatch belong to the
+next host unit.
 
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
@@ -95,7 +118,11 @@ projections, and their scope-local replay reservations. Migration from v4 is
 preceded by a validated, self-contained backup just like every older supported
 schema transition. Schema v6 adds the HTTP inbox, outbox, monotonic clock and
 their integrity-checked transition histories; migration from v5 likewise
-requires a validated pre-write backup.
+requires a validated pre-write backup. Schema v7 adds semantic idempotency,
+durable quota accounting and bounded lifecycle cursors without modifying the
+released v6 migration. A v6 database is backed up and every existing envelope,
+history, semantic identity, and usage total is validated before v7 is committed;
+ambiguous duplicate semantics fail closed.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline
