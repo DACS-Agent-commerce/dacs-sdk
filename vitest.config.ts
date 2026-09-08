@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // Bound outer concurrency so subprocess fixtures retain enough resources.
+    maxWorkers: 2,
     // demosdk's published build (and its transitive deps) use directory /
     // extensionless imports that Node's strict ESM resolver rejects — left
     // externalized, importing DemosAdapter crashes at collection time
