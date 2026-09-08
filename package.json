@@ -87,3 +87,67 @@
     "docs/fixed-price-x402-coordinator.md",
     "docs/settlement-verified-reputation.md",
     "docs/pay-solana-spl.md",
+    "docs/pay-ap2.md",
+    "docs/filesystem-store-safety.md",
+    "docs/x402-seller-paywall.md",
+    "docs/wallet-spend-authority.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "host:build": "npm run build --workspace @kynesyslabs/dacs-node",
+    "generator:build": "npm run build --workspace create-dacs-agent",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.examples.json",
+    "host:typecheck": "npm run typecheck --workspace @kynesyslabs/dacs-node",
+    "generator:typecheck": "npm run typecheck --workspace create-dacs-agent",
+    "test": "vitest run",
+    "host:test": "npm test --workspace @kynesyslabs/dacs-node",
+    "generator:test": "npm test --workspace create-dacs-agent",
+    "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
+    "test:live": "vitest run test/integration/live.e2e.test.ts",
+    "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
+    "test:watch": "vitest",
+    "conformance:sync": "node scripts/sync-vectors.mjs",
+    "clean": "rm -rf dist",
+    "prepack": "npm run clean && npm run build",
+    "package:verify": "node scripts/verify-package.mjs",
+    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@swaggerexpert/jsonpath": "4.0.4",
+    "@xmldom/xmldom": "^0.9.12",
+    "css-select": "^7.0.0",
+    "htmlparser2": "^12.0.0",
+    "re2-wasm": "^1.0.2",
+    "xpath": "^0.0.34"
+  },
+  "peerDependencies": {
+    "@kynesyslabs/demosdk": "^4.0.16",
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
+    "@x402/fetch": "^2.15.0",
+    "viem": "^2.52.2"
+  },
+  "peerDependenciesMeta": {
+    "@kynesyslabs/demosdk": { "optional": true },
+    "@x402/core": { "optional": true },
+    "@x402/evm": { "optional": true },
+    "@x402/fetch": { "optional": true },
+    "viem": { "optional": true }
+  },
+  "devDependencies": {
+    "@kynesyslabs/demosdk": "^4.0.16",
+    "@types/node": "^20",
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
+    "@x402/fetch": "^2.15.0",
+    "ganache": "7.9.2",
+    "typescript": "^5",
+    "viem": "^2.52.2",
+    "vitest": "^4.0.18"
+  }
+}
