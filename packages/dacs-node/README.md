@@ -384,7 +384,11 @@ requires a validated pre-write backup. Schema v7 adds semantic idempotency,
 durable quota accounting and bounded lifecycle cursors without modifying the
 released v6 migration. A v6 database is backed up and every existing envelope,
 history, semantic identity, and usage total is validated before v7 is committed;
-ambiguous duplicate semantics fail closed.
+ambiguous duplicate semantics fail closed. Schema v8 adds the native-DEM
+coordinator namespace without modifying the released v7 HTTP migration. A v7
+database is backed up before its coordinator tables are rebuilt; x402 rows keep
+their exact profile, hashes and canonical record bytes, while HTTP policy,
+accounting and lifecycle state are left unchanged.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline

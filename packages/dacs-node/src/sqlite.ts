@@ -89,7 +89,7 @@ import {
   type DacsHttpSqliteContext,
 } from "./sqliteTransport.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 7 as const;
+export const DACS_NODE_SQLITE_SCHEMA_VERSION = 8 as const;
 export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
@@ -1412,6 +1412,53 @@ CREATE INDEX dacs_http_outbox_active_scan_idx
   ON dacs_http_outbox (envelope_id)
   WHERE state IN ('pending', 'sending');
 `;
+
+/**
+ * Add a separate native-DEM coordinator namespace. Historical x402 rows retain
+ * their exact profile and bytes; the migration only broadens the constrained
+ * operational profile discriminator used by new records.
+ */
+const MIGRATION_8_PREPARE = MIGRATION_4_PREPARE
+  .replaceAll("_v3", "_v7")
+  .replaceAll(
+    "CHECK (profile IN ('live-x402', 'offline'))",
+    "CHECK (profile IN ('live-x402', 'live-pay-dem', 'offline'))",
+  )
+  .replace(
+    "(profile = 'live-x402' AND",
+    "(profile IN ('live-x402', 'live-pay-dem') AND",
+  );
+
+const MIGRATION_8_COPY = `
+INSERT INTO dacs_coordinator_orders (
+  profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+)
+SELECT profile, role, job_id, binding_hash, local_binding_hash, record_hash,
+  record_json, revision, created_at, updated_at
+FROM dacs_coordinator_orders_v7;
+
+INSERT INTO dacs_coordinator_tracks (
+  profile, role, job_id, local_binding_hash, track, eligible, state, outcome,
+  error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+)
+SELECT profile, role, job_id, local_binding_hash, track, eligible, state,
+  outcome, error_class, faulted_party, withdrawn_by, generation, attempts,
+  lease_expires_at, next_attempt_at, updated_at
+FROM dacs_coordinator_tracks_v7;
+`;
+
+const MIGRATION_8_FINALIZE = `
+DROP TABLE dacs_coordinator_tracks_v7;
+DROP TABLE dacs_coordinator_orders_v7;
+`;
+
+function applyMigration8(database: BetterSqlite3.Database): void {
+  database.exec(MIGRATION_8_PREPARE);
+  database.exec(MIGRATION_8_COPY);
+  database.exec(MIGRATION_8_FINALIZE);
+}
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
@@ -6017,7 +6064,7 @@ type SchemaFingerprint = Readonly<{
   indexes: Readonly<Record<string, unknown>>;
 }>;
 
-type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type DacsNodeSqliteSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 const expectedSchemaFingerprints = new Map<number, SchemaFingerprint>();
 
@@ -6102,6 +6149,7 @@ function expectedSchemaFingerprint(version: DacsNodeSqliteSchemaVersion): Schema
       ));
       reference.exec(MIGRATION_7_FINALIZE);
     }
+    if (version >= 8) applyMigration8(reference);
     const objects = schemaObjects(reference, 128);
     const fingerprint = Object.freeze({
       objects,
@@ -6227,7 +6275,7 @@ function verifyMigrationHistory(
       SELECT version, applied_at
       FROM dacs_migrations
       ORDER BY version
-      LIMIT 7
+      LIMIT 8
     `).all() as MigrationRow[];
   } catch {
     throw new DacsNodeSqliteError(
@@ -6781,6 +6829,7 @@ function initializeEmptyDatabase(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       INSERT INTO dacs_store_metadata (
         singleton, schema_version, mode, profile, role, authority,
@@ -6798,11 +6847,11 @@ function initializeEmptyDatabase(
     );
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
-    `).run(now, now, now, now, now, now, now);
+      VALUES (1, ?), (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now, now, now, now, now, now);
     database.pragma(`application_id = ${DACS_NODE_SQLITE_APPLICATION_ID}`);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -6815,7 +6864,7 @@ function removeGeneratedBackup(backupPath: string): void {
 async function createValidatedBackup(
   database: BetterSqlite3.Database,
   options: ReturnType<typeof validateOptions>,
-  version: 1 | 2 | 3 | 4 | 5 | 6,
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7,
 ): Promise<Readonly<{ backupPath: string; sourceDataVersion: number }>> {
   const backupPath = `${options.databasePath}.backup-v${version}-${randomUUID()}.sqlite`;
   try {
@@ -6879,15 +6928,16 @@ function migrateV1Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
-    `).run(now, now, now, now, now, now);
+      VALUES (2, ?), (3, ?), (4, ?), (5, ?), (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -6917,15 +6967,16 @@ function migrateV2Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
       INSERT INTO dacs_migrations (version, applied_at)
-      VALUES (3, ?), (4, ?), (5, ?), (6, ?), (7, ?)
-    `).run(now, now, now, now, now);
+      VALUES (3, ?), (4, ?), (5, ?), (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -6954,14 +7005,16 @@ function migrateV3Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (4, ?), (5, ?), (6, ?), (7, ?)
-    `).run(now, now, now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (4, ?), (5, ?), (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -6987,14 +7040,16 @@ function migrateV4Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (5, ?), (6, ?), (7, ?)
-    `).run(now, now, now);
+      INSERT INTO dacs_migrations (version, applied_at)
+      VALUES (5, ?), (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -7019,14 +7074,15 @@ function migrateV5Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?), (7, ?)
-    `).run(now, now);
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (6, ?), (7, ?), (8, ?)
+    `).run(now, now, now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -7050,14 +7106,44 @@ function migrateV6Database(
     database.exec(MIGRATION_7_PREPARE);
     migrateDacsHttpSqliteV7Rows(dacsHttpSqliteContext(database, options.authority, options.role));
     database.exec(MIGRATION_7_FINALIZE);
+    applyMigration8(database);
     database.prepare(`
       UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
     database.prepare(`
-      INSERT INTO dacs_migrations (version, applied_at) VALUES (7, ?)
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (7, ?), (8, ?)
+    `).run(now, now);
+    database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
+    verifyVersionedDatabase(database, options, 8);
+  });
+}
+
+function migrateV7Database(
+  database: BetterSqlite3.Database,
+  options: ReturnType<typeof validateOptions>,
+  sourceDataVersion: number,
+): void {
+  beginImmediate(database, () => {
+    if (Number(database.pragma("data_version", { simple: true })) !== sourceDataVersion) {
+      throw new DacsNodeSqliteError(
+        "database-version-raced",
+        "SQLite v7 data changed while its migration backup was created",
+      );
+    }
+    verifyVersionedDatabase(database, options, 7);
+    const previous = database.prepare(`
+      SELECT applied_at FROM dacs_migrations WHERE version = 7
+    `).get() as { applied_at: number };
+    const now = Math.max(databaseTime(database), previous.applied_at);
+    applyMigration8(database);
+    database.prepare(`
+      UPDATE dacs_store_metadata SET schema_version = ? WHERE singleton = 1
+    `).run(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    database.prepare(`
+      INSERT INTO dacs_migrations (version, applied_at) VALUES (8, ?)
     `).run(now);
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
   });
 }
 
@@ -7389,8 +7475,20 @@ export async function openDacsNodeSqliteDatabase(
         }
         throw error;
       }
+    } else if (admittedVersion === 7) {
+      verifyVersionedDatabase(database, options, 7);
+      const backup = await createValidatedBackup(database, options, 7);
+      try {
+        migrateV7Database(database, options, backup.sourceDataVersion);
+      } catch (error) {
+        if (error instanceof DacsNodeSqliteError &&
+            error.reasonCode === "database-version-raced") {
+          removeGeneratedBackup(backup.backupPath);
+        }
+        throw error;
+      }
     } else {
-      beginImmediate(database, () => verifyVersionedDatabase(database, options, 7));
+      beginImmediate(database, () => verifyVersionedDatabase(database, options, 8));
     }
     chmodSync(location.databasePath, 0o600);
     const journalMode = database.pragma("journal_mode = WAL", { simple: true });
@@ -7401,7 +7499,7 @@ export async function openDacsNodeSqliteDatabase(
         "SQLite WAL journal mode is unavailable",
       );
     }
-    verifyVersionedDatabase(database, options, 7);
+    verifyVersionedDatabase(database, options, 8);
     return new DacsNodeSqliteDatabaseImpl(database, options, location);
   } catch (error) {
     database.close();
