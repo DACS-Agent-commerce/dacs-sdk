@@ -934,6 +934,9 @@ describe("SQLite payment-evidence handshake store", () => {
     const raw = new BetterSqlite3(databasePath);
     downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;

@@ -251,6 +251,9 @@ describe("DACS Node SQLite durability foundation", () => {
     databases.splice(databases.indexOf(current), 1);
     const raw = new BetterSqlite3(databasePath);
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;
@@ -438,6 +441,9 @@ describe("DACS Node SQLite durability foundation", () => {
 
     const downgrade = raw.transaction(() => {
       raw.exec(`
+        DROP TABLE dacs_http_lifecycle;
+        DROP TABLE dacs_http_usage;
+        DROP TABLE dacs_http_policy;
         DROP TABLE dacs_http_inbox_history;
         DROP TABLE dacs_http_outbox_history;
         DROP TABLE dacs_http_inbox;
@@ -1571,6 +1577,9 @@ describe("DACS Node SQLite durability foundation", () => {
       retainedOrder.updated_at,
     );
     raw.exec(`
+      DROP TABLE dacs_http_lifecycle;
+      DROP TABLE dacs_http_usage;
+      DROP TABLE dacs_http_policy;
       DROP TABLE dacs_http_inbox_history;
       DROP TABLE dacs_http_outbox_history;
       DROP TABLE dacs_http_inbox;
