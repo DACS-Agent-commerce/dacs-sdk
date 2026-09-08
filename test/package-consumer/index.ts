@@ -19,6 +19,10 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
+  advanceSolanaSplSettlement,
+  createSolanaSplSettlementIntent,
+  type SolanaSplAdapter,
+  type SolanaSplSettlementStore,
   advanceAp2Settlement,
   deriveAp2IdempotencyKey,
   type Ap2BindingStore,
@@ -52,6 +56,8 @@ const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
   evaluateRailAvailabilitySelection;
+const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
+const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
@@ -63,6 +69,8 @@ declare const qualificationDeps: ClaimQualificationDeps;
 declare const qualificationMember: ClaimQualificationRequirement;
 declare const qualificationRequirement: ClaimQualificationBundleRequirement;
 declare const railAuthority: RailAvailabilityAuthority;
+declare const solanaAdapter: SolanaSplAdapter;
+declare const solanaStore: SolanaSplSettlementStore;
 declare const ap2Store: Ap2BindingStore;
 declare const ap2Verifier: Ap2MandateVerifier;
 declare const ap2Provider: Ap2ProviderAdapter;
@@ -82,6 +90,10 @@ void selectRail({}, railAuthority);
 void adapter;
 void journal;
 void result;
+void solanaAdvance;
+void solanaIntent;
+void solanaAdapter;
+void solanaStore;
 void ap2Advance;
 void ap2IdempotencyKey;
 void ap2Store;
