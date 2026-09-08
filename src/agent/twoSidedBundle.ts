@@ -120,10 +120,8 @@ export interface SessionParty {
    * of the agent id, and NOT the `attestation_bundle_hash`.
    *
    * Caller-supplied on purpose — this module cannot verify an IdentityBundle, and inventing a
-   * value here would bake a wrong one into every bundle. NOTE for whoever wires this up:
-   * `runSessionCore.ts:387` currently passes `sha256Hex(deps.buyerId)`, which is a hash of the
-   * agent id, not of an IdentityBundle. That is a conformance gap in the caller, and it survives
-   * this constructor because a 64-hex string is indistinguishable from the right one.
+   * value here would bake a wrong one into every bundle. Public producers must compute this
+   * value with `identityBundleHash()` from the exact authenticated bundle bytes.
    */
   bundleHash: string;
   /** A prepared KeyObject or remote/HSM-backed signing function. */
