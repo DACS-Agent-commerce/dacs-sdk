@@ -4,8 +4,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
-    // Filesystem recovery suites spawn their own concurrent workers/processes.
-    // Bound outer concurrency so shared CI runners do not starve their timers.
+    // Bound outer concurrency so subprocess fixtures retain enough resources.
     maxWorkers: 2,
     // demosdk's published build (and its transitive deps) use directory /
     // extensionless imports that Node's strict ESM resolver rejects — left
