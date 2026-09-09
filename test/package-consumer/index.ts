@@ -2,6 +2,13 @@ import {
   type BundleVerification,
   type DemosAdapterConfig,
   type DemosWriteJournal,
+  evaluateClaimRequirementQualification,
+  evaluateRailAvailabilitySelection,
+  type ClaimQualificationDeps,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type RailAvailabilityAuthority,
   type DeriveReputationDeps,
   type RatingRecord,
   type SubstrateAdapter,
@@ -52,6 +59,10 @@ const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
 const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
+const qualify: typeof evaluateClaimRequirementQualification =
+  evaluateClaimRequirementQualification;
+const selectRail: typeof evaluateRailAvailabilitySelection =
+  evaluateRailAvailabilitySelection;
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
@@ -60,6 +71,11 @@ const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const qualificationInput: ClaimQualificationInput;
+declare const qualificationDeps: ClaimQualificationDeps;
+declare const qualificationMember: ClaimQualificationRequirement;
+declare const qualificationRequirement: ClaimQualificationBundleRequirement;
+declare const railAuthority: RailAvailabilityAuthority;
 declare const solanaAdapter: SolanaSplAdapter;
 declare const solanaStore: SolanaSplSettlementStore;
 declare const ap2Store: Ap2BindingStore;
@@ -77,6 +93,10 @@ void fulfilment;
 void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
+void qualify(qualificationInput, qualificationDeps);
+void qualificationMember;
+void qualificationRequirement;
+void selectRail({}, railAuthority);
 void adapter;
 void journal;
 void result;

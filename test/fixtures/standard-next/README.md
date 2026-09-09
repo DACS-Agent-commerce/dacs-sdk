@@ -5,11 +5,17 @@ Each entry below names the exact DACS Standard commit it was copied from; do
 not infer one global fixture revision when a later merged ruling is tested
 ahead of the repository-wide conformance pin.
 
-- `listing-rail-registry-resolution-v0.4.json` — DACS-1 §6.3.4 LRR-1..LRR-6;
-  DACS-4 §9.4.3; commit
-  `c2ecd9fa658776f5511f2414d7b4c3e23b847463`.
-- `demos-agent-claim-reference.json` — DACS-1 §6.3.1 and CORE §B.1; commit
-  `81ded2b49851d8fa17399e3fdade9e36e33a4ff7`.
+- `listing-rail-registry-resolution-v0.4.json` — commit
+  `c2ecd9fa658776f5511f2414d7b4c3e23b847463`; DACS-1 §6.3.4 LRR-1..LRR-6;
+  DACS-4 §9.4.3.
+- `demos-agent-claim-reference.json` — commit
+  `81ded2b49851d8fa17399e3fdade9e36e33a4ff7`; DACS-1 §6.3.1; CORE §B.1.
+- `claim-requirement-qualification-v0.3.json` — commit
+  `662be1d4899a2cadf327fe2d5523e93a80334e5f`; DACS-2 §7.7.1 CRQ-1..CRQ-4
+  plus authenticated production/replay authority and cross-session reuse.
+- `rail-availability-selection-v0.1.json` — commit
+  `662be1d4899a2cadf327fe2d5523e93a80334e5f`; DACS-4 §9.4.4
+  RAV-R1/R2/R3/R5 and DACS-1 §6.3.4 LRR-6.
 - `domain-claim-gcr-v0.4.json` — DACS-1 DCR-1..DCR-8 and DACS-2
   DGCR-1..DGCR-6; commit
   `5c175d148932c8a3635e54a15f1db2f31f67a500` (Standard PR #346),
