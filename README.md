@@ -113,6 +113,13 @@ commitment appears in both sources and the native verifier authenticates it;
 an unregistered session proof remains on the external `tlsnotary` path. See
 [the Demos CCI integration guide](./docs/demos-cci-identities.md).
 
+The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
+evaluation instant from the trusted Party Vet clock, independently matches the
+active-session nonce, journals qualification for deterministic restart/replay,
+and retains compact exact provenance in an SDK-reserved signal inside the
+signed CVR. The signal remains advisory under DACS-2, while failed native
+qualification is a mandatory precondition that prevents all Vet effects.
+
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
@@ -579,6 +586,17 @@ copy gets the matching role-relative `outcome` and signs under
 `AttestationBundle` records, and consistency/reputation reconciliation supports
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
+
+For DACS-5 v0.4 exact settlement-evidence closure, use
+`verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
+EBFAB and Listing domains, derives the executed evidence phase keys from their
+signed trace, binds every SettlementEvidence to independent SB-1 execution
+authority and SR-2 receipts, and enforces SEB-1..SEB-6, ST-8, and lifecycle
+gates. `buildEvidenceBoundTwoSidedBundle()` produces type-specific copies only
+after the caller wires that complete evidence-set gate; completed publication
+still remains `audit-pending` until the bundle itself is finalized and
+independently resolvable under ST-11. EBFAB extended pointers require the same
+verified authority token; URL shape validation is not a deployment SSRF policy.
 
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
