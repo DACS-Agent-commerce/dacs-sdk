@@ -16,6 +16,7 @@ import {
 import { isCanonicalDomainHostname } from "./domainHost.js";
 import { identityBundleHash } from "./bundle.js";
 import {
+  assertDemosCciResponseBounds,
   parseCciRecord,
   type CciClaim,
   type CciRecord,
@@ -560,6 +561,8 @@ export type CciTlsnDisposition =
       jobId: string;
       sessionNonce: string;
       bundleHash: string;
+      /** Trusted evaluation instant used for every freshness decision. */
+      evaluatedAt: number;
       verification: Readonly<{
         verifiedAt: number;
         authority: string;
@@ -688,6 +691,7 @@ function nativeTlsnAuthentication(
   minimumVerifiedAt: number,
   evaluatedAt: number,
 ): NativeCciTlsnAuthentication {
+  assertDemosCciResponseBounds(value);
   const retained = snapshotCanonicalJsonRead(value, "native CCI TLSN authentication");
   if (!isPlainRecord(retained) || typeof retained.status !== "string") {
     return Object.freeze({ status: "error", reason: "native TLSN authentication is malformed" });
@@ -881,6 +885,7 @@ export async function classifyCciTlsnProof(
     jobId: capturedContext.jobId,
     sessionNonce: capturedContext.sessionNonce,
     bundleHash,
+    evaluatedAt: capturedContext.evaluatedAt,
     verification: {
       verifiedAt: nativeAuthentication.verifiedAt,
       authority: nativeAuthentication.authority,
