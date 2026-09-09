@@ -45,7 +45,7 @@ and readers must use `ComponentSignedArtifact`,
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
@@ -58,6 +58,15 @@ use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
 non-canonical CD-1 amounts instead of normalising them into acceptance.
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
+
+Use `evaluateRailAvailabilitySelection` at the session selection boundary. It
+authenticates and pins the complete RailDefinition before applying local
+production/preflight policy; discovery and counterparty availability hints are
+never authority. Use `evaluateClaimRequirementQualification` when consuming
+the DACS-2 CRQ projection outside `partyVetCore`: it authenticates either the
+orchestrator-owned active SessionContext plus the exact production
+requirement/result/reuse closure, or the signed replay bundle/CVR/result closure,
+before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
@@ -103,6 +112,13 @@ exact coordinates. It selects `native-cci` only when the same current
 commitment appears in both sources and the native verifier authenticates it;
 an unregistered session proof remains on the external `tlsnotary` path. See
 [the Demos CCI integration guide](./docs/demos-cci-identities.md).
+
+The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
+evaluation instant from the trusted Party Vet clock, independently matches the
+active-session nonce, journals qualification for deterministic restart/replay,
+and retains compact exact provenance in an SDK-reserved signal inside the
+signed CVR. The signal remains advisory under DACS-2, while failed native
+qualification is a mandatory precondition that prevents all Vet effects.
 
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
@@ -570,6 +586,17 @@ copy gets the matching role-relative `outcome` and signs under
 `AttestationBundle` records, and consistency/reputation reconciliation supports
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
+
+For DACS-5 v0.4 exact settlement-evidence closure, use
+`verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
+EBFAB and Listing domains, derives the executed evidence phase keys from their
+signed trace, binds every SettlementEvidence to independent SB-1 execution
+authority and SR-2 receipts, and enforces SEB-1..SEB-6, ST-8, and lifecycle
+gates. `buildEvidenceBoundTwoSidedBundle()` produces type-specific copies only
+after the caller wires that complete evidence-set gate; completed publication
+still remains `audit-pending` until the bundle itself is finalized and
+independently resolvable under ST-11. EBFAB extended pointers require the same
+verified authority token; URL shape validation is not a deployment SSRF policy.
 
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
