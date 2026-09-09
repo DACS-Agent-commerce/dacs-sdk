@@ -151,9 +151,9 @@ timestamps, old-session bundles, non-canonical job IDs and presenter
 substitution fail closed. An unregistered session proof remains
 `external-required` and may use the separate external `tlsnotary` recipe.
 
-For the normal Agent surface, configure these capabilities once under
-`AgentConfig.demosCci`, then call `resolveAuthenticatedIdentity()` or the
-combined current-session path. The evaluation time comes from the trusted
+For the standalone classifier on the Agent surface, configure these
+capabilities once under `AgentConfig.demosCci`, then call
+`qualifyNativeCciTlsn()`. Its evaluation time comes from the trusted
 `demosCci.nowMs` capability, not from caller-controlled request data:
 
 ```ts
@@ -177,5 +177,55 @@ The native verifier's successful result must echo the exact seven-field
 binding supplied to it (`subject`, `jobId`, `sessionNonce`, `expectedServer`,
 `bundleHash`, `proofHash`, and `resolutionObservedAt`). This prevents an
 otherwise valid verifier result from being reused for different session
-coordinates. The returned `native-cci` disposition retains that binding and
-verification provenance for the downstream Vet integration.
+coordinates. The returned `native-cci` disposition retains that binding, its
+exact trusted evaluation time, and verification provenance.
+
+## Native CCI through normal Party Vet
+
+Normal buyer/seller runtimes should use the combined Agent method. It performs
+native qualification as a mandatory, generation-fenced step and then runs the
+ordinary durable Party Vet producer:
+
+```ts
+const result = await agent.partyVetWithNativeCciTlsn(
+  {
+    vet: partyVetRequest,
+    nativeCciTlsn: [{
+      proofHash,
+      // Load this independently from the active durable role session. Do not
+      // derive the expected nonce from the counterparty's bundle.
+      sessionNonce: activeSessionNonce,
+      expectedServer: "github.com",
+      maxResolutionAgeSec: 60,
+      maxProofAgeSec: 60,
+      maxPresentationAgeSec: 60,
+    }],
+  },
+  partyVetDeps,
+);
+```
+
+The method requires the independent session nonce to equal the signed bundle
+nonce and requires the proof commitment to occur exactly once in that bundle.
+The shared operation journal durably binds that presenter nonce to one exact
+job and bundle, so reuse in a later job fails before native verification.
+It samples `partyVetDeps.nowMs` inside the fenced qualification step and gives
+that exact evaluation time to the Agent's native classifier. The returned
+job, nonce, presenter, bundle hash, proof hash, server, observations,
+verification time, evaluation time, and authority are checked again at the
+Party Vet boundary.
+
+Qualification is journalled under an exact input hash. A process restart or a
+lost committed response therefore reuses the same result instead of calling
+the native verifier again or producing timestamp-dependent evidence. The
+compact provenance is encoded canonically in an SDK-reserved `cci-tlsn`
+supplementary signal, bound into the final plan hash, and retained in the
+signed, finalized CVR. Optional native verifier evidence is bounded to 256 KiB
+and retained by hash rather than copied into the CVR.
+
+Per DACS-2, supplementary signals remain advisory and cannot change
+`overallDecision`; the combined method itself nevertheless treats a failed or
+stale native qualification as a mandatory precondition and performs no Vet
+method, signing, or anchoring work. `partyVetCore()` rejects caller-supplied
+instances of the SDK-reserved signal. Registered native commitments also
+remain prohibited as external `tlsnotary` recipe attempts.
