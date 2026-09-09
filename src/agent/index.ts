@@ -42,8 +42,27 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  evidenceBoundBundleSignedScope,
+  type EvidenceBoundReasonCode,
+  type EvidenceLifecycle,
+  type EvidencePhaseExecutionAuthority,
+  type EvidenceAnchorReceiptAuthority,
+  type ResolvedEvidenceAuthority,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type EvidenceBoundBundleVerification,
+  type CompactEvidenceRecord,
+  type EvidenceBoundExactSetInput,
+  type VerifiedEvidenceBoundExecutionAuthority,
+  type BundlePointerVerification,
+} from "./evidenceBoundBundle.js";
+export {
   lookupBundleCopies,
   bundleConsistency,
+  selectAuthoritativeBundleCopy,
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopyRead,
@@ -51,6 +70,7 @@ export {
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
+  type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
   validateSettlementEvidenceStructure,
@@ -216,6 +236,22 @@ export {
   type StrictCompositeVerification,
 } from "./compositeVerification.js";
 export {
+  evaluateClaimRequirementQualification,
+  type ClaimQualificationDecision,
+  type ClaimQualificationResultProjection,
+  type ClaimQualificationResultReuse,
+  type ClaimQualificationProductionAuthority,
+  type ClaimQualificationReplayAuthority,
+  type ClaimQualificationAuthority,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type ClaimQualificationRecipeRegistry,
+  type ClaimQualificationAuthentication,
+  type ClaimQualificationDeps,
+  type ClaimQualificationEvaluation,
+} from "./claimRequirementQualification.js";
+export {
   evaluateParserSpec,
   defaultParserEngine,
   defaultParserEngineCapabilities,
@@ -317,6 +353,7 @@ export {
 } from "./durableRecipePin.js";
 export {
   buildTwoSidedBundle,
+  buildEvidenceBoundTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
@@ -328,6 +365,9 @@ export {
   type SigningSessionParty,
   type TwoSidedSession,
   type TwoSidedBundles,
+  type EvidenceBoundTwoSidedSession,
+  type EvidenceBoundTwoSidedBundles,
+  type EvidenceBoundBundleProducerDeps,
 } from "./twoSidedBundle.js";
 export {
   assembleTerminalBundleForOwnRole,
