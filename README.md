@@ -31,13 +31,22 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 ## What's implemented
 
-All five lifecycle stages run end to end:
+The modern role-separated fixed-price coordinators cover all five lifecycle
+stages. The older `Agent.runSession()` convenience method remains a
+settlement-only compatibility API; it does not claim fulfilment or audit
+completion.
+
+The exported `SignedArtifact`, `buildSignedArtifact()` and
+`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
+surfaces used by that quarantined path and historical readers. New producers
+and readers must use `ComponentSignedArtifact`,
+`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` | fixed-price |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -103,6 +112,13 @@ exact coordinates. It selects `native-cci` only when the same current
 commitment appears in both sources and the native verifier authenticates it;
 an unregistered session proof remains on the external `tlsnotary` path. See
 [the Demos CCI integration guide](./docs/demos-cci-identities.md).
+
+The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
+evaluation instant from the trusted Party Vet clock, independently matches the
+active-session nonce, journals qualification for deterministic restart/replay,
+and retains compact exact provenance in an SDK-reserved signal inside the
+signed CVR. The signal remains advisory under DACS-2, while failed native
+qualification is a mandatory precondition that prevents all Vet effects.
 
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
@@ -324,6 +340,11 @@ const session = await buyer.runSession(resolved, {
   // the §4.1 guard compares against it, not the Price.asset symbol.
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
+
+// Legacy compatibility only: payment settlement is not commerce completion.
+if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
+  throw new Error("unexpected legacy session result");
+}
 
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callbacks above) every normative vet closure and
@@ -691,6 +712,18 @@ ignores content returned for another job. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
+
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
 
 ### Normative artifact references
 
