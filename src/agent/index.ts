@@ -42,8 +42,27 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  evidenceBoundBundleSignedScope,
+  type EvidenceBoundReasonCode,
+  type EvidenceLifecycle,
+  type EvidencePhaseExecutionAuthority,
+  type EvidenceAnchorReceiptAuthority,
+  type ResolvedEvidenceAuthority,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type EvidenceBoundBundleVerification,
+  type CompactEvidenceRecord,
+  type EvidenceBoundExactSetInput,
+  type VerifiedEvidenceBoundExecutionAuthority,
+  type BundlePointerVerification,
+} from "./evidenceBoundBundle.js";
+export {
   lookupBundleCopies,
   bundleConsistency,
+  selectAuthoritativeBundleCopy,
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopyRead,
@@ -51,6 +70,7 @@ export {
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
+  type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
   validateSettlementEvidenceStructure,
@@ -323,6 +343,7 @@ export {
 } from "./durableRecipePin.js";
 export {
   buildTwoSidedBundle,
+  buildEvidenceBoundTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
@@ -334,6 +355,9 @@ export {
   type SigningSessionParty,
   type TwoSidedSession,
   type TwoSidedBundles,
+  type EvidenceBoundTwoSidedSession,
+  type EvidenceBoundTwoSidedBundles,
+  type EvidenceBoundBundleProducerDeps,
 } from "./twoSidedBundle.js";
 export {
   assembleTerminalBundleForOwnRole,
