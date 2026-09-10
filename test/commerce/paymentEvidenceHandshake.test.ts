@@ -314,6 +314,31 @@ describe("actor-separated payment-evidence handshake", () => {
     expect(new Set(hashes)).toHaveLength(11);
   });
 
+  it("runs one exact retained request without advancing adjacent orders", async () => {
+    const first = request(0);
+    const second = request(1);
+    const { handshake, anchor } = buyer();
+    await handshake.receiveRequest(first, {});
+    await handshake.receiveRequest(second, {});
+
+    expect((await handshake.runPending({
+      messageId: second.messageId,
+      requestHash: second.requestHash,
+    })).items).toEqual([{
+      messageId: second.messageId,
+      status: "completed",
+    }]);
+    expect(anchor).toHaveBeenCalledTimes(1);
+    expect((await handshake.runPending()).items).toEqual([{
+      messageId: first.messageId,
+      status: "completed",
+    }]);
+    await expect(handshake.runPending({
+      messageId: first.messageId,
+      requestHash: second.requestHash,
+    })).rejects.toThrow(/conflicts with retained state/);
+  });
+
   it("returns the last visited cursor when a runnable page is interrupted", async () => {
     const controller = new AbortController();
     const candidates = [request(0), request(1)];

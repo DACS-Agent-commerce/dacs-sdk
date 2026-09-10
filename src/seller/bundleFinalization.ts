@@ -28,6 +28,7 @@ import {
   isFaultAttestationBundle,
   isListing,
   isPhaseStep,
+  isRatingRecord,
   isSettlementEvidence,
   isVerifyResult,
   isCanonicalBase64Url,
@@ -1624,31 +1625,6 @@ function isSettlementAmendment(value: unknown): value is Record<string, unknown>
   );
 }
 
-function isRatingRecord(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  return (
-    value.ratingVersion === "1" &&
-    typeof value.jobId === "string" &&
-    value.jobId.length > 0 &&
-    typeof value.rater === "string" &&
-    value.rater.length > 0 &&
-    typeof value.target === "string" &&
-    value.target.length > 0 &&
-    (value.targetRole === "buyer" || value.targetRole === "seller") &&
-    Number.isInteger(value.value) &&
-    (value.value as number) >= 1 &&
-    (value.value as number) <= 5 &&
-    (value.freeText === undefined ||
-      (typeof value.freeText === "string" && value.freeText.length <= 1_000)) &&
-    (value.dimensions === undefined ||
-      (isRecord(value.dimensions) &&
-        Object.values(value.dimensions).every((score) => typeof score === "number" && Number.isFinite(score)))) &&
-    validUint(value.ratedAt) &&
-    isComponentSignature(value.signature) &&
-    (value.signature as ComponentSignature).signer === value.rater
-  );
-}
-
 function decimalParts(value: string): { coefficient: bigint; scale: number } {
   const [whole, fraction = ""] = value.split(".");
   return {
@@ -2103,6 +2079,11 @@ async function auditResolvedDependencyGraph(
         ? agreementParty.role === "seller" || agreementParty.role === "bidder-non-winning"
         : agreementParty.role === "buyer" || agreementParty.role === "bidder-non-winning"
       : false;
+    const expectedVerifier = expected[0]?.primaryClaim === session.buyer.primaryClaim
+      ? session.seller.primaryClaim
+      : expected[0]?.primaryClaim === session.seller.primaryClaim
+        ? session.buyer.primaryClaim
+        : phaseOrchestrator;
     if (
       expected.length === 0 ||
       expected.some(
@@ -2116,7 +2097,7 @@ async function auditResolvedDependencyGraph(
       record.evaluatedParty !== expected[0]!.primaryClaim ||
       invocation.evaluatedParty !== record.evaluatedParty ||
       record.bundleHash !== expected[0]!.bundleHash ||
-      invocation.verifier !== phaseOrchestrator ||
+      invocation.verifier !== expectedVerifier ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement))
     ) {
       throw new DacsError("completed session carries an invalid Vet record/requirement invocation");

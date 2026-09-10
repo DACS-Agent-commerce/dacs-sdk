@@ -9,6 +9,12 @@ import {
   createInMemoryDemosWriteJournal,
   type DemosAdapterConfig,
 } from "../../src/substrate/index.js";
+import {
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../../src/crypto/index.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
@@ -172,6 +178,47 @@ describe("DemosAdapter", () => {
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
+  it("signs arbitrary binary bytes without demosdk UTF-8 coercion", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const seed = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+    const publicKey = rawPublicKey(publicKeyFromSeed(seed));
+    const privateKey = Buffer.concat([Buffer.from(seed), Buffer.from(publicKey)]);
+    const crypto = (adapter.raw as unknown as {
+      crypto: {
+        getIdentity(algorithm: string): Promise<unknown>;
+        sign(algorithm: string, bytes: Uint8Array): Promise<unknown>;
+      };
+    }).crypto;
+    vi.spyOn(crypto, "getIdentity").mockResolvedValue({ privateKey, publicKey });
+    const sdkSign = vi.spyOn(crypto, "sign");
+    const bytes = Uint8Array.from([0xff, 0x00, 0x80, 0x61, 0xc3, 0x28]);
+
+    const signature = await adapter.sign(bytes);
+
+    expect(signature).toHaveLength(64);
+    expect(ed25519Verify(bytes, signature, privateKeyFromSeed(seed))).toBe(true);
+    expect(sdkSign).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the Demos private and public signing keys disagree", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const seed = new Uint8Array(32).fill(7);
+    const publicKey = rawPublicKey(publicKeyFromSeed(new Uint8Array(32).fill(8)));
+    const crypto = (adapter.raw as unknown as {
+      crypto: { getIdentity(algorithm: string): Promise<unknown> };
+    }).crypto;
+    vi.spyOn(crypto, "getIdentity").mockResolvedValue({
+      privateKey: Buffer.concat([Buffer.from(seed), Buffer.from(publicKey)]),
+      publicKey,
+    });
+
+    await expect(adapter.sign(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+      /does not match its public key/,
+    );
+  });
+
   it("substrate ops require a connection", async () => {
     const adapter = makeAdapter();
     await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
@@ -198,6 +245,43 @@ describe("DemosAdapter", () => {
     await expect(
       adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
     ).rejects.toThrow(/not connected/);
+  });
+
+  it("resolves a primary Demos agent DID from its self-certifying key", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities");
+    const publicKey = "ab".repeat(32);
+    const ref = `did:demos:agent:${publicKey}`;
+
+    await expect(adapter.resolveIdentity(ref)).resolves.toEqual({
+      ref,
+      boundTo: ref,
+      raw: {
+        profile: "demos-primary-self-certifying:v1",
+        publicKey,
+      },
+    });
+    expect(registryLookup).not.toHaveBeenCalled();
+  });
+
+  it("retains GCR resolution for identities that are not self-certifying", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const raw = { result: 200, response: { web2: {} } };
+    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities")
+      .mockResolvedValue(raw as never);
+
+    await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
+      ref: "legacy-demos-address",
+      boundTo: "legacy-demos-address",
+      raw,
+    });
+    expect(registryLookup).toHaveBeenCalledWith(
+      adapter.raw,
+      "getIdentities",
+      "legacy-demos-address",
+    );
   });
 
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {

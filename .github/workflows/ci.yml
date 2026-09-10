@@ -79,7 +79,7 @@ jobs:
           grep -q "Cannot find module 'viem/accounts'" "$smoke_root/live-without-peers.log"
           (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           node scripts/check-npm-advisories.mjs --prefix "$smoke_root/app" --scope all --omit dev --omit optional --threshold low
-          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.52.2
+          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
@@ -97,7 +97,7 @@ jobs:
           npm install --prefix host-package-smoke/app --no-audit --ignore-scripts --strict-peer-deps \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
             "$GITHUB_WORKSPACE"/host-package-smoke/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz
-          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport')]).then(([core, host, transport]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || !import.meta.resolve('@kynesyslabs/dacs-node/sqlite')) process.exit(1) })")
+          (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport'), import('@kynesyslabs/dacs-node/sqlite')]).then(([core, host, transport, sqlite]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof host.createDacsBuyerServiceV1 !== 'function' || typeof host.createDacsSellerServiceV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsSellerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsUnavailableLiveCommerceGraphV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsSellerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsFixedPriceX402RoleOrderV1 !== 'function' || typeof host.createDacsFixedPriceX402OrderPairV1 !== 'function' || typeof host.loadDacsSecretV1 !== 'function' || typeof host.installDacsRoleServiceProcessHooksV1 !== 'function' || typeof host.runDacsLiveDoctorV1 !== 'function' || typeof host.createDacsNodeLocalDoctorProbesV1 !== 'function' || typeof host.inspectDacsNodePackageIntegrityV1 !== 'function' || typeof host.createDacsRoleServiceDoctorProbesV1 !== 'function' || typeof host.readDacsRoleServiceStatusesV1 !== 'function' || typeof host.createDacsGuardedSetupPlanV1 !== 'function' || typeof host.createDacsGuardedPurchasePlanV1 !== 'function' || typeof host.createDacsFundedDoctorPlanV1 !== 'function' || typeof host.prepareDacsFundedDoctorV1 !== 'function' || typeof host.createDacsFundedDoctorExecutorV1 !== 'function' || typeof host.runDacsGuardedCommandV1 !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || typeof transport.createDacsHttpMessageClientV1 !== 'function' || typeof transport.startDacsHttpMessageServerV1 !== 'function' || typeof sqlite.inspectExistingDacsNodeSqliteDatabaseV1 !== 'function' || typeof sqlite.inspectDacsNodeSqliteUpgradeSafetyV1 !== 'function') process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
 
       - name: Packed SQLite host smoke
@@ -260,6 +260,61 @@ jobs:
               process.exit(1);
             }
           }
+          NODE
+
+          node generator-smoke/runner/node_modules/create-dacs-agent/dist/bin.js \
+            generator-smoke/generated-live --yes --mode live-demos \
+            --profile dacs-sdk:fixed-price-x402:v1 --deploy docker --no-install
+          (cd generator-smoke/generated-live && npm install --no-save --ignore-scripts \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-0.1.0-alpha.0.tgz \
+            "$GITHUB_WORKSPACE"/generator-smoke/packs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz \
+            typescript@5.9.2 @types/node@20.19.1)
+          (cd generator-smoke/generated-live && npm rebuild better-sqlite3)
+          (cd generator-smoke/generated-live && npm run typecheck && npm test)
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { spawnSync } = require("node:child_process");
+          const root = path.resolve("generator-smoke/generated-live");
+          const actorStoreExists = () => ["buyer", "seller"].some((role) =>
+            fs.existsSync(path.join(root, "data", role, "actor.sqlite")));
+          const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          if (Object.values(packageJson.dependencies).some(value =>
+              value.startsWith("file:") || value.startsWith("git+"))) process.exit(1);
+          const doctor = spawnSync("npm", [
+            "run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start", "--json",
+          ], { cwd: root, encoding: "utf8", env: { ...process.env, DACS_DEPLOYMENT: "local" } });
+          if (doctor.status !== 5) process.exit(1);
+          const reportLine = doctor.stdout.trim().split("\n").at(-1);
+          const report = JSON.parse(reportLine);
+          if (report.safety.readOnly !== true || report.safety.funded !== false ||
+              report.gate.status !== "blocked" || report.checks.length !== 36 ||
+              actorStoreExists()) process.exit(1);
+          const setup = spawnSync("npm", [
+            "run", "dacs:setup", "--", "--max-spend-dem", "1.00",
+          ], { cwd: root, encoding: "utf8" });
+          // A fresh project has no authenticated actor, wallet, listing or rail
+          // configuration from which to prepare an exact setup plan. It must
+          // fail closed without leaking the missing prerequisite or writing a
+          // store; configured setup-plan behavior is covered by package tests.
+          if (setup.status !== 1 ||
+              !setup.stderr.includes("dacs command failed; rerun doctor for a sanitized diagnosis") ||
+              setup.stderr.includes("setup prerequisite") ||
+              setup.stderr.includes("at file:") ||
+              actorStoreExists()) process.exit(1);
+          fs.writeFileSync(path.join(root, ".env"), "DACS_SETUP_WRITE_CONFIRM=1\n", { mode: 0o600 });
+          const persistedConsent = spawnSync("npm", [
+            "run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start", "--json",
+          ], { cwd: root, encoding: "utf8" });
+          if (persistedConsent.status !== 1 ||
+              persistedConsent.stderr.includes("write confirmation") ||
+              persistedConsent.stderr.includes("at file:")) process.exit(1);
+          const compose = fs.readFileSync(path.join(root, "compose.yaml"), "utf8");
+          for (const required of [
+            "DACS_BUYER_DATA_DIRECTORY", "DACS_SELLER_DATA_DIRECTORY",
+            "DACS_BUYER_DEMOS_SECRET_FILE", "DACS_SELLER_DEMOS_SECRET_FILE", "read_only: true",
+            "DACS_RUNTIME_UID", "DACS_RUNTIME_GID", "no-new-privileges:true", "healthcheck:",
+          ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
       - name: Test (unit + conformance harness)

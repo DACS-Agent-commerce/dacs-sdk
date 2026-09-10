@@ -1,0 +1,339 @@
+import {
+  RAIL_REGISTRY_INDEX_ADDRESS,
+  ed25519Sign,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+  resolveRail,
+  signComponentArtifact,
+  type ProtocolAnchorReceipt,
+  type RailDefinition,
+  type RailRegistryDefinitionRef,
+} from "@kynesyslabs/dacs";
+import { contentHash } from "@kynesyslabs/dacs/canonical";
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+  bootstrapDacsDemosX402RailRegistryV1,
+  createDacsDemosRailRegistryProviderV1,
+  type DacsDemosAdapterV1,
+  type DacsDemosActorRuntimeV1,
+} from "../src/index.js";
+
+const SEED = Uint8Array.from(Buffer.alloc(32, 42));
+const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
+const STEWARD = `did:demos:agent:${Buffer.from(PUBLIC_KEY).toString("hex")}`;
+const privateKey = privateKeyFromSeed(SEED);
+
+function receipt(
+  ref: RailRegistryDefinitionRef,
+  logicalAddress = ref.logicalAddress,
+): ProtocolAnchorReceipt {
+  return {
+    receiptVersion: "1",
+    substrate: "demos",
+    finalityProfile: "demos-bft-confirmed-native-read",
+    logicalAddress,
+    nativeAddress: ref.anchor.locator,
+    contentHash: ref.contentHash,
+    transactionRef: { kind: "demos-storage-program", value: `tx:${ref.contentHash}` },
+    writer: STEWARD,
+    nonce: "1",
+    state: "finalized",
+    observationDisposition: "established",
+    observedAt: 1_780_000_000_000,
+    blockRef: { id: "block:1", height: "1", timestamp: 1_780_000_000_000 },
+    evidence: { kind: "demos-bft-write-proof-v1", value: "test-proof" },
+  };
+}
+
+async function fixture() {
+  const unsigned: Omit<RailDefinition, "signature"> = {
+    railVersion: 1,
+    railId: "x402:default",
+    railType: "x402",
+    asset: {
+      kind: "erc20",
+      chainId: 84532,
+      contract: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      symbol: "USDC",
+      decimals: 6,
+    },
+    network: { kind: "x402-resource", resourceBaseUrl: "https://seller.example" },
+    phaseHandler: "pay-x402",
+    parameters: { authorization: "eip-3009", finalityBlocks: 1 },
+    availability: "live",
+    governance: {
+      proposedBy: STEWARD,
+      acceptedAt: 1_780_000_000_000,
+      anchoring: "single-signer",
+    },
+  };
+  const definition = await signComponentArtifact(unsigned, "dacs-rail:v1:", {
+    algorithm: "ed25519",
+    signer: STEWARD,
+    sign: (bytes) => ed25519Sign(bytes, privateKey),
+  });
+  const definitionRef: RailRegistryDefinitionRef = {
+    logicalAddress: "dacs4:rail:x402%3Adefault:1",
+    anchor: { kind: "storage-program", locator: "stor:definition" },
+    contentHash: contentHash(definition),
+  };
+  const index = {
+    registryId: RAIL_REGISTRY_INDEX_ADDRESS,
+    entries: [definitionRef],
+  };
+  const indexRef: RailRegistryDefinitionRef = {
+    logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+    anchor: { kind: "storage-program", locator: "stor:index" },
+    contentHash: contentHash(index),
+  };
+  let current = {
+    registryVersion: 1,
+    indexRef,
+    receipt: receipt(indexRef, RAIL_REGISTRY_INDEX_ADDRESS),
+  };
+  const bindingRef: RailRegistryDefinitionRef = {
+    logicalAddress: DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    anchor: { kind: "storage-program", locator: "stor:binding" },
+    contentHash: contentHash(current),
+  };
+  const verifyDemosAnchorReceipt = vi.fn(async () => true);
+  const adapter: DacsDemosAdapterV1 = {
+    raw: {
+      getNetworkInfo: vi.fn(async () => ({})),
+      getAddressNonce: vi.fn(async () => 0),
+      getAddressInfo: vi.fn(async () => ({})),
+    },
+    connect: vi.fn(async () => undefined),
+    getAddress: vi.fn(() => "buyer"),
+    getPublicKey: vi.fn(async () => new Uint8Array(32)),
+    sign: vi.fn(async () => new Uint8Array(64)),
+    resolveIdentity: vi.fn(async (ref) => ({ ref, raw: {} })),
+    resolveAnchorByName: vi.fn(async (name) =>
+      name === DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1
+        ? { status: "present" as const, address: "stor:binding" }
+        : { status: "absent" as const }),
+    scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
+    readAnchor: vi.fn(async (address) => {
+      if (address === "stor:binding") return structuredClone(current);
+      if (address === "stor:index") return structuredClone(index);
+      if (address === "stor:definition") return structuredClone(definition);
+      return null;
+    }),
+    anchorWriteOnce: vi.fn(async () => ({ address: "unused" })),
+    verifyDemosAnchorReceipt,
+    resolveDemosAnchorReceipt: vi.fn(async (input) => {
+      if (input.nativeAddress === "stor:binding") {
+        return receipt({
+          ...bindingRef,
+          contentHash: input.contentHash,
+        });
+      }
+      if (input.nativeAddress === "stor:definition") {
+        return receipt(definitionRef);
+      }
+      return null;
+    }),
+  };
+  const runtime = {
+    role: "buyer",
+    authority: `did:demos:agent:${"11".repeat(32)}`,
+    walletAddress: "buyer",
+    publicKey: new Uint8Array(32),
+    adapter,
+    signTransportEnvelope: vi.fn(async () => new Uint8Array(64)),
+    signComponent: vi.fn(async () => new Uint8Array(64)),
+    networkInfo: vi.fn(async () => ({})),
+    addressNonce: vi.fn(async () => 0),
+    addressInfo: vi.fn(async () => ({})),
+  } satisfies DacsDemosActorRuntimeV1;
+  const provider = createDacsDemosRailRegistryProviderV1({
+    runtime,
+    stewardAuthority: STEWARD,
+    stewardPublicKey: PUBLIC_KEY,
+  });
+  return {
+    provider,
+    verifyDemosAnchorReceipt,
+    setCurrent(value: typeof current) { current = value; },
+    current: () => structuredClone(current),
+  };
+}
+
+describe("authenticated Demos rail registry provider", () => {
+  it("authorizes a steward-owned current binding and definition through core resolution", async () => {
+    const { provider, verifyDemosAnchorReceipt } = await fixture();
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      "x402:default",
+      provider,
+    )).resolves.toMatchObject({
+      railId: "x402:default",
+      railVersion: 1,
+      railType: "x402",
+      availability: "live",
+    });
+    expect(verifyDemosAnchorReceipt).toHaveBeenCalledTimes(3);
+    expect(provider.resolveCurrentIndex).toBeTypeOf("function");
+  });
+
+  it("rejects a binding changed between lookup and authority verification", async () => {
+    const { provider, current, setCurrent } = await fixture();
+    const selected = await provider.resolveCurrentIndex(RAIL_REGISTRY_INDEX_ADDRESS);
+    expect(selected).not.toBeNull();
+    setCurrent({ ...current(), registryVersion: 2 });
+    await expect(provider.authenticateCurrentIndex({
+      logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+      registryVersion: selected!.registryVersion,
+      indexRef: selected!.indexRef,
+      receipt: selected!.receipt,
+      index: {
+        registryId: RAIL_REGISTRY_INDEX_ADDRESS,
+        entries: [],
+      },
+    })).resolves.toBe("invalid");
+  });
+
+  it("fails construction when the pinned steward key does not bind its primary ClaimRef", async () => {
+    const { provider: _provider } = await fixture();
+    await expect(async () => createDacsDemosRailRegistryProviderV1({
+      runtime: {} as DacsDemosActorRuntimeV1,
+      stewardAuthority: STEWARD,
+      stewardPublicKey: new Uint8Array(32).fill(9),
+    })).rejects.toThrow(/steward authority is invalid/);
+  });
+
+  it("bootstraps an independently readable index and authenticated current binding", async () => {
+    const byName = new Map<string, string>();
+    const documents = new Map<string, Record<string, unknown>>();
+    const anchorWriteOnce = vi.fn(async (
+      name: string,
+      value: object,
+      _options?: Readonly<{ metadata?: Readonly<Record<string, unknown>> }>,
+    ) => {
+      const address = byName.get(name) ?? `stor:${byName.size + 1}`;
+      const existing = documents.get(address);
+      if (existing !== undefined && contentHash(existing) !==
+          contentHash(value as Record<string, unknown>)) {
+        throw new Error("immutable conflict");
+      }
+      byName.set(name, address);
+      documents.set(address, structuredClone(value) as Record<string, unknown>);
+      return { address };
+    });
+    const adapter: DacsDemosAdapterV1 = {
+      raw: {
+        getNetworkInfo: vi.fn(async () => ({})),
+        getAddressNonce: vi.fn(async () => 0),
+        getAddressInfo: vi.fn(async () => ({})),
+      },
+      connect: vi.fn(async () => undefined),
+      getAddress: vi.fn(() => Buffer.from(PUBLIC_KEY).toString("hex")),
+      getPublicKey: vi.fn(async () => Uint8Array.from(PUBLIC_KEY)),
+      sign: vi.fn(async (bytes) => ed25519Sign(bytes, privateKey)),
+      resolveIdentity: vi.fn(async (ref) => ({ ref, raw: {} })),
+      resolveAnchorByName: vi.fn(async (name) => {
+        const address = byName.get(name);
+        return address === undefined
+          ? { status: "absent" as const }
+          : { status: "present" as const, address };
+      }),
+      scanOwnAnchorsByNamePrefix: vi.fn(async () => ({ status: "ok" as const, anchors: [] })),
+      readAnchor: vi.fn(async (address) => {
+        const value = documents.get(address);
+        return value === undefined ? null : structuredClone(value);
+      }),
+      anchorWriteOnce,
+      verifyDemosAnchorReceipt: vi.fn(async () => true),
+      resolveDemosAnchorReceipt: vi.fn(async (input) => receipt({
+        logicalAddress: input.logicalAddress,
+        anchor: { kind: "storage-program", locator: input.nativeAddress },
+        contentHash: input.contentHash,
+      })),
+    };
+    const runtime: DacsDemosActorRuntimeV1 = {
+      role: "seller",
+      authority: STEWARD,
+      walletAddress: Buffer.from(PUBLIC_KEY).toString("hex"),
+      publicKey: Uint8Array.from(PUBLIC_KEY),
+      adapter,
+      signTransportEnvelope: vi.fn(async (bytes) => ed25519Sign(bytes, privateKey)),
+      signComponent: vi.fn(async (bytes) => ed25519Sign(bytes, privateKey)),
+      networkInfo: vi.fn(async () => ({})),
+      addressNonce: vi.fn(async () => 0),
+      addressInfo: vi.fn(async () => ({})),
+    };
+
+    const result = await bootstrapDacsDemosX402RailRegistryV1({
+      runtime,
+      resourceBaseUrl: "https://seller.example/x402",
+      assetContract: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      acceptedAt: 1_780_000_000_000,
+    });
+
+    expect(result.rail).toMatchObject({
+      railId: "x402:default",
+      railVersion: 1,
+      phaseHandler: "pay-x402",
+      network: {
+        kind: "x402-resource",
+        resourceBaseUrl: "https://seller.example/x402",
+      },
+    });
+    expect(anchorWriteOnce.mock.calls.map(([name]) => name)).toEqual([
+      "dacs4:rail:x402%3Adefault:1",
+      RAIL_REGISTRY_INDEX_ADDRESS,
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    ]);
+    expect(anchorWriteOnce.mock.calls.every(([name, value, options]) =>
+      options?.metadata?.logicalAddress === name &&
+      options.metadata.contentHash === contentHash(value as Record<string, unknown>) &&
+      typeof options.metadata.envelopeHash === "string" &&
+      options.metadata.envelopeHash.length === 64,
+    )).toBe(true);
+    expect(documents.get(byName.get(RAIL_REGISTRY_INDEX_ADDRESS)!)).toMatchObject({
+      registryId: RAIL_REGISTRY_INDEX_ADDRESS,
+      entries: [{ logicalAddress: "dacs4:rail:x402%3Adefault:1" }],
+    });
+    expect(documents.get(byName.get(
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    )!)).toMatchObject({
+      registryVersion: 1,
+      indexRef: { logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS },
+      receipt: { logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS },
+    });
+    const replay = await bootstrapDacsDemosX402RailRegistryV1({
+      runtime,
+      resourceBaseUrl: "https://seller.example/x402",
+      assetContract: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      acceptedAt: 1_780_000_000_000,
+    });
+    expect(replay.indexRef).toEqual(result.indexRef);
+    expect(byName).toHaveLength(3);
+  });
+
+  it("rejects an unsafe registry bootstrap before any Demos write", async () => {
+    const { provider: _provider } = await fixture();
+    const anchorWriteOnce = vi.fn();
+    await expect(bootstrapDacsDemosX402RailRegistryV1({
+      runtime: {
+        role: "seller",
+        authority: STEWARD,
+        walletAddress: "seller",
+        publicKey: Uint8Array.from(PUBLIC_KEY),
+        adapter: { anchorWriteOnce } as unknown as DacsDemosAdapterV1,
+        signTransportEnvelope: vi.fn(),
+        signComponent: vi.fn(),
+        networkInfo: vi.fn(),
+        addressNonce: vi.fn(),
+        addressInfo: vi.fn(),
+      },
+      resourceBaseUrl: "http://127.0.0.1:3102/x402",
+      assetContract: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      acceptedAt: 1_780_000_000_000,
+    })).rejects.toThrow(/bootstrap options are invalid/);
+    expect(anchorWriteOnce).not.toHaveBeenCalled();
+  });
+});

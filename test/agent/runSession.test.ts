@@ -7,6 +7,7 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import type {
   CompositeVerificationRecord,
+  IdentityBundle,
   Listing,
   ListingPin,
   SettlementFinalityParameters,
@@ -19,6 +20,8 @@ import {
   sha256Hex,
 } from "../../src/canonical/index.js";
 import { UnsupportedCapabilityError } from "../../src/errors.js";
+import { identityBundleHash } from "../../src/identity/index.js";
+import { signedBytes } from "../../src/crypto/index.js";
 import type {
   FinalizedVetAnchor,
   VetProduction,
@@ -41,6 +44,19 @@ const TERMS: SessionTerms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
+
+const BUYER_ID = "did:demos:bob";
+const BUYER_IDENTITY: IdentityBundle = {
+  bundleVersion: "1",
+  presentedBy: BUYER_ID,
+  presentedAt: 1_780_000_000_000,
+  claims: [{ ref: BUYER_ID }],
+  presentation: {
+    kind: "per-claim",
+    signatures: [{ ref: BUYER_ID, signature: "test-presentation" }],
+  },
+};
+const BUYER_IDENTITY_HASH = identityBundleHash(BUYER_IDENTITY);
 
 const VALID_FINALITIES = [
   { name: "block-depth without echo", finality: { model: "block-depth" } },
@@ -134,7 +150,9 @@ const authenticateClaimedVetFinality: NonNullable<
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
   return {
-    buyerId: "did:demos:bob",
+    buyerId: BUYER_ID,
+    buyerIdentityBundle: BUYER_IDENTITY,
+    authenticateBuyerIdentityBundle: () => true,
     readListing: async () => LISTING,
     sign: async (a, sep) => ({ ...a, signature: "sig", _sep: sep }),
     signBytes: async () => new Uint8Array(64),
@@ -255,11 +273,93 @@ function listingPinFor(listing: Listing): ListingPin {
 describe("runSession orchestration (T4)", () => {
   test("happy path anchors agreement+evidence+bundle and completes", async () => {
     const res = await runSessionCore("stor-listing", TERMS, makeDeps());
+    expect(res.profile).toBe("legacy-mvp-settlement-only");
+    expect(res.commerceComplete).toBe(false);
     expect(res.outcome).toBe("completed");
     expect(res.jobId).toBe("job-1");
     expect(res.agreementRef).toBe("stor-dacs3:agreement:job-1");
     expect(res.settlementRef).toBe("stor-dacs4:evidence:job-1");
     expect(res.bundleRef).toBe("stor-dacs5:bundle:job-1");
+  });
+
+  test("binds the exact authenticated buyer IdentityBundle hash before payment", async () => {
+    const anchored = new Map<string, Record<string, unknown>>();
+    let authenticatedInput:
+      | Parameters<SessionDeps["authenticateBuyerIdentityBundle"]>[0]
+      | undefined;
+    let settleCalls = 0;
+    await runSessionCore(
+      "stor-listing",
+      TERMS,
+      makeDeps({
+        authenticateBuyerIdentityBundle: (input) => {
+          authenticatedInput = input;
+          return true;
+        },
+        anchor: async (name, value) => {
+          anchored.set(name, structuredClone(value) as Record<string, unknown>);
+          return `stor-${name}`;
+        },
+        settle: async () => {
+          settleCalls += 1;
+          return {
+            ok: true,
+            txHash: "0xidentity",
+            chainId: "eip155:11155111",
+            payer: "0xbob",
+            payee: "0xalice",
+          };
+        },
+      }),
+    );
+
+    expect(settleCalls).toBe(1);
+    expect(authenticatedInput).toMatchObject({
+      buyerId: BUYER_ID,
+      jobId: "job-1",
+      bundleHash: BUYER_IDENTITY_HASH,
+      bundle: BUYER_IDENTITY,
+    });
+    expect(Buffer.from(authenticatedInput!.signedBytes)).toEqual(
+      Buffer.from(
+        signedBytes("dacs-bundle-presentation:v1:", BUYER_IDENTITY_HASH),
+      ),
+    );
+    const agreement = anchored.get("dacs3:agreement:job-1")!;
+    expect(agreement.dacsSdkBuyerIdentityBundleHash).toBe(BUYER_IDENTITY_HASH);
+    const bundle = anchored.get("dacs5:bundle:job-1")! as {
+      parties: Array<{ role: string; bundleHash: string; primaryClaim: string }>;
+    };
+    expect(bundle.parties.find((party) => party.role === "buyer")).toEqual({
+      role: "buyer",
+      bundleHash: BUYER_IDENTITY_HASH,
+      primaryClaim: BUYER_ID,
+    });
+    expect(BUYER_IDENTITY_HASH).not.toBe(sha256Hex(BUYER_ID));
+  });
+
+  test("fails closed on an unauthenticated buyer IdentityBundle before any effect", async () => {
+    let anchorCalls = 0;
+    let settleCalls = 0;
+    await expect(
+      runSessionCore(
+        "stor-listing",
+        TERMS,
+        makeDeps({
+          authenticateBuyerIdentityBundle: () => false,
+          anchor: async () => {
+            anchorCalls += 1;
+            return "stor-unexpected";
+          },
+          settle: async () => {
+            settleCalls += 1;
+            throw new Error("must not settle");
+          },
+        }),
+      ),
+    ).rejects.toThrow(/IdentityBundle presentation could not be authenticated/);
+    expect(anchorCalls).toBe(0);
+    expect(settleCalls).toBe(0);
   });
 
   test("snapshots caller-owned fixed terms before any awaited dependency", async () => {
@@ -1785,6 +1885,7 @@ describe("runSession orchestration (T4)", () => {
       seller: "did:demos:alice",
       listingRef: "stor-expiring-listing",
       dacsSdkExpectedSettlementPayee: "0xalice",
+      dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,
       dacsSdkListingPin: exactPin,
       price: terms.price,
       delivery: { phase: terms.deliveryPhase, format: terms.deliveryFormat },
@@ -2178,6 +2279,7 @@ describe("runSession orchestration (T4)", () => {
       buyer: "did:demos:bob",
       seller: "did:demos:alice",
       listingRef: "stor-another-listing",
+      dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,
       price: TERMS.price,
       delivery: { phase: "deliver-attested-payload", format: "application/json" },
       expiresAt: "2026-01-01T00:00:00Z",
@@ -2494,6 +2596,7 @@ describe("runSession orchestration (T4)", () => {
       seller: "did:demos:alice",
       listingRef: "stor-listing",
       dacsSdkExpectedSettlementPayee: "0xalice",
+      dacsSdkBuyerIdentityBundleHash: BUYER_IDENTITY_HASH,
       price: TERMS.price,
       delivery: { phase: TERMS.deliveryPhase, format: TERMS.deliveryFormat },
       expiresAt: "2026-01-01T00:00:00Z",
