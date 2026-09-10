@@ -4,6 +4,7 @@ import { stdin, stdout } from "node:process";
 
 import {
   OFFLINE_PROFILE,
+  LIVE_PROFILE,
   createDacsAgentProject,
   type CreateDacsAgentOptions,
 } from "./index.js";
@@ -12,7 +13,7 @@ interface ParsedArguments extends CreateDacsAgentOptions {
   yes: boolean;
 }
 
-const ROLES = new Set(["demo-all"]);
+const ROLES = new Set(["demo-all", "buyer", "seller", "verifier"]);
 const DEPLOYMENTS = new Set(["local", "docker"]);
 
 function valueAfter(args: string[], index: number, flag: string): string {
@@ -51,9 +52,7 @@ export function parseCreateDacsAgentArguments(args: string[]): ParsedArguments {
     } else if (argument === "--role") {
       const value = valueAfter(args, index, argument);
       if (!ROLES.has(value)) {
-        throw new Error(
-          "--role must be demo-all; independent role services are not implemented",
-        );
+        throw new Error("--role must be demo-all, buyer, seller or verifier");
       }
       role = value as CreateDacsAgentOptions["role"];
       index += 1;
@@ -116,23 +115,33 @@ async function interactive(parsed: ParsedArguments): Promise<ParsedArguments> {
 
   await boundedAnswer("Package manager [npm]: ", new Set(["npm"]), "npm");
   const mode = (parsed.mode ??
-    (await boundedAnswer("Mode [offline]: ", new Set(["offline"]), "offline"))) as
-    | "offline";
-  const role = parsed.role ?? "demo-all";
+    (await boundedAnswer(
+      "Mode [offline] (offline/live-demos): ",
+      new Set(["offline", "live-demos"]),
+      "offline",
+    ))) as "offline" | "live-demos";
+  const role = (parsed.role ?? (await boundedAnswer(
+    mode === "offline"
+      ? "Process role [demo-all]: "
+      : "Process role [buyer] (buyer/seller/verifier): ",
+    mode === "offline" ? new Set(["demo-all"]) : new Set(["buyer", "seller", "verifier"]),
+    mode === "offline" ? "demo-all" : "buyer",
+  ))) as CreateDacsAgentOptions["role"];
   const deployment = (parsed.deployment ??
     (await boundedAnswer(
       "Deployment [local] (local/docker): ",
       DEPLOYMENTS,
       "local",
     ))) as CreateDacsAgentOptions["deployment"];
-  const runAnswer = parsed.run
-    ? "yes"
-    : await boundedAnswer("Run offline smoke now? [yes] (yes/no): ", new Set(["yes", "no"]), "yes");
+  const runAnswer = mode === "offline"
+    ? parsed.run ? "yes" : await boundedAnswer(
+      "Run offline smoke now? [yes] (yes/no): ", new Set(["yes", "no"]), "yes")
+    : "no";
   return {
     ...parsed,
     targetDirectory,
     mode,
-    profile: parsed.profile ?? OFFLINE_PROFILE,
+    profile: parsed.profile ?? (mode === "offline" ? OFFLINE_PROFILE : LIVE_PROFILE),
     role,
     deployment,
     run: runAnswer === "yes",
@@ -150,6 +159,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     `\nCreated ${created.targetDirectory}\n` +
       `Profile: ${created.profile}\n` +
       `Installed: ${created.installed ? "yes" : "no"}\n` +
-      `Ran verifier simulation: ${created.ran ? "yes" : "no"}\n`,
+      `Ran verifier simulation: ${created.ran ? "yes" : "no"}\n` +
+      `Doctor: ${created.doctor}\n`,
   );
 }

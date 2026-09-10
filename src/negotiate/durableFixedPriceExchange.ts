@@ -30,6 +30,7 @@ import {
   createFixedPriceAgreementSigningPlan,
   finalizeFixedPriceAgreementContributions,
   fixedPriceAgreementSignedBytes,
+  isFixedPriceAgreementSignatureContribution,
   type FixedPriceAgreementContributionVerificationDisposition,
   type FixedPriceAgreementContributionVerificationInput,
   type FixedPriceAgreementContributionVerifier,
@@ -78,6 +79,76 @@ export interface FixedPriceAgreementProposal {
   plan: Readonly<FixedPriceAgreementSigningPlan>;
   buyerContribution: Readonly<FixedPriceAgreementSignatureContribution>;
   proposalHash: string;
+}
+
+export interface FixedPriceAgreementProposalEnvelope {
+  proposal: Readonly<FixedPriceAgreementProposal>;
+  transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
+}
+
+/**
+ * Authenticate the complete transport-level binding of a buyer proposal.
+ * This validates canonical data shape, the signing plan, both content hashes,
+ * the buyer contribution hash, and the exact job/party identity projection.
+ * Detached signature verification is deliberately performed by the durable
+ * agreement state machine after this transport admission check.
+ */
+export function isFixedPriceAgreementProposalEnvelope(
+  value: unknown,
+): value is Readonly<FixedPriceAgreementProposalEnvelope> {
+  try {
+    const captured = snapshotData(value, "fixed-price agreement proposal envelope") as unknown;
+    if (!isRecord(captured) || !exactKeys(captured, ["proposal", "transportIdentity"])) {
+      return false;
+    }
+    const proposal = captured.proposal;
+    const identity = captured.transportIdentity;
+    if (!isRecord(proposal) || !exactKeys(proposal, [
+      "proposalVersion",
+      "plan",
+      "buyerContribution",
+      "proposalHash",
+    ]) || proposal.proposalVersion !== "1" || !isHash(proposal.proposalHash) ||
+        !isFixedPriceAgreementSignatureContribution(proposal.buyerContribution) ||
+        proposal.buyerContribution.role !== "buyer") {
+      return false;
+    }
+    fixedPriceAgreementSignedBytes(
+      proposal.plan as Readonly<FixedPriceAgreementSigningPlan>,
+    );
+    const material = {
+      proposalVersion: proposal.proposalVersion,
+      plan: proposal.plan,
+      buyerContribution: proposal.buyerContribution,
+    };
+    if (sha256Hex(canonicalize(material)) !== proposal.proposalHash) return false;
+    const plan = proposal.plan as Readonly<FixedPriceAgreementSigningPlan>;
+    const buyer = plan.requiredSigners.find((entry) => entry.role === "buyer")?.party;
+    const seller = plan.requiredSigners.find((entry) => entry.role === "seller")?.party;
+    if (!buyer || !seller || proposal.buyerContribution.party !== buyer ||
+        proposal.buyerContribution.planHash !== plan.planHash ||
+        !isRecord(identity) || !exactKeys(identity, [
+          "jobId",
+          "planHash",
+          "agreementHash",
+          "buyer",
+          "seller",
+          "proposalHash",
+        ])) {
+      return false;
+    }
+    const expectedIdentity: FixedPriceAgreementTransportIdentity = {
+      jobId: plan.draft.jobId,
+      planHash: plan.planHash,
+      agreementHash: plan.agreementHash,
+      buyer,
+      seller,
+      proposalHash: proposal.proposalHash,
+    };
+    return exact(identity, expectedIdentity);
+  } catch {
+    return false;
+  }
 }
 
 /** Four-state read/reconciliation result. Only `absent` permits redrive. */

@@ -93,6 +93,7 @@ export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const EFFECT_KINDS = new Set<DacsNodeSqliteEffectKind>([
+  "session",
   "payment",
   "fulfilment",
   "artifact-publication",
@@ -144,6 +145,7 @@ const NETWORK_FILESYSTEM_MAGIC = new Set([
 
 export type DacsNodeSqliteActorRole = "buyer" | "seller" | "verifier";
 export type DacsNodeSqliteEffectKind =
+  | "session"
   | "payment"
   | "fulfilment"
   | "artifact-publication"
@@ -306,6 +308,40 @@ export interface DacsNodeSqliteDiagnostics {
   }>;
 }
 
+export interface DacsNodeSqliteUpgradeSafetyV1 {
+  safe: boolean;
+  intentEffects: number;
+  activeEffects: number;
+  reconciliationEffects: number;
+  operatorActionEffects: number;
+  incompleteOrders: number;
+}
+
+export type DacsNodeSqliteReadOnlyInspection = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
+export type DacsNodeSqliteUpgradeInspectionV1 = Readonly<
+  | {
+      status: "pass";
+      diagnostics: Readonly<DacsNodeSqliteDiagnostics>;
+      safety: Readonly<DacsNodeSqliteUpgradeSafetyV1>;
+    }
+  | {
+      status: "blocked" | "fail";
+      reasonCode: string;
+      databasePath: string;
+    }
+>;
+
 export interface DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: Readonly<{
@@ -318,6 +354,8 @@ export interface DacsNodeSqliteDatabase {
   }>;
   readTime(): number;
   diagnostics(): Readonly<DacsNodeSqliteDiagnostics>;
+  /** Read-only release gate; upgrades never proceed across unfinished effects or orders. */
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1>;
   createLiveCoordinatorStore(
     role: FixedPriceX402CoordinatorRole,
   ): FixedPriceX402CoordinatorStore;
@@ -369,6 +407,15 @@ export interface DacsNodeSqliteDatabase {
     kind: DacsNodeSqliteEffectKind,
     effectId: string,
   ): Readonly<DacsNodeSqliteEffectRecord> | undefined;
+  /**
+   * Load the exact authenticated intent payload for local effect recovery.
+   * This may contain a retained one-use authorization and must never be logged
+   * or exposed through diagnostics/status APIs.
+   */
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined;
   claimEffect(input: Readonly<{
     kind: DacsNodeSqliteEffectKind;
     effectId: string;
@@ -2669,6 +2716,7 @@ function reservationKindForEffect(
   kind: DacsNodeSqliteEffectKind,
 ): DacsNodeSqliteReservationKind {
   switch (kind) {
+    case "session": return "session";
     case "payment": return "payment-effect";
     case "fulfilment": return "fulfilment-effect";
     case "artifact-publication": return "artifact-publication";
@@ -4180,6 +4228,56 @@ function createSqlitePaymentEvidenceHandshakeStore(
   };
 }
 
+function readUpgradeSafety(
+  database: BetterSqlite3.Database,
+): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+  return readSnapshot(database, () => {
+    const effectCounts = database.prepare(`
+      SELECT
+        SUM(CASE WHEN state = 'intent' THEN 1 ELSE 0 END) AS intent_effects,
+        SUM(CASE WHEN state = 'active' THEN 1 ELSE 0 END) AS active_effects,
+        SUM(CASE WHEN state = 'reconciliation-required' THEN 1 ELSE 0 END)
+          AS reconciliation_effects,
+        SUM(CASE WHEN state = 'operator-action' THEN 1 ELSE 0 END)
+          AS operator_action_effects
+      FROM dacs_effects
+    `).get() as Readonly<{
+      intent_effects: number | null;
+      active_effects: number | null;
+      reconciliation_effects: number | null;
+      operator_action_effects: number | null;
+    }>;
+    const orderCounts = database.prepare(`
+      SELECT COUNT(*) AS incomplete_orders
+      FROM dacs_coordinator_orders
+      WHERE json_extract(record_json, '$.tracks.audit.state') IS NULL
+         OR json_extract(record_json, '$.tracks.audit.state') <> 'final'
+    `).get() as Readonly<{ incomplete_orders: number }>;
+    const intentEffects = effectCounts.intent_effects ?? 0;
+    const activeEffects = effectCounts.active_effects ?? 0;
+    const reconciliationEffects = effectCounts.reconciliation_effects ?? 0;
+    const operatorActionEffects = effectCounts.operator_action_effects ?? 0;
+    const incompleteOrders = orderCounts.incomplete_orders;
+    if ([intentEffects, activeEffects, reconciliationEffects,
+      operatorActionEffects, incompleteOrders]
+      .some((value) => !Number.isSafeInteger(value) || value < 0)) {
+      throw new DacsNodeSqliteError(
+        "database-upgrade-safety-invalid",
+        "SQLite upgrade-safety projection is invalid",
+      );
+    }
+    return Object.freeze({
+      safe: intentEffects === 0 && activeEffects === 0 && reconciliationEffects === 0 &&
+        operatorActionEffects === 0 && incompleteOrders === 0,
+      intentEffects,
+      activeEffects,
+      reconciliationEffects,
+      operatorActionEffects,
+      incompleteOrders,
+    });
+  });
+}
+
 class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
   readonly databasePath: string;
   readonly metadata: DacsNodeSqliteDatabase["metadata"];
@@ -4226,68 +4324,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         "SQLite durability diagnostics failed",
       );
     }
-    const systemNow = databaseTime(this.database);
-    const transportClock = this.database.prepare(`
-      SELECT last_time FROM dacs_http_clock WHERE singleton = 1
-    `).get() as { last_time?: unknown } | undefined;
-    if (!transportClock || !safeUint(transportClock.last_time)) {
-      throw new DacsNodeSqliteError(
-        "database-diagnostics-failed",
-        "SQLite HTTP lifecycle clock diagnostics failed",
-      );
-    }
-    const now = Math.max(systemNow, transportClock.last_time);
-    const transport = this.database.prepare(`
-      SELECT
-        (SELECT policy_hash IS NOT NULL FROM dacs_http_policy WHERE singleton = 1)
-          AS policy_bound,
-        COALESCE((SELECT retained_rows FROM dacs_http_usage
-          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS retained_rows,
-        COALESCE((SELECT retained_bytes FROM dacs_http_usage
-          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS retained_bytes,
-        COALESCE((SELECT reserved_rows FROM dacs_http_usage
-          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS reserved_rows,
-        COALESCE((SELECT reserved_bytes FROM dacs_http_usage
-          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS reserved_bytes,
-        lifecycle.rejected_admissions, lifecycle.last_rejection_reason,
-        lifecycle.purged_records, lifecycle.purged_rows, lifecycle.purged_bytes,
-        lifecycle.last_purge_at,
-        (SELECT COUNT(*) FROM dacs_http_outbox WHERE state = 'operator-action')
-          AS operator_records,
-        (SELECT COUNT(*) FROM dacs_http_inbox
-          WHERE state = 'disposed' AND retain_until <= ?) +
-          (SELECT COUNT(*) FROM dacs_http_outbox
-            WHERE state = 'acknowledged' AND retain_until <= ?) AS purgeable_records
-      FROM dacs_http_lifecycle AS lifecycle WHERE lifecycle.singleton = 1
-    `).get(now, now) as {
-      policy_bound: number;
-      retained_rows: number;
-      retained_bytes: number;
-      reserved_rows: number;
-      reserved_bytes: number;
-      rejected_admissions: number;
-      last_rejection_reason: string | null;
-      purged_records: number;
-      purged_rows: number;
-      purged_bytes: number;
-      last_purge_at: number | null;
-      operator_records: number;
-      purgeable_records: number;
-    };
-    if ((transport.policy_bound !== 0 && transport.policy_bound !== 1) ||
-        !safeUint(transport.retained_rows) || !safeUint(transport.retained_bytes) ||
-        !safeUint(transport.reserved_rows) || !safeUint(transport.reserved_bytes) ||
-        !safeUint(transport.rejected_admissions) || !safeUint(transport.purged_records) ||
-        !safeUint(transport.purged_rows) || !safeUint(transport.purged_bytes) ||
-        !safeUint(transport.operator_records) || !safeUint(transport.purgeable_records) ||
-        (transport.last_rejection_reason !== null &&
-          !reasonCode(transport.last_rejection_reason)) ||
-        (transport.last_purge_at !== null && !safeUint(transport.last_purge_at))) {
-      throw new DacsNodeSqliteError(
-        "database-diagnostics-failed",
-        "SQLite HTTP lifecycle diagnostics failed",
-      );
-    }
+    const httpTransport = readHttpTransportDiagnostics(this.database);
     return {
       databasePath: this.databasePath,
       schemaVersion: Number(this.database.pragma("user_version", { simple: true })),
@@ -4300,24 +4337,13 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
         ? {}
         : { filesystemType: this.location.filesystemType }),
       filesystemMagic: this.location.filesystemMagic,
-      httpTransport: Object.freeze({
-        policyBound: transport.policy_bound === 1,
-        retainedRows: transport.retained_rows,
-        retainedBytes: transport.retained_bytes,
-        reservedRows: transport.reserved_rows,
-        reservedBytes: transport.reserved_bytes,
-        rejectedAdmissions: transport.rejected_admissions,
-        operatorActionRecords: transport.operator_records,
-        purgeableRecords: transport.purgeable_records,
-        purgedRecords: transport.purged_records,
-        purgedRows: transport.purged_rows,
-        purgedBytes: transport.purged_bytes,
-        ...(transport.last_rejection_reason === null
-          ? {}
-          : { lastRejectionReason: transport.last_rejection_reason }),
-        ...(transport.last_purge_at === null ? {} : { lastPurgeAt: transport.last_purge_at }),
-      }),
+      httpTransport,
     };
+  }
+
+  upgradeSafety(): Readonly<DacsNodeSqliteUpgradeSafetyV1> {
+    this.assertOpen();
+    return readUpgradeSafety(this.database);
   }
 
   createLiveCoordinatorStore(
@@ -5124,6 +5150,22 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
     return readSnapshot(this.database, () => {
       const row = this.effectRow(kind, effectId);
       return row ? clone(this.validatedEffectRecord(row)) : undefined;
+    });
+  }
+
+  loadEffectInput(
+    kind: DacsNodeSqliteEffectKind,
+    effectId: string,
+  ): unknown | undefined {
+    this.assertOpen();
+    if (!EFFECT_KINDS.has(kind) || !nonEmpty(effectId)) {
+      throw new DacsNodeSqliteError("effect-input-malformed", "SQLite effect lookup is malformed");
+    }
+    return readSnapshot(this.database, () => {
+      const row = this.effectRow(kind, effectId);
+      if (!row) return undefined;
+      this.validatedEffectRecord(row);
+      return clone(JSON.parse(row.input_json) as unknown);
     });
   }
 
@@ -6758,6 +6800,218 @@ function migrateV6Database(
     database.pragma(`user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`);
     verifyVersionedDatabase(database, options, 7);
   });
+}
+
+function readHttpTransportDiagnostics(
+  database: BetterSqlite3.Database,
+): DacsNodeSqliteDiagnostics["httpTransport"] {
+    const systemNow = databaseTime(database);
+    const transportClock = database.prepare(`
+      SELECT last_time FROM dacs_http_clock WHERE singleton = 1
+    `).get() as { last_time?: unknown } | undefined;
+    if (!transportClock || !safeUint(transportClock.last_time)) {
+      throw new DacsNodeSqliteError(
+        "database-diagnostics-failed",
+        "SQLite HTTP lifecycle clock diagnostics failed",
+      );
+    }
+    const now = Math.max(systemNow, transportClock.last_time);
+    const transport = database.prepare(`
+      SELECT
+        (SELECT policy_hash IS NOT NULL FROM dacs_http_policy WHERE singleton = 1)
+          AS policy_bound,
+        COALESCE((SELECT retained_rows FROM dacs_http_usage
+          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS retained_rows,
+        COALESCE((SELECT retained_bytes FROM dacs_http_usage
+          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS retained_bytes,
+        COALESCE((SELECT reserved_rows FROM dacs_http_usage
+          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS reserved_rows,
+        COALESCE((SELECT reserved_bytes FROM dacs_http_usage
+          WHERE dimension = 'global' AND dimension_key = 'all'), 0) AS reserved_bytes,
+        lifecycle.rejected_admissions, lifecycle.last_rejection_reason,
+        lifecycle.purged_records, lifecycle.purged_rows, lifecycle.purged_bytes,
+        lifecycle.last_purge_at,
+        (SELECT COUNT(*) FROM dacs_http_outbox WHERE state = 'operator-action')
+          AS operator_records,
+        (SELECT COUNT(*) FROM dacs_http_inbox
+          WHERE state = 'disposed' AND retain_until <= ?) +
+          (SELECT COUNT(*) FROM dacs_http_outbox
+            WHERE state = 'acknowledged' AND retain_until <= ?) AS purgeable_records
+      FROM dacs_http_lifecycle AS lifecycle WHERE lifecycle.singleton = 1
+    `).get(now, now) as {
+      policy_bound: number;
+      retained_rows: number;
+      retained_bytes: number;
+      reserved_rows: number;
+      reserved_bytes: number;
+      rejected_admissions: number;
+      last_rejection_reason: string | null;
+      purged_records: number;
+      purged_rows: number;
+      purged_bytes: number;
+      last_purge_at: number | null;
+      operator_records: number;
+      purgeable_records: number;
+    };
+    if ((transport.policy_bound !== 0 && transport.policy_bound !== 1) ||
+        !safeUint(transport.retained_rows) || !safeUint(transport.retained_bytes) ||
+        !safeUint(transport.reserved_rows) || !safeUint(transport.reserved_bytes) ||
+        !safeUint(transport.rejected_admissions) || !safeUint(transport.purged_records) ||
+        !safeUint(transport.purged_rows) || !safeUint(transport.purged_bytes) ||
+        !safeUint(transport.operator_records) || !safeUint(transport.purgeable_records) ||
+        (transport.last_rejection_reason !== null &&
+          !reasonCode(transport.last_rejection_reason)) ||
+        (transport.last_purge_at !== null && !safeUint(transport.last_purge_at))) {
+      throw new DacsNodeSqliteError(
+        "database-diagnostics-failed",
+        "SQLite HTTP lifecycle diagnostics failed",
+      );
+    }
+  return Object.freeze({
+        policyBound: transport.policy_bound === 1,
+        retainedRows: transport.retained_rows,
+        retainedBytes: transport.retained_bytes,
+        reservedRows: transport.reserved_rows,
+        reservedBytes: transport.reserved_bytes,
+        rejectedAdmissions: transport.rejected_admissions,
+        operatorActionRecords: transport.operator_records,
+        purgeableRecords: transport.purgeable_records,
+        purgedRecords: transport.purged_records,
+        purgedRows: transport.purged_rows,
+        purgedBytes: transport.purged_bytes,
+        ...(transport.last_rejection_reason === null
+          ? {}
+          : { lastRejectionReason: transport.last_rejection_reason }),
+        ...(transport.last_purge_at === null ? {} : { lastPurgeAt: transport.last_purge_at }),
+      });
+}
+
+/**
+ * Validate an existing actor database without creating, migrating or writing
+ * it. This is the pre-start doctor seam; initialization and migration remain
+ * explicit lifecycle actions owned by the generated supervisor.
+ */
+export function inspectExistingDacsNodeSqliteDatabaseV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteReadOnlyInspection> {
+  const options = validateOptions(rawOptions);
+  const location = inspectDacsNodeSqliteLocation(options.databasePath);
+  if (location.status === "blocked") {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: location.reasonCode,
+      databasePath: location.databasePath,
+    });
+  }
+  if (!existsSync(location.databasePath)) {
+    return Object.freeze({
+      status: "blocked" as const,
+      reasonCode: "database-missing",
+      databasePath: location.databasePath,
+    });
+  }
+  try {
+    const version = validateExistingReadOnly(location.databasePath, options);
+    if (version === 0) {
+      return Object.freeze({
+        status: "fail" as const,
+        reasonCode: "database-uninitialized",
+        databasePath: location.databasePath,
+      });
+    }
+    if (version < DACS_NODE_SQLITE_SCHEMA_VERSION) {
+      return Object.freeze({
+        status: "blocked" as const,
+        reasonCode: "database-migration-required",
+        databasePath: location.databasePath,
+      });
+    }
+    const database = new BetterSqlite3(location.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    let httpTransport: DacsNodeSqliteDiagnostics["httpTransport"];
+    try {
+      configureAdmissionConnection(database, options);
+      const journal = database.pragma("journal_mode", { simple: true });
+      if (journal !== "wal") {
+        return Object.freeze({
+          status: "fail" as const,
+          reasonCode: "database-durability-mismatch",
+          databasePath: location.databasePath,
+        });
+      }
+      httpTransport = readHttpTransportDiagnostics(database);
+    } finally {
+      database.close();
+    }
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: Object.freeze({
+        databasePath: location.databasePath,
+        schemaVersion: version,
+        applicationId: DACS_NODE_SQLITE_APPLICATION_ID,
+        mode: options.mode,
+        profile: options.profile,
+        role: options.role,
+        authority: options.authority,
+        sdkVersion: options.sdkVersion,
+        standardRevision: options.standardRevision,
+        journalMode: "wal" as const,
+        synchronous: "full" as const,
+        quickCheck: "ok" as const,
+        ...(location.filesystemType === undefined
+          ? {} : { filesystemType: location.filesystemType }),
+        filesystemMagic: location.filesystemMagic,
+        httpTransport,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-admission-failed",
+      databasePath: location.databasePath,
+    });
+  }
+}
+
+/**
+ * Authenticate the current store and project upgrade blockers through a
+ * read-only SQLite handle. It never initializes, migrates, checkpoints or
+ * backs up the database; those remain explicit upgrade-time operations.
+ */
+export function inspectDacsNodeSqliteUpgradeSafetyV1(
+  rawOptions: Readonly<DacsNodeSqliteDatabaseOptions>,
+): Readonly<DacsNodeSqliteUpgradeInspectionV1> {
+  const options = validateOptions(rawOptions);
+  const admitted = inspectExistingDacsNodeSqliteDatabaseV1(options);
+  if (admitted.status !== "pass") return admitted;
+  let database: BetterSqlite3.Database | undefined;
+  try {
+    database = new BetterSqlite3(admitted.diagnostics.databasePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: options.busyTimeoutMs,
+    });
+    configureAdmissionConnection(database, options);
+    verifyVersionedDatabase(database, options, DACS_NODE_SQLITE_SCHEMA_VERSION);
+    return Object.freeze({
+      status: "pass" as const,
+      diagnostics: admitted.diagnostics,
+      safety: readUpgradeSafety(database),
+    });
+  } catch (error) {
+    return Object.freeze({
+      status: "fail" as const,
+      reasonCode: error instanceof DacsNodeSqliteError
+        ? error.reasonCode : "database-upgrade-safety-unavailable",
+      databasePath: admitted.diagnostics.databasePath,
+    });
+  } finally {
+    database?.close();
+  }
 }
 
 export async function openDacsNodeSqliteDatabase(

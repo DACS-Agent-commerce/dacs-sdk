@@ -25,6 +25,7 @@ import {
   createFixedPriceAgreementSignatureContribution,
   createFixedPriceAgreementSigningPlan,
   fixedPriceAgreementSignedBytes,
+  isFixedPriceAgreementSignatureContribution,
   type FixedPriceAgreementContributionVerifier,
   type FixedPriceAgreementSignatureContribution,
   type FixedPriceAgreementSigningPlan,
@@ -136,6 +137,47 @@ export interface DurableSellerFixedPriceAgreementResponse {
   responseVersion: "1";
   transportIdentity: Readonly<FixedPriceAgreementTransportIdentity>;
   sellerContribution: Readonly<FixedPriceAgreementSignatureContribution>;
+}
+
+/**
+ * Fail-closed transport validation for the seller's detached response. The
+ * response must carry one exact seller contribution bound to the same plan and
+ * seller identified by its transport identity. Signature verification remains
+ * the receiving agreement state machine's responsibility.
+ */
+export function isDurableSellerFixedPriceAgreementResponse(
+  value: unknown,
+): value is Readonly<DurableSellerFixedPriceAgreementResponse> {
+  try {
+    const captured = snapshotData(value, "durable seller agreement response") as unknown;
+    if (!isRecord(captured) || !exactKeys(captured, [
+      "responseVersion",
+      "transportIdentity",
+      "sellerContribution",
+    ]) || captured.responseVersion !== "1" ||
+        !isFixedPriceAgreementSignatureContribution(captured.sellerContribution)) {
+      return false;
+    }
+    const identity = captured.transportIdentity;
+    const contribution = captured.sellerContribution;
+    if (!isRecord(identity) || !exactKeys(identity, [
+      "jobId",
+      "planHash",
+      "agreementHash",
+      "buyer",
+      "seller",
+      "proposalHash",
+    ]) || !isNonEmpty(identity.jobId) || !isNonEmpty(identity.buyer) ||
+        !isNonEmpty(identity.seller) || identity.buyer === identity.seller ||
+        !isHash(identity.planHash) || !isHash(identity.agreementHash) ||
+        !isHash(identity.proposalHash)) {
+      return false;
+    }
+    return contribution.role === "seller" && contribution.party === identity.seller &&
+      contribution.planHash === identity.planHash;
+  } catch {
+    return false;
+  }
 }
 
 export type DurableSellerFixedPriceAgreementStage =

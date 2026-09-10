@@ -479,6 +479,32 @@ describe("publishSellerSessionSettlement", () => {
     expect(verified.disposition).toBe("verified");
   });
 
+  it("keeps one effect identity as authenticated proof observations advance", async () => {
+    const value = authorization("job-publication-proof-replay");
+    const first = harness(value);
+    const replay = harness(value);
+    replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
+      ...proof(value),
+      confirmations: 99,
+      finalityObservedAt: NOW + 60_000,
+    }));
+    const input = {
+      paymentPermitId: "permit-publication-1",
+      authorization: structuredClone(value),
+    };
+
+    const firstResult = await publishSellerSessionSettlement(input, first.deps);
+    const replayResult = await publishSellerSessionSettlement(input, replay.deps);
+    expect(firstResult.disposition).toBe("published");
+    expect(replayResult.disposition).toBe("published");
+    if (firstResult.disposition !== "published" ||
+        replayResult.disposition !== "published") return;
+    expect(replayResult.settlement.nativeProofRef.contentHash).not.toBe(
+      firstResult.settlement.nativeProofRef.contentHash,
+    );
+    expect(replayResult.effectId).toBe(firstResult.effectId);
+  });
+
   it("keeps seller evidence authority while an authenticated buyer owns the anchor lane", async () => {
     const h = harness();
     let observedWriter: unknown;
@@ -572,14 +598,14 @@ describe("publishSellerSessionSettlement", () => {
     expect(h.sign).toHaveBeenCalledOnce();
   });
 
-  it("requires a consumed permit and rejects permit/authorization substitution", async () => {
+  it("retries an available permit and rejects permit/authorization substitution", async () => {
     const available = harness();
     available.deps.receiptStore.inspectPermit = async () => ({
       status: "available",
       claim: claim(available.authorization),
     });
     expect(await publishSellerSessionSettlement(request(available), available.deps))
-      .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("not been consumed") });
+      .toMatchObject({ disposition: "indeterminate", reason: expect.stringContaining("not been consumed") });
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
@@ -735,7 +761,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(h.anchor).not.toHaveBeenCalled();
   });
 
-  it("derives effect identity only from authenticated proof content", async () => {
+  it("keeps effect identity stable across authenticated proof refreshes", async () => {
     const first = harness();
     const firstRequest = request(first);
     delete firstRequest.nativeProofRef;
@@ -765,7 +791,7 @@ describe("publishSellerSessionSettlement", () => {
     );
     expect(refreshedResult.disposition).toBe("published");
     if (refreshedResult.disposition !== "published") return;
-    expect(refreshedResult.effectId).not.toBe(firstResult.effectId);
+    expect(refreshedResult.effectId).toBe(firstResult.effectId);
     expect(refreshedResult.settlement.nativeProofRef.contentHash)
       .not.toBe(firstResult.settlement.nativeProofRef.contentHash);
   });

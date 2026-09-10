@@ -18,8 +18,10 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20.19.0"
-          cache: npm
+          node-version: "22.21.1"
+
+      - name: Pin release npm client
+        run: npm install --global --ignore-scripts npm@11.19.0
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -32,7 +34,12 @@ jobs:
         run: npm run package:lifecycle:verify
 
       - name: Build, pack, and verify reproducible root artifact
-        run: npm run package:verify -- --output-dir package-artifacts
+        run: |
+          mkdir package-artifacts
+          npm run package:verify -- --output-dir package-artifacts/core
+
+      - name: Verify exact release set, provenance, checksums and SBOMs
+        run: npm run release:set:verify -- --output-dir package-artifacts/release-set
 
       - name: Upload exact package and provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
