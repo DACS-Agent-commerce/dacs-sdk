@@ -17,10 +17,12 @@ import {
   type RailAvailabilityAuthority,
   type DeriveReputationDeps,
   type RatingRecord,
+  type RatingPublicationEffectStore,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
   isRatingRecord,
+  publishRatingRecordDurably,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -65,6 +67,9 @@ const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
 const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
+const durableRatingPublisher: typeof publishRatingRecordDurably =
+  publishRatingRecordDurably;
+declare const ratingEffectStore: RatingPublicationEffectStore;
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
@@ -109,6 +114,8 @@ void fulfilment;
 void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
+void durableRatingPublisher;
+void ratingEffectStore;
 void qualify(qualificationInput, qualificationDeps);
 void qualificationMember;
 void qualificationRequirement;
