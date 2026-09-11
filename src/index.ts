@@ -13,6 +13,43 @@
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
 export * from "./commerce/index.js";
 export {
+  admitChannelMessage,
+  prepareChannelMessageSigningInput,
+  type ChannelMessageType,
+  type ChannelMessage,
+  type ChannelAdmissionContext,
+  type UnsignedChannelMessage,
+  type ChannelMessageSigningInput,
+  type ChannelMessageSignatureVerificationInput,
+  type ChannelMessageSignatureVerifier,
+  type ChannelMessageAdmissionFailure,
+  type ChannelMessageAdmissionResult,
+} from "./negotiate/channel.js";
+export {
+  deriveRfqPriceBand,
+  validateRfqProposal,
+  openRfqSession,
+  advanceRfqSession,
+  rfqSessionCheckpointHash,
+  type RfqPriceBand,
+  type RfqPricing,
+  type RfqPartyInput,
+  type RfqProposal,
+  type RfqProposalBody,
+  type RfqAcceptBody,
+  type RfqTerminalBody,
+  type RfqTurnBody,
+  type RfqSessionPartyBinding,
+  type RfqSessionStatus,
+  type RfqStandingProposal,
+  type RfqSessionState,
+  type OpenRfqSessionInput,
+  type RfqChannelReservationInput,
+  type RfqChannelReservation,
+  type OpenRfqSessionResult,
+  type AdvanceRfqSessionResult,
+} from "./negotiate/rfq.js";
+export {
   FINALITY_COMMITMENT_SEPARATOR,
   LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
