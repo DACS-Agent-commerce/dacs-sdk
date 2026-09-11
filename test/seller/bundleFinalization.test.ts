@@ -70,16 +70,18 @@ const SELLER_SEED = new Uint8Array(32).fill(32);
 function signTestComponent<T extends Record<string, unknown>>(
   unsigned: T,
   separator: Parameters<typeof signedBytes>[0],
+  signer = SELLER,
 ): T & { signature: ComponentSignature } {
+  const seed = signer === BUYER ? BUYER_SEED : SELLER_SEED;
   return {
     ...unsigned,
     signature: {
       algorithm: "ed25519",
-      signer: SELLER,
+      signer,
       value: Buffer.from(
         ed25519Sign(
           signedBytes(separator, contentHash(unsigned)),
-          privateKeyFromSeed(SELLER_SEED),
+          privateKeyFromSeed(seed),
         ),
       ).toString("base64url"),
     },
@@ -347,6 +349,7 @@ function fixture(
     verifyRef: typeof buyerVerifyRef,
     requirement: typeof buyerRequirement,
     overallDecision: CompositeVerificationRecord["overallDecision"] = "pass",
+    verifier = SELLER,
   ): CompositeVerificationRecord =>
     signTestComponent(
       {
@@ -364,6 +367,7 @@ function fixture(
         generatedAt: NOW - 16_000,
       },
       "dacs-composite:v1:",
+      verifier,
     );
   const buyerVet = makeVetRecord(
     BUYER,
@@ -377,6 +381,7 @@ function fixture(
     sellerVerifyRef,
     sellerVetRequirement,
     options.sellerVetDecision,
+    BUYER,
   );
   const buyerVetRef = ref(
     "buyer-vet",
@@ -945,7 +950,7 @@ function fixture(
           vetRecordRef: sellerVetRef,
           evaluatedParty: SELLER,
           requirement: sellerVetRequirement,
-          verifier: SELLER,
+          verifier: BUYER,
           freshness: [],
           dealSpecific: [
             {
@@ -1128,13 +1133,16 @@ function fixture(
           : null,
       ),
       isRecipeSignerAuthorized: (_recipe, signature) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       isVerifyResultSignerAuthorized: (_result, signature) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       resolvePublicKey: async (signature) =>
-        signature.signer === SELLER && signature.algorithm === "ed25519"
-          ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
-          : null,
+        signature.algorithm !== "ed25519" ? null
+          : signature.signer === SELLER
+            ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
+            : signature.signer === BUYER
+              ? rawPublicKey(publicKeyFromSeed(BUYER_SEED))
+              : null,
       verify: ({ signedBytes: payload, signature, publicKey }) =>
         ed25519Verify(
           payload,

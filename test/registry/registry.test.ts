@@ -1706,6 +1706,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       settleFromRail(descriptor, {
         evmPrivateKey: TEST_EVM_KEY,
         paywall: { ...paywall, url: "https://attacker.example/deliver" },
+        rpcUrl: "https://sepolia.base.org",
       }),
     ).rejects.toThrow(/outside authenticated base/);
   });

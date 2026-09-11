@@ -24,6 +24,7 @@ import type {
   X402PaywallHandlers,
   X402PaywallHttpAdapter,
   X402PaywallPaymentPayload,
+  X402PaywallPaymentAuthorization,
   X402PaywallPaymentRequirements,
   X402PaywallPreSettlementAuthorization,
   X402PaywallPreSettlementContext,
@@ -38,7 +39,10 @@ import {
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
 } from "./paymentIntake.js";
-import { verifyX402ReceiptClaim } from "./x402Receipt.js";
+import {
+  deriveX402ReceiptCommitment,
+  verifyX402ReceiptClaim,
+} from "./x402Receipt.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -159,7 +163,17 @@ export type X402SellerSpine<T = unknown> = X402PaywallHandlers<
 > & Pick<
   X402PaywallCoreDeps<X402SellerPaymentPermitAuthorization, T>,
   "authorizeSettlement"
->;
+> & {
+  /**
+   * Rebuild #119 authorization from the exact settled WAL entry. This is the
+   * seller-owned recovery path when value moved but the HTTP response was lost
+   * before the post-settlement permit could be retained.
+   */
+  recoverPaymentAuthorization(input: Readonly<{
+    jobId: string;
+    phaseIndex: number;
+  }>): Promise<X402PaywallPaymentAuthorization<X402SellerPaymentPermitAuthorization>>;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -800,6 +814,87 @@ function retainedSettlementMatches(
   return "match";
 }
 
+function recoveredPaymentClaim(
+  settlement: Readonly<X402PaywallFulfilmentContext<unknown>["settlement"]>,
+  session: Readonly<X402SellerCommittedSessionScope>,
+): X402PaywallAuthorizationContext["paymentClaim"] | null {
+  try {
+    const headers = Object.entries(settlement.headers).filter(
+      ([name]) => name.toUpperCase() === "PAYMENT-RESPONSE",
+    );
+    if (headers.length !== 1 || typeof headers[0]?.[1] !== "string") return null;
+    const responseHeader = {
+      name: "PAYMENT-RESPONSE" as const,
+      value: headers[0][1],
+    };
+    const commitment = deriveX402ReceiptCommitment({
+      protocolVersion: "2",
+      responseHeader,
+    });
+    const chainMatch = /^eip155:([1-9][0-9]*)$/.exec(session.expected.network);
+    if (commitment.disposition !== "pass" ||
+        commitment.computedPaymentReceiptHash === undefined ||
+        commitment.receipt === undefined || chainMatch === null) return null;
+    const chainId = Number(chainMatch[1]);
+    if (!Number.isSafeInteger(chainId) || chainId <= 0) return null;
+    const verified = verifyX402ReceiptClaim({
+      protocolVersion: "2",
+      responseHeader,
+      evidence: {
+        paymentReceiptHash: commitment.computedPaymentReceiptHash,
+        settlementTxHash: settlement.transaction,
+        chainId,
+      },
+    });
+    if (verified.disposition !== "pass" ||
+        typeof verified.receipt?.payer !== "string" ||
+        !sameAddress(verified.receipt.payer, session.payer)) return null;
+    return deepFreeze({
+      kind: "pay-x402" as const,
+      protocolVersion: "2" as const,
+      responseHeader,
+      httpResource: session.httpResource,
+      paymentReceiptHash: commitment.computedPaymentReceiptHash,
+      settlementTxHash: settlement.transaction,
+      chainId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function recoveredRequest(
+  intent: Readonly<Record<string, unknown>>,
+  session: Readonly<X402SellerCommittedSessionScope>,
+): Readonly<X402PaywallHttpAdapter> | null {
+  try {
+    if (typeof intent.paymentHeader !== "string" ||
+        intent.paymentHeader.length === 0) return null;
+    const url = new URL(session.httpResource);
+    const query: Record<string, string | string[]> = {};
+    for (const [name, value] of url.searchParams) {
+      const prior = query[name];
+      if (prior === undefined) query[name] = value;
+      else if (Array.isArray(prior)) prior.push(value);
+      else query[name] = [prior, value];
+    }
+    return Object.freeze({
+      getHeader: (name: string) =>
+        name.toUpperCase() === "PAYMENT-SIGNATURE" ? intent.paymentHeader as string : undefined,
+      getMethod: () => "GET",
+      getPath: () => url.pathname,
+      getUrl: () => url.href,
+      getAcceptHeader: () => "",
+      getUserAgent: () => "dacs-seller-wal-recovery-v1",
+      getQueryParams: () => structuredClone(query),
+      getQueryParam: (name: string) => query[name] === undefined
+        ? undefined : structuredClone(query[name]),
+    });
+  } catch {
+    return null;
+  }
+}
+
 function validRenderedResponse<T>(value: unknown): value is X402SellerRenderedResponse<T> {
   if (!isRecord(value) || !Object.keys(value).every((key) =>
     key === "status" || key === "headers" || key === "body")) return false;
@@ -970,6 +1065,62 @@ export function createX402SellerSpine<T = unknown>(
     }
     return { disposition: "authorized" as const, authorization };
   };
+
+  const recoverPaymentAuthorization: X402SellerSpine<T>["recoverPaymentAuthorization"] =
+    async ({ jobId, phaseIndex }) => {
+      if (!isNonEmpty(jobId) || !isSafeUint(phaseIndex)) {
+        return { disposition: "rejected", reason: "seller-recovery-scope-invalid" };
+      }
+      const settlementKey = x402PaywallSettlementKey({ jobId, phaseIndex });
+      let raw: unknown;
+      try {
+        raw = await settlementStore.load(settlementKey);
+      } catch {
+        return { disposition: "indeterminate", reason: "seller-settlement-store-unavailable" };
+      }
+      const retained = ownedFrozen(raw);
+      if (!retained || !isRecord(retained) || retained.status !== "settled" ||
+          !isRecord(retained.intent) || !isRecord(retained.outcome) ||
+          retained.outcome.status !== "settled" ||
+          !isRecord(retained.outcome.settlement) ||
+          !isCommittedSessionScope(retained.intent.sessionAuthorization) ||
+          !isRecord(retained.intent.paymentPayload) ||
+          !isRecord(retained.intent.paymentRequirements)) {
+        return { disposition: "indeterminate", reason: "seller-settlement-state-unavailable" };
+      }
+      const session = retained.intent.sessionAuthorization;
+      const settlement = retained.outcome.settlement as
+        X402PaywallFulfilmentContext<unknown>["settlement"];
+      if (session.jobId !== jobId || session.paymentPhaseIndex !== phaseIndex ||
+          retainedSettlementMatches(
+            retained,
+            settlementKey,
+            session,
+            retained.intent.paymentPayload as unknown as X402PaywallPaymentPayload,
+            retained.intent.paymentRequirements as unknown as X402PaywallPaymentRequirements,
+            settlement,
+          ) !== "match") {
+        return { disposition: "indeterminate", reason: "seller-settlement-store-invalid" };
+      }
+      const paymentClaim = recoveredPaymentClaim(settlement, session);
+      const request = recoveredRequest(retained.intent, session);
+      if (!paymentClaim || !request || !settlementMatchesSession({
+        payer: session.payer,
+        paymentClaim,
+        settlement,
+      }, session)) {
+        return { disposition: "indeterminate", reason: "seller-settlement-recovery-invalid" };
+      }
+      return authorizePayment(Object.freeze({
+        jobId,
+        phaseIndex,
+        payer: session.payer,
+        request,
+        sessionAuthorization: session,
+        paymentClaim,
+        settlement,
+      }));
+    };
 
   const fulfil = async (
     context: Readonly<X402PaywallFulfilmentContext<X402SellerPaymentPermitAuthorization>>,
@@ -1277,6 +1428,7 @@ export function createX402SellerSpine<T = unknown>(
     reconcileSettlement,
     authorizeSettlement,
     authorizePayment,
+    recoverPaymentAuthorization,
     fulfil,
   });
 }
