@@ -42,6 +42,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
 
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const BUYER_SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -429,6 +430,42 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       envelopeHash: put.record!.envelopeHash,
       lease: claim.lease,
     })).toBe(false);
+  });
+
+  it.each([0, 60_000])("retains local backoff and bounded Retry-After %i through quota accounting", async (retryAfterMs) => {
+    const database = await open(join(root(), "retry-after.sqlite"), BUYER, "buyer");
+    const store = database.createHttpOutboxStore({ retryJitter: () => 250 });
+    const now = await store.readTime();
+    const signed = await envelope("buyer", 3, now);
+    const put = await store.put({
+      envelope: signed,
+      retainUntil: now + DACS_HTTP_MINIMUM_RETENTION_MS + 10_000,
+    });
+    if (!put.record) throw new Error("expected outbox record");
+    const claim = await store.claim({
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      owner: "retry-after-worker",
+      leaseDurationMs: 60_000,
+    });
+    if (claim.status !== "acquired") throw new Error("expected outbox lease");
+    const input = {
+      envelopeId: signed.envelopeId,
+      envelopeHash: put.record.envelopeHash,
+      lease: claim.lease,
+      reasonCode: "response-ambiguous",
+      retryAfterMs,
+    };
+    for (const invalid of [-1, 0.5, 60_001]) {
+      expect(await store.recordSendFailure({ ...input, retryAfterMs: invalid }))
+        .toEqual({ status: "conflict" });
+    }
+    const result = await store.recordSendFailure(input);
+    expect(result).toMatchObject({ status: "recorded", record: { state: "pending" } });
+    if (!result.record) throw new Error("expected retry record");
+    expect(result.record.nextAttemptAt - result.record.updatedAt)
+      .toBe(Math.max(1_250, retryAfterMs));
+    expect(result.record.envelope).toEqual(signed);
   });
 
   it("applies stable bounded jitter by default", async () => {
@@ -1393,6 +1430,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       envelopeHash: put.record.envelopeHash,
       lease: claim.lease,
       reasonCode: "response-ambiguous",
+      retryAfterMs: 60_000,
     })).rejects.toMatchObject({ reasonCode: "http-store-revision-limit" });
     await expect(store.requireOperatorAction({
       envelopeId: signed.envelopeId,
@@ -1786,6 +1824,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     database.checkpoint();
     close(database);
     const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DROP TABLE dacs_http_lifecycle;
       DROP TABLE dacs_http_usage;
@@ -1823,6 +1862,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     database.checkpoint();
     close(database);
     const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DROP INDEX dacs_http_inbox_semantic_idx;
       DROP INDEX dacs_http_outbox_semantic_idx;
@@ -1834,7 +1874,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       DROP TABLE dacs_http_policy;
       ALTER TABLE dacs_http_inbox DROP COLUMN semantic_key;
       ALTER TABLE dacs_http_outbox DROP COLUMN semantic_key;
-      DELETE FROM dacs_migrations WHERE version = 7;
+      DELETE FROM dacs_migrations WHERE version >= 7;
       UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
       PRAGMA user_version = 6;
     `);

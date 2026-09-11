@@ -6,10 +6,12 @@ export const DACS_NODE_LIVE_PROFILE =
   "dacs-sdk:fixed-price-x402:v1" as const;
 
 export type DacsAgentRole = "demo-all" | "buyer" | "seller" | "verifier";
+export type DacsLiveRailProfile = "pay-dem" | "x402";
 
 export interface DacsAgentLimits {
   maxServiceAmount: Readonly<{ asset: string; amount: string }>;
   maxSetupSpendDem: string;
+  /** Maximum confirmed fee for each individual Demos write, in DEM. */
   maxDemosNetworkFeeDem: string;
   maxEvmNetworkFeeEth: string;
 }
@@ -38,6 +40,8 @@ export interface DacsLiveAgentConfig extends DacsAgentConfigBase {
   rail: Readonly<{
     registryIndexRef: string;
     requestedNetwork: string;
+    /** Defaults to x402 for configs generated before native DEM support. */
+    enabledProfiles?: readonly DacsLiveRailProfile[];
   }>;
 }
 
@@ -49,6 +53,7 @@ const ROLE_VALUES = new Set<DacsAgentRole>([
   "seller",
   "verifier",
 ]);
+const DEFAULT_LIVE_RAIL_PROFILES = Object.freeze(["x402"] as const);
 
 function record(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -192,7 +197,15 @@ function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig
       !record(value.rail) || !keys(value.rail, [
         "registryIndexRef",
         "requestedNetwork",
-      ]) || !text(value.rail.registryIndexRef) || !text(value.rail.requestedNetwork)) {
+      ], ["enabledProfiles"]) || !text(value.rail.registryIndexRef) ||
+      !text(value.rail.requestedNetwork) ||
+      (value.rail.enabledProfiles !== undefined &&
+        (!Array.isArray(value.rail.enabledProfiles) ||
+          ![
+            '["pay-dem"]',
+            '["x402"]',
+            '["pay-dem","x402"]',
+          ].includes(JSON.stringify(value.rail.enabledProfiles))))) {
       throw new TypeError("live configuration is malformed or profile-incompatible");
     }
   } else {
@@ -216,4 +229,10 @@ export function validateDacsAgentConfig(value: unknown): Readonly<DacsAgentConfi
   assertDacsAgentConfig(snapshot);
 
   return deepFreeze(snapshot);
+}
+
+export function dacsLiveRailProfiles(
+  config: Readonly<DacsLiveAgentConfig>,
+): readonly DacsLiveRailProfile[] {
+  return config.rail.enabledProfiles ?? DEFAULT_LIVE_RAIL_PROFILES;
 }
