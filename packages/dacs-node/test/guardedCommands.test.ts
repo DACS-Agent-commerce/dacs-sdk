@@ -10,6 +10,7 @@ import {
   DACS_NODE_LIVE_PROFILE,
   DACS_FUNDED_DOCTOR_CONSENT_DOMAIN,
   DacsGuardedCommandError,
+  createDacsGuardedPayDemPurchasePlanV1,
   createDacsGuardedPurchasePlanV1,
   createDacsGuardedSetupPlanV1,
   createDacsFundedDoctorPlanV1,
@@ -79,6 +80,25 @@ function purchasePlan(effectId = "x402-purchase-v1") {
     maximumServiceAmount: "1",
     estimatedNetworkFeeEth: "0.0001",
     maximumNetworkFeeEth: "0.001",
+    maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
+  });
+}
+
+function payDemPurchasePlan(effectId = "pay-dem-purchase-v1") {
+  return createDacsGuardedPayDemPurchasePlanV1({
+    effectId,
+    jobId: JOB_ID,
+    listingRef: "stor-test-native-listing-ref",
+    requestHash: "e".repeat(64),
+    buyerAuthority: BUYER,
+    sellerAuthority: SELLER,
+    payer: "a".repeat(64),
+    payee: "b".repeat(64),
+    railId: "demos-native:DEM",
+    serviceAmount: "0.5",
+    maximumServiceAmount: "1",
+    maximumTotalDebitDem: "1.1",
+    maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
   });
 }
 
@@ -160,6 +180,75 @@ describe("guarded setup and purchase commands", () => {
     expect(executor).not.toHaveBeenCalled();
   });
 
+  it("binds and displays the complete generated Demos cost envelope", async () => {
+    const x402 = purchasePlan();
+    expect(x402.demosCost).toEqual({
+      rail: "x402",
+      maximumStorageWriteFeeDem: { buyer: "2", seller: "3" },
+      expectedStorageWrites: { buyer: 5, seller: 6 },
+      safetyMarginWrites: { buyer: 1, seller: 1 },
+      maximumStorageFeesDem: { buyer: "10", seller: "18" },
+      safetyMarginDem: { buyer: "2", seller: "3" },
+      minimumDem: { buyer: "12", seller: "21" },
+      maximumTotalDemosDebitDem: "33",
+    });
+    const higherCap = createDacsGuardedPurchasePlanV1({
+      ...x402,
+      effectId: x402.effectId,
+      maximumDemosStorageWriteFeeDem: { buyer: "2.1", seller: "3" },
+    });
+    expect(higherCap.planHash).not.toBe(x402.planHash);
+
+    const confirm = vi.fn(() => false);
+    await expect(runDacsGuardedCommandV1({
+      plan: x402,
+      execute: true,
+      database: await database("buyer"),
+      workerId: "buyer-consent-summary",
+      doctorReports: [await doctor("post-start", "buy")],
+      confirmation: "1",
+      confirm,
+      executor: async () => ({ status: "completed", result: {} }),
+      now: () => NOW,
+    })).rejects.toEqual(new DacsGuardedCommandError("interactive-confirmation-declined"));
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+      actionCount: 12,
+      maximumAssetSpend: "1 USDC",
+      maximumNetworkFee: "0.001 ETH EVM; 33 DEM whole-order Demos ceiling",
+    }));
+  });
+
+  it("guards native DEM purchases with a total-debit ceiling and the buy doctor", async () => {
+    const db = await database("buyer");
+    const executor = vi.fn(async () => ({ status: "completed" as const, result: {} }));
+    await expect(runDacsGuardedCommandV1({
+      plan: payDemPurchasePlan(),
+      database: db,
+      workerId: "pay-dem-buyer-worker",
+      doctorReports: [await doctor("post-start", "buy")],
+      executor,
+      now: () => NOW,
+    })).resolves.toMatchObject({
+      status: "plan-only",
+      plan: {
+        kind: "purchase-pay-dem",
+        network: "demos",
+        maximumTotalDebitDem: "1.1",
+        demosCost: {
+          expectedStorageWrites: { buyer: 5, seller: 6 },
+          maximumTotalDemosDebitDem: "34.1",
+        },
+      },
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(() => createDacsGuardedPayDemPurchasePlanV1({
+      ...payDemPurchasePlan(),
+      effectId: "pay-dem-over-ceiling",
+      maximumTotalDebitDem: "0.1",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
+    })).toThrow(/exceeds a ceiling/);
+  });
+
   it("rejects a forged or mutated plan before plan-only projection", async () => {
     const plan = setupPlan();
     const forged = { ...plan, maximumSpendDem: "8000" };
@@ -169,6 +258,18 @@ describe("guarded setup and purchase commands", () => {
       workerId: "setup-worker",
       doctorReports: [],
       executor: async () => ({ status: "completed", result: {} }),
+    })).rejects.toThrow(/options are invalid/);
+    const purchase = purchasePlan();
+    await expect(runDacsGuardedCommandV1({
+      plan: {
+        ...purchase,
+        demosCost: { ...purchase.demosCost, maximumTotalDemosDebitDem: "0" },
+      },
+      database: await database("buyer"),
+      workerId: "buyer-worker",
+      doctorReports: [await doctor("post-start", "buy")],
+      executor: async () => ({ status: "completed", result: {} }),
+      now: () => NOW,
     })).rejects.toThrow(/options are invalid/);
   });
 
@@ -368,10 +469,12 @@ describe("guarded setup and purchase commands", () => {
       ...purchasePlan(),
       serviceAmount: "2",
       maximumServiceAmount: "1",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
     })).toThrow(/exceeds a ceiling/);
     expect(() => createDacsGuardedPurchasePlanV1({
       ...purchasePlan(),
       network: "eip155:8453",
+      maximumDemosStorageWriteFeeDem: { buyer: "2", seller: "3" },
     })).toThrow(/invalid/);
     expect(() => createDacsFundedDoctorPlanV1({
       ...fundedDoctorPlan(),

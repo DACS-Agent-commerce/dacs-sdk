@@ -42,6 +42,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
 
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const BUYER_SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -1823,6 +1824,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     database.checkpoint();
     close(database);
     const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DROP TABLE dacs_http_lifecycle;
       DROP TABLE dacs_http_usage;
@@ -1860,6 +1862,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
     database.checkpoint();
     close(database);
     const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DROP INDEX dacs_http_inbox_semantic_idx;
       DROP INDEX dacs_http_outbox_semantic_idx;
@@ -1871,7 +1874,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       DROP TABLE dacs_http_policy;
       ALTER TABLE dacs_http_inbox DROP COLUMN semantic_key;
       ALTER TABLE dacs_http_outbox DROP COLUMN semantic_key;
-      DELETE FROM dacs_migrations WHERE version = 7;
+      DELETE FROM dacs_migrations WHERE version >= 7;
       UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
       PRAGMA user_version = 6;
     `);

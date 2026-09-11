@@ -344,6 +344,16 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
         handle: (authenticated, context) =>
           options.agreementTransport.handleMessage(authenticated, context),
       },
+      "pay-dem-payment-notice": {
+        validate: () => Object.freeze({
+          status: "invalid" as const,
+          reasonCode: "pay-dem-rail-disabled",
+        }),
+        handle: async () => Object.freeze({
+          disposition: "rejected" as const,
+          reasonCode: "pay-dem-rail-disabled",
+        }),
+      },
       "payment-evidence-completion": {
         validate: options.paymentEvidenceTransport.validatePayload,
         handle: (authenticated, context) =>

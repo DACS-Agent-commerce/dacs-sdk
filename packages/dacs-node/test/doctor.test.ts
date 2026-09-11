@@ -56,6 +56,45 @@ describe("complete live doctor gate", () => {
     expect(buy.exitCode).toBe(1);
   });
 
+  it("gates only enabled and explicitly selected payment rails", async () => {
+    const probes: DacsLiveDoctorProbesV1 = {
+      ...passingProbes(),
+      "x402.rail-authority": () => ({ status: "fail", reasonCode: "x402-disabled" }),
+    };
+    const nativeStart = await runDacsLiveDoctorV1({
+      ...BASE,
+      enabledRailProfiles: ["pay-dem"],
+      probes,
+    });
+    expect(nativeStart.checks.find((item) => item.id === "x402.rail-authority"))
+      .toMatchObject({ status: "fail", required: false });
+    expect(nativeStart.checks.find((item) => item.id === "pay-dem.rail-authority"))
+      .toMatchObject({ status: "pass", required: true });
+    expect(nativeStart.exitCode).toBe(0);
+
+    const nativeBuy = await runDacsLiveDoctorV1({
+      ...BASE,
+      scope: "buy",
+      enabledRailProfiles: ["x402", "pay-dem"],
+      operationRailProfile: "pay-dem",
+      probes,
+    });
+    expect(nativeBuy.checks.find((item) => item.id === "x402.rail-authority")?.required)
+      .toBe(false);
+    expect(nativeBuy.checks.find((item) => item.id === "pay-dem.total-debit")?.required)
+      .toBe(true);
+    expect(nativeBuy.exitCode).toBe(0);
+
+    const bothStart = await runDacsLiveDoctorV1({
+      ...BASE,
+      enabledRailProfiles: ["x402", "pay-dem"],
+      probes,
+    });
+    expect(bothStart.checks.find((item) => item.id === "x402.rail-authority")?.required)
+      .toBe(true);
+    expect(bothStart.exitCode).toBe(1);
+  });
+
   it("does not require post-start probes during the pre-start start gate", async () => {
     const report = await runDacsLiveDoctorV1({ ...BASE, probes: passingProbes() });
     expect(report.exitCode).toBe(0);
@@ -162,5 +201,10 @@ describe("complete live doctor gate", () => {
       ...BASE,
       probes: { "unknown.write-check": () => ({ status: "pass" }) } as never,
     })).rejects.toThrow(/probes are invalid/);
+    await expect(runDacsLiveDoctorV1({
+      ...BASE,
+      enabledRailProfiles: ["pay-dem"],
+      operationRailProfile: "x402",
+    })).rejects.toThrow(/operation rail is not enabled/);
   });
 });

@@ -129,11 +129,16 @@ async function verifyPeerAnchor(
 export function createDacsFixedPriceX402BuyerCommerceV1(
   options: Readonly<DacsFixedPriceX402BuyerCommerceOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerCommerceV1> {
-  if (options.context.role !== "buyer" || options.context.evm.role !== "buyer" ||
-      options.context.commerceStores.role !== "buyer") {
+  if (options.context.role !== "buyer" || options.context.evm?.role !== "buyer" ||
+      options.context.commerceStores.role !== "buyer" ||
+      options.context.commerceStores.x402Settlement === undefined) {
     throw new TypeError("fixed-price buyer commerce options are invalid");
   }
   const context = options.context;
+  const settlementStore = context.commerceStores.x402Settlement;
+  if (settlementStore === undefined) {
+    throw new TypeError("fixed-price buyer commerce options are invalid");
+  }
   const railContext = paymentRailContext(options.rail);
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
@@ -160,7 +165,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           jobId: loaded.record.jobId,
           phaseIndex: 2,
         });
-        const stored = await context.commerceStores.x402Settlement.load(settlementKey);
+        const stored = await settlementStore.load(settlementKey);
         if (stored.status !== "captured" || stored.outcome.status !== "captured") {
           return { disposition: "indeterminate" as const,
             reason: "buyer settlement finality is unavailable" };

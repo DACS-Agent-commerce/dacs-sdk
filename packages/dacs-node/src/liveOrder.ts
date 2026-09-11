@@ -1,8 +1,12 @@
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import {
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceX402CoordinatorRole,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
 } from "@kynesyslabs/dacs/commerce";
@@ -23,6 +27,26 @@ export interface DacsFixedPriceX402OrderPairV1 {
   readonly bindingHash: string;
   readonly buyer: Readonly<FixedPriceX402OrderInput>;
   readonly seller: Readonly<FixedPriceX402OrderInput>;
+  readonly buyerLocalBindingHash: string;
+  readonly sellerLocalBindingHash: string;
+}
+
+export interface DacsFixedPricePayDemOrderIdentityV1 {
+  jobId: string;
+  buyer: string;
+  seller: string;
+  protocol: Readonly<FixedPricePayDemProtocolBinding>;
+}
+
+export interface DacsFixedPricePayDemRoleOrderOptionsV1
+  extends DacsFixedPricePayDemOrderIdentityV1 {
+  role: FixedPriceX402CoordinatorRole;
+}
+
+export interface DacsFixedPricePayDemOrderPairV1 {
+  readonly bindingHash: string;
+  readonly buyer: Readonly<FixedPricePayDemOrderInput>;
+  readonly seller: Readonly<FixedPricePayDemOrderInput>;
   readonly buyerLocalBindingHash: string;
   readonly sellerLocalBindingHash: string;
 }
@@ -57,6 +81,16 @@ function snapshotProtocol(
     return deepFreeze(JSON.parse(canonicalize(protocol)) as FixedPriceX402ProtocolBinding);
   } catch {
     throw new TypeError("fixed-price x402 order protocol is invalid");
+  }
+}
+
+function snapshotPayDemProtocol(
+  protocol: Readonly<FixedPricePayDemProtocolBinding>,
+): Readonly<FixedPricePayDemProtocolBinding> {
+  try {
+    return deepFreeze(JSON.parse(canonicalize(protocol)) as FixedPricePayDemProtocolBinding);
+  } catch {
+    throw new TypeError("fixed-price pay-dem order protocol is invalid");
   }
 }
 
@@ -140,6 +174,61 @@ export function createDacsFixedPriceX402OrderPairV1(
   };
   if (pair.buyerLocalBindingHash === pair.sellerLocalBindingHash) {
     throw new TypeError("fixed-price x402 role-local order bindings collide");
+  }
+  return deepFreeze(pair);
+}
+
+/** Build one actor-local native DEM order with SDK-owned job pointers. */
+export function createDacsFixedPricePayDemRoleOrderV1(
+  options: Readonly<DacsFixedPricePayDemRoleOrderOptionsV1>,
+): Readonly<FixedPricePayDemOrderInput> {
+  if (!plainObject(options) || Reflect.ownKeys(options).length !== 5 ||
+      (options.role !== "buyer" && options.role !== "seller") ||
+      typeof options.jobId !== "string" || typeof options.buyer !== "string" ||
+      typeof options.seller !== "string" || !plainObject(options.protocol)) {
+    throw new TypeError("fixed-price pay-dem role order options are invalid");
+  }
+  const order: FixedPricePayDemOrderInput = {
+    jobId: options.jobId,
+    buyer: options.buyer,
+    seller: options.seller,
+    protocol: snapshotPayDemProtocol(options.protocol),
+    sdkJobs: pointers(options.role, options.jobId),
+  };
+  try {
+    fixedPricePayDemOrderBindingHash(order);
+    fixedPricePayDemOrderLocalBindingHash(order);
+  } catch {
+    throw new TypeError("fixed-price pay-dem role order is invalid");
+  }
+  return deepFreeze(order);
+}
+
+/** Build the buyer and seller native DEM views for one commercial order. */
+export function createDacsFixedPricePayDemOrderPairV1(
+  options: Readonly<DacsFixedPricePayDemOrderIdentityV1>,
+): Readonly<DacsFixedPricePayDemOrderPairV1> {
+  if (!plainObject(options) || Reflect.ownKeys(options).length !== 4 ||
+      typeof options.jobId !== "string" || typeof options.buyer !== "string" ||
+      typeof options.seller !== "string" || !plainObject(options.protocol)) {
+    throw new TypeError("fixed-price pay-dem order pair options are invalid");
+  }
+  const buyer = createDacsFixedPricePayDemRoleOrderV1({ ...options, role: "buyer" });
+  const seller = createDacsFixedPricePayDemRoleOrderV1({ ...options, role: "seller" });
+  const buyerBindingHash = fixedPricePayDemOrderBindingHash(buyer);
+  const sellerBindingHash = fixedPricePayDemOrderBindingHash(seller);
+  if (buyerBindingHash !== sellerBindingHash) {
+    throw new TypeError("fixed-price pay-dem order pair binding differs");
+  }
+  const pair: DacsFixedPricePayDemOrderPairV1 = {
+    bindingHash: buyerBindingHash,
+    buyer,
+    seller,
+    buyerLocalBindingHash: fixedPricePayDemOrderLocalBindingHash(buyer),
+    sellerLocalBindingHash: fixedPricePayDemOrderLocalBindingHash(seller),
+  };
+  if (pair.buyerLocalBindingHash === pair.sellerLocalBindingHash) {
+    throw new TypeError("fixed-price pay-dem role-local order bindings collide");
   }
   return deepFreeze(pair);
 }

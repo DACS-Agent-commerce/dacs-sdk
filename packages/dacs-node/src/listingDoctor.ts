@@ -42,6 +42,18 @@ export interface DacsX402ListingDraftInspectionOptionsV1 {
   now: number;
 }
 
+export interface DacsPayDemListingDraftInspectionOptionsV1 {
+  draft: unknown;
+  sellerAuthority: string;
+  sellerPublicKey: Uint8Array;
+  sellerPublicEndpoint: string;
+  /** Canonical 32-byte native Demos address, without a 0x prefix. */
+  sellerPayee: string;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  maximumServiceAmount: string;
+  now: number;
+}
+
 export interface DacsX402ExistingListingResolutionOptionsV1 {
   listingRef: string;
   sellerAuthority: string;
@@ -49,6 +61,26 @@ export interface DacsX402ExistingListingResolutionOptionsV1 {
   sellerPublicEndpoint: string;
   sellerPayee: string;
   network: `eip155:${number}`;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  maximumServiceAmount: string;
+  now: number;
+  readAnchor(locator: string): Promise<Record<string, unknown> | null>;
+  authenticateAnchor(input: Readonly<{
+    logicalAddress: string;
+    nativeAddress: string;
+    contentHash: string;
+    writer: string;
+  }>): Promise<boolean>;
+  readJson(url: string): Promise<unknown>;
+}
+
+export interface DacsPayDemExistingListingResolutionOptionsV1 {
+  listingRef: string;
+  sellerAuthority: string;
+  sellerPublicKey: Uint8Array;
+  sellerPublicEndpoint: string;
+  /** Canonical 32-byte native Demos address, without a 0x prefix. */
+  sellerPayee: string;
   rail: Readonly<AuthenticatedRailDefinition>;
   maximumServiceAmount: string;
   now: number;
@@ -73,6 +105,14 @@ export interface DacsX402ExistingListingAdmissionV1 {
 
 export type DacsX402ExistingListingResolutionV1 = Readonly<
   | { status: "verified"; admission: Readonly<DacsX402ExistingListingAdmissionV1> }
+  | { status: "fail" | "blocked"; reasonCode: string }
+>;
+
+export type DacsPayDemExistingListingAdmissionV1 =
+  DacsX402ExistingListingAdmissionV1;
+
+export type DacsPayDemExistingListingResolutionV1 = Readonly<
+  | { status: "verified"; admission: Readonly<DacsPayDemExistingListingAdmissionV1> }
   | { status: "fail" | "blocked"; reasonCode: string }
 >;
 
@@ -172,7 +212,7 @@ function componentSignatureValid(
   }
 }
 
-function listingRailValid(
+function x402ListingRailValid(
   draft: Readonly<ListingDraft | Listing>,
   options: Readonly<DacsX402ListingDraftInspectionOptionsV1>,
 ): boolean {
@@ -196,6 +236,35 @@ function listingRailValid(
     phases[0]?.kind === "negotiate-fixed-price" &&
     phases[1]?.kind === "commit-payee-bound-agreement" &&
     phases[2]?.kind === "pay-x402" && phases[2].parameters?.rail === rail.railId &&
+    typeof phases[3]?.kind === "string" && phases[3].kind.startsWith("deliver-");
+}
+
+function canonicalDemosAddress(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(?:0[xX])?([0-9a-fA-F]{64})$/.exec(value);
+  return match?.[1]?.toLowerCase();
+}
+
+function payDemListingRailValid(
+  draft: Readonly<ListingDraft | Listing>,
+  options: Readonly<DacsPayDemListingDraftInspectionOptionsV1>,
+): boolean {
+  const rail = options.rail;
+  const accepted = draft.acceptedRails;
+  if (!Array.isArray(accepted) || accepted.length !== 1 ||
+      accepted[0]?.railId !== rail.railId ||
+      accepted[0].railVersion !== rail.railVersion ||
+      !plainRecord(accepted[0].parameters) ||
+      Object.keys(accepted[0].parameters).length !== 2 ||
+      accepted[0].parameters.network !== "demos" ||
+      canonicalDemosAddress(accepted[0].parameters.payTo) !== options.sellerPayee) {
+    return false;
+  }
+  const phases = draft.pipeline;
+  return phases.length === 4 &&
+    phases[0]?.kind === "negotiate-fixed-price" &&
+    phases[1]?.kind === "commit-payee-bound-agreement" &&
+    phases[2]?.kind === "pay-dem" && phases[2].parameters?.rail === rail.railId &&
     typeof phases[3]?.kind === "string" && phases[3].kind.startsWith("deliver-");
 }
 
@@ -258,7 +327,10 @@ function discoveryEntry(
 }
 
 async function authenticatedDiscoverySurface(
-  options: Readonly<DacsX402ExistingListingResolutionOptionsV1>,
+  options: Readonly<
+    DacsX402ExistingListingResolutionOptionsV1 |
+    DacsPayDemExistingListingResolutionOptionsV1
+  >,
   listing: Readonly<Listing>,
   listingContentHash: string,
 ): Promise<Readonly<{
@@ -308,8 +380,11 @@ async function authenticatedDiscoverySurface(
   );
 }
 
-function validExistingOptions(
-  options: Readonly<DacsX402ExistingListingResolutionOptionsV1>,
+function validCommonExistingOptions(
+  options: Readonly<
+    DacsX402ExistingListingResolutionOptionsV1 |
+    DacsPayDemExistingListingResolutionOptionsV1
+  >,
 ): boolean {
   const authorityKey = canonicalDemosAgentPublicKey(options.sellerAuthority);
   return typeof options.listingRef === "string" &&
@@ -318,7 +393,6 @@ function validExistingOptions(
     options.sellerPublicKey.byteLength === 32 &&
     Buffer.from(authorityKey).equals(options.sellerPublicKey) &&
     safeHttpsUrl(options.sellerPublicEndpoint) !== undefined &&
-    EVM_ADDRESS_RE.test(options.sellerPayee) && /^eip155:[1-9][0-9]*$/.test(options.network) &&
     typeof options.maximumServiceAmount === "string" &&
     Number.isSafeInteger(options.now) && options.now >= 0 &&
     isAuthenticatedRailDefinition(options.rail) &&
@@ -327,18 +401,30 @@ function validExistingOptions(
     typeof options.authenticateAnchor === "function" && typeof options.readJson === "function";
 }
 
-/**
- * Resolve one exact Demos Listing reference into a session-admissible x402
- * Listing. Discovery remains a pointer: the function independently verifies the
- * Demos receipt, Listing signature, identity presentation, revocation surface,
- * authenticated rail and generated-profile price/payee bindings.
- */
-export async function resolveDacsX402ExistingListingV1(
+function validX402ExistingOptions(
   options: Readonly<DacsX402ExistingListingResolutionOptionsV1>,
+): boolean {
+  return validCommonExistingOptions(options) && EVM_ADDRESS_RE.test(options.sellerPayee) &&
+    /^eip155:[1-9][0-9]*$/.test(options.network);
+}
+
+function validPayDemExistingOptions(
+  options: Readonly<DacsPayDemExistingListingResolutionOptionsV1>,
+): boolean {
+  const authorityAddress = canonicalDemosAgentPublicKey(options.sellerAuthority);
+  const payee = canonicalDemosAddress(options.sellerPayee);
+  return validCommonExistingOptions(options) && payee !== undefined &&
+    payee === options.sellerPayee && authorityAddress !== null &&
+    Buffer.from(authorityAddress).toString("hex") === payee;
+}
+
+async function resolveDacsExistingListingV1(
+  options: Readonly<
+    DacsX402ExistingListingResolutionOptionsV1 |
+    DacsPayDemExistingListingResolutionOptionsV1
+  >,
+  profile: "x402" | "pay-dem",
 ): Promise<Readonly<DacsX402ExistingListingResolutionV1>> {
-  if (!validExistingOptions(options)) {
-    throw new TypeError("existing x402 Listing resolution options are invalid");
-  }
   let raw: Record<string, unknown> | null;
   try {
     raw = await options.readAnchor(options.listingRef);
@@ -462,22 +548,39 @@ export async function resolveDacsX402ExistingListingV1(
           : "listing-existing-validation-indeterminate",
     });
   }
-  const profileOptions: DacsX402ListingDraftInspectionOptionsV1 = {
-    draft: listing,
-    sellerAuthority: options.sellerAuthority,
-    sellerPublicKey: options.sellerPublicKey,
-    sellerPublicEndpoint: options.sellerPublicEndpoint,
-    sellerPayee: options.sellerPayee,
-    network: options.network,
-    rail: options.rail,
-    maximumServiceAmount: options.maximumServiceAmount,
-    now: options.now,
-  };
-  if (!listingRailValid(listing, profileOptions)) {
+  const railValid = profile === "x402"
+    ? x402ListingRailValid(listing, {
+        draft: listing,
+        sellerAuthority: options.sellerAuthority,
+        sellerPublicKey: options.sellerPublicKey,
+        sellerPublicEndpoint: options.sellerPublicEndpoint,
+        sellerPayee: options.sellerPayee,
+        network: (options as DacsX402ExistingListingResolutionOptionsV1).network,
+        rail: options.rail,
+        maximumServiceAmount: options.maximumServiceAmount,
+        now: options.now,
+      })
+    : payDemListingRailValid(listing, {
+        draft: listing,
+        sellerAuthority: options.sellerAuthority,
+        sellerPublicKey: options.sellerPublicKey,
+        sellerPublicEndpoint: options.sellerPublicEndpoint,
+        sellerPayee: options.sellerPayee,
+        rail: options.rail,
+        maximumServiceAmount: options.maximumServiceAmount,
+        now: options.now,
+      });
+  if (!railValid) {
     return Object.freeze({ status: "fail", reasonCode: "listing-existing-rail-invalid" });
   }
-  if (listing.pricing.kind !== "fixed" || options.rail.asset.kind !== "erc20" ||
-      listing.pricing.price.currency !== options.rail.asset.symbol ||
+  const assetSymbol = profile === "x402" && options.rail.asset.kind === "erc20"
+    ? options.rail.asset.symbol
+    : profile === "pay-dem" && options.rail.asset.kind === "native-dem" &&
+        options.rail.asset.symbol === "DEM" && options.rail.asset.decimals === 9
+      ? options.rail.asset.symbol
+      : undefined;
+  if (listing.pricing.kind !== "fixed" || assetSymbol === undefined ||
+      listing.pricing.price.currency !== assetSymbol ||
       !within(listing.pricing.price.amount, options.maximumServiceAmount)) {
     return Object.freeze({ status: "fail", reasonCode: "listing-existing-price-invalid" });
   }
@@ -490,8 +593,10 @@ export async function resolveDacsX402ExistingListingV1(
     seller: options.sellerAuthority,
     railId: options.rail.railId,
     railVersion: options.rail.railVersion,
-    network: options.network,
-    asset: options.rail.asset.symbol,
+    network: profile === "x402"
+      ? (options as DacsX402ExistingListingResolutionOptionsV1).network
+      : "demos",
+    asset: assetSymbol,
     amount: listing.pricing.price.amount,
     payee: options.sellerPayee.toLowerCase(),
   });
@@ -508,10 +613,44 @@ export async function resolveDacsX402ExistingListingV1(
   });
 }
 
+/**
+ * Resolve one exact Demos Listing reference into a session-admissible x402
+ * Listing. Discovery remains a pointer: the function independently verifies the
+ * Demos receipt, Listing signature, identity presentation, revocation surface,
+ * authenticated rail and generated-profile price/payee bindings.
+ */
+export async function resolveDacsX402ExistingListingV1(
+  options: Readonly<DacsX402ExistingListingResolutionOptionsV1>,
+): Promise<Readonly<DacsX402ExistingListingResolutionV1>> {
+  if (!validX402ExistingOptions(options)) {
+    throw new TypeError("existing x402 Listing resolution options are invalid");
+  }
+  return resolveDacsExistingListingV1(options, "x402");
+}
+
+/** Resolve and authenticate one native DEM Listing before session admission. */
+export async function resolveDacsPayDemExistingListingV1(
+  options: Readonly<DacsPayDemExistingListingResolutionOptionsV1>,
+): Promise<Readonly<DacsPayDemExistingListingResolutionV1>> {
+  if (!validPayDemExistingOptions(options)) {
+    throw new TypeError("existing pay-dem Listing resolution options are invalid");
+  }
+  return resolveDacsExistingListingV1(options, "pay-dem");
+}
+
 export async function inspectDacsX402ExistingListingV1(
   options: Readonly<DacsX402ExistingListingResolutionOptionsV1>,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
   const result = await resolveDacsX402ExistingListingV1(options);
+  return result.status === "verified"
+    ? Object.freeze({ status: "pass" as const, facts: result.admission.facts })
+    : result;
+}
+
+export async function inspectDacsPayDemExistingListingV1(
+  options: Readonly<DacsPayDemExistingListingResolutionOptionsV1>,
+): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
+  const result = await resolveDacsPayDemExistingListingV1(options);
   return result.status === "verified"
     ? Object.freeze({ status: "pass" as const, facts: result.admission.facts })
     : result;
@@ -606,7 +745,7 @@ export function inspectDacsX402ListingDraftV1(
     return Object.freeze({ status: "fail", reasonCode: "listing-candidate-endpoint-invalid" });
   }
   if (options.rail.railType !== "x402" || options.rail.phaseHandler !== "pay-x402" ||
-      options.rail.availability !== "live" || !listingRailValid(draft, options)) {
+      options.rail.availability !== "live" || !x402ListingRailValid(draft, options)) {
     return Object.freeze({ status: "fail", reasonCode: "listing-candidate-rail-invalid" });
   }
   if (draft.pricing.kind !== "fixed" || options.rail.asset.kind !== "erc20" ||
@@ -629,6 +768,73 @@ export function inspectDacsX402ListingDraftV1(
       asset: options.rail.asset.symbol,
       amount: draft.pricing.price.amount,
       payee: options.sellerPayee.toLowerCase(),
+    }),
+  });
+}
+
+
+/** Validate the exact one-rail native DEM Listing admitted by live setup. */
+export function inspectDacsPayDemListingDraftV1(
+  options: Readonly<DacsPayDemListingDraftInspectionOptionsV1>,
+): Readonly<DacsLiveDoctorProbeResultV1> {
+  if (options === null || typeof options !== "object" ||
+      typeof options.sellerAuthority !== "string" ||
+      !(options.sellerPublicKey instanceof Uint8Array) ||
+      options.sellerPublicKey.byteLength !== 32 ||
+      typeof options.sellerPublicEndpoint !== "string" ||
+      canonicalDemosAddress(options.sellerPayee) !== options.sellerPayee ||
+      typeof options.maximumServiceAmount !== "string" ||
+      !Number.isSafeInteger(options.now) || options.now < 0) {
+    throw new TypeError("pay-dem Listing draft inspection options are invalid");
+  }
+  const authorityKey = canonicalDemosAgentPublicKey(options.sellerAuthority);
+  if (authorityKey === null || !Buffer.from(authorityKey).equals(options.sellerPublicKey) ||
+      Buffer.from(authorityKey).toString("hex") !== options.sellerPayee ||
+      !isAuthenticatedRailDefinition(options.rail) ||
+      getAuthenticatedRailProvenance(options.rail) === null) {
+    throw new TypeError("pay-dem Listing draft inspection authority is invalid");
+  }
+  let draft: unknown;
+  try {
+    draft = JSON.parse(canonicalize(options.draft));
+  } catch {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-not-canonical" });
+  }
+  if (!isListingDraft(draft)) {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-schema-invalid" });
+  }
+  if (!primaryIdentityValid(draft, options.sellerAuthority, options.sellerPublicKey)) {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-identity-invalid" });
+  }
+  if (!exactPublicUrl(draft.seller.publicEndpoint, options.sellerPublicEndpoint)) {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-endpoint-invalid" });
+  }
+  if (options.rail.railType !== "demos-native" ||
+      options.rail.asset.kind !== "native-dem" ||
+      options.rail.asset.symbol !== "DEM" || options.rail.asset.decimals !== 9 ||
+      options.rail.network.kind !== "demos" || options.rail.phaseHandler !== "pay-dem" ||
+      options.rail.availability !== "live" || !payDemListingRailValid(draft, options)) {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-rail-invalid" });
+  }
+  if (draft.pricing.kind !== "fixed" || draft.pricing.price.currency !== "DEM" ||
+      !within(draft.pricing.price.amount, options.maximumServiceAmount)) {
+    return Object.freeze({ status: "fail", reasonCode: "listing-candidate-price-invalid" });
+  }
+  if (options.now < draft.validity.notBefore ||
+      (draft.validity.notAfter !== undefined && options.now > draft.validity.notAfter)) {
+    return Object.freeze({ status: "blocked", reasonCode: "listing-candidate-not-live" });
+  }
+  return Object.freeze({
+    status: "pass",
+    facts: Object.freeze({
+      candidateHash: contentHash(draft as unknown as Record<string, unknown>),
+      listingId: draft.listingId,
+      listingVersion: draft.listingVersion,
+      railId: options.rail.railId,
+      railVersion: options.rail.railVersion,
+      asset: "DEM",
+      amount: draft.pricing.price.amount,
+      payee: options.sellerPayee,
     }),
   });
 }

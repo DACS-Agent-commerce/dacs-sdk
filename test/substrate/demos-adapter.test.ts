@@ -37,6 +37,13 @@ describe("DemosAdapter", () => {
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
   });
 
+  it("rejects an invalid confirmed-fee ceiling", () => {
+    expect(() => new DemosAdapter({
+      rpc: RPC,
+      maximumFeeOs: -1n,
+    })).toThrow(/maximumFeeOs/);
+  });
+
   it("rejects proxy and accessor-backed secret carriers", () => {
     expect(() => new DemosAdapter(new Proxy({ rpc: RPC }, {})))
       .toThrow(/stable data/);
@@ -611,7 +618,7 @@ describe("DemosAdapter", () => {
       makeAdapter(sharedJournal),
       makeAdapter(sharedJournal),
     ];
-    const owner = "0xWriter";
+    const owner = "ab".repeat(32);
     const name = "listing-v1";
     const address = StorageProgram.deriveStorageAddress(owner, name, 1, "");
     let winner: Record<string, unknown> | null = null;

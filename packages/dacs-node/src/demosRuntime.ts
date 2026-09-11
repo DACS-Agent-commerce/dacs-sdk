@@ -2,7 +2,13 @@ import { lstat, mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
-import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
+import {
+  baseUnits,
+  createPayDemRail as createSdkPayDemRail,
+  type PayDemRail,
+  type PayDemSettleParams,
+  type ProtocolAnchorReceipt,
+} from "@kynesyslabs/dacs";
 import type { ComponentSigner } from "@kynesyslabs/dacs/artifacts";
 import {
   canonicalDemosAgentPublicKey,
@@ -14,12 +20,15 @@ import type {
   AnchorResolution,
   AnchorWriteOnceOptions,
   DemosWriteJournal,
+  DemosWriteJournalLease,
+  DemosWriteJournalRecord,
   OwnedAnchorScan,
   ResolvedIdentity,
 } from "@kynesyslabs/dacs/substrate";
 
 import {
   DACS_NODE_LIVE_PROFILE,
+  dacsLiveRailProfiles,
   validateDacsAgentConfig,
   type DacsLiveAgentConfig,
 } from "./config.js";
@@ -41,6 +50,7 @@ const ROLE_BY_MESSAGE: Readonly<
   "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
+  "pay-dem-payment-notice": "buyer",
   "payment-evidence-request": "seller",
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
@@ -81,6 +91,15 @@ export interface DacsDemosAdapterV1 {
     contentHash: string;
     writer: string;
   }>): Promise<ProtocolAnchorReceipt | null>;
+  reconcileWalletJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs?: number,
+  ): Promise<void>;
+  /** @deprecated Compatibility alias; implementations must reconcile all kinds. */
+  reconcileNativeTransferJournal(
+    lease: DemosWriteJournalLease,
+    timeoutMs?: number,
+  ): Promise<void>;
 }
 
 export interface DacsDemosActorRuntimeOptionsV1 {
@@ -96,7 +115,14 @@ export interface DacsDemosActorRuntimeOptionsV1 {
     rpc: string;
     secret: string;
     writeJournal: DemosWriteJournal;
+    maximumFeeOs: bigint;
   }>) => Promise<DacsDemosAdapterV1> | DacsDemosAdapterV1;
+  /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
+  createPayDemRail?: (input: Readonly<{
+    rpc: string;
+    secret: string;
+    network: "demos";
+  }>) => Promise<Readonly<PayDemRail>> | Readonly<PayDemRail>;
 }
 
 export interface DacsDemosActorRuntimeV1 {
@@ -105,6 +131,8 @@ export interface DacsDemosActorRuntimeV1 {
   readonly walletAddress: string;
   readonly publicKey: Uint8Array;
   readonly adapter: DacsDemosAdapterV1;
+  /** Present only for a write-enabled native-DEM buyer authority. */
+  readonly payDem?: Readonly<{ rail: Readonly<PayDemRail> }>;
   readonly signTransportEnvelope: DacsHttpEnvelopeSigner;
   /** Role-bound component signer; rejects substituted signer or algorithm context. */
   readonly signComponent: ComponentSigner;
@@ -164,6 +192,11 @@ function exactPrimaryAuthority(value: unknown): value is string {
   return publicKey !== null && value === demosAgentClaimRef(publicKey);
 }
 
+function canonicalWalletAddress(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() !== value) return null;
+  return value.match(/^(?:0[xX])?([0-9a-fA-F]{64})$/)?.[1]?.toLowerCase() ?? null;
+}
+
 function snapshotSecretText(secret: Readonly<DacsLoadedSecretV1>): string {
   if (secret.destroyed) throw new DacsDemosRuntimeError("demos-secret-destroyed");
   let value: string;
@@ -199,11 +232,119 @@ async function defaultAdapter(input: Readonly<{
   rpc: string;
   secret: string;
   writeJournal: DemosWriteJournal;
+  maximumFeeOs: bigint;
 }>): Promise<DacsDemosAdapterV1> {
   const substrate = await import("@kynesyslabs/dacs/substrate").catch(() => {
     throw new DacsDemosRuntimeError("demos-adapter-unavailable");
   });
   return new substrate.DemosAdapter(input) as DacsDemosAdapterV1;
+}
+
+function walletCoordinatedPayDemRail(input: Readonly<{
+  rail: Readonly<PayDemRail>;
+  journal: Readonly<DemosWriteJournal>;
+  adapter: Readonly<DacsDemosAdapterV1>;
+  chainIdentity(): Promise<string>;
+  wallet: string;
+}>): Readonly<PayDemRail> {
+  const wallet = canonicalWalletAddress(input.wallet);
+  if (wallet === null) {
+    throw new DacsDemosRuntimeError("demos-pay-dem-wallet-authority-invalid");
+  }
+  const journalWallet = input.wallet.toLowerCase();
+  return Object.freeze({
+    address: input.rail.address,
+    async settle(params: PayDemSettleParams) {
+      if (!plainObject(params)) {
+        throw new DacsDemosRuntimeError("demos-pay-dem-settlement-input-invalid");
+      }
+      const settlement = params as PayDemSettleParams;
+      const callerJournal = settlement.journalPreparedTransfer;
+      const callerFence = settlement.assertCurrentBeforeBroadcast;
+      const lease = await input.journal.acquire({
+        chainIdentity: await input.chainIdentity(),
+        wallet: journalWallet,
+      });
+      let record: DemosWriteJournalRecord | undefined;
+      try {
+        await input.adapter.reconcileWalletJournal(lease);
+        const result = await input.rail.settle({
+          ...settlement,
+          journalPreparedTransfer: async (prepared) => {
+            if (prepared.denomination !== "os" && prepared.denomination !== "dem") {
+              throw new DacsDemosRuntimeError(
+                "demos-pay-dem-prepared-denomination-unavailable",
+              );
+            }
+            if (callerJournal !== undefined) {
+              await callerJournal(prepared);
+            }
+            const transfer = Object.freeze({
+              payer: prepared.payer,
+              payee: prepared.payee,
+              amountOs: prepared.amountOs,
+              denomination: prepared.denomination,
+              network: prepared.network,
+              ...(prepared.maxTotalDebitOs === undefined
+                ? {} : { maxTotalDebitOs: prepared.maxTotalDebitOs }),
+              ...(prepared.recovery === undefined
+                ? {} : { settlementKey: prepared.recovery.settlementKey }),
+            });
+            const valueHash = sha256Hex(canonicalize({
+              txHash: prepared.txHash,
+              nonce: prepared.nonce,
+              transfer,
+            }));
+            record = {
+              writeId: `pay-dem-${valueHash}`,
+              generation: lease.generation,
+              kind: "native-transfer",
+              operation: "transfer",
+              stage: "prepared",
+              logicalName: `pay-dem:${prepared.recovery?.settlementKey ?? prepared.txHash}`,
+              programName: "native-dem-transfer",
+              owner: prepared.payer,
+              nativeAddress: prepared.payee,
+              valueHash,
+              nonce: prepared.nonce,
+              txRef: prepared.txHash,
+              transfer,
+              updatedAt: Date.now(),
+            };
+            await lease.put(record);
+          },
+          assertCurrentBeforeBroadcast: async () => {
+            if (callerFence !== undefined) await callerFence();
+            await lease.assertCurrent();
+            if (record === undefined) {
+              throw new DacsDemosRuntimeError("demos-pay-dem-prepared-record-missing");
+            }
+            record = {
+              ...record,
+              generation: lease.generation,
+              stage: "broadcast-intent",
+              updatedAt: Date.now(),
+            };
+            await lease.put(record);
+          },
+        });
+        if (result.ok) {
+          if (record === undefined || result.txHash !== record.txRef) {
+            throw new DacsDemosRuntimeError("demos-pay-dem-result-record-mismatch");
+          }
+          await input.adapter.reconcileWalletJournal(lease);
+          const retained = lease.snapshot.records.find((candidate) =>
+            candidate.writeId === record?.writeId);
+          if (retained?.stage !== "canonical-confirmed") {
+            throw new DacsDemosRuntimeError("demos-pay-dem-wallet-finality-unavailable");
+          }
+        }
+        return result;
+      } finally {
+        await lease.release();
+      }
+    },
+  });
 }
 
 /**
@@ -227,7 +368,9 @@ export async function createDacsDemosActorRuntimeV1(
       (rawOptions.writePolicy !== undefined && rawOptions.writePolicy !== "perform" &&
         rawOptions.writePolicy !== "read-only") ||
       (rawOptions.createAdapter !== undefined &&
-        typeof rawOptions.createAdapter !== "function")) {
+        typeof rawOptions.createAdapter !== "function") ||
+      (rawOptions.createPayDemRail !== undefined &&
+        typeof rawOptions.createPayDemRail !== "function")) {
     throw new TypeError("Demos actor runtime options are invalid");
   }
   const config = validateDacsAgentConfig(rawOptions.config);
@@ -244,6 +387,7 @@ export async function createDacsDemosActorRuntimeV1(
     throw error;
   }
   let adapter: DacsDemosAdapterV1;
+  let payDemRail: Readonly<PayDemRail> | undefined;
   try {
     let writeJournal: DemosWriteJournal;
     if (rawOptions.writePolicy === "read-only") {
@@ -269,8 +413,33 @@ export async function createDacsDemosActorRuntimeV1(
     }
     const makeAdapter = rawOptions.createAdapter ?? defaultAdapter;
     try {
-      adapter = await makeAdapter({ rpc: config.demos.rpcUrl, secret, writeJournal });
+      adapter = await makeAdapter({
+        rpc: config.demos.rpcUrl,
+        secret,
+        writeJournal,
+        maximumFeeOs: BigInt(baseUnits(config.limits.maxDemosNetworkFeeDem, 9)),
+      });
       await adapter.connect();
+      if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
+          dacsLiveRailProfiles(config).includes("pay-dem")) {
+        const makePayDemRail = rawOptions.createPayDemRail ?? createSdkPayDemRail;
+        const uncoordinated = await makePayDemRail({
+          rpc: config.demos.rpcUrl,
+          secret,
+          network: "demos",
+        });
+        if (adapter.getChainIdentity === undefined ||
+            typeof adapter.reconcileWalletJournal !== "function") {
+          throw new DacsDemosRuntimeError("demos-pay-dem-wallet-coordinator-unavailable");
+        }
+        payDemRail = walletCoordinatedPayDemRail({
+          rail: uncoordinated,
+          journal: writeJournal,
+          adapter,
+          chainIdentity: () => adapter.getChainIdentity!(),
+          wallet: adapter.getAddress(),
+        });
+      }
     } catch {
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");
     }
@@ -290,6 +459,13 @@ export async function createDacsDemosActorRuntimeV1(
       !text(walletAddress, 256)) {
     publicKey.fill(0);
     throw new DacsDemosRuntimeError("demos-wallet-authority-mismatch");
+  }
+  if (payDemRail !== undefined &&
+      (typeof payDemRail.settle !== "function" ||
+        canonicalWalletAddress(payDemRail.address) === null ||
+        canonicalWalletAddress(payDemRail.address) !== canonicalWalletAddress(walletAddress))) {
+    publicKey.fill(0);
+    throw new DacsDemosRuntimeError("demos-pay-dem-wallet-authority-mismatch");
   }
   const retainedPublicKey = Uint8Array.from(publicKey);
   publicKey.fill(0);
@@ -319,6 +495,9 @@ export async function createDacsDemosActorRuntimeV1(
       return Uint8Array.from(retainedPublicKey);
     },
     adapter,
+    ...(payDemRail === undefined
+      ? {}
+      : { payDem: Object.freeze({ rail: payDemRail }) }),
     signTransportEnvelope,
     signComponent,
     networkInfo: () => adapter.raw.getNetworkInfo(),

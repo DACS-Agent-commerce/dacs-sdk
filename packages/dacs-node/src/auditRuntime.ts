@@ -7,6 +7,9 @@ import {
   type DurableFinalizedBuyerBundle,
 } from "@kynesyslabs/dacs";
 import type {
+  FixedPricePayDemOrderInput,
+  FixedPricePayDemTrackOperation,
+  FixedPricePayDemTrackOperationInput,
   FixedPriceX402TrackOperation,
   FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
@@ -100,6 +103,34 @@ export interface DacsBuyerAuditRuntimeOptionsV1
   authorizeFinalized(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
+    result: Readonly<DurableFinalizedBuyerBundle>;
+  }>): Promise<boolean> | boolean;
+}
+
+export interface DacsPayDemSellerAuditRuntimeOptionsV1
+  extends Omit<DacsSellerAuditRuntimeOptionsV1, "resolveMaterial" | "authorizeFinalized"> {
+  resolveMaterial(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<DacsSellerAuditMaterialV1>> |
+    Readonly<DacsSellerAuditMaterialV1>;
+  authorizeFinalized(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+    result: Readonly<FinalizedSellerBundle>;
+  }>): Promise<boolean> | boolean;
+}
+
+export interface DacsPayDemBuyerAuditRuntimeOptionsV1
+  extends Omit<DacsBuyerAuditRuntimeOptionsV1, "resolveMaterial" | "authorizeFinalized"> {
+  resolveMaterial(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+  }>): Promise<Readonly<DacsBuyerAuditMaterialV1>> |
+    Readonly<DacsBuyerAuditMaterialV1>;
+  authorizeFinalized(input: Readonly<{
+    operation: Readonly<FixedPricePayDemTrackOperationInput>;
+    retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
     result: Readonly<DurableFinalizedBuyerBundle>;
   }>): Promise<boolean> | boolean;
 }
@@ -578,4 +609,22 @@ export function createDacsBuyerAuditTrackV1(
       });
     }
   };
+}
+
+/** Native-order projection of the rail-neutral seller audit finalizer. */
+export function createDacsPayDemSellerAuditTrackV1(
+  options: Readonly<DacsPayDemSellerAuditRuntimeOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  return createDacsSellerAuditTrackV1(
+    options as unknown as DacsSellerAuditRuntimeOptionsV1,
+  ) as unknown as FixedPricePayDemTrackOperation;
+}
+
+/** Native-order projection of the rail-neutral buyer audit finalizer. */
+export function createDacsPayDemBuyerAuditTrackV1(
+  options: Readonly<DacsPayDemBuyerAuditRuntimeOptionsV1>,
+): FixedPricePayDemTrackOperation {
+  return createDacsBuyerAuditTrackV1(
+    options as unknown as DacsBuyerAuditRuntimeOptionsV1,
+  ) as unknown as FixedPricePayDemTrackOperation;
 }

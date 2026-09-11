@@ -9,10 +9,16 @@ import {
   rawPublicKey,
 } from "@kynesyslabs/dacs/crypto";
 import {
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   type FixedPriceX402CoordinatorRole,
+  type FixedPricePayDemOperations,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
   type FixedPriceX402Operations,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
@@ -72,6 +78,26 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
     railType: "x402",
     phaseHandler: "pay-x402",
     network: "eip155:8453",
+    availability: "live",
+  },
+};
+
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: "3".repeat(64),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: "4".repeat(64),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
     availability: "live",
   },
 };
@@ -146,6 +172,13 @@ function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
   };
 }
 
+function payDemOrder(role: FixedPriceX402CoordinatorRole): FixedPricePayDemOrderInput {
+  return {
+    ...order(role),
+    protocol: PAY_DEM_PROTOCOL,
+  };
+}
+
 const finalOperation = (track: string): FixedPriceX402TrackOperation =>
   async ({ fence }) => {
     await fence.assertCurrent();
@@ -170,6 +203,10 @@ function operations(role: "buyer" | "seller"): FixedPriceX402Operations {
         delivery: finalOperation("delivery"),
         "delivery-evidence": finalOperation("delivery-evidence"),
       };
+}
+
+function payDemOperations(role: "buyer" | "seller"): FixedPricePayDemOperations {
+  return operations(role) as unknown as FixedPricePayDemOperations;
 }
 
 describe("authority-separated live role services", () => {
@@ -264,6 +301,35 @@ describe("authority-separated live role services", () => {
       ...options("buyer", buyerDatabase),
       database: sellerDatabase,
     })).toThrow(/database binding/);
+  });
+
+  it("runs native DEM orders without installing an x402 coordinator", async () => {
+    const database = await open(root(), "buyer");
+    const service = remember(createDacsBuyerServiceV1(options(
+      "buyer",
+      database,
+      undefined,
+      {
+        createOperations: undefined,
+        createPayDemOperations: () => payDemOperations("buyer"),
+      },
+    )));
+    await service.start();
+    expect(service.coordinator.profiles).toEqual(["pay-dem"]);
+
+    await service.startOrder(payDemOrder("buyer"));
+    await service.runOnce();
+
+    await expect(service.getOrderStatus(JOB_ID)).resolves.toMatchObject({
+      protocol: { phase: "pay-dem" },
+      milestone: "actor-audit-final",
+    });
+    await expect(service.startOrder({
+      ...order("buyer"),
+      jobId: `${JOB_ID.slice(0, -1)}E`,
+    })).rejects.toMatchObject({
+      reasonCode: "multirail-profile-disabled",
+    });
   });
 
   it("captures only closed data options without invoking accessors", async () => {

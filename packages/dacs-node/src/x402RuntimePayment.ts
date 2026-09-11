@@ -164,6 +164,7 @@ function preparationBindingsMatch(
     authority.railVersion === String(input.order.protocol.rail.railVersion) &&
     authority.railDescriptorHash === input.order.protocol.rail.railDefinitionHash &&
     authority.network === input.order.protocol.rail.network &&
+    context.evm?.role === "buyer" &&
     authority.payer.toLowerCase() === context.evm.address.toLowerCase() &&
     requirements.network === authority.network &&
     requirements.payTo.toLowerCase() === authority.payee.toLowerCase() &&
@@ -187,8 +188,9 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   options: Readonly<DacsX402BuyerRuntimePaymentTrackOptionsV1>,
 ): FixedPriceX402TrackOperation {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "buyer" || options.context.evm.role !== "buyer" ||
+      options.context.role !== "buyer" || options.context.evm?.role !== "buyer" ||
       options.context.commerceStores.role !== "buyer" ||
+      options.context.commerceStores.x402Settlement === undefined ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !/^[1-9][0-9]*$/.test(options.maximumServiceAmount) ||
       !Number.isSafeInteger(options.minimumConfirmations) ||
@@ -203,7 +205,8 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
   const context = options.context;
   const evm = context.evm;
   const commerceStores = context.commerceStores;
-  if (evm.role !== "buyer" || commerceStores.role !== "buyer") {
+  if (evm?.role !== "buyer" || commerceStores.role !== "buyer" ||
+      commerceStores.x402Settlement === undefined) {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
   // Capture operator authority before retaining or invoking caller callbacks.

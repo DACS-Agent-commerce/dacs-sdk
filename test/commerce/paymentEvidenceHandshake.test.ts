@@ -11,13 +11,18 @@ import {
   createInMemoryPaymentEvidenceHandshakeStore,
   createPaymentEvidenceAnchorRequest,
   createSellerPaymentEvidenceHandshake,
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceX402ProtocolBindingHash,
+  fixedPricePayDemProtocolBindingHash,
   paymentEvidenceHandshakeScopeHash,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
+  type FixedPricePayDemProtocolBinding,
   type PaymentEvidenceAnchorCompletion,
   type PaymentEvidenceAnchorFence,
   type PaymentEvidenceAnchorRequest,
@@ -47,6 +52,25 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
     railType: "x402",
     phaseHandler: "pay-x402",
     network: "eip155:8453",
+    availability: "live",
+  },
+};
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: "3".repeat(64),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: "4".repeat(64),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
     availability: "live",
   },
 };
@@ -88,6 +112,20 @@ function evidence(index = 0, outcome: "success" | "failure" = "success"): Settle
       model: "provider-receipt",
       finalityObservedAt: 7_000 + index,
     },
+  };
+}
+
+function payDemEvidence(index = 0): SettlementEvidence {
+  return {
+    evidenceVersion: "1",
+    jobId: JOB_ID,
+    phase: "pay-dem",
+    outcome: "success",
+    observedAt: 7_000 + index,
+    paymentTxRefs: [{ kind: "demos", txHash: txHash(index), blockNumber: 42 + index }],
+    paymentAmount: { amount: "1", currency: "DEM" },
+    settlementFinality: { model: "bft-final", finalityObservedAt: 7_000 + index },
+    signature: { algorithm: "ed25519", signer: SELLER, value: "c2ln" },
   };
 }
 
@@ -763,13 +801,33 @@ describe("actor-separated payment-evidence handshake", () => {
       .rejects.toThrow(/completion rejected/);
   });
 
-  it("rejects pay-dem, non-live rails, wrong networks, and unpinned revisions", () => {
-    const payDem = {
-      ...evidence(),
-      phase: "pay-dem",
-      paymentTxRefs: [{ kind: "demos", txHash: "d".repeat(64) }],
-    } as unknown as SettlementEvidence;
-    expect(() => request(0, { evidence: payDem })).toThrow(/malformed/);
+  it("accepts pinned pay-dem while rejecting wrong rail evidence and x402 policy", () => {
+    const payDem = payDemEvidence();
+    const nativeRequest = createPaymentEvidenceAnchorRequest({
+      seller: SELLER,
+      buyer: BUYER,
+      protocol: PAY_DEM_PROTOCOL,
+      effectId: "native-payment-evidence",
+      logicalAddress: `dacs4:payment:${JOB_ID}:demos-native%3ADEM:0`,
+      evidenceHash: contentHash(payDem as unknown as Record<string, unknown>),
+      evidence: payDem,
+      expectedWriter: { role: "buyer", primaryClaim: BUYER },
+    });
+    expect(nativeRequest).toMatchObject({
+      protocolHash: fixedPricePayDemProtocolBindingHash(PAY_DEM_PROTOCOL),
+      protocol: { phase: "pay-dem" },
+      evidence: { phase: "pay-dem", settlementFinality: { model: "bft-final" } },
+    });
+    expect(() => createPaymentEvidenceAnchorRequest({
+      seller: SELLER,
+      buyer: BUYER,
+      protocol: PAY_DEM_PROTOCOL,
+      effectId: "native-payment-evidence",
+      logicalAddress: `dacs4:payment:${JOB_ID}:demos-native%3ADEM:0`,
+      evidenceHash: contentHash(evidence() as unknown as Record<string, unknown>),
+      evidence: evidence(),
+      expectedWriter: { role: "buyer", primaryClaim: BUYER },
+    })).toThrow(/malformed/);
 
     const wrongNetwork = structuredClone(PROTOCOL);
     (wrongNetwork as unknown as { rail: { network: string } }).rail.network = "eip155:1";

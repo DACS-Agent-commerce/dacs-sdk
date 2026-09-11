@@ -1,15 +1,18 @@
 import {
+  getAuthenticatedRailProvenance,
+  isAuthenticatedRailDefinition,
   encodeAddressSegment,
+  type AuthenticatedRailDefinition,
   type DurableSellerFulfilmentDeps,
-  type FixedPriceX402OrderRecord,
   type ProtocolAnchorReceipt,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentDurability,
   type SellerFulfilmentListing,
   type SellerFulfilmentSessionRecord,
   type SellerFulfilmentAgreement,
+  type SellerPaymentAuthorization,
   type SignedSellerDeliveryEvidence,
-  type X402SellerPaymentPermitAuthorization,
+  fixedPriceAgreementLogicalAddress,
 } from "@kynesyslabs/dacs";
 import {
   isCanonicalBase64Url,
@@ -17,6 +20,10 @@ import {
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
+import type {
+  FixedPricePayDemOrderRecord,
+  FixedPriceX402OrderRecord,
+} from "@kynesyslabs/dacs/commerce";
 
 import { loadDacsSellerAgreementVetProductionForOrderV1 } from
   "./agreementTransportRuntime.js";
@@ -25,14 +32,22 @@ import {
   captureDacsFixedPriceX402ApplicationV1,
   loadDacsFixedPriceX402CommitmentResultV1,
 } from "./fixedPriceX402Profile.js";
-import type { DacsFixedPriceX402SellerAuthorityV1 } from
-  "./fixedPriceX402SellerAuthority.js";
-import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
+import { loadDacsFixedPricePayDemCommitmentResultV1 } from
+  "./fixedPricePayDemProfile.js";
+import {
+  createDacsFixedPricePayDemRoleOrderV1,
+  createDacsFixedPriceX402RoleOrderV1,
+} from "./liveOrder.js";
 import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
+import { loadDacsPayDemSellerPaymentAuthorizationForOrderV1 } from
+  "./payDemSellerPayment.js";
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import { loadDacsSellerX402AuthorizationForOrderV1 } from "./sellerX402Runtime.js";
-import { loadDacsSellerSessionAgreementFactsForOrderV1 } from
-  "./sessionBootstrapAgreementRuntime.js";
+import {
+  loadDacsPayDemSellerSessionAgreementFactsForOrderV1,
+  loadDacsSellerSessionAgreementFactsForOrderV1,
+} from "./sessionBootstrapAgreementRuntime.js";
 
 const PREPARED_VERSION = "1" as const;
 const PREPARED_DOMAIN = "dacs-live-public-storage-delivery:v1:" as const;
@@ -49,7 +64,12 @@ export interface DacsPublicStorageDeliverableInputV1 {
 
 export interface DacsFixedPriceX402SellerFulfilmentOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  authority: Readonly<DacsFixedPriceX402SellerAuthorityV1>;
+  /** Exact authenticated registry capability selected for this order profile. */
+  rail: Readonly<AuthenticatedRailDefinition>;
+  authority: Readonly<{
+    resolveFulfilmentAgreement: DurableSellerFulfilmentDeps["resolveAgreement"];
+    resolveFulfilmentListing: DurableSellerFulfilmentDeps["resolveListing"];
+  }>;
   workerId: string;
   recipeRegistryVersion: number;
   leaseTtlMs?: number;
@@ -63,10 +83,26 @@ export interface DacsFixedPriceX402SellerFulfilmentOptionsV1 {
     Readonly<Record<string, unknown>>;
 }
 
+export interface DacsFixedPriceSellerFulfilmentOptionsV1
+  extends DacsFixedPriceX402SellerFulfilmentOptionsV1 {
+  paymentProfile: "x402" | "pay-dem";
+}
+
+type SellerLiveOrderRecord = FixedPriceX402OrderRecord | FixedPricePayDemOrderRecord;
+
+function isPayDemOrder(
+  order: Readonly<SellerLiveOrderRecord>,
+): order is Readonly<FixedPricePayDemOrderRecord> {
+  return order.protocol.phase === "pay-dem";
+}
+
 export interface DacsFixedPriceX402SellerFulfilmentV1 {
   fulfilmentDeps: Omit<DurableSellerFulfilmentDeps, "receiptStore">;
   fulfilmentDurability: Omit<SellerFulfilmentDurability, "store" | "workerId">;
 }
+
+export type DacsFixedPriceSellerFulfilmentV1 =
+  DacsFixedPriceX402SellerFulfilmentV1;
 
 export class DacsFixedPriceX402SellerFulfilmentError extends Error {
   override readonly name = "DacsFixedPriceX402SellerFulfilmentError";
@@ -157,11 +193,14 @@ function capturePrepared(value: unknown): Readonly<PreparedRecordV1> {
 async function loadOrder(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
-): Promise<Readonly<FixedPriceX402OrderRecord>> {
-  const loaded = await context.database.createLiveCoordinatorStore("seller")
-    .load("seller", jobId);
+  paymentProfile: "x402" | "pay-dem",
+): Promise<Readonly<SellerLiveOrderRecord>> {
+  const loaded = paymentProfile === "pay-dem"
+    ? await context.database.createPayDemCoordinatorStore("seller").load("seller", jobId)
+    : await context.database.createLiveCoordinatorStore("seller").load("seller", jobId);
   if (loaded.status !== "ok" || loaded.record.seller !== context.authority ||
-      loaded.record.buyer !== context.peerAuthority) {
+      loaded.record.buyer !== context.peerAuthority ||
+      loaded.record.protocol.phase !== (paymentProfile === "pay-dem" ? "pay-dem" : "pay-x402")) {
     throw new DacsFixedPriceX402SellerFulfilmentError(
       "seller-fulfilment-order-invalid",
     );
@@ -173,13 +212,31 @@ function expectedOwner(context: Readonly<DacsLiveRoleOperationContextV1>): strin
   return Buffer.from(context.demos.publicKey).toString("hex");
 }
 
-function orderInput(order: Readonly<FixedPriceX402OrderRecord>) {
-  return createDacsFixedPriceX402RoleOrderV1({
-    role: "seller",
-    jobId: order.jobId,
-    buyer: order.buyer,
-    seller: order.seller,
-    protocol: order.protocol,
+function loadRetainedOrder(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<SellerLiveOrderRecord>,
+) {
+  if (isPayDemOrder(order)) {
+    return loadDacsLiveOrderInputV1({
+      database: context.database,
+      order: createDacsFixedPricePayDemRoleOrderV1({
+        role: "seller",
+        jobId: order.jobId,
+        buyer: order.buyer,
+        seller: order.seller,
+        protocol: order.protocol,
+      }),
+    });
+  }
+  return loadDacsLiveOrderInputV1({
+    database: context.database,
+    order: createDacsFixedPriceX402RoleOrderV1({
+      role: "seller",
+      jobId: order.jobId,
+      buyer: order.buyer,
+      seller: order.seller,
+      protocol: order.protocol,
+    }),
   });
 }
 
@@ -231,6 +288,7 @@ async function resolvePublicAnchor(
 
 async function publishPublicAnchor(
   context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
   logicalAddress: string,
   raw: Readonly<Record<string, unknown>>,
   expectedHash: string,
@@ -243,13 +301,15 @@ async function publishPublicAnchor(
     await context.demos.adapter.anchorWriteOnce(
       logicalAddress,
       copy(raw),
-      {
-        metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(
+        context,
+        jobId,
+        {
           logicalAddress,
           contentHash: expectedHash,
           envelopeHash: sha256Hex(canonicalize(raw)),
         },
-      },
+      ),
     );
   } catch {
     // A submitted Demos write is ambiguous until the exact logical name is
@@ -281,10 +341,9 @@ function verifyComponent(
 }
 
 function settlementEvidenceRef(
-  authorization: Readonly<X402SellerPaymentPermitAuthorization>,
+  payment: Readonly<SellerPaymentAuthorization>,
   signer: string,
 ) {
-  const payment = authorization.paymentAuthorization;
   return Object.freeze({
     anchor: {
       kind: "storage-program" as const,
@@ -297,7 +356,7 @@ function settlementEvidenceRef(
 }
 
 function agreementCommitmentRef(
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<SellerLiveOrderRecord>,
   result: ReturnType<typeof loadDacsFixedPriceX402CommitmentResultV1>,
 ) {
   return Object.freeze({
@@ -311,18 +370,23 @@ function agreementCommitmentRef(
 
 function buildAuditSource(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  order: Readonly<FixedPriceX402OrderRecord>;
-  authorization: Readonly<X402SellerPaymentPermitAuthorization>;
+  order: Readonly<SellerLiveOrderRecord>;
+  payment: Readonly<SellerPaymentAuthorization>;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  railRegistryVersion: number;
+  railRegistryIndexHash: string;
+  railDefinitionHash: string;
   recipeRegistryVersion: number;
 }>): Readonly<SellerFulfilmentAuditSourceV1> {
-  const { context, order, authorization } = input;
-  const session = loadDacsSellerSessionAgreementFactsForOrderV1(context, order);
+  const { context, order, payment } = input;
+  const session = isPayDemOrder(order)
+    ? loadDacsPayDemSellerSessionAgreementFactsForOrderV1(context, order)
+    : loadDacsSellerSessionAgreementFactsForOrderV1(context, order);
   const sellerVet = loadDacsSellerAgreementVetProductionForOrderV1(context, order);
-  const commitment = loadDacsFixedPriceX402CommitmentResultV1(context, order);
-  const retained = loadDacsLiveOrderInputV1({
-    database: context.database,
-    order: orderInput(order),
-  });
+  const commitment = isPayDemOrder(order)
+    ? loadDacsFixedPricePayDemCommitmentResultV1(context, order)
+    : loadDacsFixedPriceX402CommitmentResultV1(context, order);
+  const retained = loadRetainedOrder(context, order);
   if (retained === undefined || retained.localBindingHash !== order.localBindingHash ||
       commitment.commitment.recordKind !== "finality") {
     throw new DacsFixedPriceX402SellerFulfilmentError(
@@ -330,16 +394,23 @@ function buildAuditSource(input: Readonly<{
     );
   }
   const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
-  const payment = authorization.paymentAuthorization;
+  const paymentKind = order.protocol.phase;
   if (payment.jobId !== order.jobId ||
-      payment.phaseIndex !== authorization.sessionAuthorization.paymentPhaseIndex ||
-      payment.railRegistryVersion !== authorization.sessionAuthorization.railRegistryVersion ||
+      payment.railId !== order.protocol.rail.railId ||
+      payment.railRegistryVersion !== input.railRegistryVersion ||
+      input.rail.railId !== order.protocol.rail.railId ||
+      input.rail.railVersion !== order.protocol.rail.railVersion ||
+      input.rail.railType !== order.protocol.rail.railType ||
+      input.rail.phaseHandler !== order.protocol.rail.phaseHandler ||
+      input.railRegistryIndexHash !== order.protocol.rail.registryIndexHash ||
+      input.railDefinitionHash !== order.protocol.rail.railDefinitionHash ||
       payment.commitment.ref !== commitment.commitment.logicalAddress ||
       payment.commitment.contentHash !== contentHash(
         commitment.commitment.record as unknown as Record<string, unknown>,
       ) || payment.commitment.finalizedAt !== commitment.commitment.committedAt ||
       payment.evidenceInput.observedAt < commitment.commitment.committedAt ||
-      payment.phaseIndex !== 2 || application.listing.pipeline.length !== 4) {
+      payment.phaseIndex !== 2 || application.listing.pipeline.length !== 4 ||
+      application.listing.pipeline[payment.phaseIndex]?.kind !== paymentKind) {
     throw new DacsFixedPriceX402SellerFulfilmentError(
       "seller-fulfilment-audit-binding-invalid",
     );
@@ -353,7 +424,7 @@ function buildAuditSource(input: Readonly<{
       agreementRef: {
         anchor: {
           kind: "storage-program" as const,
-          locator: authorization.sessionAuthorization.agreementRef,
+          locator: fixedPriceAgreementLogicalAddress(order.jobId),
         },
         contentHash: agreementHash,
         signer: order.buyer,
@@ -373,7 +444,7 @@ function buildAuditSource(input: Readonly<{
     recordVersion: "1",
     jobId: order.jobId,
     state: "settle-pending",
-    listingRef: copy(authorization.sessionAuthorization.listingRef),
+    listingRef: copy(payment.listingRef),
     parties: [
       {
         role: "buyer",
@@ -433,7 +504,7 @@ function buildAuditSource(input: Readonly<{
     startedAt: commitment.agreement.generatedAt,
     lastUpdatedAt: payment.evidenceInput.observedAt,
     recipeRegistryVersion: input.recipeRegistryVersion,
-    railRegistryVersion: payment.railRegistryVersion,
+    railRegistryVersion: input.railRegistryVersion,
   };
   return deepFreeze({
     sourceVersion: "1" as const,
@@ -459,7 +530,7 @@ function buildAuditSource(input: Readonly<{
           dealSpecific: [],
         },
       ],
-      settlementEvidence: [settlementEvidenceRef(authorization, order.seller)],
+      settlementEvidence: [settlementEvidenceRef(payment, order.seller)],
     },
     provenanceProfile: "dacs-sdk-operational-v1" as const,
   });
@@ -484,13 +555,15 @@ function finalReceipt(input: Readonly<{
  * public-storage profile. No caller can choose an anchor name, evidence signer,
  * payment authority, or retry identity.
  */
-export function createDacsFixedPriceX402SellerFulfilmentV1(
-  options: Readonly<DacsFixedPriceX402SellerFulfilmentOptionsV1>,
-): Readonly<DacsFixedPriceX402SellerFulfilmentV1> {
+export function createDacsFixedPriceSellerFulfilmentV1(
+  options: Readonly<DacsFixedPriceSellerFulfilmentOptionsV1>,
+): Readonly<DacsFixedPriceSellerFulfilmentV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || !plainObject(options.authority) ||
+      !isAuthenticatedRailDefinition(options.rail) ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !safePositive(options.recipeRegistryVersion) ||
+      (options.paymentProfile !== "x402" && options.paymentProfile !== "pay-dem") ||
       (options.leaseTtlMs !== undefined &&
         !safePositive(options.leaseTtlMs, 600_000)) ||
       typeof options.prepareDeliverable !== "function") {
@@ -498,6 +571,16 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
   }
   const context = options.context;
   const leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
+  const paymentProfile = options.paymentProfile;
+  const railProvenance = getAuthenticatedRailProvenance(options.rail);
+  if (railProvenance === null ||
+      (paymentProfile === "x402" &&
+        (options.rail.railType !== "x402" || options.rail.phaseHandler !== "pay-x402")) ||
+      (paymentProfile === "pay-dem" &&
+        (options.rail.railType !== "demos-native" ||
+          options.rail.phaseHandler !== "pay-dem"))) {
+    throw new TypeError("fixed-price seller fulfilment rail authority is invalid");
+  }
 
   const resolveByLogicalAddress = async (logicalAddress: string) =>
     resolvePublicAnchor(context, logicalAddress);
@@ -508,17 +591,26 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
     resolveListing: (ref) => options.authority.resolveFulfilmentListing(ref),
     async resolveAuditSource(jobId) {
       try {
-        const order = await loadOrder(context, jobId);
+        const order = await loadOrder(context, jobId, paymentProfile);
         const paymentPhaseIndex = 2;
-        const authorization = loadDacsSellerX402AuthorizationForOrderV1(
-          context,
-          order,
-          paymentPhaseIndex,
-        );
+        const payment = isPayDemOrder(order)
+          ? (await loadDacsPayDemSellerPaymentAuthorizationForOrderV1(
+              context,
+              order,
+            )).authorization
+          : loadDacsSellerX402AuthorizationForOrderV1(
+              context,
+              order,
+              paymentPhaseIndex,
+            ).paymentAuthorization;
         return { status: "verified" as const, value: buildAuditSource({
           context,
           order,
-          authorization,
+          payment,
+          rail: options.rail,
+          railRegistryVersion: railProvenance.registryVersion,
+          railRegistryIndexHash: railProvenance.indexContentHash,
+          railDefinitionHash: railProvenance.definitionContentHash,
           recipeRegistryVersion: options.recipeRegistryVersion,
         }) };
       } catch {
@@ -536,11 +628,8 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
           reason: "generated seller supports only schema-free public storage delivery" };
       }
       try {
-        const order = await loadOrder(context, input.jobId);
-        const retained = loadDacsLiveOrderInputV1({
-          database: context.database,
-          order: orderInput(order),
-        });
+        const order = await loadOrder(context, input.jobId, paymentProfile);
+        const retained = loadRetainedOrder(context, order);
         if (retained === undefined || retained.localBindingHash !== order.localBindingHash) {
           throw new Error("retained order unavailable");
         }
@@ -614,6 +703,7 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
       }
       const published = await publishPublicAnchor(
         context,
+        input.jobId,
         input.logicalAddress,
         input.artifact.anchoredValue,
         contentHash(input.artifact.anchoredValue),
@@ -720,6 +810,7 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
       const raw = input.evidence as unknown as Readonly<Record<string, unknown>>;
       const published = await publishPublicAnchor(
         context,
+        input.evidence.jobId,
         logicalAddress,
         raw,
         input.evidenceHash,
@@ -822,5 +913,15 @@ export function createDacsFixedPriceX402SellerFulfilmentV1(
   return Object.freeze({
     fulfilmentDeps: Object.freeze(fulfilmentDeps),
     fulfilmentDurability: Object.freeze(fulfilmentDurability),
+  });
+}
+
+/** Backward-compatible x402-only composition. */
+export function createDacsFixedPriceX402SellerFulfilmentV1(
+  options: Readonly<DacsFixedPriceX402SellerFulfilmentOptionsV1>,
+): Readonly<DacsFixedPriceX402SellerFulfilmentV1> {
+  return createDacsFixedPriceSellerFulfilmentV1({
+    ...options,
+    paymentProfile: "x402",
   });
 }

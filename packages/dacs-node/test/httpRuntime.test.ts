@@ -207,6 +207,36 @@ describe("authenticated HTTP listener and durable client", () => {
     expect(handled).toHaveBeenCalledTimes(1);
   });
 
+  it("queues an exact signed envelope without placing peer uptime on the caller", async () => {
+    const buyerDatabase = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const outbox = buyerDatabase.createHttpOutboxStore();
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = createDacsHttpMessageClientV1({
+      endpoint: "http://127.0.0.1:1/dacs-transport/v1/messages",
+      authority: BUYER,
+      outbox,
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-queue-worker",
+      fetch: fetchImpl,
+    });
+    const signed = await proposal(await outbox.readTime(), 31);
+
+    await expect(client.queue(signed)).resolves.toEqual({
+      status: "created",
+      envelopeId: signed.envelopeId,
+    });
+    await expect(client.queue(signed)).resolves.toEqual({
+      status: "existing",
+      envelopeId: signed.envelopeId,
+    });
+    await expect(outbox.load(signed.envelopeId)).resolves.toMatchObject({
+      state: "pending",
+      attempts: 0,
+      envelope: signed,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("recovers a pending inbox reservation after restart before acknowledging replay", async () => {
     const databasePath = join(root(), "seller.sqlite");
     let sellerDatabase = await open(databasePath, SELLER, "seller");

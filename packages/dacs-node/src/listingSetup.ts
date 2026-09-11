@@ -19,7 +19,10 @@ import {
   type DacsGuardedExecutorV1,
   type DacsGuardedSetupPlanV1,
 } from "./guardedCommands.js";
-import { inspectDacsX402ListingDraftV1 } from "./listingDoctor.js";
+import {
+  inspectDacsPayDemListingDraftV1,
+  inspectDacsX402ListingDraftV1,
+} from "./listingDoctor.js";
 
 export interface DacsPreparedListingSetupV1 {
   draft: Readonly<ListingDraft>;
@@ -53,6 +56,21 @@ export interface DacsPrepareListingSetupOptionsV1 {
   sellerPublicEndpoint: string;
   sellerPayee: string;
   network: `eip155:${number}`;
+  demosNetwork: string;
+  rail: Readonly<AuthenticatedRailDefinition>;
+  maximumServiceAmount: string;
+  actionMaximumSpendDem: string;
+  safetyMarginDem: string;
+  maximumSpendDem: string;
+  now: number;
+}
+
+export interface DacsPreparePayDemListingSetupOptionsV1 {
+  draft: unknown;
+  buyerAuthority: string;
+  seller: Readonly<DacsDemosActorRuntimeV1>;
+  sellerPublicEndpoint: string;
+  sellerPayee: string;
   demosNetwork: string;
   rail: Readonly<AuthenticatedRailDefinition>;
   maximumServiceAmount: string;
@@ -172,23 +190,36 @@ async function preflightListingPublication(
 
 /** Sign and bind the exact read-only setup plan before any Demos write. */
 export async function prepareDacsListingSetupV1(
-  options: Readonly<DacsPrepareListingSetupOptionsV1>,
+  options: Readonly<
+    DacsPrepareListingSetupOptionsV1 | DacsPreparePayDemListingSetupOptionsV1
+  >,
 ): Promise<Readonly<DacsPreparedListingSetupV1>> {
   if (options === null || typeof options !== "object" ||
       options.seller.role !== "seller") {
     throw new TypeError("Listing setup preparation options are invalid");
   }
-  const inspected = inspectDacsX402ListingDraftV1({
-    draft: options.draft,
-    sellerAuthority: options.seller.authority,
-    sellerPublicKey: options.seller.publicKey,
-    sellerPublicEndpoint: options.sellerPublicEndpoint,
-    sellerPayee: options.sellerPayee,
-    network: options.network,
-    rail: options.rail,
-    maximumServiceAmount: options.maximumServiceAmount,
-    now: options.now,
-  });
+  const inspected = options.rail.phaseHandler === "pay-dem"
+    ? inspectDacsPayDemListingDraftV1({
+        draft: options.draft,
+        sellerAuthority: options.seller.authority,
+        sellerPublicKey: options.seller.publicKey,
+        sellerPublicEndpoint: options.sellerPublicEndpoint,
+        sellerPayee: options.sellerPayee,
+        rail: options.rail,
+        maximumServiceAmount: options.maximumServiceAmount,
+        now: options.now,
+      })
+    : inspectDacsX402ListingDraftV1({
+        draft: options.draft,
+        sellerAuthority: options.seller.authority,
+        sellerPublicKey: options.seller.publicKey,
+        sellerPublicEndpoint: options.sellerPublicEndpoint,
+        sellerPayee: options.sellerPayee,
+        network: (options as DacsPrepareListingSetupOptionsV1).network,
+        rail: options.rail,
+        maximumServiceAmount: options.maximumServiceAmount,
+        now: options.now,
+      });
   if (inspected.status !== "pass") {
     throw new DacsListingSetupError(inspected.reasonCode ?? "listing-candidate-invalid");
   }

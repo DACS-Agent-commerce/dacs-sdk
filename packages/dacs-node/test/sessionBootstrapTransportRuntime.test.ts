@@ -10,11 +10,15 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";
 import {
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemOrderRecord,
   type FixedPriceX402OrderRecord,
-  type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import {
@@ -26,8 +30,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
-import { createDacsFixedPriceX402OrderPairV1 } from "../src/liveOrder.js";
-import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import {
+  createDacsFixedPricePayDemOrderPairV1,
+  createDacsFixedPriceX402OrderPairV1,
+} from "../src/liveOrder.js";
+import {
+  putDacsLiveOrderInputV1,
+  type DacsLiveTrackOperationInputV1,
+} from "../src/orderInput.js";
 import {
   DacsSellerSessionAdmissionUnavailableError,
   createDacsBuyerSessionBootstrapTransportRuntimeV1,
@@ -74,6 +84,28 @@ function protocol(seller: string) {
       railType: "x402" as const,
       phaseHandler: "pay-x402" as const,
       network: "eip155:84532" as const,
+      availability: "live" as const,
+    },
+  };
+}
+
+function payDemProtocol(seller: string) {
+  return {
+    commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+    standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+    phase: "pay-dem" as const,
+    orchestratorTopology: "seller-as-phase-orchestrator-v1" as const,
+    orchestrator: seller,
+    rail: {
+      registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+      registryIndexHash: "a".repeat(64),
+      railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+      railDefinitionHash: "b".repeat(64),
+      railId: "demos-native:DEM",
+      railVersion: 1,
+      railType: "demos-native" as const,
+      phaseHandler: "pay-dem" as const,
+      network: "demos" as const,
       availability: "live" as const,
     },
   };
@@ -167,7 +199,9 @@ function buyerVet(
   });
 }
 
-function operation(order: Readonly<FixedPriceX402OrderRecord>) {
+function operation(
+  order: Readonly<FixedPriceX402OrderRecord | FixedPricePayDemOrderRecord>,
+) {
   return Object.freeze({
     order,
     fence: Object.freeze({
@@ -178,7 +212,7 @@ function operation(order: Readonly<FixedPriceX402OrderRecord>) {
       localBindingHash: order.localBindingHash,
       assertCurrent: vi.fn(async () => undefined),
     }),
-  }) as unknown as Readonly<FixedPriceX402TrackOperationInput>;
+  }) as unknown as Readonly<DacsLiveTrackOperationInputV1>;
 }
 
 async function authenticated<Type extends Exclude<DacsHttpMessageType, "acknowledgement">>(
@@ -467,6 +501,162 @@ describe("pre-agreement session bootstrap transport", () => {
     await expect(value.buyerRuntime.handleMessage(admissionEnvelope, buyerInbound))
       .resolves.toEqual({ disposition: "accepted" });
     expect(value.buyerRuntime.resolveAdmission(value.buyerOperation)).toEqual(admission);
+  });
+
+  it("runs a native DEM transcript with Demos-only buyer identity", async () => {
+    const buyerKeys = generateKeyPairSync("ed25519");
+    const sellerKeys = generateKeyPairSync("ed25519");
+    const buyer = demosAgentClaimRef(rawPublicKey(buyerKeys.publicKey));
+    const seller = demosAgentClaimRef(rawPublicKey(sellerKeys.publicKey));
+    const pair = createDacsFixedPricePayDemOrderPairV1({
+      jobId: JOB_ID,
+      buyer,
+      seller,
+      protocol: payDemProtocol(seller),
+    });
+    const root = mkdtempSync(join(tmpdir(), "dacs-session-bootstrap-dem-"));
+    roots.push(root);
+    const [buyerDatabase, sellerDatabase] = await Promise.all([
+      openDacsNodeSqliteDatabase({
+        databasePath: join(root, "buyer.sqlite"),
+        mode: "live-demos",
+        profile: DACS_NODE_LIVE_PROFILE,
+        role: "buyer",
+        authority: buyer,
+      }),
+      openDacsNodeSqliteDatabase({
+        databasePath: join(root, "seller.sqlite"),
+        mode: "live-demos",
+        profile: DACS_NODE_LIVE_PROFILE,
+        role: "seller",
+        authority: seller,
+      }),
+    ]);
+    databases.push(buyerDatabase, sellerDatabase);
+    putDacsLiveOrderInputV1({
+      database: buyerDatabase,
+      order: pair.buyer,
+      application: APPLICATION,
+    });
+    const buyerStore = buyerDatabase.createPayDemCoordinatorStore("buyer");
+    await buyerStore.create({
+      role: "buyer",
+      order: pair.buyer,
+      bindingHash: pair.bindingHash,
+      localBindingHash: pair.buyerLocalBindingHash,
+    });
+    const loadedBuyer = await buyerStore.load("buyer", JOB_ID);
+    if (loadedBuyer.status !== "ok") throw new Error("native buyer order missing");
+    const buyerContext = {
+      role: "buyer",
+      database: buyerDatabase,
+      sendMessage: vi.fn(async () => acknowledgement()),
+    } as never;
+    const sellerContext = {
+      role: "seller",
+      database: sellerDatabase,
+      sendMessage: vi.fn(async () => acknowledgement()),
+    } as never;
+    const buyerRuntime = createDacsBuyerSessionBootstrapTransportRuntimeV1(buyerContext);
+    const sellerStore = sellerDatabase.createPayDemCoordinatorStore("seller");
+    const startOrder = vi.fn(async () => sellerStore.create({
+      role: "seller",
+      order: pair.seller,
+      bindingHash: pair.bindingHash,
+      localBindingHash: pair.sellerLocalBindingHash,
+    }));
+    const sellerRuntime = createDacsSellerSessionBootstrapTransportRuntimeV1<
+      FixedPricePayDemOrderInput
+    >({
+      context: sellerContext,
+      admitInit: () => ({ order: pair.seller, application: APPLICATION }),
+    });
+    const buyerOperation = operation(loadedBuyer.record);
+    const sellerChallenge = "c".repeat(64);
+    const buyerChallenge = "d".repeat(64);
+    const init = Object.freeze({
+      bootstrapVersion: "1" as const,
+      order: pair.buyer,
+      application: APPLICATION,
+      sellerChallenge,
+    });
+    await expect(buyerRuntime.publishInit(buyerOperation, init))
+      .resolves.toBe("acknowledged");
+    await expect(sellerRuntime.handleMessage(await authenticated("session-init", init, {
+      sender: buyer,
+      audience: seller,
+      privateKey: buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 40,
+    }), { role: "seller", coordinator: { startOrder } } as never))
+      .resolves.toEqual({ disposition: "accepted" });
+    const loadedSeller = await sellerStore.load("seller", JOB_ID);
+    if (loadedSeller.status !== "ok") throw new Error("native seller order missing");
+    const sellerOperation = operation(loadedSeller.record);
+    const challenge = Object.freeze({
+      bootstrapVersion: "1" as const,
+      initPayloadHash: dacsHttpPayloadHashV1(init),
+      sellerChallenge,
+      buyerChallenge,
+      sellerIdentity: sessionIdentity(seller, sellerKeys.privateKey, sellerChallenge),
+    });
+    await sellerRuntime.publishChallenge(sellerOperation, challenge);
+    await expect(buyerRuntime.handleMessage(await authenticated(
+      "session-challenge",
+      challenge,
+      {
+        sender: seller,
+        audience: buyer,
+        privateKey: sellerKeys.privateKey,
+        role: "seller",
+        nonceByte: 41,
+      },
+    ), { role: "buyer" } as never)).resolves.toEqual({ disposition: "accepted" });
+
+    const x402Identity = await buyerSessionIdentity(
+      buyer,
+      buyerKeys.privateKey,
+      buyerChallenge,
+      `0x${"44".repeat(32)}`,
+    );
+    const wrongPresentation = Object.freeze({
+      bootstrapVersion: "1" as const,
+      challengePayloadHash: dacsHttpPayloadHashV1(challenge),
+      buyerChallenge,
+      buyerIdentity: x402Identity,
+    });
+    await expect(sellerRuntime.handleMessage(await authenticated(
+      "session-presentation",
+      wrongPresentation,
+      {
+        sender: buyer,
+        audience: seller,
+        privateKey: buyerKeys.privateKey,
+        role: "buyer",
+        nonceByte: 42,
+      },
+    ), { role: "seller" } as never)).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: "session-message-binding-invalid",
+    });
+
+    const presentation = Object.freeze({
+      ...wrongPresentation,
+      buyerIdentity: sessionIdentity(buyer, buyerKeys.privateKey, buyerChallenge),
+    });
+    await buyerRuntime.publishPresentation(buyerOperation, presentation);
+    await expect(sellerRuntime.handleMessage(await authenticated(
+      "session-presentation",
+      presentation,
+      {
+        sender: buyer,
+        audience: seller,
+        privateKey: buyerKeys.privateKey,
+        role: "buyer",
+        nonceByte: 43,
+      },
+    ), { role: "seller" } as never)).resolves.toEqual({ disposition: "accepted" });
+    expect(sellerRuntime.resolvePresentation(sellerOperation)).toEqual(presentation);
   });
 
   it("fails closed on pre-admission shape errors and transcript substitution", async () => {

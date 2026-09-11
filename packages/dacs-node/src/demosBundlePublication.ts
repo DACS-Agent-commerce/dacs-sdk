@@ -16,6 +16,7 @@ import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
 
+import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 
 const DID_PREFIX = "did:demos:agent:";
@@ -283,13 +284,15 @@ export function createDacsDemosBundlePublicationV1(
       }
       const hash = attestationBundleHash(bundle);
       try {
-        await context.demos.adapter.anchorWriteOnce(logicalAddress, copy(bundle), {
-          metadata: {
+        await context.demos.adapter.anchorWriteOnce(
+          logicalAddress,
+          copy(bundle),
+          dacsFixedPricePurchaseAnchorOptionsV1(context, input.jobId, {
             logicalAddress,
             contentHash: hash,
             envelopeHash: sha256Hex(canonicalize(bundle)),
-          },
-        });
+          }),
+        );
       } catch {
         // An ambiguous write is resolved under the exact same role/name below.
       }
@@ -314,13 +317,15 @@ export function createDacsDemosBundlePublicationV1(
       const logicalAddress = bindingAddress(input.jobId, role);
       const hash = contentHash(binding as unknown as Record<string, unknown>);
       try {
-        await context.demos.adapter.anchorWriteOnce(logicalAddress, copy(binding), {
-          metadata: {
+        await context.demos.adapter.anchorWriteOnce(
+          logicalAddress,
+          copy(binding),
+          dacsFixedPricePurchaseAnchorOptionsV1(context, input.jobId, {
             logicalAddress,
             contentHash: hash,
             envelopeHash: sha256Hex(canonicalize(binding)),
-          },
-        });
+          }),
+        );
       } catch {
         // Resolve the exact signed binding before reporting an ambiguous result.
       }
