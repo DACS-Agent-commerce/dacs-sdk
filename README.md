@@ -361,6 +361,9 @@ RT-1 input before calling the wallet and return an isolated, signed wire record:
 import {
   createBuyerRatingRecord,
   createSellerRatingRecord,
+  createRatingPhasePlan,
+  completeRatingPhase,
+  deriveReputationWithValidation,
   isRatingRecord,
   publishRatingRecordDurably,
 } from "@kynesyslabs/dacs";
@@ -410,6 +413,46 @@ const publishedRating = await publishRatingRecordDurably(
 if (publishedRating.disposition !== "published") {
   throw new Error(`rating publication is ${publishedRating.disposition}`);
 }
+
+// The session orchestrator authenticates a minimal projection of the retained
+// rate-pending SessionRecord. It never receives either party signing key.
+const ratingPlan = await createRatingPhasePlan(ratePendingAuthority, {
+  authenticateAuthority: authenticateRetainedSessionProjection,
+});
+
+// Buyer and seller publish independently through their own stores and wallets,
+// then send only the durable publication result (or an explicit decline).
+const ratingHandoff = await completeRatingPhase(
+  ratingPlan,
+  [buyerRatingSubmission, sellerRatingSubmission],
+  Date.now(),
+  {
+    authenticatePlan: authenticateRetainedRatingPlan,
+    authenticatePublication: authenticateRemoteRatingPublication,
+  },
+);
+if (ratingHandoff.disposition === "waiting") {
+  // A submitted publication is authentication-indeterminate; retry the same
+  // plan rather than omitting a possibly anchored rating.
+  return ratingHandoff;
+}
+// Append ratingHandoff.phaseEntry to the SessionRecord and pass
+// ratingHandoff.ratingRefs as the terminal finalizer rating-record inventory.
+
+const reputation = await deriveReputationWithValidation(
+  sellerPrimaryClaim,
+  candidateBundles,
+  reputationWindow,
+  {
+    validate: authenticateCompleteBundle,
+    resolvePartyRole: resolveAuthenticatedSessionRole,
+    copyAbsence: resolveAuthoritativeBundleAbsence,
+    // This boundary must authenticate the rating's SR-2 anchor/binding and
+    // dacs-rating:v1 signature. The SDK then independently rechecks its exact
+    // ref hash, wire shape, RT-1/RT-2, job, parties, direction, and target role.
+    resolveAndAuthenticateRating,
+  },
+);
 ```
 
 The durable publisher writes the exact signed record to the actor-local effect
@@ -417,9 +460,17 @@ journal before invoking SR-2. A lost response moves the effect to
 reconciliation; retrying reuses the same immutable bytes, logical address, and
 idempotency identity. It returns a `ratingRef` only after authenticated finality,
 role-owned binding visibility, and exact independently authenticated readback.
-Optional/required rate-phase orchestration, terminal-bundle handoff, and
-reputation aggregation remain separate lifecycle operations; an application
-must not treat a locally signed record as an anchored rating.
+The asynchronous validated reputation path deduplicates one authenticated
+rating per `(rater, jobId, targetRole)`, selects the latest `ratedAt`, and
+computes role-specific averages. Invalid and indeterminate ratings are excluded,
+never clamped. Rate-phase orchestration and terminal-bundle handoff remain
+authority-separated: the planner authenticates completed settlement, each actor
+publishes only its own direction, and the handoff re-authenticates every remote
+publication before exposing terminal fields. Explicit decline and absence are
+non-fatal. A Listing rate step with required:true is reported through
+requiredAdvisoryMissingRoles but, as DACS-5 ST-5 requires, never blocks terminal
+bundle production or demotes completed commerce. An application must not treat
+a locally signed record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already

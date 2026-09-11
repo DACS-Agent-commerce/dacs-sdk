@@ -112,6 +112,7 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
   type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
 export {
   isDacs5SessionTransitionAllowed,
@@ -392,6 +393,23 @@ export {
   type RatingPublicationEffectStore,
   type RatingPublicationEffectWrite,
 } from "./durableRatingPublication.js";
+export {
+  createRatingPhasePlan,
+  completeRatingPhase,
+  type RatingPartyRole,
+  type RatingPhaseParty,
+  type RatingPhasePriorResult,
+  type RatingPhaseAuthorityInput,
+  type RatingPhaseAuthenticationVerdict,
+  type CreateRatingPhasePlanDeps,
+  type RatingPhasePlan,
+  type RatingPhaseSubmission,
+  type RatingPhaseCompletedEntry,
+  type RatingPhaseRoleResult,
+  type RatingPhaseReadyHandoff,
+  type RatingPhaseCompletion,
+  type CompleteRatingPhaseDeps,
+} from "./ratingPhase.js";
 export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
