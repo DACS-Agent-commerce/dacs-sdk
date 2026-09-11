@@ -532,6 +532,7 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
   type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
   isDacs5SessionTransitionAllowed,
   dacs5BundleOutcomeForTerminalState,
   type Dacs5SessionState,
