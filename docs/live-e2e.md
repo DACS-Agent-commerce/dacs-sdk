@@ -119,10 +119,10 @@ rather than pay twice or spend without bound:
   different assets and must not be added into a misleading scalar. Set both
   `LIVE_E2E_MAX_PAYMENT_AMOUNT` and `LIVE_E2E_MAX_DEMOS_DEBIT_OS`. The harness
   requires the USDC ceiling to bind the exact one-unit x402 payment, requires a
-  Demos ceiling between the projected 32 DEM clean-run cost and the hard 38 DEM
-  test limit, then reserves each confirmed Demos fee synchronously before its
-  broadcast. Missing/malformed fee data or an aggregate fee above the declared
-  ceiling prevents that broadcast.
+  Demos ceiling between the projected 33 DEM clean-run cost and the hard 38 DEM
+  test limit, then reserves every confirmed sender balance removal synchronously
+  before its broadcast. Missing/malformed effect data or an aggregate debit
+  above the declared ceiling prevents that broadcast.
 - **Reconcile, don't blindly rerun.** If a run ends ambiguous (see the
   `evm-authorization-lookup-unavailable` note below), reconcile the original
   attempt on-chain read-only before starting a fresh one.

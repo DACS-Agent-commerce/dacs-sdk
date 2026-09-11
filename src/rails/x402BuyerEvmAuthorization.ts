@@ -379,7 +379,8 @@ function extractAuthorization(
   if (!authorization || typeof payload.signature !== "string" ||
       !SIGNATURE_RE.test(payload.signature) || typeof extra.name !== "string" ||
       typeof extra.version !== "string" || extra.name.length === 0 || extra.version.length === 0 ||
-      extra.assetTransferMethod !== "eip3009" ||
+      (extra.assetTransferMethod !== undefined &&
+        extra.assetTransferMethod !== "eip3009") ||
       !sameAddress(authorization.from, intent.payer) ||
       !sameAddress(authorization.to, intent.payee) || authorization.value !== intent.amount ||
       authorization.nonce !== intent.authorizationNonce ||

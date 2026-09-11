@@ -48,8 +48,9 @@ const ipv6InCidr = (value: bigint, base: string, prefix: number): boolean => {
 };
 
 // Snapshot: IANA IPv6 Global Unicast Address Assignments, 2025-10-10.
-// Include every allocated prefix except protocol/special-purpose ranges that
-// DACS deliberately refuses. Unlisted 2000::/3 space fails closed.
+// Include every ALLOCATED prefix except protocol/special-purpose ranges that
+// DACS deliberately refuses. Omitted 2000::/3 space fails closed; omission is
+// not itself a claim that every address in that space is IANA-reserved.
 const IPV6_ALLOCATED_GLOBAL_UNICAST_V1: readonly (readonly [string, number])[] = [
   ["2001:200::", 23], ["2001:400::", 23], ["2001:600::", 23],
   ["2001:800::", 22], ["2001:c00::", 23], ["2001:e00::", 23],
@@ -73,7 +74,7 @@ const IPV6_REFUSED_SPECIAL_PURPOSE_V1: readonly (readonly [string, number])[] = 
   ["fec0::", 10], ["ff00::", 8],
 ];
 
-/** Conservative DACS public-target classifier for IPv4 and IPv6 literals. */
+/** Conservative DACS-1 public-target classifier for IPv4 and IPv6 literals. */
 export function isDacsPublicAddressV1(address: string): boolean {
   const family = isIP(address);
   if (family === 4) {

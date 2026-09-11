@@ -8,6 +8,12 @@ export interface DemosAdapterConfig {
   /** Wallet secret — mnemonic or private key. Optional for read-only use. */
   secret?: string;
   /**
+   * Optional per-transaction fee ceiling in Demos OS base units. When set,
+   * every Storage Program confirmation must expose an authoritative fee at or
+   * below this value before the adapter invokes broadcast.
+   */
+  maximumFeeOs?: bigint;
+  /**
    * Durable, cross-process wallet/write authority. Required by every write
    * method; read-only adapters may omit it.
    */
@@ -165,6 +171,17 @@ export interface AnchorWriteOnceOptions {
    * cannot be backfilled without creating a different anchor.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Optional durable per-write and aggregate fee budget. The adapter reserves
+   * the confirmed fee before broadcast and counts the reservation even if the
+   * transaction is later reported failed, preventing restart/retry from
+   * exceeding either retained ceiling.
+   */
+  feeBudget?: Readonly<{
+    budgetId: string;
+    maximumPerWriteFeeOs: bigint;
+    maximumTotalFeeOs: bigint;
+  }>;
 }
 
 export interface ProxyFetchRequest {
