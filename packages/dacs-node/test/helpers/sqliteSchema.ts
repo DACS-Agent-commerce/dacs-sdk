@@ -1,11 +1,11 @@
 import type BetterSqlite3 from "better-sqlite3";
 
-/** Restore the immutable v6 coordinator schema when constructing legacy fixtures. */
+/** Restore the immutable coordinator schema shared by v4 through v7 fixtures. */
 export function downgradeCoordinatorSchemaToV6(database: BetterSqlite3.Database): void {
   database.exec(`
     DROP INDEX dacs_coordinator_tracks_runnable_idx;
-    ALTER TABLE dacs_coordinator_tracks RENAME TO dacs_coordinator_tracks_v7;
-    ALTER TABLE dacs_coordinator_orders RENAME TO dacs_coordinator_orders_v7;
+    ALTER TABLE dacs_coordinator_tracks RENAME TO dacs_coordinator_tracks_v8;
+    ALTER TABLE dacs_coordinator_orders RENAME TO dacs_coordinator_orders_v8;
 
     CREATE TABLE dacs_coordinator_orders (
       profile TEXT NOT NULL,
@@ -109,11 +109,11 @@ export function downgradeCoordinatorSchemaToV6(database: BetterSqlite3.Database)
     ) STRICT, WITHOUT ROWID;
 
     INSERT INTO dacs_coordinator_orders
-      SELECT * FROM dacs_coordinator_orders_v7;
+      SELECT * FROM dacs_coordinator_orders_v8;
     INSERT INTO dacs_coordinator_tracks
-      SELECT * FROM dacs_coordinator_tracks_v7;
-    DROP TABLE dacs_coordinator_tracks_v7;
-    DROP TABLE dacs_coordinator_orders_v7;
+      SELECT * FROM dacs_coordinator_tracks_v8;
+    DROP TABLE dacs_coordinator_tracks_v8;
+    DROP TABLE dacs_coordinator_orders_v8;
     CREATE INDEX dacs_coordinator_tracks_runnable_idx
       ON dacs_coordinator_tracks (
         profile, role, track, eligible, state, next_attempt_at,

@@ -379,6 +379,8 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     }
   });
 
+  // Real filesystem durability and cold reopen can exceed Vitest's 5s default
+  // on shared CI runners; the exact-byte and no-duplicate-effect assertions stay unchanged.
   test("cold filesystem restart recovers the same bytes without duplicate effects", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dacs-durable-agreement-"));
     try {
@@ -397,7 +399,7 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test.each<Effect>(["signature", "proposal", "anchor", "binding"])(
     "lost %s response reconciles without duplicate effect",

@@ -37,6 +37,7 @@ import type {
   AnyAttestationBundle,
   ChainTxRef,
   CompositeVerificationRecord,
+  IdentityBundle,
   ListingPin,
   Price,
   SettlementEvidence as CurrentSettlementEvidence,
@@ -65,9 +66,11 @@ import {
   isAttestationRef,
   isChainTxRef,
   isExactJsonRecord,
+  isIdentityBundle,
   isSettlementEvidence as isCurrentSettlementEvidence,
   readListingArtifact,
 } from "../artifacts/validators.js";
+import { identityBundleHash } from "../identity/index.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
 type SessionSettlementEvidence =
@@ -195,6 +198,25 @@ export type AnchorLookup =
 export interface SessionDeps {
   /** The buyer agent's id / primary claim. */
   buyerId: string;
+  /**
+   * Exact, already-selected DACS-1 IdentityBundle for the buyer. The core
+   * computes the party hash from these bytes; callers cannot substitute an
+   * arbitrary 64-hex value or a hash of the buyer identifier.
+   */
+  buyerIdentityBundle: IdentityBundle;
+  /**
+   * Authenticate the exact buyer IdentityBundle presentation before Vet,
+   * Agreement publication, or payment. The supplied bytes are the normative
+   * `dacs-bundle-presentation:v1:` payload over the independently recomputed
+   * IdentityBundle hash. Throwing, false, or non-boolean results fail closed.
+   */
+  authenticateBuyerIdentityBundle: (input: {
+    bundle: Readonly<IdentityBundle>;
+    signedBytes: Uint8Array;
+    bundleHash: string;
+    buyerId: string;
+    jobId: string;
+  }) => Promise<boolean> | boolean;
   /** Read the (signed) listing at a ref. */
   readListing: (ref: string) => Promise<unknown>;
   /**
@@ -386,6 +408,14 @@ export interface SessionDeps {
 }
 
 export interface SessionResult {
+  /**
+   * Explicit quarantine marker for the pre-v0.3 buyer-only producer. This path
+   * stops after settlement and therefore MUST NOT be interpreted as delivery,
+   * commercial-performance, or DACS-5 audit completion.
+   */
+  profile: "legacy-mvp-settlement-only";
+  /** Always false: this producer has no fulfilment or delivery-evidence phase. */
+  commerceComplete: false;
   outcome: "completed" | "failed";
   jobId: string;
   /** Exact DACS-1 §6.3.4 LR-1 Listing tuple used for this session. */
@@ -1754,6 +1784,20 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
     "deps.buyerId",
     { allowColon: true },
   );
+  const buyerIdentityBundle = snapshotCanonicalJson(
+    stableDataProperty(input, "buyerIdentityBundle", "deps.buyerIdentityBundle"),
+    "deps.buyerIdentityBundle",
+  );
+  if (!isIdentityBundle(buyerIdentityBundle)) {
+    throw new DacsError(
+      "deps.buyerIdentityBundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  if (buyerIdentityBundle.presentedBy !== buyerId) {
+    throw new DacsError(
+      "deps.buyerIdentityBundle.presentedBy must equal deps.buyerId",
+    );
+  }
   const legacyComponentSignatures = stableDataProperty(
     input,
     "legacyComponentSignatures",
@@ -1808,6 +1852,14 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
 
   return Object.freeze({
     buyerId,
+    buyerIdentityBundle,
+    authenticateBuyerIdentityBundle: stableDataMethod<
+      SessionDeps["authenticateBuyerIdentityBundle"]
+    >(
+      input,
+      "authenticateBuyerIdentityBundle",
+      "deps.authenticateBuyerIdentityBundle",
+    ),
     expectedListingPin,
     readListing: stableDataMethod<SessionDeps["readListing"]>(
       input,
@@ -3012,6 +3064,35 @@ export async function runSessionCore(
   // admission. Invalid Listings and unsupported pipelines fail before minting
   // a new id; an expired recovery uses the caller's exact prior id below.
   const jobId = resumeJobId ?? deps.newJobId();
+  const buyerBundleHash = identityBundleHash(deps.buyerIdentityBundle);
+  let buyerIdentityAuthenticated: unknown;
+  try {
+    buyerIdentityAuthenticated = await deps.authenticateBuyerIdentityBundle({
+      bundle: deepFreezeJson(
+        snapshotCanonicalJson(
+          deps.buyerIdentityBundle,
+          "buyer IdentityBundle authentication input",
+        ),
+      ),
+      signedBytes: signedBytes(
+        "dacs-bundle-presentation:v1:",
+        buyerBundleHash,
+      ),
+      bundleHash: buyerBundleHash,
+      buyerId: deps.buyerId,
+      jobId,
+    });
+  } catch (cause) {
+    throw new CounterpartyError(
+      "buyer IdentityBundle presentation authentication was unavailable",
+      { cause },
+    );
+  }
+  if (buyerIdentityAuthenticated !== true) {
+    throw new CounterpartyError(
+      "buyer IdentityBundle presentation could not be authenticated",
+    );
+  }
 
   const signEd25519 = async (bytes: Uint8Array): Promise<Uint8Array> => {
     const callbackBytes = Uint8Array.from(bytes);
@@ -3258,6 +3339,14 @@ export async function runSessionCore(
       return { ok: false, reason: `jobId ${a.jobId} ≠ ${jobId}` };
     if (a.buyer !== deps.buyerId)
       return { ok: false, reason: `buyer ${a.buyer} ≠ ${deps.buyerId}` };
+    if (v.dacsSdkBuyerIdentityBundleHash !== buyerBundleHash) {
+      return {
+        ok: false,
+        reason:
+          `buyer IdentityBundle hash ${String(v.dacsSdkBuyerIdentityBundleHash)} ≠ ` +
+          buyerBundleHash,
+      };
+    }
     if (a.seller !== listingView.sellerClaim)
       return { ok: false, reason: `seller ${a.seller} ≠ ${listingView.sellerClaim}` };
     if (a.listingRef !== listingRef)
@@ -3811,6 +3900,8 @@ export async function runSessionCore(
         dacsSdkListingPin?: ListingPin;
         /** Buyer-requested rail destination; distinct from the seller claim namespace. */
         dacsSdkExpectedSettlementPayee: string;
+        /** Exact DACS-1 bundle hash; retained inside the legacy signed scope. */
+        dacsSdkBuyerIdentityBundleHash: string;
       } = {
         jobId,
         pattern: "negotiate-fixed-price",
@@ -3818,6 +3909,7 @@ export async function runSessionCore(
         seller: listingView.sellerClaim,
         listingRef,
         dacsSdkExpectedSettlementPayee: expectedSettlementPayee,
+        dacsSdkBuyerIdentityBundleHash: buyerBundleHash,
         ...(readableListing.compatibility === "normative"
           ? { dacsSdkListingPin: structuredClone(listingView.pin) }
           : {}),
@@ -4522,6 +4614,14 @@ export async function runSessionCore(
         return { ok: false, reason: `jobId ${b.jobId} ≠ ${jobId}` };
       if (b.outcome !== outcome)
         return { ok: false, reason: `outcome ${b.outcome} ≠ ${outcome}` };
+      const buyerParty = b.parties.find((party) => party.role === "buyer");
+      if (
+        !buyerParty ||
+        buyerParty.primaryClaim !== runtime.buyerId ||
+        buyerParty.bundleHash !== buyerBundleHash
+      ) {
+        return { ok: false, reason: "buyer IdentityBundle binding mismatch" };
+      }
       if (!sameListingPin(b.listingRef, listingView.pin))
         return { ok: false, reason: "Listing pin mismatch" };
       if (b.agreementRef?.contentHash !== contentHash(stripSignature(agreementValue)))
@@ -4545,11 +4645,9 @@ export async function runSessionCore(
         listingRef: listingView.pin,
         agreementRef: refTo("dacs-3-agreement", `agreement-${jobId}`, agreementValue),
         parties: [
-          // The buyer's party. bundleHash remains the reduced-MVP stand-in until
-          // #140's normative IdentityBundle hash is wired into this legacy path.
           {
             role: "buyer",
-            bundleHash: sha256Hex(runtime.buyerId),
+            bundleHash: buyerBundleHash,
             primaryClaim: runtime.buyerId,
           },
           // A current Vet record carries the exact IdentityBundle hash it
@@ -4610,6 +4708,8 @@ export async function runSessionCore(
   }
 
   return {
+    profile: "legacy-mvp-settlement-only",
+    commerceComplete: false,
     outcome,
     jobId,
     listingPin: listingView.pin,
