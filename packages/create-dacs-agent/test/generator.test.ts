@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import {
+  chmod,
   lstat,
   mkdtemp,
   mkdir,
@@ -9,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -41,6 +43,68 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
     else files.push(path.slice(root.length + 1));
   }
   return files.sort();
+}
+
+const TEST_ONLY_FAKE_IMAGE_ID = "sha256:" + "1".repeat(64);
+const TEST_ONLY_REPLACEMENT_IMAGE_ID = "sha256:" + "2".repeat(64);
+
+const TEST_ONLY_FAKE_DOCKER_SOURCE = `#!/usr/bin/env node
+const { appendFileSync, existsSync, writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.CREATE_DACS_AGENT_TEST_DOCKER_LOG,
+  JSON.stringify(args) + "\\n");
+const originalReference = "test-only/fake-image:latest";
+const imageId = process.env.CREATE_DACS_AGENT_TEST_IMAGE_ID;
+const replacementImageId = process.env.CREATE_DACS_AGENT_TEST_REPLACEMENT_IMAGE_ID;
+const statePath = process.env.CREATE_DACS_AGENT_TEST_DOCKER_STATE;
+if (args[0] === "image" && args[1] === "inspect" &&
+    args[3] === "{{.Id}}" && args[4] === originalReference) {
+  if (existsSync(statePath)) process.stdout.write(replacementImageId + "\\n");
+  else {
+    writeFileSync(statePath, "retargeted", "utf8");
+    process.stdout.write(imageId + "\\n");
+  }
+} else if (args[0] === "image" && args[1] === "inspect" &&
+    args[3] === "{{json .Config}}" && args[4] === imageId) {
+  process.stdout.write(process.env.CREATE_DACS_AGENT_TEST_IMAGE_CONFIG + "\\n");
+} else if (args[0] === "run" && args[7] === imageId) {
+  process.stdout.write(process.env.CREATE_DACS_AGENT_TEST_RUNTIME_RESULT + "\\n");
+} else {
+  process.stderr.write("unexpected test-only fake docker invocation: " +
+    JSON.stringify(args) + "\\n");
+  process.exitCode = 64;
+}
+`;
+
+async function runGeneratedDockerSmokeWithFakeImage(
+  script: string,
+  config: Readonly<Record<string, unknown>>,
+  runtime: Readonly<Record<string, unknown>>,
+) {
+  const fakeBin = await temporaryDirectory();
+  const fakeDocker = join(fakeBin, "docker");
+  const dockerLog = join(fakeBin, "docker-calls.jsonl");
+  const dockerState = join(fakeBin, "docker-state");
+  await writeFile(fakeDocker, TEST_ONLY_FAKE_DOCKER_SOURCE, "utf8");
+  await chmod(fakeDocker, 0o700);
+  const result = spawnSync(process.execPath, [script, "test-only/fake-image:latest"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      PATH: fakeBin + delimiter + (process.env.PATH ?? ""),
+      CREATE_DACS_AGENT_TEST_DOCKER_LOG: dockerLog,
+      CREATE_DACS_AGENT_TEST_DOCKER_STATE: dockerState,
+      CREATE_DACS_AGENT_TEST_IMAGE_ID: TEST_ONLY_FAKE_IMAGE_ID,
+      CREATE_DACS_AGENT_TEST_REPLACEMENT_IMAGE_ID: TEST_ONLY_REPLACEMENT_IMAGE_ID,
+      CREATE_DACS_AGENT_TEST_IMAGE_CONFIG: JSON.stringify(config),
+      CREATE_DACS_AGENT_TEST_RUNTIME_RESULT: JSON.stringify(runtime),
+    },
+  });
+  const invocations = (await readFile(dockerLog, "utf8")).trim().split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+  return { ...result, invocations };
 }
 
 describe("create-dacs-agent", () => {
@@ -197,6 +261,130 @@ describe("create-dacs-agent", () => {
     ).rejects.toThrow(/symbolic link/);
   });
 
+  test.runIf(process.platform !== "win32")(
+    "rejects an unexpected image entrypoint through the generated smoke script",
+    async () => {
+      const parent = await temporaryDirectory();
+      const target = join(parent, "entrypoint-image-agent");
+      await createDacsAgentProject({
+        targetDirectory: target,
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+        deployment: "docker",
+        rails: "both",
+        install: false,
+      });
+      const result = await runGeneratedDockerSmokeWithFakeImage(
+        join(target, "scripts", "docker-runtime-smoke.mjs"),
+        {
+          User: "10001:10001",
+          WorkingDir: "/app",
+          Entrypoint: ["unexpected-program"],
+          Cmd: [
+            "node",
+            "--import",
+            "@kynesyslabs/dacs-node/demos-loader",
+            "dist/src/service.js",
+          ],
+        },
+        { status: "pass", uid: 10001, gid: 10001 },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        "image entrypoint overrides the generated DACS service command",
+      );
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "rejects wrong UID or GID through the generated smoke script",
+    async () => {
+      for (const { entrypoint, runtime } of [
+        { entrypoint: null, runtime: { status: "pass", uid: 10002, gid: 10001 } },
+        { entrypoint: [], runtime: { status: "pass", uid: 10001, gid: 10002 } },
+      ]) {
+        const parent = await temporaryDirectory();
+        const target = join(parent, `runtime-identity-${runtime.uid}-${runtime.gid}`);
+        await createDacsAgentProject({
+          targetDirectory: target,
+          mode: "live-demos",
+          profile: "dacs-sdk:fixed-price-x402:v1",
+          role: "buyer",
+          deployment: "docker",
+          rails: "both",
+          install: false,
+        });
+        const result = await runGeneratedDockerSmokeWithFakeImage(
+          join(target, "scripts", "docker-runtime-smoke.mjs"),
+          {
+            User: "10001:10001",
+            WorkingDir: "/app",
+            Entrypoint: entrypoint,
+            Cmd: [
+              "node",
+              "--import",
+              "@kynesyslabs/dacs-node/demos-loader",
+              "dist/src/service.js",
+            ],
+          },
+          runtime,
+        );
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "container runtime identity is not uid 10001 and gid 10001",
+        );
+      }
+    },
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "binds Docker configuration, execution, and evidence to one immutable image ID",
+    async () => {
+      const parent = await temporaryDirectory();
+      const target = join(parent, "immutable-image-agent");
+      await createDacsAgentProject({
+        targetDirectory: target,
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+        deployment: "docker",
+        rails: "both",
+        install: false,
+      });
+      const result = await runGeneratedDockerSmokeWithFakeImage(
+        join(target, "scripts", "docker-runtime-smoke.mjs"),
+        {
+          User: "10001:10001",
+          WorkingDir: "/app",
+          Entrypoint: null,
+          Cmd: [
+            "node",
+            "--import",
+            "@kynesyslabs/dacs-node/demos-loader",
+            "dist/src/service.js",
+          ],
+        },
+        { status: "pass", uid: 10001, gid: 10001 },
+      );
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        status: "pass",
+        image: "test-only/fake-image:latest",
+        imageId: TEST_ONLY_FAKE_IMAGE_ID,
+      });
+      expect(result.invocations[0]).toEqual([
+        "image", "inspect", "--format", "{{.Id}}", "test-only/fake-image:latest",
+      ]);
+      expect(result.invocations[1]).toEqual([
+        "image", "inspect", "--format", "{{json .Config}}", TEST_ONLY_FAKE_IMAGE_ID,
+      ]);
+      expect(result.invocations[2]?.[0]).toBe("run");
+      expect(result.invocations[2]?.[7]).toBe(TEST_ONLY_FAKE_IMAGE_ID);
+      expect(result.invocations).toHaveLength(3);
+    },
+  );
+
   test("generates a guarded authority-separated dual-rail Docker bootstrap", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "live-agent");
@@ -230,6 +418,7 @@ describe("create-dacs-agent", () => {
       "src/setup.ts",
       "src/service.ts",
       "src/upgrade.ts",
+      "scripts/docker-runtime-smoke.mjs",
       "test/live-bootstrap.test.ts",
       "compose.yaml",
       "Dockerfile",
@@ -274,6 +463,7 @@ describe("create-dacs-agent", () => {
       "dacs:backup": expect.any(String),
       "dacs:restore": expect.any(String),
       "dacs:uninstall": expect.any(String),
+      "dacs:image:smoke": "node scripts/docker-runtime-smoke.mjs",
     });
     for (const command of Object.values(packageSource.scripts as Record<string, string>)) {
       if (command.includes("dist/src/") || command.includes("dist/test/")) {
@@ -322,14 +512,35 @@ describe("create-dacs-agent", () => {
     const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
     expect(dockerfile).toContain("RUN npm ci --ignore-scripts");
     expect(dockerfile).toContain("RUN npm rebuild better-sqlite3");
-    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional");
-    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts");
+    expect(dockerfile).toContain("npm ci --ignore-scripts --omit=optional --no-audit --no-fund");
+    expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain(
       'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
     );
     expect(dockerfile).not.toContain("COPY . .");
+    const imageSmoke = await readFile(
+      join(target, "scripts", "docker-runtime-smoke.mjs"),
+      "utf8",
+    );
+    expect(imageSmoke).toContain('"--network", "none"');
+    expect(imageSmoke).toContain('"--read-only"');
+    expect(imageSmoke).toContain('config.User !== "10001:10001"');
+    expect(imageSmoke).toContain('await import("@kynesyslabs/dacs/substrate")');
+    expect(imageSmoke).toContain('await import("@kynesyslabs/demosdk/websdk")');
+    expect(imageSmoke).not.toContain('await import("@kynesyslabs/demosdk")');
+    expect(imageSmoke).toContain('+ "\\\\n");');
+    expect(imageSmoke).not.toContain("shell: true");
+    const missingImage = spawnSync(
+      process.execPath,
+      [join(target, "scripts", "docker-runtime-smoke.mjs")],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(missingImage.status).toBe(2);
+    expect(missingImage.stderr).toContain(
+      "usage: npm run dacs:image:smoke -- <built-image-reference>",
+    );
     const combined = (await Promise.all(
       (await filesBelow(target)).map((file) => readFile(join(target, file), "utf8")),
     )).join("\n");

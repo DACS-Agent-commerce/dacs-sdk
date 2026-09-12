@@ -263,6 +263,8 @@ export async function createDacsAgentProject(
       "install",
       "--ignore-scripts",
       "--omit=optional",
+      "--no-audit",
+      "--no-fund",
     ], targetDirectory);
     if (mode === "live-demos") {
       // The host kit's reviewed SQLite adapter is the only dependency allowed
