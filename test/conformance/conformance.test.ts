@@ -2440,7 +2440,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     expect(manifest.cases).toHaveLength(236);
   });
 
-  it("#86 plus payload attestation: the SDK exposes all 28 separators", () => {
+  it("the SDK exposes the current closed set of 28 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
     // reconciled the SDK to the closed §B.7 set (25). The 662be1d pin adds the
     // evidence-bound fault bundle, its pointer, and prior-payment disposition.
