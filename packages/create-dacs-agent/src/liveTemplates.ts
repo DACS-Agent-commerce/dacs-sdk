@@ -64,7 +64,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       standardRevision: STANDARD_REVISION,
       configSchemaVersion: CONFIG_SCHEMA_VERSION,
       sqliteSchemaVersion: SQLITE_SCHEMA_VERSION,
-      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7, 8],
       breakingConfigurationChanges: [],
     },
     devDependencies: {
@@ -2847,9 +2847,8 @@ export async function checkGeneratedUpgradeV1(
   const storesSafe = storeReports.every((store) => store.safe);
   const migrationSupported = availableMetadata !== undefined && storeReports.every((store) =>
     store.schemaVersion !== null &&
-    (store.schemaVersion === availableMetadata.sqliteSchemaVersion ||
-      (store.schemaVersion < availableMetadata.sqliteSchemaVersion &&
-        availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion))));
+    availableMetadata.supportedSqliteMigrationFrom.includes(store.schemaVersion) &&
+    store.schemaVersion <= availableMetadata.sqliteSchemaVersion);
   const standardChanged = availableMetadata !== undefined &&
     availableMetadata.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION;
   const configChanged = availableMetadata !== undefined &&
@@ -4430,7 +4429,7 @@ const releaseMetadata = Object.freeze({
   standardRevision: "${STANDARD_REVISION}",
   configSchemaVersion: ${CONFIG_SCHEMA_VERSION},
   sqliteSchemaVersion: ${SQLITE_SCHEMA_VERSION},
-  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6, 7]),
+  supportedSqliteMigrationFrom: Object.freeze([1, 2, 3, 4, 5, 6, 7, 8]),
   breakingConfigurationChanges: Object.freeze([]),
 });
 
