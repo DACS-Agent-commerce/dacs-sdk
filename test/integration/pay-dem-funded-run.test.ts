@@ -47,6 +47,7 @@ function preparedTransfer(
     payer: input.payer.replace(/^0x/i, "").toLowerCase(),
     payee: input.payee.replace(/^0x/i, "").toLowerCase(),
     amountOs: input.amountOs,
+    denomination: "os",
     maxTotalDebitOs: input.maxTotalDebitOs,
     network: "demos",
     ...overrides,
