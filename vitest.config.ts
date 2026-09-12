@@ -4,12 +4,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
-    // Several recovery suites intentionally spawn nested Vitest controllers
-    // and hard-kill child processes at durable boundaries. Letting the outer
-    // runner fan out across every host CPU can starve those children past
-    // their safety deadlines, producing false worker crashes. Two workers keep
-    // the default `npm test` command representative and deterministic in CI
-    // and on high-core developer machines.
+    // Bound outer concurrency so subprocess fixtures retain enough resources.
     maxWorkers: 2,
     // demosdk's published build (and its transitive deps) use directory /
     // extensionless imports that Node's strict ESM resolver rejects — left
