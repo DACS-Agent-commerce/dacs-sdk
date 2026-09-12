@@ -447,7 +447,7 @@ describe("create-dacs-agent", () => {
       standardRevision: "662be1d4899a2cadf327fe2d5523e93a80334e5f",
       configSchemaVersion: 1,
       sqliteSchemaVersion: 8,
-      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7],
+      supportedSqliteMigrationFrom: [1, 2, 3, 4, 5, 6, 7, 8],
       breakingConfigurationChanges: [],
     });
     expect(packageSource.scripts).toMatchObject({
