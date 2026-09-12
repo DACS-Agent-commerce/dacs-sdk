@@ -287,6 +287,8 @@ describe("create-dacs-agent", () => {
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
     expect(compose).toContain("DACS_SELLER_DEMOS_SECRET_FILE");
+    expect(compose).toContain("DACS_BUYER_WALLET_POLICY_KEY_FILE");
+    expect(compose).toContain("/run/secrets/wallet-spend-integrity:ro");
     expect(compose).toContain("DACS_X402_LISTING_DRAFT_FILE");
     expect(compose).toContain("DACS_PAY_DEM_LISTING_DRAFT_FILE");
     expect(compose).toContain("read_only: true");
@@ -308,6 +310,10 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).not.toContain("DACS_RESTORE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_UNINSTALL_CONFIRM");
     expect(environmentExample).toContain("DACS_BACKUP_AUTH_KEY_FILE=");
+    expect(environmentExample).toContain("DACS_BUYER_WALLET_POLICY_KEY_FILE=");
+    expect(environmentExample).toContain("DACS_WALLET_MAX_CONCURRENT_EFFECTS=1");
+    expect(environmentExample).toContain("DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT=100");
+    expect(environmentExample).toContain("DACS_PAY_DEM_WALLET_MINIMUM_RESERVE=5");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
     expect(generatedConfig).toContain("dacs4:registry:v0.1");
@@ -348,6 +354,21 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("resolveDacsPayDemExistingListingV1");
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
+    expect(combined).toContain("createDacsWalletSpendAuthorityV1");
+    expect(combined).toContain("createDacsX402WalletSpendRecoveryAuthenticatorV1");
+    expect(combined).toContain("createDacsPayDemWalletSpendRecoveryAuthenticatorV1");
+    expect(combined).not.toContain("authenticateRecovery: async () => true");
+    expect(combined).not.toContain(
+      'if (observation.disposition !== "settled") return true',
+    );
+    expect(combined).toContain("assets: Object.freeze([Object.freeze({");
+    expect(combined).toContain('stateDirectory: context.config.dataDirectory + "/wallet-spend-x402"');
+    expect(combined).toContain('stateDirectory: context.config.dataDirectory + "/wallet-spend-pay-dem"');
+    expect(combined).toContain('walletPolicyStatus: "post-start-inspection-required"');
+    expect(combined).toContain('reasonCode: "wallet-spend-operator-action-required"');
+    expect(combined).toContain("operatorActionCount: status.operatorActionReservations.length");
+    expect(combined).toContain("reservedWorstCaseDebit: asset.reservedWorstCaseDebit");
+    expect(combined).toContain("availableHeadroom: asset.availableHeadroom");
     expect(combined).toContain("--max-total-debit-dem");
     expect(combined).toContain("dacs-generated-purchase-request/v1");
     expect(combined).toContain("--resume-job");
@@ -365,6 +386,12 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("createDacsFixedPriceX402BuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceX402SellerLiveV1");
     expect(combined).toContain("DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK");
+    expect(combined).toContain(
+      "const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock",
+    );
+    expect(combined).toContain(
+      'throw new Error("x402 authorization search bound is unavailable")',
+    );
     expect(combined).toContain('finalityTag: "latest"');
     expect(combined).toContain('evmFinalityTag: "latest"');
     expect(combined).toContain("retryDelayMs: 5_000");

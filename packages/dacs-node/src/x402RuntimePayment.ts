@@ -11,6 +11,7 @@ import {
   type X402BuyerPaymentRequirements,
   type X402BuyerPreparationAuthority,
   type X402BuyerSettlementIntent,
+  type WalletSpendAuthorityV1,
 } from "@kynesyslabs/dacs";
 
 import {
@@ -51,6 +52,7 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
     retained: Readonly<DacsLiveOrderInputV1>;
     intent: Readonly<X402BuyerSettlementIntent>;
   }>): Promise<boolean> | boolean;
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
   /** Explicit trusted test seam; production callers must omit this override. */
@@ -199,7 +201,10 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
       options.authorizationSearchFromBlock < 0 ||
       typeof options.resolvePreparation !== "function" ||
       typeof options.authorizeIntent !== "function" ||
-      typeof options.authorizePreparedIntent !== "function") {
+      typeof options.authorizePreparedIntent !== "function" ||
+      !plainObject(options.walletSpendAuthority) ||
+      typeof options.walletSpendAuthority.reserve !== "function" ||
+      typeof options.walletSpendAuthority.reconcile !== "function") {
     throw new TypeError("x402 buyer runtime payment track options are invalid");
   }
   const context = options.context;
@@ -250,6 +255,8 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     settlementStore: commerceStores.x402Settlement,
     authorizationProvider,
     transport,
+    walletSpendAuthority: options.walletSpendAuthority,
+    finalityBlocks: options.minimumConfirmations,
     async prepareIntent(operation) {
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;

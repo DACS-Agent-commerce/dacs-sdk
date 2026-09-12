@@ -294,6 +294,8 @@ export interface DemosTransferResult {
   state?: string;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
+  /** Confirmed transfer amount plus network fee, in integer OS. */
+  totalDebitOs?: string;
   message?: string;
 }
 
@@ -612,6 +614,11 @@ export async function payDemSettleCore(
     "blockNumber",
     "pay-dem transfer result blockNumber",
   );
+  const totalDebitProperty = stableDataProperty(
+    response,
+    "totalDebitOs",
+    "pay-dem transfer result totalDebitOs",
+  );
   const txHash = hashProperty.found
     ? canonicalDemosTxHash(hashProperty.value)
     : null;
@@ -626,6 +633,18 @@ export async function payDemSettleCore(
     : undefined;
   const blockNumber = blockProperty.value;
   const chainId = network ?? "demos";
+  const totalDebitOs = totalDebitProperty.value === undefined
+    ? undefined
+    : typeof totalDebitProperty.value === "string" &&
+        /^[1-9][0-9]*$/.test(totalDebitProperty.value)
+      ? BigInt(totalDebitProperty.value)
+      : null;
+  if (totalDebitOs === null ||
+      (totalDebitOs !== undefined && totalDebitOs < amountOs) ||
+      (totalDebitOs !== undefined && maxTotalDebitOs !== undefined &&
+        totalDebitOs > maxTotalDebitOs)) {
+    throw new DacsError("pay-dem transfer result has invalid total debit accounting");
+  }
 
   // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
   // `included` state AND the finality-witness block height. Broadcast acceptance
@@ -661,6 +680,9 @@ export async function payDemSettleCore(
     finality: { model: "bft-final" },
     blockNumber: blockNumber as number,
     txRefKind: "demos",
+    ...(totalDebitOs === undefined
+      ? {}
+      : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
   };
 }
 
@@ -715,6 +737,8 @@ export interface PayDemPreparedTransfer {
   denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
+  /** Confirmed transfer amount plus network fee, retained before broadcast. */
+  confirmedTotalDebitOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
 }
@@ -1360,10 +1384,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem: signed and confirmed transaction bodies do not bind the requested native transfer; refusing broadcast",
         );
       }
+      const confirmedDebitOs = confirmedDebitFromValidity(validity, {
+        ...transferBinding,
+      });
       if (effectiveMaxTotalDebitOs !== undefined) {
-        const confirmedDebitOs = confirmedDebitFromValidity(validity, {
-          ...transferBinding,
-        });
         if (confirmedDebitOs === null) {
           throw new DacsError(
             "pay-dem: confirmed transaction has no unambiguous bound OS debit; refusing broadcast under maxTotalDebitOs",
@@ -1392,6 +1416,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
+        ...(confirmedDebitOs === null
+          ? {}
+          : { confirmedTotalDebitOs: confirmedDebitOs.toString() }),
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
@@ -1453,6 +1480,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         state: "included",
         hash: txHash,
         blockNumber: terminal.blockNumber,
+        ...(confirmedDebitOs === null
+          ? {}
+          : { totalDebitOs: confirmedDebitOs.toString() }),
       };
     },
   };
@@ -1490,6 +1520,7 @@ const PAY_DEM_RESULT_KEYS = new Set([
   "finality",
   "blockNumber",
   "txRefKind",
+  "networkFeeOs",
 ]);
 
 function sameRecoveryContext(
@@ -1515,7 +1546,8 @@ function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
     left.finality?.model === right.finality?.model &&
     left.finality?.finalityBlocks === right.finality?.finalityBlocks &&
     left.blockNumber === right.blockNumber &&
-    left.txRefKind === right.txRefKind;
+    left.txRefKind === right.txRefKind &&
+    left.networkFeeOs === right.networkFeeOs;
 }
 
 function capturePayDemResult(
@@ -1578,6 +1610,12 @@ function capturePayDemResult(
   if (result.txRefKind !== undefined && result.txRefKind !== "demos") {
     throw new DacsError(`${label} has a non-Demos transaction reference`);
   }
+  const networkFeeOs = result.networkFeeOs;
+  if (networkFeeOs !== undefined &&
+      (typeof networkFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(networkFeeOs))) {
+    throw new DacsError(`${label} has invalid Demos network-fee accounting`);
+  }
 
   if (result.ok) {
     if (
@@ -1616,6 +1654,7 @@ function capturePayDemResult(
       : { finality: { model: "bft-final" as const } }),
     ...(blockNumber === undefined ? {} : { blockNumber: blockNumber as number }),
     ...(result.txRefKind === undefined ? {} : { txRefKind: "demos" }),
+    ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
   };
 }
 

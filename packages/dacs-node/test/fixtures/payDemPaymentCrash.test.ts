@@ -19,6 +19,7 @@ import {
   type DacsPayDemBuyerPaymentAuthorityV1,
 } from "../../src/payDemPayment.js";
 import { openDacsNodeSqliteDatabase } from "../../src/sqlite.js";
+import { createPermissiveTestWalletSpendAuthorityV1 } from "../helpers/walletSpend.js";
 
 const databasePath = process.env.DACS_PAY_DEM_CRASH_DATABASE;
 const readyPath = process.env.DACS_PAY_DEM_CRASH_READY;
@@ -142,6 +143,7 @@ describe("native DEM payment crash fixture", () => {
     }
 
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-before-kill",
       rail,

@@ -33,6 +33,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { createPermissiveTestWalletSpendAuthorityV1 } from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"11".repeat(32)}`;
@@ -276,6 +277,7 @@ describe("buyer runtime x402 payment composition", () => {
       },
     } as const;
     const track = createDacsX402BuyerRuntimePaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       maximumServiceAmount: "1000",
@@ -300,6 +302,7 @@ describe("buyer runtime x402 payment composition", () => {
     expect(challengeClient.createPaymentPayload).not.toHaveBeenCalled();
 
     const overLimitTrack = createDacsX402BuyerRuntimePaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       maximumServiceAmount: "999",
@@ -320,6 +323,7 @@ describe("buyer runtime x402 payment composition", () => {
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
 
     const changedAfterConstruction = {
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       maximumServiceAmount: "999",
@@ -342,6 +346,7 @@ describe("buyer runtime x402 payment composition", () => {
     });
 
     const changedDuringResolution = {
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       maximumServiceAmount: "999",
@@ -369,6 +374,7 @@ describe("buyer runtime x402 payment composition", () => {
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
 
     const controlledTrack = createDacsX402BuyerRuntimePaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       context,
       workerId: "buyer-worker",
       maximumServiceAmount: "1000",
