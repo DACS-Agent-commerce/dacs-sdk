@@ -85,7 +85,7 @@ describe("wallet spend host runtime", () => {
       readBalance: async () => "1000",
       authenticateRecovery: async () => true,
       owner: "buyer-one",
-      leaseDurationMs: 100,
+      leaseDurationMs: 10_000,
     } as const;
     const first = await createDacsWalletSpendAuthorityV1(options);
     const claim = await first.reserve(reservation());

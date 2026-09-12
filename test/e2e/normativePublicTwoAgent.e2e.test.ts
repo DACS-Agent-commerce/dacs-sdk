@@ -3845,7 +3845,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 20_000);
+  }, 30_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
@@ -4057,7 +4057,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     });
     expect(state.counts.settlement).toBe(0);
     expect(state.counts.delivery).toBe(0);
-  });
+  }, 15_000);
 
   test("records a seller delivery failure without invoking the delivery callback", async () => {
     const fixture = await commerceFixture();

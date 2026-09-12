@@ -919,12 +919,18 @@ export function createDacsLiveRoleServiceV1(
       nonce: intent.nonce,
       payload: intent.payload as never,
     }, signTransportEnvelope) as Readonly<DacsHttpEnvelopeV1>;
-    await client.queue(signed);
+    const queued = await client.queue(signed);
+    const retained = queued.envelopeId === signed.envelopeId
+      ? signed
+      : (await outbox.load(queued.envelopeId))?.envelope;
+    if (retained === undefined) {
+      throw new DacsLiveRoleServiceError("service-message-intent-unavailable");
+    }
     await emit("info", "transport", "transport-message-queued", {
       jobId: input.jobId,
       details: { messageType: input.type },
     });
-    return signed as Readonly<DacsHttpEnvelopeFor<typeof input.type>>;
+    return retained as Readonly<DacsHttpEnvelopeFor<typeof input.type>>;
   };
 
   const sendMessage: DacsLiveRoleRuntimeContextV1["sendMessage"] = async (

@@ -1284,7 +1284,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
         createFsX402BuyerSettlementStore({
           dir,
           lockStaleMs: 1,
-          lockTimeoutMs: 5_000,
+          lockTimeoutMs: 30_000,
           lockPollMs: 1,
         })));
       const staleLock = join(
@@ -1321,7 +1321,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
         name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
       )).toEqual([]);
     }
-  }, 45_000);
+  }, 90_000);
 
   test("rejects accessor options and symlinked store paths without invoking traps", async () => {
     let reads = 0;

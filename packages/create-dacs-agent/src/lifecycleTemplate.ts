@@ -475,9 +475,10 @@ export function assertGeneratedBackupRestorableV1(
   if (manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       manifest.release.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
       manifest.release.sqliteSchemaVersion > DACS_NODE_SQLITE_SCHEMA_VERSION ||
-      !DACS_NODE_SUPPORTED_SQLITE_MIGRATION_SOURCES.some(
-        (version) => version === manifest.release.sqliteSchemaVersion,
-      )) {
+      (manifest.release.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION &&
+        !DACS_NODE_SUPPORTED_SQLITE_MIGRATION_SOURCES.some(
+          (version) => version === manifest.release.sqliteSchemaVersion,
+        ))) {
     throw new Error("restore-backup-release-incompatible");
   }
 }

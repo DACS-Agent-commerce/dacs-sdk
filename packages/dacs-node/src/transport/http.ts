@@ -968,12 +968,12 @@ export function createDacsHttpMessageClientV1(
       envelope: verified.envelope,
       retainUntil: safeRetentionDeadline(now, retentionMs),
     });
-    if (retained.status === "conflict") {
+    if (retained.status === "conflict" || retained.record === undefined) {
       throw new DacsHttpTransportError("outbox-envelope-conflict", false);
     }
     return Object.freeze({
       status: retained.status,
-      envelopeId: verified.envelope.envelopeId,
+      envelopeId: retained.record.envelope.envelopeId,
     });
   };
 
