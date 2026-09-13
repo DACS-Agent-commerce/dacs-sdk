@@ -10,6 +10,7 @@ export {
   type SellerFixedPriceAgreementContributionTransport,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFixedPriceAgreementResponse,
+  isDurableSellerFixedPriceAgreementResponse,
   type DurableSellerFixedPriceAgreementStage,
   type DurableSellerFixedPriceAgreementProgress,
 } from "./agreementResponder.js";
