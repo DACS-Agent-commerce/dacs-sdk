@@ -17,17 +17,23 @@ export type {
   SubstrateAdapter,
 } from "./SubstrateAdapter.js";
 export { AnchorWaitError } from "./AnchorWaitError.js";
-export { DemosAdapter, type DemosRawClient } from "./DemosAdapter.js";
+export {
+  DemosAdapter,
+  type DemosAnchorReceiptLookup,
+  type DemosRawClient,
+} from "./DemosAdapter.js";
 export {
   DEMOS_WRITE_JOURNAL_VERSION,
   createInMemoryDemosWriteJournal,
   type DemosIndexObservation,
+  type DemosNativeTransferJournalBinding,
   type DemosNativeReadObservation,
   type DemosWriteJournal,
   type DemosWriteJournalKey,
   type DemosWriteJournalLease,
   type DemosWriteJournalRecord,
   type DemosWriteJournalSnapshot,
+  type DemosWriteJournalOperation,
   type DemosWriteKind,
   type DemosWriteOperation,
   type DemosWriteStage,

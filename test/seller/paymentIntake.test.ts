@@ -400,6 +400,24 @@ function refreshCommitment(ctx: Context): void {
   ctx.committed.commitment.agreementHash = agreementHash;
 }
 
+function rebindX402ResourceBase(ctx: Context, httpResource: string): void {
+  const listingRail = ctx.listing.acceptedRails?.[0];
+  if (listingRail === undefined) throw new Error("fixture rail is unavailable");
+  listingRail.parameters = { ...listingRail.parameters, httpResource };
+  const terms = ctx.agreement.terms as {
+    rail: { parameters?: Record<string, unknown> };
+  };
+  terms.rail.parameters = { ...terms.rail.parameters, httpResource };
+  const listingRef = {
+    listingId: ctx.listing.listingId,
+    version: ctx.listing.listingVersion,
+    contentHash: contentHash(ctx.listing as unknown as Record<string, unknown>),
+  };
+  ctx.agreement.listingRef = listingRef;
+  ctx.committed.commitment.listingRef = listingRef;
+  refreshCommitment(ctx);
+}
+
 function rebindJob(ctx: Context, jobId: string): void {
   ctx.input.jobId = jobId;
   ctx.agreement.jobId = jobId;
@@ -1012,6 +1030,28 @@ describe("verifySellerPaymentIntake", () => {
       protocolVersion: "2",
     });
     expect(result.evidenceInput).not.toHaveProperty("responseHeader");
+  });
+
+  it("accepts an exact job resource below the agreement's authenticated x402 base", async () => {
+    const ctx = makeContext("pay-x402");
+    rebindX402ResourceBase(ctx, "https://seller.example/pay");
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      sessionBinding: "established",
+    });
+  });
+
+  it("rejects a job resource outside the agreement's narrower x402 base", async () => {
+    const ctx = makeContext("pay-x402");
+    rebindX402ResourceBase(ctx, "https://seller.example/pay/orders");
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      fulfilment: "none",
+      reason: "x402-http-resource-mismatch",
+    });
   });
 
   it("recovers an earlier canonical x402 winner without strengthening SB-3", async () => {

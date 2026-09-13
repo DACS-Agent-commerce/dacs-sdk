@@ -15,6 +15,11 @@ import {
   type FixedPriceOfflineProtocolBinding,
 } from "./fixedPriceOfflineProtocol.js";
 import {
+  captureFixedPricePayDemProtocolBinding,
+  fixedPricePayDemProtocolBindingHash,
+  type FixedPricePayDemProtocolBinding,
+} from "./fixedPricePayDemProtocol.js";
+import {
   captureFixedPriceX402ProtocolBinding,
   fixedPriceX402ProtocolBindingHash,
   type FixedPriceX402ProtocolBinding,
@@ -145,6 +150,10 @@ export interface FixedPriceX402OrderIdentity
   extends FixedPriceCoordinatorOrderIdentity<FixedPriceX402ProtocolBinding> {}
 export interface FixedPriceX402OrderInput
   extends FixedPriceCoordinatorOrderInput<FixedPriceX402ProtocolBinding> {}
+export interface FixedPricePayDemOrderIdentity
+  extends FixedPriceCoordinatorOrderIdentity<FixedPricePayDemProtocolBinding> {}
+export interface FixedPricePayDemOrderInput
+  extends FixedPriceCoordinatorOrderInput<FixedPricePayDemProtocolBinding> {}
 export interface FixedPriceOfflineOrderIdentity
   extends FixedPriceCoordinatorOrderIdentity<FixedPriceOfflineProtocolBinding> {}
 export interface FixedPriceOfflineOrderInput
@@ -235,6 +244,12 @@ interface FixedPriceCoordinatorOrderRecord<
 export interface FixedPriceX402OrderRecord
   extends FixedPriceCoordinatorOrderRecord<
     FixedPriceX402ProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  > {}
+export interface FixedPricePayDemOrderRecord
+  extends FixedPriceCoordinatorOrderRecord<
+    FixedPricePayDemProtocolBinding,
     FixedPriceX402NormativeOutcome,
     FixedPriceX402ErrorClass
   > {}
@@ -395,6 +410,30 @@ export type FixedPriceX402TrackWrite =
     FixedPriceX402NormativeOutcome,
     FixedPriceX402ErrorClass
   >;
+export type FixedPricePayDemOrderLoad =
+  FixedPriceCoordinatorOrderLoad<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  >;
+export type FixedPricePayDemOrderCreate =
+  FixedPriceCoordinatorOrderCreate<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  >;
+export type FixedPricePayDemTrackClaim =
+  FixedPriceCoordinatorTrackClaim<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  >;
+export type FixedPricePayDemTrackWrite =
+  FixedPriceCoordinatorTrackWrite<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  >;
 export type FixedPriceOfflineOrderLoad =
   FixedPriceCoordinatorOrderLoad<
     FixedPriceOfflineProtocolBinding,
@@ -494,6 +533,14 @@ interface FixedPriceCoordinatorStore<
 export interface FixedPriceX402CoordinatorStore
   extends FixedPriceCoordinatorStore<
     FixedPriceX402ProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    FixedPriceX402TrackOperationResult
+  > {}
+
+export interface FixedPricePayDemCoordinatorStore
+  extends FixedPriceCoordinatorStore<
+    FixedPricePayDemProtocolBinding,
     FixedPriceX402NormativeOutcome,
     FixedPriceX402ErrorClass,
     FixedPriceX402TrackOperationResult
@@ -719,6 +766,49 @@ export interface FixedPriceX402OrderStatus
     FixedPriceX402ErrorClass,
     Exclude<FixedPriceX402Milestone, "audit-complete">
   > {}
+export interface FixedPricePayDemTrackOperationInput
+  extends FixedPriceCoordinatorTrackOperationInput<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass
+  > {}
+export type FixedPricePayDemTrackOperation =
+  FixedPriceCoordinatorTrackOperation<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    FixedPriceX402TrackOperationResult
+  >;
+export type FixedPricePayDemOperations =
+  FixedPriceCoordinatorOperations<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    FixedPriceX402TrackOperationResult
+  >;
+export interface FixedPricePayDemCoordinatorOptions
+  extends FixedPriceCoordinatorOptions<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    FixedPriceX402TrackOperationResult
+  > {}
+export interface FixedPricePayDemOrderStatus
+  extends FixedPriceCoordinatorOrderStatusBase<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    Exclude<FixedPriceX402Milestone, "audit-complete">
+  > {}
+export interface FixedPricePayDemCombinedOrderStatus
+  extends FixedPriceCoordinatorCombinedOrderStatusBase<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    Exclude<FixedPriceX402Milestone, "audit-complete">,
+    FixedPriceX402Milestone,
+    Record<never, never>
+  > {}
 export interface FixedPriceX402CombinedOrderStatus
   extends FixedPriceCoordinatorCombinedOrderStatusBase<
     FixedPriceX402ProtocolBinding,
@@ -806,6 +896,12 @@ export interface FixedPriceX402WorkReport
     FixedPriceX402TrackOperationResult["status"]
   > {}
 
+export interface FixedPricePayDemWorkReport
+  extends FixedPriceCoordinatorWorkReportBase<
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402TrackOperationResult["status"]
+  > {}
+
 export type FixedPriceOfflineWorkReport = FixedPriceCoordinatorWorkReport<
   FixedPriceOfflineSimulationOutcome,
   FixedPriceOfflineTrackOperationResult["status"],
@@ -847,6 +943,13 @@ export interface FixedPriceX402CommerceCoordinator
     FixedPriceX402ProtocolBinding,
     FixedPriceX402OrderStatus,
     FixedPriceX402WorkReport
+  > {}
+
+export interface FixedPricePayDemCommerceCoordinator
+  extends FixedPriceCommerceCoordinator<
+    FixedPricePayDemProtocolBinding,
+    FixedPricePayDemOrderStatus,
+    FixedPricePayDemWorkReport
   > {}
 
 export interface FixedPriceOfflineCommerceCoordinator
@@ -935,7 +1038,7 @@ interface FixedPriceCoordinatorMilestoneVocabulary<
 interface FixedPriceCoordinatorIdentityPolicy<
   Protocol extends FixedPriceCoordinatorProtocolBinding,
 > {
-  readonly label: "fixed-price x402" | "fixed-price offline";
+  readonly label: "fixed-price x402" | "fixed-price pay-dem" | "fixed-price offline";
   captureProtocol(value: unknown): Protocol;
   protocolHash(protocol: Readonly<Protocol>): string;
   bindingHash(
@@ -1012,6 +1115,39 @@ const X402_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
       buyer: parseCanonicalClaimReference(identity.buyer)!.identity,
       seller: parseCanonicalClaimReference(identity.seller)!.identity,
       protocolHash: fixedPriceX402ProtocolBindingHash(identity.protocol),
+    })),
+  idempotencyPayload: (input: Readonly<{
+    localBindingHash: string;
+    role: FixedPriceX402CoordinatorRole;
+    track: FixedPriceX402Track;
+    roleLocalJob: string;
+  }>) => input,
+});
+
+const PAY_DEM_PROFILE_POLICY: FixedPriceCoordinatorProfilePolicy<
+  FixedPricePayDemProtocolBinding,
+  FixedPriceX402NormativeOutcome,
+  FixedPriceX402ErrorClass,
+  Exclude<FixedPriceX402Milestone, "audit-complete">,
+  FixedPriceX402Milestone,
+  Record<never, never>
+> = Object.freeze({
+  label: "fixed-price pay-dem",
+  outcomes: X402_PROFILE_POLICY.outcomes,
+  errorClasses: X402_ERROR_CLASSES,
+  milestones: X402_PROFILE_POLICY.milestones,
+  statusAuthority: Object.freeze({}),
+  requiresDacs5Attribution: true,
+  invalidOutcomeReasonCode: "invalid-normative-outcome",
+  captureProtocol: captureFixedPricePayDemProtocolBinding,
+  protocolHash: fixedPricePayDemProtocolBindingHash,
+  bindingHash: (identity: Readonly<FixedPricePayDemOrderIdentity>) =>
+    sha256Hex(canonicalize({
+      coordinatorVersion: FIXED_PRICE_X402_COORDINATOR_STORE_VERSION,
+      jobId: identity.jobId,
+      buyer: parseCanonicalClaimReference(identity.buyer)!.identity,
+      seller: parseCanonicalClaimReference(identity.seller)!.identity,
+      protocolHash: fixedPricePayDemProtocolBindingHash(identity.protocol),
     })),
   idempotencyPayload: (input: Readonly<{
     localBindingHash: string;
@@ -1211,6 +1347,13 @@ export function fixedPriceX402OrderBindingHash(
   return X402_PROFILE_POLICY.bindingHash(captured);
 }
 
+export function fixedPricePayDemOrderBindingHash(
+  order: Readonly<FixedPricePayDemOrderIdentity>,
+): string {
+  const captured = captureIdentity(order, PAY_DEM_PROFILE_POLICY);
+  return PAY_DEM_PROFILE_POLICY.bindingHash(captured);
+}
+
 export function fixedPriceOfflineOrderBindingHash(
   order: Readonly<FixedPriceOfflineOrderIdentity>,
 ): string {
@@ -1248,6 +1391,12 @@ export function fixedPriceX402OrderLocalBindingHash(
   order: Readonly<FixedPriceX402OrderInput>,
 ): string {
   return fixedPriceCoordinatorOrderLocalBindingHash(order, X402_PROFILE_POLICY);
+}
+
+export function fixedPricePayDemOrderLocalBindingHash(
+  order: Readonly<FixedPricePayDemOrderInput>,
+): string {
+  return fixedPriceCoordinatorOrderLocalBindingHash(order, PAY_DEM_PROFILE_POLICY);
 }
 
 export function fixedPriceOfflineOrderLocalBindingHash(
@@ -1748,6 +1897,10 @@ export function fixedPriceX402OrderViolation(value: unknown): string | null {
   return fixedPriceCoordinatorOrderViolation(value, X402_PROFILE_POLICY);
 }
 
+export function fixedPricePayDemOrderViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderViolation(value, PAY_DEM_PROFILE_POLICY);
+}
+
 export function fixedPriceOfflineOrderViolation(value: unknown): string | null {
   return fixedPriceCoordinatorOrderViolation(value, OFFLINE_PROFILE_POLICY);
 }
@@ -2230,6 +2383,20 @@ export function createInMemoryFixedPriceX402CoordinatorStore(
   >(X402_PROFILE_POLICY, options);
 }
 
+export function createInMemoryFixedPricePayDemCoordinatorStore(
+  options: Readonly<{ now?: () => number }> = {},
+): FixedPricePayDemCoordinatorStore {
+  return createInMemoryFixedPriceCoordinatorStore<
+    FixedPricePayDemProtocolBinding,
+    FixedPriceX402NormativeOutcome,
+    FixedPriceX402ErrorClass,
+    FixedPriceX402TrackOperationResult,
+    Exclude<FixedPriceX402Milestone, "audit-complete">,
+    FixedPriceX402Milestone,
+    Record<never, never>
+  >(PAY_DEM_PROFILE_POLICY, options);
+}
+
 export function createInMemoryFixedPriceOfflineCoordinatorStore(
   options: Readonly<{ now?: () => number }> = {},
 ): FixedPriceOfflineCoordinatorStore {
@@ -2382,6 +2549,14 @@ export function projectFixedPriceX402Milestone(
   return projectLocalMilestone(retained, X402_PROFILE_POLICY);
 }
 
+/** Native-DEM uses the same normative commerce milestones as x402. */
+export function projectFixedPricePayDemMilestone(
+  record: Readonly<FixedPricePayDemOrderRecord>,
+): Exclude<FixedPriceX402Milestone, "audit-complete"> {
+  const retained = requireCoordinatorRecord(record, record.role, PAY_DEM_PROFILE_POLICY);
+  return projectLocalMilestone(retained, PAY_DEM_PROFILE_POLICY);
+}
+
 /** Simulation projections never claim live commercial or global audit completion. */
 export function projectFixedPriceOfflineMilestone(
   record: Readonly<FixedPriceOfflineOrderRecord>,
@@ -2483,6 +2658,10 @@ function fixedPriceCoordinatorOrderStatusViolation<
 
 export function fixedPriceX402OrderStatusViolation(value: unknown): string | null {
   return fixedPriceCoordinatorOrderStatusViolation(value, X402_PROFILE_POLICY);
+}
+
+export function fixedPricePayDemOrderStatusViolation(value: unknown): string | null {
+  return fixedPriceCoordinatorOrderStatusViolation(value, PAY_DEM_PROFILE_POLICY);
 }
 
 export function fixedPriceOfflineOrderStatusViolation(value: unknown): string | null {
@@ -2848,6 +3027,13 @@ export function combineFixedPriceX402OrderStatus(input: Readonly<{
   seller: Readonly<FixedPriceX402OrderStatus>;
 }>): FixedPriceX402CombinedOrderStatus {
   return combineFixedPriceCoordinatorOrderStatus(input, X402_PROFILE_POLICY);
+}
+
+export function combineFixedPricePayDemOrderStatus(input: Readonly<{
+  buyer: Readonly<FixedPricePayDemOrderStatus>;
+  seller: Readonly<FixedPricePayDemOrderStatus>;
+}>): FixedPricePayDemCombinedOrderStatus {
+  return combineFixedPriceCoordinatorOrderStatus(input, PAY_DEM_PROFILE_POLICY);
 }
 
 export function combineFixedPriceOfflineOrderStatus(input: Readonly<{
@@ -3312,6 +3498,12 @@ export function createFixedPriceX402CommerceCoordinator(
   return createFixedPriceCommerceCoordinator(options, X402_PROFILE_POLICY);
 }
 
+export function createFixedPricePayDemCommerceCoordinator(
+  options: FixedPricePayDemCoordinatorOptions,
+): FixedPricePayDemCommerceCoordinator {
+  return createFixedPriceCommerceCoordinator(options, PAY_DEM_PROFILE_POLICY);
+}
+
 export function createFixedPriceOfflineCommerceCoordinator(
   options: FixedPriceOfflineCoordinatorOptions,
 ): FixedPriceOfflineCommerceCoordinator {
@@ -3328,6 +3520,18 @@ export function createFixedPriceX402SellerCoordinator(
   options: Omit<FixedPriceX402CoordinatorOptions, "role">,
 ): FixedPriceX402CommerceCoordinator {
   return createFixedPriceX402CommerceCoordinator({ ...options, role: "seller" });
+}
+
+export function createFixedPricePayDemBuyerCoordinator(
+  options: Omit<FixedPricePayDemCoordinatorOptions, "role">,
+): FixedPricePayDemCommerceCoordinator {
+  return createFixedPricePayDemCommerceCoordinator({ ...options, role: "buyer" });
+}
+
+export function createFixedPricePayDemSellerCoordinator(
+  options: Omit<FixedPricePayDemCoordinatorOptions, "role">,
+): FixedPricePayDemCommerceCoordinator {
+  return createFixedPricePayDemCommerceCoordinator({ ...options, role: "seller" });
 }
 
 export function createFixedPriceOfflineBuyerCoordinator(
