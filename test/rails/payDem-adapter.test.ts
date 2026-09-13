@@ -432,6 +432,7 @@ describe("createPayDemRail nonce coordination", () => {
         payer: "ab".repeat(32),
         payee: "cd".repeat(32),
         amountOs: "1000000000",
+        denomination: "os",
         network: "demos",
         maxTotalDebitOs: "2000000000",
       });
@@ -454,6 +455,86 @@ describe("createPayDemRail nonce coordination", () => {
     expect(order).toEqual(["journal", "broadcast"]);
     expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports a per-settlement journal and rechecks its fence beside broadcast", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+      assertCurrentBeforeBroadcast: async () => {
+        order.push("fence");
+      },
+    })).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual(["journal", "fence", "broadcast"]);
+  });
+
+  it("keeps the settlement generation and prepared-transfer fences current through broadcast", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+    const effectFence = {
+      owner: "payment-worker",
+      generation: 3,
+      settlementKey: "demos-native:DEM:job-fenced:0",
+      bindingHash: "ab".repeat(32),
+      async assertCurrent() {
+        order.push("generation-fence");
+      },
+    };
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+      assertCurrentBeforeBroadcast: async () => {
+        order.push("prepared-transfer-fence");
+      },
+    }, effectFence)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual([
+      "generation-fence",
+      "journal",
+      "prepared-transfer-fence",
+      "generation-fence",
+      "broadcast",
+    ]);
+  });
+
+  it("fails before signing when configured and per-settlement journals conflict", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer: async () => undefined,
+    });
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => undefined,
+    })).rejects.toThrow(/cannot combine configured and per-settlement/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
   it("does not broadcast when the durable preparation journal fails", async () => {
@@ -557,6 +638,35 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
     ).rejects.toThrow(/exceeds maxTotalDebitOs/);
     expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("enforces a per-payment ceiling on a long-lived uncapped rail", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      maxTotalDebitOs: "1500000000",
+    })).rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("does not let a per-payment ceiling exceed the retained rail ceiling", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1",
+      maxTotalDebitOs: "2000000001",
+    })).rejects.toThrow(/per-payment maximum total debit exceeds the rail ceiling/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
   });
 
   it("rejects a non-bigint debit ceiling at the JavaScript boundary", async () => {

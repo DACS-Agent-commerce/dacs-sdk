@@ -687,7 +687,7 @@ describe("party-scoped multi-claim Vet planning", () => {
     })).toThrow(/do not share one job-wide registry snapshot/);
   });
 
-  test("rejects ambiguous same-scheme claim provenance", async () => {
+  test("requires the attempt to disambiguate same-scheme claim provenance", async () => {
     const jobId = "job-144-ambiguous-scheme";
     const alpha = claim("alpha", "alice");
     const alias = claim("alpha", "alice-alias");
@@ -695,18 +695,20 @@ describe("party-scoped multi-claim Vet planning", () => {
       requirementVersion: "1",
       required: [{ scheme: "alpha", verificationRequired: true, recipeVersion: 1 }],
     };
+    const identity = bundle(alpha, [alpha, alias]);
     const attempts = await pinnedAttempts(jobId, alpha, requirement, [{
       requirementPath: { kind: "required", index: 0 },
       claimSubject: alpha,
-    }]);
-    expect(() => createPartyVetPlan({
+    }], identity);
+    const plan = createPartyVetPlan({
       jobId,
       evaluatedParty: alpha,
-      identityBundle: bundle(alpha, [alpha, alias]),
+      identityBundle: identity,
       requirement,
       verifier: { algorithm: "ed25519", signer: VERIFIER },
       attempts,
-    })).toThrow(/ambiguous same-scheme provenance/);
+    });
+    expect(plan.attempts[0]!.claimSubject).toBe(alpha);
   });
 
   test("preserves an own __proto__ field in the exact captured bundle hash", async () => {
