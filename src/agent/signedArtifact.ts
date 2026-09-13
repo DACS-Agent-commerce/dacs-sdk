@@ -5,9 +5,12 @@ import {
 } from "../crypto/index.js";
 
 /**
- * An artifact with its detached signature attached. The signed scope is the
- * artifact with `signature` omitted; the signature is over
- * `signedBytes(separator, contentHash(signedScope))` (§7.7).
+ * Legacy MVP artifact carrying a raw lowercase-hex signature string.
+ *
+ * @deprecated Compatibility reads and the quarantined settlement-only session
+ * path only. Normative DACS producers use `ComponentSignedArtifact` and
+ * `buildComponentSignedArtifact()`, whose signature is the CORE §B.7
+ * `ComponentSignature` envelope with canonical unpadded Base64URL bytes.
  */
 export type SignedArtifact<T extends object> = T & {
   signature: string;
@@ -33,9 +36,10 @@ function fromHex(hex: string): Uint8Array {
 }
 
 /**
- * Build a signed artifact: sign the content hash under `separator` and attach
- * the signature. The artifact must not already carry a `signature` field
- * (it's stripped from the signed scope regardless).
+ * Build a legacy MVP raw-hex signed artifact.
+ *
+ * @deprecated Do not use for new DACS artifacts. Use
+ * `buildComponentSignedArtifact()` with an authorised CORE §B.7 signer.
  */
 export async function buildSignedArtifact<T extends object>(
   artifact: T,
@@ -49,9 +53,11 @@ export async function buildSignedArtifact<T extends object>(
 }
 
 /**
- * Verify a signed artifact against a signer's public key. Recomputes the
- * content hash of the signed scope (re-canonicalised), so a tampered field or
- * a lifted signature fails.
+ * Verify the historical raw-hex signature representation.
+ *
+ * @deprecated Compatibility reads only. Normative readers use
+ * `verifyComponentSignature()` and enforce signer authorisation as well as
+ * cryptographic validity.
  */
 export async function verifySignedArtifact(
   signed: Record<string, unknown>,

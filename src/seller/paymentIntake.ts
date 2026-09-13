@@ -2624,7 +2624,8 @@ export async function verifySellerPaymentIntake(
     return reject("x402-http-resource-mismatch");
   }
   const pinnedResource = agreement.terms.rail.parameters?.httpResource;
-  if (typeof pinnedResource === "string" && pinnedResource !== request.receipt.httpResource) {
+  if (typeof pinnedResource === "string" &&
+      !resourceAllowed(request.receipt.httpResource, pinnedResource)) {
     return reject("x402-http-resource-mismatch");
   }
   const receiptVerification = verifyX402ReceiptClaim({

@@ -11,6 +11,7 @@ import {
   isAgreementDocument,
   isAttestationBundle,
   isFaultAttestationBundle,
+  isEvidenceBoundFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
   isLegacyMvpListing,
@@ -52,6 +53,7 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   SettlementEvidence: isSettlementEvidence,
   AttestationBundle: isAttestationBundle,
   FaultAttestationBundle: isFaultAttestationBundle,
+  EvidenceBoundFaultAttestationBundle: isEvidenceBoundFaultAttestationBundle,
 };
 
 describe("legacy MVP settlement finality compatibility", () => {

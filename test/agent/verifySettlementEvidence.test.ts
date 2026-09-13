@@ -540,6 +540,20 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     );
     expect(getter).not.toHaveBeenCalled();
   });
+  test("accepts a deeply frozen read-only structural context", async () => {
+    const ev = payment();
+    const context = Object.freeze({
+      agreement: Object.freeze({
+        amount: ev.paymentAmount.amount,
+        currency: ev.paymentAmount.currency,
+      }),
+    });
+
+    await expect(validateSettlementEvidenceStructure(ev, context)).resolves.toEqual({
+      decision: "valid",
+      reasons: [],
+    });
+  });
   test("maps non-boolean and throwing crypto dependencies to explicit verdicts", async () => {
     const ev = payment();
     const key = new Uint8Array(32);
