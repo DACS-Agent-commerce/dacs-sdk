@@ -152,7 +152,7 @@ describe("durable role-owned audit tracks", () => {
     await expect(track(current.input as never)).resolves.toEqual({
       status: "final",
       outcome: "success",
-      reference: finalized.logicalAddress,
+      reference: finalized.nativeAddress,
       authenticationHash: BUNDLE_HASH,
     });
     expect(bundleTransport.publishRequest).toHaveBeenCalledWith({
@@ -244,11 +244,19 @@ describe("durable role-owned audit tracks", () => {
     };
     const result = {
       logicalAddress: "dacs5:bundle:buyer",
+      nativeAddress: "native:buyer",
       bundleContentHash: BUNDLE_HASH,
+    };
+    const completion = {
+      sellerClosure: {
+        verificationInput: { agreement: { jobId: JOB_ID } },
+        result: { logicalAddress: "dacs5:bundle:seller" },
+      },
     };
     advanceBuyer.mockResolvedValue({
       disposition: "finalised",
       result,
+      completion,
       recovered: false,
     });
     const roleContext = context("buyer");
@@ -264,7 +272,7 @@ describe("durable role-owned audit tracks", () => {
     await expect(track(current.input as never)).resolves.toEqual({
       status: "final",
       outcome: "success",
-      reference: result.logicalAddress,
+      reference: result.nativeAddress,
       authenticationHash: BUNDLE_HASH,
     });
     expect(advanceBuyer).toHaveBeenCalledOnce();

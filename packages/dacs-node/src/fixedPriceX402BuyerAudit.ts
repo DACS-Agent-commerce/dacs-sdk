@@ -7,6 +7,7 @@ import {
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
+  verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
   type AuthenticatedRailDefinition,
@@ -1540,7 +1541,7 @@ export function createDacsFixedPriceBuyerAuditV1(
       };
       return result;
     },
-    async authorizeFinalized({ operation, result }) {
+    async authorizeFinalized({ operation, material, completion, result }) {
       if (result.logicalAddress !== bundleAddress(operation.order.jobId, "buyer") ||
           result.buyerBundle.jobId !== operation.order.jobId) return false;
       const publication = createDacsDemosBundlePublicationV1({
@@ -1549,11 +1550,67 @@ export function createDacsFixedPriceBuyerAuditV1(
         buyer: operation.order.buyer,
         seller: operation.order.seller,
       });
-      const anchored = await publication.resolveRoleBundle("buyer");
-      return anchored !== null && anchored.nativeAddress === result.nativeAddress &&
-        anchored.anchorReceipt.contentHash === result.bundleContentHash &&
-        canonicalize(anchored.bundle) === canonicalize(result.buyerBundle) &&
-        await publication.verifyBundleAnchorReceipt(anchored) === "valid";
+      const buyerPublication = result.publications.buyer;
+      const sellerPublication = result.publications.seller;
+      if (buyerPublication.nativeAddress !== result.nativeAddress ||
+          buyerPublication.bundleContentHash !== result.bundleContentHash ||
+          completion.sellerClosure.result.nativeAddress !==
+            sellerPublication.nativeAddress) return false;
+      try {
+        await verifyCompletedTwoSidedSession({
+          jobId: operation.order.jobId,
+          buyer: operation.order.buyer,
+          seller: operation.order.seller,
+          sellerClosure: completion.sellerClosure,
+          copies: {
+            buyer: {
+              role: "buyer",
+              nativeAddress: buyerPublication.nativeAddress,
+              bundle: result.buyerBundle,
+              anchorReceipt: buyerPublication.anchorReceipt,
+              ...(buyerPublication.binding === undefined
+                ? {} : { binding: buyerPublication.binding }),
+            },
+            seller: {
+              role: "seller",
+              nativeAddress: sellerPublication.nativeAddress,
+              bundle: completion.sellerClosure.result.sellerBundle,
+              anchorReceipt: sellerPublication.anchorReceipt,
+              ...(sellerPublication.binding === undefined
+                ? {} : { binding: sellerPublication.binding }),
+            },
+          },
+        }, {
+          sellerFinalizationProvider: material.provider,
+          async readBundleCopy(nativeAddress, role) {
+            const anchored = await publication.resolveRoleBundle(role);
+            return anchored !== null && anchored.nativeAddress === nativeAddress
+              ? copy(anchored.bundle) as unknown as Record<string, unknown>
+              : null;
+          },
+          async verifyBundleAnchor(candidate) {
+            const disposition = await publication.verifyBundleAnchorReceipt({
+              bundle: candidate.bundle,
+              nativeAddress: candidate.nativeAddress,
+              anchorReceipt: candidate.anchorReceipt,
+            });
+            return disposition === "valid"
+              ? { disposition: "valid" as const, mapping: "write-input" as const }
+              : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
+          },
+          resolveBundleBinding: (logicalAddress, signer) =>
+            publication.resolveBundleBinding(logicalAddress, signer),
+          async verifyBundleBinding(binding) {
+            const disposition = await publication.verifyBundleBinding(binding);
+            return disposition === "valid"
+              ? { disposition: "valid" as const }
+              : { disposition, reason: `demos-bundle-binding-${disposition}` };
+          },
+        });
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
 
