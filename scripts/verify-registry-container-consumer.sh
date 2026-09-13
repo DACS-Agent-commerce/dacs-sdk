@@ -322,6 +322,7 @@ env \
   DACS_BUYER_DEMOS_SECRET_FILE=/run/dacs-acceptance/buyer-demos \
   DACS_SELLER_DEMOS_SECRET_FILE=/run/dacs-acceptance/seller-demos \
   DACS_BUYER_EVM_SECRET_FILE=/run/dacs-acceptance/buyer-evm \
+  DACS_BUYER_WALLET_POLICY_KEY_FILE=/run/dacs-acceptance/buyer-wallet-policy \
   DACS_SELLER_EVM_SECRET_FILE=/run/dacs-acceptance/seller-evm \
   DACS_X402_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-x402.json \
   DACS_PAY_DEM_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-pay-dem.json \
