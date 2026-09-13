@@ -55,6 +55,10 @@ const ROLE_BY_MESSAGE: Readonly<
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
   "bundle-signature-response": "buyer",
+  "terminal-bundle-proposal-buyer": "buyer",
+  "terminal-bundle-proposal-seller": "seller",
+  "terminal-bundle-contribution-buyer": "buyer",
+  "terminal-bundle-contribution-seller": "seller",
   "diagnostic-probe-buyer": "buyer",
   "diagnostic-probe-seller": "seller",
 });
