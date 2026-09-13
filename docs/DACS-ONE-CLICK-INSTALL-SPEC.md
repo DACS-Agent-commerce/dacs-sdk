@@ -577,12 +577,18 @@ Every message uses this closed envelope:
 type DacsHttpEnvelopeV1 = {
   version: "1";
   type:
+    | "session-init"
+    | "session-challenge"
+    | "session-presentation"
+    | "session-admission"
     | "agreement-proposal"
     | "agreement-response"
     | "payment-evidence-request"
     | "payment-evidence-completion"
     | "bundle-signature-request"
     | "bundle-signature-response"
+    | "diagnostic-probe-buyer"
+    | "diagnostic-probe-seller"
     | "acknowledgement";
   envelopeId: string;         // lowercase 64-hex transport identifier
   jobId: string;              // canonical DACS job ID
@@ -608,12 +614,18 @@ The `type` field fixes the exact payload shape. The initial mappings are:
 
 | Envelope type | Exact payload |
 | --- | --- |
+| `session-init` | `DacsSessionInitPayloadV1`: the buyer role order and public application plus the buyer-generated challenge for the seller |
+| `session-challenge` | `DacsSessionChallengePayloadV1`: exact init hash, both verifier challenges and the seller's seller-challenge-bound session identity |
+| `session-presentation` | `DacsSessionPresentationPayloadV1`: exact challenge hash and the buyer's buyer-challenge-bound session identity |
+| `session-admission` | `DacsSessionAdmissionPayloadV1`: exact presentation and identity hashes plus the seller-produced buyer Vet record, reference and authenticated-finality receipt |
 | `agreement-proposal` | `{ proposal: FixedPriceAgreementProposal; transportIdentity: FixedPriceAgreementTransportIdentity }`, the data-only portion of the public SDK `DurableSellerFixedPriceAgreementInput` |
 | `agreement-response` | public SDK `DurableSellerFixedPriceAgreementResponse` |
 | `payment-evidence-request` | public SDK `PaymentEvidenceAnchorRequest` |
 | `payment-evidence-completion` | public SDK `PaymentEvidenceAnchorCompletion` |
 | `bundle-signature-request` | `DacsBundleSignatureRequestV1` below, a JSON projection of public SDK `CompletedSellerBundleCounterSignatureRequest` |
 | `bundle-signature-response` | public SDK `BundleSignature` for exactly one required counter-signer |
+| `diagnostic-probe-buyer` | `{ purpose: "transport-readiness"; challenge: string }`, with a canonical random 32-byte Base64URL challenge |
+| `diagnostic-probe-seller` | the same no-effect diagnostic DTO in the opposite role direction |
 | `acknowledgement` | `DacsHttpAcknowledgementV1` from section 12.5 |
 
 ```ts
@@ -624,6 +636,28 @@ type DacsBundleSignatureRequestV1 = {
   requiredCounterSigners: string[];
 };
 ```
+
+The four `session-*` messages form a no-payment, pre-agreement bootstrap. The
+buyer first challenges the seller; the seller presents its session-bound
+identity and independently challenges the buyer; the buyer presents its own
+session-bound identity; and the seller returns its completed Vet of the buyer,
+including the receipt needed for exact native-address authentication.
+This permits the buyer's Vet of the seller and the seller's Vet of the buyer to
+run concurrently under separate actor wallets. Each challenge is fresh,
+single-session and durably reserved, and every later message hashes the exact
+preceding payload. The buyer MUST authenticate finality and exact native
+readback of the returned buyer Vet before including its reference in an
+agreement proposal. Native receipt verification and exact native-address
+readback are the gate; logical-name index visibility is not on this path. The
+bootstrap itself authorizes no payment, fulfilment or agreement.
+
+The initial generated fixed-price profile automatically produces only an empty
+`BundleRequirement` Vet (`required: []` with no `oneOf`). Any non-empty buyer or
+seller requirement fails closed before a transport or Demos effect until a
+real requirement-specific Vet provider is configured. The complementary
+seller requirement remains an explicit local policy input while Standard issue
+#331 has not defined normative authenticated provenance for it; the host MUST
+NOT describe that local policy as normative provenance.
 
 The host kit MUST validate each payload with the corresponding public SDK
 validator or verifier before invoking a coordinator. For a bundle request it
@@ -778,6 +812,15 @@ operation must re-evaluate whether work is still valid and, if so, create a new
 envelope containing the same stable effect identity in its typed payload; the
 old inbox reservation remains authoritative for the old message.
 
+The role-service send boundary MUST accept a stable semantic idempotency key
+for action-bearing messages. Before signing, it durably retains the exact role,
+actors, job, type, payload, issue/expiry times and nonce under that key. Every
+same-key retry or process restart reconstructs the same signed envelope and
+resumes its existing outbox item; substituting any retained field is a terminal
+local conflict. A replacement after expiry therefore requires an explicit
+higher-level recovery decision and a new transport idempotency key—it is never
+created as a side effect of retrying the old operation.
+
 ### 12.6 HTTP dispositions
 
 The transport uses:
@@ -857,6 +900,24 @@ network, service amount and fee ceilings before consent. Retry/resume MUST reuse
 the retained job and effect identity. A new invocation with the same user-level
 request but no explicit resume MUST NOT silently attach to or repeat an earlier
 purchase.
+
+The purchase plan MUST also bind the generated profile's whole-order Demos
+cost envelope. For the fixed-price profile this is derived from five named
+buyer Storage Program writes, six named seller writes, one explicit headroom
+write per role and each role's configured per-write ceiling. Native pay-DEM
+plans MUST add the selected transfer-and-fee ceiling to that projection. The
+plan hash changes if either role's Demos ceiling changes. The buyer MUST carry
+those exact role ceilings in the authenticated session application. Before a
+role coordinator starts, its actor-local database MUST retain an immutable
+order grant; the seller MUST reject a grant above its then-current local policy.
+Restart MUST use that retained grant, so increasing process configuration
+cannot enlarge an admitted order's authority. Deterministic logical names,
+durable write-once reconciliation and per-write adapter enforcement are the
+runtime bound. Before broadcast, each role's wallet journal MUST durably reserve
+the authenticated confirmed fee against its aggregate purchase budget;
+definitively failed attempts continue to consume their reservation. Custom
+extensions and unrelated concurrent orders are not covered by this
+generated-profile envelope.
 
 Setup and purchase confirmations MUST be distinct domain-separated consent
 records. Neither may be inferred from `dacs:up`, doctor, a previous run or a

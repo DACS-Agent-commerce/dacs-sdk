@@ -43,6 +43,7 @@ export interface PayDemFundedPreparedTransfer {
   payer: string;
   payee: string;
   amountOs: string;
+  denomination: "os" | "dem";
   maxTotalDebitOs: string;
   network: "demos";
 }
@@ -148,13 +149,16 @@ function capturePreparedTransfer(
     "payer",
     "payee",
     "amountOs",
+    "denomination",
     "maxTotalDebitOs",
     "network",
   ]) || !Number.isSafeInteger(snapshot.nonce) || (snapshot.nonce as number) < 0 ||
       Object.is(snapshot.nonce, -0) || typeof snapshot.amountOs !== "string" ||
       !INTEGER_RE.test(snapshot.amountOs) ||
       typeof snapshot.maxTotalDebitOs !== "string" ||
-      !INTEGER_RE.test(snapshot.maxTotalDebitOs) || snapshot.network !== "demos") {
+      !INTEGER_RE.test(snapshot.maxTotalDebitOs) ||
+      (snapshot.denomination !== "os" && snapshot.denomination !== "dem") ||
+      snapshot.network !== "demos") {
     throw new Error("pay-dem-live:prepared-transfer-invalid");
   }
   const prepared = {
@@ -163,6 +167,7 @@ function capturePreparedTransfer(
     payer: canonicalAddress(snapshot.payer, "prepared-payer"),
     payee: canonicalAddress(snapshot.payee, "prepared-payee"),
     amountOs: snapshot.amountOs,
+    denomination: snapshot.denomination as "os" | "dem",
     maxTotalDebitOs: snapshot.maxTotalDebitOs,
     network: "demos" as const,
   };
