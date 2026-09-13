@@ -191,6 +191,28 @@ describe("full Demos CCI context projection", () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ["evm", "testnet"],
+    ["other-chain", "mainnet"],
+  ])("rejects same-address Nomis records in %s/%s regardless of bucket order", (chain, subchain) => {
+    const entry = GCR.response.nomis.evm.mainnet[0]!;
+    const original = { chain: "evm", subchain: "mainnet", entry };
+    const other = { chain, subchain, entry: structuredClone(entry) };
+    for (const buckets of [[original, other], [other, original]]) {
+      const nomis: Record<string, Record<string, typeof entry[]>> = {};
+      for (const bucket of buckets) {
+        (nomis[bucket.chain] ??= {})[bucket.subchain] = [bucket.entry];
+      }
+      const raw = {
+        ...GCR,
+        response: { ...GCR.response, nomis },
+      };
+      expect(() => parseCciRecord(PRIMARY, raw)).toThrow(
+        /conflicting claim cci-nomis/,
+      );
+    }
+  });
+
   test("rejects conflicting canonical refs instead of selecting by RPC order", () => {
     const nomisConflict = structuredClone(GCR);
     nomisConflict.response.nomis.evm.mainnet.push({
