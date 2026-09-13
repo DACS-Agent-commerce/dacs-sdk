@@ -1,9 +1,15 @@
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
   type FixedPriceX402CoordinatorRole,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemOrderRecord,
+  type FixedPricePayDemTrackOperationInput,
   type FixedPriceX402OrderInput,
+  type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
@@ -15,7 +21,17 @@ export const DACS_LIVE_ORDER_INPUT_ID_DOMAIN = "dacs-live-order-input-id:v1:" as
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
-export interface DacsLiveOrderInputV1 {
+export type DacsLiveOrderV1 = FixedPriceX402OrderInput | FixedPricePayDemOrderInput;
+export type DacsLiveOrderRecordV1 =
+  | FixedPriceX402OrderRecord
+  | FixedPricePayDemOrderRecord;
+export type DacsLiveTrackOperationInputV1 =
+  | FixedPriceX402TrackOperationInput
+  | FixedPricePayDemTrackOperationInput;
+
+export interface DacsLiveOrderInputV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> {
   orderInputVersion: typeof DACS_LIVE_ORDER_INPUT_VERSION;
   role: FixedPriceX402CoordinatorRole;
   jobId: string;
@@ -23,11 +39,17 @@ export interface DacsLiveOrderInputV1 {
   localBindingHash: string;
   applicationHash: string;
   application: Readonly<Record<string, unknown>>;
-  order: Readonly<FixedPriceX402OrderInput>;
+  order: Readonly<Order>;
 }
 
-export type DacsLiveOrderInputPutV1 = Readonly<
-  | { status: "created" | "existing"; effectId: string; record: DacsLiveOrderInputV1 }
+export type DacsLiveOrderInputPutV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> = Readonly<
+  | {
+      status: "created" | "existing";
+      effectId: string;
+      record: DacsLiveOrderInputV1<Order>;
+    }
   | { status: "conflict"; effectId: string }
 >;
 
@@ -63,18 +85,35 @@ function canonicalSnapshot(value: unknown, reasonCode: string): Readonly<Record<
   }
 }
 
-function hashes(order: Readonly<FixedPriceX402OrderInput>): Readonly<{
+function hashes(order: Readonly<DacsLiveOrderV1>): Readonly<{
   bindingHash: string;
   localBindingHash: string;
 }> {
   try {
-    const bindingHash = fixedPriceX402OrderBindingHash(order);
-    const localBindingHash = fixedPriceX402OrderLocalBindingHash(order);
+    const payDem = order.protocol.phase === "pay-dem";
+    const bindingHash = payDem
+      ? fixedPricePayDemOrderBindingHash(order as FixedPricePayDemOrderInput)
+      : fixedPriceX402OrderBindingHash(order as FixedPriceX402OrderInput);
+    const localBindingHash = payDem
+      ? fixedPricePayDemOrderLocalBindingHash(order as FixedPricePayDemOrderInput)
+      : fixedPriceX402OrderLocalBindingHash(order as FixedPriceX402OrderInput);
     if (!HASH_RE.test(bindingHash) || !HASH_RE.test(localBindingHash)) throw new Error();
     return { bindingHash, localBindingHash };
   } catch {
     throw new DacsLiveOrderInputError("live-order-binding-invalid");
   }
+}
+
+export function dacsLiveOrderBindingHashesV1(
+  order: Readonly<DacsLiveOrderV1 | DacsLiveOrderRecordV1>,
+): Readonly<{ bindingHash: string; localBindingHash: string }> {
+  if ("bindingHash" in order && "localBindingHash" in order) {
+    return Object.freeze({
+      bindingHash: order.bindingHash,
+      localBindingHash: order.localBindingHash,
+    });
+  }
+  return Object.freeze(hashes(order));
 }
 
 function effectId(input: Readonly<{
@@ -89,7 +128,7 @@ function effectId(input: Readonly<{
   })}`);
 }
 
-function captureRecord(value: unknown): Readonly<DacsLiveOrderInputV1> {
+function captureRecord(value: unknown): Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>> {
   if (!plainData(value) || Reflect.ownKeys(value).length !== 8 ||
       value.orderInputVersion !== DACS_LIVE_ORDER_INPUT_VERSION ||
       (value.role !== "buyer" && value.role !== "seller") ||
@@ -100,7 +139,7 @@ function captureRecord(value: unknown): Readonly<DacsLiveOrderInputV1> {
       !plainData(value.application) || !plainData(value.order)) {
     throw new DacsLiveOrderInputError("live-order-input-corrupt");
   }
-  const order = value.order as unknown as FixedPriceX402OrderInput;
+  const order = value.order as unknown as DacsLiveOrderV1;
   const expected = hashes(order);
   const applicationJson = canonicalize(value.application);
   if (order.sdkJobs.role !== value.role || order.jobId !== value.jobId ||
@@ -109,7 +148,7 @@ function captureRecord(value: unknown): Readonly<DacsLiveOrderInputV1> {
       sha256Hex(applicationJson) !== value.applicationHash) {
     throw new DacsLiveOrderInputError("live-order-input-corrupt");
   }
-  return JSON.parse(canonicalize(value)) as DacsLiveOrderInputV1;
+  return JSON.parse(canonicalize(value)) as DacsLiveOrderInputV1<DacsLiveOrderV1>;
 }
 
 /**
@@ -121,13 +160,28 @@ export function putDacsLiveOrderInputV1(input: Readonly<{
   database: DacsNodeSqliteDatabase;
   order: Readonly<FixedPriceX402OrderInput>;
   application: Readonly<Record<string, unknown>>;
-}>): DacsLiveOrderInputPutV1 {
+}>): DacsLiveOrderInputPutV1<FixedPriceX402OrderInput>;
+export function putDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<FixedPricePayDemOrderInput>;
+  application: Readonly<Record<string, unknown>>;
+}>): DacsLiveOrderInputPutV1<FixedPricePayDemOrderInput>;
+export function putDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<DacsLiveOrderV1>;
+  application: Readonly<Record<string, unknown>>;
+}>): DacsLiveOrderInputPutV1<DacsLiveOrderV1>;
+export function putDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<DacsLiveOrderV1>;
+  application: Readonly<Record<string, unknown>>;
+}>): DacsLiveOrderInputPutV1<DacsLiveOrderV1> {
   if (!plainData(input) || Reflect.ownKeys(input).length !== 3 ||
       input.database === null || typeof input.database !== "object" ||
       !plainData(input.order)) {
     throw new TypeError("live order input options are invalid");
   }
-  const order = JSON.parse(canonicalize(input.order)) as FixedPriceX402OrderInput;
+  const order = JSON.parse(canonicalize(input.order)) as DacsLiveOrderV1;
   const application = canonicalSnapshot(input.application, "live-order-application-invalid");
   const derived = hashes(order);
   if (input.database.metadata.mode !== "live-demos" ||
@@ -136,7 +190,7 @@ export function putDacsLiveOrderInputV1(input: Readonly<{
         (order.sdkJobs.role === "buyer" ? order.buyer : order.seller)) {
     throw new DacsLiveOrderInputError("live-order-database-binding-mismatch");
   }
-  const retained: DacsLiveOrderInputV1 = {
+  const retained: DacsLiveOrderInputV1<DacsLiveOrderV1> = {
     orderInputVersion: DACS_LIVE_ORDER_INPUT_VERSION,
     role: order.sdkJobs.role,
     jobId: order.jobId,
@@ -167,7 +221,15 @@ export function putDacsLiveOrderInputV1(input: Readonly<{
 export function loadDacsLiveOrderInputV1(input: Readonly<{
   database: DacsNodeSqliteDatabase;
   order: Readonly<FixedPriceX402OrderInput>;
-}>): Readonly<DacsLiveOrderInputV1> | undefined {
+}>): Readonly<DacsLiveOrderInputV1<FixedPriceX402OrderInput>> | undefined;
+export function loadDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<FixedPricePayDemOrderInput>;
+}>): Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>> | undefined;
+export function loadDacsLiveOrderInputV1(input: Readonly<{
+  database: DacsNodeSqliteDatabase;
+  order: Readonly<DacsLiveOrderV1>;
+}>): Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>> | undefined {
   if (!plainData(input) || Reflect.ownKeys(input).length !== 2 ||
       input.database === null || typeof input.database !== "object" ||
       !plainData(input.order)) {
@@ -193,7 +255,19 @@ export function loadDacsLiveOrderInputV1(input: Readonly<{
 export function loadDacsLiveOrderInputForTrackV1(
   operation: Readonly<FixedPriceX402TrackOperationInput>,
   database: DacsNodeSqliteDatabase,
-): Readonly<DacsLiveOrderInputV1> {
+): Readonly<DacsLiveOrderInputV1<FixedPriceX402OrderInput>>;
+export function loadDacsLiveOrderInputForTrackV1(
+  operation: Readonly<FixedPricePayDemTrackOperationInput>,
+  database: DacsNodeSqliteDatabase,
+): Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
+export function loadDacsLiveOrderInputForTrackV1(
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
+  database: DacsNodeSqliteDatabase,
+): Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
+export function loadDacsLiveOrderInputForTrackV1(
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
+  database: DacsNodeSqliteDatabase,
+): Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>> {
   if (!plainData(operation) || !plainData(operation.order) ||
       operation.fence === null || typeof operation.fence !== "object" ||
       database === null || typeof database !== "object") {

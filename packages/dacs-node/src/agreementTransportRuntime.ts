@@ -21,7 +21,6 @@ import {
 import type {
   FixedPriceX402OrderInput,
   FixedPriceX402OrderRecord,
-  FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import {
   isDurableSellerFixedPriceAgreementResponse,
@@ -30,7 +29,12 @@ import {
 } from "@kynesyslabs/dacs/seller";
 import { sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 
-import { putDacsLiveOrderInputV1 } from "./orderInput.js";
+import {
+  putDacsLiveOrderInputV1,
+  type DacsLiveOrderRecordV1,
+  type DacsLiveOrderV1,
+  type DacsLiveTrackOperationInputV1,
+} from "./orderInput.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
@@ -90,27 +94,33 @@ export interface DacsAgreementSellerVetProductionV1 {
   anchorReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
-export interface DacsBuyerAgreementTransportRuntimeOptionsV1 {
+export interface DacsBuyerAgreementTransportRuntimeOptionsV1<
+  Order extends DacsLiveOrderRecordV1 = FixedPriceX402OrderRecord,
+> {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   resolveSellerVetProduction(input: Readonly<{
-    order: Readonly<FixedPriceX402OrderRecord>;
+    order: Readonly<Order>;
   }>): Promise<Readonly<DacsAgreementSellerVetProductionV1>> |
     Readonly<DacsAgreementSellerVetProductionV1>;
 }
 
-export interface DacsSellerAgreementAdmissionV1 {
-  order: Readonly<FixedPriceX402OrderInput>;
+export interface DacsSellerAgreementAdmissionV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> {
+  order: Readonly<Order>;
   /** Public, durable application facts required by the seller's later tracks. */
   application: Readonly<Record<string, unknown>>;
 }
 
-export interface DacsSellerAgreementTransportRuntimeOptionsV1 {
+export interface DacsSellerAgreementTransportRuntimeOptionsV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+> {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   admitProposal(input: Readonly<{
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>;
     payload: Readonly<DacsAgreementProposalPayloadV1>;
-  }>): Promise<Readonly<DacsSellerAgreementAdmissionV1>> |
-    Readonly<DacsSellerAgreementAdmissionV1>;
+  }>): Promise<Readonly<DacsSellerAgreementAdmissionV1<Order>>> |
+    Readonly<DacsSellerAgreementAdmissionV1<Order>>;
 }
 
 export interface DacsSellerAgreementTransportRuntimeV1 {
@@ -118,12 +128,12 @@ export interface DacsSellerAgreementTransportRuntimeV1 {
   readonly validatePayload: DacsHttpPayloadValidatorV1;
   resolveProposal(
     input: Readonly<{
-      operation: Readonly<FixedPriceX402TrackOperationInput>;
+      operation: Readonly<DacsLiveTrackOperationInputV1>;
     }>,
   ): Promise<Readonly<FixedPriceAgreementProposalEnvelope>>;
   resolveSellerVetProduction(
     input: Readonly<{
-      operation: Readonly<FixedPriceX402TrackOperationInput>;
+      operation: Readonly<DacsLiveTrackOperationInputV1>;
     }>,
   ): Promise<Readonly<DacsAgreementSellerVetProductionV1>>;
   handleMessage(
@@ -197,19 +207,26 @@ function bindingId(
 async function loadOrder(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
-): Promise<Readonly<FixedPriceX402OrderRecord> | undefined> {
-  const loaded = await context.database.createLiveCoordinatorStore(context.role)
-    .load(context.role, jobId);
-  if (loaded.status === "missing") return undefined;
-  if (loaded.status !== "ok") {
+): Promise<Readonly<DacsLiveOrderRecordV1> | undefined> {
+  const [x402, payDem] = await Promise.all([
+    context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
+    context.database.createPayDemCoordinatorStore(context.role).load(context.role, jobId),
+  ]);
+  if ((x402.status !== "missing" && x402.status !== "ok") ||
+      (payDem.status !== "missing" && payDem.status !== "ok") ||
+      (x402.status === "ok" && payDem.status === "ok")) {
     throw new DacsAgreementTransportRuntimeError("agreement-order-state-invalid");
   }
-  return loaded.record;
+  return x402.status === "ok"
+    ? x402.record
+    : payDem.status === "ok"
+      ? payDem.record
+      : undefined;
 }
 
 function identityMatchesOrder(
   identity: Readonly<FixedPriceAgreementTransportIdentity>,
-  order: Readonly<FixedPriceX402OrderRecord> | Readonly<FixedPriceX402OrderInput>,
+  order: Readonly<DacsLiveOrderRecordV1> | Readonly<DacsLiveOrderV1>,
   role: "buyer" | "seller",
 ): boolean {
   return order.sdkJobs.role === role && identity.jobId === order.jobId &&
@@ -324,7 +341,7 @@ function captureResponseBinding(value: unknown): Readonly<DacsAgreementResponseB
 
 function retainProposal(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
   payload: Readonly<DacsAgreementProposalPayloadV1>,
   authenticated?: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
 ): Readonly<DacsAgreementProposalBindingV1> {
@@ -368,7 +385,7 @@ function retainProposal(
 
 function retainResponse(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
   payload: Readonly<DurableSellerFixedPriceAgreementResponse>,
   authenticated?: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
 ): Readonly<DacsAgreementResponseBindingV1> {
@@ -416,7 +433,7 @@ function retainResponse(
 
 function loadProposalBinding(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): Readonly<DacsAgreementProposalBindingV1> | undefined {
   const value = context.database.loadEffectInput(
     "session",
@@ -439,7 +456,7 @@ function loadProposalBinding(
  */
 export function loadDacsSellerAgreementVetProductionForOrderV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): Readonly<DacsAgreementSellerVetProductionV1> {
   if (context.role !== "seller" || order.role !== "seller" ||
       !sameCanonicalClaimIdentity(order.seller, context.authority) ||
@@ -459,7 +476,7 @@ export function loadDacsSellerAgreementVetProductionForOrderV1(
 
 function loadResponseBinding(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): Readonly<DacsAgreementResponseBindingV1> | undefined {
   const value = context.database.loadEffectInput(
     "session",
@@ -520,8 +537,10 @@ async function sendResponse(
   }
 }
 
-export function createDacsBuyerAgreementTransportRuntimeV1(
-  options: Readonly<DacsBuyerAgreementTransportRuntimeOptionsV1>,
+export function createDacsBuyerAgreementTransportRuntimeV1<
+  Order extends DacsLiveOrderRecordV1 = FixedPriceX402OrderRecord,
+>(
+  options: Readonly<DacsBuyerAgreementTransportRuntimeOptionsV1<Order>>,
 ): Readonly<DacsBuyerAgreementTransportRuntimeV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "buyer" ||
@@ -565,7 +584,7 @@ export function createDacsBuyerAgreementTransportRuntimeV1(
         return { disposition: "rejected" as const, reason: "buyer-order-missing" };
       }
       try {
-        const sellerVet = await options.resolveSellerVetProduction({ order });
+        const sellerVet = await options.resolveSellerVetProduction({ order: order as Order });
         const binding = retainProposal(context, order, {
           proposal,
           transportIdentity: identity,
@@ -660,8 +679,10 @@ export function createDacsBuyerAgreementTransportRuntimeV1(
   return Object.freeze(runtime);
 }
 
-export function createDacsSellerAgreementTransportRuntimeV1(
-  options: Readonly<DacsSellerAgreementTransportRuntimeOptionsV1>,
+export function createDacsSellerAgreementTransportRuntimeV1<
+  Order extends DacsLiveOrderV1 = FixedPriceX402OrderInput,
+>(
+  options: Readonly<DacsSellerAgreementTransportRuntimeOptionsV1<Order>>,
 ): Readonly<DacsSellerAgreementTransportRuntimeV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.admitProposal !== "function") {
@@ -741,7 +762,7 @@ export function createDacsSellerAgreementTransportRuntimeV1(
     transport,
     validatePayload,
     async resolveProposal(
-      { operation }: Readonly<{ operation: Readonly<FixedPriceX402TrackOperationInput> }>,
+      { operation }: Readonly<{ operation: Readonly<DacsLiveTrackOperationInputV1> }>,
     ) {
       if (operation.fence.role !== "seller" || operation.fence.track !== "agreement") {
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-track-mismatch");
@@ -754,7 +775,7 @@ export function createDacsSellerAgreementTransportRuntimeV1(
       return Object.freeze(structuredClone(coreProposalEnvelope(binding.payload)));
     },
     async resolveSellerVetProduction(
-      { operation }: Readonly<{ operation: Readonly<FixedPriceX402TrackOperationInput> }>,
+      { operation }: Readonly<{ operation: Readonly<DacsLiveTrackOperationInputV1> }>,
     ) {
       if (operation.fence.role !== "seller" || operation.fence.track !== "agreement") {
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-track-mismatch");
@@ -793,7 +814,11 @@ export function createDacsSellerAgreementTransportRuntimeV1(
         });
         if (!plainObject(admitted) || !plainObject(admitted.order) ||
             !plainObject(admitted.application) ||
-            !identityMatchesOrder(envelope.payload.transportIdentity, admitted.order, "seller")) {
+            !identityMatchesOrder(
+              envelope.payload.transportIdentity,
+              admitted.order as DacsLiveOrderV1,
+              "seller",
+            )) {
           throw new Error();
         }
         const retained = putDacsLiveOrderInputV1({

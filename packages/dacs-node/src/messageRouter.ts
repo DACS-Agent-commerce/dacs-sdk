@@ -19,6 +19,7 @@ const INBOUND_TYPES = Object.freeze({
     "session-init",
     "session-presentation",
     "agreement-proposal",
+    "pay-dem-payment-notice",
     "payment-evidence-completion",
     "bundle-signature-response",
   ] as const),

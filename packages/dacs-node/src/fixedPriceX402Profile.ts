@@ -42,11 +42,13 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import {
   canonicalize,
+  canonicalizeDecimal,
   contentHash,
   listingAddress,
   sha256Hex,
 } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemTrackOperationInput,
   FixedPriceX402OrderInput,
   FixedPriceX402OrderRecord,
   FixedPriceX402TrackOperationInput,
@@ -72,10 +74,17 @@ import {
 } from "./listingDoctor.js";
 import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
 import {
+  type DacsLiveOrderRecordV1,
+  type DacsLiveTrackOperationInputV1,
+  type DacsLiveOrderV1,
   loadDacsLiveOrderInputV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import { createDacsFixedPriceX402ProtocolBindingV1 } from "./purchaseQueue.js";
+import {
+  dacsFixedPricePurchaseAnchorOptionsV1,
+  retainDacsFixedPricePurchaseDemosBudgetGrantV1,
+} from "./purchaseDemosBudget.js";
 import { readDacsPublicJsonV1 } from "./publicJson.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 import type {
@@ -154,6 +163,7 @@ export interface DacsFixedPriceX402ApplicationV1 {
   listingContentHash: string;
   listingLogicalAddress: string;
   listing: Readonly<Listing>;
+  demosWriteFeeCeilings: Readonly<Record<"buyer" | "seller", string>>;
   requestHash: string;
   request: Readonly<Record<string, unknown>>;
 }
@@ -226,6 +236,11 @@ export interface DacsFixedPriceX402BuyerPaymentPolicyV1 {
 export interface DacsFixedPriceX402SellerAgreementPolicyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   maximumClockSkewMs?: number;
+  /** Select the actor-local admission store for this exact rail profile. */
+  loadAdmission?(order: Readonly<DacsLiveOrderRecordV1>): Readonly<{
+    admittedAt: number;
+    application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  }>;
 }
 
 export interface DacsFixedPriceX402SellerAgreementPolicyV1 {
@@ -272,6 +287,21 @@ function exactKeys(value: Readonly<Record<string, unknown>>, keys: readonly stri
     keys.every((key) => Object.hasOwn(value, key));
 }
 
+function demosWriteFeeCeilings(
+  value: unknown,
+): value is Readonly<Record<"buyer" | "seller", string>> {
+  if (!plainObject(value) || !exactKeys(value, ["buyer", "seller"])) return false;
+  return [value.buyer, value.seller].every((candidate) => {
+    if (typeof candidate !== "string") return false;
+    try {
+      return canonicalizeDecimal(candidate) === candidate &&
+        BigInt(baseUnits(candidate, 9)) >= 0n;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function copy<T>(value: T): T {
   return JSON.parse(canonicalize(value)) as T;
 }
@@ -289,14 +319,16 @@ export function captureDacsFixedPriceX402ApplicationV1(
 ): Readonly<DacsFixedPriceX402ApplicationV1> {
   if (!plainObject(value) || !exactKeys(value, [
     "applicationVersion", "listingRef", "listingContentHash", "listingLogicalAddress",
-    "listing", "requestHash", "request",
+    "listing", "demosWriteFeeCeilings", "requestHash", "request",
   ]) || value.applicationVersion !== APPLICATION_VERSION ||
       typeof value.listingRef !== "string" || !STORAGE_RE.test(value.listingRef) ||
       typeof value.listingContentHash !== "string" ||
         !HASH_RE.test(value.listingContentHash) ||
       typeof value.listingLogicalAddress !== "string" ||
         value.listingLogicalAddress.length === 0 ||
-      !isListing(value.listing) || typeof value.requestHash !== "string" ||
+      !isListing(value.listing) ||
+      !demosWriteFeeCeilings(value.demosWriteFeeCeilings) ||
+      typeof value.requestHash !== "string" ||
         !HASH_RE.test(value.requestHash) || !plainObject(value.request)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-application-invalid");
   }
@@ -494,6 +526,14 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         seller: payload.order.seller,
         protocol: payload.order.protocol,
       });
+      retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+        database: context.database,
+        jobId: order.jobId,
+        role: "seller",
+        authority: order.seller,
+        maximumPerWriteFeeDem: application.demosWriteFeeCeilings.seller,
+        maximumAllowedPerWriteFeeDem: context.config.limits.maxDemosNetworkFeeDem,
+      });
       retainAdmission(
         context,
         order,
@@ -620,15 +660,16 @@ function retainAgreementClock(
 
 function exactRail(
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
-  order: Readonly<FixedPriceX402OrderInput>,
+  order: Readonly<DacsLiveOrderV1>,
 ): Readonly<{ rail: PaymentRailRef; phaseIndex: number; payeeAddress: string }> {
   const listing = application.listing;
   const accepted = listing.acceptedRails?.filter((candidate) =>
     candidate.railId === order.protocol.rail.railId &&
     candidate.railVersion === order.protocol.rail.railVersion
   ) ?? [];
+  const paymentPhase = order.protocol.phase;
   const phaseIndexes = listing.pipeline.flatMap((phase, index) =>
-    phase.kind === "pay-x402" ? [index] : []
+    phase.kind === paymentPhase ? [index] : []
   );
   const commitmentCount = listing.pipeline.filter((phase) =>
     phase.kind === "commit-payee-bound-agreement"
@@ -638,8 +679,8 @@ function exactRail(
   const payeeAddress = plainObject(rail?.parameters)
     ? rail.parameters.payTo
     : undefined;
-  if (order.protocol.phase !== "pay-x402" ||
-      order.protocol.rail.phaseHandler !== "pay-x402" ||
+  if ((paymentPhase !== "pay-x402" && paymentPhase !== "pay-dem") ||
+      order.protocol.rail.phaseHandler !== paymentPhase ||
       phaseIndexes.length !== 1 || commitmentCount !== 1 || rail === undefined ||
       !plainObject(phase?.parameters) || phase.parameters.rail !== rail.railId ||
       typeof payeeAddress !== "string" || payeeAddress.length === 0 ||
@@ -655,7 +696,7 @@ function exactRail(
 
 function buildAgreementInput(input: Readonly<{
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
-  order: Readonly<FixedPriceX402OrderInput>;
+  order: Readonly<DacsLiveOrderV1>;
   buyerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["buyerIdentity"]>;
   sellerIdentity: Readonly<DacsBuyerSessionAgreementFactsV1["sellerIdentity"]>;
   buyerVetRef: Readonly<DacsBuyerSessionAgreementFactsV1["buyerVetRef"]>;
@@ -858,11 +899,11 @@ function createAgreementAnchorProvider(
         await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          { metadata: {
+          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
             envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          } },
+          }),
         );
         return { disposition: "submitted" as const };
       } catch {
@@ -886,11 +927,11 @@ function createAgreementAnchorProvider(
         const anchor = await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          { metadata: {
+          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
             logicalAddress: record.logicalAddress,
             contentHash: record.agreementHash,
             envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          } },
+          }),
         );
         const receipt = anchor.demosEvidence === undefined
           ? await context.demos.adapter.resolveDemosAnchorReceipt({
@@ -1072,7 +1113,7 @@ function captureBuyerCommitmentResult(
 
 function retainBuyerCommitmentResult(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  operation: Readonly<FixedPriceX402TrackOperationInput>,
+  operation: Readonly<DacsLiveTrackOperationInputV1>,
   agreementHash: string,
   commitment: Readonly<FinalizedFinalityAgreementCommitment>,
 ): Readonly<DacsFixedPriceX402BuyerCommitmentResultV1> {
@@ -1104,7 +1145,7 @@ function retainBuyerCommitmentResult(
 
 export function loadDacsFixedPriceX402BuyerCommitmentResultV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<FixedPriceX402OrderRecord>,
+  order: Readonly<DacsLiveOrderRecordV1>,
 ): Readonly<DacsFixedPriceX402BuyerCommitmentResultV1> {
   if (context.role !== "buyer" || order.role !== "buyer") {
     throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-commitment-role-mismatch");
@@ -1185,10 +1226,11 @@ async function readBuyerCommitment(
 
 async function authenticateBuyerCommitment(input: Readonly<{
   context: Readonly<DacsLiveRoleOperationContextV1>;
-  operation: Readonly<FixedPriceX402TrackOperationInput>;
-  retained: Readonly<DacsLiveOrderInputV1>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
+  retained: Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
   agreement: Readonly<DacsFixedPriceX402BuyerAgreementPublicationV1>;
+  session: Readonly<DacsBuyerSessionAgreementFactsV1>;
 }>): Promise<Readonly<FinalizedFinalityAgreementCommitment>> {
   const { context, operation, application, agreement } = input;
   if (input.retained.jobId !== operation.order.jobId ||
@@ -1201,10 +1243,7 @@ async function authenticateBuyerCommitment(input: Readonly<{
       "fixed-price-buyer-commitment-binding-invalid",
     );
   }
-  const session = loadDacsBuyerSessionAgreementFactsForOrderV1(
-    context,
-    operation.order,
-  );
+  const session = input.session;
   const logicalAddress = finalityCommitmentAddress(operation.order.jobId);
   const lookup = await readBuyerCommitment(context, logicalAddress);
   if (lookup.disposition !== "present") {
@@ -1278,6 +1317,48 @@ async function authenticateBuyerCommitment(input: Readonly<{
   return commitment;
 }
 
+/**
+ * Authenticate and retain the seller's exact finality commitment before either
+ * supported payment rail can sign an irreversible authorization. The caller
+ * supplies its rail-specific, already-authenticated session facts; the shared
+ * commitment verifier owns every remaining agreement/anchor check.
+ */
+export async function ensureDacsFixedPriceBuyerCommitmentV1(input: Readonly<{
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  operation: Readonly<FixedPriceX402TrackOperationInput |
+    FixedPricePayDemTrackOperationInput>;
+  retained: Readonly<DacsLiveOrderInputV1<DacsLiveOrderV1>>;
+  application: Readonly<DacsFixedPriceX402ApplicationV1>;
+  agreement: Readonly<DacsFixedPriceX402BuyerAgreementPublicationV1>;
+  session: Readonly<DacsBuyerSessionAgreementFactsV1>;
+}>): Promise<Readonly<DacsFixedPriceX402BuyerCommitmentResultV1>> {
+  try {
+    return loadDacsFixedPriceX402BuyerCommitmentResultV1(
+      input.context,
+      input.operation.order,
+    );
+  } catch (error) {
+    if (!(error instanceof DacsFixedPriceX402ProfileError) ||
+        error.reasonCode !== "fixed-price-buyer-commitment-missing") {
+      throw error;
+    }
+  }
+  const commitment = await authenticateBuyerCommitment({
+    context: input.context,
+    operation: input.operation,
+    retained: input.retained,
+    application: input.application,
+    agreement: input.agreement,
+    session: input.session,
+  });
+  return retainBuyerCommitmentResult(
+    input.context,
+    input.operation,
+    input.agreement.agreementHash,
+    commitment,
+  );
+}
+
 function tokenDomain(value: unknown): Readonly<{ name: string; version: string }> {
   if (!plainObject(value) || !exactKeys(value, ["name", "version"]) ||
       typeof value.name !== "string" || value.name.length === 0 ||
@@ -1297,6 +1378,10 @@ function paymentPreparation(
   enforceDeadline = true,
 ): Readonly<DacsX402BuyerRuntimePreparationV1> {
   const { context, rail } = options;
+  const evm = context.evm;
+  if (evm?.role !== "buyer") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-payment-authority-invalid");
+  }
   const application = captureDacsFixedPriceX402ApplicationV1(input.retained.application);
   const publication = context.database.loadEffectInput(
     "artifact-publication",
@@ -1319,7 +1404,7 @@ function paymentPreparation(
         candidate.phaseIndex === selected.phaseIndex)
     : [];
   const payerClaim = `cci-xm:evm:${rail.asset.kind === "erc20" ? rail.asset.chainId : 0}:` +
-    context.evm.address;
+    evm.address;
   const session = loadDacsBuyerSessionAgreementFactsForOrderV1(
     context,
     input.operation.order,
@@ -1377,8 +1462,8 @@ function paymentPreparation(
       canonicalize(commitment.commitment.record.listingRef) !==
         canonicalize(artifact.listingRef) ||
       !session.buyerIdentity.claims.some((claim) => claim.ref === payerClaim) ||
-      context.evm.role !== "buyer" || context.evm.runtime.chainId !== rail.asset.chainId ||
-      context.evm.runtime.network !== input.operation.order.protocol.rail.network ||
+      evm.runtime.chainId !== rail.asset.chainId ||
+      evm.runtime.network !== input.operation.order.protocol.rail.network ||
       (enforceDeadline && context.database.readTime() > artifact.terms.deadline)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-payment-authority-invalid");
   }
@@ -1416,11 +1501,11 @@ function paymentPreparation(
       termsHash: sha256Hex(canonicalize(artifact.terms)),
       sessionBindingHash: sha256Hex(canonicalize({
         jobId: input.operation.order.jobId,
-        payer: context.evm.address,
+        payer: evm.address,
         commitment: commitment.commitment.logicalAddress,
       })),
       network: input.operation.order.protocol.rail.network,
-      payer: context.evm.address,
+      payer: evm.address,
       payee: selected.payeeAddress,
       asset: rail.asset.contract,
       amount,
@@ -1472,7 +1557,7 @@ function authorizationWithinAgreement(
   const artifact = publication.artifact as unknown as
     DurableAnchoredFixedPriceAgreement["agreement"];
   const evm = options.context.evm;
-  if (evm.role !== "buyer") return false;
+  if (evm?.role !== "buyer") return false;
   if (!/^(0|[1-9][0-9]*)$/.test(authorization.validAfter) ||
       !/^[1-9][0-9]*$/.test(authorization.validBefore)) return false;
   const deadline = BigInt(artifact.terms.deadline);
@@ -1491,7 +1576,7 @@ export function createDacsFixedPriceX402BuyerPaymentPolicyV1(
   rawOptions: Readonly<DacsFixedPriceX402BuyerPaymentPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402BuyerPaymentPolicyV1> {
   if (!plainObject(rawOptions) || !plainObject(rawOptions.context) ||
-      rawOptions.context.role !== "buyer" ||
+      rawOptions.context.role !== "buyer" || rawOptions.context.evm?.role !== "buyer" ||
       !isAuthenticatedRailDefinition(rawOptions.rail) ||
       !Number.isSafeInteger(rawOptions.maxTimeoutSeconds) ||
       rawOptions.maxTimeoutSeconds <= 0 || rawOptions.maxTimeoutSeconds > 86_400) {
@@ -1538,6 +1623,10 @@ export function createDacsFixedPriceX402BuyerPaymentPolicyV1(
             retained: input.retained,
             application,
             agreement,
+            session: loadDacsBuyerSessionAgreementFactsForOrderV1(
+              context,
+              input.operation.order,
+            ),
           });
         } catch (cause) {
           if (cause instanceof DacsLiveEffectInputControlError) throw cause;
@@ -1764,11 +1853,11 @@ function createCommitmentProvider(
     const anchor = await context.demos.adapter.anchorWriteOnce(
       retained.logicalAddress,
       retained.record as unknown as Record<string, unknown>,
-      { metadata: {
+      dacsFixedPricePurchaseAnchorOptionsV1(context, operation.order.jobId, {
         logicalAddress: retained.logicalAddress,
         contentHash: retained.commitmentHash,
         envelopeHash: sha256Hex(canonicalize(retained.record)),
-      } },
+      }),
     );
     const receipt = anchor.demosEvidence === undefined
       ? await context.demos.adapter.resolveDemosAnchorReceipt({
@@ -1960,18 +2049,21 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
   options: Readonly<DacsFixedPriceX402SellerAgreementPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerAgreementPolicyV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "seller") {
+      options.context.role !== "seller" ||
+      (options.loadAdmission !== undefined && typeof options.loadAdmission !== "function")) {
     throw new TypeError("fixed-price seller agreement policy options are invalid");
   }
   const context = options.context;
   const maximumClockSkewMs = sellerClockSkew(options.maximumClockSkewMs);
+  const loadAdmission = options.loadAdmission ?? ((order: Readonly<DacsLiveOrderRecordV1>) =>
+    loadDacsFixedPriceX402SellerAdmissionV1(
+      context,
+      order as FixedPriceX402OrderRecord,
+    ));
   const policy: DacsFixedPriceX402SellerAgreementPolicyV1 = {
     resolveAuthenticatedAgreementContext(input) {
       try {
-        const admission = loadDacsFixedPriceX402SellerAdmissionV1(
-          context,
-          input.operation.order,
-        );
+        const admission = loadAdmission(input.operation.order);
         const application = captureDacsFixedPriceX402ApplicationV1(
           input.retained.application,
         );
@@ -2035,10 +2127,7 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
           proposal.plan.agreementHash !== result.transportIdentity.agreementHash) return false;
       try {
         const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
-        const admission = loadDacsFixedPriceX402SellerAdmissionV1(
-          context,
-          operation.order,
-        );
+        const admission = loadAdmission(operation.order);
         if (canonicalize(application) !== canonicalize(admission.application)) return false;
         const agreement = await finalizeFixedPriceAgreementContributions(
           proposal.plan,

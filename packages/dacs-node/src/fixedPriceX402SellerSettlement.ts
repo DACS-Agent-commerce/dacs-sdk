@@ -97,13 +97,17 @@ export function createDacsFixedPriceX402SellerSettlementV1(
   options: Readonly<DacsFixedPriceX402SellerSettlementOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerSettlementV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      options.context.role !== "seller" || options.context.evm.role !== "seller" ||
+      options.context.role !== "seller" || options.context.evm?.role !== "seller" ||
       !plainObject(options.tokenDomain) ||
       typeof options.tokenDomain.name !== "string" ||
       typeof options.tokenDomain.version !== "string" ||
       typeof options.amount !== "string" || !INTEGER_RE.test(options.amount) ||
       options.amount.length > 78 || BigInt(options.amount) <= 0n ||
       BigInt(options.amount) > MAX_UINT256) {
+    throw new TypeError("fixed-price seller settlement options are invalid");
+  }
+  const evm = options.context.evm;
+  if (evm?.role !== "seller") {
     throw new TypeError("fixed-price seller settlement options are invalid");
   }
   const base = resourceBase(options.rail);
@@ -127,7 +131,7 @@ export function createDacsFixedPriceX402SellerSettlementV1(
   const paywall: X402PaywallConfig = Object.freeze({
     route,
     network: observer.network,
-    payTo: options.context.evm.address,
+    payTo: evm.address,
     amount: options.amount,
     asset: options.rail.asset.contract,
     eip712: Object.freeze({ ...options.tokenDomain }),

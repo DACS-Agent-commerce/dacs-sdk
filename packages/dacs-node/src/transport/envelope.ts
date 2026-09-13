@@ -12,6 +12,7 @@ import {
 } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import type {
+  FixedPricePayDemOrderInput,
   FixedPriceX402OrderInput,
   PaymentEvidenceAnchorCompletion,
   PaymentEvidenceAnchorRequest,
@@ -29,6 +30,8 @@ import {
   type FixedPriceAgreementTransportIdentity,
 } from "@kynesyslabs/dacs/negotiate";
 import type { DurableSellerFixedPriceAgreementResponse } from "@kynesyslabs/dacs/seller";
+
+import type { DacsPayDemPaymentNoticeV1 } from "../payDemPayment.js";
 
 export const DACS_HTTP_TRANSPORT_PATH = "/dacs-transport/v1/messages" as const;
 export const DACS_HTTP_ENVELOPE_VERSION = "1" as const;
@@ -48,6 +51,7 @@ export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
   "session-admission",
   "agreement-proposal",
   "agreement-response",
+  "pay-dem-payment-notice",
   "payment-evidence-request",
   "payment-evidence-completion",
   "bundle-signature-request",
@@ -73,12 +77,19 @@ export interface DacsAgreementProposalPayloadV1 {
   sellerVetReceipt: Readonly<ProtocolAnchorReceipt>;
 }
 
-export interface DacsSessionInitPayloadV1 {
+export interface DacsSessionInitPayloadV1<
+  Order extends FixedPriceX402OrderInput | FixedPricePayDemOrderInput =
+    FixedPriceX402OrderInput,
+> {
   bootstrapVersion: "1";
-  order: Readonly<FixedPriceX402OrderInput>;
+  order: Readonly<Order>;
   application: Readonly<Record<string, unknown>>;
   sellerChallenge: string;
 }
+
+export type DacsLiveSessionInitPayloadV1 =
+  | DacsSessionInitPayloadV1<FixedPriceX402OrderInput>
+  | DacsSessionInitPayloadV1<FixedPricePayDemOrderInput>;
 
 export interface DacsSessionChallengePayloadV1 {
   bootstrapVersion: "1";
@@ -125,12 +136,13 @@ export interface DacsHttpDiagnosticProbePayloadV1 {
 }
 
 export interface DacsHttpPayloadByType {
-  "session-init": DacsSessionInitPayloadV1;
+  "session-init": DacsLiveSessionInitPayloadV1;
   "session-challenge": DacsSessionChallengePayloadV1;
   "session-presentation": DacsSessionPresentationPayloadV1;
   "session-admission": DacsSessionAdmissionPayloadV1;
   "agreement-proposal": DacsAgreementProposalPayloadV1;
   "agreement-response": DurableSellerFixedPriceAgreementResponse;
+  "pay-dem-payment-notice": DacsPayDemPaymentNoticeV1;
   "payment-evidence-request": PaymentEvidenceAnchorRequest;
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
@@ -291,6 +303,7 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "session-admission": "seller",
   "agreement-proposal": "buyer",
   "agreement-response": "seller",
+  "pay-dem-payment-notice": "buyer",
   "payment-evidence-request": "seller",
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
@@ -391,7 +404,7 @@ function hash(value: unknown): value is string {
 
 export function validateDacsHttpSessionInitPayloadV1(
   value: unknown,
-): value is Readonly<DacsSessionInitPayloadV1> {
+): value is Readonly<DacsLiveSessionInitPayloadV1> {
   return record(value) && exactKeys(value, [
     "bootstrapVersion", "order", "application", "sellerChallenge",
   ]) && value.bootstrapVersion === "1" && record(value.order) &&

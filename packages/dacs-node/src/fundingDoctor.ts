@@ -8,6 +8,49 @@ import type { DacsLiveDoctorProbeResultV1 } from "./doctor.js";
 const OS_PER_DEM = 1_000_000_000n;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
+/** Exact role-owned Storage Program writes in the generated fixed-price graph. */
+export const DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1 = Object.freeze({
+  buyer: Object.freeze([
+    "counterparty-vet",
+    "agreement",
+    "payment-evidence",
+    "buyer-bundle",
+    "buyer-bundle-binding",
+  ] as const),
+  seller: Object.freeze([
+    "counterparty-vet",
+    "finality-commitment",
+    "deliverable",
+    "delivery-evidence",
+    "seller-bundle",
+    "seller-bundle-binding",
+  ] as const),
+});
+
+/**
+ * Conservative clean-run write budget for the fixed-price live profile.
+ *
+ * Replays reuse the exact immutable writes above. One additional write per
+ * role is reserved as explicit headroom, but the generated implementation does
+ * not treat that headroom as authority to invent another protocol artifact.
+ */
+export const DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_BUDGET_V1 = Object.freeze({
+  buyer: DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.buyer.length,
+  seller: DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_GRAPH_V1.seller.length,
+  safetyMarginPerRole: 1,
+});
+
+export interface DacsFixedPriceDemosCostEstimateV1 {
+  rail: "x402" | "pay-dem";
+  maximumStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
+  expectedStorageWrites: Readonly<Record<"buyer" | "seller", number>>;
+  safetyMarginWrites: Readonly<Record<"buyer" | "seller", number>>;
+  maximumStorageFeesDem: Readonly<Record<"buyer" | "seller", string>>;
+  safetyMarginDem: Readonly<Record<"buyer" | "seller", string>>;
+  minimumDem: Readonly<Record<"buyer" | "seller", string>>;
+  maximumTotalDemosDebitDem: string;
+}
+
 export interface DacsDemosBalanceHeadroomOptionsV1 {
   actors: Readonly<Record<"buyer" | "seller", Readonly<DacsDemosActorRuntimeV1>>>;
   minimumDem: Readonly<Record<"buyer" | "seller", string>>;
@@ -49,6 +92,70 @@ function osToDem(value: bigint): string {
   const whole = value / OS_PER_DEM;
   const fraction = (value % OS_PER_DEM).toString().padStart(9, "0").replace(/0+$/u, "");
   return fraction.length === 0 ? whole.toString() : `${whole}.${fraction}`;
+}
+
+/**
+ * Compute the Demos balance floor used to admit one generated fixed-price
+ * purchase. The pay-DEM rail ceiling already includes its native transfer and
+ * transfer fee; Storage Program evidence fees are separate and are added here.
+ *
+ * This is a conservative preflight estimate. The adapter independently
+ * enforces the confirmed fee ceiling for every Storage Program transaction.
+ */
+export function estimateDacsFixedPriceDemosCostV1(options: Readonly<{
+  rail: "x402" | "pay-dem";
+  maximumStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
+  maximumPayDemTotalDebitDem?: string;
+}>): Readonly<DacsFixedPriceDemosCostEstimateV1> {
+  if (!dataRecord(options) || (options.rail !== "x402" && options.rail !== "pay-dem")) {
+    throw new TypeError("fixed-price Demos cost options are invalid");
+  }
+  if (!dataRecord(options.maximumStorageWriteFeeDem)) {
+    throw new TypeError("fixed-price Demos write fee ceiling is invalid");
+  }
+  const buyerWriteFeeOs = demToOs(options.maximumStorageWriteFeeDem.buyer);
+  const sellerWriteFeeOs = demToOs(options.maximumStorageWriteFeeDem.seller);
+  if (buyerWriteFeeOs === undefined || sellerWriteFeeOs === undefined) {
+    throw new TypeError("fixed-price Demos write fee ceiling is invalid");
+  }
+  const payDemDebitOs = options.rail === "pay-dem"
+    ? demToOs(options.maximumPayDemTotalDebitDem)
+    : options.maximumPayDemTotalDebitDem === undefined ? 0n : undefined;
+  if (payDemDebitOs === undefined) {
+    throw new TypeError("fixed-price pay-DEM total debit ceiling is invalid");
+  }
+  const writes = DACS_FIXED_PRICE_PURCHASE_DEMOS_WRITE_BUDGET_V1;
+  const buyerStorageOs = buyerWriteFeeOs * BigInt(writes.buyer);
+  const sellerStorageOs = sellerWriteFeeOs * BigInt(writes.seller);
+  const buyerMarginOs = buyerWriteFeeOs * BigInt(writes.safetyMarginPerRole);
+  const sellerMarginOs = sellerWriteFeeOs * BigInt(writes.safetyMarginPerRole);
+  const buyerMinimumOs = buyerStorageOs + buyerMarginOs + payDemDebitOs;
+  const sellerMinimumOs = sellerStorageOs + sellerMarginOs;
+  return Object.freeze({
+    rail: options.rail,
+    maximumStorageWriteFeeDem: Object.freeze({
+      buyer: osToDem(buyerWriteFeeOs),
+      seller: osToDem(sellerWriteFeeOs),
+    }),
+    expectedStorageWrites: Object.freeze({ buyer: writes.buyer, seller: writes.seller }),
+    safetyMarginWrites: Object.freeze({
+      buyer: writes.safetyMarginPerRole,
+      seller: writes.safetyMarginPerRole,
+    }),
+    maximumStorageFeesDem: Object.freeze({
+      buyer: osToDem(buyerStorageOs),
+      seller: osToDem(sellerStorageOs),
+    }),
+    safetyMarginDem: Object.freeze({
+      buyer: osToDem(buyerMarginOs),
+      seller: osToDem(sellerMarginOs),
+    }),
+    minimumDem: Object.freeze({
+      buyer: osToDem(buyerMinimumOs),
+      seller: osToDem(sellerMinimumOs),
+    }),
+    maximumTotalDemosDebitDem: osToDem(buyerMinimumOs + sellerMinimumOs),
+  });
 }
 
 function decimalToUnits(value: unknown, decimals: number): bigint | undefined {

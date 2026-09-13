@@ -11,6 +11,7 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
 
 import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
+import type { ListingDraft } from "@kynesyslabs/dacs/artifacts";
 
 import {
   createDacsListingSetupExecutorV1,
@@ -196,6 +197,51 @@ describe("guarded Listing setup", () => {
     );
     expect(value.adapter.verifyDemosAnchorReceipt).toHaveBeenCalledTimes(1);
     expect(publishActive).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares a native DEM Listing without requiring any EVM configuration", async () => {
+    const value = fixture();
+    const sellerPayee = Buffer.from(value.seller.publicKey).toString("hex");
+    const draft = structuredClone(value.draft) as unknown as ListingDraft;
+    draft.listingId = "generated-live-service-pay-dem";
+    draft.pipeline[2] = {
+      kind: "pay-dem",
+      parameters: { rail: "demos-native:DEM" },
+    };
+    draft.pricing = { kind: "fixed", price: { amount: "1", currency: "DEM" } };
+    draft.acceptedRails = [{
+      railId: "demos-native:DEM",
+      railVersion: 1,
+      parameters: { network: "demos", payTo: sellerPayee },
+    }];
+    const rail = {
+      ...value.rail,
+      railId: "demos-native:DEM",
+      railType: "demos-native",
+      asset: { kind: "native-dem", symbol: "DEM", decimals: 9 },
+      network: { kind: "demos" },
+      phaseHandler: "pay-dem",
+    };
+    const prepared = await prepareDacsListingSetupV1({
+      draft,
+      buyerAuthority: value.buyerAuthority,
+      seller: value.seller as never,
+      sellerPublicEndpoint: RESOURCE,
+      sellerPayee,
+      demosNetwork: "demos:testnet",
+      rail: rail as never,
+      maximumServiceAmount: "2",
+      actionMaximumSpendDem: "2",
+      safetyMarginDem: "1",
+      maximumSpendDem: "10",
+      now: 1_000,
+    });
+    expect(prepared.listing).toMatchObject({
+      listingId: "generated-live-service-pay-dem",
+      pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
+      acceptedRails: [{ railId: "demos-native:DEM" }],
+    });
+    expect(prepared.plan.listingContentHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("enters durable reconciliation after an unauthenticated response boundary", async () => {

@@ -27,6 +27,7 @@ import type {
   DacsListingDiscoveryPublicationV1,
   DacsListingDiscoveryPublisherV1,
 } from "./listingSetup.js";
+import { dacsListingOfferGroupV1 } from "./listingOffer.js";
 
 const MAX_INDEX_BYTES = 1_048_576;
 const INDEX_FILE = "listings.json";
@@ -42,6 +43,8 @@ export interface DacsListingIndexEntryV1 {
   listingId: string;
   version: number;
   contentHash: string;
+  /** Non-authoritative grouping hint; the selected Listing is still verified. */
+  offerGroup?: string;
   anchor: Readonly<{ kind: "storage-program"; locator: string }>;
   summary: Readonly<{
     title: string;
@@ -210,6 +213,8 @@ function isIndexEntry(value: unknown): value is DacsListingIndexEntryV1 {
   return typeof entry.listingId === "string" && entry.listingId.length > 0 &&
     Number.isSafeInteger(entry.version) && (entry.version as number) > 0 &&
     typeof entry.contentHash === "string" && /^[0-9a-f]{64}$/.test(entry.contentHash) &&
+    (entry.offerGroup === undefined ||
+      typeof entry.offerGroup === "string" && /^[0-9a-f]{64}$/.test(entry.offerGroup)) &&
     anchor !== null && typeof anchor === "object" && !Array.isArray(anchor) &&
     anchor.kind === "storage-program" && typeof anchor.locator === "string" &&
     /^stor-[0-9a-f]{40}$/.test(anchor.locator) &&
@@ -262,6 +267,7 @@ Readonly<DacsListingIndexEntryV1> {
     listingId: listing.listingId,
     version: listing.listingVersion,
     contentHash: input.listingContentHash,
+    offerGroup: dacsListingOfferGroupV1(listing),
     anchor: Object.freeze({ kind: "storage-program" as const, locator: input.listingRef }),
     summary: Object.freeze({
       title: listing.offering.title,

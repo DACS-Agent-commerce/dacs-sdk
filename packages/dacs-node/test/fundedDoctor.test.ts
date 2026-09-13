@@ -84,6 +84,8 @@ function runtime(overrides: Partial<DacsDemosActorRuntimeV1["adapter"]> = {}):
       }),
       verifyDemosAnchorReceipt: async () => true,
       resolveDemosAnchorReceipt: async () => receipt(),
+      reconcileWalletJournal: async () => undefined,
+      reconcileNativeTransferJournal: async () => undefined,
       ...overrides,
     },
     signTransportEnvelope: async () => new Uint8Array(64),

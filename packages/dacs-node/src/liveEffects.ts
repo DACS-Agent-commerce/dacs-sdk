@@ -2,7 +2,7 @@ import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import type {
   FixedPriceX402CoordinatorRole,
   FixedPriceX402Track,
-  FixedPriceX402TrackOperation,
+  FixedPricePayDemTrackOperationInput,
   FixedPriceX402TrackOperationInput,
   FixedPriceX402TrackOperationResult,
 } from "@kynesyslabs/dacs/commerce";
@@ -32,6 +32,8 @@ export interface DacsLiveEffectFenceV1 {
    * can become externally observable.
    */
   assertCurrent(): Promise<void>;
+  /** Commit immutable public recovery coordinates under this exact generation. */
+  checkpoint(name: string, value: unknown): Promise<void>;
 }
 
 export interface DacsLiveEffectInvocationV1<Input> {
@@ -83,14 +85,23 @@ export interface DacsLiveEffectResultProjectionV1 {
   authenticationHash?: string;
 }
 
-export interface DacsLiveEffectTrackOptionsV1<Input, Result> {
+type DacsLiveEffectTrackOperationInputV1 =
+  | FixedPriceX402TrackOperationInput
+  | FixedPricePayDemTrackOperationInput;
+
+export interface DacsLiveEffectTrackOptionsV1<
+  Input,
+  Result,
+  OperationInput extends DacsLiveEffectTrackOperationInputV1 =
+    FixedPriceX402TrackOperationInput,
+> {
   database: DacsNodeSqliteDatabase;
   kind: DacsNodeSqliteEffectKind;
   role: FixedPriceX402CoordinatorRole;
   track: FixedPriceX402Track;
   workerId: string;
   buildInput(
-    input: Readonly<FixedPriceX402TrackOperationInput>,
+    input: Readonly<OperationInput>,
   ): Promise<Readonly<Input>> | Readonly<Input>;
   adapter: Readonly<DacsLiveEffectAdapterV1<Input, Result>>;
   projectResult(
@@ -218,8 +229,8 @@ function pending(
   return Object.freeze({ status, reasonCode: code, retryAt: at });
 }
 
-function effectFence<Input>(
-  input: Readonly<FixedPriceX402TrackOperationInput>,
+function effectFence(
+  input: Readonly<DacsLiveEffectTrackOperationInputV1>,
   database: DacsNodeSqliteDatabase,
   kind: DacsNodeSqliteEffectKind,
   lease: Readonly<DacsNodeSqliteEffectLease>,
@@ -234,6 +245,33 @@ function effectFence<Input>(
     bindingHash: coordinatorFence.localBindingHash,
     generation: lease.generation,
     async assertCurrent() {
+      await coordinatorFence.assertCurrent();
+      if (!database.isCurrentEffect({
+        kind,
+        effectId: coordinatorFence.idempotencyKey,
+        bindingHash: coordinatorFence.localBindingHash,
+        lease,
+      })) {
+        throw new DacsLiveEffectError("effect-fence-stale");
+      }
+    },
+    async checkpoint(name: string, value: unknown) {
+      await coordinatorFence.assertCurrent();
+      const written = database.recordEffectCheckpoint({
+        kind,
+        effectId: coordinatorFence.idempotencyKey,
+        bindingHash: coordinatorFence.localBindingHash,
+        lease,
+        name,
+        value,
+      });
+      if (written.status !== "recorded" && written.status !== "existing") {
+        throw new DacsLiveEffectError(
+          written.status === "conflict"
+            ? "effect-checkpoint-conflict"
+            : "effect-fence-stale",
+        );
+      }
       await coordinatorFence.assertCurrent();
       if (!database.isCurrentEffect({
         kind,
@@ -323,9 +361,16 @@ function capturedExecutionControl(
  * is reconciliation-only, and only an authoritative `absent` result restores
  * permission to execute the same deterministic effect identity.
  */
-export function createDacsLiveEffectTrackV1<Input, Result>(
-  options: Readonly<DacsLiveEffectTrackOptionsV1<Input, Result>>,
-): FixedPriceX402TrackOperation {
+export function createDacsLiveEffectTrackV1<
+  Input,
+  Result,
+  OperationInput extends DacsLiveEffectTrackOperationInputV1 =
+    FixedPriceX402TrackOperationInput,
+>(
+  options: Readonly<DacsLiveEffectTrackOptionsV1<Input, Result, OperationInput>>,
+): (
+  input: Readonly<OperationInput>,
+) => Promise<Readonly<FixedPriceX402TrackOperationResult>> {
   if (!plainDataObject(options) ||
       !text(options.workerId) ||
       (options.role !== "buyer" && options.role !== "seller") ||
@@ -453,7 +498,7 @@ export function createDacsLiveEffectTrackV1<Input, Result>(
       );
     }
 
-    const fence = effectFence<Input>(operationInput, database, kind, claim.lease);
+    const fence = effectFence(operationInput, database, kind, claim.lease);
     const invocation: Readonly<DacsLiveEffectInvocationV1<Input>> = Object.freeze({
       input: effectInput,
       fence,

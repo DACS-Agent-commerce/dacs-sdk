@@ -25,7 +25,14 @@ const packageDefinitions = Object.freeze([
     label: "host",
     name: "@kynesyslabs/dacs-node",
     directory: join(repoRoot, "packages", "dacs-node"),
-    requiredFiles: ["dist/index.js", "dist/index.d.ts", "dist/sqlite.js", "LICENSE"],
+    requiredFiles: [
+      "dist/index.js",
+      "dist/index.d.ts",
+      "dist/sqlite.js",
+      "dist/demosLoader.js",
+      "dist/demosLoaderHook.js",
+      "LICENSE",
+    ],
   }),
   Object.freeze({
     label: "generator",

@@ -292,6 +292,10 @@ async function authenticateState(
   order: Readonly<FixedPriceX402OrderRecord>,
 ): Promise<Readonly<SellerStateV1>> {
   const { context, rail } = options;
+  const evm = context.evm;
+  if (evm?.role !== "seller") {
+    throw new DacsFixedPriceX402SellerAuthorityError("seller-authority-binding-invalid");
+  }
   const provenance = getAuthenticatedRailProvenance(rail);
   const retained = loadRetained(context, order);
   const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
@@ -421,7 +425,7 @@ async function authenticateState(
       typeof asset !== "string" || !EVM_ADDRESS_RE.test(asset) ||
       typeof resourceBaseUrl !== "string" ||
       payTo.toLowerCase() !== payout[0]!.payeeAddress.toLowerCase() ||
-      payTo.toLowerCase() !== context.evm.address.toLowerCase() ||
+      payTo.toLowerCase() !== evm.address.toLowerCase() ||
       asset.toLowerCase() !== rail.asset.contract.toLowerCase() ||
       rail.network.kind !== "x402-resource" ||
       resourceBaseUrl !== rail.network.resourceBaseUrl ||
@@ -567,7 +571,7 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
   rawOptions: Readonly<DacsFixedPriceX402SellerAuthorityOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerAuthorityV1> {
   if (!plainObject(rawOptions) || !plainObject(rawOptions.context) ||
-      rawOptions.context.role !== "seller" || rawOptions.context.evm.role !== "seller" ||
+      rawOptions.context.role !== "seller" || rawOptions.context.evm?.role !== "seller" ||
       !isAuthenticatedRailDefinition(rawOptions.rail)) {
     throw new TypeError("fixed-price seller authority options are invalid");
   }
@@ -576,6 +580,10 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
     tokenDomain: tokenDomain(rawOptions.tokenDomain),
   });
   const { context, rail } = options;
+  const evm = context.evm;
+  if (evm?.role !== "seller") {
+    throw new TypeError("fixed-price seller authority options are invalid");
+  }
   const intakeRail = sellerIntakeRail(rail);
 
   const stateCache = new Map<string, Readonly<SellerStateV1>>();
@@ -771,8 +779,8 @@ export function createDacsFixedPriceX402SellerAuthorityV1(
       return payeePrimaryClaim === context.authority &&
           retainedIdentity?.role === "seller" &&
           canonicalize(candidate) === canonicalize(intakeRail) &&
-          payoutAddress.toLowerCase() === context.evm.address.toLowerCase()
-        ? { disposition: "bound" as const, address: context.evm.address, tier: 3 as const }
+          payoutAddress.toLowerCase() === evm.address.toLowerCase()
+        ? { disposition: "bound" as const, address: evm.address, tier: 3 as const }
         : { disposition: "mismatch" as const,
             reason: "payee-binding-mismatch", tier: 3 as const };
     },

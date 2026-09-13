@@ -3,14 +3,22 @@ import {
   isAuthenticatedRailDefinition,
 } from "@kynesyslabs/dacs";
 import {
+  captureFixedPricePayDemProtocolBinding,
+  createFixedPricePayDemBuyerCoordinator,
   captureFixedPriceX402ProtocolBinding,
   createFixedPriceX402BuyerCoordinator,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   type FixedPriceX402ProtocolBinding,
+  type FixedPricePayDemProtocolBinding,
 } from "@kynesyslabs/dacs/commerce";
 import { isListing } from "@kynesyslabs/dacs/artifacts";
 import {
@@ -19,20 +27,32 @@ import {
   listingAddress,
   sha256Hex,
 } from "@kynesyslabs/dacs/canonical";
-import { sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
+import {
+  canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
+} from "@kynesyslabs/dacs/identity";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 
 import {
   createDacsGuardedPurchasePlanV1,
+  createDacsGuardedPayDemPurchasePlanV1,
   type DacsGuardedExecutorV1,
   type DacsGuardedPurchasePlanV1,
 } from "./guardedCommands.js";
-import type { DacsX402ExistingListingAdmissionV1 } from "./listingDoctor.js";
-import { createDacsFixedPriceX402RoleOrderV1 } from "./liveOrder.js";
+import type {
+  DacsPayDemExistingListingAdmissionV1,
+  DacsX402ExistingListingAdmissionV1,
+} from "./listingDoctor.js";
+import {
+  createDacsFixedPricePayDemRoleOrderV1,
+  createDacsFixedPriceX402RoleOrderV1,
+} from "./liveOrder.js";
 import {
   loadDacsLiveOrderInputV1,
   putDacsLiveOrderInputV1,
 } from "./orderInput.js";
+import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
+  "./purchaseDemosBudget.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -45,6 +65,7 @@ export interface DacsPrepareX402PurchaseOptionsV1 {
   request: Readonly<Record<string, unknown>>;
   maximumServiceAmount: string;
   maximumNetworkFeeEth: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
   resume?: boolean;
 }
 
@@ -57,13 +78,36 @@ export interface DacsPreparedX402PurchaseV1 {
     listingContentHash: string;
     listingLogicalAddress: string;
     listing: Readonly<DacsX402ExistingListingAdmissionV1["listing"]>;
+    demosWriteFeeCeilings: Readonly<Record<"buyer" | "seller", string>>;
     requestHash: string;
     request: Readonly<Record<string, unknown>>;
   }>;
 }
 
+export interface DacsPreparePayDemPurchaseOptionsV1 {
+  admission: Readonly<DacsPayDemExistingListingAdmissionV1>;
+  jobId: string;
+  buyerAuthority: string;
+  payer: string;
+  request: Readonly<Record<string, unknown>>;
+  maximumServiceAmount: string;
+  maximumTotalDebitDem: string;
+  maximumDemosStorageWriteFeeDem: Readonly<Record<"buyer" | "seller", string>>;
+  resume?: boolean;
+}
+
+export interface DacsPreparedPayDemPurchaseV1 {
+  plan: Readonly<ReturnType<typeof createDacsGuardedPayDemPurchasePlanV1>>;
+  order: Readonly<ReturnType<typeof createDacsFixedPricePayDemRoleOrderV1>>;
+  application: DacsPreparedX402PurchaseV1["application"];
+}
+
+export type DacsPreparedLivePurchaseV1 =
+  | DacsPreparedX402PurchaseV1
+  | DacsPreparedPayDemPurchaseV1;
+
 export interface DacsPurchaseQueueExecutorOptionsV1 {
-  prepared: Readonly<DacsPreparedX402PurchaseV1>;
+  prepared: Readonly<DacsPreparedLivePurchaseV1>;
   database: DacsNodeSqliteDatabase;
   workerId: string;
 }
@@ -158,6 +202,64 @@ export function createDacsFixedPriceX402ProtocolBindingV1(
   }));
 }
 
+/** Convert an authenticated native DEM Listing into the exact coordinator pin. */
+export function createDacsFixedPricePayDemProtocolBindingV1(
+  admission: Readonly<DacsPayDemExistingListingAdmissionV1>,
+): Readonly<FixedPricePayDemProtocolBinding> {
+  if (admission === null || typeof admission !== "object" ||
+      !isAuthenticatedRailDefinition(admission.rail)) {
+    throw new TypeError("authenticated pay-dem Listing admission is invalid");
+  }
+  const provenance = getAuthenticatedRailProvenance(admission.rail);
+  const rail = admission.rail;
+  const seller = factString(admission, "seller");
+  const payee = factString(admission, "payee");
+  const listing = admission.listing;
+  const accepted = listing.acceptedRails?.find((candidate) =>
+    candidate.railId === rail.railId && candidate.railVersion === rail.railVersion);
+  if (provenance === null || !isListing(listing) ||
+      !/^stor-[0-9a-f]{40}$/.test(admission.listingRef) ||
+      contentHash(listing as unknown as Record<string, unknown>) !==
+        admission.listingContentHash ||
+      listingAddress(listing.seller.identity.presentedBy, listing.listingId,
+        listing.listingVersion) !== admission.logicalAddress ||
+      factString(admission, "listingRef") !== admission.listingRef ||
+      factString(admission, "logicalAddress") !== admission.logicalAddress ||
+      factString(admission, "listingContentHash") !== admission.listingContentHash ||
+      rail.railType !== "demos-native" || rail.phaseHandler !== "pay-dem" ||
+      rail.availability !== "live" || rail.asset.kind !== "native-dem" ||
+      rail.asset.symbol !== "DEM" || rail.asset.decimals !== 9 ||
+      rail.network.kind !== "demos" || factString(admission, "network") !== "demos" ||
+      rail.railId !== factString(admission, "railId") ||
+      rail.railVersion !== admission.facts.railVersion || accepted === undefined ||
+      accepted.parameters?.network !== "demos" || accepted.parameters?.payTo !== payee ||
+      !/^[0-9a-f]{64}$/.test(payee) || listing.pricing.kind !== "fixed" ||
+      listing.pricing.price.amount !== factString(admission, "amount") ||
+      listing.pricing.price.currency !== "DEM" || factString(admission, "asset") !== "DEM" ||
+      !sameCanonicalClaimIdentity(seller, listing.seller.identity.presentedBy)) {
+    throw new DacsPurchaseQueueError("purchase-protocol-binding-invalid");
+  }
+  return deepFreeze(captureFixedPricePayDemProtocolBinding({
+    commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+    standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+    phase: "pay-dem",
+    orchestratorTopology: "seller-as-phase-orchestrator-v1",
+    orchestrator: seller,
+    rail: {
+      registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+      registryIndexHash: provenance.indexContentHash,
+      railDefinitionRef: provenance.definitionRef.logicalAddress,
+      railDefinitionHash: provenance.definitionContentHash,
+      railId: rail.railId,
+      railVersion: rail.railVersion,
+      railType: "demos-native",
+      phaseHandler: "pay-dem",
+      network: "demos",
+      availability: "live",
+    },
+  }));
+}
+
 /** Build the exact immutable purchase intent displayed before consent. */
 export function prepareDacsX402PurchaseV1(
   options: Readonly<DacsPrepareX402PurchaseOptionsV1>,
@@ -207,6 +309,7 @@ export function prepareDacsX402PurchaseV1(
     maximumServiceAmount: options.maximumServiceAmount,
     estimatedNetworkFeeEth: "0",
     maximumNetworkFeeEth: options.maximumNetworkFeeEth,
+    maximumDemosStorageWriteFeeDem: options.maximumDemosStorageWriteFeeDem,
   });
   return deepFreeze({
     plan,
@@ -217,6 +320,71 @@ export function prepareDacsX402PurchaseV1(
       listingContentHash: admission.listingContentHash,
       listingLogicalAddress: admission.logicalAddress,
       listing: canonicalCopy(admission.listing),
+      demosWriteFeeCeilings: plan.demosCost.maximumStorageWriteFeeDem,
+      requestHash,
+      request,
+    },
+  });
+}
+
+/** Build a consent-bound native DEM order after the buyer selects that sibling. */
+export function prepareDacsPayDemPurchaseV1(
+  options: Readonly<DacsPreparePayDemPurchaseOptionsV1>,
+): Readonly<DacsPreparedPayDemPurchaseV1> {
+  const payerKey = canonicalDemosAgentPublicKey(options?.buyerAuthority);
+  if (options === null || typeof options !== "object" ||
+      !isCanonicalJobId(options.jobId) || payerKey === null ||
+      Buffer.from(payerKey).toString("hex") !== options.payer ||
+      options.request === null || typeof options.request !== "object" ||
+      Array.isArray(options.request) ||
+      (options.resume !== undefined && typeof options.resume !== "boolean")) {
+    throw new TypeError("pay-dem purchase preparation options are invalid");
+  }
+  let request: Readonly<Record<string, unknown>>;
+  try {
+    request = deepFreeze(canonicalCopy(options.request));
+  } catch {
+    throw new DacsPurchaseQueueError("purchase-request-not-canonical");
+  }
+  const admission = options.admission;
+  const protocol = createDacsFixedPricePayDemProtocolBindingV1(admission);
+  const seller = factString(admission, "seller");
+  const payee = factString(admission, "payee");
+  const amount = factString(admission, "amount");
+  const requestHash = sha256Hex(canonicalize(request));
+  const order = createDacsFixedPricePayDemRoleOrderV1({
+    role: "buyer",
+    jobId: options.jobId,
+    buyer: options.buyerAuthority,
+    seller,
+    protocol,
+  });
+  const plan = createDacsGuardedPayDemPurchasePlanV1({
+    effectId: `purchase:${options.jobId}:${requestHash}`,
+    jobId: options.jobId,
+    resume: options.resume,
+    listingRef: admission.listingRef,
+    requestHash,
+    buyerAuthority: options.buyerAuthority,
+    sellerAuthority: seller,
+    payer: options.payer,
+    payee,
+    railId: admission.rail.railId,
+    serviceAmount: amount,
+    maximumServiceAmount: options.maximumServiceAmount,
+    maximumTotalDebitDem: options.maximumTotalDebitDem,
+    maximumDemosStorageWriteFeeDem: options.maximumDemosStorageWriteFeeDem,
+  });
+  return deepFreeze({
+    plan,
+    order,
+    application: {
+      applicationVersion: "1" as const,
+      listingRef: admission.listingRef,
+      listingContentHash: admission.listingContentHash,
+      listingLogicalAddress: admission.logicalAddress,
+      listing: canonicalCopy(admission.listing),
+      demosWriteFeeCeilings: plan.demosCost.maximumStorageWriteFeeDem,
       requestHash,
       request,
     },
@@ -238,44 +406,69 @@ export function createDacsPurchaseQueueExecutorV1(
     throw new TypeError("purchase queue executor options are invalid");
   }
   const prepared = deepFreeze(canonicalCopy(options.prepared)) as
-    Readonly<DacsPreparedX402PurchaseV1>;
+    Readonly<DacsPreparedLivePurchaseV1>;
   const expectedPlan = canonicalize(prepared.plan);
-  if (prepared.plan.kind !== "purchase" || prepared.order.sdkJobs.role !== "buyer" ||
+  const payDem = prepared.order.protocol.phase === "pay-dem";
+  const expectedPlanKind = payDem ? "purchase-pay-dem" : "purchase";
+  if (prepared.plan.kind !== expectedPlanKind ||
+      prepared.order.sdkJobs.role !== "buyer" ||
       prepared.plan.jobId !== prepared.order.jobId ||
       prepared.plan.buyerAuthority !== prepared.order.buyer ||
       prepared.plan.sellerAuthority !== prepared.order.seller ||
       prepared.application.requestHash !== prepared.plan.requestHash ||
+      canonicalize(prepared.application.demosWriteFeeCeilings) !==
+        canonicalize(prepared.plan.demosCost.maximumStorageWriteFeeDem) ||
       sha256Hex(canonicalize(prepared.application.request)) !== prepared.plan.requestHash) {
     throw new TypeError("prepared purchase queue input is inconsistent");
   }
 
   return async ({ plan, fence }) => {
-    if (plan.kind !== "purchase" || canonicalize(plan) !== expectedPlan) {
+    if (plan.kind !== expectedPlanKind || canonicalize(plan) !== expectedPlan) {
       return Object.freeze({ status: "operator-action" as const,
         reasonCode: "purchase-queue-plan-mismatch" });
     }
     try {
       await fence.assertCurrent();
-      const coordinator = createFixedPriceX402BuyerCoordinator({
-        store: options.database.createLiveCoordinatorStore("buyer"),
-        workerId: options.workerId,
-        operations: {},
-      });
+      const coordinator = payDem
+        ? createFixedPricePayDemBuyerCoordinator({
+            store: options.database.createPayDemCoordinatorStore("buyer"),
+            workerId: options.workerId,
+            operations: {},
+          })
+        : createFixedPriceX402BuyerCoordinator({
+            store: options.database.createLiveCoordinatorStore("buyer"),
+            workerId: options.workerId,
+            operations: {},
+          });
       if (prepared.plan.resume) {
         const [existingOrder, existingInput] = await Promise.all([
           coordinator.getOrderStatus(prepared.order.jobId),
-          Promise.resolve(loadDacsLiveOrderInputV1({
-            database: options.database,
-            order: prepared.order,
-          })),
+          Promise.resolve(payDem
+            ? loadDacsLiveOrderInputV1({
+                database: options.database,
+                order: prepared.order as DacsPreparedPayDemPurchaseV1["order"],
+              })
+            : loadDacsLiveOrderInputV1({
+                database: options.database,
+                order: prepared.order as DacsPreparedX402PurchaseV1["order"],
+              })),
         ]);
         if (existingOrder === null || existingInput === undefined) {
           return Object.freeze({ status: "operator-action" as const,
             reasonCode: "purchase-resume-target-missing" });
         }
-        if (existingOrder.bindingHash !== fixedPriceX402OrderBindingHash(prepared.order) ||
-            existingOrder.localBindingHash !==
-              fixedPriceX402OrderLocalBindingHash(prepared.order) ||
+        const bindingHash = payDem
+          ? fixedPricePayDemOrderBindingHash(prepared.order as
+              DacsPreparedPayDemPurchaseV1["order"])
+          : fixedPriceX402OrderBindingHash(prepared.order as
+              DacsPreparedX402PurchaseV1["order"]);
+        const localBindingHash = payDem
+          ? fixedPricePayDemOrderLocalBindingHash(prepared.order as
+              DacsPreparedPayDemPurchaseV1["order"])
+          : fixedPriceX402OrderLocalBindingHash(prepared.order as
+              DacsPreparedX402PurchaseV1["order"]);
+        if (existingOrder.bindingHash !== bindingHash ||
+            existingOrder.localBindingHash !== localBindingHash ||
             canonicalize(existingInput.application) !== canonicalize(prepared.application)) {
           return Object.freeze({ status: "operator-action" as const,
             reasonCode: "purchase-resume-binding-mismatch" });
@@ -291,8 +484,19 @@ export function createDacsPurchaseQueueExecutorV1(
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "purchase-order-input-conflict" });
       }
+      retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+        database: options.database,
+        jobId: prepared.order.jobId,
+        role: "buyer",
+        authority: prepared.order.buyer,
+        maximumPerWriteFeeDem: prepared.application.demosWriteFeeCeilings.buyer,
+      });
       await fence.assertCurrent();
-      const status = await coordinator.startOrder(prepared.order);
+      const status = payDem
+        ? await (coordinator as ReturnType<typeof createFixedPricePayDemBuyerCoordinator>)
+            .startOrder(prepared.order as DacsPreparedPayDemPurchaseV1["order"])
+        : await (coordinator as ReturnType<typeof createFixedPriceX402BuyerCoordinator>)
+            .startOrder(prepared.order as DacsPreparedX402PurchaseV1["order"]);
       await fence.assertCurrent();
       const result = Object.freeze({
         jobId: status.jobId,

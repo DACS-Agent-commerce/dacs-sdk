@@ -1,13 +1,19 @@
 import {
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  fixedPricePayDemOrderBindingHash,
+  fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
 } from "@kynesyslabs/dacs/commerce";
 import { describe, expect, it } from "vitest";
 
 import {
+  createDacsFixedPricePayDemOrderPairV1,
   createDacsFixedPriceX402OrderPairV1,
   createDacsFixedPriceX402RoleOrderV1,
 } from "../src/liveOrder.js";
@@ -33,6 +39,28 @@ function protocol() {
       railType: "x402" as const,
       phaseHandler: "pay-x402" as const,
       network: "eip155:84532" as const,
+      availability: "live" as const,
+    },
+  };
+}
+
+function payDemProtocol() {
+  return {
+    commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+    standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+    phase: "pay-dem" as const,
+    orchestratorTopology: "seller-as-phase-orchestrator-v1" as const,
+    orchestrator: SELLER,
+    rail: {
+      registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+      registryIndexHash: "3".repeat(64),
+      railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+      railDefinitionHash: "4".repeat(64),
+      railId: "demos-native:DEM",
+      railVersion: 1,
+      railType: "demos-native" as const,
+      phaseHandler: "pay-dem" as const,
+      network: "demos" as const,
       availability: "live" as const,
     },
   };
@@ -92,5 +120,25 @@ describe("fixed-price x402 live order construction", () => {
       seller: SELLER,
       protocol: protocol(),
     })).toThrow("fixed-price x402 role order is invalid");
+  });
+});
+
+describe("fixed-price native DEM live order construction", () => {
+  it("builds distinct role-local views with one shared native rail binding", () => {
+    const pair = createDacsFixedPricePayDemOrderPairV1({
+      jobId: JOB_ID,
+      buyer: BUYER,
+      seller: SELLER,
+      protocol: payDemProtocol(),
+    });
+
+    expect(pair.buyer.protocol.phase).toBe("pay-dem");
+    expect(pair.buyer.sdkJobs.role).toBe("buyer");
+    expect(pair.seller.sdkJobs.role).toBe("seller");
+    expect(pair.bindingHash).toBe(fixedPricePayDemOrderBindingHash(pair.buyer));
+    expect(pair.bindingHash).toBe(fixedPricePayDemOrderBindingHash(pair.seller));
+    expect(pair.buyerLocalBindingHash).toBe(fixedPricePayDemOrderLocalBindingHash(pair.buyer));
+    expect(pair.sellerLocalBindingHash).toBe(fixedPricePayDemOrderLocalBindingHash(pair.seller));
+    expect(pair.buyerLocalBindingHash).not.toBe(pair.sellerLocalBindingHash);
   });
 });
