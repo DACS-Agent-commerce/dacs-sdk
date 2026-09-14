@@ -16,6 +16,11 @@ ahead of the repository-wide conformance pin.
 - `rail-availability-selection-v0.1.json` — commit
   `662be1d4899a2cadf327fe2d5523e93a80334e5f`; DACS-4 §9.4.4
   RAV-R1/R2/R3/R5 and DACS-1 §6.3.4 LRR-6.
+- `channel-message-replay-v0.1.json` — DACS-3 §8.3.3 and CH-6;
+  commit `332ba4d620930cc22b79fffa3f74440ebf0df5ca`; file SHA-256
+  `ce43b226e358e15cb126b4b7d53b8638648c14ca55250eb57e6db68e451ba13f`.
+  Its historical raw-digest/hex signature conflict with current §8.5.1/SIG-6
+  and Demos L2PS is tracked upstream in DACS-Standard#349.
 - `domain-claim-gcr-v0.4.json` — DACS-1 DCR-1..DCR-8 and DACS-2
   DGCR-1..DGCR-6; commit
   `5c175d148932c8a3635e54a15f1db2f31f67a500` (Standard PR #346),
