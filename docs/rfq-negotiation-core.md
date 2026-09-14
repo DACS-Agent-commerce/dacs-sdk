@@ -83,17 +83,67 @@ if (advanced.decision === "pass") {
 }
 ```
 
-Persist a passing transition and its new `lastSequence` atomically. The
-sender-controlled `sentAt` field never extends the per-turn timeout.
+Persist a passing transition, `lastSequence`, and `lastMessageHash` atomically.
+The latter is the canonical hash of the last authenticated unsigned channel
+envelope and becomes the agreement's transcript hook. The sender-controlled
+`sentAt` field never extends the per-turn timeout.
 
 `rfqSessionCheckpointHash()` supplies a stable content key for a validated
 checkpoint. It is not a MAC or signature and does not replace keyed local-store
 authenticity.
 
+## Finalizing and committing an accepted agreement
+
+`deriveRfqAgreement()` accepts only a validated `accepted` checkpoint and the
+same exact verified Listing and post-Vet party bundles. It derives the price and
+metered quantity exclusively from the accepted proposal, binds
+`derivedFromChannel` to the admitted channel ID and `lastMessageHash`, and
+builds the Listing-selected `AgreementDocument` or
+`PayeeBoundAgreementDocument`.
+
+`signRfqAgreement()` collects the required buyer and seller signatures over the
+normative agreement domain. `commitRfqAgreement()` then verifies both party
+signatures, rebinds the agreement to the accepted checkpoint and authenticated
+commitment session, and uses the common SR-2 finality commitment engine. It
+returns success only after an authenticated finalized receipt and the
+receipt-time deadline/Listing-validity checks.
+
+```ts
+const draft = deriveRfqAgreement({
+  session: acceptedState,
+  verifiedListing,
+  buyer,
+  seller,
+  selectedRail,
+  payoutBindings,
+  generatedAt: Date.now(),
+});
+
+const agreement = await signRfqAgreement(
+  draft,
+  buyerAgreementSigner,
+  sellerAgreementSigner,
+);
+
+const committed = await commitRfqAgreement(
+  {
+    agreement,
+    verifiedListing,
+    rfqSession: acceptedState,
+    session: authenticatedCommitmentSession,
+    createdAt: Date.now(),
+    commitmentSigner: orchestratorSigner,
+  },
+  finalityProvider,
+  verifySignature,
+);
+```
+
 ## Current boundary
 
-An `accepted` state supplies the exact co-signed-channel proposal for the next
-RFQ step. Agreement construction, detached buyer/seller agreement signatures,
-SR-2 agreement commitment, optional consented encrypted transcript anchoring,
-and the live Demos L2PS adapter are separate layers. Until those layers land,
-this API is an RFQ core rather than a complete `negotiate-rfq` phase handler.
+Optional all-party-consented encrypted transcript anchoring and the live Demos
+L2PS adapter remain separate layers. Until those land, the SDK supplies the
+complete transport-neutral RFQ agreement/commitment core but not a complete
+live `negotiate-rfq` phase handler. DACS-Standard#349 must resolve the current
+channel signature-framing conflict before the adapter can safely choose a wire
+format.

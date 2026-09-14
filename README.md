@@ -46,7 +46,7 @@ and readers must use `ComponentSignedArtifact`,
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` | end-to-end fixed-price; transport-neutral RFQ core |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` | end-to-end fixed-price; transport-neutral RFQ agreement/commitment core |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -128,9 +128,11 @@ injection contract.
 
 The transport-neutral RFQ core performs authenticated channel admission,
 durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
-and restart-safe state transitions. It is not yet a complete live Demos L2PS
-phase handler; see the [RFQ negotiation core guide](./docs/rfq-negotiation-core.md)
-for that boundary and the upstream signature-format dependency.
+restart-safe state transitions, exact accepted-term agreement derivation,
+buyer/seller co-signing, and finalized SR-2 commitment. It is not yet a
+complete live Demos L2PS phase handler; see the
+[RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
+and the upstream signature-format dependency.
 
 `partyVetCore` evaluates DACS-1 presence-only members directly against the
 exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
