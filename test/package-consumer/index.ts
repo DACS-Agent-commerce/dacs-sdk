@@ -23,11 +23,19 @@ import {
   type AuthenticatedRatingResolution,
   type RatingRecord,
   type RatingPublicationEffectStore,
+  type RatingPhasePlan,
+  type RatingPhaseReadyHandoff,
+  type FencedSessionStoreV2,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
   isRatingRecord,
   publishRatingRecordDurably,
+  createRatingPhasePlan,
+  completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
   deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
@@ -94,6 +102,17 @@ const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRec
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
 const durableRatingPublisher: typeof publishRatingRecordDurably =
   publishRatingRecordDurably;
+const ratingPhasePlanner: typeof createRatingPhasePlan = createRatingPhasePlan;
+const ratingPhaseCompleter: typeof completeRatingPhase = completeRatingPhase;
+const ratingHandoffCapturer: typeof captureRatingPhaseReadyHandoff =
+  captureRatingPhaseReadyHandoff;
+const durableRatingHandoffWriter: typeof persistRatingPhaseHandoffDurably =
+  persistRatingPhaseHandoffDurably;
+const durableRatingHandoffReader: typeof recoverRatingPhaseHandoff =
+  recoverRatingPhaseHandoff;
+declare const ratingPhasePlan: RatingPhasePlan;
+declare const ratingPhaseHandoff: RatingPhaseReadyHandoff;
+declare const fencedSessionStore: FencedSessionStoreV2;
 const validatedReputationDeriver: typeof deriveReputationWithValidation =
   deriveReputationWithValidation;
 declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
@@ -132,6 +151,21 @@ void priceBand;
 void priceAccepted;
 void canonical;
 void fulfilment;
+void ratingValidator;
+void buyerRatingProducer;
+void sellerRatingProducer;
+void durableRatingPublisher;
+void ratingPhasePlanner;
+void ratingPhaseCompleter;
+void ratingHandoffCapturer;
+void durableRatingHandoffWriter;
+void durableRatingHandoffReader;
+void ratingPhasePlan;
+void ratingPhaseHandoff;
+void fencedSessionStore;
+void validatedReputationDeriver;
+void validatedReputationDeps;
+void ratingEffectStore;
 void qualify(qualificationInput, qualificationDeps);
 void qualificationMember;
 void qualificationRequirement;

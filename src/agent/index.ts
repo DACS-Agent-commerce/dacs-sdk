@@ -420,6 +420,36 @@ export {
   type RatingPublicationEffectWrite,
 } from "./durableRatingPublication.js";
 export {
+  createRatingPhasePlan,
+  completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
+  type RatingPartyRole,
+  type RatingPhaseParty,
+  type RatingPhasePriorResult,
+  type RatingPhaseAuthorityInput,
+  type RatingPhaseAuthenticationVerdict,
+  type CreateRatingPhasePlanDeps,
+  type RatingPhasePlan,
+  type RatingPhaseSubmission,
+  type RatingPhaseCompletedEntry,
+  type RatingPhaseRoleResult,
+  type RatingPhaseReadyHandoff,
+  type RatingPhaseCompletion,
+  type CompleteRatingPhaseDeps,
+} from "./ratingPhase.js";
+export {
+  RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
+  type RatingPhaseHandoffAuthenticationInput,
+  type AuthenticateRatingPhaseHandoff,
+  type PersistRatingPhaseHandoffDeps,
+  type RecoverRatingPhaseHandoffDeps,
+  type RatingPhaseHandoffStage,
+  type PersistRatingPhaseHandoffResult,
+  type RecoverRatingPhaseHandoffResult,
+} from "./durableRatingPhaseHandoff.js";
+export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,
   createTerminalBundlePlan,
