@@ -42,6 +42,10 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
+  advanceLiquidityTankSettlement,
+  createLiquidityTankIntent,
+  type LiquidityTankAdapter,
+  type LiquidityTankStore,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -75,6 +79,8 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
+const tankIntent: typeof createLiquidityTankIntent = createLiquidityTankIntent;
 const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
 const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
@@ -120,6 +126,8 @@ const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const tankAdapter: LiquidityTankAdapter;
+declare const tankStore: LiquidityTankStore;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
 declare const qualificationMember: ClaimQualificationRequirement;
@@ -167,6 +175,10 @@ void buildEvidenceBound;
 void adapter;
 void journal;
 void result;
+void tankAdvance;
+void tankIntent;
+void tankAdapter;
+void tankStore;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;
