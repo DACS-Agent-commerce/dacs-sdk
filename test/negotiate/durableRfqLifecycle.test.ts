@@ -19,6 +19,7 @@ import {
   type AttestationRef,
   type ChannelMessageSignatureVerificationInput,
   type DurableRfqLifecycleClient,
+  type DurableRfqLifecycleStore,
   type DurableRfqLifecycleTransport,
   type IdentityBundle,
   type Listing,
@@ -239,6 +240,51 @@ async function deliver(
 }
 
 describe("durable two-agent RFQ lifecycle", () => {
+  test("fails closed as indeterminate when its durable store is unavailable", async () => {
+    const unavailableStore: DurableRfqLifecycleStore<string> = {
+      load() {
+        throw new Error("database offline");
+      },
+      create() {
+        throw new Error("database offline");
+      },
+      compareAndSwap() {
+        throw new Error("database offline");
+      },
+    };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store: unavailableStore,
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+
+    await expect(client.open(openInput())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "RFQ lifecycle store create failed",
+    });
+    await expect(
+      client.sendOffer(JOB_ID, {
+        rfqProposalVersion: "1",
+        price: { amount: "9", currency: "USDC" },
+      }),
+    ).resolves.toEqual({
+      status: "indeterminate",
+      reason: "RFQ lifecycle store load failed",
+    });
+    await expect(client.getStatus(JOB_ID)).resolves.toEqual({
+      status: "unavailable",
+      reason: "RFQ lifecycle store load failed",
+    });
+    expect(network.pending(SELLER)).toBe(0);
+  });
+
   test("negotiates, replays safely, and produces the same dual-signed agreement", async () => {
     const network = createInMemoryRfqLifecycleNetwork<string>();
     const { buyerClient, sellerClient } = clients(network.transport);

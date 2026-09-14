@@ -137,6 +137,12 @@ a complete live Demos L2PS phase handler; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream signature-format dependency.
 
+`createFsDurableRfqLifecycleStore()` provides the single-host production
+restart boundary for one RFQ role: keyed record authentication, strict local
+permissions, synchronized atomic writes, cross-process locking, and monotonic
+compare-and-swap validation. Buyer and seller require separate directories and
+separate integrity keys; the in-memory RFQ store remains test-only.
+
 `partyVetCore` evaluates DACS-1 presence-only members directly against the
 exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
 not resolve an optional `verifiedBy` merely to prove presence. Mixed

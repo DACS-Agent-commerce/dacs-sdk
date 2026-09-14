@@ -148,6 +148,27 @@ returns that detached contribution. Both roles end with the same finalized
 Agreement; the buyer-side orchestrator then passes it and the exact accepted
 checkpoint to `commitRfqAgreement()`.
 
+For a single-host production process, create the role-local authenticated
+filesystem store before constructing the lifecycle client:
+
+```ts
+const store = await createFsDurableRfqLifecycleStore({
+  dir: "/var/lib/dacs/buyer/rfq",
+  role: "buyer",
+  integrityKey: roleLocalSecretWithAtLeast32RandomBytes,
+});
+```
+
+The directory must be absolute, local to one role, owned by the current user,
+and mode `0700`; existing unsafe permissions are rejected rather than silently
+changed. Record files are mode `0600`, authenticated with HMAC-SHA-256, written
+with filesystem synchronization and guarded by cross-process compare-and-swap
+locks. Keep the integrity key outside the directory and never share either the
+directory or key between buyer and seller. Wrong keys, modified records,
+symbolic-link substitution, rollback attempts, and non-append-only history fail
+closed. Use a backend with equivalent keyed authenticity, exclusive creation,
+atomic compare-and-swap, and generation fencing when multiple hosts can write.
+
 `createInMemoryRfqLifecycleNetwork()` and
 `createInMemoryDurableRfqLifecycleStore()` are deterministic local/test
 implementations. The in-memory store is not a production authenticity or
