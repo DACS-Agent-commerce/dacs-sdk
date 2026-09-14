@@ -27,7 +27,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, bundled live AP2 and Solana wallet/RPC integrations, and dispute execution (DACS-X) remain deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. Cross-chain settlement, bundled live AP2 and Solana wallet/RPC integrations, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
@@ -46,7 +46,7 @@ and readers must use `ComponentSignedArtifact`,
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` | fixed-price |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` | end-to-end fixed-price; transport-neutral RFQ core |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -125,6 +125,12 @@ filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
+
+The transport-neutral RFQ core performs authenticated channel admission,
+durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
+and restart-safe state transitions. It is not yet a complete live Demos L2PS
+phase handler; see the [RFQ negotiation core guide](./docs/rfq-negotiation-core.md)
+for that boundary and the upstream signature-format dependency.
 
 `partyVetCore` evaluates DACS-1 presence-only members directly against the
 exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
