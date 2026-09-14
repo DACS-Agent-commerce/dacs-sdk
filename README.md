@@ -46,7 +46,7 @@ and readers must use `ComponentSignedArtifact`,
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` | end-to-end fixed-price; transport-neutral RFQ agreement/commitment core |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment and transcript-policy core |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -129,8 +129,10 @@ injection contract.
 The transport-neutral RFQ core performs authenticated channel admission,
 durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
 restart-safe state transitions, exact accepted-term agreement derivation,
-buyer/seller co-signing, and finalized SR-2 commitment. It is not yet a
-complete live Demos L2PS phase handler; see the
+buyer/seller co-signing, finalized SR-2 commitment, complete private-transcript
+reverification, and fail-closed Listing disclosure policy. It does not invent
+the still-undefined encrypted transcript wire and is not yet a complete live
+Demos L2PS phase handler; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream signature-format dependency.
 
