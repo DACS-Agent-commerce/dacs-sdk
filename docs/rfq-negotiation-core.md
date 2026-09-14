@@ -1,8 +1,9 @@
 # RFQ negotiation core
 
-The RFQ core implements the transport-neutral DACS-3 channel admission and
-bounded turn state machine. It does not open a Demos L2PS subnet, persist state,
-or anchor the final agreement for the application.
+The RFQ core implements transport-neutral DACS-3 channel admission, the bounded
+turn state machine, a role-separated durable lifecycle, Agreement co-signing,
+and the finalized commitment handoff. It does not open a Demos L2PS subnet or
+choose the unresolved Demos channel-signature wire for the application.
 
 ## Opening a session
 
@@ -83,17 +84,163 @@ if (advanced.decision === "pass") {
 }
 ```
 
-Persist a passing transition and its new `lastSequence` atomically. The
-sender-controlled `sentAt` field never extends the per-turn timeout.
+Persist a passing transition, `lastSequence`, and `lastMessageHash` atomically.
+The latter is the canonical hash of the last authenticated unsigned channel
+envelope and becomes the agreement's transcript hook. The sender-controlled
+`sentAt` field never extends the per-turn timeout.
 
 `rfqSessionCheckpointHash()` supplies a stable content key for a validated
 checkpoint. It is not a MAC or signature and does not replace keyed local-store
 authenticity.
 
+## Running a durable buyer or seller
+
+`createDurableRfqLifecycleClient()` owns the restart/replay boundary around the
+pure reducer. Buyer and seller clients use separate stores and separate
+agreement signers. Each exact signed turn or detached Agreement contribution
+is added to a role-local outbox in the same compare-and-swap transition as its
+new local state, before transport publication.
+
+The injected store MUST authenticate persisted bytes and isolate role
+authority. The injected transport returns `acknowledged` only after the exact
+packet is durably accepted by the confidential member transport. If publish is
+ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
+redrive only an authenticated `absent` result. A permanent transport rejection
+or trusted-clock timeout is retained as a terminal lifecycle failure.
+
+```ts
+const buyerRfq = createDurableRfqLifecycleClient({
+  role: "buyer",
+  store: buyerAuthenticatedStore,
+  transport: privateMemberTransport,
+  reserveChannelId,
+  signChannelMessage: buyerChannelSigner,
+  verifyChannelMessage,
+  agreementSigner: buyerAgreementSigner,
+  verifyAgreementContribution,
+  nowMs: trustedClock,
+});
+
+await buyerRfq.open({
+  jobId,
+  verifiedListing,
+  buyer,
+  seller,
+  channelId,
+  selectedRail,
+  payoutBindings,
+});
+
+await buyerRfq.sendOffer(jobId, proposal);
+await buyerRfq.receive(authenticatedCounterpartyPacket);
+await buyerRfq.sendAccept(jobId);
+await buyerRfq.startAgreement(jobId);
+
+// Call this after restart, before creating any new outbound effect.
+await buyerRfq.resumeOutbox(jobId);
+```
+
+The seller uses the same factory with `role: "seller"`, its own store and its
+own signers. Receiving the buyer's valid Agreement proposal re-derives the
+expected draft from the seller's accepted checkpoint, rejects substituted
+terms, creates only the seller contribution, verifies both signatures, and
+returns that detached contribution. Both roles end with the same finalized
+Agreement; the buyer-side orchestrator then passes it and the exact accepted
+checkpoint to `commitRfqAgreement()`.
+
+For a single-host production process, create the role-local authenticated
+filesystem store before constructing the lifecycle client:
+
+```ts
+const store = await createFsDurableRfqLifecycleStore({
+  dir: "/var/lib/dacs/buyer/rfq",
+  role: "buyer",
+  integrityKey: roleLocalSecretWithAtLeast32RandomBytes,
+});
+```
+
+The directory must be absolute, local to one role, owned by the current user,
+and mode `0700`; existing unsafe permissions are rejected rather than silently
+changed. Record files are mode `0600`, authenticated with HMAC-SHA-256, written
+with filesystem synchronization and guarded by cross-process compare-and-swap
+locks. Keep the integrity key outside the directory and never share either the
+directory or key between buyer and seller. Wrong keys, modified records,
+symbolic-link substitution, rollback attempts, and non-append-only history fail
+closed. Use a backend with equivalent keyed authenticity, exclusive creation,
+atomic compare-and-swap, and generation fencing when multiple hosts can write.
+
+`createInMemoryRfqLifecycleNetwork()` and
+`createInMemoryDurableRfqLifecycleStore()` are deterministic local/test
+implementations. The in-memory store is not a production authenticity or
+restart boundary.
+
+## Finalizing and committing an accepted agreement
+
+`deriveRfqAgreement()` accepts only a validated `accepted` checkpoint and the
+same exact verified Listing and post-Vet party bundles. It derives the price and
+metered quantity exclusively from the accepted proposal, binds
+`derivedFromChannel` to the admitted channel ID and `lastMessageHash`, and
+builds the Listing-selected `AgreementDocument` or
+`PayeeBoundAgreementDocument`.
+
+`signRfqAgreement()` collects the required buyer and seller signatures over the
+normative agreement domain. `commitRfqAgreement()` then verifies both party
+signatures, rebinds the agreement to the accepted checkpoint and authenticated
+commitment session, and uses the common SR-2 finality commitment engine. It
+returns success only after an authenticated finalized receipt and the
+receipt-time deadline/Listing-validity checks.
+
+```ts
+const draft = deriveRfqAgreement({
+  session: acceptedState,
+  verifiedListing,
+  buyer,
+  seller,
+  selectedRail,
+  payoutBindings,
+  generatedAt: Date.now(),
+});
+
+const agreement = await signRfqAgreement(
+  draft,
+  buyerAgreementSigner,
+  sellerAgreementSigner,
+);
+
+const committed = await commitRfqAgreement(
+  {
+    agreement,
+    verifiedListing,
+    rfqSession: acceptedState,
+    session: authenticatedCommitmentSession,
+    createdAt: Date.now(),
+    commitmentSigner: orchestratorSigner,
+  },
+  finalityProvider,
+  verifySignature,
+);
+```
+
 ## Current boundary
 
-An `accepted` state supplies the exact co-signed-channel proposal for the next
-RFQ step. Agreement construction, detached buyer/seller agreement signatures,
-SR-2 agreement commitment, optional consented encrypted transcript anchoring,
-and the live Demos L2PS adapter are separate layers. Until those layers land,
-this API is an RFQ core rather than a complete `negotiate-rfq` phase handler.
+`prepareRfqTranscript()` re-verifies the complete ordered private message set,
+member turns, proposal bounds, exact acceptance and final-message hook against
+the accepted session and signed Agreement. `planRfqTranscriptDisclosure()`
+then applies the Listing policy and permits encrypted publication only when
+every member's injected consent verifier returns `pass`. The default `none`
+policy never invokes the verifier and retains the transcript privately;
+recommended publication may be omitted, while required publication fails
+closed.
+
+The SDK does not yet invent a ciphertext or transcript-signature wire format.
+DACS-Standard#351 tracks the missing normative `TranscriptSignature`, consent,
+encryption-envelope, SR-2 address and receipt-binding definitions. Once that is
+resolved, the verified transcript and disclosure plan can feed the conforming
+encrypted publisher.
+
+The live Demos L2PS adapter also remains separate. Until it lands, the SDK
+supplies the complete transport-neutral, durable buyer/seller RFQ lifecycle,
+agreement/commitment and transcript-policy core but not a complete live
+`negotiate-rfq` phase handler.
+DACS-Standard#349 must resolve the current channel signature-framing conflict
+before the adapter can safely choose a normative wire format.
