@@ -20,11 +20,14 @@ import {
   type AuthenticatedRatingResolution,
   type RatingRecord,
   type RatingPublicationEffectStore,
+  type RatingPhasePlan,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
   isRatingRecord,
   publishRatingRecordDurably,
+  createRatingPhasePlan,
+  completeRatingPhase,
   deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
@@ -72,6 +75,9 @@ const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRec
 const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
 const durableRatingPublisher: typeof publishRatingRecordDurably =
   publishRatingRecordDurably;
+const ratingPhasePlanner: typeof createRatingPhasePlan = createRatingPhasePlan;
+const ratingPhaseCompleter: typeof completeRatingPhase = completeRatingPhase;
+declare const ratingPhasePlan: RatingPhasePlan;
 const validatedReputationDeriver: typeof deriveReputationWithValidation =
   deriveReputationWithValidation;
 declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
@@ -126,6 +132,9 @@ void ratingValidator;
 void buyerRatingProducer;
 void sellerRatingProducer;
 void durableRatingPublisher;
+void ratingPhasePlanner;
+void ratingPhaseCompleter;
+void ratingPhasePlan;
 void validatedReputationDeriver;
 void validatedReputationDeps;
 void ratingEffectStore;
