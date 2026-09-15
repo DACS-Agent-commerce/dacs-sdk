@@ -296,7 +296,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           evidenceRaw.deliverableContentHash,
         );
         return delivered === null ? "indeterminate" as const
-          : canonicalize(delivered) === canonicalize(payload);
+          : canonicalize(delivered.artifact) === canonicalize(payload);
       } catch {
         return "indeterminate" as const;
       }
