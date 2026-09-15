@@ -110,9 +110,6 @@ from a still-pending crash window without allocating an unbounded alias row.
 Semantic replay returns the original retained record plus the newly received
 envelope ID, because any acknowledgement must bind the newly received ID;
 only a durably recorded disposition may be projected into an acknowledgement.
-An expired, unacknowledged outbox message may be renewed with a new signed
-validity window, while the receiving inbox still collapses that renewal to the
-same semantic action and binds its acknowledgement to the newly received ID.
 The outbox retains the exact signed envelope across retries, claims work with a
 generation-fenced lease, applies one-second exponential backoff capped at sixty
 seconds, and never manufactures a replacement after envelope expiry. A valid
@@ -123,19 +120,23 @@ idempotency key to the role service. The service durably retains the envelope
 inputs before signing, so a coordinator retry or process restart reconstructs
 and resumes the exact same envelope; reusing the key with a changed payload,
 job, type or lifetime fails locally.
+An expired, unacknowledged outbox message may be renewed with a new signed
+validity window, while the receiving inbox still collapses that renewal to the
+same semantic action and binds its acknowledgement to the newly received ID.
 
 Both transport stores reject retention shorter than seven days, support a
 terminal-session retention extension, use stable bounded cursors, and keep a
 complete hash-chained canonical transition history. Their durable monotonic
-clock prevents a backwards host clock from reviving a lease. A database-wide,
-durably bound policy places finite row and canonical-byte quotas on global,
-peer, job, and message-type usage and caps revisions per message. Equivalent
-acknowledgements are O(1): a new transport nonce or later receipt cannot extend
-retention or append history. The explicit job retention transition is required
-for that change. Admission charges explicit row and byte headroom for the
-largest valid terminal transition, and active updates preserve the last revision
-for an acknowledgement, disposition, or operator-action transition. Quota
-pressure therefore cannot wedge active work in an unpurgeable state.
+clock prevents a backwards host clock from reviving a lease.
+A database-wide, durably bound policy places finite row and canonical-byte
+quotas on global, peer, job, and message-type usage and caps revisions per
+message. Equivalent acknowledgements are O(1): a new transport nonce or later
+receipt cannot extend retention or append history. The explicit job retention
+transition is required for that change. Admission charges explicit row and byte
+headroom for the largest valid terminal transition, and active updates preserve
+the last revision for an acknowledgement, disposition, or operator-action
+transition. Quota pressure therefore cannot wedge active work in an
+unpurgeable state.
 
 `diagnostics()` reports durable pressure, rejection, oldest-item,
 operator-action, expiry-cursor, and purge progress. `purge()` deletes only a
@@ -144,10 +145,7 @@ retention deadline; pending, sending, and operator-action records are never
 eligible. Projection, history, usage accounting, and cursor advancement share
 one transaction, so a crash either commits the whole page or none of it. These
 scans advance over a bounded physical index page even when nothing is expired
-or purgeable, avoiding an unbounded sparse-table scan under the write lock. These
-stores do not open a socket or perform a request; admission, bounded HTTP
-parsing, TLS, rate limiting, payload validation and role dispatch belong to the
-next host unit.
+or purgeable, avoiding an unbounded sparse-table scan under the write lock.
 
 Before agreement, the live graph uses a four-message `session-init` →
 `session-challenge` → `session-presentation` → `session-admission` exchange.
@@ -370,7 +368,6 @@ The transport callbacks are intentionally host-owned. The identity resolver
 must dereference and verify Demos identity material; the payload validator must
 use public SDK validators plus independently retained session facts. Returning
 `valid` solely because an envelope is signed is not sufficient authorization.
-
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
 integrity-checked track projection is created and backfilled by v3. Schema v4
@@ -387,11 +384,11 @@ requires a validated pre-write backup. Schema v7 adds semantic idempotency,
 durable quota accounting and bounded lifecycle cursors without modifying the
 released v6 migration. A v6 database is backed up and every existing envelope,
 history, semantic identity, and usage total is validated before v7 is committed;
-ambiguous duplicate semantics fail closed. Schema v8 adds the native-DEM
-coordinator namespace without modifying the released v7 HTTP migration. A v7
-database is backed up before its coordinator tables are rebuilt; x402 rows keep
-their exact profile, hashes and canonical record bytes, while HTTP policy,
-accounting and lifecycle state are left unchanged.
+ambiguous duplicate semantics fail closed. Schema v8 adds the separate
+native-DEM coordinator namespace without changing the released v7 HTTP lifecycle
+migration. Existing x402 and offline coordinator records retain their exact
+profile and authenticated bytes while the constrained coordinator schema is
+rebuilt after a validated pre-write backup.
 
 A legacy database is migrated only when its persisted SDK and Standard
 revision exactly equal the supported runtime bindings. Compatible v3 offline
