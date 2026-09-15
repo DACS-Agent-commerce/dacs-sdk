@@ -18,9 +18,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  canonicalize,
   contentHash,
   createDurableRfqLifecycleClient,
   createFsDurableRfqLifecycleStore,
+  durableRfqLifecycleRecordViolation,
+  durableRfqLifecycleTransitionViolation,
   type AttestationRef,
   type DurableRfqLifecycleRecord,
   type DurableRfqLifecycleTransport,
@@ -33,6 +36,8 @@ const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-rfq-filesystem";
 const SELLER = "did:demos:seller-rfq-filesystem";
+const MAX_RECORD_BYTES = 16 * 1024 * 1024;
+const boundaryTest = process.env.DACS_SLOW_BOUNDARY === "1" ? test : test.skip;
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -171,7 +176,218 @@ function lockPath(dir: string): string {
   return join(dir, "locks", `${hash}.lock`);
 }
 
+function envelopeBytes(record: Readonly<DurableRfqLifecycleRecord<string>>): number {
+  const jobKeyHash = createHash("sha256")
+    .update(`buyer\u0000${JOB_ID}`)
+    .digest("hex");
+  return Buffer.byteLength(
+    canonicalize({
+      envelopeVersion: 1,
+      role: "buyer",
+      jobKeyHash,
+      record,
+      mac: "0".repeat(64),
+    }),
+    "utf8",
+  );
+}
+
+function recordAtEnvelopeSize(
+  source: Readonly<DurableRfqLifecycleRecord<string>>,
+  bytes: number,
+  nextRevision: boolean,
+): DurableRfqLifecycleRecord<string> {
+  const record = structuredClone(source) as DurableRfqLifecycleRecord<string>;
+  if (nextRevision) {
+    record.revision += 1;
+    record.updatedAt += 1;
+  }
+  record.failure = {
+    failureVersion: "1",
+    class: "timeout",
+    reason: "é",
+    recordedAt: record.updatedAt,
+  };
+  record.failure.reason += "x".repeat(bytes - envelopeBytes(record));
+  return record;
+}
+
 describe("keyed durable RFQ filesystem store", () => {
+  boundaryTest.each([-1, 0, 1])(
+    "record size boundary: enforces create at MAX_RECORD_BYTES %d",
+    async (delta) => {
+      const parent = await root();
+      const integrityKey = randomBytes(32);
+      const source = await createFsDurableRfqLifecycleStore<string>({
+        dir: join(parent, "source-rfq"),
+        role: "buyer",
+        integrityKey,
+      });
+      const transport: DurableRfqLifecycleTransport<string> = {
+        async publish() {
+          return { disposition: "acknowledged" };
+        },
+        async reconcile() {
+          return { disposition: "absent" };
+        },
+      };
+      await createDurableRfqLifecycleClient(clientOptions(source, transport)).open(
+        openInput(),
+      );
+      const loaded = await source.load("buyer", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("source record did not load");
+
+      const dir = join(parent, `create-${delta + 1}`);
+      const store = await createFsDurableRfqLifecycleStore<string>({
+        dir,
+        role: "buyer",
+        integrityKey,
+      });
+      const candidate = recordAtEnvelopeSize(
+        loaded.record,
+        MAX_RECORD_BYTES + delta,
+        false,
+      );
+      const result = await store.create(candidate);
+      expect(durableRfqLifecycleRecordViolation(candidate)).toBeNull();
+
+      if (delta <= 0) {
+        expect(result).toMatchObject({ status: "created" });
+        const [filename] = await readdir(join(dir, "records"));
+        if (filename === undefined) throw new Error("record was not created");
+        expect((await readFile(join(dir, "records", filename))).byteLength).toBe(
+          MAX_RECORD_BYTES + delta,
+        );
+        await expect(
+          (await createFsDurableRfqLifecycleStore<string>({
+            dir,
+            role: "buyer",
+            integrityKey,
+          })).load("buyer", JOB_ID),
+        ).resolves.toMatchObject({ status: "ok", record: candidate });
+      } else {
+        expect(result).toEqual({
+          status: "unavailable",
+          reason: "RFQ filesystem create failed",
+        });
+        await expect(store.load("buyer", JOB_ID)).resolves.toEqual({
+          status: "missing",
+        });
+        await expect(readdir(join(dir, "records"))).resolves.toEqual([]);
+      }
+    },
+    120_000,
+  );
+
+  boundaryTest.each([-1, 0, 1])(
+    "record size boundary: preserves prior state after CAS at MAX_RECORD_BYTES %d",
+    async (delta) => {
+      const parent = await root();
+      const dir = join(parent, `cas-${delta + 1}`);
+      const integrityKey = randomBytes(32);
+      const store = await createFsDurableRfqLifecycleStore<string>({
+        dir,
+        role: "buyer",
+        integrityKey,
+      });
+      const transport: DurableRfqLifecycleTransport<string> = {
+        async publish() {
+          return { disposition: "acknowledged" };
+        },
+        async reconcile() {
+          return { disposition: "absent" };
+        },
+      };
+      await createDurableRfqLifecycleClient(clientOptions(store, transport)).open(
+        openInput(),
+      );
+      const loaded = await store.load("buyer", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("record did not load");
+      const [filename] = await readdir(join(dir, "records"));
+      if (filename === undefined) throw new Error("record was not created");
+      const path = join(dir, "records", filename);
+      const priorBytes = await readFile(path);
+      const candidate = recordAtEnvelopeSize(
+        loaded.record,
+        MAX_RECORD_BYTES + delta,
+        true,
+      );
+      const result = await store.compareAndSwap(
+        "buyer",
+        JOB_ID,
+        loaded.record.revision,
+        candidate,
+      );
+      expect(durableRfqLifecycleRecordViolation(candidate)).toBeNull();
+      expect(
+        durableRfqLifecycleTransitionViolation(loaded.record, candidate),
+      ).toBeNull();
+
+      if (delta <= 0) {
+        expect(result).toMatchObject({ status: "written" });
+        expect((await readFile(path)).byteLength).toBe(MAX_RECORD_BYTES + delta);
+        await expect(
+          (await createFsDurableRfqLifecycleStore<string>({
+            dir,
+            role: "buyer",
+            integrityKey,
+          })).load("buyer", JOB_ID),
+        ).resolves.toMatchObject({ status: "ok", record: candidate });
+      } else {
+        expect(result).toEqual({
+          status: "unavailable",
+          reason: "RFQ filesystem CAS failed",
+        });
+        expect(await readFile(path)).toEqual(priorBytes);
+        await expect(store.load("buyer", JOB_ID)).resolves.toEqual(loaded);
+      }
+    },
+    120_000,
+  );
+
+  boundaryTest(
+    "record size boundary: reports an oversized transport rejection as indeterminate",
+    async () => {
+      const parent = await root();
+      const dir = join(parent, "oversized-transport-rejection");
+      const integrityKey = randomBytes(32);
+      const rejectionReason = "x".repeat(MAX_RECORD_BYTES / 2);
+      const transport: DurableRfqLifecycleTransport<string> = {
+        async publish() {
+          return { disposition: "rejected", reason: rejectionReason };
+        },
+        async reconcile() {
+          return { disposition: "absent" };
+        },
+      };
+      const store = await createFsDurableRfqLifecycleStore<string>({
+        dir,
+        role: "buyer",
+        integrityKey,
+      });
+      const client = createDurableRfqLifecycleClient(clientOptions(store, transport));
+      await expect(client.open(openInput())).resolves.toMatchObject({ status: "ready" });
+
+      await expect(
+        client.sendOffer(JOB_ID, {
+          rfqProposalVersion: "1",
+          price: { amount: "9", currency: "USDC" },
+        }),
+      ).resolves.toEqual({
+        status: "indeterminate",
+        reason: "RFQ filesystem CAS failed",
+      });
+
+      const loaded = await store.load("buyer", JOB_ID);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") return;
+      expect(loaded.record.failure).toBeUndefined();
+      expect(loaded.record.outbox).toHaveLength(1);
+      expect(loaded.record.outbox[0]).toMatchObject({ state: "pending", attempts: 0 });
+    },
+    60_000,
+  );
+
   test("recovers the exact pending packet through a new store and client instance", async () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
