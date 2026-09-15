@@ -23,6 +23,7 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { createPermissiveTestWalletSpendAuthorityV1 } from "./helpers/walletSpend.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:pay-dem-buyer";
@@ -239,11 +240,13 @@ describe("native DEM process recovery", () => {
           blockNumber: 43,
           txRefKind: "demos" as const,
           amountOs: AUTHORITY.amountOs,
+          networkFeeOs: "1000000000",
         },
       };
     });
     const publishNotice = vi.fn();
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-after-kill",
       rail: { address: PAYER, settle },

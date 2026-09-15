@@ -59,6 +59,7 @@ function notice(txHash = TX_HASH) {
     finality: { model: "bft-final" },
     blockNumber: 42,
     txRefKind: "demos",
+    networkFeeOs: "1000000000",
   });
 }
 

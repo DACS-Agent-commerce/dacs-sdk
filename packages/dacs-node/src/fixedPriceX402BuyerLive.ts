@@ -17,6 +17,7 @@ import {
   createDacsFixedPriceX402BuyerAgreementPolicyV1,
   createDacsFixedPriceX402BuyerPaymentPolicyV1,
 } from "./fixedPriceX402Profile.js";
+import type { WalletSpendAuthorityV1 } from "@kynesyslabs/dacs";
 import {
   createDacsBuyerLiveCommerceAssemblyV1,
 } from "./liveCommerceAssembly.js";
@@ -27,6 +28,7 @@ export interface DacsFixedPriceX402BuyerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   workerId: string;
   rail: Readonly<AuthenticatedRailDefinition>;
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   tokenDomain: Readonly<{ name: string; version: string }>;
   /** Operator-consented service ceiling in canonical major units. */
   maximumServiceAmount: string;
@@ -108,6 +110,7 @@ export async function createDacsFixedPriceX402BuyerLiveV1(
     agreement,
     payment: {
       ...payment,
+      walletSpendAuthority: options.walletSpendAuthority,
       maximumServiceAmount,
       minimumConfirmations: options.minimumConfirmations,
       authorizationSearchFromBlock: options.authorizationSearchFromBlock,
