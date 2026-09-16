@@ -160,7 +160,7 @@ describe("fixed-price offline coordinator", () => {
           railVersion: 2,
         },
       },
-    })).toBe("57133d65062083c6a5bc7242c664835588a03a1492d6cf15431bdbc201ae0e90");
+    })).toBe("df293fc57eb6de953d1371eecc1eaf2044da06e5dc1ef9ea2fca38d0061f7fdc");
   });
 
   it("runs the shared role-separated lifecycle and combines only verified actor state", async () => {

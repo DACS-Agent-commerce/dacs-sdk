@@ -17,13 +17,13 @@ const REPO =
 // Pinned for reproducible conformance runs. The pin is the SDK's test oracle,
 // so moving it changes what "conformant" means — bump deliberately, in a
 // change that re-runs the suite and reconciles any drift.
-// Currently: DACS-Standard PR #362 exact head, repairing the CORE §B.2
+// Currently: adopted DACS-Standard PR #362 merge, repairing the CORE §B.2
 // signature-omitted VerifyResult reference hashes in the signed DACS-1 v0.7 /
-// DACS-2 v0.6 38-case presence-only corpus.
+// DACS-2 v0.6 47-case presence-only corpus.
 // Previous pin: 662be1d (adopted DACS-Standard PR #335 merge).
 // See SDK #147 and Standard #359/#362.
 const REF =
-  process.env.DACS_STANDARD_REF || "f2e96627d9f5251cb32c69a31f44b35cda613b64";
+  process.env.DACS_STANDARD_REF || "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 
 function git(args, cwd) {
   execFileSync("git", args, { cwd, stdio: "inherit" });

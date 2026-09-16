@@ -716,10 +716,6 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     "canon-int": (want) => {
       expect(canonicalize(9007199254740991)).toBe(want);
     },
-    "canon-noninteger-throws": (want) => {
-      expect(want).toBe("throws");
-      expect(() => canonicalize(1.5)).toThrow();
-    },
     "canon-without-signature": (want) => {
       expect(canonicalSignedScope({ a: 1, signature: "sig" })).toBe(want);
     },
@@ -784,9 +780,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       const pub = hex(golden.signing.publicKeyHex);
       expect(verifyArtifact("dacs-bundle:v1:", golden.signing.doc, sig, pub)).toBe(want);
     },
-    // The oracle pins a closed registry of 28 separators and the SDK exposes the same
-    // 28 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
-    // below. The only remaining it.fails divergence is canonical-number handling.
+    // The oracle pins a closed registry of 30 separators and the SDK exposes the same
+    // 30 in CORE §B.7 table order; sig-registry-closed is compared as an exact set
+    // below. Registry membership does not imply every artifact consumer is implemented.
     "sig-registry-closed": (want) => {
       expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(want.count);
       expect([...SIGNATURE_DOMAIN_SEPARATORS].sort()).toEqual(want.separators);
@@ -2345,15 +2341,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     },
   };
 
-  // Divergences: assert the vector expectation but expect the test to FAIL
-  // against today's SDK (it.fails flips loudly when the divergence is fixed).
-  const DIVERGENT = new Set<string>([
-    // The pinned oracle still rejects fractional JSON numbers even though
-    // RFC 8785 and CORE B.2 admit finite values within the magnitude bound.
-    "canon-noninteger-throws",
-  ]);
-
-  it("preserves fractional canonicalization independently of the stale oracle", () => {
+  // Standard #362's adopted baseline removed the obsolete integer-only oracle.
+  // Keep the positive fractional-number regression independently of the manifest.
+  it("preserves fractional canonicalization after obsolete oracle removal", () => {
     expect(canonicalize(1.5)).toBe("1.5");
   });
 
@@ -2414,7 +2404,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           it.todo(`${c.id} (${c.spec}) — ${reason}`);
           continue;
         }
-        const test = DIVERGENT.has(c.id) ? it.fails : it;
+        const test = it;
         test(`${c.id} (${c.spec}, ${c.status})`, async () => {
           await runner(c.want as never);
         });
@@ -2435,19 +2425,17 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   });
 
   it("does not silently demote replayed cases back to todo", () => {
-    // This pin has 236 cases. The updated parent provides 141 non-vacuous SDK
-    // runners; this PR adds eleven negotiation runners while retaining every
-    // parent runner, raising coverage to 152.
-    // deleting a runner must fail loudly instead of quietly
-    // converting the case back into an `it.todo`.
-    expect(Object.keys(RUNNERS)).toHaveLength(152);
-    expect(manifest.cases).toHaveLength(236);
+    // Adopted pin: 239 cases. Preserve all 151 surviving runners; the sole
+    // removed runner was the retired integer-only expected-failure oracle.
+    // Its correct fractional-number behavior is still tested explicitly above.
+    expect(Object.keys(RUNNERS)).toHaveLength(151);
+    expect(manifest.cases).toHaveLength(239);
   });
 
-  it("the SDK exposes the current closed set of 28 separators", () => {
+  it("the SDK exposes the current closed set of 30 separators", () => {
     // Was pinned at 18 with sig-registry-closed as an it.fails divergence; #86
     // reconciled the SDK to the closed §B.7 set (25). The 662be1d pin adds the
     // evidence-bound fault bundle, its pointer, and prior-payment disposition.
-    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(28);
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(30);
   });
 });
