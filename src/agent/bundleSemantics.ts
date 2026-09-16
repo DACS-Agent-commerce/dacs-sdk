@@ -1,6 +1,7 @@
 import type {
   AnyAttestationBundle,
   BundlePartyRole,
+  AbsoluteFaultAttestationBundle,
   FaultAttestationBundle,
   FaultedParty,
 } from "../artifacts/types.js";
@@ -35,7 +36,68 @@ export function bundleOutcomeClass(outcome: unknown): BundleOutcomeClass | null 
 export function isFaultBundle(
   bundle: AnyAttestationBundle | Record<string, unknown>,
 ): bundle is FaultAttestationBundle {
-  return bundle["faultBundleVersion"] === "1" && bundle["bundleVersion"] === undefined;
+  return (
+    bundle["faultBundleVersion"] === "1" &&
+    bundle["bundleVersion"] === undefined &&
+    bundle["evidenceBoundFaultBundleVersion"] === undefined
+  );
+}
+
+export function isAbsoluteFaultBundle(
+  bundle: AnyAttestationBundle | Record<string, unknown>,
+): bundle is AbsoluteFaultAttestationBundle {
+  return (
+    bundle["bundleVersion"] === undefined &&
+    ((bundle["faultBundleVersion"] === "1" &&
+      bundle["evidenceBoundFaultBundleVersion"] === undefined) ||
+      (bundle["evidenceBoundFaultBundleVersion"] === "1" &&
+        bundle["faultBundleVersion"] === undefined))
+  );
+}
+
+export function isEvidenceBoundFaultBundle(
+  bundle: AnyAttestationBundle | Record<string, unknown>,
+): bundle is import("../artifacts/types.js").EvidenceBoundFaultAttestationBundle {
+  return (
+    bundle["evidenceBoundFaultBundleVersion"] === "1" &&
+    bundle["bundleVersion"] === undefined &&
+    bundle["faultBundleVersion"] === undefined
+  );
+}
+
+export type BundleArtifactType = "legacy" | "fault" | "evidence-bound";
+
+/** Exact exclusive discriminator class, or null for stripped/ambiguous input. */
+export function bundleArtifactType(
+  bundle: AnyAttestationBundle | Record<string, unknown>,
+): BundleArtifactType | null {
+  const known = new Set([
+    "bundleVersion",
+    "faultBundleVersion",
+    "evidenceBoundFaultBundleVersion",
+  ]);
+  if (Object.keys(bundle).some((key) => key.endsWith("BundleVersion") && !known.has(key))) {
+    return null;
+  }
+  const legacy = bundle["bundleVersion"] === "1";
+  const fault = bundle["faultBundleVersion"] === "1";
+  const evidenceBound = bundle["evidenceBoundFaultBundleVersion"] === "1";
+  if (Number(legacy) + Number(fault) + Number(evidenceBound) !== 1) return null;
+  if (
+    (bundle["bundleVersion"] !== undefined && !legacy) ||
+    (bundle["faultBundleVersion"] !== undefined && !fault) ||
+    (bundle["evidenceBoundFaultBundleVersion"] !== undefined && !evidenceBound)
+  ) return null;
+  if (evidenceBound) return "evidence-bound";
+  if (fault) return "fault";
+  return "legacy";
+}
+
+export function bundleArtifactTypeRank(
+  bundle: AnyAttestationBundle | Record<string, unknown>,
+): number {
+  const type = bundleArtifactType(bundle);
+  return type === "evidence-bound" ? 2 : type === "fault" ? 1 : type === "legacy" ? 0 : -1;
 }
 
 function partyRoles(bundle: AnyAttestationBundle | Record<string, unknown>): Set<BundlePartyRole> {
@@ -94,7 +156,7 @@ export function scoredBundleOutcome(
 ): BundleOutcome | null {
   const outcomeClass = bundleOutcomeClass(bundle.outcome);
   if (!outcomeClass) return null;
-  if (isFaultBundle(bundle)) {
+  if (isAbsoluteFaultBundle(bundle)) {
     return roleRelativeOutcome(outcomeClass, bundle.faultedParty, scoredRole);
   }
   const implied = legacyImpliedFaultSet(bundle);

@@ -16,6 +16,7 @@ import {
   ed25519Sign,
   ed25519Verify,
   fixedPriceAgreementLogicalAddress,
+  isFixedPriceAgreementProposalEnvelope,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
@@ -378,6 +379,8 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     }
   });
 
+  // Real filesystem durability and cold reopen can exceed Vitest's 5s default
+  // on shared CI runners; the exact-byte and no-duplicate-effect assertions stay unchanged.
   test("cold filesystem restart recovers the same bytes without duplicate effects", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dacs-durable-agreement-"));
     try {
@@ -396,7 +399,7 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test.each<Effect>(["signature", "proposal", "anchor", "binding"])(
     "lost %s response reconciles without duplicate effect",
@@ -728,5 +731,33 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
     expect(h.state.proposal?.buyerContribution.party).toBe(BUYER);
     expect(h.state.proposal?.proposalHash).toMatch(/^[0-9a-f]{64}$/);
     expect(canonicalize(h.state.proposal?.plan)).toBe(canonicalize(h.plan));
+  });
+
+  test("public proposal admission validates the exact transport identity", async () => {
+    const h = await harness();
+    expect((await advanceFixedPriceAgreementDurable(h.input, h.durability)).disposition).toBe(
+      "anchored",
+    );
+    const proposal = h.state.proposal!;
+    const envelope = {
+      proposal,
+      transportIdentity: {
+        jobId: proposal.plan.draft.jobId,
+        planHash: proposal.plan.planHash,
+        agreementHash: proposal.plan.agreementHash,
+        buyer: BUYER,
+        seller: SELLER,
+        proposalHash: proposal.proposalHash,
+      },
+    };
+    expect(isFixedPriceAgreementProposalEnvelope(envelope)).toBe(true);
+    expect(isFixedPriceAgreementProposalEnvelope({
+      ...envelope,
+      transportIdentity: { ...envelope.transportIdentity, seller: BUYER },
+    })).toBe(false);
+    expect(isFixedPriceAgreementProposalEnvelope({
+      ...envelope,
+      proposal: { ...proposal, proposalHash: "f".repeat(64) },
+    })).toBe(false);
   });
 });

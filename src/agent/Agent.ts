@@ -17,6 +17,7 @@ import {
   isAgreementArtifact,
   isAttestationRef,
   isChainTxRef,
+  isIdentityBundle,
   isLegacyMvpListing,
   isListing,
   readListingArtifact,
@@ -82,7 +83,14 @@ import {
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
-import type { VetProduction } from "./vetCore.js";
+import {
+  partyVetWithNativeCciTlsnCore,
+  type PartyVetDeps,
+  type PartyVetNativeCciTlsnQualifierInput,
+  type PartyVetWithNativeCciTlsnProduction,
+  type PartyVetWithNativeCciTlsnRequest,
+  type VetProduction,
+} from "./vetCore.js";
 import {
   publishListingCore,
   type PublishListingResult,
@@ -93,9 +101,12 @@ import {
   type DiscoveredListing,
 } from "./discover.js";
 import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
+import {
   listingDraftClaimReferencesArePublishable,
 } from "./listingClaimReferences.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import {
   computeReputation,
   type Reputation,
@@ -458,8 +469,22 @@ export interface AgentConfig {
   wallet?: string;
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
-  /** Optional identity metadata (e.g. the agent's DID / primary claim). */
-  identity?: { agentId?: string };
+  /**
+   * Local identity authority. Session-capable agents must provide the exact
+   * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
+   * (or an explicitly configured listing-validation fallback); the SDK
+   * computes every session party hash from these bytes rather than `agentId`.
+   */
+  identity?: {
+    agentId?: string;
+    bundle?: IdentityBundle;
+    /**
+     * Authenticate this agent's exact DACS-1 bundle presentation before any
+     * session effect. Keep this authority independent from seller Listing
+     * validation when the two identities use different keys or claim methods.
+     */
+    verifyPresentation?: ListingValidationDeps["verifyIdentityPresentation"];
+  };
   /**
    * DACS-1 §6.3.1 / CORE §B.1: explicit Ed25519 resolver for canonical
    * current ClaimReference methods that are not the self-certifying
@@ -732,6 +757,15 @@ export interface Agent {
     input: Readonly<AgentNativeCciTlsnInput>,
   ): Promise<CciTlsnDisposition>;
   /**
+   * Qualify native CCI TLSN commitments as mandatory active-session gates,
+   * retain their exact provenance in the durable signed CVR, and execute the
+   * ordinary party Vet producer without external TLSNotary recipe confusion.
+   */
+  partyVetWithNativeCciTlsn<TKey>(
+    input: Readonly<PartyVetWithNativeCciTlsnRequest>,
+    deps: PartyVetDeps<TKey>,
+  ): Promise<PartyVetWithNativeCciTlsnProduction>;
+  /**
    * Anyone: reverse-resolve a linked claim to the subject(s) that hold it —
    * `findByClaim("cci-web2:twitter:alice")` or
    * `findByClaim("cci-xm:evm:mainnet:0x…")` returns
@@ -769,7 +803,13 @@ export interface Agent {
    * (Seller-identity vetting is the separate Vet stage.)
    */
   discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
-  /** Buyer: run a fixed-price session (negotiate → settle → verify). */
+  /**
+   * @deprecated Buyer-only legacy settlement runner. Its result is explicitly
+   * marked `legacy-mvp-settlement-only` and `commerceComplete: false`; it does
+   * not run seller fulfilment, delivery evidence, or two-sided DACS-5
+   * finalisation. New production integrations use the role-separated
+   * fixed-price commerce coordinators.
+   */
   runSession(
     listing: SessionListingInput,
     opts: RunSessionOptions,
@@ -808,6 +848,52 @@ function capturedCreateConfigValue(
   return stableAgentData(config, key, `AgentConfig.${key}`);
 }
 
+function captureAgentIdentityConfig(
+  value: unknown,
+): AgentConfig["identity"] {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
+    throw new DacsError("AgentConfig.identity must be stable data");
+  }
+  const agentId = stableAgentData(
+    value,
+    "agentId",
+    "AgentConfig.identity.agentId",
+  );
+  const bundle = stableAgentData(
+    value,
+    "bundle",
+    "AgentConfig.identity.bundle",
+  );
+  const verifyPresentation = stableAgentMethod<
+    NonNullable<AgentConfig["identity"]>["verifyPresentation"]
+  >(
+    value,
+    "verifyPresentation",
+    "AgentConfig.identity.verifyPresentation",
+    true,
+  );
+  if (agentId !== undefined && typeof agentId !== "string") {
+    throw new DacsError("AgentConfig.identity.agentId must be a string");
+  }
+  const retainedBundle = bundle === undefined
+    ? undefined
+    : snapshotCanonicalJson(
+        bundle,
+        "AgentConfig.identity.bundle",
+      );
+  if (retainedBundle !== undefined && !isIdentityBundle(retainedBundle)) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  return Object.freeze({
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(retainedBundle === undefined ? {} : { bundle: retainedBundle }),
+    ...(verifyPresentation === undefined ? {} : { verifyPresentation }),
+  });
+}
+
 /**
  * Snapshot every retained construction capability before the first await. The
  * wallet bytes are deliberately absent: buildAgent needs only the fact that a
@@ -822,8 +908,18 @@ function captureAgentRuntimeConfig(
     demosRpc: String(capturedCreateConfigValue(config, "demosRpc") ?? ""),
     ...(hasWallet ? { wallet: "connected-signer" } : {}),
   };
+  const identity = captureAgentIdentityConfig(
+    capturedCreateConfigValue(config, "identity"),
+  );
+  if (identity !== undefined) {
+    Object.defineProperty(runtimeConfig, "identity", {
+      value: identity,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
   for (const key of [
-    "identity",
     "resolveIdentitySigningPublicKey",
     "loadListingRailResolution",
     "resolvePayloadVerificationCapability",
@@ -1083,6 +1179,45 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
+  const identityBundleInput =
+    identity === undefined
+      ? undefined
+      : stableAgentData(identity, "bundle", "AgentConfig.identity.bundle");
+  const configuredBuyerIdentityBundle =
+    identityBundleInput === undefined
+      ? undefined
+      : snapshotCanonicalJson(
+          identityBundleInput,
+          "AgentConfig.identity.bundle",
+        );
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    !isIdentityBundle(configuredBuyerIdentityBundle)
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
+    );
+  }
+  if (
+    configuredBuyerIdentityBundle !== undefined &&
+    configuredBuyerId !== undefined &&
+    configuredBuyerIdentityBundle.presentedBy !== configuredBuyerId
+  ) {
+    throw new DacsError(
+      "AgentConfig.identity.bundle.presentedBy must equal AgentConfig.identity.agentId",
+    );
+  }
+  const configuredBuyerIdentityPresentationVerifier =
+    identity === undefined
+      ? undefined
+      : stableAgentMethod<
+          NonNullable<AgentConfig["identity"]>["verifyPresentation"]
+        >(
+          identity,
+          "verifyPresentation",
+          "AgentConfig.identity.verifyPresentation",
+          true,
+        );
   const resolveCanonicalSigningKey = async (
     claim: string,
   ): Promise<Uint8Array | null> => {
@@ -1209,6 +1344,141 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         ? {}
         : { authenticateProviderClaim: demosCci.authenticateProviderClaim }),
     });
+  };
+  const qualifyDemosCciTlsn = async (
+    input: Readonly<AgentNativeCciTlsnInput>,
+  ): Promise<CciTlsnDisposition> => {
+    if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
+        !demosCci.nowMs) {
+      throw new DacsError(
+        "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
+      );
+    }
+    let captured: AgentNativeCciTlsnInput;
+    try {
+      captured = snapshotCanonicalJson(
+        input,
+        "Agent native CCI TLSN request",
+      ) as unknown as AgentNativeCciTlsnInput;
+    } catch {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    if (Reflect.ownKeys(captured).length !== 4 ||
+        !["subject", "bundle", "proofHash", "context"].every((key) =>
+          Object.prototype.hasOwnProperty.call(captured, key)) ||
+        captured.context === null || typeof captured.context !== "object" ||
+        Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    let evaluatedAt: number;
+    try {
+      evaluatedAt = demosCci.nowMs();
+    } catch {
+      return Object.freeze({
+        status: "indeterminate",
+        reason: "CCI TLSN evaluation clock was unavailable",
+      });
+    }
+    if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
+      return Object.freeze({
+        status: "error",
+        reason: "CCI TLSN evaluation clock was malformed",
+      });
+    }
+    return qualifyCapturedDemosCciTlsn(captured, evaluatedAt);
+  };
+  const qualifyCapturedDemosCciTlsn = async (
+    captured: Readonly<AgentNativeCciTlsnInput>,
+    evaluatedAt: number,
+  ): Promise<CciTlsnDisposition> => {
+    const verifyIdentityPresentation = demosCci?.verifyIdentityPresentation;
+    const verifyNativeTlsn = demosCci?.verifyNativeTlsn;
+    if (!verifyIdentityPresentation || !verifyNativeTlsn) {
+      throw new DacsError(
+        "native CCI TLSN qualification requires configured Demos verifiers",
+      );
+    }
+    const resolution = await resolveAuthenticatedDemosCci(captured.subject);
+    if (resolution.status !== "authenticated") {
+      return Object.freeze({
+        status: resolution.status,
+        reason: resolution.reason,
+      });
+    }
+    return classifyCciTlsnProof(
+      resolution.record,
+      captured.bundle,
+      captured.proofHash,
+      { ...captured.context, evaluatedAt },
+      {
+        verifyIdentityPresentation,
+        verifyNativeTlsn,
+      },
+    );
+  };
+  const qualifyPartyDemosCciTlsn = async (
+    input: Readonly<PartyVetNativeCciTlsnQualifierInput>,
+  ): Promise<CciTlsnDisposition> => {
+    if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn) {
+      throw new DacsError(
+        "partyVetWithNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers",
+      );
+    }
+    let captured: PartyVetNativeCciTlsnQualifierInput;
+    try {
+      captured = snapshotCanonicalJsonRead(
+        input,
+        "Agent party Vet native CCI TLSN request",
+      ) as unknown as PartyVetNativeCciTlsnQualifierInput;
+    } catch {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    const contextKeys = [
+      "jobId",
+      "expectedPresenter",
+      "sessionNonce",
+      "expectedServer",
+      "evaluatedAt",
+      "maxResolutionAgeSec",
+      "maxProofAgeSec",
+      "maxPresentationAgeSec",
+    ];
+    if (
+      Reflect.ownKeys(captured).length !== 4 ||
+      !["subject", "bundle", "proofHash", "context"].every((key) =>
+        Object.prototype.hasOwnProperty.call(captured, key)) ||
+      captured.context === null ||
+      typeof captured.context !== "object" ||
+      Reflect.ownKeys(captured.context).length !== contextKeys.length ||
+      !contextKeys.every((key) =>
+        Object.prototype.hasOwnProperty.call(captured.context, key)) ||
+      !Number.isSafeInteger(captured.context.evaluatedAt) ||
+      captured.context.evaluatedAt < 0
+    ) {
+      return Object.freeze({
+        status: "invalid",
+        reason: "CCI TLSN request is malformed",
+      });
+    }
+    const { evaluatedAt, ...context } = captured.context;
+    return qualifyCapturedDemosCciTlsn(
+      {
+        subject: captured.subject,
+        bundle: captured.bundle,
+        proofHash: captured.proofHash,
+        context,
+      },
+      evaluatedAt,
+    );
   };
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
@@ -1446,65 +1716,17 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async qualifyNativeCciTlsn(
       input: Readonly<AgentNativeCciTlsnInput>,
     ): Promise<CciTlsnDisposition> {
-      if (!demosCci?.verifyIdentityPresentation || !demosCci.verifyNativeTlsn ||
-          !demosCci.nowMs) {
-        throw new DacsError(
-          "qualifyNativeCciTlsn requires AgentConfig.demosCci native TLSN verifiers and clock",
-        );
-      }
-      let captured: AgentNativeCciTlsnInput;
-      try {
-        captured = snapshotCanonicalJson(
-          input,
-          "Agent native CCI TLSN request",
-        ) as unknown as AgentNativeCciTlsnInput;
-      } catch {
-        return Object.freeze({
-          status: "invalid",
-          reason: "CCI TLSN request is malformed",
-        });
-      }
-      if (Reflect.ownKeys(captured).length !== 4 ||
-          !["subject", "bundle", "proofHash", "context"].every((key) =>
-            Object.prototype.hasOwnProperty.call(captured, key)) ||
-          captured.context === null || typeof captured.context !== "object" ||
-          Object.prototype.hasOwnProperty.call(captured.context, "evaluatedAt")) {
-        return Object.freeze({
-          status: "invalid",
-          reason: "CCI TLSN request is malformed",
-        });
-      }
-      const resolution = await resolveAuthenticatedDemosCci(captured.subject);
-      if (resolution.status !== "authenticated") {
-        return Object.freeze({
-          status: resolution.status,
-          reason: resolution.reason,
-        });
-      }
-      let evaluatedAt: number;
-      try {
-        evaluatedAt = demosCci.nowMs();
-      } catch {
-        return Object.freeze({
-          status: "indeterminate",
-          reason: "CCI TLSN evaluation clock was unavailable",
-        });
-      }
-      if (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0) {
-        return Object.freeze({
-          status: "error",
-          reason: "CCI TLSN evaluation clock was malformed",
-        });
-      }
-      return classifyCciTlsnProof(
-        resolution.record,
-        captured.bundle,
-        captured.proofHash,
-        { ...captured.context, evaluatedAt },
-        {
-          verifyIdentityPresentation: demosCci.verifyIdentityPresentation,
-          verifyNativeTlsn: demosCci.verifyNativeTlsn,
-        },
+      return qualifyDemosCciTlsn(input);
+    },
+
+    async partyVetWithNativeCciTlsn<TKey>(
+      input: Readonly<PartyVetWithNativeCciTlsnRequest>,
+      deps: PartyVetDeps<TKey>,
+    ): Promise<PartyVetWithNativeCciTlsnProduction> {
+      return partyVetWithNativeCciTlsnCore(
+        input,
+        deps,
+        qualifyPartyDemosCciTlsn,
       );
     },
 
@@ -1862,7 +2084,27 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           "runSession requires createAgent({ identity: { agentId } })",
         );
       }
-      if (parseCanonicalClaimReference(buyerId) === null) {
+      const buyerIdentityBundle = configuredBuyerIdentityBundle;
+      if (!buyerIdentityBundle) {
+        throw new DacsError(
+          "runSession requires createAgent({ identity: { agentId, bundle } })",
+        );
+      }
+      const buyerIdentityPresentationVerifier =
+        configuredBuyerIdentityPresentationVerifier ??
+        sessionListingValidationDeps?.verifyIdentityPresentation ??
+        configuredListingValidationDeps?.verifyIdentityPresentation;
+      if (!buyerIdentityPresentationVerifier) {
+        throw new DacsError(
+          "runSession requires a configured DACS-1 identity presentation verifier",
+        );
+      }
+      if (
+        buyerId.normalize("NFC") !== buyerId ||
+        buyerId.trim() !== buyerId ||
+        /[\u0000-\u001f\u007f]/.test(buyerId) ||
+        parseCanonicalClaimReference(buyerId) === null
+      ) {
         throw new DacsError(
           "runSession buyer identity must use exact CORE B.1 CF-2 ClaimReference bytes",
         );
@@ -2011,6 +2253,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         options.terms,
         {
           buyerId,
+          buyerIdentityBundle,
+          authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
+            buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
           readListing: (ref) => publicReads.readAnchor(ref),
           // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
           // migration is owned by #98; it is deliberately not coerced into a

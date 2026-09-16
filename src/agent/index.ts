@@ -1,4 +1,6 @@
-export { isDacsPublicAddressV1 } from "./publicAddress.js";
+export {
+  isDacsPublicAddressV1,
+} from "./publicAddress.js";
 export {
   createAgent,
   createUnsafeManualAgent,
@@ -42,8 +44,27 @@ export {
   type AlternativePaymentBundleVerificationResult,
 } from "./verifyBundleCore.js";
 export {
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  evidenceBoundBundleSignedScope,
+  type EvidenceBoundReasonCode,
+  type EvidenceLifecycle,
+  type EvidencePhaseExecutionAuthority,
+  type EvidenceAnchorReceiptAuthority,
+  type ResolvedEvidenceAuthority,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type EvidenceBoundBundleVerification,
+  type CompactEvidenceRecord,
+  type EvidenceBoundExactSetInput,
+  type VerifiedEvidenceBoundExecutionAuthority,
+  type BundlePointerVerification,
+} from "./evidenceBoundBundle.js";
+export {
   lookupBundleCopies,
   bundleConsistency,
+  selectAuthoritativeBundleCopy,
   bundlesDiverge,
   type ConsistencyVerdict,
   type BundleCopyRead,
@@ -51,6 +72,7 @@ export {
   type BundleCopies,
   type BundleConsistencyDeps,
   type BundleRole,
+  type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
   validateSettlementEvidenceStructure,
@@ -90,7 +112,34 @@ export {
   type SessionOutcome,
   type DeriveReputationDeps,
   type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
 } from "./reputationDerivation.js";
+export {
+  DACS4_PAYMENT_PHASE_TYPES,
+  settlementEvidenceReferenceMultisetsEqual,
+  isSuccessfulDacs4PaymentProjection,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
+  isSettlementVerifiedReputationDerivation,
+  isReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerificationDisposition,
+  type ReputationRoleEvidence,
+  type ReputationBb6Context,
+  type ReputationAbsenceEvidenceRef,
+  type JobBoundResolutionContextEntry,
+  type SettlementVerifiedBundleInput,
+  type AuthenticatedSettlementBundle,
+  type AuthenticatedPresentedSettlement,
+  type AuthenticatedReputationAgreement,
+  type SettlementVerifiedRatingRecord,
+  type AuthenticatedReputationRating,
+  type CancellationAuthorityDisposition,
+  type SettlementVerifiedReputationDeps,
+  type SettlementVerifiedReputationDerivation,
+  type ReplayableSettlementVerifiedReputationDerivation,
+  type SettlementVerifiedReputationReplayResult,
+} from "./settlementVerifiedReputation.js";
 export {
   isDacs5SessionTransitionAllowed,
   dacs5BundleOutcomeForTerminalState,
@@ -149,6 +198,10 @@ export {
 export {
   vetCore,
   partyVetCore,
+  partyVetWithNativeCciTlsnCore,
+  PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
+  isPartyVetNativeCciTlsnEvidence,
+  readPartyVetNativeCciTlsnEvidence,
   SELF_SIGNED_ASSERTION_SEPARATOR,
   selfSignedAssertionBytes,
   selfSignedAssertionAddress,
@@ -157,6 +210,12 @@ export {
   type VetDeps,
   type VetRequest,
   type PartyVetRequest,
+  type PartyVetNativeCciTlsnInput,
+  type PartyVetWithNativeCciTlsnRequest,
+  type PartyVetNativeCciTlsnQualifierInput,
+  type PartyVetNativeCciTlsnQualifier,
+  type PartyVetNativeCciTlsnEvidence,
+  type PartyVetWithNativeCciTlsnProduction,
   type PartyVetAttemptRequest,
   type PartyVetDeps,
   type PartyVetOperationCheckpoint,
@@ -205,6 +264,22 @@ export {
   type CompositeVerificationUnresolvedCode,
   type StrictCompositeVerification,
 } from "./compositeVerification.js";
+export {
+  evaluateClaimRequirementQualification,
+  type ClaimQualificationDecision,
+  type ClaimQualificationResultProjection,
+  type ClaimQualificationResultReuse,
+  type ClaimQualificationProductionAuthority,
+  type ClaimQualificationReplayAuthority,
+  type ClaimQualificationAuthority,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type ClaimQualificationRecipeRegistry,
+  type ClaimQualificationAuthentication,
+  type ClaimQualificationDeps,
+  type ClaimQualificationEvaluation,
+} from "./claimRequirementQualification.js";
 export {
   evaluateParserSpec,
   defaultParserEngine,
@@ -307,6 +382,7 @@ export {
 } from "./durableRecipePin.js";
 export {
   buildTwoSidedBundle,
+  buildEvidenceBoundTwoSidedBundle,
   bundleSignedScope,
   attestationBundleHash,
   BUNDLE_SIGNED_SCOPE_OMIT,
@@ -318,7 +394,61 @@ export {
   type SigningSessionParty,
   type TwoSidedSession,
   type TwoSidedBundles,
+  type EvidenceBoundTwoSidedSession,
+  type EvidenceBoundTwoSidedBundles,
+  type EvidenceBoundBundleProducerDeps,
 } from "./twoSidedBundle.js";
+export {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  type CreateRatingRecordInput,
+  type RatingRecordSigner,
+} from "./ratingRecord.js";
+export {
+  publishRatingRecordDurably,
+  type DurablePublishedRating,
+  type DurableRatingPublicationDeps,
+  type DurableRatingPublicationInput,
+  type DurableRatingPublicationProgress,
+  type DurableRatingPublicationStage,
+  type RatingAnchorAuthenticationVerdict,
+  type RatingAuthenticationVerdict,
+  type RatingPublicationEffectClaim,
+  type RatingPublicationEffectLease,
+  type RatingPublicationEffectRecord,
+  type RatingPublicationEffectStore,
+  type RatingPublicationEffectWrite,
+} from "./durableRatingPublication.js";
+export {
+  createRatingPhasePlan,
+  completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
+  type RatingPartyRole,
+  type RatingPhaseParty,
+  type RatingPhasePriorResult,
+  type RatingPhaseAuthorityInput,
+  type RatingPhaseAuthenticationVerdict,
+  type CreateRatingPhasePlanDeps,
+  type RatingPhasePlan,
+  type RatingPhaseSubmission,
+  type RatingPhaseCompletedEntry,
+  type RatingPhaseRoleResult,
+  type RatingPhaseReadyHandoff,
+  type RatingPhaseCompletion,
+  type CompleteRatingPhaseDeps,
+} from "./ratingPhase.js";
+export {
+  RATING_PHASE_HANDOFF_CHECKPOINT_KEY,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
+  type RatingPhaseHandoffAuthenticationInput,
+  type AuthenticateRatingPhaseHandoff,
+  type PersistRatingPhaseHandoffDeps,
+  type RecoverRatingPhaseHandoffDeps,
+  type RatingPhaseHandoffStage,
+  type PersistRatingPhaseHandoffResult,
+  type RecoverRatingPhaseHandoffResult,
+} from "./durableRatingPhaseHandoff.js";
 export {
   assembleTerminalBundleForOwnRole,
   createTerminalBundleAuthority,

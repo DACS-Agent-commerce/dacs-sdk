@@ -43,6 +43,17 @@ import {
   type PresenceClaimDecision,
 } from "./compositeVerification.js";
 
+/** Reserved supplementary type emitted only by the native CCI Vet wrapper. */
+export const PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE =
+  "qualified-native-cci-tlsn:v1" as const;
+
+function isNativeCciTlsnQualificationSignal(
+  signal: Readonly<SupplementarySignal>,
+): boolean {
+  return signal.source === "cci-tlsn" &&
+    signal.signalType === PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE;
+}
+
 /** Exact location of one ClaimRequirement inside a party-level requirement. */
 export type PartyVetRequirementPath =
   | { kind: "required"; index: number }
@@ -815,7 +826,12 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
       classification: attempt.classification,
       methodInputHash: sha256Hex(canonicalize(attempt.methodInput)),
     })),
-    supplementary,
+    // Native CCI evidence is only available after the session recipe pins have
+    // been issued. It remains bound by the final plan hash and signed CVR; only
+    // this SDK-reserved type is omitted from the earlier, circular pre-pin scope.
+    supplementary: supplementary.filter(
+      (signal) => !isNativeCciTlsnQualificationSignal(signal),
+    ),
     ...(warnings !== undefined ? { warnings } : {}),
   };
   return sha256Hex(canonicalize(payload));
