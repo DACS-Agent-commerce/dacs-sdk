@@ -52,9 +52,11 @@ worst case. Lease expiry does not release it or authorize another effect.
 `authority.reconcile()` releases it only after the injected rail authenticator
 accepts an exact finalized settlement or authoritative absence proof.
 
-## Durable store
+## Durable stores
 
-`createFsWalletSpendStateStoreV1()` is the host-local reference store. It:
+`createFsWalletSpendStateStoreV1()` is a host-local reference/manual store. It
+is not the funded generated-agent authority and must not be treated as
+rollback-resistant across actor backup/restore. It:
 
 - serializes independent processes with crash-recoverable locks;
 - publishes state through fsync and atomic rename;
@@ -63,6 +65,13 @@ accepts an exact finalized settlement or authoritative absence proof.
   HMAC key; and
 - treats missing state after initialization as corruption, never a fresh
   budget.
+
+Filesystem and custom stores that do not explicitly implement a lineage
+selector keep the historical wallet/chain/policy-id scope, so an SDK upgrade
+continues to address their existing journal. The PostgreSQL store explicitly
+selects canonical wallet+chain lineage. Moving an existing journal to
+PostgreSQL requires the authenticated operator-only legacy import described in
+`wallet-budget-authority-design.md`; creating an empty lineage is not migration.
 
 Current writers publish a fully written `0600` file at the canonical lock path
 with an exclusive hard link. This is intentionally incompatible in a
@@ -105,7 +114,7 @@ const outcome = await executeWalletSpendEffectV1({
 });
 ```
 
-The one-click host must build reservations from authenticated agreement and rail
-definition hashes, use one state directory per wallet/chain policy, expose
-`authority.inspect()` through `dacs doctor`, and keep any ambiguous reservation
-operator-gated until reconciliation completes.
+Generated funded buyers instead use the remote authority client described in
+`wallet-budget-authority-design.md`. They hold only an endpoint and role-scoped
+token; the service owns PostgreSQL access, stable wallet/chain lineage,
+provisioning, migration, authenticated balances/recovery and transitions.

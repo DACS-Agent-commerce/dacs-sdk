@@ -22,8 +22,10 @@ import {
   type WalletSpendAuthorityDependenciesV1,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
+  type WalletSpendStateStore,
 } from "../../src/rails/walletSpendAuthority.js";
 import { createFsWalletSpendStateStoreV1 } from "../../src/rails/walletSpendAuthorityFs.js";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -146,6 +148,7 @@ describe("wallet-wide spend authority (#291)", () => {
     >);
 
     expect(await wallet.inspect()).toEqual({
+      revision: 3,
       policyId: "buyer-production-v1",
       policyHash: wallet.policyHash,
       wallet: "wallet-1",
@@ -194,6 +197,55 @@ describe("wallet-wide spend authority (#291)", () => {
       status: "denied",
       reason: "concurrency-limit",
     });
+  });
+
+  test("policy labels cannot fork one wallet and chain into a fresh lineage", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const store: WalletSpendStateStore = {
+      ...retained,
+      lineageScope: (selected: Readonly<WalletSpendPolicyV1>) => sha256Hex(
+        `dacs-wallet-spend-scope:v1:${canonicalize({
+          wallet: selected.wallet,
+          chainId: selected.chainId,
+        })}`,
+      ),
+    };
+    const original = authority({ store, selectedPolicy: policy({ policyId: "policy-a" }) });
+    expect((await original.reserve(reservation("one"))).status).toBe("reserved");
+
+    const renamed = authority({ store, selectedPolicy: policy({ policyId: "policy-b" }) });
+    await expect(renamed.inspect()).rejects.toThrow(/another policy/);
+    await expect(renamed.reserve(reservation("two"))).rejects.toThrow(
+      /another policy/,
+    );
+  });
+
+  test("stores without a lineage override retain the historical policy scope", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const scopes: string[] = [];
+    const store: WalletSpendStateStore = {
+      read: async (scope: string) => {
+        scopes.push(scope);
+        return retained.read!(scope);
+      },
+      async transact(scope, operation) {
+        scopes.push(scope);
+        return retained.transact(scope, operation);
+      },
+    };
+    const selected = policy();
+    const historicalScope = sha256Hex(
+      `dacs-wallet-spend-scope:v1:${canonicalize({
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        policyId: selected.policyId,
+      })}`,
+    );
+    const first = authority({ store, selectedPolicy: selected });
+    expect((await first.reserve(reservation("legacy"))).status).toBe("reserved");
+    const restarted = authority({ store, selectedPolicy: selected });
+    expect(await restarted.inspect()).toMatchObject({ activeEffects: 1 });
+    expect(new Set(scopes)).toEqual(new Set([historicalScope]));
   });
 
   test("an expired pre-effect lease cannot act or silently free budget", async () => {
@@ -508,11 +560,13 @@ describe("wallet-wide spend authority (#291)", () => {
     expect(calls).toEqual(["effect"]);
 
     const ambiguous = authority({});
+    let ambiguousEffects = 0;
     await expect(executeWalletSpendEffectV1({
       authority: ambiguous,
       reservation: reservation("two"),
       async effect(fence) {
         await fence.assertCurrent();
+        ambiguousEffects += 1;
         throw new Error("connection lost after submission");
       },
       async settlement() {
@@ -520,6 +574,22 @@ describe("wallet-wide spend authority (#291)", () => {
       },
     })).rejects.toThrow(/connection lost/);
     expect((await ambiguous.inspect()).activeEffects).toBe(1);
+    const retry = await executeWalletSpendEffectV1({
+      authority: ambiguous,
+      reservation: reservation("two"),
+      async effect() {
+        ambiguousEffects += 1;
+        return "must-not-run";
+      },
+      async settlement() {
+        return settled() as Extract<
+          WalletSpendRecoveryObservationV1,
+          { disposition: "settled" }
+        >;
+      },
+    });
+    expect(retry).toMatchObject({ status: "held", stage: "effect-pending" });
+    expect(ambiguousEffects).toBe(1);
   });
 
   test("combines settlement and wallet generations at the irreversible boundary", async () => {

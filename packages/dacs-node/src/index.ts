@@ -77,6 +77,8 @@ export * from "./transport/index.js";
 export * from "./x402Payment.js";
 export * from "./x402RuntimePayment.js";
 export * from "./walletSpendRuntime.js";
+export * from "./walletSpendPostgres.js";
+export * from "./walletSpendRemote.js";
 export * from "./x402SellerEvm.js";
 export * from "./x402Http.js";
 export * from "./evmRuntime.js";

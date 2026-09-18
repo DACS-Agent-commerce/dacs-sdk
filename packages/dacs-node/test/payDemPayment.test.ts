@@ -462,9 +462,10 @@ describe("native DEM buyer payment track", () => {
         finality: { model: "bft-final" },
         blockNumber: 43,
         txRefKind: "demos",
-        networkFeeOs: "1000000000",
       } }),
     }));
+    expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
+      .not.toHaveProperty("networkFeeOs");
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
   });

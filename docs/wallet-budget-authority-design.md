@@ -1,10 +1,14 @@
-# SDK #301: backend direction for D1 review
+# SDK #301: PostgreSQL wallet authority direction
 
-Status: recommendation for steward/Hayk consideration, not D1 ratification, backend acceptance, implementation or deployment approval. This note does not amend the existing D1 digest. It accompanies the [existing decision worksheet](https://github.com/DACS-Agent-commerce/dacs-sdk/pull/301#issuecomment-5608486446).
+Status: decided SDK implementation direction. This is not provider/topology
+approval, deployment evidence, D1 ratification or a Standard change.
 
-## Recommended direction
+## SDK direction
 
-Evaluate a small protected wallet-budget authority service backed by a separately operated PostgreSQL database. Keep it outside the agent host's backup/restore lifecycle. This is an architectural recommendation, not a claim that any existing deployment meets D1. Hosting provider, durable failover policy and operating owner remain to be named.
+Funded generated buyers use a narrow wallet-budget authority client. The
+authority is a separately operated service backed by PostgreSQL and is outside
+the generated actor host's backup/restore lifecycle. Hosting provider, durable
+failover policy and operating owner remain to be named and approved.
 
 Agents receive access only to the budget service's narrow operations; they do not receive database administration, arbitrary table-write, lineage-provisioning or restore permissions. The service must enforce stable wallet/chain lineage, allowed accounting transitions and policy migration itself. Caller-supplied revision numbers, commitments or a capability label alone cannot establish authority.
 
@@ -20,14 +24,47 @@ Database restore, failover to a stale replica, account compromise and administra
 
 Durability settings must be explicit and verified: asynchronous commit can acknowledge transactions before durable WAL persistence, so a default product label cannot supply D1's guarantee. [PostgreSQL WAL configuration](https://www.postgresql.org/docs/current/runtime-config-wal.html).
 
-## Alternative if the team already operates AWS
+## Implemented boundary
 
-DynamoDB is a candidate only if the design preserves D1's two-phase ordering: first conditionally create the immutable candidate and receive durable success; then conditionally advance the authoritative head from the exact prior revision and commitment. A single transaction that makes candidate and head visible together does not by itself demonstrate WA-D09. Unknown outcomes require reconciliation by durable operation identity. Restored or exported tables remain nonauthorizing until the exact candidate/head pair, lineage, revision, commitment and unresolved obligations are independently reconciled to the latest accepted authority; AWS documents that backups can capture only part of a recent transaction during propagation. Resource identity, IAM, endpoint selection, read consistency and failover topology remain review requirements. [DynamoDB transaction and restore behavior](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis.html).
+The SDK supplies a PostgreSQL state-store/schema library, explicit operator-only
+lineage provisioning and policy migration, and an authenticated remote
+`WalletSpendAuthorityV1` client/service protocol. The agent protocol exposes
+only reserve/current/begin/settle/reconcile/inspect. PostgreSQL credentials,
+lineage creation, migration, balance authentication, recovery authentication
+and authoritative state transitions remain server-side. Missing or unavailable
+lineage is nonauthorizing. Generated funded wiring has no filesystem fallback.
 
-A point-in-time restore creates a new table. That helps make restoration explicit, but does not prevent an operator or restorable configuration from selecting the restored table as authority. Its resource identity, permissions and read/transaction consistency must therefore be part of the provider review. [DynamoDB restore behavior](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/pointintimerecovery_restores.html).
+Lineage is the canonical wallet plus chain, never a policy id, actor path or
+deployment. Every state mutation advances a revision. PostgreSQL server time is
+used for windows and leases. Each changed state is committed first as an
+immutable operation-bound candidate and then applied in a separate serializable,
+row-locked exact-head transaction. Inspect is read-only. The service operation
+log binds an immutable operation id and request hash so an uncertain response is
+resolved without retrying a payment effect or assuming budget is unused.
 
-## Concrete decision before implementation
+Generated backup/restore rejects legacy `wallet-spend*` actor paths and never
+selects the authority database. The generated client receives only an HTTPS
+endpoint and role-scoped token secret; explicit insecure HTTP is limited to
+loopback test/local use.
 
-The steward and Hayk should approve or amend the service boundary, then name the provider/topology and owner who can supply durability, authorization and restore evidence. Prefer an existing separately operated service if one can meet the contract; do not provision new infrastructure from this recommendation.
+## Existing-agent upgrade
 
-Acceptance remains WA-D01 through WA-D09 in D1: stable lineage, every-mutation revision, unavailable/stale authority refusal, concurrency, interrupted-commit recovery, migration/rekey continuity, funded-consumer capability enforcement, non-mutating doctor/status and durable-candidate-before-anchor ordering. Preserve signed DACS formats and separately resolve the existing operational notice compatibility item under WA-D07. No new Standard change is proposed.
+Do not freshly provision PostgreSQL for a wallet/chain that has an existing
+filesystem/custom authority journal. An operator must first authenticate that
+journal using its existing integrity mechanism, then call the operator-only
+legacy-state import with the complete state and authenticated source identity
+and evidence. Import validates the full state against the selected policy and
+preserves its revision, totals, rolling events and unresolved reservations; it
+refuses an existing lineage. Empty provisioning likewise requires authenticated
+operator evidence that the wallet/chain is demonstrably new. Neither operation
+is present on the agent HTTP API. Rotating role authentication does not change
+lineage.
+
+## Claim boundary
+
+This PR governs generated service-payment debits and the rail network-fee debits
+attached to those payments. Setup and funded-doctor disposable-wallet actions,
+plus unrelated Demos storage/anchor fees, are outside this authority claim.
+They retain their existing explicit consent and limit controls.
+
+Acceptance remains WA-D01 through WA-D09 in D1: stable lineage, every-mutation revision, unavailable/stale authority refusal, concurrency, interrupted-commit recovery, migration/rekey continuity, funded-consumer capability enforcement, non-mutating doctor/status and durable-candidate-before-anchor ordering. Pay-DEM v1 keeps its original wire settlement shape; network-fee accounting remains an internal funded-authority requirement. No new Standard or signed wire-format change is proposed.
