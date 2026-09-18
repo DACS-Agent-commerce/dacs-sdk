@@ -118,6 +118,27 @@ function residualPadBitAlias(value: string): string {
 }
 
 describe("verifyBundleCopy (§10.4.3(b) copy validity)", () => {
+  test.each([undefined, NaN, "\ud800"])(
+    "returns invalid for non-canonical JSON data (%s)",
+    async (invalidValue) => {
+      const copy = sign(body(), [BUYER, SELLER], "buyer");
+      copy["jobId"] = invalidValue;
+      await expect(verifyBundleCopy(copy, "buyer", deps)).resolves.toEqual({
+        valid: false,
+        reason: "bundle is not canonical JSON data",
+      });
+    },
+  );
+
+  test("preserves the dependency error channel", async () => {
+    const copy = sign(body(), [BUYER, SELLER], "buyer");
+    const unavailable = new Error("key resolver unavailable");
+    await expect(verifyBundleCopy(copy, "buyer", {
+      ...deps,
+      resolvePublicKey: async () => { throw unavailable; },
+    })).rejects.toBe(unavailable);
+  });
+
   test("a FULLY SIGNED copy at its own role address is valid", async () => {
     const copy = sign(body(), [BUYER, SELLER], "buyer");
     const r = await verifyBundleCopy(copy, "buyer", deps);
