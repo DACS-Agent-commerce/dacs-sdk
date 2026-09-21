@@ -39,8 +39,20 @@ deployment. Every state mutation advances a revision. PostgreSQL server time is
 used for windows and leases. Each changed state is committed first as an
 immutable operation-bound candidate and then applied in a separate serializable,
 row-locked exact-head transaction. Inspect is read-only. The service operation
-log binds an immutable operation id and request hash so an uncertain response is
-resolved without retrying a payment effect or assuming budget is unused.
+log binds an authenticated role, immutable operation id, and request hash so an
+uncertain response is resolved without retrying a payment effect or assuming
+budget is unused. The authenticated role and lineage resolver is re-run before
+any retained or reconstructed response is disclosed. If a reserve head advance
+commits but its acknowledgement or response-log write is lost, the PostgreSQL
+operation store reconstructs only that exact role-bound reserved response from
+the applied operation-bound candidate and verifies that the authoritative head
+has not fallen behind it. The schema upgrade backfills a legacy candidate role
+only where the operation log makes the binding unambiguous. It aborts if any
+candidate remains unbound and makes the role column non-null before releasing
+its exclusive migration locks. Candidate decoding accepts the strict legacy
+raw-value format (where JSON null represented undefined) for candidates prepared
+by the initial PR head. Serializable/deadlock conflicts retry only the database
+transition, never a rail effect.
 
 Generated backup/restore rejects legacy `wallet-spend*` actor paths and never
 selects the authority database. The generated client receives only an HTTPS
@@ -59,6 +71,16 @@ refuses an existing lineage. Empty provisioning likewise requires authenticated
 operator evidence that the wallet/chain is demonstrably new. Neither operation
 is present on the agent HTTP API. Rotating role authentication does not change
 lineage.
+
+Upgrading from the initial PR head is a quiesced migration, not a rolling
+upgrade. Stop and retire every old authority process and database writer, run
+the schema migration to completion, verify that no candidate role is null and
+that PostgreSQL enforces the non-null constraint, and only then start the new
+service. A candidate that cannot be mapped to exactly one operation-log role
+makes migration fail closed and requires explicit operator investigation and
+resolution. The exclusive operation/candidate migration locks plus the final
+non-null constraint also ensure that a concurrent or accidentally restarted old
+writer blocks and then fails rather than inserting a newly unbound candidate.
 
 ## Claim boundary
 

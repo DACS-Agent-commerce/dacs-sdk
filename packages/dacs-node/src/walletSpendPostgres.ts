@@ -33,9 +33,11 @@ export interface DacsPostgresPoolV1 {
 }
 
 export interface DacsWalletSpendPostgresOperationV1 {
+  /** Authenticated service role that owns this operation and its candidates. */
+  roleId: string;
   operationId: string;
   requestHash: string;
-  /** Mutation ordinal within one remote operation (normally zero). */
+  /** Logical mutation ordinal within one remote operation (normally omitted). */
   mutationIndex?: number;
 }
 
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS dacs_wallet_spend_lineages (
 CREATE TABLE IF NOT EXISTS dacs_wallet_spend_candidates (
   candidate_id uuid PRIMARY KEY,
   lineage_key text NOT NULL REFERENCES dacs_wallet_spend_lineages(lineage_key),
+  role_id text NOT NULL,
   operation_id uuid NOT NULL,
   request_hash text NOT NULL,
   mutation_index integer NOT NULL CHECK (mutation_index >= 0),
@@ -85,6 +88,40 @@ CREATE TABLE IF NOT EXISTS dacs_wallet_spend_operations (
   completed_at timestamptz,
   PRIMARY KEY (role_id, operation_id)
 );
+DO $dacs_wallet_spend_role_migration$
+BEGIN
+  -- This is a quiesced migration. The exclusive lock fences any old writer
+  -- until role_id has become mandatory; an old insert released afterward then
+  -- fails the NOT NULL constraint instead of creating an unusable candidate.
+  LOCK TABLE dacs_wallet_spend_operations IN ACCESS EXCLUSIVE MODE;
+  LOCK TABLE dacs_wallet_spend_candidates IN ACCESS EXCLUSIVE MODE;
+  ALTER TABLE dacs_wallet_spend_candidates
+    ADD COLUMN IF NOT EXISTS role_id text;
+  WITH unambiguous_candidate_roles AS (
+    SELECT operation_id, request_hash, min(role_id) AS role_id
+      FROM dacs_wallet_spend_operations
+     GROUP BY operation_id, request_hash
+    HAVING count(*) = 1
+  )
+  UPDATE dacs_wallet_spend_candidates AS candidate
+     SET role_id = binding.role_id
+    FROM unambiguous_candidate_roles AS binding
+   WHERE candidate.role_id IS NULL
+     AND candidate.operation_id = binding.operation_id
+     AND candidate.request_hash = binding.request_hash;
+  IF EXISTS (
+    SELECT 1 FROM dacs_wallet_spend_candidates WHERE role_id IS NULL
+  ) THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23502',
+      MESSAGE = 'wallet-spend-candidate-role-migration-ambiguous';
+  END IF;
+  ALTER TABLE dacs_wallet_spend_candidates
+    ALTER COLUMN role_id SET NOT NULL;
+END
+$dacs_wallet_spend_role_migration$;
+CREATE INDEX IF NOT EXISTS dacs_wallet_spend_candidates_role_operation
+  ON dacs_wallet_spend_candidates(lineage_key, role_id, operation_id);
 `;
 
 export function dacsWalletSpendLineageKeyV1(wallet: string, chainId: string): string {
@@ -153,6 +190,7 @@ interface LineageRow {
 
 interface CandidateRow {
   candidate_id: string;
+  role_id: string | null;
   request_hash: string;
   prior_revision: string | number;
   prior_state_hash: string;
@@ -163,22 +201,80 @@ interface CandidateRow {
   status: "prepared" | "applied" | "superseded";
 }
 
+interface CandidateValueV1 {
+  valueVersion: "1";
+  defined: boolean;
+  value: unknown;
+}
+
+function encodeCandidateValue(value: unknown): Readonly<CandidateValueV1> {
+  return Object.freeze({
+    valueVersion: "1",
+    defined: value !== undefined,
+    value: value === undefined ? null : value,
+  });
+}
+
+function decodedCandidateValue(value: unknown): Readonly<{
+  defined: boolean;
+  value: unknown;
+}> {
+  // d0e26c candidates stored result.value directly and represented undefined
+  // as JSON null. Preserve that exact legacy meaning after the quiesced upgrade.
+  if (value === null) return Object.freeze({ defined: false, value: undefined });
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const candidate = value as Record<string, unknown>;
+    if (Object.hasOwn(candidate, "valueVersion")) {
+      if (Object.keys(candidate).length !== 3 || candidate.valueVersion !== "1" ||
+          typeof candidate.defined !== "boolean" || !Object.hasOwn(candidate, "value") ||
+          (!candidate.defined && candidate.value !== null)) {
+        throw new Error("wallet-spend-postgres-candidate-value-invalid");
+      }
+      return Object.freeze({
+        defined: candidate.defined,
+        value: candidate.defined ? candidate.value : undefined,
+      });
+    }
+  }
+  return Object.freeze({ defined: true, value });
+}
+
+function decodeCandidateValue<T>(value: unknown): T {
+  return decodedCandidateValue(value).value as T;
+}
+
+function candidateValueMatches(value: unknown, expected: unknown): boolean {
+  const decoded = decodedCandidateValue(value);
+  if (!decoded.defined) return expected === undefined;
+  return expected !== undefined && canonicalize(decoded.value) === canonicalize(expected);
+}
+
+function postgresErrorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
 async function transaction<T>(
   pool: DacsPostgresPoolV1,
   operation: (client: DacsPostgresClientV1) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const result = await operation(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    try { await client.query("ROLLBACK"); } catch { /* preserve the original failure */ }
-    throw error;
-  } finally {
-    client.release();
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch { /* preserve the original failure */ }
+      const code = postgresErrorCode(error);
+      if ((code !== "40001" && code !== "40P01") || attempt === 7) throw error;
+    } finally {
+      client.release();
+    }
   }
+  throw new Error("wallet-spend-postgres-serialization-exhausted");
 }
 
 /** Explicit operator-only lineage provisioning; the agent HTTP API never calls this. */
@@ -193,7 +289,7 @@ export async function provisionDacsWalletSpendPostgresLineageV1(
   const policy = input.policy;
   const policyHash = dacsWalletSpendPolicyHashV1(policy);
   const lineage = dacsWalletSpendLineageKeyV1(policy.wallet, policy.chainId);
-  const state = emptyState(policyHash);
+  const state = validateWalletSpendStateV1(emptyState(policyHash), policy);
   const evidence = provisioningEvidence(input.newLineageEvidence);
   if (!await input.authenticateEvidence(evidence, state)) {
     throw new Error("wallet-spend-new-lineage-evidence-rejected");
@@ -263,6 +359,10 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
   );
   const row = loaded.rows[0];
   if (!row) throw new Error("wallet-spend-lineage-missing");
+  if (safeRevision(row.revision) !== row.state.generation ||
+      row.state_hash !== stateHash(row.state) || row.policy_hash !== row.state.policyHash) {
+    throw new Error("wallet-spend-authoritative-head-invalid");
+  }
   if (row.policy_hash !== input.previousPolicyHash ||
       row.state.policyHash !== input.previousPolicyHash) {
     throw new Error("wallet-spend-policy-head-mismatch");
@@ -275,11 +375,14 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
   }
   const priorRevision = safeRevision(row.revision);
   const revision = priorRevision + 1;
-  const nextState: WalletSpendStateV1 = {
+  if (!Number.isSafeInteger(revision)) {
+    throw new Error("wallet-spend-postgres-revision-exhausted");
+  }
+  const nextState = validateWalletSpendStateV1({
     ...row.state,
     policyHash: nextPolicyHash,
     generation: revision,
-  };
+  }, input.policy);
   const candidateId = randomUUID();
   const operationId = randomUUID();
   const requestHash = sha256Hex(canonicalize({
@@ -291,13 +394,13 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
   const nextHash = stateHash(nextState);
   await pool.query(
     `INSERT INTO dacs_wallet_spend_candidates
-      (candidate_id, lineage_key, operation_id, request_hash, mutation_index,
+      (candidate_id, lineage_key, role_id, operation_id, request_hash, mutation_index,
        prior_revision, prior_state_hash, next_revision, next_state_hash,
        candidate_state, candidate_value, status)
-     VALUES ($1::uuid, $2, $3::uuid, $4, 0, $5, $6, $7, $8,
-             $9::jsonb, 'null'::jsonb, 'prepared')`,
+     VALUES ($1::uuid, $2, 'operator:policy-migration', $3::uuid, $4, 0,
+             $5, $6, $7, $8, $9::jsonb, $10::jsonb, 'prepared')`,
     [candidateId, lineage, operationId, requestHash, priorRevision, row.state_hash,
-      revision, nextHash, canonicalize(nextState)],
+      revision, nextHash, canonicalize(nextState), canonicalize(encodeCandidateValue(undefined))],
   );
   await transaction(pool, async (client) => {
     const head = (await client.query<LineageRow>(
@@ -340,6 +443,26 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
 }>): WalletSpendStateStore {
   const lineage = dacsWalletSpendLineageKeyV1(input.wallet, input.chainId);
   let mutationIndex = 0;
+  let contextualMutationIndex = 0;
+
+  const operationContext = () => {
+    const context = input.operation?.();
+    if (context === undefined) return undefined;
+    if (typeof context.roleId !== "string" || context.roleId.length === 0 ||
+        context.roleId.trim() !== context.roleId || context.roleId.normalize("NFC") !== context.roleId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+          .test(context.operationId) || !/^[0-9a-f]{64}$/.test(context.requestHash) ||
+        (context.mutationIndex !== undefined &&
+          (!Number.isSafeInteger(context.mutationIndex) || context.mutationIndex < 0))) {
+      throw new Error("wallet-spend-postgres-operation-identity-invalid");
+    }
+    return Object.freeze({
+      roleId: context.roleId,
+      operationId: context.operationId,
+      requestHash: context.requestHash,
+      mutationIndex: context.mutationIndex ?? contextualMutationIndex++,
+    });
+  };
 
   const load = async (): Promise<LineageRow> => {
     const result = await input.pool.query<LineageRow>(
@@ -380,52 +503,57 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
       ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
     ): Promise<T> {
       if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
+      const context = operationContext();
       for (let attempt = 0; attempt < 8; attempt += 1) {
         const prior = await load();
+        const priorRevision = safeRevision(prior.revision);
+        if (priorRevision === Number.MAX_SAFE_INTEGER) {
+          throw new Error("wallet-spend-postgres-revision-exhausted");
+        }
         const result = operation(structuredClone(prior.state));
         if (canonicalize(result.state) === canonicalize(prior.state)) return result.value;
-        const priorRevision = safeRevision(prior.revision);
-        if (result.state.generation !== priorRevision + 1) {
+        if (!Number.isSafeInteger(result.state.generation) ||
+            result.state.generation !== priorRevision + 1) {
           throw new Error("wallet-spend-postgres-revision-not-monotonic");
         }
-        const context = input.operation?.();
         const operationId = context?.operationId ?? randomUUID();
         const requestHash = context?.requestHash ?? sha256Hex(canonicalize({
           lineage, priorRevision, state: result.state,
         }));
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-              .test(operationId) || !/^[0-9a-f]{64}$/.test(requestHash)) {
-          throw new Error("wallet-spend-postgres-operation-identity-invalid");
-        }
-        const index = context === undefined
-          ? mutationIndex++
-          : (context.mutationIndex ?? 0) + attempt;
-        if (!Number.isSafeInteger(index) || index < 0) {
+        // Reserve a bounded retry range for each logical mutation. One remote
+        // request can legitimately prune rolling events and then reserve, so
+        // separate transitions must not collide on the same candidate key.
+        const index = context === undefined ? mutationIndex++ :
+          context.mutationIndex * 8 + attempt;
+        if (!Number.isSafeInteger(index) || index < 0 || index > 2_147_483_647) {
           throw new Error("wallet-spend-postgres-mutation-index-invalid");
         }
         const candidateId = randomUUID();
         const nextHash = stateHash(result.state);
-        const storedValue = result.value === undefined ? null : result.value;
+        const storedValue = encodeCandidateValue(result.value);
         await input.pool.query(
           `INSERT INTO dacs_wallet_spend_candidates
-            (candidate_id, lineage_key, operation_id, request_hash, mutation_index,
+            (candidate_id, lineage_key, role_id, operation_id, request_hash, mutation_index,
              prior_revision, prior_state_hash, next_revision, next_state_hash,
              candidate_state, candidate_value, status)
-           VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, $9,
-                   $10::jsonb, $11::jsonb, 'prepared')
+           VALUES ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10,
+                   $11::jsonb, $12::jsonb, 'prepared')
            ON CONFLICT (lineage_key, operation_id, mutation_index) DO NOTHING`,
-          [candidateId, lineage, operationId, requestHash, index, priorRevision,
+          [candidateId, lineage, context?.roleId ?? "internal:unscoped",
+            operationId, requestHash, index, priorRevision,
             prior.state_hash, result.state.generation, nextHash,
             canonicalize(result.state), canonicalize(storedValue)],
         );
         const retained = (await input.pool.query<CandidateRow>(
-          `SELECT candidate_id, request_hash, prior_revision, prior_state_hash, next_revision,
-                  next_state_hash, candidate_state, candidate_value, status
+          `SELECT candidate_id, role_id, request_hash, prior_revision, prior_state_hash,
+                  next_revision, next_state_hash, candidate_state, candidate_value, status
              FROM dacs_wallet_spend_candidates
-            WHERE lineage_key = $1 AND operation_id = $2::uuid AND mutation_index = $3`,
-          [lineage, operationId, index],
+            WHERE lineage_key = $1 AND role_id = $2
+              AND operation_id = $3::uuid AND mutation_index = $4`,
+          [lineage, context?.roleId ?? "internal:unscoped", operationId, index],
         )).rows[0];
-        if (!retained || retained.request_hash !== requestHash) {
+        if (!retained || retained.role_id !== (context?.roleId ?? "internal:unscoped") ||
+            retained.request_hash !== requestHash) {
           throw new Error("wallet-spend-postgres-operation-conflict");
         }
         if (retained.status === "superseded") continue;
@@ -435,7 +563,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
             safeRevision(retained.next_revision) !== result.state.generation ||
             retained.next_state_hash !== nextHash ||
             canonicalize(retained.candidate_state) !== canonicalize(result.state) ||
-            canonicalize(retained.candidate_value) !== canonicalize(storedValue)) {
+            !candidateValueMatches(retained.candidate_value, result.value)) {
           throw new Error("wallet-spend-postgres-operation-conflict");
         }
 
@@ -489,6 +617,111 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
 export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
   pool: DacsPostgresPoolV1,
 ): DacsWalletSpendRemoteOperationStoreV1 {
+  const recoverReservedResponse = async (
+    roleId: string,
+    operationId: string,
+    requestHash: string,
+    request: unknown,
+  ): Promise<unknown | undefined> => {
+    if (request === null || typeof request !== "object" || Array.isArray(request)) {
+      throw new Error("wallet-spend-authority-stored-request-invalid");
+    }
+    const retainedRequest = request as Record<string, unknown>;
+    if (retainedRequest.operation !== "reserve" ||
+        retainedRequest.operationId !== operationId ||
+        sha256Hex(canonicalize(retainedRequest)) !== requestHash ||
+        typeof retainedRequest.wallet !== "string" ||
+        typeof retainedRequest.chainId !== "string" ||
+        typeof retainedRequest.policyHash !== "string" ||
+        retainedRequest.payload === null || typeof retainedRequest.payload !== "object" ||
+        Array.isArray(retainedRequest.payload)) {
+      return undefined;
+    }
+    const payload = retainedRequest.payload as Record<string, unknown>;
+    if (payload.reservation === null || typeof payload.reservation !== "object" ||
+        Array.isArray(payload.reservation)) {
+      throw new Error("wallet-spend-authority-stored-request-invalid");
+    }
+    const reservation = payload.reservation as Record<string, unknown>;
+    const lineage = dacsWalletSpendLineageKeyV1(
+      retainedRequest.wallet,
+      retainedRequest.chainId,
+    );
+    const candidates = await pool.query<CandidateRow & { lineage_key: string }>(
+      `SELECT candidate_id, lineage_key, role_id, request_hash, prior_revision,
+              prior_state_hash, next_revision, next_state_hash, candidate_state,
+              candidate_value, status
+         FROM dacs_wallet_spend_candidates
+        WHERE lineage_key = $1 AND role_id = $2 AND operation_id = $3::uuid
+          AND request_hash = $4 AND status = 'applied'
+        ORDER BY next_revision`,
+      [lineage, roleId, operationId, requestHash],
+    );
+    const recoverable = candidates.rows.flatMap((candidate) => {
+      const priorRevision = safeRevision(candidate.prior_revision);
+      const nextRevision = safeRevision(candidate.next_revision);
+      if (candidate.lineage_key !== lineage || candidate.role_id !== roleId ||
+          nextRevision !== priorRevision + 1 ||
+          candidate.candidate_state.generation !== nextRevision ||
+          candidate.candidate_state.policyHash !== retainedRequest.policyHash ||
+          candidate.next_state_hash !== stateHash(candidate.candidate_state)) {
+        throw new Error("wallet-spend-postgres-candidate-invalid");
+      }
+      const value = decodeCandidateValue<unknown>(candidate.candidate_value);
+      if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+      const claim = value as Record<string, unknown>;
+      if (Object.keys(claim).length !== 2 || claim.status !== "reserved" ||
+          !Number.isSafeInteger(claim.generation) || claim.generation !== nextRevision) {
+        return [];
+      }
+      const stored = candidate.candidate_state.reservations.find(({ reservationId }) =>
+        reservationId === reservation.reservationId);
+      if (!stored || stored.stage !== "reserved" || stored.generation !== nextRevision ||
+          canonicalize(stored.reservation) !== canonicalize(reservation) ||
+          typeof stored.owner !== "string") {
+        throw new Error("wallet-spend-postgres-reserved-candidate-invalid");
+      }
+      return [{ candidate, stored, nextRevision }];
+    });
+    if (recoverable.length === 0) return undefined;
+    if (recoverable.length !== 1) {
+      throw new Error("wallet-spend-postgres-operation-conflict");
+    }
+    const recovered = recoverable[0]!;
+    const headResult = await pool.query<LineageRow>(
+      `SELECT policy_hash, revision, state_hash, state
+         FROM dacs_wallet_spend_lineages WHERE lineage_key = $1`,
+      [lineage],
+    );
+    const head = headResult.rows[0];
+    if (!head || head.policy_hash !== retainedRequest.policyHash ||
+        safeRevision(head.revision) !== head.state.generation ||
+        head.state_hash !== stateHash(head.state) ||
+        safeRevision(head.revision) < recovered.nextRevision ||
+        (safeRevision(head.revision) === recovered.nextRevision &&
+          head.state_hash !== recovered.candidate.next_state_hash)) {
+      throw new Error("wallet-spend-postgres-applied-candidate-missing");
+    }
+    return {
+      protocolVersion: "1",
+      operationId,
+      requestHash,
+      revision: recovered.nextRevision,
+      status: "ok",
+      result: {
+        status: "reserved",
+        permit: {
+          reservationId: recovered.stored.reservationId,
+          bindingHash: recovered.stored.bindingHash,
+          settlementBindingHash: recovered.stored.reservation.settlementBindingHash,
+          owner: recovered.stored.owner,
+          generation: recovered.stored.generation,
+          reservation: recovered.stored.reservation,
+        },
+      },
+    };
+  };
+
   const load: DacsWalletSpendRemoteOperationStoreV1["load"] = async (input) => {
     const result = await pool.query<{
       request_hash: string;
@@ -501,12 +734,20 @@ export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
     );
     const row = result.rows[0];
     if (!row) return undefined;
-    return row.response === null
+    const recovered = row.response === null
+      ? await recoverReservedResponse(
+          input.roleId,
+          input.operationId,
+          row.request_hash,
+          row.request,
+        )
+      : undefined;
+    return row.response === null && recovered === undefined
       ? { requestHash: row.request_hash, request: row.request as never }
       : {
           requestHash: row.request_hash,
           request: row.request as never,
-          response: row.response as never,
+          response: (row.response ?? recovered) as never,
         };
   };
   const store: DacsWalletSpendRemoteOperationStoreV1 = {

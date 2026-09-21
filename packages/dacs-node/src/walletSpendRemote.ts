@@ -519,8 +519,10 @@ function jsonResponse(value: unknown, status = 200): Response {
 export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
   authenticate(token: string): Promise<string | null> | string | null;
   /**
-   * A PostgreSQL authority resolver must bind operationId/requestHash to the
-   * state store operation callback and use one stable service owner identity.
+   * A PostgreSQL authority resolver must bind roleId/operationId/requestHash
+   * to the state store operation callback and use one stable service owner
+   * identity. The resolver is called again before any retained response is
+   * disclosed.
    */
   resolveAuthority(scope: Readonly<{
     roleId: string;
@@ -533,11 +535,11 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     Readonly<WalletSpendAuthorityV1> | null;
   operations: DacsWalletSpendRemoteOperationStoreV1;
 }>): (request: Request) => Promise<Response> {
-  const executeOperation = async (
+  const resolveAvailableAuthority = async (
     roleId: string,
     body: Readonly<RemoteRequestV1>,
     requestHash: string,
-  ): Promise<RemoteResponseV1> => {
+  ): Promise<Readonly<WalletSpendAuthorityV1>> => {
     const authority = await input.resolveAuthority({
       roleId,
       operationId: body.operationId,
@@ -550,6 +552,15 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         authority.policy.wallet !== body.wallet || authority.policy.chainId !== body.chainId) {
       throw new DacsWalletSpendRemoteError("wallet-spend-authority-lineage-unavailable");
     }
+    return authority;
+  };
+
+  const executeOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<RemoteResponseV1> => {
+    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
     const payload = body.payload as Record<string, unknown>;
     let result: unknown;
     if (body.operation === "inspect") {
@@ -601,7 +612,8 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         return jsonResponse({ reasonCode: "wallet-spend-authority-authentication-required" }, 401);
       }
       const roleId = await input.authenticate(token);
-      if (roleId === null) {
+      if (roleId === null || roleId.length === 0 || roleId.trim() !== roleId ||
+          roleId.normalize("NFC") !== roleId) {
         return jsonResponse({ reasonCode: "wallet-spend-authority-authentication-invalid" }, 403);
       }
       const queryMatch = /^\/v1\/wallet-spend\/operations\/([0-9a-f-]+)$/i.exec(
@@ -622,18 +634,21 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         if (retained.requestHash !== requestHash) {
           return jsonResponse({ reasonCode: "wallet-spend-authority-operation-conflict" }, 409);
         }
+        const retainedRequest = captureRequest(retained.request);
+        if (retainedRequest.operationId !== operationId ||
+            sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+          throw new Error("stored-request-invalid");
+        }
         if (retained.response !== undefined) {
           if (!responseShape(retained.response) ||
               retained.response.operationId !== operationId ||
               retained.response.requestHash !== requestHash) {
             throw new Error("stored-response-invalid");
           }
+          await resolveAvailableAuthority(roleId, retainedRequest, requestHash);
           return jsonResponse(retained.response);
         }
-        const retainedRequest = captureRequest(retained.request);
-        if (retainedRequest.operationId !== operationId ||
-            sha256Hex(canonicalize(retainedRequest)) !== requestHash ||
-            retainedRequest.operation === "inspect") {
+        if (retainedRequest.operation === "inspect") {
           throw new Error("stored-request-invalid");
         }
         const resumed = await executeOperation(roleId, retainedRequest, requestHash);
@@ -659,6 +674,7 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
             prior.response.requestHash !== requestHash) {
           throw new Error("stored-response-invalid");
         }
+        await resolveAvailableAuthority(roleId, body, requestHash);
         return jsonResponse(prior.response);
       }
       if (body.operation === "inspect") {
