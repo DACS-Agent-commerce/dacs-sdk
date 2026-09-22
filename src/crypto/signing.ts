@@ -10,12 +10,12 @@ import {
 } from "./ed25519.js";
 
 /**
- * The closed §B.7 registry of signature domain separators — the full 28-entry
+ * The closed §B.7 registry of signature domain separators — the full 30-entry
  * set at this revision, in CORE §B.7 table order (issue #86; oracle pin
- * 662be1d4899a2cadf327fe2d5523e93a80334e5f). A signature produced under one
+ * d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20). A signature produced under one
  * separator MUST NOT validate under any other (SIG-2).
  *
- * Registry membership (all 28) is distinct from *generic single-hash signing
+ * Registry membership (all 30) is distinct from *generic single-hash signing
  * support*: most entries sign the single-hash payload `separator || artifact_hash`
  * and are usable via {@link signArtifact}, but two entries are composite-payload
  * separators ({@link COMPOSITE_DOMAIN_SEPARATORS}) that frame more than one value
@@ -36,6 +36,8 @@ export const SIGNATURE_DOMAIN_SEPARATORS = [
   "dacs-channelmsg:v1:",
   "dacs-agreement:v1:",
   "dacs-payee-bound-agreement:v1:",
+  "dacs-identity-bound-agreement:v1:",
+  "dacs-identity-bound-payee-agreement:v1:",
   "dacs-commitment:v1:",
   "dacs-finality-commitment:v1:",
   "dacs-transcript:v1:",

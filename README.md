@@ -14,6 +14,7 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
+- **Presence oracle update:** see [adoption scope and remaining runtime boundary](./docs/presence-conformance-adoption.md).
 
 ## Layering
 

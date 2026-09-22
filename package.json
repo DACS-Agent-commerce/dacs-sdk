@@ -81,6 +81,7 @@
     "dist",
     "README.md",
     "docs/parser-engine.md",
+    "docs/presence-conformance-adoption.md",
     "docs/alternative-payment-projection.md",
     "docs/demos-cci-identities.md",
     "docs/fixed-price-offline-coordinator.md",
@@ -122,7 +123,7 @@
   },
   "dacs": {
     "releaseMetadataVersion": 1,
-    "standardRevision": "662be1d4899a2cadf327fe2d5523e93a80334e5f",
+    "standardRevision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
     "configSchemaVersion": 1,
     "sqliteSchemaVersion": 8,
     "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7, 8],

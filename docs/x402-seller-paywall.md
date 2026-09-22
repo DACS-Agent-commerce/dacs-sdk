@@ -1,7 +1,7 @@
 # Seller x402 paywall
 
-Normative source audited: DACS Standard `next` at
-`662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the immutable
+Historical normative source audit: DACS Standard `next` at
+`662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the historical
 revision pinned by the fixed-price coordinator.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
@@ -155,3 +155,8 @@ const result = await paywall.handle({ jobId, phaseIndex, request: adapter });
 ```
 
 No new DACS signed field or artifact is introduced by this adapter.
+
+The current conformance oracle is pinned to merged Standard #362 at
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` (DACS-4 v0.8). This pin update
+adopts the strict presence-reference corpus; it does not establish implementation
+of every capability introduced after the historical source audit above.
