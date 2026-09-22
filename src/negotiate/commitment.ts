@@ -5,7 +5,10 @@ import {
   contentHash,
   sha256Hex,
 } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonRead,
+} from "../canonical/snapshot.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import {
   CounterpartyError,
@@ -13,6 +16,7 @@ import {
   SubstrateError,
   TransientError,
 } from "../errors.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   COMPONENT_SIGNATURE_ALGORITHMS,
   isComponentSignature,
@@ -52,6 +56,11 @@ import {
   type AlternativePaymentAgreementLike,
   type AlternativePaymentListingLike,
 } from "../rails/payAlternative.js";
+import {
+  rfqSessionCheckpointHash,
+  validateRfqProposal,
+  type RfqSessionState,
+} from "./rfq.js";
 
 export const FINALITY_COMMITMENT_SEPARATOR =
   "dacs-finality-commitment:v1:" as const satisfies DomainSeparator;
@@ -148,12 +157,20 @@ interface CommitmentBindingInput {
   session: CommitmentSessionBinding;
 }
 
-export interface CommitFixedPriceAgreementInput extends CommitmentBindingInput {
+export interface CommitAgreementInput extends CommitmentBindingInput {
   /** Record construction time only; never used as authoritative committedAt (CA-8). */
   createdAt: number;
   commitmentSigner: BuildComponentSignatureOptions;
   /** Required for an APR Listing; exact authenticated projection/replacement outputs. */
   alternativePayment?: AlternativePaymentAuthorizationInput;
+}
+
+/** Backward-compatible fixed-price name for the shared commitment contract. */
+export interface CommitFixedPriceAgreementInput extends CommitAgreementInput {}
+
+/** RFQ commitment additionally binds the exact accepted channel checkpoint. */
+export interface CommitRfqAgreementInput extends CommitAgreementInput {
+  rfqSession: RfqSessionState;
 }
 
 export interface ReadLegacyFixedPriceAgreementCommitmentInput
@@ -211,7 +228,7 @@ interface CapturedCommitmentProvider extends CapturedCommitmentReader {
   submit: FinalityCommitmentProvider["submit"];
 }
 
-interface FixedPriceBinding {
+interface AgreementBinding {
   agreementHash: string;
   pin: ListingPin;
   parties: string[];
@@ -396,7 +413,7 @@ function captureCommitmentBindingInput(
 
 /** Capture all scalar/callback choices before inspecting either signed artifact. */
 function captureCommitmentInput(
-  value: CommitFixedPriceAgreementInput,
+  value: CommitAgreementInput,
 ): CapturedCommitmentInput {
   const signerOptions = capturedSignerOptions(
     ownDataProperty(value, "commitmentSigner", "commitment input"),
@@ -411,6 +428,16 @@ function captureCommitmentInput(
     createdAt,
     commitmentSigner: signerOptions,
   };
+}
+
+function captureRfqSession(value: CommitRfqAgreementInput): RfqSessionState {
+  const candidate = ownDataProperty(value, "rfqSession", "RFQ commitment input");
+  const session = snapshotCanonicalJsonRead(
+    candidate,
+    "RFQ commitment session checkpoint",
+  ) as RfqSessionState;
+  rfqSessionCheckpointHash(session);
+  return session;
 }
 
 function providerDataMethod<
@@ -629,13 +656,21 @@ function establishAlternativePaymentAuthority(
   return true;
 }
 
-function selectFixedPriceArtifact(
+type SupportedCommitmentPattern = "fixed-price" | "rfq";
+
+interface SelectedAgreementArtifact {
+  agreement: AgreementArtifact;
+  listing: Listing;
+}
+
+function selectAgreementArtifact(
   input: Pick<
     CapturedCommitmentBindingInput,
     "agreement" | "verifiedListing"
   >,
+  pattern: SupportedCommitmentPattern,
   options: { allowLegacyJobId?: boolean } = {},
-): { agreement: AgreementArtifact; listing: Listing } {
+): SelectedAgreementArtifact {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
   if (verified.disposition !== "verified") {
@@ -673,31 +708,54 @@ function selectFixedPriceArtifact(
       "auto-accept requires a verified commitment and live instance-signature path",
     );
   }
-  const negotiate = listing.pipeline.filter((phase) =>
-    phase.kind.startsWith("negotiate-"),
-  );
-  const commits = listing.pipeline.filter((phase) =>
-    phase.kind.startsWith("commit-"),
-  );
+  const negotiate = listing.pipeline
+    .map((phase, index) => ({ phase, index }))
+    .filter(({ phase }) => phase.kind.startsWith("negotiate-"));
+  const commits = listing.pipeline
+    .map((phase, index) => ({ phase, index }))
+    .filter(({ phase }) => phase.kind.startsWith("commit-"));
+  const expectedNegotiation =
+    pattern === "fixed-price" ? "negotiate-fixed-price" : "negotiate-rfq";
   if (
     negotiate.length !== 1 ||
-    negotiate[0]!.kind !== "negotiate-fixed-price" ||
-    commits.length !== 1
+    negotiate[0]!.phase.kind !== expectedNegotiation ||
+    commits.length !== 1 ||
+    commits[0]!.index !== negotiate[0]!.index + 1 ||
+    agreement.derivedFromPattern !== pattern
   ) {
     throw new DacsError(
-      "Listing does not select one fixed-price commitment pipeline",
+      `Listing/agreement does not select one ${pattern} commitment pipeline`,
     );
   }
   const expectedCommit =
     "agreementVersion" in agreement
       ? "commit-agreement"
       : "commit-payee-bound-agreement";
-  if (commits[0]!.kind !== expectedCommit) {
+  if (commits[0]!.phase.kind !== expectedCommit) {
     throw new DacsError(
       "agreement artifact discriminator does not match the commit phase (CA-5)",
     );
   }
   return { agreement, listing };
+}
+
+function selectFixedPriceArtifact(
+  input: Pick<
+    CapturedCommitmentBindingInput,
+    "agreement" | "verifiedListing"
+  >,
+  options: { allowLegacyJobId?: boolean } = {},
+): SelectedAgreementArtifact {
+  return selectAgreementArtifact(input, "fixed-price", options);
+}
+
+function selectRfqArtifact(
+  input: Pick<
+    CapturedCommitmentBindingInput,
+    "agreement" | "verifiedListing"
+  >,
+): SelectedAgreementArtifact {
+  return selectAgreementArtifact(input, "rfq");
 }
 
 /**
@@ -726,7 +784,29 @@ function isLegacyReadableAgreementArtifact(
 function validatePricingBinding(
   listing: Listing,
   agreement: AgreementArtifact,
+  pattern: SupportedCommitmentPattern,
 ): void {
+  if (pattern === "rfq") {
+    if (
+      listing.pricing.kind !== "negotiable" &&
+      listing.pricing.kind !== "metered"
+    ) {
+      throw new DacsError(
+        "RFQ commitment requires negotiable or metered Listing pricing",
+      );
+    }
+    validateRfqProposal(
+      {
+        rfqProposalVersion: "1",
+        price: agreement.terms.price,
+        ...(agreement.terms.meteredQuantity === undefined
+          ? {}
+          : { meteredQuantity: agreement.terms.meteredQuantity }),
+      },
+      listing.pricing,
+    );
+    return;
+  }
   const quantity = agreement.terms.meteredQuantity;
   if (listing.pricing.kind === "fixed" || listing.pricing.kind === "negotiable") {
     if (quantity !== undefined) {
@@ -823,8 +903,14 @@ function validateAuthenticatedSessionBinding(
   if (
     !partyMatches(buyer, input.session.buyer) ||
     !partyMatches(seller, input.session.seller) ||
-    buyer!.primaryClaim === seller!.primaryClaim ||
-    seller!.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(
+      buyer!.primaryClaim,
+      seller!.primaryClaim,
+    ) ||
+    !sameCanonicalClaimIdentity(
+      seller!.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError(
       "authenticated commitment session parties do not match the signed agreement and Listing",
@@ -833,23 +919,97 @@ function validateAuthenticatedSessionBinding(
   return { pin, buyer: buyer!, seller: seller! };
 }
 
-function fixedPriceBinding(
-  selected: ReturnType<typeof selectFixedPriceArtifact>,
+function validateRfqSessionBinding(
+  rfqSession: RfqSessionState,
+  input: CapturedCommitmentBindingInput,
+  selected: SelectedAgreementArtifact,
+): void {
+  const { agreement, listing } = selected;
+  const proposal = rfqSession.standingProposal;
+  const channel = agreement.derivedFromChannel;
+  if (
+    rfqSession.status !== "accepted" ||
+    proposal === undefined ||
+    rfqSession.lastMessageHash === undefined ||
+    channel === undefined
+  ) {
+    throw new DacsError(
+      "RFQ commitment requires an accepted transcript-bound session",
+    );
+  }
+  if (
+    rfqSession.jobId !== agreement.jobId ||
+    !listingPinEquals(rfqSession.listingPin, agreement.listingRef) ||
+    !exact(rfqSession.pricing, listing.pricing) ||
+    channel.subnet !== rfqSession.channelId ||
+    channel.lastMessageHash !== rfqSession.lastMessageHash
+  ) {
+    throw new DacsError(
+      "RFQ agreement does not bind the exact accepted channel checkpoint",
+    );
+  }
+  const buyer = agreement.parties.find((party) => party.role === "buyer");
+  const seller = agreement.parties.find((party) => party.role === "seller");
+  if (
+    buyer === undefined ||
+    seller === undefined ||
+    rfqSession.buyer.primaryClaim !== buyer.primaryClaim ||
+    rfqSession.buyer.bundleHash !== buyer.bundleHash ||
+    !exact(rfqSession.buyer.vetRecordRef, buyer.vetRecordRef) ||
+    rfqSession.seller.primaryClaim !== seller.primaryClaim ||
+    rfqSession.seller.bundleHash !== seller.bundleHash ||
+    !exact(rfqSession.seller.vetRecordRef, seller.vetRecordRef) ||
+    input.session.buyer.primaryClaim !== rfqSession.buyer.primaryClaim ||
+    input.session.seller.primaryClaim !== rfqSession.seller.primaryClaim
+  ) {
+    throw new DacsError(
+      "RFQ channel parties do not match the authenticated commitment session",
+    );
+  }
+  const accepted = validateRfqProposal(
+    {
+      rfqProposalVersion: proposal.rfqProposalVersion,
+      price: proposal.price,
+      ...(proposal.meteredQuantity === undefined
+        ? {}
+        : { meteredQuantity: proposal.meteredQuantity }),
+    },
+    rfqSession.pricing,
+  );
+  const agreementQuantity = agreement.terms.meteredQuantity;
+  const acceptedQuantity = accepted.meteredQuantity;
+  if (
+    !exact(agreement.terms.price, accepted.price) ||
+    ((agreementQuantity === undefined) !==
+      (acceptedQuantity === undefined)) ||
+    (agreementQuantity !== undefined &&
+      acceptedQuantity !== undefined &&
+      !exact(agreementQuantity, acceptedQuantity))
+  ) {
+    throw new DacsError(
+      "RFQ agreement terms differ from the authenticated accepted proposal",
+    );
+  }
+}
+
+function agreementBinding(
+  selected: SelectedAgreementArtifact,
   authenticated: ReturnType<typeof validateAuthenticatedSessionBinding>,
+  pattern: SupportedCommitmentPattern,
   alternativeAuthorityEstablished = false,
-): FixedPriceBinding {
+): AgreementBinding {
   const { agreement, listing } = selected;
   if (usesAlternativePayment(listing) && !alternativeAuthorityEstablished) {
     throw new DacsError(
       "pay-alternative commitment requires authenticated APR projection and replacement gates",
     );
   }
-  if (agreement.derivedFromPattern !== "fixed-price") {
+  if (agreement.derivedFromPattern !== pattern) {
     throw new DacsError(
-      "this commitment core supports only fixed-price agreements",
+      `this commitment path requires a ${pattern} agreement`,
     );
   }
-  validatePricingBinding(listing, agreement);
+  validatePricingBinding(listing, agreement, pattern);
   if (!exact(agreement.terms.deliverable, expectedDeliverable(listing))) {
     throw new DacsError(
       "agreement deliverable does not match the pinned Listing",
@@ -878,7 +1038,7 @@ function fixedPriceBinding(
 function validateProvisionalTime(
   input: CapturedCommitmentInput,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
-  binding: FixedPriceBinding,
+  binding: AgreementBinding,
 ): void {
   const { agreement, listing } = selected;
   if (
@@ -911,36 +1071,39 @@ function validateProvisionalTime(
  * seller intake supplies the authenticated finality timestamp and uses this
  * only to re-check the complete agreement/listing commerce binding.
  */
-export function validateFixedPriceAgreementBinding(callerInput: {
-  agreement: AgreementArtifact;
-  verifiedListing: VerifiedListingInput;
-  committedAt: number;
-  alternativePayment?: AlternativePaymentAuthorizationInput;
-}): FixedPriceBinding {
+function validateAgreementBindingForPattern(
+  callerInput: {
+    agreement: AgreementArtifact;
+    verifiedListing: VerifiedListingInput;
+    committedAt: number;
+    alternativePayment?: AlternativePaymentAuthorizationInput;
+  },
+  pattern: SupportedCommitmentPattern,
+): AgreementBinding {
   const alternativePayment = optionalOwnDataProperty(
     callerInput,
     "alternativePayment",
-    "fixed-price agreement binding input",
+    `${pattern} agreement binding input`,
   );
   const input = snapshotCanonicalJson(
     {
       agreement: ownDataProperty(
         callerInput,
         "agreement",
-        "fixed-price agreement binding input",
+        `${pattern} agreement binding input`,
       ),
       verifiedListing: ownDataProperty(
         callerInput,
         "verifiedListing",
-        "fixed-price agreement binding input",
+        `${pattern} agreement binding input`,
       ),
       committedAt: ownDataProperty(
         callerInput,
         "committedAt",
-        "fixed-price agreement binding input",
+        `${pattern} agreement binding input`,
       ),
     },
-    "fixed-price agreement binding input",
+    `${pattern} agreement binding input`,
   ) as {
     agreement: AgreementArtifact;
     verifiedListing: VerifiedListingInput;
@@ -950,9 +1113,12 @@ export function validateFixedPriceAgreementBinding(callerInput: {
     !isRecord(input) ||
     !hasExactKeys(input, ["agreement", "verifiedListing", "committedAt"])
   ) {
-    throw new DacsError("fixed-price agreement binding input is not exact");
+    throw new DacsError(`${pattern} agreement binding input is not exact`);
   }
-  const selected = selectFixedPriceArtifact(input);
+  const selected =
+    pattern === "fixed-price"
+      ? selectFixedPriceArtifact(input)
+      : selectRfqArtifact(input);
   establishAlternativePaymentAuthority(selected, alternativePayment);
   const { agreement, listing } = selected;
   const pin: ListingPin = {
@@ -968,12 +1134,7 @@ export function validateFixedPriceAgreementBinding(callerInput: {
       "agreement commitment does not bind the exact verified Listing pin",
     );
   }
-  if (agreement.derivedFromPattern !== "fixed-price") {
-    throw new DacsError(
-      "this commitment core supports only fixed-price agreements",
-    );
-  }
-  validatePricingBinding(listing, agreement);
+  validatePricingBinding(listing, agreement, pattern);
   if (!exact(agreement.terms.deliverable, expectedDeliverable(listing))) {
     throw new DacsError(
       "agreement deliverable does not match the pinned Listing",
@@ -986,8 +1147,11 @@ export function validateFixedPriceAgreementBinding(callerInput: {
   if (
     !buyer ||
     !seller ||
-    buyer.primaryClaim === seller.primaryClaim ||
-    seller.primaryClaim !== listing.seller.identity.presentedBy
+    sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
+    !sameCanonicalClaimIdentity(
+      seller.primaryClaim,
+      listing.seller.identity.presentedBy,
+    )
   ) {
     throw new DacsError(
       "agreement parties do not match the pinned Listing seller",
@@ -1024,6 +1188,25 @@ export function validateFixedPriceAgreementBinding(callerInput: {
     parties: [buyer.primaryClaim, seller.primaryClaim],
     deadlineSeconds: deadlineSeconds!,
   };
+}
+
+export function validateFixedPriceAgreementBinding(callerInput: {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  committedAt: number;
+  alternativePayment?: AlternativePaymentAuthorizationInput;
+}): AgreementBinding {
+  return validateAgreementBindingForPattern(callerInput, "fixed-price");
+}
+
+/** Pure post-finality RFQ agreement/listing binding verifier. */
+export function validateRfqAgreementBinding(callerInput: {
+  agreement: AgreementArtifact;
+  verifiedListing: VerifiedListingInput;
+  committedAt: number;
+  alternativePayment?: AlternativePaymentAuthorizationInput;
+}): AgreementBinding {
+  return validateAgreementBindingForPattern(callerInput, "rfq");
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -1138,7 +1321,7 @@ async function verifyAgreementSignatures(
 
 function unsignedFinalityRecord(
   input: CapturedCommitmentInput,
-  binding: FixedPriceBinding,
+  binding: AgreementBinding,
 ): Omit<FinalityCommitmentRecord, "signature"> {
   return {
     finalityCommitmentVersion: "1",
@@ -1146,7 +1329,7 @@ function unsignedFinalityRecord(
     agreementHash: binding.agreementHash,
     listingRef: { ...binding.pin },
     parties: [...binding.parties],
-    pattern: "fixed-price",
+    pattern: input.agreement.derivedFromPattern,
     createdAt: input.createdAt,
   };
 }
@@ -1154,7 +1337,7 @@ function unsignedFinalityRecord(
 function recordMatchesBinding(
   record: AgreementCommitmentRecord,
   input: CapturedCommitmentBindingInput,
-  binding: FixedPriceBinding,
+  binding: AgreementBinding,
 ): boolean {
   return (
     record.jobId === input.agreement.jobId &&
@@ -1164,7 +1347,7 @@ function recordMatchesBinding(
     binding.parties.every(
       (party, index) => record.parties[index] === party,
     ) &&
-    record.pattern === "fixed-price"
+    record.pattern === input.agreement.derivedFromPattern
   );
 }
 
@@ -1374,7 +1557,7 @@ async function finalizedReceiptTime(
 function validateAuthoritativeTime(
   committedAt: number,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
-  binding: FixedPriceBinding,
+  binding: AgreementBinding,
 ): void {
   const finalizedLimit = committedAt + binding.deadlineSeconds * 1_000;
   if (
@@ -1416,7 +1599,7 @@ async function verifyAnchoredCommitment(
   anchored: AnchoredAgreementCommitment,
   input: CapturedCommitmentBindingInput,
   selected: ReturnType<typeof selectFixedPriceArtifact>,
-  binding: FixedPriceBinding,
+  binding: AgreementBinding,
   verifyAnchorReceipt: CapturedCommitmentReader["verifyAnchorReceipt"],
   verifySignature: CommitmentSignatureVerifier,
   options: {
@@ -1547,14 +1730,11 @@ async function verifyAnchoredCommitment(
   ) as FinalizedFinalityAgreementCommitment;
 }
 
-/**
- * DACS-3 §8.6 + CORE §5.1 fixed-price commitment gate. It is deliberately
- * transport-independent and fails closed before any caller may enter DACS-4.
- */
-export async function commitFixedPriceAgreement(
-  callerInput: CommitFixedPriceAgreementInput,
+async function commitAgreementForPattern(
+  callerInput: CommitAgreementInput | CommitRfqAgreementInput,
   callerProvider: FinalityCommitmentProvider,
   callerVerifySignature: CommitmentSignatureVerifier,
+  pattern: SupportedCommitmentPattern,
 ): Promise<FinalizedAgreementCommitment> {
   // Dependency identity is fixed before any caller-owned artifact is read.
   const provider = captureProvider(callerProvider);
@@ -1564,14 +1744,24 @@ export async function commitFixedPriceAgreement(
     "alternativePayment",
     "commitment input",
   );
+  const rfqSession =
+    pattern === "rfq"
+      ? captureRfqSession(callerInput as CommitRfqAgreementInput)
+      : undefined;
   const input = captureCommitmentInput(callerInput);
-  const selected = selectFixedPriceArtifact(input);
+  const selected =
+    pattern === "fixed-price"
+      ? selectFixedPriceArtifact(input)
+      : selectRfqArtifact(input);
   const alternativeAuthorityEstablished = establishAlternativePaymentAuthority(
     selected,
     alternativePayment,
   );
   const logicalAddress = finalityCommitmentAddress(selected.agreement.jobId);
   const authenticated = validateAuthenticatedSessionBinding(input, selected);
+  if (rfqSession !== undefined) {
+    validateRfqSessionBinding(rfqSession, input, selected);
+  }
   if (input.commitmentSigner.signer !== input.session.orchestrator) {
     throw new DacsError(
       "commitment signer is not the authenticated orchestrator (CA-6)",
@@ -1579,9 +1769,10 @@ export async function commitFixedPriceAgreement(
   }
 
   await verifyAgreementSignatures(selected.agreement, verifySignature);
-  const binding = fixedPriceBinding(
+  const binding = agreementBinding(
     selected,
     authenticated,
+    pattern,
     alternativeAuthorityEstablished,
   );
   const lookup = await resolveCommitment(logicalAddress, provider);
@@ -1656,6 +1847,37 @@ export async function commitFixedPriceAgreement(
 }
 
 /**
+ * DACS-3 §8.6 + CORE §5.1 fixed-price commitment gate. It is deliberately
+ * transport-independent and fails closed before any caller may enter DACS-4.
+ */
+export async function commitFixedPriceAgreement(
+  callerInput: CommitFixedPriceAgreementInput,
+  callerProvider: FinalityCommitmentProvider,
+  callerVerifySignature: CommitmentSignatureVerifier,
+): Promise<FinalizedAgreementCommitment> {
+  return commitAgreementForPattern(
+    callerInput,
+    callerProvider,
+    callerVerifySignature,
+    "fixed-price",
+  );
+}
+
+/** RFQ commitment gate bound to the exact accepted channel checkpoint. */
+export async function commitRfqAgreement(
+  callerInput: CommitRfqAgreementInput,
+  callerProvider: FinalityCommitmentProvider,
+  callerVerifySignature: CommitmentSignatureVerifier,
+): Promise<FinalizedAgreementCommitment> {
+  return commitAgreementForPattern(
+    callerInput,
+    callerProvider,
+    callerVerifySignature,
+    "rfq",
+  );
+}
+
+/**
  * Explicit read-only recovery for pre-ULID DACS-3 v0.1-v0.3 commitments.
  * This path can never submit or upgrade the immutable historical record.
  */
@@ -1676,7 +1898,7 @@ export async function readLegacyFixedPriceAgreementCommitment(
   const logicalAddress = legacyCommitmentAddress(selected.agreement.jobId);
   const authenticated = validateAuthenticatedSessionBinding(input, selected);
   await verifyAgreementSignatures(selected.agreement, verifySignature);
-  const binding = fixedPriceBinding(selected, authenticated);
+  const binding = agreementBinding(selected, authenticated, "fixed-price");
   const lookup = await resolveCommitment(logicalAddress, reader);
   if (lookup.disposition === "absent") {
     throw new DacsError("legacy commitment is authoritatively absent");
