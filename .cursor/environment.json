@@ -1,0 +1,4 @@
+{
+  "name": "dacs-sdk",
+  "install": "npm ci --no-audit && npm run conformance:sync"
+}

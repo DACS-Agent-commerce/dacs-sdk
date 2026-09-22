@@ -198,7 +198,7 @@ const SECRET_NAMES = Object.freeze({
   buyer: Object.freeze([
     "DACS_BUYER_DEMOS_SECRET_FILE",
     "DACS_BUYER_EVM_SECRET_FILE",
-    "DACS_BUYER_WALLET_POLICY_KEY_FILE",
+    "DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE",
   ]),
   seller: Object.freeze([
     "DACS_SELLER_DEMOS_SECRET_FILE",
@@ -347,9 +347,21 @@ export function actorSecretPath(
   return value === undefined || value.trim() === "" ? undefined : resolve(value);
 }
 
-export function configuredWalletSpendIntegrityKeyPath(): string | undefined {
-  const value = process.env.DACS_BUYER_WALLET_POLICY_KEY_FILE;
-  return value === undefined || value.trim() === "" ? undefined : resolve(value);
+export function configuredWalletSpendAuthorityConnection(): Readonly<{
+  endpoint: string;
+  tokenFilePath: string;
+  allowInsecureLoopback: boolean;
+}> | undefined {
+  const endpoint = process.env.DACS_WALLET_AUTHORITY_URL;
+  const tokenFilePath = process.env.DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE;
+  if (endpoint === undefined || endpoint.trim() === "" ||
+      tokenFilePath === undefined || tokenFilePath.trim() === "") return undefined;
+  return Object.freeze({
+    endpoint,
+    tokenFilePath: resolve(tokenFilePath),
+    allowInsecureLoopback:
+      process.env.DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK === "1",
+  });
 }
 
 function positiveIntegerEnvironment(name: string, fallback: number): number {
@@ -513,7 +525,7 @@ import {
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
-  createDacsWalletSpendAuthorityV1,
+  createDacsRemoteWalletSpendAuthorityV1,
   createViemDacsX402BalanceReadClientV1,
   dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
@@ -567,7 +579,7 @@ import {
   configuredX402RailId,
   configuredX402TokenDomain,
   configuredX402WalletSpendPolicy,
-  configuredWalletSpendIntegrityKeyPath,
+  configuredWalletSpendAuthorityConnection,
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
@@ -1042,82 +1054,36 @@ function baseProbes(
   >> = {};
   const selectedWalletSpendStatus = (profile: GeneratedRailProfile) => {
     if (actors === undefined) throw new Error("wallet spend actor unavailable");
-    const integrityKeyFilePath = configuredWalletSpendIntegrityKeyPath();
-    if (integrityKeyFilePath === undefined) {
-      throw new Error("wallet spend integrity key unavailable");
+    const connection = configuredWalletSpendAuthorityConnection();
+    if (connection === undefined) {
+      throw new Error("wallet spend authority connection unavailable");
     }
     walletSpendTasks[profile] ??= (async () => {
       const buyer = actors.buyer;
-      const dataDirectory = loadRoleConfig("buyer").dataDirectory;
+      let policy;
       if (profile === "x402") {
         const rail = await selectedRail("x402");
         if (rail.asset.kind !== "erc20" ||
             rail.asset.chainId !== buyer.evmIdentity.chainId) {
           throw new Error("x402 wallet policy asset is incompatible");
         }
-        const rpcUrl = configuredEvmRpcUrl();
-        if (rpcUrl === undefined) throw new Error("x402 wallet RPC unavailable");
-        const client = await createViemDacsX402BalanceReadClientV1({
-          rpcUrl,
-          chainId: buyer.evmIdentity.chainId,
-        });
         const wallet = buyer.evmIdentity.address.toLowerCase();
         const chainId = loadRoleConfig("buyer").rail.requestedNetwork;
         const asset = rail.asset.contract.toLowerCase();
-        const authority = await createDacsWalletSpendAuthorityV1({
-          dataDirectory,
-          stateDirectory: dataDirectory + "/wallet-spend-x402",
-          integrityKeyFilePath,
-          owner: "buyer-doctor-x402-" + String(process.pid),
-          policy: configuredX402WalletSpendPolicy({
-            wallet,
-            chainId,
-            asset,
-            decimals: rail.asset.decimals,
-          }),
-          readBalance: async (input) => {
-            if (input.wallet !== wallet || input.chainId !== chainId ||
-                input.asset !== asset) {
-              throw new Error("x402 wallet status request is unbound");
-            }
-            return String(await client.getAssetBalance({ asset, owner: wallet }));
-          },
-          // Doctor is read-only and never receives authority to reconcile.
-          authenticateRecovery: async () => false,
+        policy = configuredX402WalletSpendPolicy({
+          wallet,
+          chainId,
+          asset,
+          decimals: rail.asset.decimals,
         });
-        return authority.inspect();
+      } else {
+        policy = configuredPayDemWalletSpendPolicy(buyer.runtime.walletAddress);
       }
-
-      const wallet = buyer.runtime.walletAddress;
-      const authority = await createDacsWalletSpendAuthorityV1({
-        dataDirectory,
-        stateDirectory: dataDirectory + "/wallet-spend-pay-dem",
-        integrityKeyFilePath,
-        owner: "buyer-doctor-pay-dem-" + String(process.pid),
-        policy: configuredPayDemWalletSpendPolicy(wallet),
-        readBalance: async (input) => {
-          if (input.wallet !== wallet || input.chainId !== "demos" ||
-              input.asset !== "DEM") {
-            throw new Error("pay-dem wallet status request is unbound");
-          }
-          const [network, account] = await Promise.all([
-            buyer.runtime.networkInfo(), buyer.runtime.addressInfo(),
-          ]);
-          const activated = network !== null && typeof network === "object" &&
-            "forks" in network && network.forks !== null &&
-            typeof network.forks === "object" && "osDenomination" in network.forks &&
-            network.forks.osDenomination !== null &&
-            typeof network.forks.osDenomination === "object" &&
-            "activated" in network.forks.osDenomination
-            ? network.forks.osDenomination.activated : undefined;
-          const balance = account !== null && typeof account === "object" &&
-            "balance" in account ? account.balance : undefined;
-          if (typeof activated !== "boolean" || typeof balance !== "bigint" ||
-              balance < 0n) throw new Error("Demos wallet balance is unavailable");
-          return (activated ? balance : balance * 1000000000n).toString();
-        },
-        // Doctor is read-only and never receives authority to reconcile.
-        authenticateRecovery: async () => false,
+      const authority = await createDacsRemoteWalletSpendAuthorityV1({
+        policy,
+        endpoint: connection.endpoint,
+        tokenFilePath: connection.tokenFilePath,
+        allowInsecureLoopback: connection.allowInsecureLoopback,
       });
       return authority.inspect();
     })();
@@ -3717,10 +3683,7 @@ import {
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
-  createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
-  createDacsWalletSpendAuthorityV1,
-  createDacsX402WalletSpendRecoveryAuthenticatorV1,
-  createViemDacsX402BalanceReadClientV1,
+  createDacsRemoteWalletSpendAuthorityV1,
   dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
@@ -3742,7 +3705,7 @@ import {
   configuredX402RailId,
   configuredX402TokenDomain,
   configuredX402WalletSpendPolicy,
-  configuredWalletSpendIntegrityKeyPath,
+  configuredWalletSpendAuthorityConnection,
   listingDiscoveryDirectory,
   loadRoleConfig,
   serviceEndpoint,
@@ -3776,14 +3739,14 @@ async function main(): Promise<void> {
   const profiles = dacsLiveRailProfiles(config);
   const x402Enabled = profiles.includes("x402");
   const payDemEnabled = profiles.includes("pay-dem");
-  const walletSpendIntegrityKeyPath = role === "buyer"
-    ? configuredWalletSpendIntegrityKeyPath() : undefined;
+  const walletSpendAuthorityConnection = role === "buyer"
+    ? configuredWalletSpendAuthorityConnection() : undefined;
   if (authority === undefined || peerAuthority === undefined ||
       demosIdentityFilePath === undefined || railStewardAuthority === undefined ||
       railStewardPublicKey === null ||
       (x402Enabled && (evmPrivateKeyFilePath === undefined || evmRpcUrl === undefined ||
         authorizationSearchFromBlock === undefined)) ||
-      (role === "buyer" && walletSpendIntegrityKeyPath === undefined)) {
+      (role === "buyer" && walletSpendAuthorityConnection === undefined)) {
     throw new Error("role, rail, Demos identity, EVM identity or RPC is unavailable");
   }
   const ownEndpoint = new URL(serviceEndpoint(role));
@@ -3863,89 +3826,31 @@ async function main(): Promise<void> {
             if (context.evm?.role !== "buyer") {
               throw new Error("x402 buyer wallet authority is unavailable");
             }
-            const x402AuthorizationSearchFromBlock = authorizationSearchFromBlock;
-            if (x402AuthorizationSearchFromBlock === undefined) {
-              throw new Error("x402 authorization search bound is unavailable");
-            }
-            if (context.commerceStores.role !== "buyer" ||
-                context.commerceStores.x402Settlement === undefined) {
-              throw new Error("x402 buyer settlement evidence is unavailable");
-            }
-            const client = await createViemDacsX402BalanceReadClientV1({
-              rpcUrl: evmRpcUrl!,
-              chainId: context.evm.runtime.chainId,
-            });
             const asset = x402Asset!.contract.toLowerCase();
             const decimals = x402Asset!.decimals;
             const chainId = config.rail.requestedNetwork;
             const wallet = context.evm.address.toLowerCase();
-            return createDacsWalletSpendAuthorityV1({
-              dataDirectory: context.config.dataDirectory,
-              stateDirectory: context.config.dataDirectory + "/wallet-spend-x402",
-              integrityKeyFilePath: walletSpendIntegrityKeyPath!,
-              owner: workerId + "-x402",
+            return createDacsRemoteWalletSpendAuthorityV1({
               policy: configuredX402WalletSpendPolicy({
                 wallet, chainId, asset, decimals,
               }),
-              readBalance: async (input) => {
-                if (input.asset !== asset || input.chainId !== chainId ||
-                    input.wallet !== wallet) {
-                  throw new Error("x402 wallet balance request is unbound");
-                }
-                return String(await client.getAssetBalance({
-                  asset,
-                  owner: input.wallet,
-                }));
-              },
-              authenticateRecovery:
-                createDacsX402WalletSpendRecoveryAuthenticatorV1({
-                  settlementStore: context.commerceStores.x402Settlement,
-                  owner: workerId + "-x402-wallet-recovery",
-                  chainId: context.evm.runtime.chainId,
-                  minimumConfirmations: Number(finalityBlocks),
-                  authorizationSearchFromBlock: x402AuthorizationSearchFromBlock,
-                  client: context.evm.runtime.readClient,
-                  confirmUnused: confirmX402Unused!,
-                }),
+              endpoint: walletSpendAuthorityConnection!.endpoint,
+              tokenFilePath: walletSpendAuthorityConnection!.tokenFilePath,
+              allowInsecureLoopback:
+                walletSpendAuthorityConnection!.allowInsecureLoopback,
             });
           })();
         const payDemObserver = payDemRail === undefined ? undefined :
           createPayDemSellerObserver({ rpc: config.demos.rpcUrl }).observeDemosTransfer;
         const payDemWalletSpendAuthority = payDemRail === undefined ? undefined :
-          await createDacsWalletSpendAuthorityV1({
-            dataDirectory: context.config.dataDirectory,
-            stateDirectory: context.config.dataDirectory + "/wallet-spend-pay-dem",
-            integrityKeyFilePath: walletSpendIntegrityKeyPath!,
-            owner: workerId + "-pay-dem",
+          await createDacsRemoteWalletSpendAuthorityV1({
             policy: configuredPayDemWalletSpendPolicy(
               context.demos.walletAddress,
             ),
-            readBalance: async (input) => {
-              if (input.asset !== "DEM" || input.chainId !== "demos" ||
-                  input.wallet !== context.demos.walletAddress) {
-                throw new Error("pay-dem wallet balance request is unbound");
-              }
-              const [network, account] = await Promise.all([
-                context.demos.networkInfo(), context.demos.addressInfo(),
-              ]);
-              const activated = network !== null && typeof network === "object" &&
-                "forks" in network && network.forks !== null &&
-                typeof network.forks === "object" && "osDenomination" in network.forks &&
-                network.forks.osDenomination !== null &&
-                typeof network.forks.osDenomination === "object" &&
-                "activated" in network.forks.osDenomination
-                ? network.forks.osDenomination.activated : undefined;
-              const balance = account !== null && typeof account === "object" &&
-                "balance" in account ? account.balance : undefined;
-              if (typeof activated !== "boolean" || typeof balance !== "bigint" ||
-                  balance < 0n) throw new Error("Demos wallet balance is unavailable");
-              return (activated ? balance : balance * 1000000000n).toString();
-            },
-            authenticateRecovery:
-              createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
-                database: context.database,
-                observeDemosTransfer: payDemObserver!,
-              }),
+            endpoint: walletSpendAuthorityConnection!.endpoint,
+            tokenFilePath: walletSpendAuthorityConnection!.tokenFilePath,
+            allowInsecureLoopback:
+              walletSpendAuthorityConnection!.allowInsecureLoopback,
           });
         const x402 = x402Rail === undefined ? undefined : {
           context,
@@ -4293,6 +4198,16 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     inspectGeneratedBackupV1({ backupDirectory, authKeyFile }),
     /backup-content-mismatch/,
   );
+  const legacyAuthorityDirectory = join(buyer, "wallet-spend-pay-dem");
+  await mkdir(legacyAuthorityDirectory, { mode: 0o700 });
+  await writeFile(join(legacyAuthorityDirectory, "state.json"), "stale-authority", {
+    mode: 0o600,
+  });
+  await assert.rejects(createGeneratedBackupV1({
+    outputDirectory: join(backupParent, "reject-authority-state"),
+    paths,
+  }), /backup-authority-state-rejected/);
+  await rm(legacyAuthorityDirectory, { recursive: true });
   const emptyDirectory = join(buyer, "empty");
   await mkdir(emptyDirectory, { mode: 0o700 });
   await assert.rejects(createGeneratedBackupV1({
@@ -4740,7 +4655,9 @@ services:
       DACS_BUYER_DATA_DIRECTORY: /var/lib/dacs
       DACS_BUYER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_BUYER_EVM_SECRET_FILE: /run/secrets/evm-wallet
-      DACS_BUYER_WALLET_POLICY_KEY_FILE: /run/secrets/wallet-spend-integrity
+      DACS_WALLET_AUTHORITY_URL: \${DACS_WALLET_AUTHORITY_URL:?set DACS_WALLET_AUTHORITY_URL}
+      DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK: \${DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK:-0}
+      DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE: /run/secrets/wallet-authority-token
       DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
@@ -4748,7 +4665,7 @@ services:
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
-      - \${DACS_BUYER_WALLET_POLICY_KEY_FILE:?set DACS_BUYER_WALLET_POLICY_KEY_FILE}:/run/secrets/wallet-spend-integrity:ro
+      - \${DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE:?set DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE}:/run/secrets/wallet-authority-token:ro
       - \${DACS_LISTING_DRAFT_FILE:?set DACS_LISTING_DRAFT_FILE}:/run/dacs/listing-draft.json:ro
   seller:
     <<: *dacs-role
@@ -4847,7 +4764,9 @@ DACS_SELLER_AUTHORITY=
 DACS_SELLER_EVM_PAYEE=
 DACS_BUYER_DEMOS_SECRET_FILE=
 DACS_BUYER_EVM_SECRET_FILE=
-DACS_BUYER_WALLET_POLICY_KEY_FILE=
+DACS_WALLET_AUTHORITY_URL=
+DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=0
+DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE=
 DACS_SELLER_DEMOS_SECRET_FILE=
 DACS_SELLER_EVM_SECRET_FILE=
 DACS_FUNDED_DOCTOR_AUTHORITY=
@@ -4904,12 +4823,19 @@ generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
 The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
-The buyer also requires \`DACS_BUYER_WALLET_POLICY_KEY_FILE\`. Store exactly 32
-random bytes as 64 hexadecimal characters in a third buyer-owned file; for
-example, \`openssl rand -hex 32 > /secure/path/buyer-wallet-policy.key\`, then
-set mode 0600. This key authenticates the durable wallet-wide spend journal. It
-is not a protocol signing key and must not be reused as any identity, wallet or
-backup key.
+The buyer requires \`DACS_WALLET_AUTHORITY_URL\` and a role-scoped bearer secret
+at \`DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE\`. The separately operated authority
+retains PostgreSQL credentials, wallet/chain lineage, policy migration and all
+authoritative accounting; never place those capabilities in this project or
+mount them into the buyer. Use HTTPS. Plain HTTP is accepted only for an
+explicit loopback test/local authority with
+\`DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1\`. The generated backup and
+restore commands cover actor data only and never select authority database state.
+When upgrading an existing funded agent, stop the buyer and have the authority
+operator authenticate and import the complete legacy wallet-spend journal before
+enabling this remote client. The import must preserve totals, rolling events,
+unresolved reservations and revision. Never empty-provision an existing
+wallet/chain; fresh provisioning requires evidence that the lineage is new.
 Backup and restore require a separate operator-owned
 \`DACS_BACKUP_AUTH_KEY_FILE\`. Store exactly 32 random bytes as 64 hexadecimal
 characters, keep the file outside this project, and set mode 0600. It
@@ -4992,14 +4918,16 @@ definitively failed attempt still consumes that reservation. The reported ceilin
 does not cover custom extensions or unrelated concurrent orders using the same
 wallets.
 
-Buyer service payments have a second, wallet-wide authority covering all
-concurrent orders in this generated process. It reserves the exact x402 token
-debit, or the native DEM service amount plus maximum network fee, before the
-irreversible boundary. It enforces per-order, reserve, rolling, cumulative,
-counterparty and concurrency limits from the \`DACS_*_WALLET_*\` settings. A
-settled debit remains permanently accounted; a retry is possible only after the
-same rail cryptographically establishes terminal absence. Protect and back up
-the separate wallet-policy key together with the buyer data directory.
+Buyer service payments use a separately operated, PostgreSQL-backed wallet-wide
+authority covering every generated service-payment and its rail network fee. It
+reserves the exact x402 token debit, or the native DEM service amount plus
+maximum network fee, before the irreversible boundary. It enforces per-order,
+reserve, rolling, cumulative, counterparty and concurrency limits from the
+\`DACS_*_WALLET_*\` settings. A settled debit remains permanently accounted; a
+retry is possible only after the same rail cryptographically establishes
+terminal absence. Generated backup/restore covers actor state only and never
+the authority database. Setup/doctor disposable wallets and unrelated Demos
+storage/anchor fees remain outside this authority claim.
 
 The purchase request file is closed, versioned JSON:
 

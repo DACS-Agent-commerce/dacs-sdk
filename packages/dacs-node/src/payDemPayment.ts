@@ -130,7 +130,20 @@ export interface DacsPayDemBuyerPaymentResultV1 {
 export interface DacsPayDemPaymentNoticeV1 {
   paymentNoticeVersion: "1";
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
-  settlement: Readonly<SettleResult>;
+  /**
+   * Version 1 wire shape. Internal fee accounting is deliberately not added
+   * to this already-deployed notice version.
+   */
+  settlement: Readonly<{
+    ok: true;
+    txHash: string;
+    chainId: "demos";
+    payer: string;
+    payee: string;
+    finality: Readonly<{ model: "bft-final" }>;
+    blockNumber: number;
+    txRefKind: "demos";
+  }>;
 }
 
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
@@ -572,7 +585,16 @@ export function createDacsPayDemPaymentNoticeV1(
   return Object.freeze({
     paymentNoticeVersion: "1",
     payment: capturedPayment,
-    settlement: capturedSettlement,
+    settlement: Object.freeze({
+      ok: true as const,
+      txHash: capturedSettlement.txHash,
+      chainId: "demos" as const,
+      payer: capturedSettlement.payer,
+      payee: capturedSettlement.payee,
+      finality: Object.freeze({ model: "bft-final" as const }),
+      blockNumber: capturedSettlement.blockNumber!,
+      txRefKind: "demos" as const,
+    }),
   });
 }
 
@@ -583,10 +605,22 @@ export function isDacsPayDemPaymentNoticeV1(
     "paymentNoticeVersion", "payment", "settlement",
   ]) || value.paymentNoticeVersion !== "1") return false;
   try {
-    createDacsPayDemPaymentNoticeV1(
-      value.payment as DacsPayDemBuyerPaymentInputV1,
-      value.settlement as SettleResult,
-    );
+    const payment = capturePaymentInput(value.payment as DacsPayDemBuyerPaymentInputV1);
+    const settlement = value.settlement;
+    if (!plainObject(settlement) || !exactKeys(settlement, [
+      "ok", "txHash", "chainId", "payer", "payee", "finality",
+      "blockNumber", "txRefKind",
+    ]) || settlement.ok !== true || typeof settlement.txHash !== "string" ||
+        !HASH_RE.test(settlement.txHash) || settlement.chainId !== "demos" ||
+        canonicalAddress(settlement.payer) !== payment.payer ||
+        canonicalAddress(settlement.payee) !== payment.payee ||
+        !plainObject(settlement.finality) ||
+        !exactKeys(settlement.finality, ["model"]) ||
+        settlement.finality.model !== "bft-final" ||
+        !Number.isSafeInteger(settlement.blockNumber) ||
+        (settlement.blockNumber as number) < 0 || settlement.txRefKind !== "demos") {
+      return false;
+    }
     return true;
   } catch {
     return false;

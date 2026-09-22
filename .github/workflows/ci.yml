@@ -327,6 +327,11 @@ jobs:
       - name: Test (unit + conformance harness)
         run: npm test
 
+      - name: Test durable RFQ filesystem record-size boundaries
+        env:
+          DACS_SLOW_BOUNDARY: "1"
+        run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
+
       - name: Test Node host kit
         run: npm run host:test
 
