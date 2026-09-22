@@ -6,6 +6,7 @@ import {
   contentHash,
   ed25519Sign,
   ed25519Verify,
+  identityBundleHash,
   isCompositeVerificationRecord,
   isCompositeBundleRequirement,
   isLegacyCompositeVerificationRecord,
@@ -28,6 +29,7 @@ import {
   type CompositeVerificationExpectations,
   type CompositeVerificationRecord,
   type ExpectedVerifyResult,
+  type IdentityBundle,
   type ResolvedVerificationContent,
   type VerifyCompositeVerificationDeps,
   type VerifyResult,
@@ -316,6 +318,69 @@ describe("strict DACS-2 composite verification closure", () => {
     await expect(
       verifyCompositeVerificationRecord(f.record, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "valid", record: f.record });
+  });
+
+  test("preserves fail-first selector precedence when another result is unavailable", async () => {
+    const f = await fixture();
+    const evaluatedParty = "lei:5493001KJTIIGC8Y1R12";
+    const presenceRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "lei", verificationRequired: false },
+        { scheme: "domain", verificationRequired: true, recipeVersion: 1 },
+      ],
+      primaryClaimSelector: "lei",
+    };
+    const bundle: IdentityBundle = {
+      bundleVersion: "1",
+      presentedBy: evaluatedParty,
+      presentedAt: NOW - 1,
+      claims: [
+        { ref: evaluatedParty },
+        { ref: PARTY, verifiedBy: f.ref },
+      ],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: VERIFIER, signature: "authenticated-in-test" }],
+      },
+    };
+    const bundleHash = identityBundleHash(bundle);
+    const record = await withRecord(f.record, {
+      evaluatedParty,
+      bundleHash,
+      requirementHash: sha256Hex(canonicalize(presenceRequirement)),
+      overallDecision: "fail",
+    });
+    const expected: CompositeVerificationExpectations = {
+      ...f.expected,
+      evaluatedParty,
+      bundleHash,
+      requirement: presenceRequirement,
+      dealSpecific: [{
+        ...f.expectedResult,
+        requirement: presenceRequirement.required[1]!,
+      }],
+      presence: {
+        bundle,
+        sessionRecipeRegistrySnapshotHash: "c".repeat(64),
+      },
+    };
+
+    await expect(verifyCompositeVerificationRecord(record, expected, {
+      ...f.deps,
+      resolve: async () => null,
+      isSessionRecipeRegistrySnapshotAuthenticated: () => true,
+      verifyIdentityPresentation: () => true,
+    })).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+      dealSpecific: [],
+      indeterminateEvidence: [{
+        collection: "dealSpecific",
+        index: 0,
+        ref: f.ref,
+      }],
+    });
   });
 
   test("snapshots the composite before any asynchronous verifier callback", async () => {
@@ -820,7 +885,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
   });
 
-  test("rejects method substitution across recipe families", async () => {
+  test("rejects method substitution during recipe-family preflight", async () => {
     const f = await fixture();
     await expect(
       verifyCompositeVerificationRecord(
@@ -833,7 +898,7 @@ describe("strict DACS-2 composite verification closure", () => {
         },
         f.deps,
       ),
-    ).resolves.toMatchObject({ status: "invalid", code: "verify-result-method" });
+    ).resolves.toMatchObject({ status: "invalid", code: "verify-result-recipe" });
   });
 
   test("authenticates the exact recipe and applies RAV-3 availability", async () => {

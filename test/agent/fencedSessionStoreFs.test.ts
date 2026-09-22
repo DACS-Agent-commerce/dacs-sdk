@@ -941,33 +941,33 @@ describe("generation-fenced filesystem FencedSessionStoreV2 v2", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("concurrent stale-lock reclaimers cannot delete the replacement holder", async () => {
-    const staleStore = await createFsFencedSessionStore({ dir, lockStaleMs: 1 });
-    await staleStore.create({ jobId: "j1", now: 0 });
-    const lp = join(dir, "locks", `${encodeURIComponent("j1")}.lock`);
-    await (await open(lp, "wx")).close();
+  test("stale recovery cannot remove a successor across repeated lock races (#306)", async () => {
     const old = new Date(Date.now() - 60_000);
-    await utimes(lp, old, old);
-    const contenders = await Promise.all(
-      Array.from({ length: 16 }, () =>
-        createFsFencedSessionStore({ dir, lockStaleMs: 1 }),
-      ),
-    );
-
-    const results = await Promise.all(
-      contenders.map((contender, index) => contender.transition({
-        jobId: "j1",
-        expectedRevision: 0,
-        phase: `contender-${index}`,
-        now: 1,
-      })),
-    );
-
-    expect(results.filter((result) => result.ok)).toHaveLength(1);
-    const loaded = await staleStore.load("j1");
-    if (loaded.status !== "ok") throw new Error("session missing");
-    expect(loaded.record.revision).toBe(1);
-  });
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const jobId = `successor-race-${attempt}`;
+      const staleStore = await createFsFencedSessionStore({ dir, lockStaleMs: 1 });
+      await staleStore.create({ jobId, now: 0 });
+      const lp = join(dir, "locks", `${encodeURIComponent(jobId)}.lock`);
+      await (await open(lp, "wx")).close();
+      await utimes(lp, old, old);
+      const contenders = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          createFsFencedSessionStore({ dir, lockStaleMs: 1 })),
+      );
+      const results = await Promise.all(
+        contenders.map((contender, index) => contender.transition({
+          jobId,
+          expectedRevision: 0,
+          phase: `contender-${index}`,
+          now: 1,
+        })),
+      );
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      const loaded = await staleStore.load(jobId);
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.revision).toBe(1);
+    }
+  }, 30_000);
 
   test("lock age alone cannot evict a live writer", async () => {
     const guardedStore = await createFsFencedSessionStore({ dir, lockStaleMs: 1 });
@@ -1980,7 +1980,11 @@ test("create keeps its published session locked through marker-conflict rollback
     "sessions",
     `${encodeURIComponent(jobId)}.json`,
   );
-  const jobLock = join(admittedDir, "locks", `${encodeURIComponent(jobId)}.lock`);
+  const jobMutationGate = join(
+    admittedDir,
+    "locks",
+    `${encodeURIComponent(jobId)}.reclaim`,
+  );
   let signalPublished = () => {};
   let permitSessionLink = () => {};
   let signalMutationContended = () => {};
@@ -1993,7 +1997,7 @@ test("create keeps its published session locked through marker-conflict rollback
   const mutationContended = new Promise<void>((resolve) => {
     signalMutationContended = resolve;
   });
-  let canonicalLockAttempts = 0;
+  let canonicalGateAttempts = 0;
 
   vi.resetModules();
   vi.doMock("node:fs/promises", async () => {
@@ -2002,14 +2006,20 @@ test("create keeps its published session locked through marker-conflict rollback
     );
     return {
       ...actual,
+      rename: async (
+        oldPath: Parameters<typeof actual.rename>[0],
+        newPath: Parameters<typeof actual.rename>[1],
+      ) => {
+        if (String(newPath) === jobMutationGate) {
+          canonicalGateAttempts += 1;
+          if (canonicalGateAttempts === 2) signalMutationContended();
+        }
+        await actual.rename(oldPath, newPath);
+      },
       link: async (
         existingPath: Parameters<typeof actual.link>[0],
         newPath: Parameters<typeof actual.link>[1],
       ) => {
-        if (String(newPath) === jobLock) {
-          canonicalLockAttempts += 1;
-          if (canonicalLockAttempts === 2) signalMutationContended();
-        }
         await actual.link(existingPath, newPath);
         if (String(newPath) === sessionFile) {
           signalPublished();

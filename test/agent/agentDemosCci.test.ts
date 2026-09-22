@@ -31,25 +31,25 @@ const rawGcr = {
   },
 };
 
-function input(): AgentNativeCciTlsnInput {
+function input(subject = PRIMARY): AgentNativeCciTlsnInput {
   const bundle: IdentityBundle = {
     bundleVersion: "1",
-    presentedBy: PRIMARY,
+    presentedBy: subject,
     presentedAt: EVALUATED_AT,
     sessionNonce: SESSION_NONCE,
-    claims: [{ ref: PRIMARY }, { ref: `cci-tlsn:${PROOF_HASH}` }],
+    claims: [{ ref: subject }, { ref: `cci-tlsn:${PROOF_HASH}` }],
     presentation: {
       kind: "per-claim",
-      signatures: [{ ref: PRIMARY, signature: "test-signature" }],
+      signatures: [{ ref: subject, signature: "test-signature" }],
     },
   };
   return {
-    subject: PRIMARY,
+    subject,
     bundle,
     proofHash: PROOF_HASH,
     context: {
       jobId: JOB_ID,
-      expectedPresenter: PRIMARY,
+      expectedPresenter: subject,
       sessionNonce: SESSION_NONCE,
       expectedServer: "github.com",
       maxResolutionAgeSec: 60,
@@ -110,6 +110,7 @@ describe("Agent authenticated Demos CCI", () => {
       status: "native-cci",
       jobId: JOB_ID,
       sessionNonce: SESSION_NONCE,
+      evaluatedAt: EVALUATED_AT,
       verification: {
         authority: "native-tlsn:testnet",
         binding: {
@@ -125,6 +126,56 @@ describe("Agent authenticated Demos CCI", () => {
     expect(resolveIdentity).toHaveBeenCalledWith("11".repeat(32));
     expect(verifyIdentityPresentation).toHaveBeenCalledTimes(1);
     expect(verifyNativeTlsn).toHaveBeenCalledTimes(1);
+  });
+
+  test("accepts a qualified presenter against parameter-free resolver evidence", async () => {
+    const qualified = `${PRIMARY}?network=testnet`;
+    const resolveIdentity = vi.fn(async (ref: string) => ({
+      ref,
+      boundTo: ref,
+      raw: rawGcr,
+    }));
+    const verifyNativeTlsn = vi.fn((candidate: VerifyNativeCciTlsnInput) => ({
+      status: "verified" as const,
+      verifiedAt: EVALUATED_AT,
+      authority: "native-tlsn:testnet",
+      binding: {
+        subject: candidate.subject,
+        jobId: candidate.jobId,
+        sessionNonce: candidate.sessionNonce,
+        expectedServer: candidate.expectedServer,
+        bundleHash: candidate.bundleHash,
+        proofHash: candidate.proofHash,
+        resolutionObservedAt: candidate.resolution.observedAt,
+      },
+    }));
+    const agent = buildAgent(
+      { resolveIdentity } as unknown as SubstrateAdapter,
+      {
+        demosRpc: "https://node.example",
+        demosCci: {
+          authenticateResolution: ({ subject }) => ({
+            status: "authenticated",
+            subject,
+            observedAt: OBSERVED_AT,
+            authority: "demos:testnet",
+          }),
+          verifyIdentityPresentation: () => true,
+          verifyNativeTlsn,
+          nowMs: () => EVALUATED_AT,
+        },
+      },
+    );
+    const request = input(qualified);
+
+    await expect(agent.qualifyNativeCciTlsn(request)).resolves.toMatchObject({
+      status: "native-cci",
+      verification: { binding: { subject: PRIMARY } },
+    });
+    expect(resolveIdentity).toHaveBeenCalledWith("11".repeat(32));
+    expect(verifyNativeTlsn).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: PRIMARY }),
+    );
   });
 
   test("fails before RPC for a non-canonical authenticated subject", async () => {
