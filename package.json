@@ -89,6 +89,7 @@
     "docs/rfq-negotiation-core.md",
     "docs/pay-solana-spl.md",
     "docs/pay-ap2.md",
+    "docs/pay-cross-chain-liquidity-tank.md",
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
     "docs/wallet-spend-authority.md",
