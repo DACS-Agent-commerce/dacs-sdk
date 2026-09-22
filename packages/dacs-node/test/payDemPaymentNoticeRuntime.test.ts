@@ -10,6 +10,7 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import type { DacsLiveEffectFenceV1 } from "../src/liveEffects.js";
 import {
   createDacsPayDemPaymentNoticeV1,
+  isDacsPayDemPaymentNoticeV1,
   type DacsPayDemBuyerPaymentInputV1,
 } from "../src/payDemPayment.js";
 import {
@@ -150,6 +151,34 @@ describe("native DEM payment notice runtime", () => {
       payload: expect.objectContaining({ paymentNoticeVersion: "1" }),
       idempotencyKey: expect.stringContaining(`pay-dem-payment-notice:${JOB_ID}:`),
     }));
+    expect(notice().settlement).not.toHaveProperty("networkFeeOs");
+  });
+
+  it("accepts the original v1 wire settlement and rejects fee extensions", () => {
+    const original = notice();
+    expect(original.settlement).toEqual({
+      ok: true,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYMENT.payer,
+      payee: PAYMENT.payee,
+      finality: { model: "bft-final" },
+      blockNumber: 42,
+      txRefKind: "demos",
+    });
+    expect(() => authenticated(original)).not.toThrow();
+    const extended = {
+      ...original,
+      settlement: { ...original.settlement, networkFeeOs: "1" },
+    };
+    const runtimePayloadHash = sha256Hex(canonicalize(extended));
+    expect(runtimePayloadHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(isDacsPayDemPaymentNoticeV1(original)).toBe(true);
+    expect(isDacsPayDemPaymentNoticeV1(extended)).toBe(false);
+    expect(createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "1",
+    })).toEqual(original);
   });
 
   it("retains the first authenticated notice and accepts exact transport renewal", async () => {

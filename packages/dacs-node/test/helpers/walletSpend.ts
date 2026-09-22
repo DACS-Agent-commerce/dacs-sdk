@@ -51,6 +51,7 @@ export function createPermissiveTestWalletSpendAuthorityV1(): WalletSpendAuthori
     },
     async inspect(): Promise<Readonly<WalletSpendStatusV1>> {
       return Object.freeze({
+        revision: 0,
         policyId: TEST_POLICY.policyId,
         policyHash: "f".repeat(64),
         wallet: TEST_POLICY.wallet,

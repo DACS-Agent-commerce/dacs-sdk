@@ -171,6 +171,8 @@ export {
   WALLET_SPEND_STATE_VERSION,
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
+  resumeWalletSpendAuthorityOperationV1,
+  validateWalletSpendStateV1,
   executeWalletSpendEffectV1,
   combineWalletSpendEffectFenceV1,
   type WalletSpendDebitPurpose,
@@ -195,6 +197,7 @@ export {
   type WalletSpendAssetStatusV1,
   type WalletSpendStatusV1,
   type WalletSpendAuthorityV1,
+  type WalletSpendAuthorityReplayV1,
   type WalletSpendExecutionResultV1,
   type WalletSpendExecutionInputV1,
 } from "./walletSpendAuthority.js";

@@ -70,6 +70,8 @@ const isObj = (value: unknown): value is Record<string, unknown> =>
 
 /**
  * Validate ONE fetched bundle copy for the role-address it was read from.
+ * Malformed canonical JSON resolves to an invalid result. Dependency errors
+ * from key resolution or signature verification still reject the promise.
  * See the module doc for the exact contract.
  */
 export async function verifyBundleCopy(
@@ -77,7 +79,12 @@ export async function verifyBundleCopy(
   role: BundleCopyRole,
   deps: BundleCopyDeps,
 ): Promise<CopyValidity> {
-  const unsigned = stripSignature(bundle);
+  let unsigned: Partial<Record<string, unknown>>;
+  try {
+    unsigned = stripSignature(bundle);
+  } catch {
+    return { valid: false, reason: "bundle is not canonical JSON data" };
+  }
   if (isAbsoluteFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
     return { valid: false, reason: "faultedParty is not permitted for outcome and anchoredByRole" };
   }
