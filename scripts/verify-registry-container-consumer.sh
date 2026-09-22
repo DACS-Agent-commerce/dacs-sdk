@@ -322,7 +322,9 @@ env \
   DACS_BUYER_DEMOS_SECRET_FILE=/run/dacs-acceptance/buyer-demos \
   DACS_SELLER_DEMOS_SECRET_FILE=/run/dacs-acceptance/seller-demos \
   DACS_BUYER_EVM_SECRET_FILE=/run/dacs-acceptance/buyer-evm \
-  DACS_BUYER_WALLET_POLICY_KEY_FILE=/run/dacs-acceptance/buyer-wallet-policy \
+  DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:48080 \
+  DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1 \
+  DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE=/run/dacs-acceptance/buyer-wallet-authority-token \
   DACS_SELLER_EVM_SECRET_FILE=/run/dacs-acceptance/seller-evm \
   DACS_X402_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-x402.json \
   DACS_PAY_DEM_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-pay-dem.json \
