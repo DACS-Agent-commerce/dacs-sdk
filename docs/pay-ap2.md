@@ -60,3 +60,29 @@ because this core exists. A provider adapter is eligible only when all
 `Ap2RegistrationCapabilities` are explicitly true: writable/readable DACS
 metadata, provider idempotency keys, a privileged local create credential, and
 a distinct relayed status-only credential.
+
+## Stripe test-mode + Demos reference adapter
+
+`createStripeAp2Integration` is an optional reference implementation for
+Stripe PaymentIntents. It requires two distinct restricted keys: a local
+PaymentIntent create key and a read-only status key. Only the read key crosses
+DAHR, through the Demos adapter's transient authorization channel. The exact
+provider response is hash-bound by DAHR but is not published as DACS content.
+
+Use `createFsAp2BindingStore` for restart-safe AP2-7 state. The store persists
+the transaction binding, lease generation, provider reference and terminal
+settlement before later calls can resume. Its generation fence prevents an
+expired worker from submitting or recording a provider effect.
+
+When the binding exposes a native transaction, the resulting settlement uses
+the Standard's distinct `ap2-sr3` arm and separates two references:
+
+- `receiptAttestation.anchor` is the HTTPS provider-status resource whose raw
+  response bytes match `contentHash`;
+- `receiptTransactionRef` is the native SR-3 transaction authenticating that
+  observation (`demos-web2-request` for the Demos binding).
+
+The adapter rejects standard Stripe keys, shared keys, and live keys unless
+`allowLive: true` is explicit. The opt-in live test additionally requires an
+isolated funded Demos wallet, the official AP2 Python verifier, durable state,
+and `DACS_AP2_LIVE_CONFIRM=1`.

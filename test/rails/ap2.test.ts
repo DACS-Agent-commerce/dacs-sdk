@@ -155,6 +155,7 @@ function verifier(): Ap2MandateVerifier<object, object> {
           payee: "merchant-1",
           amount: "10.00",
           currency: "USD",
+          paymentInstrumentId: "pm_card_visa",
         },
       };
     },
@@ -175,9 +176,15 @@ function capturedStatus(
       dacs_agreement_hash: AGREEMENT_HASH,
     },
     receiptAttestation: {
-      kind: "dahr-provider-status",
-      id: "attestation-1",
+      anchor: {
+        kind: "https",
+        locator: "https://provider.example/receipts/provider-1",
+      },
       contentHash: "b".repeat(64),
+    },
+    receiptTransactionRef: {
+      kind: "demos-web2-request",
+      value: "d".repeat(64),
     },
     capturedAt: 1_788_000_000_000,
   };
@@ -349,7 +356,13 @@ describe("advanceAp2Settlement", () => {
     const statuses: Ap2AttestedProviderStatus[] = [
       { ...capturedStatus(), amount: "11" },
       { ...capturedStatus(), metadata: { dacs_job_id: "other", dacs_agreement_hash: AGREEMENT_HASH } },
-      { ...capturedStatus(), receiptAttestation: { kind: "dahr", id: "a", contentHash: "not-a-hash" } },
+      {
+        ...capturedStatus(),
+        receiptAttestation: {
+          anchor: { kind: "https", locator: "https://provider.example/receipts/provider-1" },
+          contentHash: "not-a-hash",
+        },
+      },
     ];
     for (const status of statuses) {
       await expect(advanceAp2Settlement(input({
