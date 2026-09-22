@@ -33,6 +33,7 @@ const prepared = Object.freeze({
   amountOs: payment.amountOs,
   network: "demos",
   maxTotalDebitOs: payment.maxTotalDebitOs,
+  confirmedTotalDebitOs: "2000000000",
   recovery: {
     railId: payment.railId,
     jobId: payment.jobId,
@@ -83,6 +84,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
         blockNumber: 42,
         txRefKind: "demos",
         amountOs: payment.amountOs,
+        networkFeeOs: "1000000000",
       },
     });
   });

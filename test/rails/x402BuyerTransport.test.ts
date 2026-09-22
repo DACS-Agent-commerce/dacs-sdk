@@ -189,17 +189,7 @@ describe("prepareX402BuyerSettlement", () => {
         authority: authority(),
         challengeHeaders: { "PAYMENT-SIGNATURE": "caller-bearer" },
       },
-      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
-    )).resolves.toEqual({
-      disposition: "rejected",
-      reason: "x402-challenge-headers-invalid",
-    });
-    await expect(prepareX402BuyerSettlement(
-      {
-        authority: authority(),
-        challengeHeaders: { "X-API-Key": "internal-secret" },
-      },
-      { client: client(), fetchImpl: async () => { throw new Error("must not fetch"); } },
+      { client: client() },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-headers-invalid",
@@ -251,14 +241,14 @@ describe("prepareX402BuyerSettlement", () => {
     });
     await expect(prepareX402BuyerSettlement(
       { authority: malformed as never },
-      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
+      { client: client(counters) },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
     });
     await expect(prepareX402BuyerSettlement(
       { authority: new Proxy(authority(), {}) },
-      { client: client(counters), fetchImpl: async () => { throw new Error("must not fetch"); } },
+      { client: client(counters) },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",

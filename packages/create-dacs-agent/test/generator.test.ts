@@ -287,6 +287,9 @@ describe("create-dacs-agent", () => {
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
     expect(compose).toContain("DACS_SELLER_DEMOS_SECRET_FILE");
+    expect(compose).toContain("DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE");
+    expect(compose).toContain("/run/secrets/wallet-authority-token:ro");
+    expect(compose).toContain("DACS_WALLET_AUTHORITY_URL");
     expect(compose).toContain("DACS_X402_LISTING_DRAFT_FILE");
     expect(compose).toContain("DACS_PAY_DEM_LISTING_DRAFT_FILE");
     expect(compose).toContain("read_only: true");
@@ -308,6 +311,11 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).not.toContain("DACS_RESTORE_CONFIRM");
     expect(environmentExample).not.toContain("DACS_UNINSTALL_CONFIRM");
     expect(environmentExample).toContain("DACS_BACKUP_AUTH_KEY_FILE=");
+    expect(environmentExample).toContain("DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE=");
+    expect(environmentExample).toContain("DACS_WALLET_AUTHORITY_URL=");
+    expect(environmentExample).toContain("DACS_WALLET_MAX_CONCURRENT_EFFECTS=1");
+    expect(environmentExample).toContain("DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT=100");
+    expect(environmentExample).toContain("DACS_PAY_DEM_WALLET_MINIMUM_RESERVE=5");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");
     expect(generatedConfig).toContain("dacs4:registry:v0.1");
@@ -348,6 +356,24 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("resolveDacsPayDemExistingListingV1");
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
+    expect(combined).toContain("createDacsRemoteWalletSpendAuthorityV1");
+    expect(combined).not.toContain("createDacsWalletSpendAuthorityV1");
+    expect(combined).not.toContain("createDacsX402WalletSpendRecoveryAuthenticatorV1");
+    expect(combined).not.toContain("createDacsPayDemWalletSpendRecoveryAuthenticatorV1");
+    expect(combined).not.toContain("authenticateRecovery: async () => true");
+    expect(combined).not.toContain(
+      'if (observation.disposition !== "settled") return true',
+    );
+    expect(combined).toContain("assets: Object.freeze([Object.freeze({");
+    expect(combined).not.toContain('stateDirectory: context.config.dataDirectory');
+    expect(combined).toContain("backup-authority-state-rejected");
+    expect(combined).toContain("import the complete legacy wallet-spend journal");
+    expect(combined).toContain("Never empty-provision an existing");
+    expect(combined).toContain('walletPolicyStatus: "post-start-inspection-required"');
+    expect(combined).toContain('reasonCode: "wallet-spend-operator-action-required"');
+    expect(combined).toContain("operatorActionCount: status.operatorActionReservations.length");
+    expect(combined).toContain("reservedWorstCaseDebit: asset.reservedWorstCaseDebit");
+    expect(combined).toContain("availableHeadroom: asset.availableHeadroom");
     expect(combined).toContain("--max-total-debit-dem");
     expect(combined).toContain("dacs-generated-purchase-request/v1");
     expect(combined).toContain("--resume-job");
