@@ -5276,7 +5276,17 @@ function assertFocusedProjectionClosure(
     expectedKeys.add(sellerFulfilmentCheckpointKey.payloadPublication(phaseIndex));
     expectedKeys.add(sellerFulfilmentCheckpointKey.payloadReadback(phaseIndex));
   }
-  const actualKeys = new Set(record.checkpoints.map((checkpoint) => checkpoint.key));
+  const firstSellerCheckpoint = record.checkpoints.findIndex((checkpoint) =>
+    checkpoint.key.startsWith("seller:"));
+  if (firstSellerCheckpoint < 0 || record.checkpoints.some((checkpoint, index) =>
+    index >= firstSellerCheckpoint && !checkpoint.key.startsWith("seller:"))) {
+    throw new Error(
+      "focused audit projection rejects interleaved or post-delivery non-seller checkpoints",
+    );
+  }
+  const actualKeys = new Set(record.checkpoints
+    .filter((checkpoint) => checkpoint.key.startsWith("seller:"))
+    .map((checkpoint) => checkpoint.key));
   if (actualKeys.size !== expectedKeys.size ||
       [...actualKeys].some((key) => !expectedKeys.has(key)) ||
       [...expectedKeys].some((key) => !actualKeys.has(key))) {

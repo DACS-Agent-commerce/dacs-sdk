@@ -9,10 +9,12 @@ import type {
   PhaseStep,
   PriorPaymentDisposition,
   Listing,
+  ListingRef,
 } from "../artifacts/types.js";
 import {
   isAttestationRef,
   isPaymentRailRef,
+  isPhaseStep,
 } from "../artifacts/validators.js";
 import {
   isCanonicalBase64Url,
@@ -651,6 +653,38 @@ export interface AlternativePaymentProjection
 export type AlternativePaymentProjectionResult =
   | AlternativePaymentProjection
   | (AlternativePaymentDecision & { verdict: "fail" | "indeterminate" | "error" });
+
+/**
+ * Internal authority bridge for DACS-5 consumers. Only a projection minted by
+ * {@link projectAlternativePaymentPipeline} can yield an effective pipeline,
+ * and its authenticated Agreement must bind the exact signed Listing pin.
+ */
+export function authenticatedAlternativePaymentEffectivePipeline(
+  projection: AlternativePaymentProjection,
+  listingRef: Readonly<ListingRef>,
+): readonly PhaseStep[] | null {
+  if (!AUTHENTICATED_PROJECTIONS.has(projection as object)) return null;
+  try {
+    if (
+      canonicalize(projection.agreement.listingRef) !==
+        canonicalize(listingRef) ||
+      !Array.isArray(projection.effectivePipeline) ||
+      projection.effectivePipeline.some(
+        (phase) => !isPhaseStep(phase) || phase.kind === "pay-alternative",
+      )
+    ) {
+      return null;
+    }
+    return Object.freeze(
+      snapshotCanonicalJsonRead(
+        projection.effectivePipeline,
+        "authenticated alternative-payment effective pipeline",
+      ) as PhaseStep[],
+    );
+  } catch {
+    return null;
+  }
+}
 
 /** APR-3..APR-5 deterministic, index-preserving projection and payout gate. */
 export async function projectAlternativePaymentPipeline(

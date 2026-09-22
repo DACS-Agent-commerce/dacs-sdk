@@ -16,6 +16,7 @@ import {
   ed25519Sign,
   ed25519Verify,
   finalizeFixedPriceAgreementContributions,
+  isDurableSellerFixedPriceAgreementResponse,
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
@@ -928,5 +929,30 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     expect(h.request.input.transportIdentity.buyer).toBe(BUYER);
     expect(h.request.input.proposal.plan.draft.terms.price.amount).toBe("2");
     expect(observedCandidate).toBe(true);
+  });
+
+  test("public response admission rejects seller and plan rebinding", async () => {
+    const h = await harness();
+    const result = await respondToFixedPriceAgreementProposalDurable(
+      h.request.input,
+      h.durability,
+    );
+    expect(result.disposition).toBe("complete");
+    if (result.disposition !== "complete") return;
+    expect(isDurableSellerFixedPriceAgreementResponse(result.result)).toBe(true);
+    expect(isDurableSellerFixedPriceAgreementResponse({
+      ...result.result,
+      sellerContribution: {
+        ...result.result.sellerContribution,
+        planHash: "f".repeat(64),
+      },
+    })).toBe(false);
+    expect(isDurableSellerFixedPriceAgreementResponse({
+      ...result.result,
+      transportIdentity: {
+        ...result.result.transportIdentity,
+        seller: OTHER_SELLER,
+      },
+    })).toBe(false);
   });
 });

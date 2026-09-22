@@ -27,17 +27,26 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2**, **Solana SPL**, and **cross-chain HTLC safety-core** settlement · one delivery type · attestation bundle + reputation. Bundled live AP2, Solana wallet/RPC, and two-chain adapters, liquidity-tank settlement, and dispute execution (DACS-X) remain deferred.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, and provider-injected **AP2**, **Solana SPL**, and **cross-chain HTLC safety-core** settlement · one delivery type · attestation bundle + reputation. Bundled live AP2, Solana wallet/RPC, and two-chain adapters, liquidity-tank settlement, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
-All five lifecycle stages run end to end:
+The modern role-separated fixed-price coordinators cover all five lifecycle
+stages. The older `Agent.runSession()` convenience method remains a
+settlement-only compatibility API; it does not claim fulfilment or audit
+completion.
+
+The exported `SignedArtifact`, `buildSignedArtifact()` and
+`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
+surfaces used by that quarantined path and historical readers. New producers
+and readers must use `ComponentSignedArtifact`,
+`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | `runSession({ vet })` · `vetCore` · `resolveRecipe` | recipe-driven (self-signed, consensus-backed-proxy via DAHR); aborts before paying on failure |
-| **Negotiate** | `runSession({ terms })` | fixed-price |
+| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `advanceCrossChainHtlc` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, plus directly invoked provider-injected safety cores and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -49,6 +58,15 @@ use `negotiablePriceBand()` and `isNegotiablePriceWithinBand()` for DACS-3
 non-canonical CD-1 amounts instead of normalising them into acceptance.
 
 Rails and verification recipes are resolved from **steward-signed registries** (`resolveRail` / `resolveRecipe`), so adding one is config, not code.
+
+Use `evaluateRailAvailabilitySelection` at the session selection boundary. It
+authenticates and pins the complete RailDefinition before applying local
+production/preflight policy; discovery and counterparty availability hints are
+never authority. Use `evaluateClaimRequirementQualification` when consuming
+the DACS-2 CRQ projection outside `partyVetCore`: it authenticates either the
+orchestrator-owned active SessionContext plus the exact production
+requirement/result/reuse closure, or the signed replay bundle/CVR/result closure,
+before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
@@ -95,11 +113,46 @@ commitment appears in both sources and the native verifier authenticates it;
 an unregistered session proof remains on the external `tlsnotary` path. See
 [the Demos CCI integration guide](./docs/demos-cci-identities.md).
 
+The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
+evaluation instant from the trusted Party Vet clock, independently matches the
+active-session nonce, journals qualification for deterministic restart/replay,
+and retains compact exact provenance in an SDK-reserved signal inside the
+signed CVR. The signal remains advisory under DACS-2, while failed native
+qualification is a mandatory precondition that prevents all Vet effects.
+
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
 filters), CSS selectors, XPath 1.0, and actual RE2 matching. It parses detached
 content only and fails closed on malformed input; see the
 [ParserSpec engine guide](./docs/parser-engine.md) for its exact capability and
 injection contract.
+
+The transport-neutral RFQ core performs authenticated channel admission,
+durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
+restart-safe state transitions, exact accepted-term agreement derivation,
+role-separated replay-safe transport outboxes, detached buyer/seller
+co-signatures, finalized SR-2 commitment, complete private-transcript
+reverification, and fail-closed Listing disclosure policy. It does not invent
+the still-undefined Demos signature or encrypted transcript wires and is not yet
+a complete live Demos L2PS phase handler; see the
+[RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
+and the upstream signature-format dependency.
+
+`createFsDurableRfqLifecycleStore()` provides the single-host production
+restart boundary for one RFQ role: keyed record authentication, strict local
+permissions, synchronized atomic writes, cross-process locking, and monotonic
+compare-and-swap validation. Buyer and seller require separate directories and
+separate integrity keys; the in-memory RFQ store remains test-only.
+
+`partyVetCore` evaluates DACS-1 presence-only members directly against the
+exact signed `IdentityBundle`: it creates no synthetic `VerifyResult` and does
+not resolve an optional `verifiedBy` merely to prove presence. Mixed
+presence/verified production must supply the durable
+`sessionRecipeRegistrySnapshot` pinned at session start. A strict consumer must
+provide the same bundle and snapshot hash through
+`CompositeVerificationExpectations.presence`, authenticate both, and re-run
+the mixed decision and exact-claim selector-control rules. A temporarily
+unavailable result is retained as indeterminate evidence; an independently
+conclusive failure still has the Standard's fail-first precedence.
 
 Settlement evidence has two deliberately different public boundaries.
 `validateSettlementEvidenceStructure()` checks wire shape and any supplied
@@ -211,7 +264,17 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: { agentId: buyerId },
+  identity: {
+    agentId: buyerId,
+    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
+    // terminal bundle. A bare agent id is not an identity commitment.
+    bundle: buyerIdentityBundle,
+    // Presentation authentication is deliberately bundle-scoped so the same
+    // identity bundle can be reused. Session replay resistance is separate:
+    // its exact bundle hash is committed inside each signed Agreement.
+    verifyPresentation: ({ bundle, signedBytes }) =>
+      verifyBuyerIdentityPresentation(bundle, signedBytes),
+  },
   bindings: { index: bindings },
 });
 
@@ -295,12 +358,166 @@ const session = await buyer.runSession(resolved, {
   settle: x402Settle(rail, { url, network, recipientEvm, asset }),
 });
 
+// Legacy compatibility only: payment settlement is not commerce completion.
+if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
+  throw new Error("unexpected legacy session result");
+}
+
 // anyone — verify the bundle's structure, signatures, referenced artifacts,
 // and (through the configured callbacks above) every normative vet closure and
 // SettlementEvidence record
 const verdict = await buyer.verifyBundle(session.bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
+
+The public RatingRecord producers own the two permitted DACS-5 directions and
+do not accept a caller-selected rater or target role. They reject malformed
+RT-1 input before calling the wallet and return an isolated, signed wire record:
+
+```ts
+import {
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  createRatingPhasePlan,
+  completeRatingPhase,
+  deriveReputationWithValidation,
+  isRatingRecord,
+  persistRatingPhaseHandoffDurably,
+  publishRatingRecordDurably,
+  recoverRatingPhaseHandoff,
+} from "@kynesyslabs/dacs";
+import { createSqliteRatingPublicationEffectStore } from "@kynesyslabs/dacs-node/sqlite";
+
+const buyerRating = await createBuyerRatingRecord(
+  {
+    jobId,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    value: 5,
+    dimensions: { timeliness: 5 },
+    ratedAt: Date.now(),
+  },
+  {
+    algorithm: "ed25519",
+    sign: signWithBuyerIdentityKey,
+  },
+);
+
+if (!isRatingRecord(buyerRating)) throw new Error("invalid RatingRecord");
+
+// The seller-owned direction uses the same session parties but necessarily
+// produces seller -> buyer with targetRole "buyer".
+const sellerRating = await createSellerRatingRecord(ratingInput, sellerSigner);
+
+const publishedRating = await publishRatingRecordDurably(
+  {
+    record: buyerRating,
+    buyer: buyerPrimaryClaim,
+    seller: sellerPrimaryClaim,
+    expectedOwner: buyerDemosWalletAddress,
+  },
+  {
+    effectStore: createSqliteRatingPublicationEffectStore(buyerDatabase),
+    workerId: processInstanceId,
+    leaseDurationMs: 30_000,
+    repository: buyerBoundArtifactRepository,
+    // Must authenticate both the rating signature and the exact rater -> Demos
+    // writer relationship from trusted IdentityBundle/session state.
+    authenticateRatingRecord,
+    // Must authenticate canonical anchor inclusion/finality and writer
+    // provenance; shape-only receipts are insufficient.
+    authenticateAnchor: authenticateRatingAnchor,
+  },
+);
+if (publishedRating.disposition !== "published") {
+  throw new Error(`rating publication is ${publishedRating.disposition}`);
+}
+
+// The session orchestrator authenticates a minimal projection of the retained
+// rate-pending SessionRecord. It never receives either party signing key.
+const ratingPlan = await createRatingPhasePlan(ratePendingAuthority, {
+  authenticateAuthority: authenticateRetainedSessionProjection,
+});
+
+// Buyer and seller publish independently through their own stores and wallets,
+// then send only the durable publication result (or an explicit decline).
+const ratingHandoff = await completeRatingPhase(
+  ratingPlan,
+  [buyerRatingSubmission, sellerRatingSubmission],
+  Date.now(),
+  {
+    authenticatePlan: authenticateRetainedRatingPlan,
+    authenticatePublication: authenticateRemoteRatingPublication,
+  },
+);
+if (ratingHandoff.disposition === "waiting") {
+  // A submitted publication is authentication-indeterminate; retry the same
+  // plan rather than omitting a possibly anchored rating.
+  return ratingHandoff;
+}
+
+// Write the exact handoff to the existing fenced session WAL before audit work.
+// The outcome checkpoint and rate-pending -> audit-pending transition commit
+// atomically; neither party's signing or publication authority is present here.
+const durableRatingHandoff = await persistRatingPhaseHandoffDurably(
+  ratingHandoff,
+  {
+    store: fencedSessionStore,
+    workerId: processInstanceId,
+    leaseTtlMs: 30_000,
+    authenticateHandoff: authenticateRatingHandoffAgainstRetainedSession,
+  },
+);
+if (durableRatingHandoff.disposition !== "persisted") {
+  return durableRatingHandoff;
+}
+
+// On process start, recover only a committed outcome. A bare WAL intent is
+// pending and must be resumed through persistRatingPhaseHandoffDurably().
+const recoveredRatingHandoff = await recoverRatingPhaseHandoff(jobId, {
+  store: fencedSessionStore,
+  authenticateHandoff: authenticateRatingHandoffAgainstRetainedSession,
+});
+if (recoveredRatingHandoff.disposition === "recovered") {
+  // Append phaseEntry to the full SessionRecord projection and pass ratingRefs
+  // as the terminal finalizer's exact rating-record inventory.
+  startTerminalAudit(recoveredRatingHandoff.handoff);
+}
+
+const reputation = await deriveReputationWithValidation(
+  sellerPrimaryClaim,
+  candidateBundles,
+  reputationWindow,
+  {
+    validate: authenticateCompleteBundle,
+    resolvePartyRole: resolveAuthenticatedSessionRole,
+    copyAbsence: resolveAuthoritativeBundleAbsence,
+    // This boundary must authenticate the rating's SR-2 anchor/binding and
+    // dacs-rating:v1 signature. The SDK then independently rechecks its exact
+    // ref hash, wire shape, RT-1/RT-2, job, parties, direction, and target role.
+    resolveAndAuthenticateRating,
+  },
+);
+```
+
+The durable publisher writes the exact signed record to the actor-local effect
+journal before invoking SR-2. A lost response moves the effect to
+reconciliation; retrying reuses the same immutable bytes, logical address, and
+idempotency identity. It returns a `ratingRef` only after authenticated finality,
+role-owned binding visibility, and exact independently authenticated readback.
+The asynchronous validated reputation path deduplicates one authenticated
+rating per `(rater, jobId, targetRole)`, selects the latest `ratedAt`, and
+computes role-specific averages. Invalid and indeterminate ratings are excluded,
+never clamped. Rate-phase orchestration and terminal-bundle handoff remain
+authority-separated: the planner authenticates completed settlement, each actor
+publishes only its own direction, and the handoff re-authenticates every remote
+publication before exposing terminal fields. Explicit decline and absence are
+non-fatal. A Listing rate step with required:true is reported through
+requiredAdvisoryMissingRoles but, as DACS-5 ST-5 requires, never blocks terminal
+bundle production or demotes completed commerce. The final handoff is stored in
+the existing generation-fenced session WAL, so restart recovery returns the
+same phase entry and refs and rejects any attempt to rebind them. An application
+must not treat a locally signed record as an anchored rating.
 
 `Agent.getReputation()` is the normal untrusted-input path and fully verifies
 each referenced bundle before scoring it. Lower-level consumers that already
@@ -536,6 +753,27 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+For DACS-5 v0.4 exact settlement-evidence closure, use
+`verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
+EBFAB and Listing domains, derives the executed evidence phase keys from their
+signed trace, binds every SettlementEvidence to independent SB-1 execution
+authority and SR-2 receipts, and enforces SEB-1..SEB-6, ST-8, and lifecycle
+gates. `buildEvidenceBoundTwoSidedBundle()` produces type-specific copies only
+after the caller wires that complete evidence-set gate; completed publication
+still remains `audit-pending` until the bundle itself is finalized and
+independently resolvable under ST-11. EBFAB extended pointers require the same
+verified authority token; URL shape validation is not a deployment SSRF policy.
+
+For reputation that makes an explicit settlement-verification claim, use
+`deriveSettlementVerifiedReputation()` or its replayable counterpart. These
+emit the distinct DACS-5 v0.4 settlement-verified discriminators and never
+reinterpret the released `derivationVersion: "1"` type. The caller must supply
+independent bundle, SettlementEvidence, Agreement, role/binding, finality and
+SB-1..SB-3 authority. Any rejected or unavailable presented evidence excludes
+the whole job without assigning fresh fault. See the
+[settlement-verified reputation guide](./docs/settlement-verified-reputation.md)
+for the authority contract and replay boundary.
+
 `prepareVetTerminalBundle(...)` is the strict bridge for modern role-separated
 coordinators. It accepts a finalized DACS-2 `VetProduction`, invokes the host's
 recursive production authenticator, and creates DACS-5 `vet-failed` terminal
@@ -553,6 +791,18 @@ ignores content returned for another job. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
+
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
 
 ### Normative artifact references
 
@@ -668,6 +918,12 @@ evidence anchoring catches up independently. See
 [the seller x402 paywall guide](./docs/x402-seller-paywall.md) for the exact
 ordering, recovery, and post-settlement failure contract.
 
+Funded unattended buyers should place every rail behind the shared
+[wallet-wide spend authority](./docs/wallet-spend-authority.md). It durably
+enforces balance reserve, fee, rate, rolling, cumulative, counterparty,
+concurrency and approval limits across jobs, rails and processes; ambiguous
+effects remain charged until rail-authenticated reconciliation.
+
 The Demos adapter and live rail clients are optional peers: install
 `@kynesyslabs/demosdk` for `createAgent`, and `@x402/core`, `@x402/evm`,
 `@x402/fetch`, plus `viem` for the corresponding live rails. Pure artifact,
@@ -687,7 +943,9 @@ reproduce the release-candidate checks locally:
 
 ```sh
 npm ci
-npm run package:verify -- --output-dir package-artifacts
+mkdir -p package-artifacts
+npm run package:verify -- --output-dir package-artifacts/core
+npm run release:set:verify -- --output-dir package-artifacts/release-set
 ```
 
 The verifier creates the package twice and requires byte-identical tarballs,
@@ -696,8 +954,16 @@ digests, and installs the exact tarball in a fresh Bun consumer. It then removes
 the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
-tarball and `provenance.json` for the exact checkout SHA. This is a qualified
-package candidate, not evidence that the package was published to npm.
+core tarball and `provenance.json` for the exact checkout SHA. The release-set
+verifier additionally requires byte-identical core, Node host and generator
+tarballs at one version with identical compatibility metadata. It emits exact
+checksums, one CycloneDX SBOM per package and combined release provenance. These
+are qualified package candidates, not evidence that the packages were published
+to npm.
+
+Maintainer-controlled prerelease publication and first-release credential
+bootstrap are documented in
+[the npm prerelease release runbook](./docs/npm-prerelease-release.md).
 
 ## License
 

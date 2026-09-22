@@ -9,8 +9,10 @@ import {
   type SolanaSplAdapter,
   type SolanaSplObservedTransfer,
   type SolanaSplPreflight,
+  type SolanaSplReconciliation,
   type SolanaSplSettlementAuthority,
   type SolanaSplSettlementStore,
+  type SolanaSplSignedAttempt,
 } from "../../src/rails/solanaSpl.js";
 
 // Fixed-width values with canonical Base58 leading-zero encoding. These decode
@@ -78,6 +80,41 @@ function observed(
     finalityObservedAt: 1_788_000_000_000,
     authenticationHash: "c".repeat(64),
     ...overrides,
+  };
+}
+
+type SolanaSplExpiredReconciliation = Extract<
+  SolanaSplReconciliation,
+  { disposition: "absent-expired" }
+>;
+
+function expired(
+  attempt: Pick<SolanaSplSignedAttempt, "signature" | "lastValidBlockHeight">,
+  overrides: Partial<Omit<SolanaSplExpiredReconciliation, "disposition">> = {},
+): SolanaSplExpiredReconciliation {
+  return {
+    disposition: "absent-expired",
+    observedBlockHeight: attempt.lastValidBlockHeight + 1,
+    commitmentLevel: "confirmed",
+    authenticationHash: "e".repeat(64),
+    ...overrides,
+  };
+}
+
+function legacyExpiryView(store: SolanaSplSettlementStore): SolanaSplSettlementStore {
+  return {
+    ...store,
+    async claim(request) {
+      const claim = await store.claim(request);
+      if (claim.status !== "acquired" && claim.status !== "waiting") return claim;
+      return {
+        status: claim.status,
+        intent: claim.intent,
+        lease: claim.lease,
+        attempts: claim.attempts,
+        expiredSignatures: claim.expiredSignatures,
+      };
+    },
   };
 }
 
@@ -335,17 +372,27 @@ describe("advanceSolanaSplSettlement", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
-  test("only authenticated expiry permits a replacement signed attempt", async () => {
+  test("persists valid confirmed expiry before preparing a replacement", async () => {
     let clock = 1_000;
+    const sequence: string[] = [];
     const counts = new Map<string, number>();
-    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const memory = createInMemorySolanaSplSettlementStore();
+    const markAttemptExpired = vi.fn(async (request) => {
+      sequence.push(`expire-${request.signature}`);
+      return memory.markAttemptExpired(request);
+    });
+    const store: SolanaSplSettlementStore = { ...memory, markAttemptExpired };
+    const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => {
+      sequence.push(`prepare-${attempt}`);
+      return adapter().prepareSignedTransfer(plan, attempt, fence);
+    });
     const reconcile = vi.fn(async (_intent, attempt) => {
       const count = (counts.get(attempt.signature) ?? 0) + 1;
       counts.set(attempt.signature, count);
       if (attempt.signature === SIGNATURE_1) {
         return count === 1
           ? { disposition: "indeterminate" as const, reason: "lost" }
-          : { disposition: "absent-expired" as const, authenticationHash: "e".repeat(64) };
+          : expired(attempt);
       }
       return {
         disposition: "settled-same" as const,
@@ -353,6 +400,7 @@ describe("advanceSolanaSplSettlement", () => {
       };
     });
     const shared = input({
+      store,
       adapter: adapter({ prepareSignedTransfer, reconcile }),
       now: () => clock,
     });
@@ -365,6 +413,361 @@ describe("advanceSolanaSplSettlement", () => {
       });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
     expect(prepareSignedTransfer.mock.calls.map((call) => call[1])).toEqual([1, 2]);
+    expect(markAttemptExpired).toHaveBeenCalledWith(expect.objectContaining({
+      signature: SIGNATURE_1,
+      observedBlockHeight: 10_002,
+      commitmentLevel: "confirmed",
+      authenticationHash: "e".repeat(64),
+    }));
+    expect(sequence).toEqual([
+      "prepare-1",
+      `expire-${SIGNATURE_1}`,
+      "prepare-2",
+    ]);
+  });
+
+  test.each([
+    ["missing height", { commitmentLevel: "confirmed" }],
+    ["non-integer height", { observedBlockHeight: 10_001.5, commitmentLevel: "confirmed" }],
+    ["equal height", { observedBlockHeight: 10_001, commitmentLevel: "confirmed" }],
+    ["lower height", { observedBlockHeight: 10_000, commitmentLevel: "confirmed" }],
+    ["missing commitment", { observedBlockHeight: 10_002 }],
+    ["wrong commitment", { observedBlockHeight: 10_002, commitmentLevel: "processed" }],
+  ])("refuses replacement for %s in fresh expiry evidence", async (_name, fields) => {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const store = createInMemorySolanaSplSettlementStore();
+    const markAttemptExpired = vi.spyOn(store, "markAttemptExpired");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (): Promise<SolanaSplReconciliation> => {
+      reconciliations += 1;
+      if (reconciliations === 1) {
+        return { disposition: "indeterminate", reason: "lost" };
+      }
+      return {
+        disposition: "absent-expired",
+        authenticationHash: "e".repeat(64),
+        ...fields,
+      } as SolanaSplReconciliation;
+    });
+    const shared = input({
+      store,
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-expiry-proof-invalid",
+      });
+    expect(markAttemptExpired).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(["missing", "mismatched"] as const)(
+    "refuses replacement with %s durable expiry acknowledgement",
+    async (mode) => {
+      let clock = 1_000;
+      let observations = 0;
+      const memory = createInMemorySolanaSplSettlementStore();
+      const store: SolanaSplSettlementStore = {
+        ...memory,
+        async markAttemptExpired(request) {
+          const result = await memory.markAttemptExpired(request);
+          if (result.status !== "recorded" && result.status !== "existing") return result;
+          return mode === "missing" ? { status: result.status } : {
+            status: result.status,
+            expiryEvidence: { ...request, observedBlockHeight: request.observedBlockHeight + 1 },
+          };
+        },
+      };
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      const checkedPreflight = vi.fn(adapter().preflight);
+      const shared = input({
+        store, now: () => clock,
+        adapter: adapter({
+          preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained,
+          async reconcile(_intent, attempt) {
+            return ++observations === 1
+              ? { disposition: "indeterminate", reason: "not-observed" }
+              : expired(attempt);
+          },
+        }),
+      });
+      await advanceSolanaSplSettlement(shared);
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" });
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(checkedPreflight).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("refuses resumed effects when a predecessor lacks complete expiry evidence", async () => {
+    let clock = 1_000;
+    let observations = 0;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      observations += 1;
+      if (observations === 2) return expired(attempt);
+      return { disposition: "indeterminate", reason: "not-observed" };
+    });
+    const shared = input({
+      store: memory, now: () => clock,
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+    });
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({
+      ...shared, owner: "worker-c", store: legacyExpiryView(memory),
+    })).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-retained-state-corrupt" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
+    expect(broadcastRetained).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+  });
+
+  test("uses complete persisted expiry evidence after restart", async () => {
+    let clock = 1_000;
+    let preflights = 0;
+    const counts = new Map<string, number>();
+    const store = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const reconcile = vi.fn(async (_intent, attempt) => {
+      const count = (counts.get(attempt.signature) ?? 0) + 1;
+      counts.set(attempt.signature, count);
+      if (attempt.signature === SIGNATURE_1) {
+        return count === 1
+          ? { disposition: "indeterminate" as const, reason: "lost" }
+          : expired(attempt);
+      }
+      return {
+        disposition: "settled-same" as const,
+        transfer: observed({ signature: SIGNATURE_2 }),
+      };
+    });
+    const checkedPreflight = vi.fn(async (_intent, fence) => {
+      await fence.assertCurrent();
+      preflights += 1;
+      if (preflights === 2) throw new Error("stop-after-expiry-persistence");
+      return preflight();
+    });
+    const shared = input({
+      store,
+      adapter: adapter({
+        preflight: checkedPreflight,
+        prepareSignedTransfer,
+        reconcile,
+      }),
+      now: () => clock,
+    });
+
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-preflight-unavailable",
+      });
+    const persisted = await store.claim({
+      intent: createSolanaSplSettlementIntent(authority()),
+      owner: "observer",
+      now: clock,
+      leaseDurationMs: 100,
+    });
+    expect(persisted).toMatchObject({
+      status: "waiting",
+      expiredSignatures: [SIGNATURE_1],
+      expiryEvidence: [{
+        signature: SIGNATURE_1,
+        observedBlockHeight: 10_002,
+        commitmentLevel: "confirmed",
+        authenticationHash: "e".repeat(64),
+      }],
+    });
+
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" }))
+      .resolves.toMatchObject({
+        status: "settled",
+        settlement: { txRef: { signature: SIGNATURE_2 } },
+      });
+    expect(counts.get(SIGNATURE_1)).toBe(2);
+    expect(prepareSignedTransfer.mock.calls.map((call) => call[1])).toEqual([1, 2]);
+  });
+
+  test.each(["unavailable", "inconsistent"] as const)(
+    "legacy hash-only expiry is %s without new side effects",
+    async (mode) => {
+      let clock = 1_000;
+      let preflights = 0;
+      let reconciliations = 0;
+      const memory = createInMemorySolanaSplSettlementStore();
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      const checkedPreflight = vi.fn(async (_intent, fence) => {
+        await fence.assertCurrent();
+        preflights += 1;
+        if (preflights === 2) throw new Error("stop-after-expiry-persistence");
+        return preflight();
+      });
+      const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+        reconciliations += 1;
+        if (reconciliations === 1) {
+          return { disposition: "indeterminate", reason: "lost" };
+        }
+        if (reconciliations === 2) return expired(attempt);
+        if (mode === "unavailable") throw new Error("rpc-unavailable");
+        return { disposition: "absent-expired", authenticationHash: "e".repeat(64) };
+      });
+      const shared = input({
+        store: memory,
+        adapter: adapter({
+          preflight: checkedPreflight,
+          prepareSignedTransfer,
+          broadcastRetained,
+          reconcile,
+        }),
+        now: () => clock,
+      });
+
+      await advanceSolanaSplSettlement(shared);
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+        .resolves.toMatchObject({ status: "indeterminate" });
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({
+        ...shared,
+        owner: "worker-c",
+        store: legacyExpiryView(memory),
+      })).resolves.toEqual({
+        status: "indeterminate",
+        reason: mode === "unavailable"
+          ? "solana-spl-reconciliation-unavailable"
+          : "solana-spl-expiry-proof-invalid",
+      });
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("settlement wins when legacy hash-only expiry is reconciled as settled", async () => {
+    let clock = 1_000;
+    let preflights = 0;
+    let reconciliations = 0;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const recordSettlement = vi.spyOn(memory, "recordSettlement");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const checkedPreflight = vi.fn(async (_intent, fence) => {
+      await fence.assertCurrent();
+      preflights += 1;
+      if (preflights === 2) throw new Error("stop-after-expiry-persistence");
+      return preflight();
+    });
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      reconciliations += 1;
+      if (reconciliations === 1) {
+        return { disposition: "indeterminate", reason: "lost" };
+      }
+      if (reconciliations === 2) return expired(attempt);
+      return {
+        disposition: "settled-same",
+        transfer: observed({ signature: attempt.signature }),
+      };
+    });
+    const shared = input({
+      store: memory,
+      adapter: adapter({
+        preflight: checkedPreflight,
+        prepareSignedTransfer,
+        broadcastRetained,
+        reconcile,
+      }),
+      now: () => clock,
+    });
+
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({
+      ...shared,
+      owner: "worker-c",
+      store: legacyExpiryView(memory),
+    })).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRef: { signature: SIGNATURE_1 } },
+    });
+    expect(recordSettlement).toHaveBeenCalledTimes(1);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  test("legacy hash-only absent-valid recovery retransmits only retained bytes", async () => {
+    let clock = 1_000;
+    let preflights = 0;
+    let reconciliations = 0;
+    const wires: string[] = [];
+    const memory = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(async (attempt) => {
+      wires.push(attempt.signedTransactionBase64);
+      return { disposition: "submitted" as const };
+    });
+    const checkedPreflight = vi.fn(async (_intent, fence) => {
+      await fence.assertCurrent();
+      preflights += 1;
+      if (preflights === 2) throw new Error("stop-after-expiry-persistence");
+      return preflight();
+    });
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      reconciliations += 1;
+      if (reconciliations === 1) {
+        return { disposition: "indeterminate", reason: "lost" };
+      }
+      if (reconciliations === 2) return expired(attempt);
+      return { disposition: "absent-valid", authenticationHash: "d".repeat(64) };
+    });
+    const shared = input({
+      store: memory,
+      adapter: adapter({
+        preflight: checkedPreflight,
+        prepareSignedTransfer,
+        broadcastRetained,
+        reconcile,
+      }),
+      now: () => clock,
+    });
+
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({
+      ...shared,
+      owner: "worker-c",
+      store: legacyExpiryView(memory),
+    })).resolves.toEqual({
+      status: "waiting",
+      reason: "solana-spl-broadcast-not-yet-visible",
+    });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(wires).toHaveLength(2);
+    expect(new Set(wires).size).toBe(1);
   });
 
   test.each([
@@ -482,6 +885,51 @@ describe("advanceSolanaSplSettlement", () => {
       status: "indeterminate",
       reason: "solana-spl-retained-state-corrupt",
     });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  test("fails closed on invalid durable expiry evidence", async () => {
+    let clock = 1_000;
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length === 0) return claim;
+        const latest = claim.attempts.at(-1)!;
+        return {
+          ...claim,
+          expiredSignatures: [latest.signature],
+          expiryEvidence: [{
+            signature: latest.signature,
+            observedBlockHeight: latest.lastValidBlockHeight,
+            commitmentLevel: "confirmed",
+            authenticationHash: "e".repeat(64),
+          }],
+        };
+      },
+    };
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => ({
+      disposition: "indeterminate" as const,
+      reason: "rpc-unavailable",
+    }));
+    const shared = input({
+      store,
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-retained-state-corrupt",
+      });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });

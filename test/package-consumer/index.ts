@@ -2,8 +2,41 @@ import {
   type BundleVerification,
   type DemosAdapterConfig,
   type DemosWriteJournal,
+  evaluateClaimRequirementQualification,
+  evaluateRailAvailabilitySelection,
+  verifyEvidenceBoundFaultBundle,
+  evaluateEvidenceBoundSettlementSet,
+  verifyFaultBundleExtendedPointer,
+  buildEvidenceBoundTwoSidedBundle,
+  deriveSettlementVerifiedReputation,
+  deriveReplayableSettlementVerifiedReputation,
+  replaySettlementVerifiedReputation,
+  type EvidenceBoundBundleAuthority,
+  type EvidenceBoundBundleVerifierDeps,
+  type ClaimQualificationDeps,
+  type ClaimQualificationRequirement,
+  type ClaimQualificationBundleRequirement,
+  type ClaimQualificationInput,
+  type RailAvailabilityAuthority,
   type DeriveReputationDeps,
+  type DeriveReputationValidationDeps,
+  type AuthenticatedRatingResolution,
+  type RatingRecord,
+  type RatingPublicationEffectStore,
+  type RatingPhasePlan,
+  type RatingPhaseReadyHandoff,
+  type FencedSessionStoreV2,
   type SubstrateAdapter,
+  createBuyerRatingRecord,
+  createSellerRatingRecord,
+  isRatingRecord,
+  publishRatingRecordDurably,
+  createRatingPhasePlan,
+  completeRatingPhase,
+  captureRatingPhaseReadyHandoff,
+  persistRatingPhaseHandoffDurably,
+  recoverRatingPhaseHandoff,
+  deriveReputationWithValidation,
   lookupBundleCopies,
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
@@ -51,6 +84,50 @@ const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
 const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
+const qualify: typeof evaluateClaimRequirementQualification =
+  evaluateClaimRequirementQualification;
+const selectRail: typeof evaluateRailAvailabilitySelection =
+  evaluateRailAvailabilitySelection;
+const verifyEvidenceBound: typeof verifyEvidenceBoundFaultBundle =
+  verifyEvidenceBoundFaultBundle;
+const evaluateExactSet: typeof evaluateEvidenceBoundSettlementSet =
+  evaluateEvidenceBoundSettlementSet;
+const verifyBundlePointer: typeof verifyFaultBundleExtendedPointer =
+  verifyFaultBundleExtendedPointer;
+const buildEvidenceBound: typeof buildEvidenceBoundTwoSidedBundle =
+  buildEvidenceBoundTwoSidedBundle;
+const deriveSettlementVerified: typeof deriveSettlementVerifiedReputation =
+  deriveSettlementVerifiedReputation;
+const deriveReplayableSettlementVerified:
+  typeof deriveReplayableSettlementVerifiedReputation =
+    deriveReplayableSettlementVerifiedReputation;
+const replaySettlementVerified: typeof replaySettlementVerifiedReputation =
+  replaySettlementVerifiedReputation;
+const ratingValidator: (value: unknown) => value is RatingRecord = isRatingRecord;
+const buyerRatingProducer: typeof createBuyerRatingRecord = createBuyerRatingRecord;
+const sellerRatingProducer: typeof createSellerRatingRecord = createSellerRatingRecord;
+const durableRatingPublisher: typeof publishRatingRecordDurably =
+  publishRatingRecordDurably;
+const ratingPhasePlanner: typeof createRatingPhasePlan = createRatingPhasePlan;
+const ratingPhaseCompleter: typeof completeRatingPhase = completeRatingPhase;
+const ratingHandoffCapturer: typeof captureRatingPhaseReadyHandoff =
+  captureRatingPhaseReadyHandoff;
+const durableRatingHandoffWriter: typeof persistRatingPhaseHandoffDurably =
+  persistRatingPhaseHandoffDurably;
+const durableRatingHandoffReader: typeof recoverRatingPhaseHandoff =
+  recoverRatingPhaseHandoff;
+declare const ratingPhasePlan: RatingPhasePlan;
+declare const ratingPhaseHandoff: RatingPhaseReadyHandoff;
+declare const fencedSessionStore: FencedSessionStoreV2;
+const validatedReputationDeriver: typeof deriveReputationWithValidation =
+  deriveReputationWithValidation;
+declare const authenticatedRatingResolution: AuthenticatedRatingResolution;
+const validatedReputationDeps: DeriveReputationValidationDeps = {
+  validate: async () => true,
+  trustBundlePartyRoles: true,
+  resolveAndAuthenticateRating: async () => authenticatedRatingResolution,
+};
+declare const ratingEffectStore: RatingPublicationEffectStore;
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
@@ -61,6 +138,13 @@ declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
 declare const htlcAdapter: CrossChainHtlcAdapter;
 declare const htlcStore: CrossChainHtlcStore;
+declare const qualificationInput: ClaimQualificationInput;
+declare const qualificationDeps: ClaimQualificationDeps;
+declare const qualificationMember: ClaimQualificationRequirement;
+declare const qualificationRequirement: ClaimQualificationBundleRequirement;
+declare const railAuthority: RailAvailabilityAuthority;
+declare const ebfabAuthority: EvidenceBoundBundleAuthority;
+declare const ebfabDeps: EvidenceBoundBundleVerifierDeps;
 declare const solanaAdapter: SolanaSplAdapter;
 declare const solanaStore: SolanaSplSettlementStore;
 declare const ap2Store: Ap2BindingStore;
@@ -75,6 +159,32 @@ void priceBand;
 void priceAccepted;
 void canonical;
 void fulfilment;
+void ratingValidator;
+void buyerRatingProducer;
+void sellerRatingProducer;
+void durableRatingPublisher;
+void ratingPhasePlanner;
+void ratingPhaseCompleter;
+void ratingHandoffCapturer;
+void durableRatingHandoffWriter;
+void durableRatingHandoffReader;
+void ratingPhasePlan;
+void ratingPhaseHandoff;
+void fencedSessionStore;
+void validatedReputationDeriver;
+void validatedReputationDeps;
+void ratingEffectStore;
+void qualify(qualificationInput, qualificationDeps);
+void qualificationMember;
+void qualificationRequirement;
+void selectRail({}, railAuthority);
+void verifyEvidenceBound(ebfabAuthority, ebfabDeps);
+void evaluateExactSet;
+void verifyBundlePointer;
+void buildEvidenceBound;
+void deriveSettlementVerified;
+void deriveReplayableSettlementVerified;
+void replaySettlementVerified;
 void adapter;
 void journal;
 void result;
