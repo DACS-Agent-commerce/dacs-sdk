@@ -22,6 +22,11 @@ import type { DacsSellerPayDemLiveCommerceGraphV1 } from
 import type { DacsPublicStorageDeliverableInputV1 } from
   "./fixedPriceX402SellerFulfilment.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import type { DacsSessionVetRuntimeV1 } from "./sessionIdentityVetRuntime.js";
+import type { DacsVetTerminalBundleTransportOptionsV1 } from
+  "./terminalBundleTransportRuntime.js";
+import { createDacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
 
 export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -44,6 +49,11 @@ export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
   effectLeaseDurationMs?: number;
   leaseTtlMs?: number;
   retryDelayMs?: number;
+  vet?: Readonly<DacsSessionVetRuntimeV1>;
+  terminalBundle?: Readonly<Omit<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "context"
+  >>;
 }
 
 /** Close the complete fixed-price native DEM seller graph. */
@@ -96,6 +106,11 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
     ...(options.leaseTtlMs === undefined
       ? {} : { leaseTtlMs: options.leaseTtlMs }),
   });
+  const terminalInput = options.terminalBundle === undefined
+    ? undefined : createDacsFixedPriceVetTerminalInputFactoryV1({
+        rail: options.rail,
+        recipeRegistryVersion: options.recipeRegistryVersion,
+      });
   return createDacsSellerPayDemLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
@@ -103,6 +118,7 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
       admitInit: session.admitInit,
       resolveBuyerRequirement: session.resolveBuyerRequirement,
       resolveSellerRequirement: session.resolveSellerRequirement,
+      ...(options.vet === undefined ? {} : { vet: options.vet }),
     },
     agreementTransport: { admitProposal: session.admitProposal },
     agreement,
@@ -133,5 +149,10 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
         ? {} : { retryDelayMs: options.retryDelayMs }),
     },
     audit,
+    ...(options.terminalBundle === undefined || terminalInput === undefined
+      ? {} : { terminalBundle: {
+          ...options.terminalBundle,
+          createInput: terminalInput,
+        } }),
   });
 }

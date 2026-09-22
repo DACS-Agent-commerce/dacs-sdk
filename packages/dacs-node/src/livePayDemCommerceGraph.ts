@@ -35,6 +35,8 @@ import type {
   DacsHttpPayloadValidatorV1,
 } from "./transport/envelope.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
+import type { DacsVetTerminalBundleTransportRuntimeV1 } from
+  "./terminalBundleTransportRuntime.js";
 
 export interface DacsBuyerPayDemLiveCommerceGraphOptionsV1 {
   sessionBootstrap: Readonly<DacsBuyerSessionBootstrapTransportRuntimeV1>;
@@ -45,6 +47,7 @@ export interface DacsBuyerPayDemLiveCommerceGraphOptionsV1 {
   audit: FixedPricePayDemTrackOperation;
   agreementTransport: Readonly<DacsBuyerAgreementTransportRuntimeV1>;
   bundleTransport: Readonly<DacsBuyerBundleTransportRuntimeV1>;
+  terminalBundleTransport?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
 }
 
 export interface DacsSellerPayDemLiveCommerceGraphOptionsV1 {
@@ -59,6 +62,7 @@ export interface DacsSellerPayDemLiveCommerceGraphOptionsV1 {
   agreementTransport: Readonly<DacsSellerAgreementTransportRuntimeV1>;
   paymentEvidenceTransport: Readonly<DacsSellerPaymentEvidenceRuntimeV1>;
   bundleTransport: Readonly<DacsSellerBundleTransportRuntimeV1>;
+  terminalBundleTransport?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
 }
 
 export interface DacsBuyerPayDemLiveCommerceGraphV1 {
@@ -68,6 +72,7 @@ export interface DacsBuyerPayDemLiveCommerceGraphV1 {
     Readonly<FixedPricePayDemOperations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
   readonly validatePayload: DacsHttpPayloadValidatorV1;
+  readonly terminalBundles?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -81,6 +86,7 @@ export interface DacsSellerPayDemLiveCommerceGraphV1 {
     Readonly<FixedPricePayDemOperations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
   readonly validatePayload: DacsHttpPayloadValidatorV1;
+  readonly terminalBundles?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -107,6 +113,28 @@ function exactFields(value: Readonly<Record<string, unknown>>, fields: readonly 
   return keys.length === fields.length && fields.every((field) => Object.hasOwn(value, field));
 }
 
+function exactOptionalFields(
+  value: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Reflect.ownKeys(value);
+  return required.every((field) => Object.hasOwn(value, field)) &&
+    keys.every((field) => typeof field === "string" && allowed.has(field));
+}
+
+const unavailableTerminalTransport = Object.freeze({
+  validatePayload: () => Object.freeze({
+    status: "invalid" as const,
+    reasonCode: "vet-terminal-runtime-unavailable",
+  }),
+  handleMessage: async () => Object.freeze({
+    disposition: "rejected" as const,
+    reasonCode: "vet-terminal-runtime-unavailable",
+  }),
+});
+
 function operation(value: unknown): value is FixedPricePayDemTrackOperation {
   return typeof value === "function";
 }
@@ -130,7 +158,11 @@ export function createDacsBuyerPayDemLiveCommerceGraphV1(
     "sessionBootstrap", "agreement", "payment", "paymentEvidence",
     "buyerReceived", "audit", "agreementTransport", "bundleTransport",
   ] as const;
-  if (!plainObject(options) || !exactFields(options, fields) ||
+  if (!plainObject(options) || !exactOptionalFields(
+    options,
+    fields,
+    ["terminalBundleTransport"],
+  ) ||
       !operation(options.agreement) || !operation(options.payment) ||
       !plainObject(options.paymentEvidence) ||
       !operation(options.paymentEvidence.operation) ||
@@ -138,7 +170,9 @@ export function createDacsBuyerPayDemLiveCommerceGraphV1(
       !transportRuntime(options.sessionBootstrap) ||
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentEvidence) ||
-      !transportRuntime(options.bundleTransport)) {
+      !transportRuntime(options.bundleTransport) ||
+      (options.terminalBundleTransport !== undefined &&
+        !transportRuntime(options.terminalBundleTransport))) {
     throw new TypeError("buyer pay-DEM live commerce graph options are invalid");
   }
   const payDemOperations = createDacsFixedPricePayDemOperationSetV1({
@@ -152,6 +186,8 @@ export function createDacsBuyerPayDemLiveCommerceGraphV1(
     },
   }) as Readonly<DacsFixedPricePayDemBuyerOperationsV1> &
     Readonly<FixedPricePayDemOperations>;
+  const terminalBundleTransport = options.terminalBundleTransport ??
+    unavailableTerminalTransport;
   const router = createDacsLiveRoleMessageRouterV1({
     role: "buyer",
     routes: {
@@ -180,6 +216,16 @@ export function createDacsBuyerPayDemLiveCommerceGraphV1(
         handle: (authenticated, context) =>
           options.bundleTransport.handleMessage(authenticated, context),
       },
+      "terminal-bundle-proposal-seller": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
+      "terminal-bundle-contribution-seller": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
     },
   });
   return Object.freeze({
@@ -188,6 +234,8 @@ export function createDacsBuyerPayDemLiveCommerceGraphV1(
     payDemOperations,
     router,
     validatePayload: router.validatePayload,
+    ...(options.terminalBundleTransport === undefined
+      ? {} : { terminalBundles: options.terminalBundleTransport }),
     handleMessage: (
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
       context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -204,7 +252,11 @@ export function createDacsSellerPayDemLiveCommerceGraphV1(
     "paymentEvidence", "delivery", "deliveryEvidence", "audit",
     "agreementTransport", "paymentEvidenceTransport", "bundleTransport",
   ] as const;
-  if (!plainObject(options) || !exactFields(options, fields) ||
+  if (!plainObject(options) || !exactOptionalFields(
+    options,
+    fields,
+    ["terminalBundleTransport"],
+  ) ||
       !operation(options.agreement) || !operation(options.payment) ||
       !operation(options.paymentEvidence) || !operation(options.delivery) ||
       !operation(options.deliveryEvidence) || !operation(options.audit) ||
@@ -212,7 +264,9 @@ export function createDacsSellerPayDemLiveCommerceGraphV1(
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentNotice) ||
       !transportRuntime(options.paymentEvidenceTransport) ||
-      !transportRuntime(options.bundleTransport)) {
+      !transportRuntime(options.bundleTransport) ||
+      (options.terminalBundleTransport !== undefined &&
+        !transportRuntime(options.terminalBundleTransport))) {
     throw new TypeError("seller pay-DEM live commerce graph options are invalid");
   }
   const payDemOperations = createDacsFixedPricePayDemOperationSetV1({
@@ -227,6 +281,8 @@ export function createDacsSellerPayDemLiveCommerceGraphV1(
     },
   }) as Readonly<DacsFixedPricePayDemSellerOperationsV1> &
     Readonly<FixedPricePayDemOperations>;
+  const terminalBundleTransport = options.terminalBundleTransport ??
+    unavailableTerminalTransport;
   const router = createDacsLiveRoleMessageRouterV1({
     role: "seller",
     routes: {
@@ -260,6 +316,16 @@ export function createDacsSellerPayDemLiveCommerceGraphV1(
         handle: (authenticated, context) =>
           options.bundleTransport.handleMessage(authenticated, context),
       },
+      "terminal-bundle-proposal-buyer": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
+      "terminal-bundle-contribution-buyer": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
     },
   });
   return Object.freeze({
@@ -268,6 +334,8 @@ export function createDacsSellerPayDemLiveCommerceGraphV1(
     payDemOperations,
     router,
     validatePayload: router.validatePayload,
+    ...(options.terminalBundleTransport === undefined
+      ? {} : { terminalBundles: options.terminalBundleTransport }),
     handleMessage: (
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
       context: Readonly<DacsLiveRoleInboundOperationContextV1>,
