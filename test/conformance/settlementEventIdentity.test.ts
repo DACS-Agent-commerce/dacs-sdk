@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalize,
+  signArtifact,
+  publicKeyFromSeed,
+  rawPublicKey,
   ed25519Verify,
   publicKeyFromRaw,
   resolveSettlementEventIdentity,
@@ -106,6 +109,32 @@ describe.skipIf(!haveVector)(
           });
         }
       }
+    });
+
+    it("admits depth-128 signed evidence and refuses depth 129 before signature work", async () => {
+      const vector = document.vectors.find(({ expected }) => expected === "pass")!;
+      const evidence = structuredClone(vector.settlementEvidence) as Record<string, unknown>;
+      let nested: unknown = null;
+      for (let index = 0; index < 127; index += 1) nested = [nested];
+      evidence.extension = nested;
+      const seed = new Uint8Array(32).fill(42);
+      const scope = { ...evidence };
+      delete scope.signature;
+      evidence.signature = {
+        ...(evidence.signature as Record<string, unknown>),
+        value: Buffer.from(signArtifact("dacs-evidence:v1:", scope, seed)).toString("base64url"),
+      };
+      let calls = 0;
+      const signingDeps = {
+        resolvePublicKey: () => { calls += 1; return rawPublicKey(publicKeyFromSeed(seed)); },
+        verify: deps.verify,
+      };
+      expect((await resolveSettlementEventIdentity(evidence, contextFor(vector), signingDeps)).decision).toBe("pass");
+      expect(calls).toBeGreaterThan(0);
+      calls = 0;
+      evidence.extension = [nested];
+      expect((await resolveSettlementEventIdentity(evidence, contextFor(vector), signingDeps)).decision).toBe("error");
+      expect(calls).toBe(0);
     });
 
     it("fails closed without invoking evidence or context accessors", async () => {
