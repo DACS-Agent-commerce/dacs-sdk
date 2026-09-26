@@ -1,3 +1,4 @@
+import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { types as nodeTypes } from "node:util";
 
 import { isComponentSignature } from "../artifacts/signatures.js";
@@ -211,7 +212,9 @@ function snapshotExactJson(
   seen = new WeakSet<object>(),
   depth = 0,
 ): unknown {
-  if (depth > 64) throw new TypeError(`${label} exceeds the supported JSON depth`);
+  if (value !== null && typeof value === "object" && depth >= MAX_NESTING_DEPTH) {
+    throw new TypeError(`${label} exceeds the supported JSON depth`);
+  }
   if (value === null || typeof value !== "object") {
     if (
       value === undefined || typeof value === "function" ||

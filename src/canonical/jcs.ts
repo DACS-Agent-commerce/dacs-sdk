@@ -2,7 +2,7 @@ import { DacsError } from "../errors.js";
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 - 1
 // CORE §B.2 CF-5: top-level container has depth 1; admit through 128.
-const MAX_NESTING_DEPTH = 128;
+export const MAX_NESTING_DEPTH = 128;
 const OBJECT_CONSTRUCTOR_SOURCE = Function.prototype.toString.call(Object);
 
 /**

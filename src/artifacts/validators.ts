@@ -1,3 +1,4 @@
+import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -145,7 +146,7 @@ function isExactJsonValue(
     typeof value !== "object" ||
     nodeTypes.isProxy(value) ||
     seen.has(value) ||
-    depth >= 64
+    depth >= MAX_NESTING_DEPTH
   ) return false;
   seen.add(value);
   try {

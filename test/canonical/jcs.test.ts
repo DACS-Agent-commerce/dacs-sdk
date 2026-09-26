@@ -140,6 +140,12 @@ describe("canonicalize (§7.1)", () => {
       }
       expect(() => canonicalize(mixed)).not.toThrow();
     }
+    expect(canonicalize(nestedArrays(128))).toBe("[".repeat(128) + "null" + "]".repeat(128));
+    let mixedTooDeep: unknown = null;
+    for (let index = 0; index < 129; index += 1) {
+      mixedTooDeep = index % 2 === 0 ? [mixedTooDeep] : { value: mixedTooDeep };
+    }
+    expect(() => canonicalize(mixedTooDeep)).toThrow(DacsError);
     expect(() => canonicalize(nestedArrays(129))).toThrow(DacsError);
     expect(() => canonicalize(nestedArrays(200_000))).toThrow(/nesting depth exceeds 128/);
     let objects: unknown = null;
