@@ -43,3 +43,12 @@ ahead of the repository-wide conformance pin.
 
 Do not edit a fixture locally. Replace it from a named Standard commit and
 update this provenance note.
+
+## CF-5 raw JSON candidate
+
+`raw-json-profile-v0.1.json` is copied byte-for-byte from
+DACS-Standard `b80919cd7b114499ffc3d9b5c2f3f91ca7fab3f6`, path
+`conformance/vectors/security/raw-json-profile-v0.1.json`.
+`test/canonical/rawJson.test.ts` checks its 59 admission results, error stages
+and codes, and canonical bytes. This targeted candidate corpus does not update
+the SDK-wide Standard pin or establish current-profile adoption.
