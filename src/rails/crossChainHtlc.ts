@@ -1037,6 +1037,7 @@ export async function advanceCrossChainHtlc(
     }
   };
   let destinationClaimCutoffReached = false;
+  let sourceClaimExpiryReached = false;
   const destinationClaimWindowIsOpen = (expiries: {
     sourceExpiry?: number;
     destinationExpiry?: number;
@@ -1062,6 +1063,23 @@ export async function advanceCrossChainHtlc(
     const currentTime = readNow();
     return currentTime < destinationCutoff && currentTime < sourceCutoff;
   };
+  const sourceClaimWindowIsOpen = (sourceExpiry: number | undefined): boolean =>
+    sourceExpiry !== undefined &&
+    readNow() < secondsToMilliseconds(sourceExpiry, "source claim expiry");
+  const actionWindowIsOpen = (
+    action: HtlcAction,
+    expiries: { sourceExpiry?: number; destinationExpiry?: number },
+  ): boolean => {
+    if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
+      destinationClaimCutoffReached = true;
+      return false;
+    }
+    if (action === "source-claim" && !sourceClaimWindowIsOpen(expiries.sourceExpiry)) {
+      sourceClaimExpiryReached = true;
+      return false;
+    }
+    return true;
+  };
   const execute = async (
     action: HtlcAction,
     expiries: { sourceExpiry?: number; destinationExpiry?: number } = {},
@@ -1069,11 +1087,9 @@ export async function advanceCrossChainHtlc(
     let retained = prepared.get(action);
     if (!retained) {
       try {
+        if (!actionWindowIsOpen(action, expiries)) return null;
         await fence.assertCurrent();
-        if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
-          destinationClaimCutoffReached = true;
-          return null;
-        }
+        if (!actionWindowIsOpen(action, expiries)) return null;
         retained = validatePrepared(await prepareAction({
           intent,
           action,
@@ -1083,11 +1099,9 @@ export async function advanceCrossChainHtlc(
             : undefined,
           ...expiries,
         }, fence), intent, action);
+        if (!actionWindowIsOpen(action, expiries)) return null;
         await fence.assertCurrent();
-        if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
-          destinationClaimCutoffReached = true;
-          return null;
-        }
+        if (!actionWindowIsOpen(action, expiries)) return null;
       } catch {
         return null;
       }
@@ -1107,11 +1121,9 @@ export async function advanceCrossChainHtlc(
       prepared.set(action, retained);
     }
     try {
+      if (!actionWindowIsOpen(action, expiries)) return null;
       await fence.assertCurrent();
-      if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
-        destinationClaimCutoffReached = true;
-        return null;
-      }
+      if (!actionWindowIsOpen(action, expiries)) return null;
       await broadcastRetained(retained, fence);
       await fence.assertCurrent();
     } catch {
@@ -1124,13 +1136,20 @@ export async function advanceCrossChainHtlc(
     sourceExpiry: number,
   ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     const prior = prepared.get("source-claim");
-    if (!prior || failedObservation.state !== "failed" ||
-        readNow() >= secondsToMilliseconds(sourceExpiry, "source claim expiry")) {
+    if (!prior || failedObservation.state !== "failed") {
+      return null;
+    }
+    if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+      sourceClaimExpiryReached = true;
       return null;
     }
     let replacement: Readonly<HtlcPreparedAction>;
     try {
       await fence.assertCurrent();
+      if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+        sourceClaimExpiryReached = true;
+        return null;
+      }
       const replacementContext: Readonly<HtlcSourceClaimReplacementContext> = Object.freeze({
         attempt: sourceClaimAttemptHistory.length + 2,
         priorEffectHash: prior.effectHash,
@@ -1145,7 +1164,15 @@ export async function advanceCrossChainHtlc(
         sourceExpiry,
         replacement: replacementContext,
       }, fence), intent, "source-claim");
+      if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+        sourceClaimExpiryReached = true;
+        return null;
+      }
       await fence.assertCurrent();
+      if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+        sourceClaimExpiryReached = true;
+        return null;
+      }
       if (replacement.effectHash === prior.effectHash || sameRef(replacement.txRef, prior.txRef)) {
         throw new DacsError("pay-cross-chain-htlc: source-claim replacement is not fresh");
       }
@@ -1180,7 +1207,15 @@ export async function advanceCrossChainHtlc(
     ]);
     prepared.set("source-claim", replacement);
     try {
+      if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+        sourceClaimExpiryReached = true;
+        return null;
+      }
       await fence.assertCurrent();
+      if (!sourceClaimWindowIsOpen(sourceExpiry)) {
+        sourceClaimExpiryReached = true;
+        return null;
+      }
       await broadcastRetained(replacement, fence);
       await fence.assertCurrent();
     } catch {
@@ -1331,7 +1366,15 @@ export async function advanceCrossChainHtlc(
           checkpoint.sourceExpiry,
         )
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
-      if (!advanced) return { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
+      if (!advanced) {
+        return sourceClaimExpiryReached
+          ? {
+            status: "failed",
+            errorClass: "settlement-atomicity",
+            reason: "dest-revealed-source-unclaimed-expired",
+          }
+          : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
+      }
       snapshot = advanced;
       try {
         sourceClaim = final(snapshot, "source-claim", prepared.get("source-claim"));

@@ -92,6 +92,13 @@ ambiguous restart. Store implementations must return the complete immutable
 history on claim/takeover; the core validates the history chain before any
 ledger observation or effect.
 
+The source expiry is also an exclusive broadcast boundary. The core rechecks it
+around initial source-claim preparation, after persistence, around replacement
+preparation, and again after the replacement CAS immediately before broadcast.
+If expiry arrives after a replacement is committed, the replacement and its
+audit history remain durable for reconciliation, but it is not broadcast at or
+after the expiry.
+
 `HtlcObservedAction.state: "final"` is an authenticated adapter assertion, not
 an independently corroborated core observation. Each chain adapter owns the
 confirmation-depth and irreversibility policy selected by the intent, including

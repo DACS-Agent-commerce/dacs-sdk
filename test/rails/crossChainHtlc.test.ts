@@ -653,6 +653,99 @@ describe("advanceCrossChainHtlc", () => {
     expect(order).toEqual(["persist", "broadcast"]);
   });
 
+  test("does not broadcast an initial source claim when expiry arrives after persistence", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    let expireClock = () => {};
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordPrepared(input) {
+        const result = await base.recordPrepared(input);
+        if (result.status === "recorded" && input.prepared.action === "source-claim") {
+          expireClock();
+        }
+        return result;
+      },
+    };
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100 });
+    const run = runner({ adapter: h.adapter, store });
+    expireClock = () => run.setClock(1_500_000);
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    });
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+      .not.toContain("source-claim");
+  });
+
+  test("does not broadcast a replacement when expiry arrives after its CAS", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    let expireClock = () => {};
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async replacePreparedSourceClaim(input) {
+        const result = await base.replacePreparedSourceClaim(input);
+        if (result.status === "recorded") expireClock();
+        return result;
+      },
+    };
+    const h = harness({
+      sourceExpiry: 1_500,
+      destinationExpiry: 1_100,
+      mode: { "source-claim": "pending" },
+    });
+    const run = runner({ adapter: h.adapter, store });
+    expireClock = () => run.setClock(1_500_000);
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const prior = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .find((prepared) => prepared.action === "source-claim");
+    if (!prior) throw new Error("expected source claim");
+    h.actions["source-claim"] = {
+      state: "failed",
+      txRef: prior.txRef,
+      authenticationHash: AUTH_HASH,
+    };
+    h.setMode("source-claim", "final");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    });
+    const replacementBroadcasts = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "source-claim" &&
+        prepared.txRef.kind === "htlc-claim" &&
+        prepared.txRef.claimTxHash.includes("attempt-2"));
+    expect(replacementBroadcasts).toHaveLength(0);
+
+    const created = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const retained = await base.claim({
+      ...created,
+      owner: "post-expiry-auditor",
+      now: 1_500_001,
+      leaseDurationMs: 100,
+    });
+    expect(retained).toMatchObject({
+      status: "acquired",
+      prepared: [{ action: "source-lock" }, { action: "destination-lock" },
+        { action: "destination-claim" }, {
+          action: "source-claim",
+          txRef: { kind: "htlc-claim", claimTxHash: "tx-source-claim-attempt-2" },
+        }],
+      sourceClaimAttemptHistory: [{
+        attempt: 1,
+        prepared: { effectHash: prior.effectHash },
+      }],
+    });
+  });
+
   test("reuses a persisted ambiguous replacement byte-for-byte without a third preparation", async () => {
     const h = harness({ mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
