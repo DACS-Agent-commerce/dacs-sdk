@@ -13,11 +13,17 @@ The core implements the normative HTLC lifecycle:
 - separate chain-native hashlocks derived from the same preimage;
 - exact amount conversion for each chain's token decimals;
 - source/destination timelock and actual-expiry asymmetry checks;
+- an authority-bound `destinationFinalitySec` budget that is included in the
+  canonical intent and enforced before destination-claim preparation and
+  broadcast;
 - payer source lock, then payee destination lock only after source finality;
 - payer destination claim/reveal, then payee source claim;
 - durable signed effects recorded before any broadcast and generation-fenced
   across worker takeover;
 - byte-identical retained-effect rebroadcast after ambiguity or restart;
+- generation-fenced source-claim replacement after an authenticated failure,
+  with an immutable attempt history and no release of old effect/transaction
+  reservations;
 - benign two-leg refunds only before a final reveal; and
 - a durable reveal checkpoint that permanently blocks source refund and emits
   `dest-revealed-source-unclaimed` ST-8 recovery state until source-claim
@@ -47,11 +53,44 @@ final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
 refund or terminal ordinary failure.
 
+The selected authority must provide a positive safe-integer
+`destinationFinalitySec`. For actual lock expiries, the last permissible reveal
+instant is the earlier of:
+
+- `destinationExpiry - destinationFinalitySec`; and
+- `sourceExpiry - sourceFinalitySec - safetyWindowSec`.
+
+Both deadlines are evaluated with overflow-safe millisecond arithmetic. The
+cutoff itself is exclusive: one millisecond before it can reveal, while at or
+after it the core returns `htlc-destination-claim-cutoff-reached` without
+preparing or broadcasting a new reveal. A retained destination-claim is treated
+as potentially exposed after restart; pending or ambiguous reveal attempts are
+never reclassified as a benign timeout refund. A destination claim that is
+already final is still authenticated, checkpointed, and recovered after the
+cutoff.
+
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically
 enforce cross-session salt uniqueness, authenticate retained signed payloads,
-and persist the reveal checkpoint. The exported in-memory store is for tests
-and development only.
+and persist the reveal checkpoint. They must also implement
+`replacePreparedSourceClaim` as a source-claim-only compare-and-swap. The CAS
+binds the settlement and authority hash, current owner/generation, exact active
+effect hash and transaction reference, authenticated failed observation, and a
+fresh replacement. It requires a reveal checkpoint and an unexpired source
+claim window, appends the failed attempt to `sourceClaimAttemptHistory`, keeps
+all old effect/transaction reservations, and exposes only the replacement as
+the active `prepared` source claim. `recordPrepared` remains immutable for every
+ordinary action. The exported in-memory store is for tests and development
+only.
+
+When preparing a replacement, the adapter receives `replacement` context with
+the new attempt number, prior effect hash/reference, and failure authentication
+hash. It must use that context to create a different signed transaction. The
+core rejects an unchanged effect or transaction reference, persists the new
+attempt before broadcast, and reuses those exact retained bytes after an
+ambiguous restart. Store implementations must return the complete immutable
+history on claim/takeover; the core validates the history chain before any
+ledger observation or effect.
 
 `HtlcObservedAction.state: "final"` is an authenticated adapter assertion, not
 an independently corroborated core observation. Each chain adapter owns the

@@ -46,6 +46,7 @@ export interface CrossChainHtlcAuthority {
   sourceContractAddress: string;
   destinationContractAddress: string;
   sourceFinalitySec: number;
+  destinationFinalitySec: number;
   safetyWindowSec?: number;
   sourceTimelockSec: number;
   destinationTimelockSec: number;
@@ -89,6 +90,7 @@ export interface CrossChainHtlcIntent {
   sourceContractAddress: string;
   destinationContractAddress: string;
   sourceFinalitySec: number;
+  destinationFinalitySec: number;
   safetyWindowSec: number;
   sourceTimelockSec: number;
   destinationTimelockSec: number;
@@ -142,6 +144,13 @@ export interface HtlcPreparedAction {
   effectHash: string;
 }
 
+export interface HtlcSourceClaimReplacementContext {
+  attempt: number;
+  priorEffectHash: string;
+  priorTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+  failureAuthenticationHash: string;
+}
+
 export type HtlcObservedAction =
   | {
       state: "absent";
@@ -170,6 +179,18 @@ export type HtlcObservedAction =
       revealedPreimageHex?: string;
       authenticationHash: string;
     };
+
+export type HtlcFailedObservation = Omit<
+  Extract<HtlcObservedAction, { state: "pending" | "failed" }>,
+  "state"
+> & { state: "failed" };
+
+export interface HtlcSourceClaimAttemptHistoryEntry {
+  attempt: number;
+  prepared: Readonly<HtlcPreparedAction>;
+  failedObservation: Readonly<HtlcFailedObservation>;
+  replacementEffectHash: string;
+}
 
 export interface HtlcLedgerSnapshot {
   observedAt: number;
@@ -202,6 +223,7 @@ export interface CrossChainHtlcAdapter {
       preimage?: Uint8Array;
       sourceExpiry?: number;
       destinationExpiry?: number;
+      replacement?: Readonly<HtlcSourceClaimReplacementContext>;
     }>,
     fence: Readonly<HtlcEffectFence>,
   ): Promise<Readonly<Omit<HtlcPreparedAction, "effectHash">>>;
@@ -240,6 +262,7 @@ export type HtlcStoreClaim =
       intent: Readonly<CrossChainHtlcIntent>;
       lease: Readonly<HtlcLease>;
       prepared: readonly Readonly<HtlcPreparedAction>[];
+      sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
       revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
     }
   | {
@@ -247,6 +270,7 @@ export type HtlcStoreClaim =
       intent: Readonly<CrossChainHtlcIntent>;
       lease: Readonly<HtlcLease>;
       prepared: readonly Readonly<HtlcPreparedAction>[];
+      sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
       revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
     }
   | {
@@ -282,6 +306,17 @@ export interface CrossChainHtlcStore {
     owner: string;
     generation: number;
     prepared: Readonly<HtlcPreparedAction>;
+  }): Promise<HtlcStoreWrite>;
+  replacePreparedSourceClaim(input: {
+    settlementKey: string;
+    bindingHash: string;
+    owner: string;
+    generation: number;
+    now: number;
+    priorEffectHash: string;
+    priorTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+    failedObservation: Readonly<HtlcFailedObservation>;
+    replacement: Readonly<HtlcPreparedAction>;
   }): Promise<HtlcStoreWrite>;
   recordRevealFinal(input: {
     settlementKey: string;
@@ -344,6 +379,32 @@ function requireUInt(value: unknown, label: string, positive = false): number {
     throw new DacsError(`pay-cross-chain-htlc: ${label} must be a ${positive ? "positive" : "non-negative"} safe integer`);
   }
   return Number(value);
+}
+
+function safeAdd(left: number, right: number, label: string): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result)) {
+    throw new DacsError(`pay-cross-chain-htlc: ${label} exceeds the safe-integer range`);
+  }
+  return result;
+}
+
+function secondsToMilliseconds(seconds: number, label: string): number {
+  const result = seconds * 1_000;
+  if (!Number.isSafeInteger(result)) {
+    throw new DacsError(`pay-cross-chain-htlc: ${label} exceeds the safe-integer range`);
+  }
+  return result;
+}
+
+function finalityCutoffMillis(expiry: number, budgetSec: number, label: string): number {
+  const expiryMillis = secondsToMilliseconds(expiry, `${label} expiry`);
+  const budgetMillis = secondsToMilliseconds(budgetSec, `${label} finality budget`);
+  const result = expiryMillis - budgetMillis;
+  if (!Number.isSafeInteger(result)) {
+    throw new DacsError(`pay-cross-chain-htlc: ${label} cutoff exceeds the safe-integer range`);
+  }
+  return result;
 }
 
 function secretCopy(value: Uint8Array): Uint8Array {
@@ -415,6 +476,11 @@ export function createCrossChainHtlcIntent(
     throw new DacsError("pay-cross-chain-htlc: source and destination chains must differ");
   }
   const sourceFinalitySec = requireUInt(authority.sourceFinalitySec, "sourceFinalitySec", true);
+  const destinationFinalitySec = requireUInt(
+    authority.destinationFinalitySec,
+    "destinationFinalitySec",
+    true,
+  );
   const safetyWindowSec = authority.safetyWindowSec === undefined
     ? DEFAULT_SAFETY_WINDOW_SEC
     : requireUInt(authority.safetyWindowSec, "safetyWindowSec", true);
@@ -424,7 +490,21 @@ export function createCrossChainHtlcIntent(
     "destinationTimelockSec",
     true,
   );
-  if (sourceTimelockSec <= destinationTimelockSec + sourceFinalitySec + safetyWindowSec) {
+  const sourceRecoveryBudgetSec = safeAdd(
+    sourceFinalitySec,
+    safetyWindowSec,
+    "source finality and safety budget",
+  );
+  secondsToMilliseconds(destinationFinalitySec, "destinationFinalitySec");
+  secondsToMilliseconds(sourceRecoveryBudgetSec, "source finality and safety budget");
+  secondsToMilliseconds(sourceTimelockSec, "sourceTimelockSec");
+  secondsToMilliseconds(destinationTimelockSec, "destinationTimelockSec");
+  const minimumSourceTimelockSec = safeAdd(
+    destinationTimelockSec,
+    sourceRecoveryBudgetSec,
+    "HTLC-7 timelock margin",
+  );
+  if (sourceTimelockSec <= minimumSourceTimelockSec) {
     throw new DacsError("pay-cross-chain-htlc: HTLC-7 timelock margin is insufficient");
   }
   const amount = assertPositiveAmount(authority.amount);
@@ -484,6 +564,7 @@ export function createCrossChainHtlcIntent(
     sourceContractAddress: requireString(authority.sourceContractAddress, "sourceContractAddress"),
     destinationContractAddress: requireString(authority.destinationContractAddress, "destinationContractAddress"),
     sourceFinalitySec,
+    destinationFinalitySec,
     safetyWindowSec,
     sourceTimelockSec,
     destinationTimelockSec,
@@ -589,6 +670,76 @@ function validatePrepared(
   return Object.freeze({ ...unsigned, effectHash: sha256Hex(canonicalize(unsigned)) });
 }
 
+function captureFailedObservation(
+  value: Readonly<HtlcFailedObservation>,
+  prepared: Readonly<HtlcPreparedAction>,
+): Readonly<HtlcFailedObservation> {
+  if (value.state !== "failed" || !sameRef(value.txRef, prepared.txRef) ||
+      !HASH_RE.test(value.authenticationHash) ||
+      (value.reason !== undefined && typeof value.reason !== "string")) {
+    throw new DacsError("pay-cross-chain-htlc: source-claim failure observation is invalid");
+  }
+  return Object.freeze({
+    state: "failed",
+    txRef: Object.freeze({ ...value.txRef }),
+    ...(value.reason === undefined ? {} : { reason: value.reason }),
+    authenticationHash: value.authenticationHash,
+  });
+}
+
+function captureSourceClaimAttemptHistory(
+  value: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[],
+  prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+  intent: Readonly<CrossChainHtlcIntent>,
+): readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[] {
+  if (!Array.isArray(value)) {
+    throw new DacsError("pay-cross-chain-htlc: retained source-claim history is invalid");
+  }
+  const active = prepared.get("source-claim");
+  if (value.length > 0 && !active) {
+    throw new DacsError("pay-cross-chain-htlc: retained source-claim history omits the active attempt");
+  }
+  const effectHashes = new Set<string>();
+  const transactionRefs = new Set<string>();
+  const captured = value.map((entry, index) => {
+    if (entry === null || typeof entry !== "object" || entry.attempt !== index + 1) {
+      throw new DacsError("pay-cross-chain-htlc: retained source-claim history sequence is invalid");
+    }
+    const { effectHash, ...unsigned } = entry.prepared;
+    const prior = validatePrepared(unsigned, intent, "source-claim");
+    if (prior.effectHash !== effectHash || !HASH_RE.test(entry.replacementEffectHash) ||
+        entry.replacementEffectHash === prior.effectHash) {
+      throw new DacsError("pay-cross-chain-htlc: retained source-claim history integrity mismatch");
+    }
+    const transactionKey = canonicalize(prior.txRef);
+    if (effectHashes.has(prior.effectHash) || transactionRefs.has(transactionKey)) {
+      throw new DacsError("pay-cross-chain-htlc: retained source-claim history reuses an attempt");
+    }
+    effectHashes.add(prior.effectHash);
+    transactionRefs.add(transactionKey);
+    const failedObservation = captureFailedObservation(entry.failedObservation, prior);
+    return Object.freeze({
+      attempt: entry.attempt,
+      prepared: prior,
+      failedObservation,
+      replacementEffectHash: entry.replacementEffectHash,
+    });
+  });
+  for (let index = 0; index < captured.length; index += 1) {
+    const successor = captured[index + 1]?.prepared ?? active;
+    if (!successor || captured[index]!.replacementEffectHash !== successor.effectHash) {
+      throw new DacsError("pay-cross-chain-htlc: retained source-claim history chain is invalid");
+    }
+  }
+  if (active) {
+    const activeTransactionKey = canonicalize(active.txRef);
+    if (effectHashes.has(active.effectHash) || transactionRefs.has(activeTransactionKey)) {
+      throw new DacsError("pay-cross-chain-htlc: active source-claim reuses a retained attempt");
+    }
+  }
+  return Object.freeze(captured);
+}
+
 function final(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   action: HtlcAction,
@@ -689,7 +840,7 @@ function validateSnapshot(
     if (action === "source-lock" || action === "destination-lock") {
       const includedAt = requireUInt(observed.includedAt, `${action} includedAt`);
       const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
-      if (expiresAt * 1_000 <= includedAt) {
+      if (secondsToMilliseconds(expiresAt, `${action} expiresAt`) <= includedAt) {
         throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
       }
     }
@@ -737,6 +888,7 @@ export async function advanceCrossChainHtlc(
   const claimSettlement = store.claim.bind(store);
   const isCurrentSettlement = store.isCurrent.bind(store);
   const recordPrepared = store.recordPrepared.bind(store);
+  const replacePreparedSourceClaim = store.replacePreparedSourceClaim.bind(store);
   const recordRevealFinal = store.recordRevealFinal.bind(store);
   const recordSettlement = store.recordSettlement.bind(store);
   const observeLedger = adapter.observe.bind(adapter);
@@ -847,6 +999,20 @@ export async function advanceCrossChainHtlc(
   if (prepared.size !== retainedActions.length) {
     return { status: "failed", errorClass: "permanent", reason: "htlc-retained-action-duplicate" };
   }
+  let sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+  try {
+    sourceClaimAttemptHistory = captureSourceClaimAttemptHistory(
+      claimed.sourceClaimAttemptHistory,
+      prepared,
+      intent,
+    );
+  } catch (error) {
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: error instanceof Error ? error.message : "htlc-source-claim-history-corrupt",
+    };
+  }
   let retainedCheckpoint: Readonly<HtlcRevealCheckpoint> | undefined;
   try {
     retainedCheckpoint = claimed.revealCheckpoint === undefined
@@ -870,6 +1036,32 @@ export async function advanceCrossChainHtlc(
       return null;
     }
   };
+  let destinationClaimCutoffReached = false;
+  const destinationClaimWindowIsOpen = (expiries: {
+    sourceExpiry?: number;
+    destinationExpiry?: number;
+  }): boolean => {
+    if (expiries.sourceExpiry === undefined || expiries.destinationExpiry === undefined) {
+      return false;
+    }
+    const sourceRecoveryBudgetSec = safeAdd(
+      intent.sourceFinalitySec,
+      intent.safetyWindowSec,
+      "source finality and safety budget",
+    );
+    const destinationCutoff = finalityCutoffMillis(
+      expiries.destinationExpiry,
+      intent.destinationFinalitySec,
+      "destination claim",
+    );
+    const sourceCutoff = finalityCutoffMillis(
+      expiries.sourceExpiry,
+      sourceRecoveryBudgetSec,
+      "source recovery",
+    );
+    const currentTime = readNow();
+    return currentTime < destinationCutoff && currentTime < sourceCutoff;
+  };
   const execute = async (
     action: HtlcAction,
     expiries: { sourceExpiry?: number; destinationExpiry?: number } = {},
@@ -878,6 +1070,10 @@ export async function advanceCrossChainHtlc(
     if (!retained) {
       try {
         await fence.assertCurrent();
+        if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
+          destinationClaimCutoffReached = true;
+          return null;
+        }
         retained = validatePrepared(await prepareAction({
           intent,
           action,
@@ -888,6 +1084,10 @@ export async function advanceCrossChainHtlc(
           ...expiries,
         }, fence), intent, action);
         await fence.assertCurrent();
+        if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
+          destinationClaimCutoffReached = true;
+          return null;
+        }
       } catch {
         return null;
       }
@@ -908,7 +1108,80 @@ export async function advanceCrossChainHtlc(
     }
     try {
       await fence.assertCurrent();
+      if (action === "destination-claim" && !destinationClaimWindowIsOpen(expiries)) {
+        destinationClaimCutoffReached = true;
+        return null;
+      }
       await broadcastRetained(retained, fence);
+      await fence.assertCurrent();
+    } catch {
+      return null;
+    }
+    return observe();
+  };
+  const replaceFailedSourceClaim = async (
+    failedObservation: Readonly<HtlcFailedObservation>,
+    sourceExpiry: number,
+  ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
+    const prior = prepared.get("source-claim");
+    if (!prior || failedObservation.state !== "failed" ||
+        readNow() >= secondsToMilliseconds(sourceExpiry, "source claim expiry")) {
+      return null;
+    }
+    let replacement: Readonly<HtlcPreparedAction>;
+    try {
+      await fence.assertCurrent();
+      const replacementContext: Readonly<HtlcSourceClaimReplacementContext> = Object.freeze({
+        attempt: sourceClaimAttemptHistory.length + 2,
+        priorEffectHash: prior.effectHash,
+        priorTxRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+        failureAuthenticationHash: failedObservation.authenticationHash,
+      });
+      replacement = validatePrepared(await prepareAction({
+        intent,
+        action: "source-claim",
+        actor: actorFor("source-claim"),
+        preimage: secretCopy(secrets.preimage),
+        sourceExpiry,
+        replacement: replacementContext,
+      }, fence), intent, "source-claim");
+      await fence.assertCurrent();
+      if (replacement.effectHash === prior.effectHash || sameRef(replacement.txRef, prior.txRef)) {
+        throw new DacsError("pay-cross-chain-htlc: source-claim replacement is not fresh");
+      }
+    } catch {
+      return null;
+    }
+    let recorded: HtlcStoreWrite;
+    try {
+      recorded = await replacePreparedSourceClaim({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        now: readNow(),
+        priorEffectHash: prior.effectHash,
+        priorTxRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+        failedObservation,
+        replacement,
+      });
+    } catch {
+      return null;
+    }
+    if (recorded.status !== "recorded" && recorded.status !== "existing") return null;
+    sourceClaimAttemptHistory = Object.freeze([
+      ...sourceClaimAttemptHistory,
+      Object.freeze({
+        attempt: sourceClaimAttemptHistory.length + 1,
+        prepared: prior,
+        failedObservation: captureFailedObservation(failedObservation, prior),
+        replacementEffectHash: replacement.effectHash,
+      }),
+    ]);
+    prepared.set("source-claim", replacement);
+    try {
+      await fence.assertCurrent();
+      await broadcastRetained(replacement, fence);
       await fence.assertCurrent();
     } catch {
       return null;
@@ -939,7 +1212,8 @@ export async function advanceCrossChainHtlc(
         destinationClaim.revealedPreimageHex !== Buffer.from(secrets.preimage).toString("hex")) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-invalid" };
     }
-    if (sourceClaim.finalityObservedAt > sourceLock.expiresAt * 1_000) {
+    if (sourceClaim.finalityObservedAt >
+        secondsToMilliseconds(sourceLock.expiresAt, "source claim expiry")) {
       return {
         status: "failed",
         errorClass: "settlement-atomicity",
@@ -1041,7 +1315,7 @@ export async function advanceCrossChainHtlc(
   }
 
   if (checkpoint) {
-    if (readNow() >= checkpoint.sourceExpiry * 1_000) {
+    if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
       return {
         status: "failed",
         errorClass: "settlement-atomicity",
@@ -1049,8 +1323,14 @@ export async function advanceCrossChainHtlc(
       };
     }
     const sourceClaimState = snapshot.actions["source-claim"];
-    if (!sourceClaimState || sourceClaimState.state === "absent") {
-      const advanced = await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
+    if (!sourceClaimState || sourceClaimState.state === "absent" ||
+        sourceClaimState.state === "failed") {
+      const advanced = sourceClaimState?.state === "failed"
+        ? await replaceFailedSourceClaim(
+          sourceClaimState as Readonly<HtlcFailedObservation>,
+          checkpoint.sourceExpiry,
+        )
+        : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) return { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
       snapshot = advanced;
       try {
@@ -1059,7 +1339,8 @@ export async function advanceCrossChainHtlc(
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
       if (sourceClaim && sourceLock && destinationLock && destinationClaim) {
-        if (sourceClaim.finalityObservedAt > checkpoint.sourceExpiry * 1_000) {
+        if (sourceClaim.finalityObservedAt >
+            secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
           return {
             status: "failed",
             errorClass: "settlement-atomicity",
@@ -1116,7 +1397,7 @@ export async function advanceCrossChainHtlc(
   }
 
   if (!destinationLock) {
-    if (readNow() >= sourceLock.expiresAt * 1_000) {
+    if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry")) {
       const refund = snapshot.actions["source-refund"];
       if (!refund || refund.state === "absent") {
         const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
@@ -1130,8 +1411,21 @@ export async function advanceCrossChainHtlc(
         txRefs: collectRefs(snapshot, prepared),
       };
     }
-    const destinationExpiry = Math.floor(snapshot.observedAt / 1_000) + intent.destinationTimelockSec;
-    if (sourceLock.expiresAt <= destinationExpiry + intent.sourceFinalitySec + intent.safetyWindowSec) {
+    const destinationExpiry = safeAdd(
+      Math.floor(snapshot.observedAt / 1_000),
+      intent.destinationTimelockSec,
+      "destination lock expiry",
+    );
+    const sourceRecoveryBudgetSec = safeAdd(
+      intent.sourceFinalitySec,
+      intent.safetyWindowSec,
+      "source finality and safety budget",
+    );
+    if (sourceLock.expiresAt <= safeAdd(
+      destinationExpiry,
+      sourceRecoveryBudgetSec,
+      "absolute expiry margin",
+    )) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
     }
     const state = snapshot.actions["destination-lock"];
@@ -1156,13 +1450,29 @@ export async function advanceCrossChainHtlc(
       destinationLock.includedAt < sourceLock.finalityObservedAt) {
     return { status: "failed", errorClass: "permanent", reason: "htlc-destination-lock-precedes-source-finality" };
   }
-  if (sourceLock.expiresAt <= destinationLock.expiresAt + intent.sourceFinalitySec + intent.safetyWindowSec) {
+  const sourceRecoveryBudgetSec = safeAdd(
+    intent.sourceFinalitySec,
+    intent.safetyWindowSec,
+    "source finality and safety budget",
+  );
+  if (sourceLock.expiresAt <= safeAdd(
+    destinationLock.expiresAt,
+    sourceRecoveryBudgetSec,
+    "absolute expiry margin",
+  )) {
     return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
   }
 
-  if (readNow() >= destinationLock.expiresAt * 1_000) {
+  if (readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry")) {
     const pendingClaim = snapshot.actions["destination-claim"];
-    if (pendingClaim?.state === "pending") {
+    if (prepared.has("destination-claim")) {
+      if (pendingClaim?.state === "failed") {
+        return {
+          status: "failed",
+          errorClass: "counterparty",
+          reason: pendingClaim.reason ?? "htlc-destination-claim-failed",
+        };
+      }
       return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
     }
     const destinationRefund = snapshot.actions["destination-refund"];
@@ -1173,7 +1483,8 @@ export async function advanceCrossChainHtlc(
         ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
         : { status: "indeterminate", reason: "htlc-destination-refund-effect-uncertain" };
     }
-    if (readNow() >= sourceLock.expiresAt * 1_000 && (!sourceRefund || sourceRefund.state === "absent")) {
+    if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry") &&
+        (!sourceRefund || sourceRefund.state === "absent")) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
       return advanced
         ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
@@ -1201,7 +1512,9 @@ export async function advanceCrossChainHtlc(
     });
     return advanced
       ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
-      : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
+      : destinationClaimCutoffReached
+        ? { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" }
+        : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
   }
   return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
 }
@@ -1211,6 +1524,7 @@ interface MemoryHtlcRecord {
   secrets: Readonly<CrossChainHtlcSecrets>;
   lease: HtlcLease;
   prepared: Map<HtlcAction, Readonly<HtlcPreparedAction>>;
+  sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
   revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
   settlement?: Readonly<CrossChainHtlcSettlement>;
 }
@@ -1245,6 +1559,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
             intent: existing.intent,
             lease: { ...existing.lease },
             prepared: [...existing.prepared.values()],
+            sourceClaimAttemptHistory: existing.sourceClaimAttemptHistory,
             revealCheckpoint: existing.revealCheckpoint,
           };
         }
@@ -1258,6 +1573,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
           intent: existing.intent,
           lease: { ...existing.lease },
           prepared: [...existing.prepared.values()],
+          sourceClaimAttemptHistory: existing.sourceClaimAttemptHistory,
           revealCheckpoint: existing.revealCheckpoint,
         };
       }
@@ -1274,6 +1590,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
         }),
         lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs },
         prepared: new Map(),
+        sourceClaimAttemptHistory: Object.freeze([]),
       };
       records.set(input.intent.settlementKey, record);
       saltOwners.set(input.secrets.buyerSaltHash, input.intent.settlementKey);
@@ -1282,6 +1599,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
         intent: record.intent,
         lease: { ...record.lease },
         prepared: [],
+        sourceClaimAttemptHistory: Object.freeze([]),
       };
     },
     async isCurrent(input) {
@@ -1311,6 +1629,85 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
       }
       record.prepared.set(input.prepared.action, Object.freeze({ ...input.prepared }));
       effects.set(input.prepared.effectHash, input.settlementKey);
+      transactionOwners.set(transactionKey, input.settlementKey);
+      return { status: "recorded" };
+    },
+    async replacePreparedSourceClaim(input) {
+      const record = records.get(input.settlementKey);
+      if (!current(record, input) || !Number.isSafeInteger(input.now) ||
+          input.now < 0 || record.lease.expiresAt <= input.now) {
+        return { status: "stale", reason: "stale-lease" };
+      }
+      if (!record.revealCheckpoint) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-without-reveal" };
+      }
+      let sourceExpiryMillis: number;
+      try {
+        sourceExpiryMillis = secondsToMilliseconds(
+          record.revealCheckpoint.sourceExpiry,
+          "source claim replacement expiry",
+        );
+      } catch {
+        return { status: "corrupt", reason: "htlc-source-claim-replacement-expiry-corrupt" };
+      }
+      if (input.now >= sourceExpiryMillis) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-expired" };
+      }
+      const prior = record.prepared.get("source-claim");
+      if (!prior || prior.effectHash !== input.priorEffectHash ||
+          !sameRef(prior.txRef, input.priorTxRef)) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-prior-mismatch" };
+      }
+      let failedObservation: Readonly<HtlcFailedObservation>;
+      let replacement: Readonly<HtlcPreparedAction>;
+      try {
+        captureSourceClaimAttemptHistory(
+          record.sourceClaimAttemptHistory,
+          record.prepared,
+          record.intent,
+        );
+        failedObservation = captureFailedObservation(input.failedObservation, prior);
+        const { effectHash, ...unsigned } = input.replacement;
+        replacement = validatePrepared(unsigned, record.intent, "source-claim");
+        if (replacement.effectHash !== effectHash) {
+          return { status: "corrupt", reason: "htlc-source-claim-replacement-integrity-mismatch" };
+        }
+      } catch {
+        return { status: "corrupt", reason: "htlc-source-claim-replacement-invalid" };
+      }
+      if (replacement.effectHash === prior.effectHash || sameRef(replacement.txRef, prior.txRef)) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-not-fresh" };
+      }
+      const allPriorAttempts = record.sourceClaimAttemptHistory.map((entry) => entry.prepared);
+      if (allPriorAttempts.some((attempt) => attempt.effectHash === replacement.effectHash ||
+          sameRef(attempt.txRef, replacement.txRef))) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-reuses-history" };
+      }
+      const effectOwner = effects.get(replacement.effectHash);
+      if (effectOwner) {
+        return { status: "conflict", reason: effectOwner === input.settlementKey
+          ? "htlc-source-claim-replacement-reuses-effect"
+          : "htlc-effect-cross-settlement-reuse" };
+      }
+      const transactionKey = canonicalize(replacement.txRef);
+      const transactionOwner = transactionOwners.get(transactionKey);
+      if (transactionOwner) {
+        return { status: "conflict", reason: transactionOwner === input.settlementKey
+          ? "htlc-source-claim-replacement-reuses-transaction"
+          : "htlc-transaction-cross-settlement-reuse" };
+      }
+      const historyEntry = Object.freeze({
+        attempt: record.sourceClaimAttemptHistory.length + 1,
+        prepared: prior,
+        failedObservation,
+        replacementEffectHash: replacement.effectHash,
+      });
+      record.sourceClaimAttemptHistory = Object.freeze([
+        ...record.sourceClaimAttemptHistory,
+        historyEntry,
+      ]);
+      record.prepared.set("source-claim", replacement);
+      effects.set(replacement.effectHash, input.settlementKey);
       transactionOwners.set(transactionKey, input.settlementKey);
       return { status: "recorded" };
     },
