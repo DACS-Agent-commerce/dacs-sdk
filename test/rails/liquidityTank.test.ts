@@ -20,6 +20,7 @@ const BRIDGE_ID = "abc123def456gh78";
 const JOB_ID = "01JZ0000000000000000000001";
 const SECOND_JOB_ID = "01JZ0000000000000000000002";
 const DIFFERENT_JOB_ID = "01JZ0000000000000000000003";
+const RECOVERY_DEADLINE_MS = 1_785_436_800_000;
 
 function unreadableProxy<T extends object>(value: T, touched: () => void): T {
   const reject = () => {
@@ -84,6 +85,7 @@ function empty(operationHash: string): LiquidityTankObservation {
 function pending(
   operationHash: string,
   locked = false,
+  recoveryDeadline = RECOVERY_DEADLINE_MS,
 ): Extract<LiquidityTankObservation, { status: "pending" }> {
   return {
     status: "pending",
@@ -93,7 +95,7 @@ function pending(
     observedAt: 2_000,
     authenticationHash: AUTH_HASH,
     lockTxHash: locked ? "source-lock-tx" : undefined,
-    recoveryDeadline: locked ? 5_000 : undefined,
+    recoveryDeadline: locked ? recoveryDeadline : undefined,
   };
 }
 
@@ -227,7 +229,29 @@ describe("createLiquidityTankIntent", () => {
       sourceAmountBaseUnits: "1250000",
       destinationAmountBaseUnits: "1250000",
       mechanism: "liquidity-tank",
+      operationHash: "cbbd1b1d178191fda9acce350aa52b4993cf17ae63d2afa7b5db692d912df402",
+      bindingHash: "4d574c7e251d0d90d9e1ae6ffff412b9ef7ac63df69499b436bba3061e94dbbf",
     });
+  });
+
+  test.each([
+    ["source", { sourceTokenDecimals: 18 }],
+    ["destination", { destinationTokenDecimals: 18 }],
+  ])("rejects contradictory %s decimals before store or adapter access", async (_label, override) => {
+    expect(() => createLiquidityTankIntent(authority(override))).toThrow(/must both be exactly 6/);
+
+    const store = createInMemoryLiquidityTankStore();
+    const claim = vi.spyOn(store, "claim");
+    const h = harness();
+    await expect(advanceLiquidityTankSettlement(runner({
+      authority: authority(override),
+      store,
+      adapter: h.adapter,
+    }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+    expect(claim).not.toHaveBeenCalled();
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
   test.each([JOB_ID.toLowerCase(), "tank-job-1"])(
@@ -487,6 +511,95 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
+  test("corrupt retained submission is indeterminate and exact restoration resumes without preparation", async () => {
+    const intent = createLiquidityTankIntent(authority());
+    let retainedSubmission: Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
+      | undefined;
+    let corruption: "hash" | "bytes" | undefined;
+    let claimGeneration = 0;
+    const claim = vi.fn<LiquidityTankStore["claim"]>(async (input) => {
+      claimGeneration += 1;
+      const submission = retainedSubmission === undefined
+        ? undefined
+        : corruption === "hash"
+          ? { ...retainedSubmission, submissionHash: "f".repeat(64) }
+          : corruption === "bytes"
+            ? {
+                ...retainedSubmission,
+                signedSubmissionBase64: Buffer.from("corrupted-retained-bytes").toString("base64"),
+              }
+            : retainedSubmission;
+      return {
+        status: "acquired",
+        intent: input.intent,
+        lease: {
+          owner: input.owner,
+          generation: claimGeneration,
+          expiresAt: input.now + input.leaseDurationMs,
+        },
+        ...(submission === undefined ? {} : { submission }),
+      };
+    });
+    const store: LiquidityTankStore = {
+      claim,
+      isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+      recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
+        retainedSubmission = input.submission;
+        return { status: "recorded" };
+      }),
+      recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
+        async () => ({ status: "recorded" }),
+      ),
+      recordSettlement: vi.fn<LiquidityTankStore["recordSettlement"]>(
+        async () => ({ status: "recorded" }),
+      ),
+    };
+    const h = harness({ status: "indeterminate", reason: "status API unavailable" });
+    const run = runner({ store, adapter: h.adapter });
+
+    await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "status API unavailable",
+    });
+    expect(retainedSubmission).toBeDefined();
+    expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+
+    for (const variant of ["hash", "bytes"] as const) {
+      corruption = variant;
+      vi.mocked(store.isCurrent).mockClear();
+      vi.mocked(store.recordSubmission).mockClear();
+      vi.mocked(store.recordObservation).mockClear();
+      vi.mocked(store.recordSettlement).mockClear();
+      h.prepareSubmission.mockClear();
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-retained-state-corrupt",
+      });
+      expect(store.isCurrent).not.toHaveBeenCalled();
+      expect(store.recordSubmission).not.toHaveBeenCalled();
+      expect(store.recordObservation).not.toHaveBeenCalled();
+      expect(store.recordSettlement).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    }
+
+    corruption = undefined;
+    h.setObservation(completed(intent.operationHash));
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+    });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+    expect(h.observe).toHaveBeenCalledTimes(1);
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+    expect(store.recordSubmission).not.toHaveBeenCalled();
+    expect(store.recordObservation).toHaveBeenCalledTimes(1);
+    expect(store.recordSettlement).toHaveBeenCalledTimes(1);
+  });
+
   test("capacity exhaustion stays on the pinned tank mechanism", async () => {
     const h = harness({
       status: "capacity-unavailable",
@@ -542,26 +655,54 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(result).toEqual({
       status: "settle-asymmetric",
       reason: "tank-locked-unreleased",
-      recoveryDeadline: 5_000,
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
       txRef: {
         kind: "liquidity-tank",
         bridgeId: BRIDGE_ID,
         sourceChainId: 11_155_111,
         destChainId: 80_002,
         lockTxHash: "source-lock-tx",
-        recoveryDeadline: 5_000,
+        recoveryDeadline: RECOVERY_DEADLINE_MS,
       },
     });
   });
 
-  test("durable locked state expires as reputation-neutral failed-substrate", async () => {
+  test("a Unix-millisecond recovery deadline remains open at deadline minus one", async () => {
+    const h = harness();
+    h.setAfterBroadcast(pending(h.operationHash, true));
+    const run = runner({ adapter: h.adapter });
+    run.setClock(RECOVERY_DEADLINE_MS - 1);
+
+    await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+      txRef: { recoveryDeadline: RECOVERY_DEADLINE_MS },
+    });
+  });
+
+  test("durable locked state expires at the exact Unix-millisecond deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
     const run = runner({ adapter: h.adapter });
     await advanceLiquidityTankSettlement(run.shared);
-    run.setClock(5_000_000);
+    run.setClock(RECOVERY_DEADLINE_MS);
     h.setObservation({ status: "indeterminate", reason: "status API unavailable" });
     await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "recovery-worker" })).resolves.toEqual({
+      status: "failed",
+      errorClass: "failed-substrate",
+      reason: "tank-locked-unreleased-recovery-expired",
+      reputationNeutral: true,
+    });
+  });
+
+  test("does not reinterpret a seconds-scale deadline as Unix milliseconds", async () => {
+    const h = harness();
+    const secondsScale = RECOVERY_DEADLINE_MS / 1_000;
+    h.setAfterBroadcast(pending(h.operationHash, true, secondsScale));
+    const run = runner({ adapter: h.adapter });
+    run.setClock(RECOVERY_DEADLINE_MS - 1);
+
+    await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
       status: "failed",
       errorClass: "failed-substrate",
       reason: "tank-locked-unreleased-recovery-expired",
@@ -607,7 +748,7 @@ describe("advanceLiquidityTankSettlement", () => {
     })],
     ["extends the recovery deadline", (operationHash: string) => ({
       ...pending(operationHash, true),
-      recoveryDeadline: 6_000,
+      recoveryDeadline: RECOVERY_DEADLINE_MS + 1_000,
     })],
     ["completes a replacement lock", (operationHash: string) => ({
       ...completed(operationHash),
@@ -627,8 +768,8 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
       status: "settle-asymmetric",
       reason: "tank-locked-unreleased",
-      recoveryDeadline: 5_000,
-      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: 5_000 },
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: RECOVERY_DEADLINE_MS },
     });
     expect(recordObservation).not.toHaveBeenCalled();
     expect(h.broadcastRetained).not.toHaveBeenCalled();
@@ -644,13 +785,13 @@ describe("advanceLiquidityTankSettlement", () => {
     recordObservation.mockClear();
     h.setObservation({
       ...pending(h.operationHash, true),
-      recoveryDeadline: Math.floor(Number.MAX_SAFE_INTEGER / 1_000) + 1,
+      recoveryDeadline: Number.MAX_SAFE_INTEGER + 1,
     });
 
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
       status: "settle-asymmetric",
-      recoveryDeadline: 5_000,
-      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: 5_000 },
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+      txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: RECOVERY_DEADLINE_MS },
     });
     expect(recordObservation).not.toHaveBeenCalled();
   });
@@ -691,7 +832,10 @@ describe("advanceLiquidityTankSettlement", () => {
     })).resolves.toEqual({ status: "recorded" });
     await expect(store.recordObservation({
       ...writeAuthority,
-      observation: { ...pending(intent.operationHash, true), recoveryDeadline: 6_000 },
+      observation: {
+        ...pending(intent.operationHash, true),
+        recoveryDeadline: RECOVERY_DEADLINE_MS + 1_000,
+      },
     })).resolves.toMatchObject({ status: "conflict" });
     await expect(store.recordObservation({
       ...writeAuthority,

@@ -106,7 +106,7 @@ export type LiquidityTankObservation =
       status: "pending";
       history: readonly ["empty", "pending"];
       lockTxHash?: string;
-      /** Unix seconds; required exactly when a source lock is committed. */
+      /** Unix milliseconds; required exactly when a source lock is committed. */
       recoveryDeadline?: number;
     })
   | (LiquidityTankObservationBase & {
@@ -256,6 +256,7 @@ export type LiquidityTankProgress =
   | {
       status: "settle-asymmetric";
       reason: "tank-locked-unreleased";
+      /** Exact Unix-millisecond timestamp from the authenticated checkpoint. */
       recoveryDeadline: number;
       txRef: Readonly<{
         kind: "liquidity-tank";
@@ -263,6 +264,7 @@ export type LiquidityTankProgress =
         sourceChainId: number;
         destChainId: number;
         lockTxHash: string;
+        /** Exact Unix-millisecond timestamp from the authenticated checkpoint. */
         recoveryDeadline: number;
       }>;
     }
@@ -302,14 +304,8 @@ function leaseExpiry(now: number, leaseDurationMs: number): number {
   return now + leaseDurationMs;
 }
 
-function recoveryDeadlineMs(value: unknown): number {
-  const seconds = requireUInt(value, "recoveryDeadline", true);
-  if (seconds > Math.floor(Number.MAX_SAFE_INTEGER / 1_000)) {
-    throw new DacsError(
-      "pay-cross-chain-liquidity-tank: recoveryDeadline cannot be represented in milliseconds",
-    );
-  }
-  return seconds * 1_000;
+function recoveryDeadlineUnixMs(value: unknown): number {
+  return requireUInt(value, "recoveryDeadline", true);
 }
 
 function stableDataProperty(
@@ -497,8 +493,10 @@ export function createLiquidityTankIntent(
     authority.destinationTokenDecimals,
     "destinationTokenDecimals",
   );
-  if (sourceTokenDecimals > 255 || destinationTokenDecimals > 255) {
-    throw new DacsError("pay-cross-chain-liquidity-tank: token decimals must be unsigned bytes");
+  if (sourceTokenDecimals !== 6 || destinationTokenDecimals !== 6) {
+    throw new DacsError(
+      "pay-cross-chain-liquidity-tank: fixed USDC route token decimals must both be exactly 6",
+    );
   }
   const amount = assertPositiveAmount(authority.amount);
   const operation = {
@@ -669,7 +667,7 @@ function validateCapturedObservation(
     }
     if (value.lockTxHash !== undefined) {
       requireString(value.lockTxHash, "lockTxHash");
-      recoveryDeadlineMs(value.recoveryDeadline);
+      recoveryDeadlineUnixMs(value.recoveryDeadline);
     }
   }
   if (value.status === "completed") {
@@ -693,7 +691,7 @@ function progressFromDurableObservation(
 ): LiquidityTankProgress | null {
   if (!observation) return null;
   if (observation.status === "pending" && observation.lockTxHash && observation.recoveryDeadline) {
-    if (now >= recoveryDeadlineMs(observation.recoveryDeadline)) {
+    if (now >= observation.recoveryDeadline) {
       return {
         status: "failed",
         errorClass: "failed-substrate",
@@ -964,8 +962,8 @@ export async function advanceLiquidityTankSettlement(
   if (submission) {
     try {
       submission = validateRetainedSubmission(submission, intent);
-    } catch (error) {
-      return { status: "failed", errorClass: "permanent", reason: String(error) };
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
   } else {
     try {

@@ -9,8 +9,8 @@ The core:
 
 - validates the exact stablecoin-cross-chain / cross-chain / liquidity-tank
   authority, SR-5 binding, route and distinct tank pair;
-- binds both addresses, per-chain decimal conversion, amount, agreement, rail,
-  job and phase before effects;
+- binds both addresses, the fixed route's exact six-decimal USDC conversion,
+  amount, agreement, rail, job and phase before effects;
 - requires the complete signed native-bridge transaction to be prepared and
   durably stored before broadcast;
 - generation-fences preparation, exact-byte broadcast and authenticated status
@@ -23,7 +23,9 @@ The core:
 - treats capacity exhaustion as transient on the same pinned tank rail; and
 - persists locked-unreleased state as ST-8 `tank-locked-unreleased`, resolving
   forward to success or reputation-neutral `failed-substrate` at the recovery
-  deadline.
+  deadline. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
+  adapter observations, durable checkpoints, progress and transaction evidence;
+  seconds-scale values are not converted or heuristically reinterpreted.
 
 ```ts
 import {
@@ -45,6 +47,11 @@ Demos programmatic API this corresponds to the manual confirmation path. The
 store commits those exact signed bytes first. `broadcastRetained` may then
 rebroadcast only that retained transaction, so an ambiguous response never
 authorizes a new nonce or bridge operation.
+
+The retained submission hash and bytes are validated before any adapter effect
+or store write. Corrupted retained state returns the retry-safe indeterminate
+reason `liquidity-tank-retained-state-corrupt`; operators must restore the exact
+authenticated row rather than preparing or broadcasting a replacement.
 
 Production adapters must authenticate bridge status and its history. Demos SDK
 4.0.16 exposes native-bridge submission but no public bridge-status lookup that
