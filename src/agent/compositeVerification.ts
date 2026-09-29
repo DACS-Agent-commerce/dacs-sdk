@@ -25,7 +25,7 @@ import {
   type VerifyComponentSignatureDeps,
 } from "../artifacts/signatures.js";
 import { isRecipeDescriptor } from "../registry/resolve.js";
-import type { RecipeDescriptor } from "../registry/types.js";
+import type { RecipeDescriptor, VerificationMethod } from "../registry/types.js";
 import {
   identityBundleHash,
   isRegisteredClaimReferenceScheme,
@@ -64,10 +64,10 @@ export interface ExpectedVerifyResult {
   /** Exact method selected from the pinned recipe family. */
   method: VerificationMethodKind;
   /**
-   * Exact claim requirement this result is intended to satisfy. It must occur
-   * byte-for-byte in `CompositeVerificationExpectations.requirement`; carrying
-   * it here prevents one same-scheme result from satisfying a different
-   * recipe, freshness window, or parameterized requirement.
+   * Exact claim requirement used to bind this committed reference to the full
+   * authenticated requirement. It must occur byte-for-byte in
+   * `CompositeVerificationExpectations.requirement`; the verifier then derives
+   * every compatible member and qualifies each predicate independently.
    */
   requirement: CompositeClaimRequirement;
 }
@@ -723,6 +723,7 @@ function validateResultTime(
   expected: Readonly<ExpectedVerifyResult>,
   recipe: Readonly<RecipeDescriptor>,
   now: number,
+  includeRequirementMaxAge = true,
 ): StrictCompositeVerification | null {
   if (
     result.method !== "demos-gcr-domain" &&
@@ -777,11 +778,8 @@ function validateResultTime(
       return invalid("verify-result-time", "default freshness window overflows");
     }
   }
-  if (expected.requirement.maxAge !== undefined) {
-    const listingExpiry = addSeconds(
-      result.verifiedAt,
-      expected.requirement.maxAge,
-    );
+  if (includeRequirementMaxAge && expected.requirement.maxAge !== undefined) {
+    const listingExpiry = addSeconds(result.verifiedAt, expected.requirement.maxAge);
     if (listingExpiry === null) {
       return invalid("verify-result-time", "listing freshness window overflows");
     }
@@ -1069,6 +1067,15 @@ interface MixedVerificationEntry {
   result?: Readonly<VerifyResult>;
 }
 
+interface AuthenticatedResolvedResult {
+  status: "resolved";
+  result: VerifyResult;
+  recipe: RecipeDescriptor & { signature: ComponentSignature };
+  content: ResolvedVerificationContent;
+  /** RAV-3 aggregation verdict without rewriting signed evidence. */
+  effectiveDecision: VerificationDecision;
+}
+
 function decisionForExactRequirement(
   requirement: Readonly<CompositeClaimRequirement>,
   entries: readonly MixedVerificationEntry[],
@@ -1170,13 +1177,7 @@ async function resolveResult<TKey>(
   deps: VerifyCompositeVerificationDeps<TKey>,
 ): Promise<
   | StrictCompositeVerification
-  | {
-      status: "resolved";
-      result: VerifyResult;
-      recipe: RecipeDescriptor & { signature: ComponentSignature };
-      /** RAV-3 aggregation verdict without rewriting signed evidence. */
-      effectiveDecision: VerificationDecision;
-    }
+  | AuthenticatedResolvedResult
   | {
       status: "indeterminate";
       recipe: RecipeDescriptor & { signature: ComponentSignature };
@@ -1370,37 +1371,6 @@ async function resolveResult<TKey>(
   }
   if (authority === "unresolved") return unresolved("authority-signature");
   if (authority !== "valid") return invalid("authority-signature");
-  if (expected.requirement.parameters !== undefined) {
-    if (!deps.verifyRequirementParameters) {
-      return unresolved(
-        "requirement-parameters",
-        "parameterized requirement has no verifier",
-      );
-    }
-    let parametersMatch = false;
-    try {
-      parametersMatch =
-        (await deps.verifyRequirementParameters({
-          result: deepFreezeSnapshot(structuredClone(result)),
-          expected: deepFreezeSnapshot(structuredClone(expected)),
-          recipe: deepFreezeSnapshot(structuredClone(recipe)),
-          content: attestation.encoding === "bytes"
-            ? { encoding: "bytes", value: Uint8Array.from(attestation.value) }
-            : {
-                encoding: "canonical-json",
-                value: deepFreezeSnapshot(structuredClone(attestation.value)),
-              },
-        })) === true;
-    } catch (error) {
-      return unresolved("requirement-parameters", String(error));
-    }
-    // §7.6 step 7: an authenticated parameter mismatch is a legitimate
-    // verification outcome, but it MUST force decision=fail. Reject elevation
-    // to pass/error/indeterminate; accept the producer's signed fail result.
-    if (!parametersMatch && result.decision !== "fail") {
-      return invalid("requirement-parameters");
-    }
-  }
   const effectiveDecision: VerificationDecision =
     recipe.availability === "disabled" ||
     recipe.availability === "failed" ||
@@ -1411,8 +1381,156 @@ async function resolveResult<TKey>(
     status: "resolved",
     result: structuredClone(result),
     recipe: structuredClone(recipe),
+    content: attestation.encoding === "bytes"
+      ? { encoding: "bytes", value: Uint8Array.from(attestation.value) }
+      : {
+          encoding: "canonical-json",
+          value: structuredClone(attestation.value),
+        },
     effectiveDecision,
   };
+}
+
+function compatibleVerifiedExpectations(
+  requirement: Readonly<CompositeBundleRequirement>,
+  expected: Readonly<ExpectedVerifyResult>,
+  recipe: Readonly<RecipeDescriptor & { signature: ComponentSignature }>,
+): ExpectedVerifyResult[] {
+  const exactRequirement = (member: Readonly<CompositeClaimRequirement>): boolean => {
+    try {
+      return canonicalize(member) === canonicalize(expected.requirement);
+    } catch {
+      return false;
+    }
+  };
+  const selectedMethods = [recipe.defaultMethod, ...(recipe.alternatives ?? [])]
+    .filter((method) => method.kind === expected.method);
+  const selectedMethod: VerificationMethod | undefined = selectedMethods.length === 1
+    ? selectedMethods[0]
+    : undefined;
+  const compatibilityKey = (
+    member: Readonly<CompositeClaimRequirement>,
+  ): string | null => {
+    // The consensus proxy input is the fixed `{ kind }` value and its actual
+    // authority substitutions are reconstructible from the authenticated
+    // recipe plus requirement. Other method inputs are not carried by the CVR,
+    // so only the explicitly committed requirement can use those results.
+    if (selectedMethod?.kind !== "consensus-backed-proxy") return null;
+    if (
+      member.parameters !== undefined &&
+      Object.prototype.hasOwnProperty.call(member.parameters, "identifier")
+    ) {
+      return null;
+    }
+    const bindings: Record<string, unknown> = {};
+    const placeholders = [...selectedMethod.endpoint.urlTemplate.matchAll(
+      /\{([A-Za-z][A-Za-z0-9_]*)\}/g,
+    )].map((match) => match[1]!);
+    for (const key of [...new Set(placeholders)].sort()) {
+      if (key === "identifier") continue;
+      if (
+        member.parameters === undefined ||
+        !Object.prototype.hasOwnProperty.call(member.parameters, key)
+      ) {
+        return null;
+      }
+      const value = member.parameters[key];
+      if (
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+      ) return null;
+      bindings[key] = value;
+    }
+    try {
+      return sha256Hex(canonicalize({
+        claimSubject: `${expected.scheme}:${expected.identifier}`,
+        method: selectedMethod,
+        methodInputHash: sha256Hex(canonicalize({
+          kind: "consensus-backed-proxy",
+        })),
+        recipeArtifactHash: sha256Hex(canonicalize(recipe)),
+        authorityTemplateBindings: bindings,
+      }));
+    } catch {
+      return null;
+    }
+  };
+  const committedKey = compatibilityKey(expected.requirement);
+  return [
+    ...requirement.required,
+    ...(requirement.oneOf ?? []).flat(),
+  ].filter((member) =>
+    member.verificationRequired === true &&
+    member.scheme === expected.scheme &&
+    (member.recipeVersion === undefined ||
+      member.recipeVersion === expected.ref.recipeVersion) &&
+    (member.parameters?.verificationMethod === undefined ||
+      member.parameters.verificationMethod === expected.method) &&
+    (exactRequirement(member) ||
+      (committedKey !== null && compatibilityKey(member) === committedKey))
+  ).map((member) => ({
+    ref: expected.ref,
+    scheme: expected.scheme,
+    identifier: expected.identifier,
+    method: expected.method,
+    requirement: member,
+  }));
+}
+
+async function qualifyResolvedMember<TKey>(
+  resolved: Readonly<{
+    result: VerifyResult;
+    recipe: RecipeDescriptor & { signature: ComponentSignature };
+    content: ResolvedVerificationContent;
+    effectiveDecision: VerificationDecision;
+  }>,
+  expected: Readonly<ExpectedVerifyResult>,
+  acceptanceTime: number,
+  deps: VerifyCompositeVerificationDeps<TKey>,
+  sharedProjection: boolean,
+): Promise<VerificationDecision | StrictCompositeVerification> {
+  if (expected.requirement.maxAge !== undefined) {
+    const expiry = addSeconds(
+      resolved.result.verifiedAt,
+      expected.requirement.maxAge,
+    );
+    if (expiry === null) {
+      return invalid("verify-result-time", "listing freshness window overflows");
+    }
+    if (acceptanceTime > expiry) return "fail";
+  }
+  if (
+    resolved.effectiveDecision !== "pass" ||
+    expected.requirement.parameters === undefined
+  ) {
+    return resolved.effectiveDecision;
+  }
+  if (!deps.verifyRequirementParameters) {
+    return unresolved(
+      "requirement-parameters",
+      "parameterized requirement has no verifier",
+    );
+  }
+  try {
+    const matches = await deps.verifyRequirementParameters({
+      result: deepFreezeSnapshot(structuredClone(resolved.result)),
+      expected: deepFreezeSnapshot(structuredClone(expected)),
+      recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
+      content: resolved.content.encoding === "bytes"
+        ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
+        : {
+            encoding: "canonical-json",
+            value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
+          },
+    });
+    if (matches === true) return "pass";
+    return !sharedProjection && resolved.result.decision !== "fail"
+      ? invalid("requirement-parameters")
+      : "fail";
+  } catch (error) {
+    return unresolved("requirement-parameters", String(error));
+  }
 }
 
 /**
@@ -1502,6 +1620,15 @@ export async function verifyCompositeVerificationRecord<TKey>(
   )) {
     return invalid("deal-specific-substitution");
   }
+  try {
+    const committedRefs = [...record.freshness, ...record.dealSpecific]
+      .map((ref) => canonicalize(ref));
+    if (new Set(committedRefs).size !== committedRefs.length) {
+      return invalid("deal-specific-substitution", "duplicate committed VerifyResultRef");
+    }
+  } catch {
+    return invalid("record-shape", "VerifyResultRef is not canonicalizable");
+  }
 
   const recordSignature = await verifyComponentSignature(
     record as unknown as Record<string, unknown>,
@@ -1571,7 +1698,11 @@ export async function verifyCompositeVerificationRecord<TKey>(
 
   const freshness: VerifyResult[] = [];
   const freshnessRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }> = [];
-  const freshnessExpected: ExpectedVerifyResult[] = [];
+  const resolvedFreshness: Array<{
+    resolution: AuthenticatedResolvedResult;
+    expected: ExpectedVerifyResult;
+    members: ExpectedVerifyResult[];
+  }> = [];
   const mixedEntries: MixedVerificationEntry[] = [];
   const indeterminateEvidence: Array<{
     collection: "freshness" | "dealSpecific";
@@ -1588,11 +1719,18 @@ export async function verifyCompositeVerificationRecord<TKey>(
       capturedDeps,
     );
     if (resolution.status === "indeterminate") {
-      mixedEntries.push({
-        requirement: expected.requirement,
+      const memberExpectations = compatibleVerifiedExpectations(
+        expectedSnapshot.requirement,
         expected,
-        effectiveDecision: "indeterminate",
-      });
+        resolution.recipe,
+      );
+      for (const memberExpected of memberExpectations) {
+        mixedEntries.push({
+          requirement: memberExpected.requirement,
+          expected: memberExpected,
+          effectiveDecision: "indeterminate",
+        });
+      }
       indeterminateEvidence.push({
         collection: "freshness",
         index,
@@ -1602,20 +1740,27 @@ export async function verifyCompositeVerificationRecord<TKey>(
       continue;
     }
     if (resolution.status !== "resolved") return resolution;
+    const memberExpectations = compatibleVerifiedExpectations(
+      expectedSnapshot.requirement,
+      expected,
+      resolution.recipe,
+    );
     freshness.push(resolution.result);
     freshnessRecipes.push(resolution.recipe);
-    freshnessExpected.push(expected);
-    mixedEntries.push({
-      requirement: expected.requirement,
+    resolvedFreshness.push({
+      resolution,
       expected,
-      result: resolution.result,
-      effectiveDecision: resolution.effectiveDecision,
+      members: memberExpectations,
     });
   }
 
   const dealSpecific: VerifyResult[] = [];
   const dealSpecificRecipes: Array<RecipeDescriptor & { signature: ComponentSignature }> = [];
-  const dealSpecificExpected: ExpectedVerifyResult[] = [];
+  const resolvedDealSpecific: Array<{
+    resolution: AuthenticatedResolvedResult;
+    expected: ExpectedVerifyResult;
+    members: ExpectedVerifyResult[];
+  }> = [];
   for (let index = 0; index < record.dealSpecific.length; index += 1) {
     const ref = record.dealSpecific[index]!;
     const expected = expectedSnapshot.dealSpecific[index]!;
@@ -1625,11 +1770,18 @@ export async function verifyCompositeVerificationRecord<TKey>(
       capturedDeps,
     );
     if (resolution.status === "indeterminate") {
-      mixedEntries.push({
-        requirement: expected.requirement,
+      const memberExpectations = compatibleVerifiedExpectations(
+        expectedSnapshot.requirement,
         expected,
-        effectiveDecision: "indeterminate",
-      });
+        resolution.recipe,
+      );
+      for (const memberExpected of memberExpectations) {
+        mixedEntries.push({
+          requirement: memberExpected.requirement,
+          expected: memberExpected,
+          effectiveDecision: "indeterminate",
+        });
+      }
       indeterminateEvidence.push({
         collection: "dealSpecific",
         index,
@@ -1639,14 +1791,17 @@ export async function verifyCompositeVerificationRecord<TKey>(
       continue;
     }
     if (resolution.status !== "resolved") return resolution;
+    const memberExpectations = compatibleVerifiedExpectations(
+      expectedSnapshot.requirement,
+      expected,
+      resolution.recipe,
+    );
     dealSpecific.push(resolution.result);
     dealSpecificRecipes.push(resolution.recipe);
-    dealSpecificExpected.push(expected);
-    mixedEntries.push({
-      requirement: expected.requirement,
+    resolvedDealSpecific.push({
+      resolution,
       expected,
-      result: resolution.result,
-      effectiveDecision: resolution.effectiveDecision,
+      members: memberExpectations,
     });
   }
 
@@ -1662,23 +1817,31 @@ export async function verifyCompositeVerificationRecord<TKey>(
       "acceptance clock must return a non-negative safe integer",
     );
   }
-  for (let index = 0; index < freshness.length; index += 1) {
+  for (const entry of [...resolvedFreshness, ...resolvedDealSpecific]) {
     const timeFailure = validateResultTime(
-      freshness[index]!,
-      freshnessExpected[index]!,
-      freshnessRecipes[index]!,
+      entry.resolution.result,
+      entry.expected,
+      entry.resolution.recipe,
       acceptanceTime,
+      entry.members.length === 1,
     );
     if (timeFailure) return timeFailure;
-  }
-  for (let index = 0; index < dealSpecific.length; index += 1) {
-    const timeFailure = validateResultTime(
-      dealSpecific[index]!,
-      dealSpecificExpected[index]!,
-      dealSpecificRecipes[index]!,
-      acceptanceTime,
-    );
-    if (timeFailure) return timeFailure;
+    for (const memberExpected of entry.members) {
+      const decision = await qualifyResolvedMember(
+        entry.resolution,
+        memberExpected,
+        acceptanceTime,
+        capturedDeps,
+        entry.members.length > 1,
+      );
+      if (typeof decision !== "string") return decision;
+      mixedEntries.push({
+        requirement: memberExpected.requirement,
+        expected: memberExpected,
+        result: entry.resolution.result,
+        effectiveDecision: decision,
+      });
+    }
   }
   const latestResultTime = Math.max(
     0,

@@ -30,6 +30,7 @@ import {
   type CompositeVerificationRecord,
   type ExpectedVerifyResult,
   type IdentityBundle,
+  type RecipeDescriptor,
   type ResolvedVerificationContent,
   type VerifyCompositeVerificationDeps,
   type VerifyResult,
@@ -964,7 +965,7 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "recipe-signature" });
   });
 
-  test("does not reuse one result across distinct same-scheme requirements", async () => {
+  test("authenticates one result once and evaluates each same-scheme predicate", async () => {
     const f = await fixture();
     const first = {
       ...requirement.required[0]!,
@@ -981,8 +982,8 @@ describe("strict DACS-2 composite verification closure", () => {
     const record = await withRecord(f.record, {
       requirementHash: sha256Hex(canonicalize(dualRequirement)),
     });
-    await expect(
-      verifyCompositeVerificationRecord(
+    let resultResolutions = 0;
+    const verified = await verifyCompositeVerificationRecord(
         record,
         {
           ...f.expected,
@@ -991,11 +992,228 @@ describe("strict DACS-2 composite verification closure", () => {
             { ...f.expectedResult, requirement: first },
           ],
         },
-        { ...f.deps, verifyRequirementParameters: () => true },
+        {
+          ...f.deps,
+          resolve: async (ref) => {
+            if (ref.anchor.locator === RESULT_LOCATOR) resultResolutions += 1;
+            return f.deps.resolve(ref);
+          },
+          verifyRequirementParameters: () => true,
+        },
+      );
+    expect(verified).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(resultResolutions).toBe(1);
+
+    const failedRecord = await withRecord(record, { overallDecision: "fail" });
+    await expect(
+      verifyCompositeVerificationRecord(
+        failedRecord,
+        {
+          ...f.expected,
+          requirement: dualRequirement,
+          dealSpecific: [
+            { ...f.expectedResult, requirement: first },
+          ],
+        },
+        {
+          ...f.deps,
+          verifyRequirementParameters: ({ expected }) =>
+            expected.requirement.parameters?.jurisdiction === "GB",
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+  });
+
+  test("does not project one result across different authority URL inputs", async () => {
+    const f = await fixture();
+    const first = {
+      ...requirement.required[0]!,
+      parameters: { region: "GB", jurisdiction: "GB" },
+    };
+    const second = {
+      ...requirement.required[0]!,
+      parameters: { region: "US", jurisdiction: "GB" },
+    };
+    const splitAuthorityRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [first, second],
+    };
+    const splitAuthorityRecipe = await signComponentArtifact(
+      {
+        ...(stripSignature(
+          f.recipe as unknown as Record<string, unknown>,
+        ) as Omit<RecipeDescriptor, "signature">),
+        defaultMethod: {
+          kind: "consensus-backed-proxy" as const,
+          endpoint: {
+            method: "GET" as const,
+            urlTemplate: "https://authority.example/{region}/{identifier}",
+          },
+        },
+      },
+      "dacs-recipe:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) => ed25519Sign(
+          bytes,
+          privateKeyFromSeed(VERIFIER_SEED),
+        ),
+      },
+    );
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(splitAuthorityRequirement)),
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: splitAuthorityRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: first }],
+        },
+        {
+          ...f.deps,
+          resolveRecipe: async () => splitAuthorityRecipe as never,
+          verifyRequirementParameters: () => true,
+        },
       ),
     ).resolves.toMatchObject({
       status: "invalid",
       code: "aggregation-mismatch",
+    });
+  });
+
+  test("does not project when distinct method-input hashes are absent from the wire", async () => {
+    const f = await fixture();
+    const first = {
+      ...requirement.required[0]!,
+      parameters: { assertionPolicy: "first" },
+    };
+    const second = {
+      ...requirement.required[0]!,
+      parameters: { assertionPolicy: "second" },
+    };
+    const selfSignedRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [first, second],
+    };
+    const selfSignedRecipe = await signComponentArtifact(
+      {
+        ...(stripSignature(
+          f.recipe as unknown as Record<string, unknown>,
+        ) as Omit<RecipeDescriptor, "signature">),
+        defaultMethod: { kind: "self-signed" as const },
+      },
+      "dacs-recipe:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) => ed25519Sign(
+          bytes,
+          privateKeyFromSeed(VERIFIER_SEED),
+        ),
+      },
+    );
+    const selfSignedResult = await withResult(f.result, {
+      method: "self-signed",
+    });
+    const selfSignedRef: VerifyResultRef = {
+      ...f.ref,
+      contentHash: contentHash(
+        selfSignedResult as unknown as Record<string, unknown>,
+      ),
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(selfSignedRequirement)),
+      dealSpecific: [selfSignedRef],
+    });
+    const resolved = new Map(f.resolved);
+    resolved.set(RESULT_LOCATOR, {
+      encoding: "canonical-json",
+      value: selfSignedResult as unknown as Record<string, unknown>,
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: selfSignedRequirement,
+          dealSpecific: [{
+            ...f.expectedResult,
+            ref: selfSignedRef,
+            method: "self-signed",
+            requirement: first,
+          }],
+        },
+        {
+          ...f.deps,
+          resolve: async (ref) => resolved.get(ref.anchor.locator) ?? null,
+          resolveRecipe: async () => selfSignedRecipe as never,
+          verifyRequirementParameters: () => true,
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+  });
+
+  test("applies shared-result maxAge per member and samples time after authentication", async () => {
+    const f = await fixture();
+    const wide = { ...requirement.required[0]!, maxAge: 3_600 };
+    const expired = { ...requirement.required[0]!, maxAge: 0 };
+    const dualRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [wide, expired],
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(dualRequirement)),
+      overallDecision: "fail",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: dualRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: wide }],
+        },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+
+    let acceptanceNow = NOW;
+    await expect(
+      verifyCompositeVerificationRecord(
+        f.record,
+        f.expected,
+        {
+          ...f.deps,
+          nowMs: () => acceptanceNow,
+          resolve: async (ref) => {
+            const resolved = await f.deps.resolve(ref);
+            if (ref.anchor.locator === AUTHORITY_LOCATOR) {
+              acceptanceNow = NOW + 3_600_001;
+            }
+            return resolved;
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "verify-result-stale",
     });
   });
 
