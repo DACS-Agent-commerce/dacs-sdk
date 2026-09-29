@@ -33,6 +33,14 @@ const vectors = JSON.parse(readFileSync(
   "utf8",
 )) as { vectors: ReceiptVector[] };
 
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
+}
+
 describe("verifyX402ReceiptClaim — DACS-4 §9.5.7", () => {
   for (const vector of vectors.vectors) {
     it(`replays ${vector.name}`, () => {
@@ -171,4 +179,41 @@ describe("verifyX402ReceiptClaim — DACS-4 §9.5.7", () => {
     expect(result).not.toHaveProperty("txRef");
     expect(result).not.toHaveProperty("settlementId");
   });
+
+  it.each(["object", "array"] as const)(
+    "accepts a depth-128 public receipt with an empty %s leaf and rejects depth 129",
+    (kind) => {
+      const receiptAt128 = {
+        success: true,
+        transaction: "0x1",
+        network: "eip155:1",
+        payer: "0x2",
+        extension: nestedContainer(127, kind),
+      };
+      const accepted = verifyX402ReceiptClaim({
+        protocolVersion: "2",
+        responseHeader: {
+          name: "PAYMENT-RESPONSE",
+          value: Buffer.from(JSON.stringify(receiptAt128), "utf8").toString("base64"),
+        },
+        evidence: { paymentReceiptHash: sha256Hex(canonicalize(receiptAt128)) },
+      });
+      expect(accepted.disposition).toBe("pass");
+
+      const receiptAt129 = {
+        ...receiptAt128,
+        extension: nestedContainer(128, kind),
+      };
+      expect(deriveX402ReceiptCommitment({
+        protocolVersion: "2",
+        responseHeader: {
+          name: "PAYMENT-RESPONSE",
+          value: Buffer.from(JSON.stringify(receiptAt129), "utf8").toString("base64"),
+        },
+      })).toEqual({
+        disposition: "error",
+        reason: "invalid-settlementResponse-schema",
+      });
+    },
+  );
 });

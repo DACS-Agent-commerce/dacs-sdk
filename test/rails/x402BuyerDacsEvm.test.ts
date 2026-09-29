@@ -75,6 +75,14 @@ function requirements(
   } as PaymentRequirements & X402BuyerPaymentRequirements;
 }
 
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
+}
+
 function challenge(
   accepts: PaymentRequirements[] = [requirements()],
   resource = RESOURCE,
@@ -190,6 +198,30 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       expect(result.intent.signedPaymentPayload.accepted).toEqual(wireRequirements);
     }
   });
+
+  test.each(["object", "array"] as const)(
+    "captures depth-128 expected requirement %s data and refuses depth 129",
+    async (kind) => {
+      const atDepth = (depth: number) => requirements({
+        extra: {
+          name: "USD Coin",
+          version: "2",
+          depthProbe: nestedContainer(depth - 1, kind),
+        },
+      });
+
+      await expect(createDacsX402BuyerEvmChallengeClient({
+        evmPrivateKey: PRIVATE_KEY,
+        authority: authority(),
+        expectedRequirements: atDepth(128),
+      })).resolves.toMatchObject({ address: ACCOUNT.address });
+      await expect(createDacsX402BuyerEvmChallengeClient({
+        evmPrivateKey: PRIVATE_KEY,
+        authority: authority(),
+        expectedRequirements: atDepth(129),
+      })).rejects.toThrow(/exactly match/);
+    },
+  );
 
   test("rejects the stock ExactEvmScheme random nonce at durable preparation", async () => {
     const core = new x402Client().register(
