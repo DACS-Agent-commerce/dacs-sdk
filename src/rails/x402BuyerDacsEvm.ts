@@ -7,6 +7,7 @@ import type {
 } from "@x402/core/types";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { CounterpartyError } from "../errors.js";
 import type {
   X402BuyerJson,
@@ -91,7 +92,7 @@ function captureJson(
       ? value
       : null;
   }
-  if (typeof value !== "object" || depth >= 64 || nodeTypes.isProxy(value)) {
+  if (typeof value !== "object" || depth >= MAX_NESTING_DEPTH || nodeTypes.isProxy(value)) {
     return null;
   }
   if (ancestors.has(value)) return null;
