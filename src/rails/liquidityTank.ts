@@ -894,7 +894,10 @@ export async function advanceLiquidityTankSettlement(
     }
     return { status: "waiting", reason: "liquidity-tank-settlement-held" };
   }
-  if (claimStatus === "conflict" || claimStatus === "corrupt") {
+  if (claimStatus === "corrupt") {
+    return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+  }
+  if (claimStatus === "conflict") {
     const failedClaim = claimed as Extract<
       LiquidityTankStoreClaim,
       { status: "conflict" | "corrupt" }

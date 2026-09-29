@@ -1267,6 +1267,35 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
 
+  test("a corrupt store claim is retry-safe indeterminate before any effects", async () => {
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      claim: vi.fn<LiquidityTankStore["claim"]>(async () => ({
+        status: "corrupt",
+        reason: "implementation-specific-corrupt-retained-row",
+      })),
+    };
+    const isCurrent = vi.spyOn(store, "isCurrent");
+    const recordSubmission = vi.spyOn(store, "recordSubmission");
+    const recordObservation = vi.spyOn(store, "recordObservation");
+    const recordSettlement = vi.spyOn(store, "recordSettlement");
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-retained-state-corrupt",
+      });
+    expect(isCurrent).not.toHaveBeenCalled();
+    expect(recordSubmission).not.toHaveBeenCalled();
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(recordSettlement).not.toHaveBeenCalled();
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test.each(["own accessor", "inherited", "proxy"] as const)(
     "rejects a claim with %s status without invoking caller code",
     async (kind) => {
