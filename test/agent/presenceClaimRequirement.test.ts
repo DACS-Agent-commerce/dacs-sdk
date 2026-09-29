@@ -36,14 +36,23 @@ interface PresenceVector {
   bundle: unknown;
   requirement: unknown;
   compositeRecord: unknown;
-  resolvedResults: Array<{ ref: VerifyResultRef; artifact: VerifyResult }>;
+  resolvedResults: Array<{ ref: VerifyResultRef; artifact: VerifyResult | null }>;
 }
 
 const corpus = JSON.parse(readFileSync(new URL(
   "../../vendor/DACS-Standard/conformance/vectors/security/" +
     "presence-only-claim-requirement-v0.7.json",
   import.meta.url,
-), "utf8")) as { count: number; vectors: PresenceVector[] };
+), "utf8")) as {
+  count: number;
+  vectors: PresenceVector[];
+  trustedContext: {
+    compositeSigner: string;
+    verifyResultAuthorities: Array<{
+      scheme: string; method: string; recipeVersion: number; signer: string;
+    }>;
+  };
+};
 
 function keyBytes(reference: unknown): Uint8Array | null {
   const parsed = parseCanonicalClaimReference(reference);
@@ -52,7 +61,7 @@ function keyBytes(reference: unknown): Uint8Array | null {
   return Uint8Array.from(Buffer.from(parsed.identity.identifier, "hex"));
 }
 
-async function componentAuthenticated(value: unknown): Promise<boolean> {
+async function componentAuthenticated(value: unknown, expectedSigner: string): Promise<boolean> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const artifact = value as Record<string, unknown>;
   const separator = Object.prototype.hasOwnProperty.call(artifact, "recordVersion")
@@ -62,7 +71,7 @@ async function componentAuthenticated(value: unknown): Promise<boolean> {
     artifact,
     separator,
     {
-      isSignerAuthorized: () => true,
+      isSignerAuthorized: (_artifact, signature) => signature.signer === expectedSigner,
       resolvePublicKey: ({ signer }) => keyBytes(signer),
       verify: ({ signedBytes: bytes, signature, publicKey }) =>
         ed25519Verify(
@@ -101,13 +110,15 @@ function exactRef(left: VerifyResultRef, right: VerifyResultRef): boolean {
   return canonicalize(left) === canonicalize(right);
 }
 
+// Historical fixture replay through the pure SDK aggregator. This is not the
+// durable producer or active reuse verifier; those retain their own authority
+// and current-time gates. Corpus context is an immutable test trust root.
 async function replay(
   vector: PresenceVector,
-  options: Readonly<{ acceptStandard359VectorHashRegression?: boolean }> = {},
 ): Promise<VerificationDecision> {
   const record = vector.compositeRecord;
   if (!isCompositeVerificationRecord(record)) return "error";
-  if (!(await componentAuthenticated(record))) return "error";
+  if (!(await componentAuthenticated(record, corpus.trustedContext.compositeSigner))) return "error";
   if (!isCompositeBundleRequirement(vector.requirement)) return "error";
   const requirement = vector.requirement;
   if (presenceRequirementPreflight(requirement) !== null) return "error";
@@ -128,79 +139,96 @@ async function replay(
     ...(requirement.oneOf ?? []).flat(),
   ].filter((member) => member.verificationRequired === true);
   const refs = [...record.freshness, ...record.dealSpecific];
+  if (refs.length !== vector.resolvedResults.length || refs.some(
+    (ref, index) => !exactRef(ref, vector.resolvedResults[index]!.ref),
+  )) return "error";
   const verified: Array<{
     requirement: CompositeClaimRequirement;
     decision: VerificationDecision;
     claimRef: string;
     ref: VerifyResultRef;
   }> = [];
-  for (const ref of refs) {
-    const resolved = vector.resolvedResults.find((entry) => exactRef(entry.ref, ref));
-    if (resolved) {
+  if (new Set(refs.map((ref) => canonicalize(ref))).size !== refs.length) return "error";
+  for (const [index, ref] of refs.entries()) {
+    const resolved = vector.resolvedResults[index];
+    if (resolved?.artifact !== null && resolved !== undefined) {
       if (!isVerifyResult(resolved.artifact)) return "error";
-      const normativeHash = contentHash(
-        resolved.artifact as unknown as Record<string, unknown>,
+      const authorities = corpus.trustedContext.verifyResultAuthorities.filter(
+        (authority) => authority.scheme === resolved.artifact!.scheme &&
+          authority.method === resolved.artifact!.method &&
+          authority.recipeVersion === resolved.artifact!.recipeVersion,
       );
-      const knownRegressedHash = sha256Hex(canonicalize(resolved.artifact));
-      const referenceMatches = normativeHash === ref.contentHash ||
-        (options.acceptStandard359VectorHashRegression === true &&
-          knownRegressedHash === ref.contentHash);
-      if (!referenceMatches || !(await componentAuthenticated(resolved.artifact))) {
+      if (authorities.length !== 1) return "error";
+      if (
+        contentHash(resolved.artifact as unknown as Record<string, unknown>) !==
+          ref.contentHash ||
+        !(await componentAuthenticated(resolved.artifact, authorities[0]!.signer))
+      ) {
         return "error";
       }
     }
-    const scheme = resolved?.artifact.scheme ?? bundle.claims.find(
+    const scheme = resolved?.artifact?.scheme ?? bundle.claims.find(
       (claim) => claim.verifiedBy && exactRef(claim.verifiedBy, ref),
     )?.ref.split(":", 1)[0];
-    const member = verifiedMembers.find((candidate) =>
+    const members = verifiedMembers.filter((candidate) =>
       candidate.scheme === scheme &&
       (candidate.recipeVersion === undefined ||
         candidate.recipeVersion === ref.recipeVersion)
     );
-    if (!member) return "error";
+    if (members.length === 0) return "error";
     const claim = bundle.claims.find((candidate) =>
       candidate.verifiedBy !== undefined && exactRef(candidate.verifiedBy, ref)
     );
-    const claimRef = resolved
-      ? `${resolved.artifact.scheme}:${resolved.artifact.identifier}`
+    const artifact = resolved?.artifact;
+    const claimRef = artifact
+      ? `${artifact.scheme}:${artifact.identifier}`
       : claim?.ref;
     if (!claimRef) return "error";
-    verified.push({
-      requirement: member,
-      decision: resolved?.artifact.decision ?? "indeterminate",
-      claimRef,
-      ref,
-    });
+    for (const member of members) {
+      const parametersMatch = artifact && Object.entries(member.parameters ?? {}).every(
+        ([key, value]) => key === "verificationMethod"
+          ? artifact.method === value
+          : artifact.data !== undefined && Object.hasOwn(artifact.data, key) &&
+            canonicalize(artifact.data[key]) === canonicalize(value),
+      );
+      verified.push({
+        requirement: member,
+        decision: !artifact ? "indeterminate"
+          : artifact.decision === "pass" && !parametersMatch ? "fail" : artifact.decision,
+        claimRef,
+        ref,
+      });
+    }
   }
   const decision = aggregatePresenceAwareCompositeVerification({
     bundle,
     requirement: requirement as CompositeBundleRequirement,
-    evaluatedAt: vector.evaluatedAt,
+    evaluatedAt: record.generatedAt,
     verified,
   });
   return record.overallDecision === decision ? decision : "error";
 }
 
 describe("DACS-1 v0.7 / DACS-2 v0.6 presence-only corpus", () => {
-  test("quarantines the eight signature-included refs tracked by Standard #359", () => {
-    const resolved = corpus.vectors.flatMap((vector) => vector.resolvedResults);
-    const regressions = resolved.filter(({ ref, artifact }) =>
-      contentHash(artifact as unknown as Record<string, unknown>) !== ref.contentHash
-    );
+  test("uses CORE §B.2 signature-omitted refs for every resolved result", () => {
+    const resolved = corpus.vectors.flatMap((vector) => vector.resolvedResults)
+      .filter((entry): entry is { ref: VerifyResultRef; artifact: VerifyResult } => entry.artifact !== null);
 
-    expect(resolved).toHaveLength(8);
-    expect(regressions).toHaveLength(8);
-    expect(regressions.every(({ ref, artifact }) =>
-      sha256Hex(canonicalize(artifact)) === ref.contentHash
+    expect(resolved).toHaveLength(15);
+    expect(resolved.every(({ ref, artifact }) =>
+      contentHash(artifact as unknown as Record<string, unknown>) === ref.contentHash
+    )).toBe(true);
+    expect(resolved.every(({ ref, artifact }) =>
+      sha256Hex(canonicalize(artifact)) !== ref.contentHash
     )).toBe(true);
   });
 
-  test("replays all 38 semantic outcomes with only the quarantined #359 hash waived", async () => {
-    expect(corpus.count).toBe(38);
+  test("strictly replays all 47 authenticated semantic outcomes", async () => {
+    expect(corpus.count).toBe(47);
     const outcomes = await Promise.all(corpus.vectors.map(async (vector) => ({
       name: vector.name,
       expected: vector.expected,
-      actual: await replay(vector, { acceptStandard359VectorHashRegression: true }),
+      actual: await replay(vector),
     })));
     expect(outcomes.filter((outcome) => outcome.actual !== outcome.expected)).toEqual([]);
   });
