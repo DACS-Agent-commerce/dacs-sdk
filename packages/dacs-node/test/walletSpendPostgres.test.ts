@@ -513,6 +513,22 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1).toContain(
       "ALTER COLUMN prior_revision DROP NOT NULL",
     );
+    expect(DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1).toContain(
+      "ADD COLUMN IF NOT EXISTS role_id text",
+    );
+  });
+
+  it("adds the legacy candidate role before continuity adoption", () => {
+    const schema = DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1;
+    const lock = schema.indexOf(
+      "LOCK TABLE dacs_wallet_spend_candidates IN ACCESS EXCLUSIVE MODE",
+    );
+    const addRole = schema.indexOf("ADD COLUMN IF NOT EXISTS role_id text", lock);
+    const commit = schema.indexOf("COMMIT;", addRole);
+
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(addRole).toBeGreaterThan(lock);
+    expect(commit).toBeGreaterThan(addRole);
   });
 
   it("quiesces role migration, rejects ambiguous rows and fences legacy writers", () => {

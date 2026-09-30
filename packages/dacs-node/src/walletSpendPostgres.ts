@@ -504,6 +504,7 @@ ALTER TABLE dacs_wallet_spend_candidates
   ADD COLUMN IF NOT EXISTS authority_id text,
   ADD COLUMN IF NOT EXISTS continuity_epoch text,
   ADD COLUMN IF NOT EXISTS continuity_receipt jsonb,
+  ADD COLUMN IF NOT EXISTS role_id text,
   ALTER COLUMN prior_revision DROP NOT NULL,
   ALTER COLUMN prior_state_hash DROP NOT NULL;
 ALTER TABLE dacs_wallet_spend_operations
