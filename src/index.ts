@@ -1,4 +1,9 @@
-export { admitRawJson, RawJsonAdmissionError, type RawJsonAdmissionStage } from "./canonical/rawJson.js";
+export {
+  admitRawJson,
+  RawJsonAdmissionError,
+  type RawJsonAdmissionOptions,
+  type RawJsonAdmissionStage,
+} from "./canonical/rawJson.js";
 /**
  * dacs-sdk — reusable runtime for building DACS (Demos Agent Commerce
  * Standards) agents across the Identify → Vet → Negotiate → Settle → Verify

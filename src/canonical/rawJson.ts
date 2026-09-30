@@ -2,6 +2,20 @@ import { DacsError } from "../errors.js";
 
 export type RawJsonAdmissionStage = "parse" | "profile";
 
+export interface RawJsonAdmissionOptions {
+  /** Maximum admitted view length in bytes (default 1 MiB, maximum 2 MiB). */
+  maxBytes?: number;
+}
+
+const DEFAULT_MAX_BYTES = 1_048_576;
+const MAX_MAX_BYTES = 2_097_152;
+const Uint8ArrayIntrinsic = Uint8Array;
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8ArrayIntrinsic.prototype) as object,
+  "byteLength",
+)?.get;
+const typedArraySet = Uint8ArrayIntrinsic.prototype.set;
+
 /** Admission failures precede canonicalization and cryptographic verification. */
 export class RawJsonAdmissionError extends DacsError {
   constructor(
@@ -17,6 +31,17 @@ function reject(stage: RawJsonAdmissionStage, code: string): never {
   throw new RawJsonAdmissionError(stage, code);
 }
 
+function intrinsicByteLength(input: Uint8Array): number {
+  if (typedArrayByteLength === undefined) reject("parse", "BYTE-INPUT-REQUIRED");
+  try {
+    return Reflect.apply(typedArrayByteLength, input, []) as number;
+  } catch {
+    // Proxies and objects forged with Uint8Array.prototype have no typed-array
+    // internal slots even when they pass instanceof.
+    return reject("parse", "BYTE-INPUT-REQUIRED");
+  }
+}
+
 function scalarString(value: string): boolean {
   for (let i = 0; i < value.length; i += 1) {
     const c = value.charCodeAt(i);
@@ -29,27 +54,28 @@ function scalarString(value: string): boolean {
 }
 
 /** Compare the exact decimal token, before binary64 rounding, with 2^53-1. */
-function checkNumber(token: string): void {
+function numberProfileError(token: string): string | undefined {
   const unsigned = token.replace(/^-/, "");
   const [coefficient, exponent = "0"] = unsigned.toLowerCase().split("e");
   const [whole, fraction = ""] = coefficient!.split(".");
   const digits = (whole! + fraction).replace(/^0+/, "");
-  if (digits === "") return; // Exact zero, including arbitrarily large exponents.
+  if (digits === "") return undefined; // Exact zero, including arbitrarily large exponents.
   const value = Number(token);
   if (/[.eE]/.test(token) && (!Number.isFinite(value) || value === 0)) {
-    reject("profile", "NUMBER-NOT-BINARY64");
+    return "NUMBER-NOT-BINARY64";
   }
   // No exponent-sized allocation or big-integer exponentiation. For a finite
   // nonzero binary64 value, this decimal order is small even with long tokens.
   const integerDigits = digits.length + Number(exponent) - fraction.length;
   const maximum = "9007199254740991";
-  if (integerDigits > maximum.length) reject("profile", "NUMBER-OUTSIDE-DACS-MAGNITUDE");
+  if (integerDigits > maximum.length) return "NUMBER-OUTSIDE-DACS-MAGNITUDE";
   if (integerDigits === maximum.length) {
     const integer = digits.slice(0, maximum.length).padEnd(maximum.length, "0");
     if (integer > maximum || (integer === maximum && /[1-9]/.test(digits.slice(maximum.length)))) {
-      reject("profile", "NUMBER-OUTSIDE-DACS-MAGNITUDE");
+      return "NUMBER-OUTSIDE-DACS-MAGNITUDE";
     }
   }
+  return undefined;
 }
 
 /**
@@ -59,10 +85,27 @@ function checkNumber(token: string): void {
  * Call canonicalize only after this returns. Existing object-based SDK APIs
  * are not automatically protected by adding this opt-in admission function.
  */
-export function admitRawJson(input: Uint8Array): unknown {
-  if (!(input instanceof Uint8Array)) reject("parse", "BYTE-INPUT-REQUIRED");
-  // Own the slice; never decode bytes outside a Buffer/Uint8Array view.
-  const bytes = Uint8Array.from(input);
+export function admitRawJson(
+  input: Uint8Array,
+  options: Readonly<RawJsonAdmissionOptions> = {},
+): unknown {
+  if (!(input instanceof Uint8ArrayIntrinsic)) reject("parse", "BYTE-INPUT-REQUIRED");
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("raw JSON admission options are invalid");
+  }
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_MAX_BYTES) {
+    throw new TypeError("raw JSON admission byte bound is invalid");
+  }
+  // Read the internal view length rather than an overridable property. A small
+  // Buffer/subarray must not inherit its backing allocation, while a subclass
+  // cannot shadow byteLength to evade the budget.
+  const byteLength = intrinsicByteLength(input);
+  if (byteLength > maxBytes) reject("parse", "BYTE-LIMIT-EXCEEDED");
+  // Own the exact view using typed-array internal slots. Uint8Array.from would
+  // consume an overridable iterator and could copy more bytes than were charged.
+  const bytes = new Uint8ArrayIntrinsic(byteLength);
+  Reflect.apply(typedArraySet, bytes, [input]);
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) reject("parse", "BOM");
   let text: string;
   try {
@@ -88,7 +131,10 @@ export function admitRawJson(input: Uint8Array): unknown {
   }
 
   let offset = 0;
-  const profileChecks: Array<() => void> = [];
+  let firstProfileError: string | undefined;
+  function noteProfileError(code: string | undefined): void {
+    firstProfileError ??= code;
+  }
   const number = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
   function whitespace(): void {
     while (offset < text.length && /[\x20\x09\x0a\x0d]/.test(text[offset]!)) offset += 1;
@@ -104,9 +150,7 @@ export function admitRawJson(input: Uint8Array): unknown {
         let decoded: string;
         try { decoded = JSON.parse(text.slice(start, offset)) as string; }
         catch { reject("parse", "INVALID-JSON"); }
-        profileChecks.push(() => {
-          if (!scalarString(decoded)) reject("profile", "INVALID-UNICODE");
-        });
+        if (!scalarString(decoded)) noteProfileError("INVALID-UNICODE");
         return decoded;
       }
     }
@@ -127,7 +171,7 @@ export function admitRawJson(input: Uint8Array): unknown {
         if (object) {
           if (text[offset] !== '"') reject("parse", "INVALID-JSON");
           const name = string();
-          if (names.has(name)) profileChecks.push(() => reject("profile", "DUPLICATE-MEMBER"));
+          if (names.has(name)) noteProfileError("DUPLICATE-MEMBER");
           names.add(name);
           whitespace();
           if (text[offset++] !== ":") reject("parse", "INVALID-JSON");
@@ -149,13 +193,12 @@ export function admitRawJson(input: Uint8Array): unknown {
     const match = number.exec(text);
     if (!match) reject("parse", "INVALID-JSON");
     offset = number.lastIndex;
-    const token = match[0];
-    profileChecks.push(() => checkNumber(token));
+    noteProfileError(numberProfileError(match[0]));
   }
   value();
   whitespace();
   if (offset !== text.length) reject("parse", "TRAILING-DATA");
-  for (const check of profileChecks) check();
+  if (firstProfileError !== undefined) reject("profile", firstProfileError);
   // Grammar, decoded-name uniqueness, scalar strings and exact raw numbers
   // have all passed. JSON.parse preserves __proto__ as an own data property.
   return JSON.parse(text) as unknown;

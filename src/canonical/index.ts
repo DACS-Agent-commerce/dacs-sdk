@@ -1,4 +1,9 @@
-export { admitRawJson, RawJsonAdmissionError, type RawJsonAdmissionStage } from "./rawJson.js";
+export {
+  admitRawJson,
+  RawJsonAdmissionError,
+  type RawJsonAdmissionOptions,
+  type RawJsonAdmissionStage,
+} from "./rawJson.js";
 export { canonicalize } from "./jcs.js";
 export { canonicalizeDecimal, assertPositiveAmount, baseUnits } from "./decimal.js";
 export {
