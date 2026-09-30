@@ -5,6 +5,7 @@ import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
   advanceCrossChainHtlc,
   crossChainHtlcSettlementKey,
+  crossChainHtlcSourceFinalityCheckpointHash,
   createCrossChainHtlcIntent,
   createInMemoryCrossChainHtlcStore,
   deriveHtlcPreimage,
@@ -25,6 +26,11 @@ const AGREEMENT_HASH = "a".repeat(64);
 const RAIL_HASH = "b".repeat(64);
 const AUTH_HASH = "c".repeat(64);
 const SALT = Uint8Array.from({ length: 16 }, () => 1);
+const PREIMAGE_HEX = Buffer.from(deriveHtlcPreimage({
+  buyerSalt: SALT,
+  jobId: "job-1",
+  agreementHash: AGREEMENT_HASH,
+})).toString("hex");
 
 function authority(overrides: Partial<CrossChainHtlcAuthority> = {}): CrossChainHtlcAuthority {
   return {
@@ -103,6 +109,7 @@ function preparedFor(
   intent: Readonly<CrossChainHtlcIntent>,
   action: HtlcAction,
   suffix = "",
+  sourceFinalityCheckpointHash?: string,
 ): Readonly<HtlcPreparedAction> {
   const unsigned = {
     actionVersion: "1" as const,
@@ -113,6 +120,7 @@ function preparedFor(
     txRef: refFor(action, suffix),
     signedPayloadBase64: Buffer.from(`wire-${action}${suffix}`, "utf8").toString("base64"),
     preparedAt: 1_000,
+    ...(sourceFinalityCheckpointHash === undefined ? {} : { sourceFinalityCheckpointHash }),
   };
   return Object.freeze({ ...unsigned, effectHash: sha256Hex(canonicalize(unsigned)) });
 }
@@ -152,6 +160,13 @@ function harness(options: HarnessOptions = {}) {
         "utf8",
       ).toString("base64"),
       preparedAt: observedAt,
+      ...(request.sourceFinalityCheckpoint === undefined
+        ? {}
+        : {
+          sourceFinalityCheckpointHash: crossChainHtlcSourceFinalityCheckpointHash(
+            request.sourceFinalityCheckpoint,
+          ),
+        }),
     };
   });
   const broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
@@ -546,18 +561,144 @@ describe("advanceCrossChainHtlc", () => {
       .not.toContain("destination-refund");
   });
 
-  test("rejects a destination lock included before source-lock finality", async () => {
-    const h = harness({ sourceFinalityObservedAt: 1_000_100, destinationIncludedAt: 1_000_050 });
+  test("accepts causally prepared locks when the two chains' timestamps are skewed", async () => {
+    const h = harness({ sourceFinalityObservedAt: 1_000_100, destinationIncludedAt: 999_950 });
     const run = runner({ adapter: h.adapter });
     await advanceCrossChainHtlc(run.shared);
     await advanceCrossChainHtlc(run.nextOwner());
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
+      "source-lock",
+      "destination-lock",
+      "destination-claim",
+    ]);
+  });
+
+  test("persists source finality before preparing the causally bound destination lock", async () => {
+    const events: string[] = [];
+    const base = createInMemoryCrossChainHtlcStore();
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordSourceFinality(input) {
+        events.push("source-finality-checkpoint");
+        return base.recordSourceFinality(input);
+      },
+    };
+    const h = harness();
+    const prepareAction = h.adapter.prepareAction;
+    h.adapter.prepareAction = vi.fn(async (...args) => {
+      if (args[0].action === "destination-lock") events.push("destination-lock-prepare");
+      return prepareAction(...args);
+    });
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    expect(events).toEqual(["source-finality-checkpoint", "destination-lock-prepare"]);
+    const destinationRequest = h.adapter.prepareAction.mock.calls
+      .find((call) => call[0].action === "destination-lock")?.[0];
+    expect(destinationRequest?.sourceFinalityCheckpoint).toMatchObject({
+      authenticationHash: AUTH_HASH,
+      sourceExpiry: 5_000,
+      sourceLockTxRef: refFor("source-lock"),
+    });
+  });
+
+  test("does not prepare a destination lock when source-finality persistence fails", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordSourceFinality() {
+        return { status: "stale", reason: "injected-checkpoint-failure" };
+      },
+    };
+    const h = harness();
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-finality-persistence-uncertain",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+  });
+
+  test("reuses a causally bound destination lock byte-for-byte after ambiguous broadcast", async () => {
+    const h = harness({ mode: { "destination-lock": "throw-once" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-lock-effect-uncertain",
+    });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    const destinationPreparations = h.prepareAction.mock.calls
+      .filter((call) => call[0].action === "destination-lock");
+    const destinationBroadcasts = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-lock");
+    expect(destinationPreparations).toHaveLength(1);
+    expect(destinationBroadcasts).toHaveLength(2);
+    expect(destinationBroadcasts[1]).toEqual(destinationBroadcasts[0]);
+  });
+
+  test("fails closed before effects when a runtime store lacks the checkpoint contract", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const { recordSourceFinality: _unsupported, ...legacyStore } = base;
+    const h = harness();
+    await expect(advanceCrossChainHtlc(runner({
+      adapter: h.adapter,
+      store: legacyStore as CrossChainHtlcStore,
+    }).shared)).resolves.toEqual({
       status: "failed",
       errorClass: "permanent",
-      reason: "htlc-destination-lock-precedes-source-finality",
+      reason: "htlc-source-finality-store-unsupported",
     });
-    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("destination-claim");
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.prepareAction).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
+
+  test.each(["missing", "mismatched"] as const)(
+    "fails a takeover with a %s destination-lock causal checkpoint before effects",
+    async (mode) => {
+      const base = createInMemoryCrossChainHtlcStore();
+      const h = harness();
+      const run = runner({ adapter: h.adapter, store: base });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      const observeCalls = h.observe.mock.calls.length;
+      const prepareCalls = h.prepareAction.mock.calls.length;
+      const corruptStore: CrossChainHtlcStore = {
+        ...base,
+        async claim(input) {
+          const claimed = await base.claim(input);
+          if (claimed.status !== "acquired") return claimed;
+          if (mode === "missing") {
+            const { sourceFinalityCheckpoint: _checkpoint, ...withoutCheckpoint } = claimed;
+            return withoutCheckpoint;
+          }
+          if (!claimed.sourceFinalityCheckpoint) throw new Error("expected source checkpoint");
+          return {
+            ...claimed,
+            sourceFinalityCheckpoint: {
+              ...claimed.sourceFinalityCheckpoint,
+              authenticationHash: "d".repeat(64),
+            },
+          };
+        },
+      };
+      await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: corruptStore }))
+        .resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      expect(h.observe).toHaveBeenCalledTimes(observeCalls);
+      expect(h.prepareAction).toHaveBeenCalledTimes(prepareCalls);
+    },
+  );
 
   test("a final reveal durably blocks refund and enters ST-8 asymmetric recovery", async () => {
     const h = harness({ mode: { "source-claim": "pending" } });
@@ -832,6 +973,66 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-claim");
   });
 
+  test.each([
+    ["uppercase", PREIMAGE_HEX.toUpperCase()],
+    ["0x prefix", `0x${PREIMAGE_HEX}`],
+  ])("accepts byte-equivalent %s revealed preimages and completes recovery", async (_name, revealed) => {
+    const h = harness({ revealedPreimageHex: revealed });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toContain("source-claim");
+  });
+
+  test("accepts an equivalent 0X preimage when recovering an already-final source claim", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    let failSettlementOnce = true;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordSettlement(input) {
+        if (failSettlementOnce) {
+          failSettlementOnce = false;
+          throw new Error("injected settlement persistence ambiguity");
+        }
+        return base.recordSettlement(input);
+      },
+    };
+    const h = harness({ revealedPreimageHex: `0X${PREIMAGE_HEX.toUpperCase()}` });
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-settlement-persistence-uncertain",
+    });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+    expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-claim"))
+      .toHaveLength(1);
+  });
+
+  test.each([
+    ["leading whitespace", ` ${PREIMAGE_HEX}`],
+    ["sign", `+${PREIMAGE_HEX}`],
+    ["odd length", PREIMAGE_HEX.slice(1)],
+    ["wrong length", `${PREIMAGE_HEX}00`],
+    ["non-hex", `${PREIMAGE_HEX.slice(0, -1)}g`],
+  ])("rejects a malformed revealed preimage with %s", async (_name, revealed) => {
+    const h = harness({ revealedPreimageHex: revealed });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-revealed-preimage-invalid",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-claim");
+  });
+
   test("refunds both legs on a benign destination timeout, never before each expiry", async () => {
     const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
     const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
@@ -984,6 +1185,59 @@ describe("advanceCrossChainHtlc", () => {
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock"]);
+  });
+});
+
+describe("source-finality checkpoint store contract", () => {
+  test("rejects destination-lock persistence without the exact retained checkpoint", async () => {
+    const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const store = createInMemoryCrossChainHtlcStore();
+    const claimed = await store.claim({
+      intent,
+      secrets,
+      owner: "checkpoint-owner",
+      now: 1_000,
+      leaseDurationMs: 100,
+    });
+    if (claimed.status !== "acquired") throw new Error("checkpoint fixture lease not acquired");
+    const fence = {
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      owner: claimed.lease.owner,
+      generation: claimed.lease.generation,
+    };
+    const sourceLock = preparedFor(intent, "source-lock");
+    await expect(store.recordPrepared({ ...fence, prepared: sourceLock }))
+      .resolves.toEqual({ status: "recorded" });
+    const checkpoint = {
+      sourceLockEffectHash: sourceLock.effectHash,
+      sourceLockTxRef: sourceLock.txRef as Extract<HtlcTxRef, { kind: "htlc-lock" }>,
+      includedAt: 1_000,
+      sourceExpiry: 5_000,
+      finalityObservedAt: 1_100,
+      authenticationHash: AUTH_HASH,
+    };
+    await expect(store.recordPrepared({
+      ...fence,
+      prepared: preparedFor(intent, "destination-lock"),
+    })).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-lock-without-source-finality",
+    });
+    await expect(store.recordSourceFinality({ ...fence, checkpoint }))
+      .resolves.toEqual({ status: "recorded" });
+    await expect(store.recordPrepared({
+      ...fence,
+      prepared: preparedFor(intent, "destination-lock", "-wrong", "0".repeat(64)),
+    })).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-lock-without-source-finality",
+    });
+    const checkpointHash = crossChainHtlcSourceFinalityCheckpointHash(checkpoint);
+    await expect(store.recordPrepared({
+      ...fence,
+      prepared: preparedFor(intent, "destination-lock", "", checkpointHash),
+    })).resolves.toEqual({ status: "recorded" });
   });
 });
 

@@ -17,6 +17,8 @@ The core implements the normative HTLC lifecycle:
   canonical intent and enforced before destination-claim preparation and
   broadcast;
 - payer source lock, then payee destination lock only after source finality;
+- an immutable authenticated source-finality checkpoint persisted before the
+  destination lock is prepared and bound into that prepared action;
 - payer destination claim/reveal, then payee source claim;
 - durable signed effects recorded before any broadcast and generation-fenced
   across worker takeover;
@@ -72,7 +74,28 @@ cutoff.
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically
 enforce cross-session salt uniqueness, authenticate retained signed payloads,
-and persist the reveal checkpoint. They must also implement
+and persist both finality checkpoints. After the source lock becomes final, the
+core calls `recordSourceFinality` with the exact source-lock transaction
+reference and prepared-effect hash, its within-ledger inclusion/finality
+timestamps and expiry, and the adapter's authentication hash. This
+generation-fenced write must be immutable
+and must complete before destination-lock preparation. The destination-lock
+adapter receives the retained checkpoint and must set
+`sourceFinalityCheckpointHash` to the value returned by
+`crossChainHtlcSourceFinalityCheckpointHash`. `recordPrepared` must atomically
+reject a destination lock when the checkpoint is absent or the binding does not
+match. Claims and takeovers must return the checkpoint; the core validates the
+retained binding before observing the ledger or revealing the preimage.
+
+This checkpoint is the causal ordering proof between chains. Source and
+destination timestamps belong to different ledger clock domains, so the core
+does not numerically order a destination transaction's `includedAt` against the
+source transaction's `finalityObservedAt`. Adapters must still provide coherent
+within-ledger evidence: each lock's finality timestamp cannot precede its own
+inclusion timestamp, and its expiry must be after its own inclusion. Valid
+cross-chain clock skew therefore does not block settlement.
+
+Stores must also implement
 `replacePreparedSourceClaim` as a source-claim-only compare-and-swap. The CAS
 binds the settlement and authority hash, current owner/generation, exact active
 effect hash and transaction reference, authenticated failed observation, and a
@@ -106,6 +129,27 @@ reorg detection. It must return `pending` while reversal remains possible and
 must never report `final` for a state it could later reverse. A reorg-capable
 adapter therefore needs to keep observing through its required finality horizon
 before allowing the core to checkpoint a reveal or report settlement.
+
+For a final destination claim, adapters should emit `revealedPreimageHex` in
+canonical lowercase, unprefixed form. The core accepts that producer form plus
+equivalent uppercase hexadecimal and an optional `0x`/`0X` prefix for
+compatibility. It strictly requires exactly 64 hexadecimal digits after the
+optional prefix, decodes them as 32 bytes, and compares those bytes to the
+derived preimage. Whitespace, signs, odd or wrong lengths, and non-hexadecimal
+characters are rejected rather than normalized.
+
+The source-finality checkpoint additions are a public adapter/store contract
+change. Existing durable-store implementations must add `recordSourceFinality`,
+return `sourceFinalityCheckpoint` from `claim`, and enforce the destination-lock
+binding before adopting this version. Existing adapters must accept the
+checkpoint on destination-lock preparation and return the matching hash. The
+core fails closed with `htlc-source-finality-store-unsupported` before any new
+chain effect when a runtime store has not adopted the required method. The
+core also rejects legacy retained destination locks that lack this causal
+binding; stores must not backfill a checkpoint after destination-lock
+preparation, and operators must reconcile such legacy sessions explicitly. The
+preimage parser remains compatible with canonical lowercase producers while
+also accepting byte-equivalent uppercase and prefixed values.
 
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require
