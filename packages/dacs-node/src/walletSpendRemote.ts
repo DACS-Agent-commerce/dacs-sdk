@@ -1094,6 +1094,38 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
       throw new Error("stored-response-invalid");
     }
     const resolved = await resolveAvailableAuthority(roleId, body, requestHash);
+    const payload = body.payload as Record<string, unknown>;
+    if (body.operation === "inspect") {
+      if (!exact(payload, [])) throw new Error("stored-request-invalid");
+      const status = await resolved.authority.inspect();
+      return currentResponse(resolved, body, requestHash, status, status);
+    }
+    if (body.operation === "reserve") {
+      if (!exact(payload, ["reservation", "options"])) throw new Error("stored-request-invalid");
+      const claim = remoteClaim(
+        response.result,
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+      );
+      if (claim.status === "reserved") {
+        await resumeWalletSpendAuthorityOperationV1(resolved.authority, {
+          operation: "current",
+          permit: permitData((response.result as Record<string, unknown>).permit),
+        });
+      }
+    } else if (body.operation === "current" || body.operation === "begin" ||
+        body.operation === "settle") {
+      const expected = body.operation === "settle" ? ["permit", "observation"] : ["permit"];
+      if (!exact(payload, expected) || response.result !== null) {
+        throw new Error("stored-response-invalid");
+      }
+      await resumeWalletSpendAuthorityOperationV1(resolved.authority, {
+        operation: body.operation,
+        permit: permitData(payload.permit),
+        ...(body.operation === "settle"
+          ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
+          : {}),
+      });
+    }
     return currentResponse(resolved, body, requestHash, response.result);
   };
 

@@ -109,7 +109,7 @@ function server() {
   return { authority, handler, operations };
 }
 
-async function serverV2() {
+async function serverV2(now: () => number = () => 1_000) {
   const selected = policy();
   const reference = createInMemoryDacsWalletSpendContinuityWitnessV1({
     authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
@@ -133,7 +133,7 @@ async function serverV2() {
       authenticateRecovery: async () => true,
       owner: "remote-service",
       leaseDurationMs: 60_000,
-      now: () => 1_000,
+      now,
     },
   };
   const binding = createDacsWalletSpendContinuityAuthorityV2(bindingInput);
@@ -192,6 +192,51 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       assets: [{ cumulativeSettledDebit: "25" }],
     });
   });
+
+  it.each(["current", "begin"] as const)(
+    "rejects a retained %s success when its permit was released before recovery",
+    async (operation) => {
+      const tokenFilePath = await tokenFile();
+      let now = 1_000;
+      const local = await serverV2(() => now);
+      let loseAfter: typeof operation | undefined;
+      const fetchWithRelease = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const body = request.method === "POST"
+          ? await request.clone().json() as { operation?: string }
+          : undefined;
+        const response = await local.handler(request);
+        if (response.ok && body?.operation === loseAfter) {
+          loseAfter = undefined;
+          now = 70_000;
+          await local.authority.reconcile(reservation(), {
+            disposition: "terminal-absent",
+            evidenceHash: "e".repeat(64),
+          });
+          throw new Error("response lost after the permit was released");
+        }
+        return response;
+      }) as typeof fetch;
+      const remote = await createDacsRemoteWalletSpendAuthorityV2({
+        policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+        authorityId: local.authorityId, epoch: local.epoch,
+        witnessVerificationKey: local.verificationKey,
+        allowInsecureLoopback: true, fetch: fetchWithRelease,
+      });
+      const claim = await remote.reserve(reservation());
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      loseAfter = operation;
+
+      await expect(operation === "current"
+        ? claim.permit.assertCurrent()
+        : claim.permit.beginEffect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-outcome-unknown",
+      });
+      await expect(local.authority.reserve(reservation())).resolves.toMatchObject({
+        status: "reserved",
+      });
+    },
+  );
 
   it("rejects an independently paired same-revision attester with a different state hash", async () => {
     const tokenFilePath = await tokenFile();
