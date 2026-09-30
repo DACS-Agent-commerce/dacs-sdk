@@ -398,11 +398,11 @@ function successfulStoreWrite(value: unknown): boolean {
     (status.value === "recorded" || status.value === "existing");
 }
 
-function snapshotOptionalCanonicalRead<T>(
+function snapshotOptionalCanonicalReadWithPresence<T>(
   value: T,
   label: string,
   optionalUndefined: ReadonlySet<string>,
-): T {
+): Readonly<{ value: T; present: ReadonlySet<string> }> {
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value) ||
         nodeTypes.isProxy(value)) {
@@ -414,12 +414,14 @@ function snapshotOptionalCanonicalRead<T>(
     }
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const normalized: Record<string, unknown> = {};
+    const present = new Set<string>();
     for (const key of Reflect.ownKeys(descriptors)) {
       if (typeof key !== "string") throw new TypeError("value has a symbol property");
       const descriptor = descriptors[key];
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
         throw new TypeError("properties must be enumerable data");
       }
+      present.add(key);
       if (descriptor.value === undefined) {
         if (optionalUndefined.has(key)) continue;
         throw new TypeError("value has an undefined required property");
@@ -431,18 +433,44 @@ function snapshotOptionalCanonicalRead<T>(
         writable: true,
       });
     }
-    return snapshotCanonicalJsonRead(normalized, label) as T;
+    return Object.freeze({
+      value: snapshotCanonicalJsonRead(normalized, label) as T,
+      present,
+    });
   } catch (cause) {
     throw new DacsError(`${label} must be stable data`, { cause });
   }
 }
 
-function snapshotStoreClaim(value: unknown): LiquidityTankStoreClaim {
-  return snapshotOptionalCanonicalRead(
+function snapshotOptionalCanonicalRead<T>(
+  value: T,
+  label: string,
+  optionalUndefined: ReadonlySet<string>,
+): T {
+  return snapshotOptionalCanonicalReadWithPresence(value, label, optionalUndefined).value;
+}
+
+function snapshotStoreClaim(value: unknown): Readonly<{
+  value: LiquidityTankStoreClaim;
+  submissionPresent: boolean;
+  submissionValue: unknown;
+  observationPresent: boolean;
+  observationValue: unknown;
+}> {
+  const snapshot = snapshotOptionalCanonicalReadWithPresence(
     value,
     "liquidity-tank store claim",
     new Set(["submission", "observation"]),
-  ) as LiquidityTankStoreClaim;
+  );
+  const submission = Object.getOwnPropertyDescriptor(snapshot.value as object, "submission");
+  const observation = Object.getOwnPropertyDescriptor(snapshot.value as object, "observation");
+  return Object.freeze({
+    value: snapshot.value as LiquidityTankStoreClaim,
+    submissionPresent: snapshot.present.has("submission"),
+    submissionValue: submission && "value" in submission ? submission.value : undefined,
+    observationPresent: snapshot.present.has("observation"),
+    observationValue: observation && "value" in observation ? observation.value : undefined,
+  });
 }
 
 function captureSettlement(
@@ -943,12 +971,13 @@ export async function advanceLiquidityTankSettlement(
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-unavailable" };
   }
-  let claimed: LiquidityTankStoreClaim;
+  let claimSnapshot: ReturnType<typeof snapshotStoreClaim>;
   try {
-    claimed = snapshotStoreClaim(rawClaim);
+    claimSnapshot = snapshotStoreClaim(rawClaim);
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
+  const claimed = claimSnapshot.value;
   const claimStatus: unknown = Object.hasOwn(claimed, "status") ? claimed.status : undefined;
   if (typeof claimStatus !== "string") {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
@@ -1066,21 +1095,15 @@ export async function advanceLiquidityTankSettlement(
     },
   });
   let submission: Readonly<LiquidityTankPreparedSubmission> | undefined;
-  let retainedObservation:
-    | Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>
-    | undefined;
-  try {
-    submission = acquiredClaim.submission;
-    retainedObservation = acquiredClaim.observation;
-  } catch {
+  if (claimSnapshot.observationPresent && !claimSnapshot.submissionPresent) {
     return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
   }
-  if (retainedObservation && !submission) {
-    return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
-  }
-  if (submission) {
+  if (claimSnapshot.submissionPresent) {
     try {
-      submission = validateRetainedSubmission(submission, intent);
+      submission = validateRetainedSubmission(
+        claimSnapshot.submissionValue as Readonly<LiquidityTankPreparedSubmission>,
+        intent,
+      );
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
@@ -1111,9 +1134,15 @@ export async function advanceLiquidityTankSettlement(
   }
 
   let durableObservation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined;
-  if (retainedObservation) {
+  if (claimSnapshot.observationPresent) {
     try {
-      durableObservation = validateRetainedObservation(retainedObservation, intent, submission);
+      durableObservation = validateRetainedObservation(
+        claimSnapshot.observationValue as Readonly<
+          Exclude<LiquidityTankObservation, { status: "indeterminate" }>
+        >,
+        intent,
+        submission,
+      );
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
@@ -1362,8 +1391,12 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
             status: "waiting",
             intent: existing.intent,
             lease: { ...existing.lease },
-            submission: existing.submission,
-            observation: existing.observation,
+            ...(existing.submission === undefined
+              ? {}
+              : { submission: existing.submission }),
+            ...(existing.observation === undefined
+              ? {}
+              : { observation: existing.observation }),
           };
         }
         const generation = existing.lease.generation + 1;
@@ -1380,8 +1413,12 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
           status: "acquired",
           intent: existing.intent,
           lease: { ...lease },
-          submission: existing.submission,
-          observation: existing.observation,
+          ...(existing.submission === undefined
+            ? {}
+            : { submission: existing.submission }),
+          ...(existing.observation === undefined
+            ? {}
+            : { observation: existing.observation }),
         };
       }
       const record: MemoryTankRecord = {

@@ -55,6 +55,9 @@ The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
 reason `liquidity-tank-retained-state-corrupt`; operators must restore the exact
 authenticated row rather than preparing or broadcasting a replacement.
+For acquired claims, optional retained fields are distinguished by own-property
+presence: a present malformed or falsey submission/observation is corruption,
+while only a genuinely absent submission authorizes fresh preparation.
 
 Production stores must implement `recordRecoveryExpired` as an atomic,
 authority/lease/generation-fenced compare-and-set against the exact observation

@@ -590,6 +590,161 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
+  test.each([
+    ["null", null],
+    ["false", false],
+    ["empty string", ""],
+    ["undefined", undefined],
+  ] as const)(
+    "a present %s retained submission is corrupt before any effects",
+    async (_label, malformedSubmission) => {
+      const inner = createInMemoryLiquidityTankStore();
+      const store: LiquidityTankStore = {
+        ...inner,
+        claim: vi.fn(async (input) => ({
+          status: "acquired",
+          intent: input.intent,
+          lease: {
+            owner: input.owner,
+            generation: 1,
+            expiresAt: input.now + input.leaseDurationMs,
+          },
+          submission: malformedSubmission,
+        }) as never),
+      };
+      const isCurrent = vi.spyOn(store, "isCurrent");
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      const recordSettlement = vi.spyOn(store, "recordSettlement");
+      const h = harness();
+
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-retained-state-corrupt",
+        });
+      expect(isCurrent).not.toHaveBeenCalled();
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(recordObservation).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ["null", null],
+    ["false", false],
+    ["empty string", ""],
+    ["undefined", undefined],
+  ] as const)(
+    "a present %s retained observation is corrupt before any effects",
+    async (_label, malformedObservation) => {
+      let retainedSubmission:
+        | Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
+        | undefined;
+      let exposeMalformedObservation = false;
+      let generation = 0;
+      const claim = vi.fn<LiquidityTankStore["claim"]>(async (input) => {
+        generation += 1;
+        return {
+          status: "acquired",
+          intent: input.intent,
+          lease: {
+            owner: input.owner,
+            generation,
+            expiresAt: input.now + input.leaseDurationMs,
+          },
+          ...(retainedSubmission === undefined ? {} : { submission: retainedSubmission }),
+          ...(exposeMalformedObservation ? { observation: malformedObservation } : {}),
+        } as never;
+      });
+      const store: LiquidityTankStore = {
+        claim,
+        isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+        recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
+          retainedSubmission = input.submission;
+          return { status: "recorded" };
+        }),
+        recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
+          async () => ({ status: "recorded" }),
+        ),
+        recordRecoveryExpired: vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
+          async () => ({ status: "recorded" }),
+        ),
+        recordSettlement: vi.fn<LiquidityTankStore["recordSettlement"]>(
+          async () => ({ status: "recorded" }),
+        ),
+      };
+      const h = harness({ status: "indeterminate", reason: "status API unavailable" });
+      const run = runner({ store, adapter: h.adapter });
+      await advanceLiquidityTankSettlement(run.shared);
+      expect(retainedSubmission).toBeDefined();
+
+      exposeMalformedObservation = true;
+      vi.mocked(store.isCurrent).mockClear();
+      vi.mocked(store.recordSubmission).mockClear();
+      vi.mocked(store.recordObservation).mockClear();
+      vi.mocked(store.recordRecoveryExpired).mockClear();
+      vi.mocked(store.recordSettlement).mockClear();
+      h.prepareSubmission.mockClear();
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-retained-state-corrupt",
+      });
+      expect(store.isCurrent).not.toHaveBeenCalled();
+      expect(store.recordSubmission).not.toHaveBeenCalled();
+      expect(store.recordObservation).not.toHaveBeenCalled();
+      expect(store.recordRecoveryExpired).not.toHaveBeenCalled();
+      expect(store.recordSettlement).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+
+  test("truly absent retained fields take the fresh preparation path", async () => {
+    const store: LiquidityTankStore = {
+      claim: vi.fn<LiquidityTankStore["claim"]>(async (input) => ({
+        status: "acquired",
+        intent: input.intent,
+        lease: {
+          owner: input.owner,
+          generation: 1,
+          expiresAt: input.now + input.leaseDurationMs,
+        },
+      })),
+      isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+      recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(
+        async () => ({ status: "recorded" }),
+      ),
+      recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
+        async () => ({ status: "recorded" }),
+      ),
+      recordRecoveryExpired: vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
+        async () => ({ status: "recorded" }),
+      ),
+      recordSettlement: vi.fn<LiquidityTankStore["recordSettlement"]>(
+        async () => ({ status: "recorded" }),
+      ),
+    };
+    const recordSubmission = vi.spyOn(store, "recordSubmission");
+    const h = harness({ status: "indeterminate", reason: "status API unavailable" });
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({ status: "indeterminate", reason: "status API unavailable" });
+    expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+    expect(recordSubmission).toHaveBeenCalledTimes(1);
+    expect(h.observe).toHaveBeenCalledTimes(1);
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("corrupt retained submission is indeterminate and exact restoration resumes without preparation", async () => {
     const intent = createLiquidityTankIntent(authority());
     let retainedSubmission: Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
