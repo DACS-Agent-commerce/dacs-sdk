@@ -356,7 +356,11 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("resolveDacsPayDemExistingListingV1");
     expect(combined).toContain("createDacsFixedPriceMultirailBuyerLiveV1");
     expect(combined).toContain("createDacsFixedPriceMultirailSellerLiveV1");
-    expect(combined).toContain("createDacsRemoteWalletSpendAuthorityV1");
+    expect(combined).toContain("createDacsRemoteWalletSpendAuthorityV2");
+    expect(combined).not.toContain("createDacsRemoteWalletSpendAuthorityV1");
+    expect(combined).toContain("DACS_WALLET_AUTHORITY_ID");
+    expect(combined).toContain("DACS_WALLET_AUTHORITY_EPOCH");
+    expect(combined).toContain("DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY");
     expect(combined).not.toContain("createDacsWalletSpendAuthorityV1");
     expect(combined).not.toContain("createDacsX402WalletSpendRecoveryAuthenticatorV1");
     expect(combined).not.toContain("createDacsPayDemWalletSpendRecoveryAuthenticatorV1");

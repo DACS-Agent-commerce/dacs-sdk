@@ -116,5 +116,10 @@ const outcome = await executeWalletSpendEffectV1({
 
 Generated funded buyers instead use the remote authority client described in
 `wallet-budget-authority-design.md`. They hold only an endpoint and role-scoped
-token; the service owns PostgreSQL access, stable wallet/chain lineage,
-provisioning, migration, authenticated balances/recovery and transitions.
+token plus operator-controlled authority-id, epoch and witness-public-key pins.
+They speak only remote protocol V2 and do not fall back to V1 or this filesystem
+store. The service owns PostgreSQL access, stable wallet/chain lineage,
+provisioning, migration, authenticated balances/recovery and transitions; every
+authorization and status read is fenced by the independently rollback-resistant
+continuity witness. The included in-memory witness is deterministic test/reference
+code only and is not production topology, durability or failover evidence.
