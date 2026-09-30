@@ -102,6 +102,7 @@ function pending(
 function completed(
   operationHash: string,
   finalityObservedAt = 3_000,
+  recoveryDeadline = RECOVERY_DEADLINE_MS,
 ): Extract<LiquidityTankObservation, { status: "completed" }> {
   return {
     status: "completed",
@@ -110,6 +111,7 @@ function completed(
     history: ["empty", "pending", "completed"],
     observedAt: 3_000,
     finalityObservedAt,
+    recoveryDeadline,
     authenticationHash: AUTH_HASH,
     lockTxHash: "source-lock-tx",
     releaseTxHash: "destination-release-tx",
@@ -332,6 +334,7 @@ describe("advanceLiquidityTankSettlement", () => {
           destChainId: 80_002,
           lockTxHash: "source-lock-tx",
           releaseTxHash: "destination-release-tx",
+          recoveryDeadline: RECOVERY_DEADLINE_MS,
         },
         paymentAmount: { amount: "1.25", currency: "USDC" },
         settlementFinality: { model: "liquidity-tank", finalityObservedAt: 3_000 },
@@ -397,6 +400,11 @@ describe("advanceLiquidityTankSettlement", () => {
       status: "settled",
     });
     expect(recordSettlement).toHaveBeenCalledTimes(1);
+    expect(recordSettlement).toHaveBeenCalledWith(expect.objectContaining({
+      settlement: expect.objectContaining({
+        txRef: expect.objectContaining({ recoveryDeadline: RECOVERY_DEADLINE_MS }),
+      }),
+    }));
     expect(recordObservation).not.toHaveBeenCalled();
     expect(h.prepareSubmission).not.toHaveBeenCalled();
     expect(h.observe).not.toHaveBeenCalled();
@@ -754,6 +762,88 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  test("a completed observation without a durable pending checkpoint settles before its deadline", async () => {
+    const h = harness(completed(
+      createLiquidityTankIntent(authority()).operationHash,
+      RECOVERY_DEADLINE_MS - 1,
+    ));
+    const store = createInMemoryLiquidityTankStore();
+    const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+    const run = runner({ adapter: h.adapter, store });
+    run.setClock(RECOVERY_DEADLINE_MS - 1);
+
+    await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRef: { recoveryDeadline: RECOVERY_DEADLINE_MS } },
+    });
+    expect(recordRecoveryExpired).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["at", RECOVERY_DEADLINE_MS],
+    ["after", RECOVERY_DEADLINE_MS + 1],
+  ] as const)(
+    "a direct completion finalized %s the deadline after ambiguous broadcast expires durably",
+    async (_label, finalityObservedAt) => {
+      const h = harness();
+      h.failNextBroadcast();
+      const store = createInMemoryLiquidityTankStore();
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      const recordSettlement = vi.spyOn(store, "recordSettlement");
+      const run = runner({ adapter: h.adapter, store });
+
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-broadcast-outcome-uncertain",
+      });
+      recordObservation.mockClear();
+      recordRecoveryExpired.mockClear();
+      recordSettlement.mockClear();
+      h.prepareSubmission.mockClear();
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+
+      run.setClock(finalityObservedAt);
+      h.setObservation(completed(h.operationHash, finalityObservedAt));
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: `direct-expiry-${_label}`,
+      })).resolves.toEqual({
+        status: "failed",
+        errorClass: "failed-substrate",
+        reason: "tank-locked-unreleased-recovery-expired",
+        reputationNeutral: true,
+      });
+      expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
+      expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
+        expectedObservation: expect.objectContaining({ status: "empty" }),
+        observation: expect.objectContaining({
+          status: "completed",
+          recoveryDeadline: RECOVERY_DEADLINE_MS,
+        }),
+      }));
+      expect(recordObservation).not.toHaveBeenCalled();
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+
+      recordRecoveryExpired.mockClear();
+      h.prepareSubmission.mockClear();
+      h.observe.mockClear();
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: `direct-expiry-retry-${_label}`,
+      })).resolves.toMatchObject({
+        status: "failed",
+        reason: "tank-locked-unreleased-recovery-expired",
+      });
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+    },
+  );
+
   test("durable locked state expires durably at the exact Unix-millisecond deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
@@ -949,6 +1039,39 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
+  test("a completed observation cannot replace a retained recovery deadline", async () => {
+    const h = harness();
+    h.setAfterBroadcast(pending(h.operationHash, true));
+    const store = createInMemoryLiquidityTankStore();
+    const recordObservation = vi.spyOn(store, "recordObservation");
+    const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+    const recordSettlement = vi.spyOn(store, "recordSettlement");
+    const run = runner({ adapter: h.adapter, store });
+    await advanceLiquidityTankSettlement(run.shared);
+    recordObservation.mockClear();
+    recordRecoveryExpired.mockClear();
+    recordSettlement.mockClear();
+    h.broadcastRetained.mockClear();
+    run.setClock(RECOVERY_DEADLINE_MS - 1);
+    h.setObservation(completed(
+      h.operationHash,
+      RECOVERY_DEADLINE_MS - 2,
+      RECOVERY_DEADLINE_MS + 1,
+    ));
+
+    await expect(advanceLiquidityTankSettlement({
+      ...run.shared,
+      owner: "deadline-conflict-worker",
+    })).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+    });
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(recordRecoveryExpired).not.toHaveBeenCalled();
+    expect(recordSettlement).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("rejects an unsafe recovery deadline without poisoning the durable checkpoint", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
@@ -1061,6 +1184,7 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(completionFirst.store.recordRecoveryExpired({
       ...completionFirst.writeAuthority,
       now: RECOVERY_DEADLINE_MS,
+      expectedObservation: completionFirst.checkpoint,
       observation: completionFirst.checkpoint,
     })).resolves.toMatchObject({ status: "conflict" });
     await expect(completionFirst.store.claim({
@@ -1077,6 +1201,7 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(expiryFirst.store.recordRecoveryExpired({
       ...expiryFirst.writeAuthority,
       now: RECOVERY_DEADLINE_MS,
+      expectedObservation: expiryFirst.checkpoint,
       observation: expiryFirst.checkpoint,
     })).resolves.toEqual({ status: "recorded" });
     await expect(expiryFirst.store.recordObservation({
@@ -1123,6 +1248,20 @@ describe("advanceLiquidityTankSettlement", () => {
     } as never);
     await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared))
       .resolves.toMatchObject({ status: "indeterminate" });
+  });
+
+  test("completed status without an authenticated recovery deadline never produces success", async () => {
+    const h = harness();
+    h.setAfterBroadcast({
+      ...completed(h.operationHash),
+      recoveryDeadline: undefined,
+    } as never);
+    const store = createInMemoryLiquidityTankStore();
+    const recordSettlement = vi.spyOn(store, "recordSettlement");
+
+    await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter, store }).shared))
+      .resolves.toMatchObject({ status: "indeterminate" });
+    expect(recordSettlement).not.toHaveBeenCalled();
   });
 
   test("bridge IDs are globally unique across local settlements", async () => {
@@ -1423,6 +1562,7 @@ describe("advanceLiquidityTankSettlement", () => {
               destChainId: 1,
               lockTxHash: "source-lock-tx",
               releaseTxHash: "destination-release-tx",
+              recoveryDeadline: RECOVERY_DEADLINE_MS,
             },
             paymentAmount: { amount: intent.amount, currency: "USDC" },
             settlementFinality: { model: "liquidity-tank", finalityObservedAt: 3_000 },
@@ -1440,6 +1580,46 @@ describe("advanceLiquidityTankSettlement", () => {
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
 
+  test("rejects stored settlement evidence finalized at its recovery deadline", async () => {
+    const intent = createLiquidityTankIntent(authority());
+    const inner = createInMemoryLiquidityTankStore();
+    const store: LiquidityTankStore = {
+      ...inner,
+      async claim() {
+        return {
+          status: "settled" as const,
+          intent,
+          settlement: {
+            txRef: {
+              kind: "liquidity-tank" as const,
+              bridgeId: BRIDGE_ID,
+              sourceChainId: intent.sourceChainId,
+              destChainId: intent.destinationChainId,
+              lockTxHash: "source-lock-tx",
+              releaseTxHash: "destination-release-tx",
+              recoveryDeadline: RECOVERY_DEADLINE_MS,
+            },
+            paymentAmount: { amount: intent.amount, currency: "USDC" as const },
+            settlementFinality: {
+              model: "liquidity-tank" as const,
+              finalityObservedAt: RECOVERY_DEADLINE_MS,
+            },
+            authenticationHash: AUTH_HASH,
+          },
+        };
+      },
+    };
+    const h = harness();
+
+    await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-stored-settlement-mismatch",
+      });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+  });
+
   test.each(["accessor", "proxy"] as const)(
     "rejects a stored settlement %s without invoking caller code",
     async (kind) => {
@@ -1453,6 +1633,7 @@ describe("advanceLiquidityTankSettlement", () => {
           destChainId: intent.destinationChainId,
           lockTxHash: "source-lock-tx",
           releaseTxHash: "destination-release-tx",
+          recoveryDeadline: RECOVERY_DEADLINE_MS,
         },
         paymentAmount: { amount: intent.amount, currency: "USDC" as const },
         settlementFinality: { model: "liquidity-tank" as const, finalityObservedAt: 3_000 },

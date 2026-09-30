@@ -24,7 +24,8 @@ The core:
 - persists locked-unreleased state as ST-8 `tank-locked-unreleased`, resolving
   forward to success or reputation-neutral `failed-substrate` at the recovery
   deadline. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
-  adapter observations, durable checkpoints, progress and transaction evidence;
+  pending and completed adapter observations, durable checkpoints, settlement
+  replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted. A
   completion is timely only when `finalityObservedAt < recoveryDeadline`;
   equality is expired.
@@ -56,16 +57,22 @@ reason `liquidity-tank-retained-state-corrupt`; operators must restore the exact
 authenticated row rather than preparing or broadcasting a replacement.
 
 Production stores must implement `recordRecoveryExpired` as an atomic,
-authority/lease/generation-fenced compare-and-set against the exact durable
-locked-pending observation. Completion persistence and recovery expiry race on
-that checkpoint: whichever transition commits first is terminal, and the loser
-must report a non-successful write. Once expiry commits, every claim returns the
-same recovery-expired terminal state and no later completion may settle.
+authority/lease/generation-fenced compare-and-set against the exact observation
+established by the acquired claim or a confirmed write. A completed observation
+carries the authenticated source-lock `recoveryDeadline` even when no pending
+checkpoint was previously persisted; expiry can therefore compare-and-set
+directly from that exact prior state. When a durable locked-pending checkpoint
+exists, the completed lock hash and deadline must match it exactly. Completion
+persistence and recovery expiry race atomically: whichever eligible transition
+commits first is terminal, and the loser must report a non-successful write. Once
+expiry commits, every claim returns the same recovery-expired terminal state and
+no later completion may settle.
 
-A durable completed observation is also a settlement replay record. On worker
+A timely durable completed observation is also a settlement replay record. On worker
 takeover the coordinator deterministically reconstructs and records its
-settlement before any adapter observation, preparation or broadcast. Stores must
-accept an exact replay as `existing` and reject conflicting settlement writes.
+settlement, including its exact `recoveryDeadline`, before any adapter
+observation, preparation or broadcast. Stores must accept an exact replay as
+`existing` and reject conflicting settlement writes.
 
 Production adapters must authenticate bridge status and its history. Demos SDK
 4.0.16 exposes native-bridge submission but no public bridge-status lookup that
