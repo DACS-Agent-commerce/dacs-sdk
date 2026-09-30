@@ -1486,20 +1486,9 @@ async function qualifyResolvedMember<TKey>(
     effectiveDecision: VerificationDecision;
   }>,
   expected: Readonly<ExpectedVerifyResult>,
-  acceptanceTime: number,
   deps: VerifyCompositeVerificationDeps<TKey>,
   sharedProjection: boolean,
 ): Promise<VerificationDecision | StrictCompositeVerification> {
-  if (expected.requirement.maxAge !== undefined) {
-    const expiry = addSeconds(
-      resolved.result.verifiedAt,
-      expected.requirement.maxAge,
-    );
-    if (expiry === null) {
-      return invalid("verify-result-time", "listing freshness window overflows");
-    }
-    if (acceptanceTime > expiry) return "fail";
-  }
   if (
     resolved.effectiveDecision !== "pass" ||
     expected.requirement.parameters === undefined
@@ -1805,6 +1794,27 @@ export async function verifyCompositeVerificationRecord<TKey>(
     });
   }
 
+  for (const entry of [...resolvedFreshness, ...resolvedDealSpecific]) {
+    for (const memberExpected of entry.members) {
+      const decision = await qualifyResolvedMember(
+        entry.resolution,
+        memberExpected,
+        capturedDeps,
+        entry.members.length > 1,
+      );
+      if (typeof decision !== "string") return decision;
+      mixedEntries.push({
+        requirement: memberExpected.requirement,
+        expected: memberExpected,
+        result: entry.resolution.result,
+        effectiveDecision: decision,
+      });
+    }
+  }
+  // Parameter qualification is callback-driven and may be asynchronous. The
+  // acceptance instant therefore has to be sampled after every authentication
+  // and qualification callback, not before them, or evidence could expire
+  // while a predicate is being checked and still be accepted as current.
   let acceptanceTime: number;
   try {
     acceptanceTime = capturedDeps.nowMs();
@@ -1826,22 +1836,15 @@ export async function verifyCompositeVerificationRecord<TKey>(
       entry.members.length === 1,
     );
     if (timeFailure) return timeFailure;
-    for (const memberExpected of entry.members) {
-      const decision = await qualifyResolvedMember(
-        entry.resolution,
-        memberExpected,
-        acceptanceTime,
-        capturedDeps,
-        entry.members.length > 1,
-      );
-      if (typeof decision !== "string") return decision;
-      mixedEntries.push({
-        requirement: memberExpected.requirement,
-        expected: memberExpected,
-        result: entry.resolution.result,
-        effectiveDecision: decision,
-      });
+  }
+  for (const entry of mixedEntries) {
+    const maxAge = entry.expected?.requirement.maxAge;
+    if (entry.result === undefined || maxAge === undefined) continue;
+    const expiry = addSeconds(entry.result.verifiedAt, maxAge);
+    if (expiry === null) {
+      return invalid("verify-result-time", "listing freshness window overflows");
     }
+    if (acceptanceTime > expiry) entry.effectiveDecision = "fail";
   }
   const latestResultTime = Math.max(
     0,

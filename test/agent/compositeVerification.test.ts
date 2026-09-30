@@ -1167,7 +1167,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
   });
 
-  test("applies shared-result maxAge per member and samples time after authentication", async () => {
+  test("applies shared-result maxAge per member and samples time after callbacks", async () => {
     const f = await fixture();
     const wide = { ...requirement.required[0]!, maxAge: 3_600 };
     const expired = { ...requirement.required[0]!, maxAge: 0 };
@@ -1214,6 +1214,47 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({
       status: "invalid",
       code: "verify-result-stale",
+    });
+
+    const delayedFirst = {
+      ...requirement.required[0]!,
+      maxAge: 1,
+      parameters: { jurisdiction: "GB" },
+    };
+    const delayedSecond = {
+      ...requirement.required[0]!,
+      maxAge: 1,
+      parameters: { status: "active" },
+    };
+    const delayedRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [delayedFirst, delayedSecond],
+    };
+    const delayedRecord = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(delayedRequirement)),
+    });
+    acceptanceNow = NOW;
+    await expect(
+      verifyCompositeVerificationRecord(
+        delayedRecord,
+        {
+          ...f.expected,
+          requirement: delayedRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: delayedFirst }],
+        },
+        {
+          ...f.deps,
+          nowMs: () => acceptanceNow,
+          verifyRequirementParameters: async () => {
+            await Promise.resolve();
+            acceptanceNow = NOW + 1_000;
+            return true;
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
     });
   });
 

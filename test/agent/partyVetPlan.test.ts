@@ -480,6 +480,42 @@ describe("party-scoped multi-claim Vet planning", () => {
       attempts: incompatibleAttempts,
     })).toThrow(/incompatible duplicate result address/);
 
+    const unprojectableJobId = "job-144-unprojectable-duplicate";
+    const unprojectableRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          parameters: { assertionPolicy: "first" },
+        },
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          parameters: { assertionPolicy: "second" },
+        },
+      ],
+    };
+    const unprojectableAttempts = await pinnedAttempts(
+      unprojectableJobId,
+      alpha,
+      unprojectableRequirement,
+      [0, 1].map((index) => ({
+        requirementPath: { kind: "required" as const, index },
+        claimSubject: alpha,
+      })),
+    );
+    expect(() => createPartyVetPlan({
+      jobId: unprojectableJobId,
+      evaluatedParty: alpha,
+      identityBundle: bundle(alpha, [alpha]),
+      requirement: unprojectableRequirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: unprojectableAttempts,
+    })).toThrow(/incompatible duplicate result address/);
+
     const plan = await requiredPlan();
     const second = await resultOutcome(plan.attempts[1]!, "pass");
     expect(() => advancePartyVetPlan(plan, [second])).toThrow(

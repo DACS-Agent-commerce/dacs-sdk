@@ -1236,6 +1236,17 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   const sharedGroups = new Map<string, string>();
   for (const [address, attempts] of attemptsByResultAddress) {
     if (attempts.length < 2) continue;
+    const distinctRequirements = new Set(
+      attempts.map((attempt) => canonicalize(attempt.requirement)),
+    );
+    if (
+      distinctRequirements.size > 1 &&
+      attempts.some((attempt) => attempt.method.kind !== "consensus-backed-proxy")
+    ) {
+      throw new DacsError(
+        `party Vet attempts derive incompatible duplicate result address ${address}`,
+      );
+    }
     const keys = new Set(attempts.map(sharedResultCompatibilityKey));
     if (keys.size !== 1) {
       throw new DacsError(
