@@ -5,14 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  WALLET_SPEND_STATE_VERSION,
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
   type WalletSpendPolicyV1,
   type WalletSpendReservationV1,
-  type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
-import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { sha256Hex } from "@kynesyslabs/dacs/canonical";
 
 import {
   createDacsRemoteWalletSpendAuthorityV1,
@@ -24,10 +22,9 @@ import {
 } from "../src/walletSpendRemote.js";
 import {
   createDacsWalletSpendContinuityAuthorityV2,
+  createInMemoryDacsWalletSpendContinuityStateStoreV1,
   createInMemoryDacsWalletSpendContinuityWitnessV1,
   dacsWalletSpendLineageKeyV1,
-  dacsWalletSpendPolicyHashV1,
-  type DacsPostgresWalletSpendStateStoreV1,
 } from "../src/walletSpendPostgres.js";
 
 const roots: string[] = [];
@@ -119,65 +116,15 @@ async function serverV2() {
     seed: new Uint8Array(32).fill(21),
   });
   const lineageKey = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
-  let state: WalletSpendStateV1 = {
-    stateVersion: WALLET_SPEND_STATE_VERSION,
-    policyHash: dacsWalletSpendPolicyHashV1(selected),
-    generation: 0,
-    reservations: [],
-    totals: [],
-    rollingEvents: [],
-  };
-  const stateHash = (value: Readonly<WalletSpendStateV1>) =>
-    sha256Hex(`dacs-wallet-spend-state:v1:${canonicalize(value)}`);
-  await reference.witness.compareAndSet({
-    authorityId: "wallet-authority-production", epoch: "epoch-2026-09", lineageKey,
-    predecessor: null, next: { revision: 0, stateHash: stateHash(state) },
-    candidateId: "00000000-0000-4000-8000-000000000071",
-    roleId: "operator:test", operationId: "00000000-0000-4000-8000-000000000072",
-    requestHash: "7".repeat(64), mutationIndex: 0, clientNonce: "6".repeat(64),
+  const store = await createInMemoryDacsWalletSpendContinuityStateStoreV1({
+    policy: selected,
+    continuity: {
+      authorityId: "wallet-authority-production",
+      epoch: "epoch-2026-09",
+      verificationKey: reference.verificationKey,
+      witness: reference.witness,
+    },
   });
-  let candidate = 80;
-  const store: DacsPostgresWalletSpendStateStoreV1 = {
-    lineageScope: () => lineageKey,
-    async read(scope) {
-      if (scope !== lineageKey) throw new Error("scope mismatch");
-      return structuredClone(state);
-    },
-    async transact<T>(scope: string, operation: (
-      current: Readonly<WalletSpendStateV1> | null,
-    ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>): Promise<T> {
-      if (scope !== lineageKey) throw new Error("scope mismatch");
-      const prior = structuredClone(state);
-      const result = operation(prior);
-      if (canonicalize(result.state) !== canonicalize(prior)) {
-        const nextHash = stateHash(result.state);
-        await reference.witness.compareAndSet({
-          authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
-          lineageKey,
-          predecessor: { revision: prior.generation, stateHash: stateHash(prior) },
-          next: { revision: result.state.generation, stateHash: nextHash },
-          candidateId: `00000000-0000-4000-8000-${String(candidate++).padStart(12, "0")}`,
-          roleId: "service:test", operationId: "00000000-0000-4000-8000-000000000073",
-          requestHash: sha256Hex(canonicalize(result.state)),
-          mutationIndex: result.state.generation,
-          clientNonce: sha256Hex(`test-advance:${result.state.generation}`),
-        });
-        state = structuredClone(result.state);
-      }
-      return result.value;
-    },
-    async attestCurrent(binding) {
-      const receipt = await reference.witness.readCurrent({
-        authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
-        lineageKey, ...binding,
-      });
-      if (receipt === null || receipt.revision !== state.generation ||
-          receipt.stateHash !== stateHash(state)) {
-        throw new Error("test continuity mismatch");
-      }
-      return receipt;
-    },
-  };
   const bindingInput = {
     policy: selected,
     store,
@@ -263,6 +210,28 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       roleId: "service:test", operationId: "00000000-0000-4000-8000-000000000075",
       requestHash: "4".repeat(64), mutationIndex: 0, clientNonce: "5".repeat(64),
     });
+    const structurallyCompatibleStore = {
+      ...createInMemoryWalletSpendStateStore(),
+      lineageScope: () => lineageKey,
+      async attestCurrent(binding: {
+        operationId: string; requestHash: string; clientNonce: string;
+      }) {
+        const receipt = await reference.witness.readCurrent({
+          authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
+          lineageKey, ...binding,
+        });
+        if (receipt === null) throw new Error("missing synthetic receipt");
+        return receipt;
+      },
+    };
+    expect(() => createDacsWalletSpendContinuityAuthorityV2({
+      policy: selected,
+      store: structurallyCompatibleStore,
+      dependencies: {
+        readBalance: async () => "1000",
+        authenticateRecovery: async () => true,
+      },
+    })).toThrow(/official-store-required/);
     const handler = createDacsWalletSpendAuthorityServiceV2({
       authenticate: (token) => token === TOKEN ? "buyer" : null,
       // This was the vulnerable composition: an authority and a valid witness

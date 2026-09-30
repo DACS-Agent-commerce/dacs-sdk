@@ -139,6 +139,7 @@ export interface DacsPostgresWalletSpendStateStoreV1 extends WalletSpendStateSto
   ): Promise<Readonly<DacsWalletSpendContinuityReceiptV1>>;
 }
 
+const continuityStateStores = new WeakSet<object>();
 const continuityAuthorityBindings = new WeakSet<object>();
 
 /**
@@ -162,6 +163,9 @@ export function createDacsWalletSpendContinuityAuthorityV2(input: Readonly<{
   // configuration object; dereferencing input.store later would let a caller
   // swap in an unrelated same-revision attester after branding the pair.
   const store = input.store;
+  if (!continuityStateStores.has(store)) {
+    throw new Error("wallet-spend-continuity-official-store-required");
+  }
   const attestCurrent = store.attestCurrent;
   if (typeof attestCurrent !== "function") {
     throw new Error("wallet-spend-continuity-store-invalid");
@@ -758,6 +762,150 @@ export function createInMemoryDacsWalletSpendContinuityWitnessV1(input: Readonly
   return Object.freeze({ witness: Object.freeze(witness), verificationKey });
 }
 
+/**
+ * Process-local reference store for deterministic protocol tests. It is
+ * library-branded so tests exercise the same cohesive V2 binding gate, but it
+ * is not a production durability, fencing, or topology implementation.
+ */
+export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
+  input: Readonly<{
+    policy: Readonly<WalletSpendPolicyV1>;
+    continuity: Readonly<DacsWalletSpendContinuityPinV1>;
+  }>,
+): Promise<DacsPostgresWalletSpendStateStoreV1> {
+  const pin = continuityPin(input.continuity);
+  const lineage = dacsWalletSpendLineageKeyV1(input.policy.wallet, input.policy.chainId);
+  let state = validateWalletSpendStateV1(
+    emptyState(dacsWalletSpendPolicyHashV1(input.policy)),
+    input.policy,
+  );
+  const initializationIdentity = {
+    authorityId: pin.authorityId,
+    epoch: pin.epoch,
+    lineageKey: lineage,
+    candidateId: randomUUID(),
+    roleId: "reference:initialization",
+    operationId: randomUUID(),
+    requestHash: sha256Hex(canonicalize({ operation: "reference-initialization", lineage })),
+    mutationIndex: 0,
+  };
+  const initializationReadNonce = nonce();
+  const current = await pin.witness.readCurrent({
+    authorityId: pin.authorityId,
+    epoch: pin.epoch,
+    lineageKey: lineage,
+    operationId: initializationIdentity.operationId,
+    requestHash: initializationIdentity.requestHash,
+    clientNonce: initializationReadNonce,
+  });
+  if (current === null) {
+    await compareAndSetContinuity(pin, {
+      ...initializationIdentity,
+      predecessor: null,
+      next: { revision: state.generation, stateHash: stateHash(state) },
+      clientNonce: advanceNonce(initializationIdentity),
+    });
+  } else {
+    requireCurrentReceipt(current, pin, {
+      lineageKey: lineage,
+      head: { revision: state.generation, stateHash: stateHash(state) },
+      operationId: initializationIdentity.operationId,
+      requestHash: initializationIdentity.requestHash,
+      clientNonce: initializationReadNonce,
+    });
+  }
+  let tail: Promise<void> = Promise.resolve();
+  const requireHead = async (
+    binding: Readonly<DacsWalletSpendContinuityAttestationRequestV1>,
+  ): Promise<Readonly<DacsWalletSpendContinuityReceiptV1>> => {
+    const receipt = await pin.witness.readCurrent({
+      authorityId: pin.authorityId,
+      epoch: pin.epoch,
+      lineageKey: lineage,
+      ...binding,
+    });
+    if (receipt === null) throw new Error("wallet-spend-continuity-head-missing");
+    return requireCurrentReceipt(receipt, pin, {
+      lineageKey: lineage,
+      head: { revision: state.generation, stateHash: stateHash(state) },
+      ...binding,
+    });
+  };
+  const internalBinding = (purpose: string) => {
+    const operationId = randomUUID();
+    const clientNonce = nonce();
+    return {
+      operationId,
+      clientNonce,
+      requestHash: sha256Hex(canonicalize({ purpose, lineage, operationId, clientNonce })),
+    };
+  };
+  const store: DacsPostgresWalletSpendStateStoreV1 = {
+    lineageScope(selectedPolicy) {
+      if (selectedPolicy.wallet !== input.policy.wallet ||
+          selectedPolicy.chainId !== input.policy.chainId) {
+        throw new Error("wallet-spend-lineage-policy-mismatch");
+      }
+      return lineage;
+    },
+    async read(scope) {
+      if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
+      await requireHead(internalBinding("reference-read"));
+      return structuredClone(state);
+    },
+    async transact<T>(
+      scope: string,
+      operation: (
+        current: Readonly<WalletSpendStateV1> | null,
+      ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
+    ): Promise<T> {
+      if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
+      const priorTail = tail;
+      let release!: () => void;
+      tail = new Promise<void>((resolve) => { release = resolve; });
+      await priorTail;
+      try {
+        await requireHead(internalBinding("reference-mutation-read"));
+        const prior = structuredClone(state);
+        const result = operation(prior);
+        const next = validateWalletSpendStateV1(result.state, input.policy);
+        if (canonicalize(next) === canonicalize(prior)) return result.value;
+        if (next.generation !== prior.generation + 1) {
+          throw new Error("wallet-spend-postgres-revision-not-monotonic");
+        }
+        const operationId = randomUUID();
+        const requestHash = sha256Hex(canonicalize({
+          operation: "reference-mutation", lineage, state: next,
+        }));
+        const identity = {
+          authorityId: pin.authorityId,
+          epoch: pin.epoch,
+          lineageKey: lineage,
+          candidateId: randomUUID(),
+          roleId: "reference:mutation",
+          operationId,
+          requestHash,
+          mutationIndex: next.generation,
+        };
+        await compareAndSetContinuity(pin, {
+          ...identity,
+          predecessor: { revision: prior.generation, stateHash: stateHash(prior) },
+          next: { revision: next.generation, stateHash: stateHash(next) },
+          clientNonce: advanceNonce(identity),
+        });
+        state = structuredClone(next);
+        await requireHead(internalBinding("reference-mutation-readback"));
+        return result.value;
+      } finally {
+        release();
+      }
+    },
+    attestCurrent: requireHead,
+  };
+  continuityStateStores.add(store);
+  return Object.freeze(store);
+}
+
 function safeRevision(value: unknown): number {
   const revision = typeof value === "string" ? Number(value) : value;
   if (!Number.isSafeInteger(revision) || (revision as number) < 0) {
@@ -767,11 +915,11 @@ function safeRevision(value: unknown): number {
 }
 
 interface LineageRow {
-  writer_contract_version: string | number;
-  authority_id: string;
-  continuity_epoch: string;
-  continuity_verification_key: string;
-  continuity_status: "pending" | "active";
+  writer_contract_version: string | number | null;
+  authority_id: string | null;
+  continuity_epoch: string | null;
+  continuity_verification_key: string | null;
+  continuity_status: "pending" | "active" | null;
   continuity_receipt: DacsWalletSpendContinuityReceiptV1 | null;
   policy_hash: string;
   revision: string | number;
@@ -786,14 +934,34 @@ interface CandidateRow {
   role_id: string | null;
   request_hash: string;
   mutation_index: string | number;
-  prior_revision: string | number;
-  prior_state_hash: string;
+  prior_revision: string | number | null;
+  prior_state_hash: string | null;
   next_revision: string | number;
   next_state_hash: string;
   candidate_state: WalletSpendStateV1;
   candidate_value: unknown;
   continuity_receipt: DacsWalletSpendContinuityReceiptV1 | null;
   status: "prepared" | "applied" | "superseded";
+}
+
+async function loadExactCandidate(
+  pool: DacsPostgresPoolV1,
+  input: Readonly<{
+    lineageKey: string;
+    roleId: string;
+    operationId: string;
+    mutationIndex: number;
+  }>,
+): Promise<CandidateRow | undefined> {
+  return (await pool.query<CandidateRow>(
+    `SELECT candidate_id, authority_id, continuity_epoch, role_id, request_hash,
+            mutation_index, prior_revision, prior_state_hash, next_revision,
+            next_state_hash, candidate_state, candidate_value, continuity_receipt, status
+       FROM dacs_wallet_spend_candidates
+      WHERE lineage_key = $1 AND role_id = $2 AND operation_id = $3::uuid
+        AND mutation_index = $4`,
+    [input.lineageKey, input.roleId, input.operationId, input.mutationIndex],
+  )).rows[0];
 }
 
 async function confirmContinuityHead(
@@ -997,13 +1165,6 @@ export async function adoptDacsWalletSpendPostgresContinuityV1(
       row.state_hash !== stateHash(state)) {
     throw new Error("wallet-spend-authoritative-head-invalid");
   }
-  if (row.authority_id !== null && row.authority_id !== undefined ||
-      row.continuity_epoch !== null && row.continuity_epoch !== undefined ||
-      row.continuity_verification_key !== null &&
-        row.continuity_verification_key !== undefined ||
-      row.continuity_receipt !== null && row.continuity_receipt !== undefined) {
-    throw new Error("wallet-spend-continuity-already-adopted");
-  }
   if (!await input.authenticateEvidence(evidence, state)) {
     throw new Error("wallet-spend-continuity-adoption-evidence-rejected");
   }
@@ -1011,30 +1172,84 @@ export async function adoptDacsWalletSpendPostgresContinuityV1(
     operation: "adopt-continuity", lineage, policyHash, revision: state.generation,
     stateHash: row.state_hash, evidence, authorityId: pin.authorityId, epoch: pin.epoch,
   }));
-  const clientNonce = nonce();
-  const existing = await pin.witness.readCurrent({
-    authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
-    operationId: input.operationId, requestHash, clientNonce,
+  if (row.continuity_status === "active") {
+    const receipt = row.continuity_receipt;
+    if (row.authority_id !== pin.authorityId || row.continuity_epoch !== pin.epoch ||
+        row.continuity_verification_key !== pin.verificationKey || receipt === null ||
+        !verifyDacsWalletSpendContinuityReceiptV1(receipt, pin) || receipt.kind !== "advance" ||
+        receipt.lineageKey !== lineage || receipt.operationId !== input.operationId ||
+        receipt.requestHash !== requestHash || receipt.revision !== state.generation ||
+        receipt.stateHash !== row.state_hash || receipt.priorRevision !== null ||
+        receipt.priorStateHash !== null) {
+      throw new Error("wallet-spend-continuity-already-adopted");
+    }
+    await confirmContinuityHead(pool, pin, {
+      lineageKey: lineage,
+      head: { revision: state.generation, stateHash: row.state_hash },
+      operationId: input.operationId,
+      requestHash,
+    });
+    return;
+  }
+  if ((row.authority_id !== null && row.authority_id !== undefined) ||
+      (row.continuity_epoch !== null && row.continuity_epoch !== undefined) ||
+      (row.continuity_verification_key !== null &&
+        row.continuity_verification_key !== undefined) ||
+      (row.continuity_receipt !== null && row.continuity_receipt !== undefined)) {
+    throw new Error("wallet-spend-continuity-adoption-partial");
+  }
+  const roleId = "operator:continuity-adoption";
+  let candidate = await loadExactCandidate(pool, {
+    lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
   });
-  if (existing !== null) throw new Error("wallet-spend-continuity-lineage-already-exists");
-  const candidateId = randomUUID();
-  await pool.query(
-    `INSERT INTO dacs_wallet_spend_candidates
-      (candidate_id, lineage_key, writer_contract_version, authority_id, continuity_epoch,
-       role_id, operation_id, request_hash, mutation_index, prior_revision,
-       prior_state_hash, next_revision, next_state_hash, candidate_state,
-       candidate_value, continuity_receipt, status)
-     VALUES ($1::uuid, $2, 2, $3, $4, 'operator:continuity-adoption', $5::uuid,
-             $6, 0, NULL, NULL, $7, $8, $9::jsonb, $10::jsonb, NULL, 'prepared')`,
-    [candidateId, lineage, pin.authorityId, pin.epoch, input.operationId, requestHash,
-      state.generation, row.state_hash, canonicalize(state),
-      canonicalize(encodeCandidateValue(undefined))],
-  );
+  if (candidate === undefined) {
+    const candidateId = randomUUID();
+    await pool.query(
+      `INSERT INTO dacs_wallet_spend_candidates
+        (candidate_id, lineage_key, writer_contract_version, authority_id, continuity_epoch,
+         role_id, operation_id, request_hash, mutation_index, prior_revision,
+         prior_state_hash, next_revision, next_state_hash, candidate_state,
+         candidate_value, continuity_receipt, status)
+       VALUES ($1::uuid, $2, 2, $3, $4, $5, $6::uuid,
+               $7, 0, NULL, NULL, $8, $9, $10::jsonb, $11::jsonb, NULL, 'prepared')
+       ON CONFLICT (lineage_key, operation_id, mutation_index) DO NOTHING`,
+      [candidateId, lineage, pin.authorityId, pin.epoch, roleId, input.operationId,
+        requestHash, state.generation, row.state_hash, canonicalize(state),
+        canonicalize(encodeCandidateValue(undefined))],
+    );
+    candidate = await loadExactCandidate(pool, {
+      lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
+    });
+  }
+  if (!candidate || candidate.authority_id !== pin.authorityId ||
+      candidate.continuity_epoch !== pin.epoch || candidate.role_id !== roleId ||
+      candidate.request_hash !== requestHash || safeRevision(candidate.mutation_index) !== 0 ||
+      candidate.prior_revision !== null || candidate.prior_state_hash !== null ||
+      safeRevision(candidate.next_revision) !== state.generation ||
+      candidate.next_state_hash !== row.state_hash ||
+      canonicalize(candidate.candidate_state) !== canonicalize(state) ||
+      !candidateValueMatches(candidate.candidate_value, undefined) ||
+      candidate.status !== "prepared") {
+    throw new Error("wallet-spend-continuity-adoption-candidate-conflict");
+  }
+  const candidateId = candidate.candidate_id;
   const transitionIdentity = {
     authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
-    candidateId, roleId: "operator:continuity-adoption",
+    candidateId, roleId,
     operationId: input.operationId, requestHash, mutationIndex: 0,
   };
+  const readNonce = nonce();
+  const witnessHead = await pin.witness.readCurrent({
+    authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
+    operationId: input.operationId, requestHash, clientNonce: readNonce,
+  });
+  if (witnessHead !== null) {
+    requireCurrentReceipt(witnessHead, pin, {
+      lineageKey: lineage,
+      head: { revision: state.generation, stateHash: row.state_hash },
+      operationId: input.operationId, requestHash, clientNonce: readNonce,
+    });
+  }
   const receipt = await compareAndSetContinuity(pin, {
     ...transitionIdentity,
     predecessor: null, next: { revision: state.generation, stateHash: row.state_hash },
@@ -1072,13 +1287,16 @@ export async function adoptDacsWalletSpendPostgresContinuityV1(
         WHERE lineage_key = $1`,
       [lineage, pin.authorityId, pin.epoch],
     );
-    await client.query(
+    const appliedCandidate = await client.query(
       `UPDATE dacs_wallet_spend_candidates
           SET status = 'applied', continuity_receipt = $2::jsonb,
               applied_at = clock_timestamp()
         WHERE candidate_id = $1::uuid AND status = 'prepared'`,
       [candidateId, canonicalize(receipt)],
     );
+    if (appliedCandidate.rowCount !== 1) {
+      throw new Error("wallet-spend-continuity-adoption-candidate-moved");
+    }
     await client.query(
       `UPDATE dacs_wallet_spend_operations SET writer_contract_version = 2
         WHERE writer_contract_version IS NULL`,
@@ -1214,13 +1432,16 @@ async function initializeLineage(
       [lineage, canonicalize(receipt)],
     );
     if (updated.rowCount !== 1) throw new Error("wallet-spend-continuity-initialization-conflict");
-    await client.query(
+    const appliedCandidate = await client.query(
       `UPDATE dacs_wallet_spend_candidates
           SET status = 'applied', continuity_receipt = $2::jsonb,
               applied_at = clock_timestamp()
         WHERE candidate_id = $1::uuid AND status = 'prepared'`,
       [candidateId, canonicalize(receipt)],
     );
+    if (appliedCandidate.rowCount !== 1) {
+      throw new Error("wallet-spend-continuity-initialization-candidate-moved");
+    }
   });
   await confirmContinuityHead(pool, pin, {
     lineageKey: lineage,
@@ -1248,6 +1469,16 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
   const pin = continuityPin(input.continuity);
   const lineage = dacsWalletSpendLineageKeyV1(input.policy.wallet, input.policy.chainId);
   const nextPolicyHash = dacsWalletSpendPolicyHashV1(input.policy);
+  if (nextPolicyHash === input.previousPolicyHash) {
+    throw new Error("wallet-spend-policy-unchanged");
+  }
+  const requestHash = sha256Hex(canonicalize({
+    operation: "migrate-policy",
+    lineage,
+    previousPolicyHash: input.previousPolicyHash,
+    policy: input.policy,
+  }));
+  const roleId = "operator:policy-migration";
   const loaded = await pool.query<LineageRow>(
     `SELECT writer_contract_version, authority_id, continuity_epoch,
             continuity_verification_key, continuity_status, continuity_receipt,
@@ -1264,6 +1495,41 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
       safeRevision(row.revision) !== row.state.generation ||
       row.state_hash !== stateHash(row.state) || row.policy_hash !== row.state.policyHash) {
     throw new Error("wallet-spend-authoritative-head-invalid");
+  }
+  if (row.policy_hash === nextPolicyHash) {
+    const state = validateWalletSpendStateV1(row.state, input.policy);
+    const candidate = await loadExactCandidate(pool, {
+      lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
+    });
+    const receipt = candidate?.continuity_receipt;
+    if (!candidate || candidate.authority_id !== pin.authorityId ||
+        candidate.continuity_epoch !== pin.epoch || candidate.role_id !== roleId ||
+        candidate.request_hash !== requestHash || safeRevision(candidate.mutation_index) !== 0 ||
+        candidate.prior_revision === null ||
+        safeRevision(candidate.prior_revision) + 1 !== state.generation ||
+        candidate.prior_state_hash === null ||
+        safeRevision(candidate.next_revision) !== state.generation ||
+        candidate.next_state_hash !== row.state_hash ||
+        canonicalize(candidate.candidate_state) !== canonicalize(state) ||
+        !candidateValueMatches(candidate.candidate_value, undefined) ||
+        candidate.status !== "applied" || receipt === null ||
+        !verifyDacsWalletSpendContinuityReceiptV1(receipt, pin) ||
+        receipt.kind !== "advance" || receipt.lineageKey !== lineage ||
+        receipt.candidateId !== candidate.candidate_id || receipt.operationId !== input.operationId ||
+        receipt.requestHash !== requestHash || receipt.mutationIndex !== 0 ||
+        receipt.priorRevision !== safeRevision(candidate.prior_revision) ||
+        receipt.priorStateHash !== candidate.prior_state_hash ||
+        receipt.revision !== state.generation || receipt.stateHash !== row.state_hash ||
+        canonicalize(row.continuity_receipt) !== canonicalize(receipt)) {
+      throw new Error("wallet-spend-policy-migration-already-applied-conflict");
+    }
+    await confirmContinuityHead(pool, pin, {
+      lineageKey: lineage,
+      head: { revision: state.generation, stateHash: row.state_hash },
+      operationId: input.operationId,
+      requestHash,
+    });
+    return;
   }
   if (row.policy_hash !== input.previousPolicyHash ||
       row.state.policyHash !== input.previousPolicyHash) {
@@ -1285,40 +1551,68 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
     policyHash: nextPolicyHash,
     generation: revision,
   }, input.policy);
-  const candidateId = randomUUID();
-  const requestHash = sha256Hex(canonicalize({
-    operation: "migrate-policy",
-    lineage,
-    previousPolicyHash: input.previousPolicyHash,
-    policy: input.policy,
-  }));
   const readNonce = nonce();
   const current = await pin.witness.readCurrent({
     authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
     operationId: input.operationId, requestHash, clientNonce: readNonce,
   });
   if (current === null) throw new Error("wallet-spend-continuity-head-missing");
+  const nextHash = stateHash(nextState);
+  const witnessAtPrior = current.revision === priorRevision &&
+    current.stateHash === row.state_hash;
+  const witnessAtNext = current.revision === revision && current.stateHash === nextHash;
   requireCurrentReceipt(current, pin, {
-    lineageKey: lineage, head: { revision: priorRevision, stateHash: row.state_hash },
+    lineageKey: lineage,
+    head: witnessAtPrior
+      ? { revision: priorRevision, stateHash: row.state_hash }
+      : { revision, stateHash: nextHash },
     operationId: input.operationId, requestHash, clientNonce: readNonce,
   });
-  const nextHash = stateHash(nextState);
-  await pool.query(
-    `INSERT INTO dacs_wallet_spend_candidates
-      (candidate_id, lineage_key, writer_contract_version, authority_id, continuity_epoch,
-       role_id, operation_id, request_hash, mutation_index,
-       prior_revision, prior_state_hash, next_revision, next_state_hash,
-       candidate_state, candidate_value, continuity_receipt, status)
-     VALUES ($1::uuid, $2, 2, $3, $4, 'operator:policy-migration', $5::uuid, $6, 0,
-             $7, $8, $9, $10, $11::jsonb, $12::jsonb, NULL, 'prepared')`,
-    [candidateId, lineage, pin.authorityId, pin.epoch, input.operationId, requestHash,
-      priorRevision, row.state_hash,
-      revision, nextHash, canonicalize(nextState), canonicalize(encodeCandidateValue(undefined))],
-  );
+  if (!witnessAtPrior && !witnessAtNext) {
+    throw new Error("wallet-spend-continuity-head-mismatch");
+  }
+  let candidate = await loadExactCandidate(pool, {
+    lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
+  });
+  if (candidate === undefined && witnessAtNext) {
+    throw new Error("wallet-spend-continuity-recovery-unavailable");
+  }
+  if (candidate === undefined) {
+    const candidateId = randomUUID();
+    await pool.query(
+      `INSERT INTO dacs_wallet_spend_candidates
+        (candidate_id, lineage_key, writer_contract_version, authority_id, continuity_epoch,
+         role_id, operation_id, request_hash, mutation_index,
+         prior_revision, prior_state_hash, next_revision, next_state_hash,
+         candidate_state, candidate_value, continuity_receipt, status)
+       VALUES ($1::uuid, $2, 2, $3, $4, $5, $6::uuid, $7, 0,
+               $8, $9, $10, $11, $12::jsonb, $13::jsonb, NULL, 'prepared')
+       ON CONFLICT (lineage_key, operation_id, mutation_index) DO NOTHING`,
+      [candidateId, lineage, pin.authorityId, pin.epoch, roleId, input.operationId,
+        requestHash, priorRevision, row.state_hash, revision, nextHash,
+        canonicalize(nextState), canonicalize(encodeCandidateValue(undefined))],
+    );
+    candidate = await loadExactCandidate(pool, {
+      lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
+    });
+  }
+  if (!candidate || candidate.authority_id !== pin.authorityId ||
+      candidate.continuity_epoch !== pin.epoch || candidate.role_id !== roleId ||
+      candidate.request_hash !== requestHash || safeRevision(candidate.mutation_index) !== 0 ||
+      safeRevision(candidate.prior_revision) !== priorRevision ||
+      candidate.prior_state_hash !== row.state_hash ||
+      safeRevision(candidate.next_revision) !== revision ||
+      candidate.next_state_hash !== nextHash ||
+      canonicalize(candidate.candidate_state) !== canonicalize(nextState) ||
+      !candidateValueMatches(candidate.candidate_value, undefined) ||
+      candidate.status !== "prepared") {
+    throw new Error("wallet-spend-policy-migration-candidate-conflict");
+  }
+  const candidateId = candidate.candidate_id;
   const transitionIdentity = {
     authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
     candidateId,
-    roleId: "operator:policy-migration", operationId: input.operationId, requestHash,
+    roleId, operationId: input.operationId, requestHash,
     mutationIndex: 0,
   };
   const transition: DacsWalletSpendContinuityTransitionV1 = {
@@ -1350,13 +1644,16 @@ export async function migrateDacsWalletSpendPostgresPolicyV1(
         canonicalize(receipt), priorRevision, row.state_hash],
     );
     if (updated.rowCount !== 1) throw new Error("wallet-spend-policy-head-moved");
-    await client.query(
+    const appliedCandidate = await client.query(
       `UPDATE dacs_wallet_spend_candidates
           SET status = 'applied', continuity_receipt = $2::jsonb,
               applied_at = clock_timestamp()
         WHERE candidate_id = $1::uuid AND status = 'prepared'`,
       [candidateId, canonicalize(receipt)],
     );
+    if (appliedCandidate.rowCount !== 1) {
+      throw new Error("wallet-spend-policy-migration-candidate-moved");
+    }
   });
   await confirmContinuityHead(pool, pin, {
     lineageKey: lineage, head: { revision, stateHash: nextHash },
@@ -1719,6 +2016,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
       throw new Error("wallet-spend-postgres-concurrency-exhausted");
     },
   };
+  continuityStateStores.add(store);
   return Object.freeze(store);
 }
 

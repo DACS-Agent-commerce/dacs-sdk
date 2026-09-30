@@ -13,6 +13,7 @@ import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1,
   DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1,
+  adoptDacsWalletSpendPostgresContinuityV1,
   createInMemoryDacsWalletSpendContinuityWitnessV1,
   createDacsPostgresWalletSpendStateStoreV1,
   createDacsPostgresWalletSpendRemoteOperationStoreV1,
@@ -116,14 +117,186 @@ interface FakeCandidate {
   role_id: string | null;
   request_hash: string;
   mutation_index: number;
-  prior_revision: number;
-  prior_state_hash: string;
+  prior_revision: number | null;
+  prior_state_hash: string | null;
   next_revision: number;
   next_state_hash: string;
   candidate_state: WalletSpendStateV1;
   candidate_value: unknown;
   continuity_receipt: DacsWalletSpendContinuityReceiptV1 | null;
   status: "prepared" | "applied" | "superseded";
+}
+
+interface RecoveryLineageRow {
+  writer_contract_version: number | null;
+  authority_id: string | null;
+  continuity_epoch: string | null;
+  continuity_verification_key: string | null;
+  continuity_status: "active" | null;
+  continuity_receipt: DacsWalletSpendContinuityReceiptV1 | null;
+  policy_hash: string;
+  revision: number;
+  state_hash: string;
+  state: WalletSpendStateV1;
+}
+
+/** Minimal operator-flow database with an injectable post-witness connection loss. */
+class RecoveryPostgresPool implements DacsPostgresPoolV1 {
+  readonly candidates = new Map<string, FakeCandidate>();
+  failNextConnect = false;
+  failNextCommitAfterApply = false;
+
+  constructor(readonly row: RecoveryLineageRow) {}
+
+  private candidateKey(
+    lineageKey: unknown,
+    roleId: unknown,
+    operationId: unknown,
+    mutationIndex: unknown,
+  ): string {
+    return `${String(lineageKey)}\0${String(roleId)}\0${String(operationId)}` +
+      `\0${String(mutationIndex)}`;
+  }
+
+  async query<Row = Record<string, unknown>>(
+    text: string,
+    values: readonly unknown[] = [],
+  ): Promise<{ rows: Row[]; rowCount: number }> {
+    if (text.includes("FROM dacs_wallet_spend_lineages")) {
+      return { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+    }
+    if (text.startsWith("INSERT INTO dacs_wallet_spend_candidates")) {
+      const adoption = values.length === 11;
+      const key = this.candidateKey(values[1], values[4], values[5], 0);
+      if (this.candidates.has(key)) return { rows: [], rowCount: 0 };
+      this.candidates.set(key, {
+        candidate_id: String(values[0]),
+        authority_id: String(values[2]),
+        continuity_epoch: String(values[3]),
+        role_id: String(values[4]),
+        request_hash: String(values[6]),
+        mutation_index: 0,
+        prior_revision: adoption ? null : Number(values[7]),
+        prior_state_hash: adoption ? null : String(values[8]),
+        next_revision: Number(values[adoption ? 7 : 9]),
+        next_state_hash: String(values[adoption ? 8 : 10]),
+        candidate_state: JSON.parse(String(values[adoption ? 9 : 11])) as WalletSpendStateV1,
+        candidate_value: JSON.parse(String(values[adoption ? 10 : 12])) as unknown,
+        continuity_receipt: null,
+        status: "prepared",
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.startsWith("SELECT candidate_id")) {
+      const candidate = this.candidates.get(
+        this.candidateKey(values[0], values[1], values[2], values[3]),
+      );
+      return {
+        rows: candidate === undefined ? [] : [structuredClone(candidate) as Row],
+        rowCount: candidate === undefined ? 0 : 1,
+      };
+    }
+    throw new Error(`unexpected recovery pool query: ${text}`);
+  }
+
+  async connect(): Promise<DacsPostgresClientV1> {
+    if (this.failNextConnect) {
+      this.failNextConnect = false;
+      throw new Error("database connection outcome unknown");
+    }
+    return {
+      query: async <Row = Record<string, unknown>>(
+        text: string,
+        values: readonly unknown[] = [],
+      ) => {
+        if (text === "BEGIN ISOLATION LEVEL SERIALIZABLE" || text === "ROLLBACK" ||
+            text.startsWith("SELECT set_config")) {
+          return { rows: [] as Row[], rowCount: 0 };
+        }
+        if (text === "COMMIT") {
+          if (this.failNextCommitAfterApply) {
+            this.failNextCommitAfterApply = false;
+            throw new Error("database commit acknowledgement outcome unknown");
+          }
+          return { rows: [] as Row[], rowCount: 0 };
+        }
+        if (text.includes("FROM dacs_wallet_spend_lineages") && text.includes("FOR UPDATE")) {
+          return { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_lineages") &&
+            text.includes("SET writer_contract_version = 2")) {
+          if (this.row.revision !== Number(values[5]) ||
+              this.row.state_hash !== String(values[6]) || this.row.authority_id !== null) {
+            return { rows: [] as Row[], rowCount: 0 };
+          }
+          this.row.writer_contract_version = 2;
+          this.row.authority_id = String(values[1]);
+          this.row.continuity_epoch = String(values[2]);
+          this.row.continuity_verification_key = String(values[3]);
+          this.row.continuity_status = "active";
+          this.row.continuity_receipt = JSON.parse(
+            String(values[4]),
+          ) as DacsWalletSpendContinuityReceiptV1;
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_lineages")) {
+          if (this.row.revision !== Number(values[6]) ||
+              this.row.state_hash !== String(values[7])) {
+            return { rows: [] as Row[], rowCount: 0 };
+          }
+          this.row.policy_hash = String(values[1]);
+          this.row.revision = Number(values[2]);
+          this.row.state_hash = String(values[3]);
+          this.row.state = JSON.parse(String(values[4])) as WalletSpendStateV1;
+          this.row.continuity_receipt = JSON.parse(
+            String(values[5]),
+          ) as DacsWalletSpendContinuityReceiptV1;
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_candidates") &&
+            text.includes("SET writer_contract_version = 2")) {
+          return { rows: [] as Row[], rowCount: this.candidates.size };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_candidates")) {
+          const candidate = [...this.candidates.values()].find(({ candidate_id }) =>
+            candidate_id === String(values[0]));
+          if (candidate?.status !== "prepared") {
+            return { rows: [] as Row[], rowCount: 0 };
+          }
+          candidate.status = "applied";
+          candidate.continuity_receipt = JSON.parse(
+            String(values[1]),
+          ) as DacsWalletSpendContinuityReceiptV1;
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_operations")) {
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        throw new Error(`unexpected recovery client query: ${text}`);
+      },
+      release() {},
+    };
+  }
+}
+
+function failOneContinuityAdvance(
+  pin: DacsWalletSpendContinuityPinV1,
+): DacsWalletSpendContinuityPinV1 {
+  let fail = true;
+  return {
+    ...pin,
+    witness: {
+      readCurrent: (input) => pin.witness.readCurrent(input),
+      async compareAndSet(input) {
+        if (fail) {
+          fail = false;
+          throw new Error("continuity service unavailable before advance");
+        }
+        return pin.witness.compareAndSet(input);
+      },
+      lookupAdvance: (input) => pin.witness.lookupAdvance(input),
+    },
+  };
 }
 
 class FakePostgresPool implements DacsPostgresPoolV1 {
@@ -799,6 +972,7 @@ describe("PostgreSQL wallet authority persistence", () => {
       state: initialState,
     };
     const statements: string[] = [];
+    let preparedCandidate: FakeCandidate | undefined;
     const client: DacsPostgresClientV1 = {
       async query(text, values = []) {
         statements.push(text.trim());
@@ -822,10 +996,36 @@ describe("PostgreSQL wallet authority persistence", () => {
       release() {},
     };
     const pool: DacsPostgresPoolV1 = {
-      async query(text) {
+      async query(text, values = []) {
         statements.push(text.trim());
         if (text.includes("FROM dacs_wallet_spend_lineages")) {
           return { rows: [structuredClone(row)], rowCount: 1 } as never;
+        }
+        if (text.startsWith("INSERT INTO dacs_wallet_spend_candidates")) {
+          if (preparedCandidate === undefined) {
+            preparedCandidate = {
+              candidate_id: String(values[0]),
+              authority_id: String(values[2]),
+              continuity_epoch: String(values[3]),
+              role_id: String(values[4]),
+              request_hash: String(values[6]),
+              mutation_index: 0,
+              prior_revision: Number(values[7]),
+              prior_state_hash: String(values[8]),
+              next_revision: Number(values[9]),
+              next_state_hash: String(values[10]),
+              candidate_state: JSON.parse(String(values[11])) as WalletSpendStateV1,
+              candidate_value: JSON.parse(String(values[12])) as unknown,
+              continuity_receipt: null,
+              status: "prepared",
+            };
+          }
+          return { rows: [], rowCount: 1 } as never;
+        }
+        if (text.startsWith("SELECT candidate_id")) {
+          return { rows: preparedCandidate === undefined
+            ? [] : [structuredClone(preparedCandidate)],
+          rowCount: preparedCandidate === undefined ? 0 : 1 } as never;
         }
         return { rows: [], rowCount: 1 } as never;
       },
@@ -857,6 +1057,229 @@ describe("PostgreSQL wallet authority persistence", () => {
         totals: [{ cumulativeDebit: "25", counterpartyDebits: { "payee-a": "25" } }],
       },
     });
+  });
+
+  it.each(["before-continuity", "after-continuity", "after-database"] as const)(
+    "retries continuity adoption with the exact retained candidate %s uncertainty",
+    async (failurePoint) => {
+      const selected = policy("policy-adoption");
+      const state = legacyState(selected);
+      const baseContinuity = newContinuity(31);
+      const continuity = failurePoint === "before-continuity"
+        ? failOneContinuityAdvance(baseContinuity)
+        : baseContinuity;
+      const pool = new RecoveryPostgresPool({
+        writer_contract_version: 1,
+        authority_id: null,
+        continuity_epoch: null,
+        continuity_verification_key: null,
+        continuity_status: null,
+        continuity_receipt: null,
+        policy_hash: dacsWalletSpendPolicyHashV1(selected),
+        revision: state.generation,
+        state_hash: hashState(state),
+        state,
+      });
+      pool.failNextConnect = failurePoint === "after-continuity";
+      pool.failNextCommitAfterApply = failurePoint === "after-database";
+      const input = {
+        policy: selected,
+        operationId: "00000000-0000-4000-8000-000000000051",
+        continuity,
+        sourceEvidence: {
+          sourceIdentity: "authenticated-postgres-adoption:test",
+          evidenceHash: "a".repeat(64),
+        },
+        authenticateEvidence: () => true,
+      };
+
+      await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).rejects.toThrow();
+      expect(pool.candidates.size).toBe(1);
+      const candidateId = [...pool.candidates.values()][0]!.candidate_id;
+
+      await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).resolves.toBeUndefined();
+      expect([...pool.candidates.values()]).toHaveLength(1);
+      expect([...pool.candidates.values()][0]).toMatchObject({
+        candidate_id: candidateId,
+        status: "applied",
+      });
+      expect(pool.row).toMatchObject({
+        writer_contract_version: 2,
+        authority_id: continuity.authorityId,
+        continuity_epoch: continuity.epoch,
+        continuity_status: "active",
+      });
+      // A lost success response is also exactly idempotent.
+      await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).resolves.toBeUndefined();
+    },
+  );
+
+  it("fails continuity adoption closed when an advanced witness loses its candidate", async () => {
+    const selected = policy("policy-adoption-missing-candidate");
+    const state = legacyState(selected);
+    const continuity = newContinuity(32);
+    const pool = new RecoveryPostgresPool({
+      writer_contract_version: 1,
+      authority_id: null,
+      continuity_epoch: null,
+      continuity_verification_key: null,
+      continuity_status: null,
+      continuity_receipt: null,
+      policy_hash: dacsWalletSpendPolicyHashV1(selected),
+      revision: state.generation,
+      state_hash: hashState(state),
+      state,
+    });
+    pool.failNextConnect = true;
+    const input = {
+      policy: selected,
+      operationId: "00000000-0000-4000-8000-000000000052",
+      continuity,
+      sourceEvidence: {
+        sourceIdentity: "authenticated-postgres-adoption:test",
+        evidenceHash: "b".repeat(64),
+      },
+      authenticateEvidence: () => true,
+    };
+
+    await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).rejects.toThrow(
+      /outcome unknown/,
+    );
+    pool.candidates.clear();
+    await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).rejects.toThrow(
+      /continuity-conflict/,
+    );
+    expect(pool.row.authority_id).toBeNull();
+  });
+
+  it.each(["before-continuity", "after-continuity", "after-database"] as const)(
+    "retries policy migration with the exact retained candidate %s uncertainty",
+    async (failurePoint) => {
+      const previous = policy("policy-migration-before");
+      const next = { ...policy("policy-migration-after"), maximumRetainedReservations: 20 };
+      const previousHash = dacsWalletSpendPolicyHashV1(previous);
+      const initialState: WalletSpendStateV1 = {
+        stateVersion: WALLET_SPEND_STATE_VERSION,
+        policyHash: previousHash,
+        generation: 0,
+        reservations: [],
+        totals: [],
+        rollingEvents: [],
+      };
+      const baseContinuity = newContinuity(33);
+      const lineage = dacsWalletSpendLineageKeyV1(previous.wallet, previous.chainId);
+      const initialReceipt = await baseContinuity.witness.compareAndSet({
+        authorityId: baseContinuity.authorityId,
+        epoch: baseContinuity.epoch,
+        lineageKey: lineage,
+        predecessor: null,
+        next: { revision: 0, stateHash: hashState(initialState) },
+        candidateId: "00000000-0000-4000-8000-000000000053",
+        roleId: "operator:initial",
+        operationId: "00000000-0000-4000-8000-000000000054",
+        requestHash: "c".repeat(64),
+        mutationIndex: 0,
+        clientNonce: "d".repeat(64),
+      });
+      const continuity = failurePoint === "before-continuity"
+        ? failOneContinuityAdvance(baseContinuity)
+        : baseContinuity;
+      const pool = new RecoveryPostgresPool({
+        writer_contract_version: 2,
+        authority_id: continuity.authorityId,
+        continuity_epoch: continuity.epoch,
+        continuity_verification_key: continuity.verificationKey,
+        continuity_status: "active",
+        continuity_receipt: initialReceipt,
+        policy_hash: previousHash,
+        revision: 0,
+        state_hash: hashState(initialState),
+        state: initialState,
+      });
+      pool.failNextConnect = failurePoint === "after-continuity";
+      pool.failNextCommitAfterApply = failurePoint === "after-database";
+      const input = {
+        previousPolicyHash: previousHash,
+        policy: next,
+        operationId: "00000000-0000-4000-8000-000000000055",
+        continuity,
+      };
+
+      await expect(migrateDacsWalletSpendPostgresPolicyV1(pool, input)).rejects.toThrow();
+      expect(pool.candidates.size).toBe(1);
+      const candidateId = [...pool.candidates.values()][0]!.candidate_id;
+
+      await expect(migrateDacsWalletSpendPostgresPolicyV1(pool, input)).resolves.toBeUndefined();
+      expect([...pool.candidates.values()]).toHaveLength(1);
+      expect([...pool.candidates.values()][0]).toMatchObject({
+        candidate_id: candidateId,
+        status: "applied",
+      });
+      expect(pool.row).toMatchObject({
+        policy_hash: dacsWalletSpendPolicyHashV1(next),
+        revision: 1,
+        state: { policyHash: dacsWalletSpendPolicyHashV1(next), generation: 1 },
+      });
+      // A lost commit acknowledgement is distinguishable from another migration.
+      await expect(migrateDacsWalletSpendPostgresPolicyV1(pool, input)).resolves.toBeUndefined();
+    },
+  );
+
+  it("fails policy migration closed when an advanced witness loses its candidate", async () => {
+    const previous = policy("policy-migration-missing-before");
+    const next = policy("policy-migration-missing-after");
+    const previousHash = dacsWalletSpendPolicyHashV1(previous);
+    const initialState: WalletSpendStateV1 = {
+      stateVersion: WALLET_SPEND_STATE_VERSION,
+      policyHash: previousHash,
+      generation: 0,
+      reservations: [],
+      totals: [],
+      rollingEvents: [],
+    };
+    const continuity = newContinuity(34);
+    const lineage = dacsWalletSpendLineageKeyV1(previous.wallet, previous.chainId);
+    const initialReceipt = await continuity.witness.compareAndSet({
+      authorityId: continuity.authorityId,
+      epoch: continuity.epoch,
+      lineageKey: lineage,
+      predecessor: null,
+      next: { revision: 0, stateHash: hashState(initialState) },
+      candidateId: "00000000-0000-4000-8000-000000000056",
+      roleId: "operator:initial",
+      operationId: "00000000-0000-4000-8000-000000000057",
+      requestHash: "e".repeat(64),
+      mutationIndex: 0,
+      clientNonce: "f".repeat(64),
+    });
+    const pool = new RecoveryPostgresPool({
+      writer_contract_version: 2,
+      authority_id: continuity.authorityId,
+      continuity_epoch: continuity.epoch,
+      continuity_verification_key: continuity.verificationKey,
+      continuity_status: "active",
+      continuity_receipt: initialReceipt,
+      policy_hash: previousHash,
+      revision: 0,
+      state_hash: hashState(initialState),
+      state: initialState,
+    });
+    pool.failNextConnect = true;
+    const input = {
+      previousPolicyHash: previousHash,
+      policy: next,
+      operationId: "00000000-0000-4000-8000-000000000058",
+      continuity,
+    };
+
+    await expect(migrateDacsWalletSpendPostgresPolicyV1(pool, input)).rejects.toThrow(
+      /outcome unknown/,
+    );
+    pool.candidates.clear();
+    await expect(migrateDacsWalletSpendPostgresPolicyV1(pool, input)).rejects.toThrow(
+      /recovery-unavailable/,
+    );
+    expect(pool.row.policy_hash).toBe(previousHash);
   });
 
   it("reuses an immutable prepared candidate after an uncertain connection outcome", async () => {
