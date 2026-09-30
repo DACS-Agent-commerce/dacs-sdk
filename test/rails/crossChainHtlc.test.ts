@@ -14,11 +14,13 @@ import {
   type CrossChainHtlcAdapter,
   type CrossChainHtlcAuthority,
   type CrossChainHtlcIntent,
+  type CrossChainHtlcSettlement,
   type CrossChainHtlcStore,
   type HtlcAction,
   type HtlcLedgerSnapshot,
   type HtlcObservedAction,
   type HtlcPreparedAction,
+  type HtlcStoreClaim,
   type HtlcTxRef,
 } from "../../src/rails/crossChainHtlc.js";
 
@@ -132,6 +134,9 @@ interface HarnessOptions {
   revealedPreimageHex?: string;
   sourceFinalityObservedAt?: number;
   destinationIncludedAt?: number;
+  sourceClaimIncludedAt?: number;
+  sourceClaimFinalityReachedAt?: number;
+  sourceClaimFinalityObservedAt?: number;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -185,17 +190,22 @@ function harness(options: HarnessOptions = {}) {
       };
       return;
     }
-    actions[prepared.action] = {
-      state: "final",
-      txRef: prepared.txRef,
-      finalityObservedAt: prepared.action === "source-lock"
-        ? options.sourceFinalityObservedAt ?? observedAt
-        : observedAt,
-      includedAt: prepared.action === "source-lock"
-        ? observedAt
-        : prepared.action === "destination-lock"
-          ? options.destinationIncludedAt ?? observedAt
-        : undefined,
+    const finalityObservedAt = prepared.action === "source-lock"
+      ? options.sourceFinalityObservedAt ?? observedAt
+      : prepared.action === "source-claim"
+        ? options.sourceClaimFinalityObservedAt ?? observedAt
+        : observedAt;
+    const includedAt = prepared.action === "source-lock"
+      ? observedAt
+      : prepared.action === "destination-lock"
+        ? options.destinationIncludedAt ?? observedAt
+        : prepared.action === "source-claim"
+          ? options.sourceClaimIncludedAt
+          : undefined;
+    const commonFinal = {
+      state: "final" as const,
+      finalityObservedAt,
+      includedAt,
       expiresAt: prepared.action === "source-lock"
         ? options.sourceExpiry ?? 5_000
         : prepared.action === "destination-lock"
@@ -206,6 +216,17 @@ function harness(options: HarnessOptions = {}) {
         : undefined,
       authenticationHash: AUTH_HASH,
     };
+    if (prepared.action === "source-claim") {
+      if (prepared.txRef.kind !== "htlc-claim") throw new Error("invalid source-claim ref");
+      actions[prepared.action] = {
+        ...commonFinal,
+        txRef: prepared.txRef,
+        finalityReachedAt: options.sourceClaimFinalityReachedAt ?? observedAt,
+      };
+    } else {
+      if (prepared.txRef.kind === "htlc-claim") throw new Error("claim ref on non-claim action");
+      actions[prepared.action] = { ...commonFinal, txRef: prepared.txRef };
+    }
   });
   const observe = vi.fn<CrossChainHtlcAdapter["observe"]>(async (_intent, fence) => {
     await fence.assertCurrent();
@@ -237,6 +258,7 @@ function harness(options: HarnessOptions = {}) {
           state: "final",
           txRef: value.txRef,
           finalityObservedAt: observedAt,
+          ...(action === "source-claim" ? { finalityReachedAt: observedAt } : {}),
           authenticationHash: AUTH_HASH,
           ...overrides,
         };
@@ -426,7 +448,7 @@ describe("advanceCrossChainHtlc", () => {
       status: "settled",
       settlement: {
         paymentAmount: { amount: "1.25", currency: "USDC" },
-        settlementFinality: { model: "htlc-reveal" },
+        settlementFinality: { model: "htlc-reveal", sourceExpiry: 5_000 },
       },
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
@@ -1127,18 +1149,208 @@ describe("advanceCrossChainHtlc", () => {
       .toEqual(["source-lock"]);
   });
 
-  test("does not accept source-claim finality observed after the source deadline", async () => {
-    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100 });
-    const run = runner({ adapter: h.adapter });
+  test.each([
+    ["before", 1_499_999, "settled"],
+    ["after", 1_500_001, "failed"],
+  ] as const)(
+    "uses source-claim finality reached %s expiry when observation is delayed",
+    async (_timing, finalityReachedAt, expectedStatus) => {
+      const h = harness({
+        sourceExpiry: 1_500,
+        destinationExpiry: 1_100,
+        sourceClaimIncludedAt: 1_400_000,
+        sourceClaimFinalityReachedAt: finalityReachedAt,
+        sourceClaimFinalityObservedAt: 1_600_000,
+      });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      const broadcastRetained = h.adapter.broadcastRetained;
+      h.adapter.broadcastRetained = vi.fn(async (...args) => {
+        await broadcastRetained(...args);
+        if (args[0].action === "source-claim") {
+          h.setObservedAt(1_600_000);
+          run.setClock(1_600_000);
+        }
+      });
+      const result = await advanceCrossChainHtlc({
+        ...run.nextOwner(),
+        leaseDurationMs: 1_000_000,
+      });
+      if (expectedStatus === "settled") {
+        expect(result).toMatchObject({
+          status: "settled",
+          settlement: {
+            settlementFinality: {
+              sourceExpiry: 1_500,
+              finalityReachedAt: 1_499_999,
+              finalityObservedAt: 1_600_000,
+            },
+          },
+        });
+      } else {
+        expect(result).toEqual({
+          status: "failed",
+          errorClass: "settlement-atomicity",
+          reason: "dest-revealed-source-unclaimed-expired",
+        });
+      }
+    },
+  );
+
+  test.each([
+    ["before", 1_499_999, "settled"],
+    ["after", 1_500_001, "failed"],
+  ] as const)(
+    "reconciles a retained source claim that reached finality %s expiry",
+    async (_timing, finalityReachedAt, expectedStatus) => {
+      const h = harness({
+        sourceExpiry: 1_500,
+        destinationExpiry: 1_100,
+        mode: { "source-claim": "pending" },
+      });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      h.setObservedAt(1_600_000);
+      await h.markFinal("source-claim", {
+        includedAt: 1_400_000,
+        finalityReachedAt,
+        finalityObservedAt: 1_600_000,
+      });
+      run.setClock(1_600_000);
+      const result = await advanceCrossChainHtlc(run.nextOwner());
+      if (expectedStatus === "settled") {
+        expect(result).toMatchObject({
+          status: "settled",
+          settlement: {
+            settlementFinality: {
+              sourceExpiry: 1_500,
+              finalityReachedAt: 1_499_999,
+              finalityObservedAt: 1_600_000,
+            },
+          },
+        });
+      } else {
+        expect(result).toEqual({
+          status: "failed",
+          errorClass: "settlement-atomicity",
+          reason: "dest-revealed-source-unclaimed-expired",
+        });
+      }
+    },
+  );
+
+  test.each([
+    ["missing", { finalityReachedAt: undefined }],
+    ["non-integer", { finalityReachedAt: Number.NaN }],
+    ["before inclusion", { includedAt: 1_450_000, finalityReachedAt: 1_400_000 }],
+    ["after observation", { finalityReachedAt: 1_600_001 }],
+  ])("fails closed on %s retained source-claim finality timing", async (_name, timing) => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const recordSettlement = vi.fn(base.recordSettlement);
+    const store: CrossChainHtlcStore = { ...base, recordSettlement };
+    const h = harness({
+      sourceExpiry: 1_500,
+      destinationExpiry: 1_100,
+      mode: { "source-claim": "pending" },
+    });
+    const run = runner({ adapter: h.adapter, store });
     await advanceCrossChainHtlc(run.shared);
     await advanceCrossChainHtlc(run.nextOwner());
     await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
     h.setObservedAt(1_600_000);
-    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
-      status: "failed",
-      errorClass: "settlement-atomicity",
-      reason: "dest-revealed-source-unclaimed-expired",
+    await h.markFinal("source-claim", {
+      includedAt: 1_400_000,
+      finalityObservedAt: 1_600_000,
+      ...timing,
     });
+    run.setClock(1_600_000);
+    const prepareCalls = h.prepareAction.mock.calls.length;
+    const broadcastCalls = h.broadcastRetained.mock.calls.length;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(recordSettlement).not.toHaveBeenCalled();
+    expect(h.prepareAction).toHaveBeenCalledTimes(prepareCalls);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcastCalls);
+  });
+
+  test("fails closed on a retained settlement without finality-reached evidence", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const h = harness();
+    const run = runner({ adapter: h.adapter, store: base });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const prepareCalls = h.prepareAction.mock.calls.length;
+    const broadcastCalls = h.broadcastRetained.mock.calls.length;
+    const legacyStore: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "settled") return claimed;
+        const { finalityReachedAt: _missing, ...legacyFinality } =
+          claimed.settlement.settlementFinality;
+        return {
+          ...claimed,
+          settlement: {
+            ...claimed.settlement,
+            settlementFinality: legacyFinality,
+          },
+        } as HtlcStoreClaim;
+      },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: legacyStore }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-stored-settlement-mismatch",
+      });
+    expect(h.prepareAction).toHaveBeenCalledTimes(prepareCalls);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcastCalls);
+  });
+
+  test("fails closed when retained settlement finality reached after its bound expiry", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const h = harness();
+    const run = runner({ adapter: h.adapter, store: base });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const prepareCalls = h.prepareAction.mock.calls.length;
+    const broadcastCalls = h.broadcastRetained.mock.calls.length;
+    const corruptStore: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "settled") return claimed;
+        return {
+          ...claimed,
+          settlement: {
+            ...claimed.settlement,
+            settlementFinality: {
+              ...claimed.settlement.settlementFinality,
+              finalityReachedAt: 5_000_001,
+              finalityObservedAt: 5_000_001,
+            },
+          },
+        };
+      },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: corruptStore }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-stored-settlement-mismatch",
+      });
+    expect(h.prepareAction).toHaveBeenCalledTimes(prepareCalls);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcastCalls);
   });
 
   test("does not classify mismatched refund evidence as refunded", async () => {
@@ -1150,6 +1362,7 @@ describe("advanceCrossChainHtlc", () => {
     await advanceCrossChainHtlc({ ...run.shared, owner: "refund-destination" });
     const refund = h.actions["destination-refund"];
     if (!refund || refund.state !== "final") throw new Error("expected final refund fixture");
+    if (refund.txRef.kind !== "htlc-refund") throw new Error("expected refund reference");
     h.actions["destination-refund"] = {
       ...refund,
       txRef: { ...refund.txRef, contractAddress: "substituted-contract" },
@@ -1238,6 +1451,55 @@ describe("source-finality checkpoint store contract", () => {
       ...fence,
       prepared: preparedFor(intent, "destination-lock", "", checkpointHash),
     })).resolves.toEqual({ status: "recorded" });
+  });
+});
+
+describe("source-claim finality settlement store contract", () => {
+  test("rejects post-expiry and wrong-expiry writes but preserves exact idempotent timing", async () => {
+    const fixture = await sourceClaimStoreFixture({ sourceExpiry: 5_000 });
+    const fence = {
+      settlementKey: fixture.intent.settlementKey,
+      bindingHash: fixture.intent.bindingHash,
+      owner: fixture.lease.owner,
+      generation: fixture.lease.generation,
+    };
+    const settlement = (
+      finalityReachedAt: number,
+      sourceExpiry = 5_000,
+    ): Readonly<CrossChainHtlcSettlement> => ({
+      txRefs: [
+        refFor("source-lock"),
+        refFor("destination-lock"),
+        refFor("destination-claim"),
+        refFor("source-claim"),
+      ],
+      paymentAmount: { amount: fixture.intent.amount, currency: fixture.intent.currency },
+      settlementFinality: {
+        model: "htlc-reveal",
+        sourceExpiry,
+        finalityReachedAt,
+        finalityObservedAt: 5_100_000,
+      },
+      authenticationHash: AUTH_HASH,
+    });
+
+    await expect(fixture.store.recordSettlement({
+      ...fence,
+      settlement: settlement(5_000_001),
+    })).resolves.toEqual({ status: "corrupt", reason: "htlc-settlement-invalid" });
+    await expect(fixture.store.recordSettlement({
+      ...fence,
+      settlement: settlement(4_999_999, 5_001),
+    })).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-settlement-source-expiry-mismatch",
+    });
+
+    const valid = settlement(4_999_999);
+    await expect(fixture.store.recordSettlement({ ...fence, settlement: valid }))
+      .resolves.toEqual({ status: "recorded" });
+    await expect(fixture.store.recordSettlement({ ...fence, settlement: valid }))
+      .resolves.toEqual({ status: "existing" });
   });
 });
 

@@ -163,14 +163,13 @@ export type HtlcObservedAction =
       reason?: string;
       authenticationHash: string;
     }
-  | {
+  | ({
       /**
        * Authenticated and irreversible under the intent's selected chain
        * finality policy. The adapter owns confirmation-depth and reorg checks;
        * it must return `pending` while a reversal remains possible.
        */
       state: "final";
-      txRef: Readonly<HtlcTxRef>;
       /** Unix milliseconds at which the named finality condition was observed. */
       finalityObservedAt: number;
       /** Unix milliseconds at which the transaction was included, when applicable. */
@@ -179,7 +178,20 @@ export type HtlcObservedAction =
       expiresAt?: number;
       revealedPreimageHex?: string;
       authenticationHash: string;
-    };
+    } & (
+      | {
+          txRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+          /**
+           * Authenticated chain-native Unix milliseconds at which source-claim
+           * finality was reached, distinct from the later observer timestamp.
+           */
+          finalityReachedAt: number;
+        }
+      | {
+          txRef: Readonly<Exclude<HtlcTxRef, { kind: "htlc-claim" }>>;
+          finalityReachedAt?: number;
+        }
+    ));
 
 export type HtlcFailedObservation = Omit<
   Extract<HtlcObservedAction, { state: "pending" | "failed" }>,
@@ -262,6 +274,9 @@ export interface CrossChainHtlcSettlement {
   paymentAmount: Readonly<{ amount: string; currency: string }>;
   settlementFinality: Readonly<{
     model: "htlc-reveal";
+    /** Exact source-lock expiry authority as Unix seconds. */
+    sourceExpiry: number;
+    finalityReachedAt: number;
     finalityObservedAt: number;
   }>;
   authenticationHash: string;
@@ -792,6 +807,43 @@ function captureSourceClaimAttemptHistory(
   return Object.freeze(captured);
 }
 
+type FinalHtlcObservation = Extract<HtlcObservedAction, { state: "final" }>;
+type FinalSourceClaimObservation = FinalHtlcObservation & { finalityReachedAt: number };
+
+function validateFinalityTiming(
+  observed: Readonly<FinalHtlcObservation>,
+  action: HtlcAction,
+): void {
+  const finalityObservedAt = requireUInt(
+    observed.finalityObservedAt,
+    `${action} finalityObservedAt`,
+  );
+  const includedAt = observed.includedAt === undefined
+    ? undefined
+    : requireUInt(observed.includedAt, `${action} includedAt`);
+  const finalityReachedAt = observed.finalityReachedAt === undefined
+    ? undefined
+    : requireUInt(observed.finalityReachedAt, `${action} finalityReachedAt`);
+  if (action === "source-claim" && finalityReachedAt === undefined) {
+    throw new DacsError("pay-cross-chain-htlc: source-claim finalityReachedAt is required");
+  }
+  if (finalityReachedAt !== undefined &&
+      (finalityReachedAt > finalityObservedAt ||
+        (includedAt !== undefined && finalityReachedAt < includedAt))) {
+    throw new DacsError(`pay-cross-chain-htlc: ${action} finality timing is invalid`);
+  }
+  if (action === "source-lock" || action === "destination-lock") {
+    const lockIncludedAt = requireUInt(observed.includedAt, `${action} includedAt`);
+    const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
+    if (secondsToMilliseconds(expiresAt, `${action} expiresAt`) <= lockIncludedAt) {
+      throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
+    }
+    if (finalityObservedAt < lockIncludedAt) {
+      throw new DacsError(`pay-cross-chain-htlc: ${action} finality precedes inclusion`);
+    }
+  }
+}
+
 function final(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   action: HtlcAction,
@@ -805,6 +857,16 @@ function final(
     throw new DacsError(`pay-cross-chain-htlc: invalid authenticated ${action} finality`);
   }
   return observed;
+}
+
+function finalSourceClaim(
+  snapshot: Readonly<HtlcLedgerSnapshot>,
+  prepared: Readonly<HtlcPreparedAction> | undefined,
+): Readonly<FinalSourceClaimObservation> | undefined {
+  const observed = final(snapshot, "source-claim", prepared);
+  if (!observed) return undefined;
+  validateFinalityTiming(observed, "source-claim");
+  return observed as Readonly<FinalSourceClaimObservation>;
 }
 
 function collectRefs(
@@ -920,17 +982,7 @@ function validateSnapshot(
     if (observed.state !== "final") {
       throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
     }
-    requireUInt(observed.finalityObservedAt, `${action} finalityObservedAt`);
-    if (action === "source-lock" || action === "destination-lock") {
-      const includedAt = requireUInt(observed.includedAt, `${action} includedAt`);
-      const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
-      if (secondsToMilliseconds(expiresAt, `${action} expiresAt`) <= includedAt) {
-        throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
-      }
-      if (observed.finalityObservedAt < includedAt) {
-        throw new DacsError(`pay-cross-chain-htlc: ${action} finality precedes inclusion`);
-      }
-    }
+    validateFinalityTiming(observed, action);
     if (action === "destination-claim" &&
         typeof observed.revealedPreimageHex !== "string") {
       throw new DacsError("pay-cross-chain-htlc: final destination claim omits the preimage");
@@ -958,8 +1010,18 @@ function storedSettlementMatchesIntent(
     return refsMatch && settlement.paymentAmount.amount === intent.amount &&
       settlement.paymentAmount.currency === intent.currency &&
       settlement.settlementFinality.model === "htlc-reveal" &&
+      Number.isSafeInteger(settlement.settlementFinality.sourceExpiry) &&
+      settlement.settlementFinality.sourceExpiry > 0 &&
+      Number.isSafeInteger(settlement.settlementFinality.finalityReachedAt) &&
+      settlement.settlementFinality.finalityReachedAt >= 0 &&
       Number.isSafeInteger(settlement.settlementFinality.finalityObservedAt) &&
       settlement.settlementFinality.finalityObservedAt >= 0 &&
+      settlement.settlementFinality.finalityReachedAt <=
+        settlement.settlementFinality.finalityObservedAt &&
+      settlement.settlementFinality.finalityReachedAt <= secondsToMilliseconds(
+        settlement.settlementFinality.sourceExpiry,
+        "stored settlement source expiry",
+      ) &&
       HASH_RE.test(settlement.authenticationHash);
   } catch {
     return false;
@@ -1352,12 +1414,12 @@ export async function advanceCrossChainHtlc(
   let sourceLock: Extract<HtlcObservedAction, { state: "final" }> | undefined;
   let destinationLock: Extract<HtlcObservedAction, { state: "final" }> | undefined;
   let destinationClaim: Extract<HtlcObservedAction, { state: "final" }> | undefined;
-  let sourceClaim: Extract<HtlcObservedAction, { state: "final" }> | undefined;
+  let sourceClaim: Readonly<FinalSourceClaimObservation> | undefined;
   try {
     sourceLock = final(snapshot, "source-lock", prepared.get("source-lock"));
     destinationLock = final(snapshot, "destination-lock", prepared.get("destination-lock"));
     destinationClaim = final(snapshot, "destination-claim", prepared.get("destination-claim"));
-    sourceClaim = final(snapshot, "source-claim", prepared.get("source-claim"));
+    sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"));
   } catch (error) {
     return { status: "failed", errorClass: "permanent", reason: String(error) };
   }
@@ -1423,7 +1485,7 @@ export async function advanceCrossChainHtlc(
     } catch {
       return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-invalid" };
     }
-    if (sourceClaim.finalityObservedAt >
+    if (sourceClaim.finalityReachedAt >
         secondsToMilliseconds(sourceLock.expiresAt, "source claim expiry")) {
       return {
         status: "failed",
@@ -1464,6 +1526,8 @@ export async function advanceCrossChainHtlc(
       paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
       settlementFinality: Object.freeze({
         model: "htlc-reveal" as const,
+        sourceExpiry: sourceLock.expiresAt,
+        finalityReachedAt: sourceClaim.finalityReachedAt,
         finalityObservedAt: sourceClaim.finalityObservedAt,
       }),
       authenticationHash: snapshot.authenticationHash,
@@ -1557,12 +1621,12 @@ export async function advanceCrossChainHtlc(
       }
       snapshot = advanced;
       try {
-        sourceClaim = final(snapshot, "source-claim", prepared.get("source-claim"));
+        sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"));
       } catch (error) {
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
       if (sourceClaim && sourceLock && destinationLock && destinationClaim) {
-        if (sourceClaim.finalityObservedAt >
+        if (sourceClaim.finalityReachedAt >
             secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
           return {
             status: "failed",
@@ -1573,7 +1637,12 @@ export async function advanceCrossChainHtlc(
         const settlement = Object.freeze({
           txRefs: Object.freeze([sourceLock.txRef, destinationLock.txRef, destinationClaim.txRef, sourceClaim.txRef]),
           paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
-          settlementFinality: Object.freeze({ model: "htlc-reveal" as const, finalityObservedAt: sourceClaim.finalityObservedAt }),
+          settlementFinality: Object.freeze({
+            model: "htlc-reveal" as const,
+            sourceExpiry: checkpoint.sourceExpiry,
+            finalityReachedAt: sourceClaim.finalityReachedAt,
+            finalityObservedAt: sourceClaim.finalityObservedAt,
+          }),
           authenticationHash: snapshot.authenticationHash,
         });
         let stored: HtlcStoreWrite;
@@ -1989,6 +2058,13 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
       if (!record.revealCheckpoint) {
         return { status: "conflict", reason: "htlc-settlement-without-reveal-checkpoint" };
+      }
+      if (input.settlement.settlementFinality.sourceExpiry !==
+          record.revealCheckpoint.sourceExpiry) {
+        return { status: "conflict", reason: "htlc-settlement-source-expiry-mismatch" };
+      }
+      if (!storedSettlementMatchesIntent(input.settlement, record.intent)) {
+        return { status: "corrupt", reason: "htlc-settlement-invalid" };
       }
       if (record.settlement) {
         return canonicalize(record.settlement) === canonicalize(input.settlement)

@@ -130,6 +130,34 @@ must never report `final` for a state it could later reverse. A reorg-capable
 adapter therefore needs to keep observing through its required finality horizon
 before allowing the core to checkpoint a reveal or report settlement.
 
+A final `source-claim` observation must also provide `finalityReachedAt`: an
+authenticated, chain-native Unix-millisecond timestamp for when the selected
+source-chain finality condition was actually reached. This is distinct from
+`finalityObservedAt`, the later wall-clock time at which the adapter observed
+that condition. When `includedAt` is available, adapters must report
+`includedAt <= finalityReachedAt <= finalityObservedAt`; without inclusion
+evidence, `finalityReachedAt <= finalityObservedAt` still applies. The core
+compares `finalityReachedAt`, not observation latency, with `expiry_source`, so
+a claim that reached finality in-window can settle even when observed later. A
+claim reaching finality after the expiry is a terminal settlement-atomicity
+failure. Missing, malformed, or impossibly ordered timing proof fails closed.
+Successful `CrossChainHtlcSettlement.settlementFinality` records both timestamps:
+`finalityReachedAt` preserves the expiry decision and `finalityObservedAt`
+remains the audit/evidence observation time. It also binds the exact
+`sourceExpiry` used for that decision.
+
+This is a public adapter contract addition. Existing adapters, including those
+that durably cache authenticated observations, must retain and return both
+timestamps for final source claims; they must derive `finalityReachedAt` from
+the chain's selected confirmation/commitment proof and must not substitute the
+poll time. `CrossChainHtlcStore` implementations do not synthesize or backfill
+this adapter evidence; their settlement schema must persist both finality
+timestamps plus the exact source expiry. `recordSettlement` must compare that
+expiry with the immutable reveal checkpoint and reject a claim whose
+`finalityReachedAt` is after it. Settled replay must revalidate the same bound;
+legacy settlement rows without it fail closed rather than being upgraded from
+observation time.
+
 For a final destination claim, adapters should emit `revealedPreimageHex` in
 canonical lowercase, unprefixed form. The core accepts that producer form plus
 equivalent uppercase hexadecimal and an optional `0x`/`0X` prefix for
