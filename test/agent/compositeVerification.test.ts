@@ -1030,6 +1030,158 @@ describe("strict DACS-2 composite verification closure", () => {
     });
   });
 
+  test("does not project across independently bound claim identities", async () => {
+    const f = await fixture();
+    const aliceRequirement = {
+      ...requirement.required[0]!,
+      parameters: { jurisdiction: "GB" },
+    };
+    const bobRequirement = {
+      ...requirement.required[0]!,
+      parameters: { status: "active" },
+    };
+    const dualRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [aliceRequirement, bobRequirement],
+    };
+    const bobResult = await withResult(f.result, {
+      identifier: "bob.example",
+      decision: "fail",
+      reason: "authority rejected claim",
+      data: { active: false },
+    });
+    const bobRef: VerifyResultRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: "stor:verify-result-2",
+      },
+      contentHash: contentHash(
+        bobResult as unknown as Record<string, unknown>,
+      ),
+      recipeVersion: 1,
+    };
+    f.resolved.set(bobRef.anchor.locator, {
+      encoding: "canonical-json",
+      value: bobResult as unknown as Record<string, unknown>,
+    });
+    const passRecord = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(dualRequirement)),
+      dealSpecific: [f.ref, bobRef],
+      overallDecision: "pass",
+    });
+    const expected: CompositeVerificationExpectations = {
+      ...f.expected,
+      requirement: dualRequirement,
+      dealSpecific: [
+        { ...f.expectedResult, requirement: aliceRequirement },
+        {
+          ...f.expectedResult,
+          ref: bobRef,
+          identifier: "bob.example",
+          requirement: bobRequirement,
+        },
+      ],
+    };
+    const deps = {
+      ...f.deps,
+      verifyRequirementParameters: ({ expected: member }: {
+        expected: Readonly<ExpectedVerifyResult>;
+      }) => member.identifier === "alice.example",
+    };
+
+    await expect(
+      verifyCompositeVerificationRecord(passRecord, expected, deps),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+
+    const failRecord = await withRecord(passRecord, {
+      overallDecision: "fail",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(failRecord, expected, deps),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+
+    const crossClassificationPass = await withRecord(passRecord, {
+      freshness: [f.ref],
+      dealSpecific: [bobRef],
+      overallDecision: "pass",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        crossClassificationPass,
+        {
+          ...expected,
+          freshness: [expected.dealSpecific[0]!],
+          dealSpecific: [expected.dealSpecific[1]!],
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+  });
+
+  test("rejects ambiguous duplicate requirement expectation owners", async () => {
+    const f = await fixture();
+    const duplicateRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        requirement.required[0]!,
+        structuredClone(requirement.required[0]!),
+      ],
+    };
+    const bobResult = await withResult(f.result, {
+      identifier: "bob.example",
+      decision: "fail",
+    });
+    const bobRef: VerifyResultRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: "stor:verify-result-duplicate-owner",
+      },
+      contentHash: contentHash(
+        bobResult as unknown as Record<string, unknown>,
+      ),
+      recipeVersion: 1,
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(duplicateRequirement)),
+      dealSpecific: [f.ref, bobRef],
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: duplicateRequirement,
+          dealSpecific: [
+            {
+              ...f.expectedResult,
+              requirement: duplicateRequirement.required[0]!,
+            },
+            {
+              ...f.expectedResult,
+              ref: bobRef,
+              identifier: "bob.example",
+              requirement: duplicateRequirement.required[1]!,
+            },
+          ],
+        },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "expectation-shape",
+    });
+  });
+
   test("does not project one result across different authority URL inputs", async () => {
     const f = await fixture();
     const first = {

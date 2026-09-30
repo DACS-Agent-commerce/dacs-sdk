@@ -1395,14 +1395,18 @@ function compatibleVerifiedExpectations(
   requirement: Readonly<CompositeBundleRequirement>,
   expected: Readonly<ExpectedVerifyResult>,
   recipe: Readonly<RecipeDescriptor & { signature: ComponentSignature }>,
+  explicitlyBoundRequirements: ReadonlySet<string>,
 ): ExpectedVerifyResult[] {
-  const exactRequirement = (member: Readonly<CompositeClaimRequirement>): boolean => {
+  const canonicalRequirement = (
+    member: Readonly<CompositeClaimRequirement>,
+  ): string | null => {
     try {
-      return canonicalize(member) === canonicalize(expected.requirement);
+      return canonicalize(member);
     } catch {
-      return false;
+      return null;
     }
   };
+  const expectedRequirement = canonicalRequirement(expected.requirement);
   const selectedMethods = [recipe.defaultMethod, ...(recipe.alternatives ?? [])]
     .filter((method) => method.kind === expected.method);
   const selectedMethod: VerificationMethod | undefined = selectedMethods.length === 1
@@ -1460,16 +1464,22 @@ function compatibleVerifiedExpectations(
   return [
     ...requirement.required,
     ...(requirement.oneOf ?? []).flat(),
-  ].filter((member) =>
-    member.verificationRequired === true &&
-    member.scheme === expected.scheme &&
-    (member.recipeVersion === undefined ||
-      member.recipeVersion === expected.ref.recipeVersion) &&
-    (member.parameters?.verificationMethod === undefined ||
-      member.parameters.verificationMethod === expected.method) &&
-    (exactRequirement(member) ||
-      (committedKey !== null && compatibilityKey(member) === committedKey))
-  ).map((member) => ({
+  ].filter((member) => {
+    const memberRequirement = canonicalRequirement(member);
+    const isExactRequirement = memberRequirement !== null &&
+      memberRequirement === expectedRequirement;
+    return member.verificationRequired === true &&
+      member.scheme === expected.scheme &&
+      (member.recipeVersion === undefined ||
+        member.recipeVersion === expected.ref.recipeVersion) &&
+      (member.parameters?.verificationMethod === undefined ||
+        member.parameters.verificationMethod === expected.method) &&
+      (isExactRequirement ||
+        (memberRequirement !== null &&
+          !explicitlyBoundRequirements.has(memberRequirement) &&
+          committedKey !== null &&
+          compatibilityKey(member) === committedKey));
+  }).map((member) => ({
     ref: expected.ref,
     scheme: expected.scheme,
     identifier: expected.identifier,
@@ -1618,6 +1628,25 @@ export async function verifyCompositeVerificationRecord<TKey>(
   } catch {
     return invalid("record-shape", "VerifyResultRef is not canonicalizable");
   }
+  let explicitlyBoundRequirements: Set<string>;
+  try {
+    const requirementBindings = [
+      ...expectedSnapshot.freshness,
+      ...expectedSnapshot.dealSpecific,
+    ].map((entry) => canonicalize(entry.requirement));
+    explicitlyBoundRequirements = new Set(requirementBindings);
+    if (explicitlyBoundRequirements.size !== requirementBindings.length) {
+      return invalid(
+        "expectation-shape",
+        "multiple VerifyResult expectations bind the same requirement",
+      );
+    }
+  } catch {
+    return invalid(
+      "expectation-shape",
+      "expected ClaimRequirement is not canonicalizable",
+    );
+  }
 
   const recordSignature = await verifyComponentSignature(
     record as unknown as Record<string, unknown>,
@@ -1712,6 +1741,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
         expectedSnapshot.requirement,
         expected,
         resolution.recipe,
+        explicitlyBoundRequirements,
       );
       for (const memberExpected of memberExpectations) {
         mixedEntries.push({
@@ -1733,6 +1763,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
       expectedSnapshot.requirement,
       expected,
       resolution.recipe,
+      explicitlyBoundRequirements,
     );
     freshness.push(resolution.result);
     freshnessRecipes.push(resolution.recipe);
@@ -1763,6 +1794,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
         expectedSnapshot.requirement,
         expected,
         resolution.recipe,
+        explicitlyBoundRequirements,
       );
       for (const memberExpected of memberExpectations) {
         mixedEntries.push({
@@ -1784,6 +1816,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
       expectedSnapshot.requirement,
       expected,
       resolution.recipe,
+      explicitlyBoundRequirements,
     );
     dealSpecific.push(resolution.result);
     dealSpecificRecipes.push(resolution.recipe);
