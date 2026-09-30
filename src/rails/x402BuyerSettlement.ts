@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { DacsError } from "../errors.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
@@ -412,7 +413,6 @@ function snapshotJson(
   ancestors = new Set<object>(),
   depth = 0,
 ): X402BuyerJson {
-  if (depth > 64) throw new DacsError(`${label} exceeds the supported JSON depth`);
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     // This snapshot is also the retained x402/EIP-712 wire payload. Preserve
     // its exact Unicode spelling; canonicalize() applies CF-1 only when a DACS
@@ -428,6 +428,9 @@ function snapshotJson(
   }
   if (typeof value !== "object" || nodeTypes.isProxy(value)) {
     throw new DacsError(`${label} must contain only non-proxy JSON data`);
+  }
+  if (depth >= MAX_NESTING_DEPTH) {
+    throw new DacsError(`${label} exceeds the supported JSON depth`);
   }
   if (ancestors.has(value)) throw new DacsError(`${label} must be acyclic`);
   ancestors.add(value);
@@ -665,9 +668,11 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
   };
 
   const scanValue = (depth: number): boolean => {
-    if (depth > 64) throw new DacsError("x402 buyer JSON exceeds the supported depth");
     skipWhitespace();
     const character = source[offset];
+    if ((character === "{" || character === "[") && depth >= MAX_NESTING_DEPTH) {
+      throw new DacsError("x402 buyer JSON exceeds the supported depth");
+    }
     if (character === "{") {
       offset += 1;
       skipWhitespace();

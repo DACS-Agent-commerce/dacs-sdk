@@ -134,6 +134,14 @@ function receiptResponse(overrides: Record<string, unknown> = {}): Record<string
 const encode = (value: unknown): string =>
   Buffer.from(JSON.stringify(value), "utf8").toString("base64");
 
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
+}
+
 function disclosure(overrides: Partial<X402BuyerSettlementDisclosure> = {}) {
   return {
     protocolVersion: "2" as const,
@@ -399,6 +407,26 @@ describe("durable buyer x402 intent", () => {
       },
     })).toThrow(/JSON/);
   });
+
+  test.each(["object", "array"] as const)(
+    "captures a depth-128 x402 intent with signed %s data and refuses depth 129",
+    (kind) => {
+      const atDepth = (depth: number): X402BuyerSettlementIntentDraft => {
+        const draft = intentDraft();
+        const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+        // The public canonical value wraps this chain in the intent and signed
+        // payload records, so subtract both containers from the target depth.
+        payload.depthProbe = nestedContainer(depth - 2, kind);
+        draft.signedPaymentPayload =
+          payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+        draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+        return draft;
+      };
+
+      expect(() => createX402BuyerSettlementIntent(atDepth(128))).not.toThrow();
+      expect(() => createX402BuyerSettlementIntent(atDepth(129))).toThrow(/depth|JSON/);
+    },
+  );
 });
 
 describe("advanceX402BuyerSettlement", () => {

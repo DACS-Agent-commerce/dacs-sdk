@@ -5,9 +5,10 @@ existing durable fixed-price x402 operations. It does not own wallets, host an
 HTTP service, invent DACS artifacts, or replace the authoritative session and
 write journals used by those operations.
 
-The supported artifact/conformance revision is
-`662be1d4899a2cadf327fe2d5523e93a80334e5f`, the immutable revision pinned by
-`scripts/sync-vectors.mjs`. The implementation was also checked against DACS
+The pinned conformance-oracle and profile-binding revision is
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, the immutable revision pinned by
+`scripts/sync-vectors.mjs`. See the [adoption scope and remaining runtime
+boundary](presence-conformance-adoption.md). The implementation was also checked against DACS
 Standard `next` at `81ded2b49851d8fa17399e3fdade9e36e33a4ff7` on 15 August
 2026. A later Standard revision is not accepted merely because a peer supplies
 its hash: supporting it requires an explicit SDK update and conformance run.
