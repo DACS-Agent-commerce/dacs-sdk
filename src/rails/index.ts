@@ -154,6 +154,7 @@ export {
   type LiquidityTankAdapter,
   type LiquidityTankLease,
   type LiquidityTankSettlement,
+  type LiquidityTankRecoveryCheckpoint,
   type LiquidityTankStoreClaim,
   type LiquidityTankStoreWrite,
   type LiquidityTankStore,
