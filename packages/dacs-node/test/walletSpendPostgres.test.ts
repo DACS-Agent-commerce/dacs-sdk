@@ -855,8 +855,18 @@ describe("PostgreSQL wallet authority persistence", () => {
       operationId,
     })).resolves.toEqual({ requestHash, request });
 
+    const authorityStore = createInMemoryWalletSpendStateStore();
+    const authorityScope = sha256Hex(`dacs-wallet-spend-scope:v1:${canonicalize({
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      policyId: selected.policyId,
+    })}`);
+    await authorityStore.transact(authorityScope, () => ({
+      state: candidateState,
+      value: undefined,
+    }));
     const authority = createWalletSpendAuthorityV1(selected, {
-      store: createInMemoryWalletSpendStateStore(),
+      store: authorityStore,
       readBalance: async () => "1000",
       authenticateRecovery: async () => true,
       owner: "wallet-service",
