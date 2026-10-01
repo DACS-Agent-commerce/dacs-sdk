@@ -25,6 +25,9 @@ import {
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import {
+  createDacsFixedPricePayDemBuyerReconciliationV1,
+} from "../src/fixedPricePayDemBuyerPayment.js";
+import {
   createDacsPayDemBuyerPaymentTrackV1,
   createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
   type DacsPayDemBuyerPaymentAuthorityV1,
@@ -470,6 +473,122 @@ describe("native DEM buyer payment track", () => {
       .toMatchObject({ state: "final", outcome: "success" });
   });
 
+  it("holds wallet budget when an older actor checkpoint is restored after transfer", async () => {
+    const directory = root();
+    const databasePath = join(directory, "buyer.sqlite");
+    const first = await open(databasePath);
+    putDacsLiveOrderInputV1({ database: first, order: ORDER, application: {} });
+    let actorDatabase = first;
+    const recoveryDatabase = {
+      loadEffectInput(...args: Parameters<DacsNodeSqliteDatabase["loadEffectInput"]>) {
+        return actorDatabase.loadEffectInput(...args);
+      },
+      loadEffectCheckpoint(
+        ...args: Parameters<DacsNodeSqliteDatabase["loadEffectCheckpoint"]>
+      ) {
+        return actorDatabase.loadEffectCheckpoint(...args);
+      },
+    } as unknown as DacsNodeSqliteDatabase;
+    const observeDemosTransfer = vi.fn(async () => ({
+      status: "included" as const,
+      txHash: TX_HASH,
+      payer: PAYER,
+      payee: PAYEE,
+      amountOs: AUTHORITY.amountOs,
+      blockNumber: 44,
+      includedAt: 1_780_000_000_000,
+    }));
+    const authenticateRecovery =
+      createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+        database: recoveryDatabase,
+        observeDemosTransfer,
+      });
+    const walletNow = { value: 1_000 };
+    const walletSpendAuthority = recoveryWalletAuthority(authenticateRecovery, walletNow);
+    let transfers = 0;
+    const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database: first,
+      workerId: "buyer-before-actor-restore",
+      rail: {
+        address: PAYER,
+        async settle(input) {
+          await input.journalPreparedTransfer!({
+            txHash: TX_HASH,
+            nonce: 11,
+            payer: PAYER,
+            payee: PAYEE,
+            amountOs: AUTHORITY.amountOs,
+            network: "demos",
+            maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+            confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+            recovery: input.recovery!,
+          });
+          await input.assertCurrentBeforeBroadcast!();
+          transfers += 1;
+          throw new Error("transfer completed but response was lost");
+        },
+      },
+      resolveAuthority: () => AUTHORITY,
+      reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(
+        observeDemosTransfer,
+      ),
+      publishNotice: vi.fn(),
+      effectLeaseDurationMs: 50,
+      retryDelayMs: 1,
+    });
+    const initial = createFixedPricePayDemBuyerCoordinator({
+      store: first.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-before-actor-restore",
+      operations: { agreement: success, payment: firstPayment },
+    });
+    await initial.startOrder(ORDER);
+    await initial.runPending({ limit: 2 });
+    expect(transfers).toBe(1);
+    expect((await initial.getOrderStatus(JOB_ID))?.tracks.payment?.state)
+      .toBe("indeterminate");
+    Object.defineProperty(first, "loadEffectCheckpoint", {
+      configurable: true,
+      value: () => undefined,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    actorDatabase = first;
+    walletNow.value = 1_101;
+    const settle = vi.fn(async () => {
+      throw new Error("restored actor must not rebroadcast");
+    });
+    const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database: first,
+      workerId: "buyer-after-actor-restore",
+      rail: { address: PAYER, settle },
+      resolveAuthority: () => AUTHORITY,
+      reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(
+        observeDemosTransfer,
+      ),
+      publishNotice: vi.fn(),
+      effectLeaseDurationMs: 50,
+      retryDelayMs: 1,
+    });
+    const resumed = createFixedPricePayDemBuyerCoordinator({
+      store: first.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-after-actor-restore",
+      operations: { payment: resumedPayment },
+    });
+    await resumed.runPending({ limit: 1 });
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(observeDemosTransfer).not.toHaveBeenCalled();
+    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "operator-action",
+    });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ reservedWorstCaseDebit: AUTHORITY.maxTotalDebitOs }],
+    });
+  });
+
   it("authenticates the complete DEM service and confirmed fee debit", async () => {
     const payment = recoveryPayment();
     const reservation = recoveryReservation(payment);
@@ -611,28 +730,51 @@ describe("native DEM buyer payment track", () => {
     )).toThrow(/options are invalid/);
   });
 
-  it("releases only the exact no-checkpoint DEM absence proof", async () => {
+  it("retains wallet budget after an actor restore omits the prepared checkpoint", async () => {
     const payment = recoveryPayment();
     const reservation = recoveryReservation(payment);
-    const database = recoveryEvidenceDatabase(payment, false);
+    const current = recoveryEvidenceDatabase(payment, true);
+    const restored = recoveryEvidenceDatabase(payment, false);
+    let actorDatabase = current;
+    const database = {
+      loadEffectInput(...args: Parameters<DacsNodeSqliteDatabase["loadEffectInput"]>) {
+        return actorDatabase.loadEffectInput(...args);
+      },
+      loadEffectCheckpoint(
+        ...args: Parameters<DacsNodeSqliteDatabase["loadEffectCheckpoint"]>
+      ) {
+        return actorDatabase.loadEffectCheckpoint(...args);
+      },
+    } as unknown as DacsNodeSqliteDatabase;
+    const observeDemosTransfer = vi.fn(async () => ({
+      status: "included" as const,
+      txHash: TX_HASH,
+      payer: PAYER,
+      payee: PAYEE,
+      amountOs: payment.amountOs,
+      blockNumber: 42,
+      includedAt: 1_780_000_000_000,
+    }));
     const authenticateRecovery =
       createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
         database,
-        observeDemosTransfer: vi.fn(async () => ({
-          status: "unavailable" as const,
-          reason: "must not be needed",
-        })),
+        observeDemosTransfer,
       });
     const now = { value: 1_000 };
     const wallet = recoveryWalletAuthority(authenticateRecovery, now);
-    expect((await wallet.reserve(reservation)).status).toBe("reserved");
+    const claim = await wallet.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+
+    // The actor database is restored to an older authenticated backup while
+    // the independent wallet authority retains the ambiguous effect.
+    actorDatabase = restored;
     now.value = 1_101;
 
     await expect(wallet.reconcile(reservation, {
-      disposition: "not-invoked",
+      disposition: "terminal-absent",
       evidenceHash: "f".repeat(64),
     })).rejects.toThrow(/authentication failed/);
-    expect((await wallet.inspect()).activeEffects).toBe(1);
 
     const absenceProofHash = sha256Hex(canonicalize({
       disposition: "no-prepared-transfer",
@@ -640,9 +782,17 @@ describe("native DEM buyer payment track", () => {
       orderLocalBindingHash: payment.orderLocalBindingHash,
     }));
     await expect(wallet.reconcile(reservation, {
-      disposition: "not-invoked",
+      disposition: "terminal-absent",
       evidenceHash: absenceProofHash,
-    })).resolves.toBe("released");
-    expect((await wallet.inspect()).activeEffects).toBe(0);
+    })).rejects.toThrow(/authentication failed/);
+    expect(observeDemosTransfer).not.toHaveBeenCalled();
+    expect(await wallet.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ reservedWorstCaseDebit: payment.maxTotalDebitOs }],
+    });
+    await expect(wallet.reserve(reservation)).resolves.toMatchObject({
+      status: "held",
+      stage: "effect-pending",
+    });
   });
 });
