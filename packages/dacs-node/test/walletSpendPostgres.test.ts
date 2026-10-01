@@ -1,3 +1,7 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -27,7 +31,10 @@ import {
   type DacsWalletSpendContinuityPinV1,
   type DacsWalletSpendContinuityReceiptV1,
 } from "../src/walletSpendPostgres.js";
-import { createDacsWalletSpendAuthorityServiceV1 } from "../src/walletSpendRemote.js";
+import {
+  createDacsRemoteWalletSpendAuthorityV1,
+  createDacsWalletSpendAuthorityServiceV1,
+} from "../src/walletSpendRemote.js";
 
 function policy(policyId: string): WalletSpendPolicyV1 {
   return {
@@ -301,6 +308,11 @@ function failOneContinuityAdvance(
 
 class FakePostgresPool implements DacsPostgresPoolV1 {
   readonly candidates = new Map<string, FakeCandidate>();
+  readonly operations = new Map<string, {
+    request_hash: string;
+    request: unknown;
+    response: unknown | null;
+  }>();
   failNextConnect = false;
   failNextCommitAfterApply = false;
   failNextSerializableAdvance = false;
@@ -326,6 +338,34 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
   ): Promise<{ rows: Row[]; rowCount: number }> {
     if (text.startsWith("SELECT floor")) {
       return { rows: [{ now_ms: String(this.nowMs) } as Row], rowCount: 1 };
+    }
+    if (text.startsWith("SELECT request_hash")) {
+      const operation = this.operations.get(`${String(values[0])}\0${String(values[1])}`);
+      return {
+        rows: operation === undefined ? [] : [structuredClone(operation) as Row],
+        rowCount: operation === undefined ? 0 : 1,
+      };
+    }
+    if (text.startsWith("INSERT INTO dacs_wallet_spend_operations")) {
+      const key = `${String(values[0])}\0${String(values[1])}`;
+      if (this.operations.has(key)) return { rows: [], rowCount: 0 };
+      this.operations.set(key, {
+        request_hash: String(values[2]),
+        request: JSON.parse(String(values[3])) as unknown,
+        response: null,
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.startsWith("UPDATE dacs_wallet_spend_operations")) {
+      const operation = this.operations.get(`${String(values[0])}\0${String(values[1])}`);
+      const response = JSON.parse(String(values[3])) as unknown;
+      if (operation === undefined || operation.request_hash !== String(values[2]) ||
+          (operation.response !== null &&
+            canonicalize(operation.response) !== canonicalize(response))) {
+        return { rows: [], rowCount: 0 };
+      }
+      operation.response = response;
+      return { rows: [], rowCount: 1 };
     }
     if (text.includes("FROM dacs_wallet_spend_lineages") &&
         !text.includes("FOR UPDATE")) {
@@ -354,6 +394,18 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
+    }
+    if (text.startsWith("SELECT candidate_id") && text.includes("status = 'applied'")) {
+      const prefix = `${String(values[0])}\0${String(values[1])}\0${String(values[2])}\0`;
+      const candidates = [...this.candidates.entries()]
+        .filter(([key, candidate]) => key.startsWith(prefix) &&
+          candidate.request_hash === values[3] && candidate.status === "applied")
+        .sort(([, left], [, right]) => left.next_revision - right.next_revision)
+        .map(([, candidate]) => ({
+          ...structuredClone(candidate),
+          lineage_key: String(values[0]),
+        }) as Row);
+      return { rows: candidates, rowCount: candidates.length };
     }
     if (text.startsWith("SELECT candidate_id") && text.includes("ORDER BY mutation_index")) {
       const prefix = `${String(values[0])}\0${String(values[1])}\0${String(values[2])}\0`;
@@ -1630,7 +1682,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     ]);
   });
 
-  it("does not return a recovered later-mutation value to an earlier callback", async () => {
+  it("aborts an earlier callback after recovering a later mutation", async () => {
     const pool = await fakePool();
     const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
     const createStore = () => createDacsPostgresWalletSpendStateStoreV1({
@@ -1678,7 +1730,8 @@ describe("PostgreSQL wallet authority persistence", () => {
     ]);
 
     const restarted = createStore();
-    await expect(restarted.transact(scope, mutateOnce("first"))).resolves.toBe("first");
+    await expect(restarted.transact(scope, mutateOnce("first")))
+      .rejects.toThrow(/operation-recovery-required/);
     await expect(restarted.transact(scope, mutateOnce("second"))).resolves.toBe("second");
     expect(pool.row.revision).toBe(2);
     expect(pool.row.state.rollingEvents.map(({ reservationId }) => reservationId))
@@ -1687,6 +1740,119 @@ describe("PostgreSQL wallet authority persistence", () => {
       { mutation_index: 0, status: "applied" },
       { mutation_index: 8, status: "applied" },
     ]);
+  });
+
+  it("recovers the exact remote reserve after a witnessed later mutation", async () => {
+    const pool = await fakePool();
+    const selected = policy("policy-a");
+    const roleId = "buyer";
+    const token = "buyer-role-token-which-is-long-enough";
+    const operations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (presented) => presented === token ? roleId : null,
+      resolveAuthority: ({ roleId: requestedRole, operationId, requestHash,
+        wallet, chainId, policyHash }) => {
+        if (requestedRole !== roleId || wallet !== selected.wallet ||
+            chainId !== selected.chainId ||
+            policyHash !== dacsWalletSpendPolicyHashV1(selected)) {
+          return null;
+        }
+        return createWalletSpendAuthorityV1(selected, {
+          store: createDacsPostgresWalletSpendStateStoreV1({
+            pool,
+            wallet: selected.wallet,
+            chainId: selected.chainId,
+            continuity: pool.continuity,
+            operation: () => ({ roleId, operationId, requestHash }),
+          }),
+          readBalance: async () => "1000",
+          authenticateRecovery: async () => true,
+          owner: "wallet-service",
+          leaseDurationMs: 60_000,
+        });
+      },
+      operations,
+    });
+    const retainedReservation: WalletSpendReservationV1 = {
+      reservationVersion: "1",
+      reservationId: "recovered-remote-reserve",
+      jobId: "job-recovered-remote",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    };
+    const tokenRoot = await mkdtemp(join(tmpdir(), "dacs-postgres-remote-"));
+    const tokenPath = join(tokenRoot, "token");
+    await writeFile(tokenPath, `${token}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(tokenPath, 0o600);
+    let handledPosts = 0;
+    let handledGets = 0;
+    const fetchWithExactRetry = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") {
+        handledPosts += 2;
+        const interrupted = await handler(request.clone());
+        expect(interrupted.status).toBe(400);
+        const recovered = await handler(request);
+        expect(recovered.status).toBe(400);
+        return recovered;
+      }
+      handledGets += 1;
+      return handler(request);
+    }) as typeof fetch;
+
+    try {
+      const remote = await createDacsRemoteWalletSpendAuthorityV1({
+        policy: selected,
+        endpoint: "http://127.0.0.1:8080/",
+        tokenFilePath: tokenPath,
+        allowInsecureLoopback: true,
+        fetch: fetchWithExactRetry,
+      });
+      pool.failNextConnect = true;
+      const claim = await remote.reserve(retainedReservation);
+
+      expect(claim).toMatchObject({
+        status: "reserved",
+        permit: {
+          reservationId: retainedReservation.reservationId,
+          owner: "wallet-service",
+          generation: 1,
+        },
+      });
+      expect(handledPosts).toBe(2);
+      expect(handledGets).toBe(1);
+      expect([...pool.operations.values()]).toMatchObject([{ response: null }]);
+      expect(pool.row).toMatchObject({
+        revision: 1,
+        state: {
+          generation: 1,
+          reservations: [{
+            reservationId: retainedReservation.reservationId,
+            stage: "reserved",
+            generation: 1,
+          }],
+        },
+      });
+      expect([...pool.candidates.values()]).toMatchObject([
+        { mutation_index: 8, status: "applied" },
+      ]);
+    } finally {
+      await rm(tokenRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects a whole-database rollback and stale replica for a brand-new client", async () => {

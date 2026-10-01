@@ -1912,6 +1912,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
                 context.mutationIndex) {
             return recovered.value as T;
           }
+          throw new Error("wallet-spend-postgres-operation-recovery-required");
         }
         const prior = loaded.row;
         const priorRevision = safeRevision(prior.revision);
