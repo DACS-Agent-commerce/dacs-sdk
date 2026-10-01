@@ -46,11 +46,13 @@ import type {
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 
 const BINDING_VERSION = "1" as const;
+const CONFLICT_VERSION = "1" as const;
 const TRANSPORT_ID_DOMAIN = "dacs-live-vet-terminal-transport:v1:" as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
+type TransportRecordKind = BindingKind | "conflict";
 
 interface DacsVetTerminalTransportBindingV1 {
   bindingVersion: typeof BINDING_VERSION;
@@ -62,6 +64,13 @@ interface DacsVetTerminalTransportBindingV1 {
   >;
   authenticationHash?: string;
   identityEvidenceHash?: string;
+}
+
+interface DacsVetTerminalTransportConflictV1 {
+  conflictVersion: typeof CONFLICT_VERSION;
+  localBindingHash: string;
+  kind: "plan-conflict";
+  planHashes: readonly [string, string];
 }
 
 export interface DacsVetTerminalBundleTransportOptionsV1 {
@@ -441,7 +450,7 @@ async function loadOrder(
 
 function transportId(
   role: Role,
-  kind: BindingKind,
+  kind: TransportRecordKind,
   jobId: string,
   signerRole?: Role,
 ): string {
@@ -451,6 +460,96 @@ function transportId(
     jobId,
     ...(signerRole === undefined ? {} : { signerRole }),
   })}`);
+}
+
+function captureConflict(value: unknown): Readonly<DacsVetTerminalTransportConflictV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "conflictVersion", "localBindingHash", "kind", "planHashes",
+  ]) || value.conflictVersion !== CONFLICT_VERSION || value.kind !== "plan-conflict" ||
+      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
+      !Array.isArray(value.planHashes) || value.planHashes.length !== 2 ||
+      typeof value.planHashes[0] !== "string" || !HASH_RE.test(value.planHashes[0]) ||
+      typeof value.planHashes[1] !== "string" || !HASH_RE.test(value.planHashes[1]) ||
+      value.planHashes[0] >= value.planHashes[1]) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return value as unknown as Readonly<DacsVetTerminalTransportConflictV1>;
+}
+
+async function loadPlanConflict(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+): Promise<Readonly<DacsVetTerminalTransportConflictV1> | undefined> {
+  const order = await loadOrder(context, jobId);
+  return loadPlanConflictForOrder(context, jobId, order.localBindingHash);
+}
+
+function loadPlanConflictForOrder(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+  localBindingHash: string,
+): Readonly<DacsVetTerminalTransportConflictV1> | undefined {
+  const value = context.database.loadEffectInput(
+    "session",
+    transportId(context.role, "conflict", jobId),
+  );
+  if (value === undefined) return undefined;
+  const conflict = captureConflict(value);
+  if (conflict.localBindingHash !== localBindingHash) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return conflict;
+}
+
+async function assertNoPlanConflict(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+): Promise<void> {
+  if (await loadPlanConflict(context, jobId) !== undefined) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+  }
+}
+
+async function putPlanConflict(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+  leftPlanHash: string,
+  rightPlanHash: string,
+): Promise<Readonly<DacsVetTerminalTransportConflictV1>> {
+  const order = await loadOrder(context, jobId);
+  const planHashes = [leftPlanHash, rightPlanHash].sort() as [string, string];
+  if (!HASH_RE.test(planHashes[0]) || !HASH_RE.test(planHashes[1]) ||
+      planHashes[0] === planHashes[1]) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  const id = transportId(context.role, "conflict", jobId);
+  const existing = context.database.loadEffectInput("session", id);
+  if (existing !== undefined) {
+    const retained = captureConflict(existing);
+    if (retained.localBindingHash !== order.localBindingHash ||
+        !canonicalEqual(retained.planHashes, planHashes)) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+    }
+    return retained;
+  }
+  const conflict: DacsVetTerminalTransportConflictV1 = Object.freeze({
+    conflictVersion: CONFLICT_VERSION,
+    localBindingHash: order.localBindingHash,
+    kind: "plan-conflict",
+    planHashes: Object.freeze(planHashes),
+  });
+  const put = context.database.putEffectIntent({
+    kind: "session",
+    effectId: id,
+    bindingHash: order.localBindingHash,
+    input: conflict,
+    idempotencyKey: id,
+    jobId,
+  });
+  if (put.status === "conflict") {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+  }
+  return captureConflict(context.database.loadEffectInput("session", id));
 }
 
 function captureBinding(value: unknown): Readonly<DacsVetTerminalTransportBindingV1> {
@@ -484,6 +583,13 @@ async function putBinding(
   authentication?: Readonly<{ authenticationHash: string; identityEvidenceHash: string }>,
 ): Promise<Readonly<DacsVetTerminalTransportBindingV1>> {
   const order = await loadOrder(context, jobId);
+  if (loadPlanConflictForOrder(
+    context,
+    jobId,
+    order.localBindingHash,
+  ) !== undefined) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+  }
   const signerRole = kind === "contribution"
     ? (payload as TerminalBundleSignatureContribution).signerRole as Role
     : undefined;
@@ -700,7 +806,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     }
   };
 
-  const assessProposal = async (value: unknown): Promise<ProposalAssessment> => {
+  const assessProposalCandidate = async (
+    value: unknown,
+  ): Promise<ProposalAssessment> => {
     let proposal: Readonly<DacsVetTerminalBundleProposalV1>;
     let prepared: PreparedVetTerminalBundle;
     try {
@@ -774,15 +882,73 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     }
   };
 
+  const detectPlanConflict = async (
+    proposal: Readonly<DacsVetTerminalBundleProposalV1>,
+    seal: boolean,
+  ): Promise<void> => {
+    const jobId = proposal.plan.authority.jobId;
+    await assertNoPlanConflict(context, jobId);
+    const bindings = await Promise.all([
+      loadBinding(context, "material", jobId),
+      loadBinding(context, "proposal", jobId),
+    ]);
+    for (const binding of bindings) {
+      if (binding === undefined) continue;
+      const retained = captureProposal(binding.payload);
+      if (retained.plan.planHash === proposal.plan.planHash) continue;
+      if (seal) {
+        await putPlanConflict(
+          context,
+          jobId,
+          proposal.plan.planHash,
+          retained.plan.planHash,
+        );
+      }
+      throw new DacsVetTerminalBundleTransportError(
+        "vet-terminal-binding-conflict",
+      );
+    }
+  };
+
+  const assessProposal = async (
+    value: unknown,
+    sealConflict = false,
+  ): Promise<ProposalAssessment> => {
+    let captured: Readonly<DacsVetTerminalBundleProposalV1>;
+    try {
+      captured = captureProposal(value);
+      await assertNoPlanConflict(context, captured.terminalInput.jobId);
+    } catch (error) {
+      return Object.freeze({
+        disposition: "rejected" as const,
+        reasonCode: error instanceof DacsVetTerminalBundleTransportError
+          ? error.reasonCode : "vet-terminal-proposal-invalid",
+      });
+    }
+    const assessment = await assessProposalCandidate(captured);
+    if (assessment.disposition !== "authorized") return assessment;
+    try {
+      await detectPlanConflict(assessment.proposal, sealConflict);
+      return assessment;
+    } catch (error) {
+      return Object.freeze({
+        disposition: "rejected" as const,
+        reasonCode: error instanceof DacsVetTerminalBundleTransportError
+          ? error.reasonCode : "vet-terminal-proposal-invalid",
+      });
+    }
+  };
+
   const loadRegistered = async (
     jobId: string,
   ): Promise<Extract<ProposalAssessment, { disposition: "authorized" }>> => {
+    await assertNoPlanConflict(context, jobId);
     const binding = await loadBinding(context, "material", jobId) ??
       await loadBinding(context, "proposal", jobId);
     if (binding === undefined) {
       throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
     }
-    const assessment = await assessProposal(binding.payload);
+    const assessment = await assessProposal(binding.payload, true);
     if (assessment.disposition !== "authorized") {
       throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
     }
@@ -917,9 +1083,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       return payloadValidation(false, "vet-terminal-message-role-incompatible");
     }
     try {
+      await assertNoPlanConflict(context, input.jobId);
       if (input.type === proposalType) {
         await loadOrder(context, input.jobId);
-        const assessment = await assessProposal(input.payload);
+        const assessment = await assessProposal(input.payload, true);
         if (assessment.disposition === "indeterminate") {
           return Object.freeze({
             status: "authentication-failure" as const,
@@ -963,25 +1130,35 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       identity: Readonly<TerminalBundleTransportIdentity>,
     ): Promise<TerminalBundleResolution<unknown>> {
       try {
+        await assertNoPlanConflict(context, identity.jobId);
         const binding = await loadBinding(context, "proposal", identity.jobId);
         if (binding === undefined) {
           return { disposition: "authoritatively-absent",
             reason: "vet-terminal-proposal-absent" };
         }
         const assessment = await assessProposal(binding.payload);
-        if (assessment.disposition !== "authorized") {
+        if (assessment.disposition === "rejected") {
+          return assessment.reasonCode === "vet-terminal-binding-conflict"
+            ? { disposition: "rejected", reason: assessment.reasonCode }
+            : { disposition: "indeterminate", reason: assessment.reasonCode };
+        }
+        if (assessment.disposition === "indeterminate") {
           return { disposition: "indeterminate", reason: assessment.reasonCode };
         }
         return identityMatchesPlan(identity, assessment.proposal.plan)
           ? { disposition: "present", value: assessment.proposal.plan }
           : { disposition: "rejected", reason: "vet-terminal-proposal-conflict" };
-      } catch {
-        return { disposition: "indeterminate", reason: "vet-terminal-proposal-unavailable" };
+      } catch (error) {
+        return error instanceof DacsVetTerminalBundleTransportError &&
+            error.reasonCode === "vet-terminal-binding-conflict"
+          ? { disposition: "rejected", reason: error.reasonCode }
+          : { disposition: "indeterminate", reason: "vet-terminal-proposal-unavailable" };
       }
     },
     async publishProposal(
       input: Parameters<TerminalBundleTransport["publishProposal"]>[0],
     ) {
+      await assertNoPlanConflict(context, input.identity.jobId);
       const plan = capturePlan(input.plan);
       assertPlanParties(context, plan);
       if (!identityMatchesPlan(input.identity, plan)) {
@@ -991,7 +1168,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (material === undefined) {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
       }
-      const assessment = await assessProposal(material.payload);
+      const assessment = await assessProposal(material.payload, true);
       if (assessment.disposition !== "authorized") {
         throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
       }
@@ -1021,12 +1198,18 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       input: Parameters<TerminalBundleTransport["resolveContribution"]>[0],
     ): Promise<TerminalBundleResolution<unknown>> {
       try {
+        await assertNoPlanConflict(context, input.identity.jobId);
         const proposal = await loadBinding(context, "proposal", input.identity.jobId);
         if (proposal === undefined) {
           return { disposition: "indeterminate", reason: "vet-terminal-proposal-pending" };
         }
         const assessment = await assessProposal(proposal.payload);
-        if (assessment.disposition !== "authorized") {
+        if (assessment.disposition === "rejected") {
+          return assessment.reasonCode === "vet-terminal-binding-conflict"
+            ? { disposition: "rejected", reason: assessment.reasonCode }
+            : { disposition: "indeterminate", reason: assessment.reasonCode };
+        }
+        if (assessment.disposition === "indeterminate") {
           return { disposition: "indeterminate", reason: assessment.reasonCode };
         }
         const plan = assessment.proposal.plan;
@@ -1044,19 +1227,23 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           ? { disposition: "authoritatively-absent",
               reason: "vet-terminal-contribution-absent" }
           : { disposition: "present", value: captureContribution(plan, binding.payload) };
-      } catch {
-        return { disposition: "indeterminate",
-          reason: "vet-terminal-contribution-unavailable" };
+      } catch (error) {
+        return error instanceof DacsVetTerminalBundleTransportError &&
+            error.reasonCode === "vet-terminal-binding-conflict"
+          ? { disposition: "rejected", reason: error.reasonCode }
+          : { disposition: "indeterminate",
+              reason: "vet-terminal-contribution-unavailable" };
       }
     },
     async publishContribution(
       input: Parameters<TerminalBundleTransport["publishContribution"]>[0],
     ) {
+      await assertNoPlanConflict(context, input.identity.jobId);
       const proposal = await loadBinding(context, "proposal", input.identity.jobId);
       if (proposal === undefined) {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-proposal-pending");
       }
-      const assessment = await assessProposal(proposal.payload);
+      const assessment = await assessProposal(proposal.payload, true);
       if (assessment.disposition !== "authorized") {
         throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
       }
@@ -1099,6 +1286,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     async registerLocalTerminal(input) {
       const terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
         Readonly<PrepareVetTerminalBundleInput>;
+      await assertNoPlanConflict(context, terminalInput.jobId);
       let prepared: PreparedVetTerminalBundle;
       try {
         prepared = await prepareVetTerminalBundle(terminalInput, {
@@ -1126,6 +1314,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       });
       assertPlanParties(context, proposal.plan);
       await assertProposalOrder(proposal, false);
+      await detectPlanConflict(proposal, true);
       await putBinding(context, "material", input.jobId, proposal);
       return Object.freeze({ prepared, proposal });
     },

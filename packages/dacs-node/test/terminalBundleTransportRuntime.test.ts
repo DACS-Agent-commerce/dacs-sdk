@@ -79,6 +79,19 @@ const REGISTRY_VERSIONS = Object.freeze({
   recipeRegistryVersion: 1,
   railRegistryVersion: 1,
 });
+const TERMINAL_TRANSPORT_ID_DOMAIN =
+  "dacs-live-vet-terminal-transport:v1:" as const;
+
+function terminalTransportEffectId(
+  role: "buyer" | "seller",
+  kind: "material" | "proposal" | "conflict",
+): string {
+  return sha256Hex(`${TERMINAL_TRANSPORT_ID_DOMAIN}${canonicalize({
+    role,
+    kind,
+    jobId: JOB_ID,
+  })}`);
+}
 
 function identity(role: "buyer" | "seller"): IdentityBundle {
   const presentedBy = role === "buyer" ? BUYER : SELLER;
@@ -167,15 +180,18 @@ function application(paymentPhase: "pay-x402" | "pay-dem" = "pay-x402") {
 function terminalInput(
   decision: CompositeVerificationRecord["overallDecision"] = "fail",
   paymentPhase: "pay-x402" | "pay-dem" = "pay-x402",
+  evaluatedRole: "buyer" | "seller" = "seller",
 ): PrepareVetTerminalBundleInput {
   const exactListing = listing(paymentPhase);
-  const sellerIdentity = identity("seller");
-  const logicalAddress = compositeVerificationAddress(JOB_ID, SELLER);
+  const evaluatedParty = evaluatedRole === "buyer" ? BUYER : SELLER;
+  const verifier = evaluatedRole === "buyer" ? SELLER : BUYER;
+  const evaluatedIdentity = identity(evaluatedRole);
+  const logicalAddress = compositeVerificationAddress(JOB_ID, evaluatedParty);
   const record: CompositeVerificationRecord = {
     recordVersion: "1",
     jobId: JOB_ID,
-    evaluatedParty: SELLER,
-    bundleHash: identityBundleHash(sellerIdentity),
+    evaluatedParty,
+    bundleHash: identityBundleHash(evaluatedIdentity),
     requirementHash: "3".repeat(64),
     freshness: [],
     supplementary: [],
@@ -184,7 +200,7 @@ function terminalInput(
     generatedAt: STARTED_AT + 100,
     signature: {
       algorithm: "ed25519",
-      signer: BUYER,
+      signer: verifier,
       value: Buffer.alloc(64, 7).toString("base64url"),
     },
   };
@@ -205,15 +221,15 @@ function terminalInput(
     railRegistryVersion: 1,
     parties: [
       { role: "buyer", identityBundle: identity("buyer") },
-      { role: "seller", identityBundle: sellerIdentity },
+      { role: "seller", identityBundle: identity("seller") },
     ],
-    evaluatedRole: "seller",
+    evaluatedRole,
     production: {
       record,
       recordRef: {
         anchor: { kind: "storage-program", locator: nativeAddress },
         contentHash: recordHash,
-        signer: BUYER,
+        signer: verifier,
       },
       anchorReceipt: {
         receiptVersion: "1",
@@ -223,7 +239,7 @@ function terminalInput(
         nativeAddress,
         contentHash: recordHash,
         transactionRef: { kind: "demos", value: "5".repeat(64) },
-        writer: BUYER,
+        writer: verifier,
         nonce: "7",
         state: "finalized",
         observationDisposition: "established",
@@ -1085,6 +1101,251 @@ describe("role-separated Vet terminal bundle transport", () => {
       authorityHash: proposal.plan.authorityHash,
       planHash: proposal.plan.planHash,
     })).resolves.toMatchObject({ disposition: "present" });
+  });
+
+  it.each([
+    ["local material first", "material"],
+    ["peer proposal first", "proposal"],
+  ] as const)("durably rejects distinct authenticated Vet plans with %s", async (
+    _label,
+    first,
+  ) => {
+    const buyerDatabase = await open("buyer");
+    const authenticate = vi.fn(async () => ({ status: "valid" as const }));
+    const sendMessage = vi.fn();
+    const signComponent = vi.fn();
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase,
+      sessionStore: createInMemoryFencedSessionStore(),
+      demos: { signComponent },
+      sendMessage,
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const createRuntime = () => createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: authenticate,
+    });
+    const runtime = createRuntime();
+    const localInput = terminalInput("fail", "pay-x402", "seller");
+    const localProposal = await terminalProposal(localInput);
+    const peerProposal = await terminalProposal(
+      terminalInput("fail", "pay-x402", "buyer"),
+    );
+    expect(localProposal.plan.planHash).not.toBe(peerProposal.plan.planHash);
+    expect(localProposal.plan.authority.faultedParty).toBe("seller");
+    expect(peerProposal.plan.authority.faultedParty).toBe("buyer");
+
+    if (first === "material") {
+      await expect(runtime.registerLocalTerminal(localInput)).resolves.toMatchObject({
+        proposal: { plan: { planHash: localProposal.plan.planHash } },
+      });
+      await expect(runtime.validatePayload({
+        type: "terminal-bundle-proposal-seller",
+        payload: peerProposal,
+        jobId: JOB_ID,
+        sender: SELLER,
+        audience: BUYER,
+      })).resolves.toEqual({
+        status: "invalid",
+        reasonCode: "vet-terminal-binding-conflict",
+      });
+      await expect(runtime.handleMessage(
+        authenticated(
+          "terminal-bundle-proposal-seller",
+          peerProposal,
+          SELLER,
+          BUYER,
+        ),
+        { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({
+        disposition: "rejected",
+        reasonCode: "vet-terminal-binding-conflict",
+      });
+    } else {
+      await expect(runtime.handleMessage(
+        authenticated(
+          "terminal-bundle-proposal-seller",
+          peerProposal,
+          SELLER,
+          BUYER,
+        ),
+        { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({ disposition: "accepted" });
+      await expect(runtime.registerLocalTerminal(localInput)).rejects.toMatchObject({
+        reasonCode: "vet-terminal-binding-conflict",
+      });
+    }
+
+    const material = buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "material"),
+    );
+    const proposal = buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "proposal"),
+    );
+    expect(material === undefined).toBe(first === "proposal");
+    expect(proposal === undefined).toBe(first === "material");
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "conflict"),
+    )).toMatchObject({
+      conflictVersion: "1",
+      localBindingHash: fixedPriceX402OrderLocalBindingHash(order("buyer")),
+      kind: "plan-conflict",
+      planHashes: [
+        localProposal.plan.planHash,
+        peerProposal.plan.planHash,
+      ].sort(),
+    });
+
+    const retainedPlan = first === "material" ? localProposal.plan : peerProposal.plan;
+    const identity = {
+      jobId: JOB_ID,
+      authorityHash: retainedPlan.authorityHash,
+      planHash: retainedPlan.planHash,
+    };
+    const restarted = createRuntime();
+    await expect(restarted.transport.resolveProposal(identity)).resolves.toEqual({
+      disposition: "rejected",
+      reason: "vet-terminal-binding-conflict",
+    });
+    await expect(restarted.transport.resolveContribution({
+      identity,
+      signerRole: "seller",
+    })).resolves.toEqual({
+      disposition: "rejected",
+      reason: "vet-terminal-binding-conflict",
+    });
+    await expect(restarted.transport.publishContribution({
+      identity,
+      contribution: contribution(retainedPlan, "buyer"),
+    }, {} as never)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-binding-conflict",
+    });
+    await expect(restarted.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-binding-conflict",
+    });
+    authenticate.mockClear();
+    await expect(restarted.registerLocalTerminal(localInput)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-binding-conflict",
+    });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(signComponent).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["invalid", "invalid", "vet-terminal-production-invalid"],
+    ["indeterminate", "authentication-failure", "vet-terminal-production-indeterminate"],
+  ] as const)("does not tombstone a distinct peer plan when Vet authentication is %s", async (
+    authenticationStatus,
+    validationStatus,
+    reasonCode,
+  ) => {
+    const buyerDatabase = await open("buyer");
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase, sendMessage: vi.fn(),
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const validRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status: "valid" }),
+    });
+    const localInput = terminalInput("fail", "pay-x402", "seller");
+    await validRuntime.registerLocalTerminal(localInput);
+    const untrustedRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({
+        status: authenticationStatus,
+        reason: "recursive Vet authentication failed",
+      }),
+    });
+    const peer = await terminalProposal(
+      terminalInput("fail", "pay-x402", "buyer"),
+    );
+
+    await expect(untrustedRuntime.validatePayload({
+      type: "terminal-bundle-proposal-seller",
+      payload: peer,
+      jobId: JOB_ID,
+      sender: SELLER,
+      audience: BUYER,
+    })).resolves.toEqual({ status: validationStatus, reasonCode });
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "conflict"),
+    )).toBeUndefined();
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "proposal"),
+    )).toBeUndefined();
+    await expect(validRuntime.registerLocalTerminal(localInput)).resolves.toMatchObject({
+      proposal: { plan: { authority: { faultedParty: "seller" } } },
+    });
+  });
+
+  it("seals a pre-existing split material/proposal state before restart can sign", async () => {
+    const buyerDatabase = await open("buyer");
+    const signComponent = vi.fn();
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase,
+      sessionStore: createInMemoryFencedSessionStore(),
+      demos: { signComponent },
+      sendMessage: vi.fn(),
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const createRuntime = () => createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status: "valid" as const }),
+    });
+    const local = await createRuntime().registerLocalTerminal(
+      terminalInput("fail", "pay-x402", "seller"),
+    );
+    const peer = await terminalProposal(
+      terminalInput("fail", "pay-x402", "buyer"),
+    );
+    const localBindingHash = fixedPriceX402OrderLocalBindingHash(order("buyer"));
+    const proposalId = terminalTransportEffectId("buyer", "proposal");
+    expect(buyerDatabase.putEffectIntent({
+      kind: "session",
+      effectId: proposalId,
+      bindingHash: localBindingHash,
+      input: {
+        bindingVersion: "1",
+        localBindingHash,
+        kind: "proposal",
+        payloadHash: sha256Hex(canonicalize(peer)),
+        payload: peer,
+        authenticationHash: "c".repeat(64),
+        identityEvidenceHash: "d".repeat(64),
+      },
+      idempotencyKey: proposalId,
+      jobId: JOB_ID,
+    })).toMatchObject({ status: "created" });
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "conflict"),
+    )).toBeUndefined();
+
+    const restarted = createRuntime();
+    await expect(restarted.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-binding-conflict",
+    });
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "conflict"),
+    )).toMatchObject({
+      conflictVersion: "1",
+      localBindingHash,
+      kind: "plan-conflict",
+      planHashes: [local.proposal.plan.planHash, peer.plan.planHash].sort(),
+    });
+    expect(signComponent).not.toHaveBeenCalled();
   });
 
   it("fails closed when a first proposal has no trusted registry authority", async () => {
