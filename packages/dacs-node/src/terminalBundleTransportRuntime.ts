@@ -49,6 +49,13 @@ const BINDING_VERSION = "1" as const;
 const CONFLICT_VERSION = "1" as const;
 const TRANSPORT_ID_DOMAIN = "dacs-live-vet-terminal-transport:v1:" as const;
 const HASH_RE = /^[0-9a-f]{64}$/;
+// Serialize only the process-local callback-start boundary. The callback promise
+// is deliberately outside this section; the durable marker is rechecked after it
+// settles and remains the cross-process source of truth.
+const PLAN_CONFLICT_SEQUENCES = new WeakMap<
+  object,
+  Map<string, Promise<void>>
+>();
 
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
@@ -501,6 +508,37 @@ function loadPlanConflictForOrder(
   return conflict;
 }
 
+async function withPlanConflictSequence<T>(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+  critical: () => T,
+): Promise<T> {
+  const database = context.database as object;
+  let sequences = PLAN_CONFLICT_SEQUENCES.get(database);
+  if (sequences === undefined) {
+    sequences = new Map();
+    PLAN_CONFLICT_SEQUENCES.set(database, sequences);
+  }
+  const key = `${context.role}:${jobId}`;
+  const previous = sequences.get(key) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => turn);
+  sequences.set(key, tail);
+  await previous;
+  try {
+    return critical();
+  } finally {
+    release();
+    if (sequences.get(key) === tail) {
+      sequences.delete(key);
+      if (sequences.size === 0) PLAN_CONFLICT_SEQUENCES.delete(database);
+    }
+  }
+}
+
 async function assertNoPlanConflict(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
@@ -522,34 +560,74 @@ async function putPlanConflict(
       planHashes[0] === planHashes[1]) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
   }
-  const id = transportId(context.role, "conflict", jobId);
-  const existing = context.database.loadEffectInput("session", id);
-  if (existing !== undefined) {
-    const retained = captureConflict(existing);
-    if (retained.localBindingHash !== order.localBindingHash ||
-        !canonicalEqual(retained.planHashes, planHashes)) {
+  return await withPlanConflictSequence(context, jobId, () => {
+    const id = transportId(context.role, "conflict", jobId);
+    const existing = context.database.loadEffectInput("session", id);
+    if (existing !== undefined) {
+      const retained = captureConflict(existing);
+      if (retained.localBindingHash !== order.localBindingHash ||
+          !canonicalEqual(retained.planHashes, planHashes)) {
+        throw new DacsVetTerminalBundleTransportError(
+          "vet-terminal-binding-conflict",
+        );
+      }
+      return retained;
+    }
+    const conflict: DacsVetTerminalTransportConflictV1 = Object.freeze({
+      conflictVersion: CONFLICT_VERSION,
+      localBindingHash: order.localBindingHash,
+      kind: "plan-conflict",
+      planHashes: Object.freeze(planHashes),
+    });
+    const put = context.database.putEffectIntent({
+      kind: "session",
+      effectId: id,
+      bindingHash: order.localBindingHash,
+      input: conflict,
+      idempotencyKey: id,
+      jobId,
+    });
+    if (put.status === "conflict") {
       throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
     }
-    return retained;
-  }
-  const conflict: DacsVetTerminalTransportConflictV1 = Object.freeze({
-    conflictVersion: CONFLICT_VERSION,
-    localBindingHash: order.localBindingHash,
-    kind: "plan-conflict",
-    planHashes: Object.freeze(planHashes),
+    return captureConflict(context.database.loadEffectInput("session", id));
   });
-  const put = context.database.putEffectIntent({
-    kind: "session",
-    effectId: id,
-    bindingHash: order.localBindingHash,
-    input: conflict,
-    idempotencyKey: id,
-    jobId,
+}
+
+async function invokeConflictFenced<T>(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+  callback: () => Promise<T> | T,
+): Promise<T> {
+  const order = await loadOrder(context, jobId);
+  const started = await withPlanConflictSequence(context, jobId, () => {
+    if (loadPlanConflictForOrder(
+      context,
+      jobId,
+      order.localBindingHash,
+    ) !== undefined) {
+      throw new DacsVetTerminalBundleTransportError(
+        "vet-terminal-binding-conflict",
+      );
+    }
+    try {
+      const value = callback();
+      return {
+        settled: Promise.resolve(value).then(
+          (result) => ({ status: "fulfilled" as const, result }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        ),
+      };
+    } catch (error) {
+      return {
+        settled: Promise.resolve({ status: "rejected" as const, error }),
+      };
+    }
   });
-  if (put.status === "conflict") {
-    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
-  }
-  return captureConflict(context.database.loadEffectInput("session", id));
+  const settled = await started.settled;
+  await assertNoPlanConflict(context, jobId);
+  if (settled.status === "rejected") throw settled.error;
+  return settled.result;
 }
 
 function captureBinding(value: unknown): Readonly<DacsVetTerminalTransportBindingV1> {
@@ -958,6 +1036,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   const terminalProvider = (
     proposal: Readonly<DacsVetTerminalBundleProposalV1>,
   ): Readonly<DurableTerminalBundleProvider> => {
+    const jobId = proposal.plan.authority.jobId;
     const buyer = proposal.plan.authority.parties.find((party) => party.role === "buyer");
     const seller = proposal.plan.authority.parties.find((party) => party.role === "seller");
     if (buyer === undefined || seller === undefined) {
@@ -983,6 +1062,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           });
     const provider: DurableTerminalBundleProvider = {
       async resolveOwnBundle(input) {
+        await assertNoPlanConflict(context, jobId);
         if (input.role !== role) {
           return { disposition: "rejected" as const,
             reason: "vet-terminal-bundle-role-mismatch" };
@@ -1024,7 +1104,8 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
             "vet-terminal-bundle-role-mismatch",
           );
         }
-        await publication.submitRoleBundle(role, input.logicalAddress, input.bundle);
+        await invokeConflictFenced(context, jobId, () =>
+          publication.submitRoleBundle(role, input.logicalAddress, input.bundle));
       },
       async verifyOwnBundlePublication(input) {
         if (input.role !== role) {
@@ -1043,6 +1124,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         );
       },
       async resolveOwnBundleBinding(input) {
+        await assertNoPlanConflict(context, jobId);
         if (input.role !== role) {
           return { disposition: "rejected" as const,
             reason: "vet-terminal-binding-role-mismatch" };
@@ -1059,7 +1141,8 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
             : resolved;
       },
       async publishOwnBundleBinding(binding) {
-        const result = await publication.publishRoleBundleBinding(role, binding);
+        const result = await invokeConflictFenced(context, jobId, () =>
+          publication.publishRoleBundleBinding(role, binding));
         if (result.disposition !== "published") {
           throw new DacsVetTerminalBundleTransportError(result.reason);
         }
@@ -1354,9 +1437,13 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         local: {
           role,
           primaryClaim: context.authority,
-          signer: async (bytes) => await context.demos.signComponent(
-            Uint8Array.from(bytes),
-            { algorithm: "ed25519", signer: context.authority },
+          signer: async (bytes) => await invokeConflictFenced(
+            context,
+            jobId,
+            () => context.demos.signComponent(
+              Uint8Array.from(bytes),
+              { algorithm: "ed25519", signer: context.authority },
+            ),
           ),
         },
         signerKeys,

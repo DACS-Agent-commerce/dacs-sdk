@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  bundleAddress,
   createInMemoryFencedSessionStore,
   createTerminalBundlePlan,
   createTerminalBundleSignatureContribution,
@@ -449,6 +450,215 @@ describe("role-separated Vet terminal bundle transport", () => {
       });
     }
     return database;
+  }
+
+  type IrreversibleSink = "signer" | "bundle-submit" | "binding-publish";
+  type PauseTiming = "before" | "inside";
+
+  async function raceReadyBuyer(
+    pauseAt: (sink: IrreversibleSink, timing: PauseTiming) => Promise<void>,
+  ) {
+    const database = await open("buyer");
+    retainDacsFixedPricePurchaseDemosBudgetGrantV1({
+      database,
+      jobId: JOB_ID,
+      role: "buyer",
+      authority: BUYER,
+      maximumPerWriteFeeDem: "1",
+    });
+    type StoredAnchor = Readonly<{
+      address: string;
+      value: Readonly<Record<string, unknown>>;
+      receipt: Readonly<ProtocolAnchorReceipt>;
+    }>;
+    const byName = new Map<string, StoredAnchor>();
+    const byAddress = new Map<string, StoredAnchor>();
+    const owner = BUYER.slice("did:demos:agent:".length);
+    const ownBundleAddress = bundleAddress(JOB_ID, "buyer");
+    const ownBindingAddress = `dacs5:bundle-binding:${JOB_ID}:buyer`;
+    const signComponent = vi.fn(async (bytes: Uint8Array) => {
+      await pauseAt("signer", "inside");
+      return ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED));
+    });
+    const anchorWriteOnce = vi.fn(async (
+      name: string,
+      value: object,
+      options?: Readonly<{ metadata?: Readonly<Record<string, unknown>> }>,
+    ) => {
+      if (name === ownBundleAddress) await pauseAt("bundle-submit", "inside");
+      if (name === ownBindingAddress) await pauseAt("binding-publish", "inside");
+      const key = `${owner}:${name}`;
+      const exactValue = structuredClone(value) as Readonly<Record<string, unknown>>;
+      const retained = byName.get(key);
+      if (retained !== undefined) {
+        if (canonicalize(retained.value) !== canonicalize(exactValue)) throw new Error();
+        return { address: retained.address, txRef: retained.receipt.transactionRef.value };
+      }
+      const hash = typeof options?.metadata?.contentHash === "string"
+        ? options.metadata.contentHash : contentHash(exactValue);
+      const address = `stor-${sha256Hex(canonicalize({ owner, name }))}`;
+      const receipt: ProtocolAnchorReceipt = {
+        receiptVersion: "1",
+        substrate: "demos",
+        finalityProfile: "demos-bft-confirmed-native-read",
+        logicalAddress: name,
+        nativeAddress: address,
+        contentHash: hash,
+        transactionRef: { kind: "demos", value: sha256Hex(address) },
+        writer: BUYER,
+        nonce: String(byName.size + 1),
+        state: "finalized",
+        observationDisposition: "established",
+        observedAt: STARTED_AT + 1_000 + byName.size,
+        blockRef: { id: sha256Hex(`block:${address}`), height: "43" },
+        evidence: { kind: "demos-bft", value: sha256Hex(`proof:${address}`) },
+      };
+      const stored = Object.freeze({ address, value: exactValue, receipt });
+      byName.set(key, stored);
+      byAddress.set(address, stored);
+      return { address, txRef: receipt.transactionRef.value };
+    });
+    const adapter = {
+      raw: {
+        getNetworkInfo: async () => ({}),
+        getAddressNonce: async () => 0,
+        getAddressInfo: async () => ({}),
+      },
+      connect: async () => undefined,
+      getAddress: () => owner,
+      getPublicKey: async () => rawPublicKey(publicKeyFromSeed(BUYER_SEED)),
+      sign: async (bytes: Uint8Array) => ed25519Sign(
+        bytes,
+        privateKeyFromSeed(BUYER_SEED),
+      ),
+      resolveIdentity: async (ref: string) => ({ ref, raw: {} }),
+      readAnchor: async (address: string) =>
+        structuredClone(byAddress.get(address)?.value ?? null),
+      resolveAnchorByName: async (name: string, expectedOwner: string) => {
+        const retained = byName.get(`${expectedOwner}:${name}`);
+        if (retained === undefined && name === ownBundleAddress) {
+          await pauseAt("bundle-submit", "before");
+        }
+        if (retained === undefined && name === ownBindingAddress) {
+          await pauseAt("binding-publish", "before");
+        }
+        return retained === undefined
+          ? { status: "absent" as const }
+          : { status: "present" as const, address: retained.address };
+      },
+      scanOwnAnchorsByNamePrefix: async () => ({
+        status: "ok" as const,
+        anchors: [],
+      }),
+      anchorWriteOnce,
+      verifyDemosAnchorReceipt: async (receipt: Readonly<ProtocolAnchorReceipt>) => {
+        const retained = byAddress.get(receipt.nativeAddress);
+        return retained !== undefined &&
+          canonicalize(retained.receipt) === canonicalize(receipt);
+      },
+      resolveDemosAnchorReceipt: async (input: Readonly<{
+        logicalAddress: string;
+        nativeAddress: string;
+        contentHash: string;
+        writer: string;
+      }>) => {
+        const retained = byAddress.get(input.nativeAddress);
+        return retained !== undefined &&
+            retained.receipt.logicalAddress === input.logicalAddress &&
+            retained.receipt.contentHash === input.contentHash &&
+            retained.receipt.writer === input.writer
+          ? structuredClone(retained.receipt) : null;
+      },
+      reconcileWalletJournal: async () => undefined,
+      reconcileNativeTransferJournal: async () => undefined,
+    };
+    const baseSessionStore = createInMemoryFencedSessionStore();
+    const sessionStore = {
+      apiVersion: baseSessionStore.apiVersion,
+      create: (input: Parameters<typeof baseSessionStore.create>[0]) =>
+        baseSessionStore.create(input),
+      load: (jobId: string) => baseSessionStore.load(jobId),
+      transition: (input: Parameters<typeof baseSessionStore.transition>[0]) =>
+        baseSessionStore.transition(input),
+      claimCheckpoint: async (
+        input: Parameters<typeof baseSessionStore.claimCheckpoint>[0],
+      ) => {
+        if (input.phase?.endsWith(":contribution-signing") &&
+            input.key.includes("signature:")) {
+          await pauseAt("signer", "before");
+        }
+        return await baseSessionStore.claimCheckpoint(input);
+      },
+      acquireLease: (input: Parameters<typeof baseSessionStore.acquireLease>[0]) =>
+        baseSessionStore.acquireLease(input),
+      renewLease: (input: Parameters<typeof baseSessionStore.renewLease>[0]) =>
+        baseSessionStore.renewLease(input),
+      bindSessionAuthorization: (
+        input: Parameters<typeof baseSessionStore.bindSessionAuthorization>[0],
+      ) => baseSessionStore.bindSessionAuthorization(input),
+      bindHash: (input: Parameters<typeof baseSessionStore.bindHash>[0]) =>
+        baseSessionStore.bindHash(input),
+      list: (filter?: Parameters<typeof baseSessionStore.list>[0]) =>
+        baseSessionStore.list(filter),
+    };
+    const demos = {
+      role: "buyer",
+      authority: BUYER,
+      walletAddress: owner,
+      publicKey: rawPublicKey(publicKeyFromSeed(BUYER_SEED)),
+      adapter,
+      signTransportEnvelope: async (bytes: Uint8Array) => ed25519Sign(
+        bytes,
+        privateKeyFromSeed(BUYER_SEED),
+      ),
+      signComponent,
+      networkInfo: async () => ({}),
+      addressNonce: async () => 0,
+      addressInfo: async () => ({}),
+    } as unknown as Readonly<DacsDemosActorRuntimeV1>;
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      config: { role: "buyer" },
+      database,
+      demos,
+      sessionStore,
+      sendMessage: vi.fn(async () => acknowledgement("accepted")),
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status: "valid" }),
+    });
+    const registered = await runtime.registerLocalTerminal(
+      terminalInput("fail", "pay-x402", "seller"),
+    );
+    await runtime.handleMessage(
+      authenticated(
+        "terminal-bundle-proposal-seller",
+        registered.proposal,
+        SELLER,
+        BUYER,
+      ),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    );
+    await runtime.handleMessage(
+      authenticated(
+        "terminal-bundle-contribution-seller",
+        contribution(registered.proposal.plan, "seller"),
+        SELLER,
+        BUYER,
+      ),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    );
+    return {
+      database,
+      runtime,
+      conflictProposal: await terminalProposal(
+        terminalInput("fail", "pay-x402", "buyer"),
+      ),
+      signComponent,
+      anchorWriteOnce,
+    };
   }
 
   it("exchanges one exact authorized plan and each role's own verified row", async () => {
@@ -1235,6 +1445,59 @@ describe("role-separated Vet terminal bundle transport", () => {
     expect(signComponent).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["signer", "before", 0, 0],
+    ["signer", "inside", 1, 0],
+    ["bundle-submit", "before", 2, 0],
+    ["bundle-submit", "inside", 2, 1],
+    ["binding-publish", "before", 3, 1],
+    ["binding-publish", "inside", 3, 2],
+  ] as const)(
+    "stops irreversible progress when a conflict is sealed %s %s",
+    async (sink, timing, expectedSignatures, expectedWrites) => {
+      let enter = (): void => undefined;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let paused = false;
+      const harness = await raceReadyBuyer(async (candidateSink, candidateTiming) => {
+        if (!paused && candidateSink === sink && candidateTiming === timing) {
+          paused = true;
+          enter();
+          await released;
+        }
+      });
+      const advancing = harness.runtime.advanceRegisteredTerminal(JOB_ID);
+      await entered;
+      try {
+        await expect(harness.runtime.validatePayload({
+          type: "terminal-bundle-proposal-seller",
+          payload: harness.conflictProposal,
+          jobId: JOB_ID,
+          sender: SELLER,
+          audience: BUYER,
+        })).resolves.toEqual({
+          status: "invalid",
+          reasonCode: "vet-terminal-binding-conflict",
+        });
+      } finally {
+        release();
+      }
+      const result = await advancing;
+      expect(result.disposition).not.toBe("finalised");
+      expect(harness.signComponent).toHaveBeenCalledTimes(expectedSignatures);
+      expect(harness.anchorWriteOnce).toHaveBeenCalledTimes(expectedWrites);
+      expect(harness.database.loadEffectInput(
+        "session",
+        terminalTransportEffectId("buyer", "conflict"),
+      )).toMatchObject({ kind: "plan-conflict" });
+    },
+  );
 
   it.each([
     ["invalid", "invalid", "vet-terminal-production-invalid"],
