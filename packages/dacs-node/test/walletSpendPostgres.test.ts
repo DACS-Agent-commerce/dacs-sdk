@@ -1630,6 +1630,65 @@ describe("PostgreSQL wallet authority persistence", () => {
     ]);
   });
 
+  it("does not return a recovered later-mutation value to an earlier callback", async () => {
+    const pool = await fakePool();
+    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const createStore = () => createDacsPostgresWalletSpendStateStoreV1({
+      pool,
+      wallet: "wallet-a",
+      chainId: "chain-a",
+      continuity: pool.continuity,
+      operation: () => ({
+        roleId: "buyer",
+        operationId: "00000000-0000-4000-8000-000000000014",
+        requestHash: "d".repeat(64),
+      }),
+    });
+    const mutateOnce = (label: string) => (
+      current: Readonly<WalletSpendStateV1> | null,
+    ) => {
+      if (current!.rollingEvents.some(({ reservationId }) => reservationId === label)) {
+        return { state: current!, value: label };
+      }
+      return {
+        state: {
+          ...current!,
+          generation: current!.generation + 1,
+          rollingEvents: [...current!.rollingEvents, {
+            reservationId: label,
+            asset: "ASSET",
+            payee: "payee-a",
+            amount: "1",
+            settledAt: 1_000,
+          }],
+        },
+        value: label,
+      };
+    };
+
+    const interrupted = createStore();
+    await expect(interrupted.transact(scope, mutateOnce("first"))).resolves.toBe("first");
+    pool.failNextConnect = true;
+    await expect(interrupted.transact(scope, mutateOnce("second")))
+      .rejects.toThrow(/outcome unknown/);
+    expect(pool.row.revision).toBe(1);
+    expect([...pool.candidates.values()]).toMatchObject([
+      { mutation_index: 0, status: "applied" },
+      { mutation_index: 8, status: "prepared" },
+    ]);
+
+    const restarted = createStore();
+    await expect(restarted.transact(scope, mutateOnce("first"))).resolves.toBe("first");
+    await expect(restarted.transact(scope, mutateOnce("second"))).resolves.toBe("second");
+    expect(pool.row.revision).toBe(2);
+    expect(pool.row.state.rollingEvents.map(({ reservationId }) => reservationId))
+      .toEqual(["first", "second"]);
+    expect([...pool.candidates.values()]).toMatchObject([
+      { mutation_index: 0, status: "applied" },
+      { mutation_index: 8, status: "applied" },
+    ]);
+  });
+
   it("rejects a whole-database rollback and stale replica for a brand-new client", async () => {
     const pool = await fakePool();
     const stale = structuredClone(pool.row);

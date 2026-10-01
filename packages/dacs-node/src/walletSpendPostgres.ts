@@ -54,6 +54,7 @@ export interface DacsWalletSpendPostgresOperationV1 {
 const HASH_RE = /^[0-9a-f]{64}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64URL_RE = /^(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{86})$/;
+const POSTGRES_MUTATION_RETRY_BLOCK_SIZE = 8;
 
 export interface DacsWalletSpendContinuityHeadV1 {
   revision: number;
@@ -1764,11 +1765,11 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
     },
   );
 
-  const recoverWitnessedCandidate = async <T>(
+  const recoverWitnessedCandidate = async (
     row: Readonly<LineageRow>,
     witnessHead: Readonly<DacsWalletSpendContinuityReceiptV1>,
     context: ReturnType<typeof operationContext>,
-  ): Promise<T | undefined> => {
+  ): Promise<Readonly<{ mutationIndex: number; value: unknown }>> => {
     if (context === undefined) throw new Error("wallet-spend-continuity-head-mismatch");
     const candidates = await input.pool.query<CandidateRow>(
       `SELECT candidate_id, authority_id, continuity_epoch, role_id, request_hash,
@@ -1844,12 +1845,18 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
     });
     const recovered = await loadDatabase();
     await attestDatabaseHead(recovered, internalBinding("recovery-readback"));
-    return decodeCandidateValue<T>(candidate.candidate_value);
+    return Object.freeze({
+      mutationIndex,
+      value: decodeCandidateValue<unknown>(candidate.candidate_value),
+    });
   };
 
-  const load = async <T>(
+  const load = async (
     context?: ReturnType<typeof operationContext>,
-  ): Promise<Readonly<{ row: LineageRow; recovered?: T }>> => {
+  ): Promise<Readonly<{
+    row: LineageRow;
+    recovered?: Readonly<{ mutationIndex: number; value: unknown }>;
+  }>> => {
     const row = await loadDatabase();
     const binding = internalBinding("authority-read");
     const witnessHead = await readWitness(binding);
@@ -1857,7 +1864,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
         witnessHead.stateHash === row.state_hash) {
       return { row };
     }
-    const recovered = await recoverWitnessedCandidate<T>(row, witnessHead, context);
+    const recovered = await recoverWitnessedCandidate(row, witnessHead, context);
     return { row: await loadDatabase(), recovered };
   };
 
@@ -1894,9 +1901,18 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
     ): Promise<T> {
       if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
       const context = operationContext();
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const loaded = await load<T>(context);
-        if (Object.hasOwn(loaded, "recovered")) return loaded.recovered as T;
+      for (let attempt = 0; attempt < POSTGRES_MUTATION_RETRY_BLOCK_SIZE; attempt += 1) {
+        const loaded = await load(context);
+        if (Object.hasOwn(loaded, "recovered")) {
+          const recovered = loaded.recovered!;
+          if (context === undefined) {
+            throw new Error("wallet-spend-continuity-head-mismatch");
+          }
+          if (Math.floor(recovered.mutationIndex / POSTGRES_MUTATION_RETRY_BLOCK_SIZE) ===
+                context.mutationIndex) {
+            return recovered.value as T;
+          }
+        }
         const prior = loaded.row;
         const priorRevision = safeRevision(prior.revision);
         if (priorRevision === Number.MAX_SAFE_INTEGER) {
@@ -1916,7 +1932,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
         // request can legitimately prune rolling events and then reserve, so
         // separate transitions must not collide on the same candidate key.
         const index = context === undefined ? mutationIndex++ :
-          context.mutationIndex * 8 + attempt;
+          context.mutationIndex * POSTGRES_MUTATION_RETRY_BLOCK_SIZE + attempt;
         if (!Number.isSafeInteger(index) || index < 0 || index > 2_147_483_647) {
           throw new Error("wallet-spend-postgres-mutation-index-invalid");
         }
