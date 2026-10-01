@@ -1937,15 +1937,10 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
             prior.state_hash, result.state.generation, nextHash,
             canonicalize(result.state), canonicalize(storedValue)],
         );
-        const retained = (await input.pool.query<CandidateRow>(
-          `SELECT candidate_id, authority_id, continuity_epoch, role_id, request_hash,
-                  mutation_index, prior_revision, prior_state_hash, next_revision,
-                  next_state_hash, candidate_state, candidate_value, continuity_receipt, status
-             FROM dacs_wallet_spend_candidates
-            WHERE lineage_key = $1 AND role_id = $2
-              AND operation_id = $3::uuid AND mutation_index = $4`,
-          [lineage, context?.roleId ?? "internal:unscoped", operationId, index],
-        )).rows[0];
+        const retained = await loadExactCandidate(input.pool, {
+          lineageKey: lineage, roleId: context?.roleId ?? "internal:unscoped",
+          operationId, mutationIndex: index,
+        });
         if (!retained || retained.authority_id !== pin.authorityId ||
             retained.continuity_epoch !== pin.epoch ||
             retained.role_id !== (context?.roleId ?? "internal:unscoped") ||
@@ -1953,6 +1948,9 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
           throw new Error("wallet-spend-postgres-operation-conflict");
         }
         if (retained.status === "superseded") continue;
+        if (retained.status !== "prepared") {
+          throw new Error("wallet-spend-postgres-operation-conflict");
+        }
         if (
             safeRevision(retained.prior_revision) !== priorRevision ||
             retained.prior_state_hash !== prior.state_hash ||
@@ -1960,7 +1958,11 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
             retained.next_state_hash !== nextHash ||
             canonicalize(retained.candidate_state) !== canonicalize(result.state) ||
             !candidateValueMatches(retained.candidate_value, result.value)) {
-          throw new Error("wallet-spend-postgres-operation-conflict");
+          // This exact operation may have prepared the ordinal before a prior
+          // witness attempt failed. Leave that immutable row available in case
+          // the original CAS still wins, but never ask the witness to advance
+          // it unless a fresh operation evaluation reproduces it exactly.
+          continue;
         }
 
         const transitionIdentity = {
