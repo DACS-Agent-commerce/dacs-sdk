@@ -61,7 +61,10 @@ import {
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
 } from "../src/sqlite.js";
-import { downgradeCoordinatorSchemaToV6 } from "./helpers/sqliteSchema.js";
+import {
+  downgradeCoordinatorSchemaToV6,
+  downgradeHttpSchemaToV6,
+} from "./helpers/sqliteSchema.js";
 
 const BINDING_HASH = "a".repeat(64);
 const OTHER_BINDING_HASH = "b".repeat(64);
@@ -2415,7 +2418,51 @@ describe("DACS Node SQLite durability foundation", () => {
       .toEqual(["missing", "ok"]);
   });
 
-  it("backs up and migrates schema v7 without changing x402 or HTTP state", async () => {
+  it("migrates a v6 x402 order before enabling the native DEM namespace", async () => {
+    const root = temporaryRoot();
+    const databasePath = join(root, "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const initial = await open(databasePath, liveOptions);
+    const x402 = liveOrder();
+    expect(await initial.createLiveCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: x402,
+      ...liveOrderBinding(x402),
+    })).toMatchObject({ status: "created" });
+    initial.checkpoint();
+    initial.close();
+    databases.splice(databases.indexOf(initial), 1);
+
+    const raw = new BetterSqlite3(databasePath);
+    downgradeCoordinatorSchemaToV6(raw);
+    downgradeHttpSchemaToV6(raw);
+    raw.exec(`
+      DELETE FROM dacs_migrations WHERE version = 8;
+      DELETE FROM dacs_migrations WHERE version = 7;
+      UPDATE dacs_store_metadata SET schema_version = 6 WHERE singleton = 1;
+      PRAGMA user_version = 6;
+    `);
+    raw.close();
+
+    const migrated = await open(databasePath, liveOptions);
+    expect(readdirSync(root).filter((name) => name.includes(".backup-v6-")))
+      .toHaveLength(1);
+    expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
+    const payDem = payDemOrder(OTHER_JOB_ID);
+    expect(await migrated.createPayDemCoordinatorStore("buyer").create({
+      role: "buyer",
+      order: payDem,
+      ...payDemOrderBinding(payDem),
+    })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
+  });
+
+  it("backs up and migrates an authenticated HTTP v7 database to native DEM v8", async () => {
     const root = temporaryRoot();
     const databasePath = join(root, "buyer.sqlite");
     const liveOptions = {

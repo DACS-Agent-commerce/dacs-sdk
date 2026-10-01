@@ -4397,7 +4397,7 @@ test("upgrade check proves compatible stores without writing", async () => {
         quickCheck: "ok" as const,
         filesystemMagic: 1,
         httpTransport: Object.freeze({
-          policyBound: false,
+          policyBound: true,
           retainedRows: 0,
           retainedBytes: 0,
           reservedRows: 0,
@@ -4451,7 +4451,7 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
         quickCheck: "ok" as const,
         filesystemMagic: 1,
         httpTransport: Object.freeze({
-          policyBound: false,
+          policyBound: true,
           retainedRows: 0,
           retainedBytes: 0,
           reservedRows: 0,
