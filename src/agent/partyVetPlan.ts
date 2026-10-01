@@ -157,6 +157,12 @@ export interface PartyVetRequirementAttempt {
   recipeContentHash: string;
   recipeArtifactHash: string;
   registryProvenance: DurableSessionRecipePin["provenance"];
+  /**
+   * Present only when two or more requirement paths can consume one exact
+   * authority execution and VerifyResult. The group never replaces the
+   * path-specific recipe pins or requirements retained above.
+   */
+  sharedResultGroup?: string;
 }
 
 export interface PartyVetPlan {
@@ -452,6 +458,46 @@ function resultAddress(
     `dacs2:${encodeAddressSegment(jobId)}:${scheme}:` +
     `${encodeAddressSegment(identifier)}:v${recipeVersion}`
   );
+}
+
+function authorityTemplateBindings(
+  attempt: Readonly<PartyVetRequirementAttempt>,
+): Record<string, unknown> {
+  if (attempt.method.kind !== "consensus-backed-proxy") return {};
+  const bindings: Record<string, unknown> = {};
+  const placeholders = [...attempt.method.endpoint.urlTemplate.matchAll(
+    /\{([A-Za-z][A-Za-z0-9_]*)\}/g,
+  )].map((match) => match[1]!);
+  for (const key of [...new Set(placeholders)].sort()) {
+    if (key === "identifier") continue;
+    if (
+      attempt.requirement.parameters === undefined ||
+      !Object.prototype.hasOwnProperty.call(attempt.requirement.parameters, key)
+    ) {
+      // An unavailable template input will fail before the authority effect.
+      // Keeping it explicit prevents it being coalesced with a real binding.
+      bindings[key] = null;
+      continue;
+    }
+    bindings[key] = attempt.requirement.parameters[key];
+  }
+  return bindings;
+}
+
+function sharedResultCompatibilityKey(
+  attempt: Readonly<PartyVetRequirementAttempt>,
+): string {
+  return sha256Hex(canonicalize({
+    resultAddress: attempt.resultAddress,
+    claimSubject: attempt.claimSubject,
+    classification: attempt.classification,
+    method: attempt.method,
+    methodInputHash: attempt.methodInputHash,
+    recipeContentHash: attempt.recipeContentHash,
+    recipeArtifactHash: attempt.recipeArtifactHash,
+    sessionSnapshotHash: attempt.recipePin.sessionSnapshotHash,
+    authorityTemplateBindings: authorityTemplateBindings(attempt),
+  }));
 }
 
 /** DACS-2 §7.7.2 exact party-level composite address. */
@@ -839,8 +885,8 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
 
 /**
  * Capture one immutable, party-scoped Vet plan before any method, signing or
- * anchoring effect. Every requirement path is explicit, so two same-scheme
- * requirements cannot silently share a result or lose their provenance.
+ * anchoring effect. Every requirement path is explicit; compatible same-result
+ * paths share only a derived execution group and retain their own provenance.
  */
 export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   if (
@@ -1002,8 +1048,7 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     supplementary,
     ...(warnings !== undefined ? { warnings } : {}),
   });
-  const plannedAttempts: PartyVetRequirementAttempt[] = [];
-  const resultAddresses = new Set<string>();
+  let plannedAttempts: PartyVetRequirementAttempt[] = [];
   let sessionRecipeRegistrySnapshotHash: string | undefined =
     sessionSnapshot?.snapshotHash;
   for (let index = 0; index < captured.length; index += 1) {
@@ -1108,12 +1153,6 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       attempt.claimSubject,
       recipe.recipeVersion,
     );
-    if (resultAddresses.has(address)) {
-      throw new DacsError(
-        `party Vet attempts derive duplicate result address ${address}`,
-      );
-    }
-    resultAddresses.add(address);
     const recipeContentHash = contentHash(
       recipe as unknown as Record<string, unknown>,
     );
@@ -1186,6 +1225,43 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       recipeArtifactHash,
       registryProvenance,
     }));
+  }
+
+  const attemptsByResultAddress = new Map<string, PartyVetRequirementAttempt[]>();
+  for (const attempt of plannedAttempts) {
+    const group = attemptsByResultAddress.get(attempt.resultAddress) ?? [];
+    group.push(attempt);
+    attemptsByResultAddress.set(attempt.resultAddress, group);
+  }
+  const sharedGroups = new Map<string, string>();
+  for (const [address, attempts] of attemptsByResultAddress) {
+    if (attempts.length < 2) continue;
+    const distinctRequirements = new Set(
+      attempts.map((attempt) => canonicalize(attempt.requirement)),
+    );
+    if (
+      distinctRequirements.size > 1 &&
+      attempts.some((attempt) => attempt.method.kind !== "consensus-backed-proxy")
+    ) {
+      throw new DacsError(
+        `party Vet attempts derive incompatible duplicate result address ${address}`,
+      );
+    }
+    const keys = new Set(attempts.map(sharedResultCompatibilityKey));
+    if (keys.size !== 1) {
+      throw new DacsError(
+        `party Vet attempts derive incompatible duplicate result address ${address}`,
+      );
+    }
+    sharedGroups.set(address, [...keys][0]!);
+  }
+  if (sharedGroups.size > 0) {
+    plannedAttempts = plannedAttempts.map((attempt) => {
+      const sharedResultGroup = sharedGroups.get(attempt.resultAddress);
+      return sharedResultGroup === undefined
+        ? attempt
+        : deepFreeze({ ...attempt, sharedResultGroup });
+    });
   }
 
   const attemptsByPath = new Map(
@@ -1284,21 +1360,53 @@ function validateOutcome(
   });
 }
 
+type PartyVetQualificationDecisions = ReadonlyMap<string, VerificationDecision>;
+
 function effectiveAttemptDecision(
   attempt: Readonly<PartyVetRequirementAttempt>,
   outcome: Readonly<PartyVetAttemptOutcome> | undefined,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): VerificationDecision | undefined {
   if (!outcome) return undefined;
-  return attempt.recipe.availability === "mocked" ||
+  if (attempt.recipe.availability === "mocked" ||
     attempt.recipe.availability === "failed" ||
-    attempt.recipe.availability === "disabled"
-    ? "error"
-    : outcome.result.decision;
+    attempt.recipe.availability === "disabled") {
+    return "error";
+  }
+  if (
+    attempt.sharedResultGroup !== undefined &&
+    evaluatedAt !== undefined &&
+    attempt.requirement.maxAge !== undefined
+  ) {
+    const freshnessWindow = attempt.requirement.maxAge * 1_000;
+    const expiresAt = outcome.result.verifiedAt + freshnessWindow;
+    if (
+      !Number.isSafeInteger(freshnessWindow) ||
+      !Number.isSafeInteger(expiresAt) ||
+      evaluatedAt > expiresAt
+    ) {
+      return "fail";
+    }
+  }
+  if (
+    attempt.sharedResultGroup !== undefined &&
+    outcome.result.decision === "pass" &&
+    attempt.requirement.parameters !== undefined
+  ) {
+    // Shared parameters require the method-specific runtime matcher. The pure
+    // planner has no authenticated method context, so it fails closed unless
+    // the durable producer supplies its internally derived qualification.
+    return qualifications?.get(attempt.attemptId) ?? "fail";
+  }
+  return outcome.result.decision;
 }
 
 function nextAttempt(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): PartyVetRequirementAttempt | null {
   for (let index = 0; index < plan.requirement.required.length; index += 1) {
     const attempt = plan.attempts.find(
@@ -1328,7 +1436,14 @@ function nextAttempt(
       }
       const outcome = completed.get(attempt.attemptId);
       if (!outcome) return attempt;
-      if (effectiveAttemptDecision(attempt, outcome) === "pass") break;
+      if (
+        effectiveAttemptDecision(
+          attempt,
+          outcome,
+          evaluatedAt,
+          qualifications,
+        ) === "pass"
+      ) break;
     }
   }
   return null;
@@ -1337,6 +1452,8 @@ function nextAttempt(
 function skippedAttemptIds(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): string[] {
   const skipped: string[] = [];
   for (let groupIndex = 0; groupIndex < (plan.requirement.oneOf?.length ?? 0); groupIndex += 1) {
@@ -1373,6 +1490,8 @@ function skippedAttemptIds(
           effectiveAttemptDecision(
             attempt,
             completed.get(attempt.attemptId),
+            evaluatedAt,
+            qualifications,
           ) === "pass"
         ) {
           satisfied = true;
@@ -1387,6 +1506,8 @@ function plannedEntryDecision(
   plan: Readonly<PartyVetPlan>,
   entry: Readonly<PartyVetPlannedRequirement>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): VerificationDecision {
   if (entry.disposition === "presence") {
     return entry.presenceDecision ?? "error";
@@ -1396,13 +1517,20 @@ function plannedEntryDecision(
     (candidate) => candidate.attemptId === entry.attemptId,
   );
   return attempt
-    ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId)) ?? "fail"
+    ? effectiveAttemptDecision(
+        attempt,
+        completed.get(attempt.attemptId),
+        evaluatedAt,
+        qualifications,
+      ) ?? "fail"
     : "fail";
 }
 
 function planSelectorAuthorized(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): boolean {
   const selector = plan.requirement.primaryClaimSelector;
   if (selector === undefined) return true;
@@ -1421,7 +1549,12 @@ function planSelectorAuthorized(
     return sameCanonicalClaimIdentity(
       attempt.claimSubject,
       plan.identityBundle.presentedBy,
-    ) && effectiveAttemptDecision(attempt, outcome) === "pass";
+    ) && effectiveAttemptDecision(
+      attempt,
+      outcome,
+      evaluatedAt,
+      qualifications,
+    ) === "pass";
   });
   const presencePassesExact = (
     entry: Readonly<PartyVetPlannedRequirement>,
@@ -1459,7 +1592,13 @@ function planSelectorAuthorized(
     const passingOtherScheme = entries.some(
       (entry) =>
         entry.requirement.scheme !== selector &&
-        plannedEntryDecision(plan, entry, completed) === "pass",
+        plannedEntryDecision(
+          plan,
+          entry,
+          completed,
+          evaluatedAt,
+          qualifications,
+        ) === "pass",
     );
     if (!exactPresenceInGroup && !passingOtherScheme) presenceSelector = false;
   }
@@ -1469,6 +1608,8 @@ function planSelectorAuthorized(
 function aggregateComplete(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): VerificationDecision {
   const failures: string[] = [];
   const errors: string[] = [];
@@ -1482,7 +1623,12 @@ function aggregateComplete(
     const decision = entry.disposition === "presence"
       ? entry.presenceDecision
       : attempt
-        ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId))
+        ? effectiveAttemptDecision(
+            attempt,
+            completed.get(attempt.attemptId),
+            evaluatedAt,
+            qualifications,
+          )
         : "fail";
     if (decision === "pass") continue;
     if (decision === "fail" || decision === undefined) {
@@ -1513,6 +1659,8 @@ function aggregateComplete(
           ? effectiveAttemptDecision(
               attempt,
               completed.get(attempt.attemptId),
+              evaluatedAt,
+              qualifications,
             ) ?? "fail"
           : "fail";
       })
@@ -1527,7 +1675,14 @@ function aggregateComplete(
     }
   }
 
-  if (!planSelectorAuthorized(plan, completed)) failures.push("primaryClaimSelector");
+  if (!planSelectorAuthorized(
+    plan,
+    completed,
+    evaluatedAt,
+    qualifications,
+  )) {
+    failures.push("primaryClaimSelector");
+  }
   if (failures.length > 0) return "fail";
   if (errors.length > 0) return "error";
   if (indeterminates.length > 0) return "indeterminate";
@@ -1539,15 +1694,23 @@ function aggregateComplete(
  * alternatives stop after the first pass; required claims and separate groups
  * remain AND-composed. An out-of-order, duplicate or post-pass result is fatal.
  */
-export function advancePartyVetPlan(
+function advancePartyVetPlanInternal(
   plan: PartyVetPlan,
   outcomeSource: readonly PartyVetAttemptOutcome[],
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): PartyVetExecutionState {
   if (!isPartyVetPlan(plan)) {
     throw new DacsError("party Vet execution requires an authenticated immutable plan");
   }
   if (!Array.isArray(outcomeSource)) {
     throw new DacsError("party Vet outcomes must be an array");
+  }
+  if (
+    evaluatedAt !== undefined &&
+    (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0)
+  ) {
+    throw new DacsError("party Vet evaluatedAt must be a non-negative safe integer");
   }
   let outcomeDescriptors: Record<string, PropertyDescriptor>;
   try {
@@ -1577,7 +1740,7 @@ export function advancePartyVetPlan(
   const completed = new Map<string, PartyVetAttemptOutcome>();
   const ordered: PartyVetAttemptOutcome[] = [];
   for (let index = 0; index < outcomeKeys.length; index += 1) {
-    const expected = nextAttempt(plan, completed);
+    const expected = nextAttempt(plan, completed, evaluatedAt, qualifications);
     if (!expected) {
       throw new DacsError("party Vet execution contains an outcome after completion");
     }
@@ -1593,8 +1756,13 @@ export function advancePartyVetPlan(
     completed.set(outcome.attemptId, outcome);
     ordered.push(outcome);
   }
-  const pending = nextAttempt(plan, completed);
-  const skipped = skippedAttemptIds(plan, completed);
+  const pending = nextAttempt(plan, completed, evaluatedAt, qualifications);
+  const skipped = skippedAttemptIds(
+    plan,
+    completed,
+    evaluatedAt,
+    qualifications,
+  );
   if (pending) {
     return deepFreeze({
       status: "pending" as const,
@@ -1614,10 +1782,38 @@ export function advancePartyVetPlan(
   }
   return deepFreeze({
     status: "complete" as const,
-    overallDecision: aggregateComplete(plan, completed),
+    overallDecision: aggregateComplete(
+      plan,
+      completed,
+      evaluatedAt,
+      qualifications,
+    ),
     completed: ordered,
     freshness,
     dealSpecific,
     skippedAttemptIds: skipped,
   });
+}
+
+export function advancePartyVetPlan(
+  plan: PartyVetPlan,
+  outcomeSource: readonly PartyVetAttemptOutcome[],
+  evaluatedAt?: number,
+): PartyVetExecutionState {
+  return advancePartyVetPlanInternal(plan, outcomeSource, evaluatedAt);
+}
+
+/** @internal Durable producer path after method-specific qualification. */
+export function advanceQualifiedPartyVetPlan(
+  plan: PartyVetPlan,
+  outcomeSource: readonly PartyVetAttemptOutcome[],
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  evaluatedAt?: number,
+): PartyVetExecutionState {
+  return advancePartyVetPlanInternal(
+    plan,
+    outcomeSource,
+    evaluatedAt,
+    qualifications,
+  );
 }
