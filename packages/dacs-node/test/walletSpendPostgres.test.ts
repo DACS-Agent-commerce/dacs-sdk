@@ -313,6 +313,7 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
     request: unknown;
     response: unknown | null;
   }>();
+  readonly operationCounts = new Map<string, number>([["global", 0]]);
   failNextConnect = false;
   failNextCommitAfterApply = false;
   failNextSerializableAdvance = false;
@@ -447,10 +448,57 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
         text: string,
         values: readonly unknown[] = [],
       ) => {
-        if (text === "BEGIN ISOLATION LEVEL SERIALIZABLE" || text === "ROLLBACK" ||
+        if (text.startsWith("SELECT pg_advisory_xact_lock(")) {
+          await acquire();
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text === "BEGIN ISOLATION LEVEL SERIALIZABLE" ||
+            text === "BEGIN ISOLATION LEVEL READ COMMITTED" || text === "ROLLBACK" ||
             text.startsWith("SELECT set_config")) {
           if (text === "ROLLBACK") releaseLock?.();
           return { rows: [], rowCount: 0 };
+        }
+        if (text.startsWith("SELECT request_hash, request FROM dacs_wallet_spend_operations")) {
+          const operation = this.operations.get(`${String(values[0])}\0${String(values[1])}`);
+          return {
+            rows: operation === undefined ? [] : [structuredClone(operation) as Row],
+            rowCount: operation === undefined ? 0 : 1,
+          };
+        }
+        if (text.startsWith("SELECT scope, retained_operations")) {
+          const roleScope = String(values[0]);
+          const rows = ["global", roleScope].flatMap((scope) => {
+            const count = this.operationCounts.get(scope);
+            return count === undefined ? [] : [{
+              scope,
+              retained_operations: String(count),
+            } as Row];
+          });
+          return {
+            rows,
+            rowCount: rows.length,
+          };
+        }
+        if (text.startsWith("INSERT INTO dacs_wallet_spend_operations")) {
+          const key = `${String(values[0])}\0${String(values[1])}`;
+          if (this.operations.has(key)) return { rows: [] as Row[], rowCount: 0 };
+          this.operations.set(key, {
+            request_hash: String(values[2]),
+            request: JSON.parse(String(values[3])) as unknown,
+            response: null,
+          });
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text.startsWith("UPDATE dacs_wallet_spend_operation_counts")) {
+          const count = this.operationCounts.get("global");
+          if (count === undefined) return { rows: [] as Row[], rowCount: 0 };
+          this.operationCounts.set("global", count + 1);
+          return { rows: [] as Row[], rowCount: 1 };
+        }
+        if (text.startsWith("INSERT INTO dacs_wallet_spend_operation_counts")) {
+          const scope = String(values[0]);
+          this.operationCounts.set(scope, (this.operationCounts.get(scope) ?? 0) + 1);
+          return { rows: [] as Row[], rowCount: 1 };
         }
         if (text === "COMMIT") {
           releaseLock?.();
@@ -562,6 +610,9 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1).toContain(
       "wallet-spend-continuity-migration-required",
     );
+    expect(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1).toContain(
+      "CREATE TABLE IF NOT EXISTS dacs_wallet_spend_operation_counts",
+    );
     // Fresh lineages are inserted as pending before the external witness CAS.
     // Only active lineages require a receipt, so this column must remain nullable.
     expect(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1).not.toContain(
@@ -588,10 +639,62 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(commit).toBeGreaterThan(addRole);
   });
 
+  it("atomically bounds retained operations per role and globally", async () => {
+    const pool = await fakePool();
+    const operations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool, {
+      maximumOperationsPerRole: 2,
+      maximumOperations: 3,
+    });
+    const claim = (roleId: string, suffix: string) => {
+      const operationId = `00000000-0000-4000-8000-0000000000${suffix.padStart(2, "0")}`;
+      const requestHash = suffix.repeat(64);
+      return operations.claim({
+        roleId,
+        operationId,
+        requestHash,
+        request: {
+          protocolVersion: "1",
+          operationId,
+          policyHash: "a".repeat(64),
+          wallet: "wallet-a",
+          chainId: "chain-a",
+          operation: "reserve",
+          payload: { reservation: {}, options: {} },
+        },
+      });
+    };
+
+    const roleResults = await Promise.all([
+      claim("role-a", "1"),
+      claim("role-a", "2"),
+      claim("role-a", "3"),
+      claim("role-a", "4"),
+    ]);
+    const retainedSuffix = String(roleResults.findIndex((result) => result === "new") + 1);
+    expect([...roleResults].sort()).toEqual(["full", "full", "new", "new"]);
+    await expect(claim("role-b", "5")).resolves.toBe("new");
+    await expect(claim("role-b", "6")).resolves.toBe("full");
+    await expect(claim("role-a", retainedSuffix)).resolves.toBe("existing");
+    expect(pool.operations.size).toBe(3);
+    expect([...pool.operations.keys()].filter((key) => key.startsWith("role-a\0")))
+      .toHaveLength(2);
+    expect([...pool.operations.keys()].filter((key) => key.startsWith("role-b\0")))
+      .toHaveLength(1);
+    expect(pool.operationCounts).toEqual(new Map([
+      ["global", 3],
+      ["role:role-a", 2],
+      ["role:role-b", 1],
+    ]));
+  });
+
   it("quiesces role migration, rejects ambiguous rows and fences legacy writers", () => {
     const schema = DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1;
     const operationLock = schema.indexOf(
       "LOCK TABLE dacs_wallet_spend_operations IN ACCESS EXCLUSIVE MODE",
+    );
+    const operationCountLock = schema.indexOf(
+      "LOCK TABLE dacs_wallet_spend_operation_counts IN ACCESS EXCLUSIVE MODE",
+      operationLock,
     );
     const lock = schema.indexOf(
       "LOCK TABLE dacs_wallet_spend_candidates IN ACCESS EXCLUSIVE MODE",
@@ -603,7 +706,8 @@ describe("PostgreSQL wallet authority persistence", () => {
     const migrationEnd = schema.indexOf("$dacs_wallet_spend_role_migration$;", requireRole);
 
     expect(operationLock).toBeGreaterThanOrEqual(0);
-    expect(lock).toBeGreaterThan(operationLock);
+    expect(operationCountLock).toBeGreaterThan(operationLock);
+    expect(lock).toBeGreaterThan(operationCountLock);
     expect(addRole).toBeGreaterThan(lock);
     expect(backfill).toBeGreaterThan(addRole);
     expect(rejectNull).toBeGreaterThan(backfill);
@@ -616,6 +720,12 @@ describe("PostgreSQL wallet authority persistence", () => {
     // role_id is rejected by this database constraint.
     expect(schema.slice(lock, migrationEnd)).toContain(
       "ALTER COLUMN role_id SET NOT NULL",
+    );
+    expect(schema.slice(lock, migrationEnd)).toContain(
+      "DELETE FROM dacs_wallet_spend_operation_counts",
+    );
+    expect(schema.slice(lock, migrationEnd)).toContain(
+      "SELECT 'global', count(*) FROM dacs_wallet_spend_operations",
     );
   });
 
@@ -1748,7 +1858,18 @@ describe("PostgreSQL wallet authority persistence", () => {
     const selected = policy("policy-a");
     const roleId = "buyer";
     const token = "buyer-role-token-which-is-long-enough";
-    const operations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    const durableOperations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    const operations = {
+      load: (input: Parameters<typeof durableOperations.load>[0]) =>
+        durableOperations.load(input),
+      async claim(input: Parameters<typeof durableOperations.claim>[0]) {
+        const result = await durableOperations.claim(input);
+        pool.failNextConnect = true;
+        return result;
+      },
+      complete: (input: Parameters<typeof durableOperations.complete>[0]) =>
+        durableOperations.complete(input),
+    };
     const handler = createDacsWalletSpendAuthorityServiceV1({
       authenticate: (presented) => presented === token ? roleId : null,
       resolveAuthority: ({ roleId: requestedRole, operationId, requestHash,
@@ -1819,7 +1940,6 @@ describe("PostgreSQL wallet authority persistence", () => {
         allowInsecureLoopback: true,
         fetch: fetchWithExactRetry,
       });
-      pool.failNextConnect = true;
       const claim = await remote.reserve(retainedReservation);
 
       expect(claim).toMatchObject({

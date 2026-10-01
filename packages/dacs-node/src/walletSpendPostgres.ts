@@ -19,7 +19,13 @@ import {
   publicKeyFromSeed,
 } from "@kynesyslabs/dacs/crypto";
 
-import type { DacsWalletSpendRemoteOperationStoreV1 } from "./walletSpendRemote.js";
+import type {
+  DacsWalletSpendRemoteOperationStoreV1,
+} from "./walletSpendRemote.js";
+import {
+  dacsWalletSpendRemoteOperationRetentionV1,
+  type DacsWalletSpendRemoteOperationRetentionV1,
+} from "./walletSpendOperationRetention.js";
 
 export interface DacsPostgresQueryResultV1<Row = Record<string, unknown>> {
   rows: Row[];
@@ -382,6 +388,10 @@ CREATE TABLE IF NOT EXISTS dacs_wallet_spend_operations (
   completed_at timestamptz,
   PRIMARY KEY (role_id, operation_id)
 );
+CREATE TABLE IF NOT EXISTS dacs_wallet_spend_operation_counts (
+  scope text PRIMARY KEY,
+  retained_operations bigint NOT NULL CHECK (retained_operations >= 0)
+);
 CREATE OR REPLACE FUNCTION dacs_wallet_spend_require_writer_v2()
 RETURNS trigger LANGUAGE plpgsql AS $dacs_wallet_spend_writer_fence$
 BEGIN
@@ -404,6 +414,7 @@ BEGIN
   -- until role_id has become mandatory; an old insert released afterward then
   -- fails the NOT NULL constraint instead of creating an unusable candidate.
   LOCK TABLE dacs_wallet_spend_operations IN ACCESS EXCLUSIVE MODE;
+  LOCK TABLE dacs_wallet_spend_operation_counts IN ACCESS EXCLUSIVE MODE;
   LOCK TABLE dacs_wallet_spend_candidates IN ACCESS EXCLUSIVE MODE;
   LOCK TABLE dacs_wallet_spend_lineages IN ACCESS EXCLUSIVE MODE;
   ALTER TABLE dacs_wallet_spend_lineages
@@ -477,6 +488,14 @@ BEGIN
     ALTER COLUMN continuity_epoch SET NOT NULL;
   ALTER TABLE dacs_wallet_spend_operations
     ALTER COLUMN writer_contract_version SET NOT NULL;
+  -- This is derived admission state. Rebuild it under the same quiesced lock
+  -- that fences legacy operation writers so upgrades start from exact counts.
+  DELETE FROM dacs_wallet_spend_operation_counts;
+  INSERT INTO dacs_wallet_spend_operation_counts (scope, retained_operations)
+    SELECT 'global', count(*) FROM dacs_wallet_spend_operations;
+  INSERT INTO dacs_wallet_spend_operation_counts (scope, retained_operations)
+    SELECT 'role:' || role_id, count(*)
+      FROM dacs_wallet_spend_operations GROUP BY role_id;
 END
 $dacs_wallet_spend_role_migration$;
 CREATE INDEX IF NOT EXISTS dacs_wallet_spend_candidates_role_operation
@@ -1067,6 +1086,34 @@ async function transaction<T>(
     try {
       await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
       await client.query("SELECT set_config('dacs.wallet_spend_writer_contract', '2', true)");
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch { /* preserve the original failure */ }
+      const code = postgresErrorCode(error);
+      if ((code !== "40001" && code !== "40P01") || attempt === 7) throw error;
+    } finally {
+      client.release();
+    }
+  }
+  throw new Error("wallet-spend-postgres-serialization-exhausted");
+}
+
+// Fixed namespace for operation-log admission. READ COMMITTED gives the count
+// statement a fresh snapshot after this transaction-scoped lock is acquired.
+const OPERATION_ADMISSION_LOCK = "(1145131859, 1330662465)";
+
+async function operationAdmissionTransaction<T>(
+  pool: DacsPostgresPoolV1,
+  operation: (client: DacsPostgresClientV1) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      await client.query("SELECT set_config('dacs.wallet_spend_writer_contract', '2', true)");
+      await client.query(`SELECT pg_advisory_xact_lock${OPERATION_ADMISSION_LOCK}`);
       const result = await operation(client);
       await client.query("COMMIT");
       return result;
@@ -2043,7 +2090,10 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
 /** Durable request identity/result log used by the narrow authority service. */
 export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
   pool: DacsPostgresPoolV1,
+  retentionInput: Readonly<DacsWalletSpendRemoteOperationRetentionV1> = {},
 ): DacsWalletSpendRemoteOperationStoreV1 {
+  const { maximumOperationsPerRole, maximumOperations } =
+    dacsWalletSpendRemoteOperationRetentionV1(retentionInput);
   const recoverReservedResponse = async (
     roleId: string,
     operationId: string,
@@ -2178,22 +2228,72 @@ export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
   const store: DacsWalletSpendRemoteOperationStoreV1 = {
     load,
     async claim(input) {
-      const inserted = await pool.query(
-        `INSERT INTO dacs_wallet_spend_operations
-          (writer_contract_version, role_id, operation_id, request_hash, request)
-         VALUES (2, $1, $2::uuid, $3, $4::jsonb) ON CONFLICT DO NOTHING`,
-        [input.roleId, input.operationId, input.requestHash,
-          canonicalize(input.request)],
-      );
-      if (inserted.rowCount === 1) return "new";
-      const prior = await load({
-        roleId: input.roleId,
-        operationId: input.operationId,
+      return operationAdmissionTransaction(pool, async (client) => {
+        // Every supported claimant is serialized before counting. Completion
+        // updates remain independent, and no ambiguous or completed row is
+        // deleted to make room.
+        const retained = (await client.query<{
+          request_hash: string;
+          request: unknown;
+        }>(
+          `SELECT request_hash, request FROM dacs_wallet_spend_operations
+            WHERE role_id = $1 AND operation_id = $2::uuid`,
+          [input.roleId, input.operationId],
+        )).rows[0];
+        if (retained !== undefined) {
+          if (retained.request_hash !== input.requestHash ||
+              canonicalize(retained.request) !== canonicalize(input.request)) {
+            throw new Error("wallet-spend-authority-operation-conflict");
+          }
+          return "existing";
+        }
+        const roleScope = `role:${input.roleId}`;
+        const countRows = (await client.query<{
+          scope: string;
+          retained_operations: string | number;
+        }>(
+          `SELECT scope, retained_operations
+             FROM dacs_wallet_spend_operation_counts
+            WHERE scope IN ('global', $1)`,
+          [roleScope],
+        )).rows;
+        const globalCount = countRows.find(({ scope }) => scope === "global");
+        const roleCount = countRows.find(({ scope }) => scope === roleScope);
+        if (globalCount === undefined) {
+          throw new Error("wallet-spend-authority-operation-counts-missing");
+        }
+        if (safeRevision(roleCount?.retained_operations ?? 0) >=
+              maximumOperationsPerRole ||
+            safeRevision(globalCount.retained_operations) >= maximumOperations) {
+          return "full";
+        }
+        const inserted = await client.query(
+          `INSERT INTO dacs_wallet_spend_operations
+            (writer_contract_version, role_id, operation_id, request_hash, request)
+           VALUES (2, $1, $2::uuid, $3, $4::jsonb) ON CONFLICT DO NOTHING`,
+          [input.roleId, input.operationId, input.requestHash,
+            canonicalize(input.request)],
+        );
+        if (inserted.rowCount !== 1) {
+          throw new Error("wallet-spend-authority-operation-conflict");
+        }
+        const globalIncrement = await client.query(
+          `UPDATE dacs_wallet_spend_operation_counts
+              SET retained_operations = retained_operations + 1
+            WHERE scope = 'global'`,
+        );
+        const roleIncrement = await client.query(
+          `INSERT INTO dacs_wallet_spend_operation_counts (scope, retained_operations)
+           VALUES ($1, 1)
+           ON CONFLICT (scope) DO UPDATE SET retained_operations =
+             dacs_wallet_spend_operation_counts.retained_operations + 1`,
+          [roleScope],
+        );
+        if (globalIncrement.rowCount !== 1 || roleIncrement.rowCount !== 1) {
+          throw new Error("wallet-spend-authority-operation-counts-invalid");
+        }
+        return "new";
       });
-      if (prior?.requestHash !== input.requestHash) {
-        throw new Error("wallet-spend-authority-operation-conflict");
-      }
-      return "existing";
     },
     async complete(input) {
       const retained = (await pool.query<{

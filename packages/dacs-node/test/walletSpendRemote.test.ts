@@ -170,6 +170,22 @@ function handlerFetch(
     handler(new Request(input, init))) as typeof fetch;
 }
 
+function postService(
+  version: "1" | "2",
+  handler: (request: Request) => Promise<Response>,
+  body: unknown,
+  token = TOKEN,
+): Promise<Response> {
+  return handler(new Request(
+    `http://authority.test/v${version}/wallet-spend/operations`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  ));
+}
+
 function countedByteStream(totalBytes: number, chunkBytes = 8 * 1024) {
   const counters = { pulls: 0, cancellations: 0, bytes: 0 };
   const stream = new ReadableStream<Uint8Array>({
@@ -190,6 +206,218 @@ function countedByteStream(totalBytes: number, chunkBytes = 8 * 1024) {
 }
 
 describe("remote PostgreSQL wallet authority boundary", () => {
+  it.each(["1", "2"] as const)(
+    "does not claim a V%s operation for an unavailable lineage",
+    async (version) => {
+      const local = version === "1" ? server() : await serverV2();
+      const operationId = version === "1"
+        ? "00000000-0000-4000-8000-000000000101"
+        : "00000000-0000-4000-8000-000000000102";
+      const unknownWallet = "wallet-unprovisioned";
+      const item = { ...reservation(), wallet: unknownWallet };
+      const common = {
+        operationId,
+        policyHash: local.authority.policyHash,
+        wallet: unknownWallet,
+        chainId: item.chainId,
+        operation: "reserve",
+        payload: { reservation: item, options: {} },
+      };
+      const body = version === "1" ? {
+        protocolVersion: "1",
+        ...common,
+      } : {
+        protocolVersion: "2",
+        requestHashVersion: "1",
+        clientNonce: "1".repeat(64),
+        authorityId: "wallet-authority-production",
+        epoch: "epoch-2026-09",
+        lineageKey: dacsWalletSpendLineageKeyV1(unknownWallet, item.chainId),
+        ...common,
+      };
+
+      const response = await postService(version, local.handler, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-lineage-unavailable",
+      });
+      await expect(local.operations.load({ roleId: "buyer", operationId }))
+        .resolves.toBeUndefined();
+    },
+  );
+
+  it.each(["1", "2"] as const)(
+    "does not claim a V%s operation with a deeply malformed payload",
+    async (version) => {
+      const local = version === "1" ? server() : await serverV2();
+      const operationId = version === "1"
+        ? "00000000-0000-4000-8000-000000000103"
+        : "00000000-0000-4000-8000-000000000104";
+      const selected = local.authority.policy;
+      const common = {
+        operationId,
+        policyHash: local.authority.policyHash,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        operation: "reserve",
+        payload: {
+          reservation: { ...reservation(), agreementHash: "not-a-hash" },
+          options: {},
+        },
+      };
+      const body = version === "1" ? {
+        protocolVersion: "1",
+        ...common,
+      } : {
+        protocolVersion: "2",
+        requestHashVersion: "1",
+        clientNonce: "2".repeat(64),
+        authorityId: "wallet-authority-production",
+        epoch: "epoch-2026-09",
+        lineageKey: dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId),
+        ...common,
+      };
+
+      const response = await postService(version, local.handler, body);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      await expect(local.operations.load({ roleId: "buyer", operationId }))
+        .resolves.toBeUndefined();
+    },
+  );
+
+  it("durably claims a valid operation immediately before authority mutation", async () => {
+    const selected = policy();
+    const events: string[] = [];
+    const state = createInMemoryWalletSpendStateStore();
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: {
+        transact: (scope, operation) => {
+          events.push("authority");
+          return state.transact(scope, operation);
+        },
+      },
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "remote-service",
+      now: () => 1_000,
+    });
+    const inner = createInMemoryDacsWalletSpendRemoteOperationStoreV1();
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (token) => token === TOKEN ? "buyer" : null,
+      resolveAuthority: () => authority,
+      operations: {
+        load: (input) => inner.load(input),
+        async claim(input) {
+          const result = await inner.claim(input);
+          events.push("claim");
+          return result;
+        },
+        complete: (input) => inner.complete(input),
+      },
+    });
+    const operationId = "00000000-0000-4000-8000-000000000105";
+    const response = await postService("1", handler, {
+      protocolVersion: "1",
+      operationId,
+      policyHash: authority.policyHash,
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      operation: "reserve",
+      payload: { reservation: reservation(), options: {} },
+    });
+
+    expect(response.status).toBe(200);
+    expect(events.slice(0, 2)).toEqual(["claim", "authority"]);
+  });
+
+  it("bounds retained operations per role and globally without evicting exact claims", async () => {
+    const operations = createInMemoryDacsWalletSpendRemoteOperationStoreV1({
+      maximumOperationsPerRole: 2,
+      maximumOperations: 3,
+    });
+    const claim = (roleId: string, suffix: string) => {
+      const operationId = `00000000-0000-4000-8000-0000000000${suffix.padStart(2, "0")}`;
+      const requestHash = suffix.repeat(64);
+      return operations.claim({
+        roleId,
+        operationId,
+        requestHash,
+        request: {
+          protocolVersion: "1",
+          operationId,
+          policyHash: HASH,
+          wallet: "wallet-a",
+          chainId: "chain-a",
+          operation: "reserve",
+          payload: { reservation: reservation(), options: {} },
+        },
+      });
+    };
+
+    await expect(claim("role-a", "1")).resolves.toBe("new");
+    await expect(claim("role-a", "2")).resolves.toBe("new");
+    await expect(claim("role-a", "3")).resolves.toBe("full");
+    await expect(claim("role-b", "3")).resolves.toBe("new");
+    await expect(claim("role-b", "4")).resolves.toBe("full");
+    await expect(claim("role-a", "1")).resolves.toBe("existing");
+    await expect(operations.load({
+      roleId: "role-a",
+      operationId: "00000000-0000-4000-8000-000000000001",
+    })).resolves.toBeDefined();
+  });
+
+  it("returns stable capacity exhaustion while preserving other-role and exact recovery", async () => {
+    const selected = { ...policy(), maximumConcurrentEffects: 3 };
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "remote-service",
+      now: () => 1_000,
+    });
+    const otherToken = "other-role-scoped-test-token-which-is-long-enough";
+    const operations = createInMemoryDacsWalletSpendRemoteOperationStoreV1({
+      maximumOperationsPerRole: 1,
+      maximumOperations: 2,
+    });
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (token) => token === TOKEN ? "role-a" : token === otherToken ? "role-b" : null,
+      resolveAuthority: () => authority,
+      operations,
+    });
+    const body = (suffix: string) => ({
+      protocolVersion: "1",
+      operationId: `00000000-0000-4000-8000-0000000001${suffix.padStart(2, "0")}`,
+      policyHash: authority.policyHash,
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      operation: "reserve",
+      payload: {
+        reservation: {
+          ...reservation(),
+          reservationId: `capacity-${suffix}`,
+          jobId: `capacity-job-${suffix}`,
+        },
+        options: {},
+      },
+    });
+
+    const first = await postService("1", handler, body("1"));
+    expect(first.status).toBe(200);
+    const exhausted = await postService("1", handler, body("2"));
+    expect(exhausted.status).toBe(429);
+    await expect(exhausted.json()).resolves.toEqual({
+      reasonCode: "wallet-spend-authority-operation-capacity-exceeded",
+    });
+    const otherRole = await postService("1", handler, body("3"), otherToken);
+    expect(otherRole.status).toBe(200);
+    const exact = await postService("1", handler, body("1"));
+    expect(exact.status).toBe(200);
+  });
+
   it.each(["V1", "V2"] as const)(
     "cancels an undeclared oversized %s service request before draining it",
     async (version) => {

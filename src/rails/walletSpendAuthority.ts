@@ -283,6 +283,14 @@ export interface WalletSpendAuthorityReplayV1 {
   observation?: Readonly<WalletSpendSettlementObservationV1>;
 }
 
+export type WalletSpendAuthorityOperationV1 =
+  | "reserve"
+  | "current"
+  | "begin"
+  | "settle"
+  | "reconcile"
+  | "inspect";
+
 const walletSpendAuthorityReplay = new WeakMap<
   WalletSpendAuthorityV1,
   (input: Readonly<WalletSpendAuthorityReplayV1>) => Promise<void>
@@ -595,6 +603,188 @@ function captureReservation(
     throw new DacsError("wallet spend reservation must bind the exact service debit");
   }
   return reservation;
+}
+
+function captureReservationOptions(
+  value: Readonly<{ operatorApproval?: string }>,
+): Readonly<{ operatorApproval?: string }> {
+  const options = frozenSnapshot(value, "wallet spend reservation options");
+  if (options === null || typeof options !== "object" || Array.isArray(options) ||
+      Object.keys(options).some((key) => key !== "operatorApproval")) {
+    throw new DacsError("wallet spend reservation option is unsupported");
+  }
+  if (options.operatorApproval !== undefined) {
+    nonEmpty(options.operatorApproval, "wallet spend operator approval");
+  }
+  return options;
+}
+
+function captureObservation(
+  value: Readonly<WalletSpendRecoveryObservationV1>,
+  reservation: Readonly<WalletSpendReservationV1>,
+): Readonly<WalletSpendRecoveryObservationV1> {
+  const observation = frozenSnapshot(value, "wallet spend recovery observation");
+  const allowed = observation.disposition === "settled"
+    ? new Set(["disposition", "evidenceHash", "debits"])
+    : new Set(["disposition", "evidenceHash"]);
+  if (Object.keys(observation).some((key) => !allowed.has(key))) {
+    throw new DacsError("wallet spend recovery observation has an invalid shape");
+  }
+  hash(observation.evidenceHash, "wallet spend recovery evidenceHash");
+  if (observation.disposition === "settled") {
+    if (!Array.isArray(observation.debits) || observation.debits.length === 0) {
+      throw new DacsError("wallet spend settlement has no debit accounting");
+    }
+    const maxima = new Map(reservation.debits.map((debit) => [
+      `${debit.asset}\0${debit.purpose}`,
+      positiveAmount(debit.maximumAmount, "wallet spend maximum debit"),
+    ]));
+    const seen = new Set<string>();
+    for (const debit of observation.debits) {
+      if (Object.keys(debit).some((key) =>
+        key !== "asset" && key !== "purpose" && key !== "amount") ||
+          (debit.purpose !== "service" && debit.purpose !== "network-fee")) {
+        throw new DacsError("wallet spend settlement debit purpose is invalid");
+      }
+      const key = `${debit.asset}\0${debit.purpose}`;
+      if (seen.has(key) || !maxima.has(key)) {
+        throw new DacsError("wallet spend settlement debit is unbound");
+      }
+      seen.add(key);
+      const actual = amount(debit.amount, "wallet spend actual debit");
+      if (actual > maxima.get(key)!) {
+        throw new DacsError("wallet spend actual debit exceeds its reservation");
+      }
+      if (debit.purpose === "service" && actual !== maxima.get(key)) {
+        throw new DacsError("wallet spend service debit differs from the agreement");
+      }
+    }
+    if (seen.size !== maxima.size) {
+      throw new DacsError("wallet spend settlement omits reserved debit accounting");
+    }
+    return observation;
+  }
+  if (observation.disposition !== "not-invoked" &&
+      observation.disposition !== "terminal-absent") {
+    throw new DacsError("wallet spend recovery disposition is invalid");
+  }
+  return observation;
+}
+
+function captureReplayOperation(
+  policy: Readonly<WalletSpendPolicyV1>,
+  input: Readonly<WalletSpendAuthorityReplayV1>,
+): Readonly<{
+  operation: WalletSpendAuthorityReplayV1["operation"];
+  reservation: Readonly<WalletSpendReservationV1>;
+  binding: string;
+  token: Readonly<WalletSpendLeaseTokenV1>;
+  observation?: Readonly<WalletSpendSettlementObservationV1>;
+}> {
+  const captured = frozenSnapshot(input, "wallet spend claimed operation replay");
+  const expectedInput = captured.operation === "settle"
+    ? new Set(["operation", "permit", "observation"])
+    : new Set(["operation", "permit"]);
+  if (!new Set(["current", "begin", "settle"]).has(captured.operation) ||
+      Object.keys(captured).some((key) => !expectedInput.has(key)) ||
+      captured.permit === null || typeof captured.permit !== "object" ||
+      Array.isArray(captured.permit) || Object.keys(captured.permit).some((key) =>
+        !new Set([
+          "reservationId", "bindingHash", "settlementBindingHash", "owner",
+          "generation", "reservation",
+        ]).has(key))) {
+    throw new DacsError("wallet spend claimed operation replay is invalid");
+  }
+  const reservation = captureReservation(captured.permit.reservation, policy);
+  const binding = bindingHash(reservation);
+  if (captured.permit.reservationId !== reservation.reservationId ||
+      captured.permit.bindingHash !== binding ||
+      captured.permit.settlementBindingHash !== reservation.settlementBindingHash) {
+    throw new DacsError("wallet spend claimed operation replay is unbound");
+  }
+  const token = Object.freeze({
+    owner: nonEmpty(captured.permit.owner, "wallet spend replay owner"),
+    generation: safeInteger(
+      captured.permit.generation,
+      "wallet spend replay generation",
+      true,
+    ),
+  });
+  if (captured.operation !== "settle") {
+    return Object.freeze({ operation: captured.operation, reservation, binding, token });
+  }
+  if (captured.observation === undefined) {
+    throw new DacsError("wallet spend settlement replay lacks an observation");
+  }
+  const observation = captureObservation(captured.observation, reservation);
+  if (observation.disposition !== "settled") {
+    throw new DacsError("wallet spend settlement replay requires a settlement observation");
+  }
+  return Object.freeze({
+    operation: captured.operation,
+    reservation,
+    binding,
+    token,
+    observation,
+  });
+}
+
+/** Pure shape/scope admission for a remote operation before it is durably claimed. */
+export function validateWalletSpendAuthorityOperationV1(
+  policyInput: Readonly<WalletSpendPolicyV1>,
+  operation: WalletSpendAuthorityOperationV1,
+  payloadInput: unknown,
+): void {
+  const policy = capturePolicy(policyInput);
+  const payload = frozenSnapshot(payloadInput, "wallet spend authority operation payload");
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new DacsError("wallet spend authority operation payload is invalid");
+  }
+  const value = payload as Record<string, unknown>;
+  if (operation === "inspect") {
+    if (Object.keys(value).length !== 0) {
+      throw new DacsError("wallet spend authority inspect payload is invalid");
+    }
+    return;
+  }
+  if (operation === "reserve") {
+    if (Object.keys(value).length !== 2 || !Object.hasOwn(value, "reservation") ||
+        !Object.hasOwn(value, "options")) {
+      throw new DacsError("wallet spend authority reserve payload is invalid");
+    }
+    captureReservation(value.reservation as Readonly<WalletSpendReservationV1>, policy);
+    captureReservationOptions(
+      value.options as Readonly<{ operatorApproval?: string }>,
+    );
+    return;
+  }
+  if (operation === "reconcile") {
+    if (Object.keys(value).length !== 2 || !Object.hasOwn(value, "reservation") ||
+        !Object.hasOwn(value, "observation")) {
+      throw new DacsError("wallet spend authority reconcile payload is invalid");
+    }
+    const reservation = captureReservation(
+      value.reservation as Readonly<WalletSpendReservationV1>,
+      policy,
+    );
+    captureObservation(
+      value.observation as Readonly<WalletSpendRecoveryObservationV1>,
+      reservation,
+    );
+    return;
+  }
+  const expected = operation === "settle" ? ["permit", "observation"] : ["permit"];
+  if (Object.keys(value).length !== expected.length ||
+      expected.some((key) => !Object.hasOwn(value, key))) {
+    throw new DacsError("wallet spend authority replay payload is invalid");
+  }
+  captureReplayOperation(policy, {
+    operation,
+    permit: value.permit as WalletSpendAuthorityReplayV1["permit"],
+    ...(operation === "settle" ? {
+      observation: value.observation as Readonly<WalletSpendSettlementObservationV1>,
+    } : {}),
+  });
 }
 
 function bindingHash(reservation: Readonly<WalletSpendReservationV1>): string {
@@ -1113,58 +1303,6 @@ export function createWalletSpendAuthorityV1(
     return Object.freeze(permit);
   };
 
-  const captureObservation = (
-    value: Readonly<WalletSpendRecoveryObservationV1>,
-    reservation: Readonly<WalletSpendReservationV1>,
-  ): Readonly<WalletSpendRecoveryObservationV1> => {
-    const observation = frozenSnapshot(value, "wallet spend recovery observation");
-    const allowed = observation.disposition === "settled"
-      ? new Set(["disposition", "evidenceHash", "debits"])
-      : new Set(["disposition", "evidenceHash"]);
-    if (Object.keys(observation).some((key) => !allowed.has(key))) {
-      throw new DacsError("wallet spend recovery observation has an invalid shape");
-    }
-    hash(observation.evidenceHash, "wallet spend recovery evidenceHash");
-    if (observation.disposition === "settled") {
-      if (!Array.isArray(observation.debits) || observation.debits.length === 0) {
-        throw new DacsError("wallet spend settlement has no debit accounting");
-      }
-      const maxima = new Map(reservation.debits.map((debit) => [
-        `${debit.asset}\0${debit.purpose}`,
-        positiveAmount(debit.maximumAmount, "wallet spend maximum debit"),
-      ]));
-      const seen = new Set<string>();
-      for (const debit of observation.debits) {
-        if (Object.keys(debit).some((key) =>
-          key !== "asset" && key !== "purpose" && key !== "amount") ||
-            (debit.purpose !== "service" && debit.purpose !== "network-fee")) {
-          throw new DacsError("wallet spend settlement debit purpose is invalid");
-        }
-        const key = `${debit.asset}\0${debit.purpose}`;
-        if (seen.has(key) || !maxima.has(key)) {
-          throw new DacsError("wallet spend settlement debit is unbound");
-        }
-        seen.add(key);
-        const actual = amount(debit.amount, "wallet spend actual debit");
-        if (actual > maxima.get(key)!) {
-          throw new DacsError("wallet spend actual debit exceeds its reservation");
-        }
-        if (debit.purpose === "service" && actual !== maxima.get(key)) {
-          throw new DacsError("wallet spend service debit differs from the agreement");
-        }
-      }
-      if (seen.size !== maxima.size) {
-        throw new DacsError("wallet spend settlement omits reserved debit accounting");
-      }
-      return observation;
-    }
-    if (observation.disposition !== "not-invoked" &&
-        observation.disposition !== "terminal-absent") {
-      throw new DacsError("wallet spend recovery disposition is invalid");
-    }
-    return observation;
-  };
-
   const settleStored = async (
     reservation: Readonly<WalletSpendReservationV1>,
     binding: string,
@@ -1236,42 +1374,11 @@ export function createWalletSpendAuthorityV1(
   const replayClaimedOperation = async (
     input: Readonly<WalletSpendAuthorityReplayV1>,
   ): Promise<void> => {
-    const captured = frozenSnapshot(input, "wallet spend claimed operation replay");
-    const expectedInput = captured.operation === "settle"
-      ? new Set(["operation", "permit", "observation"])
-      : new Set(["operation", "permit"]);
-    if (!new Set(["current", "begin", "settle"]).has(captured.operation) ||
-        Object.keys(captured).some((key) => !expectedInput.has(key)) ||
-        captured.permit === null || typeof captured.permit !== "object" ||
-        Array.isArray(captured.permit) || Object.keys(captured.permit).some((key) =>
-          !new Set([
-            "reservationId", "bindingHash", "settlementBindingHash", "owner",
-            "generation", "reservation",
-          ]).has(key))) {
-      throw new DacsError("wallet spend claimed operation replay is invalid");
-    }
-    const reservation = captureReservation(captured.permit.reservation, policy);
-    const binding = bindingHash(reservation);
-    if (captured.permit.reservationId !== reservation.reservationId ||
-        captured.permit.bindingHash !== binding ||
-        captured.permit.settlementBindingHash !== reservation.settlementBindingHash) {
-      throw new DacsError("wallet spend claimed operation replay is unbound");
-    }
-    const token = {
-      owner: nonEmpty(captured.permit.owner, "wallet spend replay owner"),
-      generation: safeInteger(
-        captured.permit.generation,
-        "wallet spend replay generation",
-        true,
-      ),
-    };
+    const captured = captureReplayOperation(policy, input);
+    const { reservation, binding, token } = captured;
     if (captured.operation === "settle") {
-      if (captured.observation === undefined) {
-        throw new DacsError("wallet spend settlement replay lacks an observation");
-      }
-      const observation = captureObservation(captured.observation, reservation);
-      if (observation.disposition !== "settled" ||
-          !await authenticateRecovery(reservation, observation)) {
+      const observation = captured.observation!;
+      if (!await authenticateRecovery(reservation, observation)) {
         throw new DacsError("wallet spend settlement replay authentication failed");
       }
       await settleStored(reservation, binding, observation, token);
@@ -1318,12 +1425,8 @@ export function createWalletSpendAuthorityV1(
     async reserve(inputReservation, options = {}) {
       const reservation = captureReservation(inputReservation, policy);
       const binding = bindingHash(reservation);
-      const capturedOptions = frozenSnapshot(options, "wallet spend reservation options");
-      if (Object.keys(capturedOptions).some((key) => key !== "operatorApproval")) {
-        throw new DacsError("wallet spend reservation option is unsupported");
-      }
+      const capturedOptions = captureReservationOptions(options);
       const approval = capturedOptions.operatorApproval;
-      if (approval !== undefined) nonEmpty(approval, "wallet spend operator approval");
 
       type ExistingClaim = Exclude<
         WalletSpendReservationClaimV1,

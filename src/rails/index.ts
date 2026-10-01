@@ -172,6 +172,7 @@ export {
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
   resumeWalletSpendAuthorityOperationV1,
+  validateWalletSpendAuthorityOperationV1,
   validateWalletSpendStateV1,
   executeWalletSpendEffectV1,
   combineWalletSpendEffectFenceV1,
@@ -198,6 +199,7 @@ export {
   type WalletSpendStatusV1,
   type WalletSpendAuthorityV1,
   type WalletSpendAuthorityReplayV1,
+  type WalletSpendAuthorityOperationV1,
   type WalletSpendExecutionResultV1,
   type WalletSpendExecutionInputV1,
 } from "./walletSpendAuthority.js";

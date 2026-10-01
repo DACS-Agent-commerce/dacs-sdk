@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   resumeWalletSpendAuthorityOperationV1,
+  validateWalletSpendAuthorityOperationV1,
   type WalletSpendAuthorityReplayV1,
   type WalletSpendAuthorityV1,
   type WalletSpendPolicyV1,
@@ -14,6 +15,10 @@ import {
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 
 import { loadDacsSecretV1 } from "./secrets.js";
+import {
+  dacsWalletSpendRemoteOperationRetentionV1,
+  type DacsWalletSpendRemoteOperationRetentionV1,
+} from "./walletSpendOperationRetention.js";
 import {
   dacsWalletSpendLineageKeyV1,
   isDacsWalletSpendContinuityAuthorityV2,
@@ -99,7 +104,7 @@ export interface DacsWalletSpendRemoteOperationStoreV1 {
     operationId: string;
     requestHash: string;
     request: Readonly<RemoteRequest>;
-  }>): Promise<"new" | "existing">;
+  }>): Promise<"new" | "existing" | "full">;
   complete(input: Readonly<{
     roleId: string;
     operationId: string;
@@ -107,6 +112,12 @@ export interface DacsWalletSpendRemoteOperationStoreV1 {
     response: Readonly<RemoteResponse>;
   }>): Promise<void>;
 }
+
+export {
+  DACS_WALLET_SPEND_DEFAULT_MAXIMUM_OPERATIONS,
+  DACS_WALLET_SPEND_DEFAULT_MAXIMUM_OPERATIONS_PER_ROLE,
+  type DacsWalletSpendRemoteOperationRetentionV1,
+} from "./walletSpendOperationRetention.js";
 
 export class DacsWalletSpendRemoteError extends Error {
   override readonly name = "DacsWalletSpendRemoteError";
@@ -884,12 +895,27 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     return authority;
   };
 
+  const admitOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<Readonly<WalletSpendAuthorityV1>> => {
+    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    validateWalletSpendAuthorityOperationV1(
+      authority.policy,
+      body.operation,
+      body.payload,
+    );
+    return authority;
+  };
+
   const executeOperation = async (
     roleId: string,
     body: Readonly<RemoteRequestV1>,
     requestHash: string,
+    admittedAuthority?: Readonly<WalletSpendAuthorityV1>,
   ): Promise<RemoteResponseV1> => {
-    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    const authority = admittedAuthority ?? await admitOperation(roleId, body, requestHash);
     const payload = body.payload as Record<string, unknown>;
     let result: unknown;
     if (body.operation === "inspect") {
@@ -1013,9 +1039,15 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     roleId: string,
     body: Readonly<RemoteRequestV1>,
     requestHash: string,
+    admittedAuthority?: Readonly<WalletSpendAuthorityV1>,
   ): Promise<RemoteResponseV1> => {
     try {
-      const response = await executeOperation(roleId, body, requestHash);
+      const response = await executeOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      );
       await input.operations.complete({
         roleId, operationId: body.operationId, requestHash, response,
       });
@@ -1095,14 +1127,28 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
       if (body.operation === "inspect") {
         return jsonResponse(await executeOperation(roleId, body, requestHash));
       }
-      await input.operations.claim({
+      const admittedAuthority = await admitOperation(roleId, body, requestHash);
+      const claimed = await input.operations.claim({
         roleId, operationId: body.operationId, requestHash, request: body,
       });
-      return jsonResponse(await executeRecoverableOperation(roleId, body, requestHash));
+      if (claimed === "full") {
+        throw new DacsWalletSpendRemoteError(
+          "wallet-spend-authority-operation-capacity-exceeded",
+        );
+      }
+      return jsonResponse(await executeRecoverableOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      ));
     } catch (error) {
       const reasonCode = error instanceof DacsWalletSpendRemoteError
         ? error.reasonCode : "wallet-spend-authority-request-rejected";
-      return jsonResponse({ reasonCode }, 400);
+      return jsonResponse(
+        { reasonCode },
+        reasonCode === "wallet-spend-authority-operation-capacity-exceeded" ? 429 : 400,
+      );
     }
   };
 }
@@ -1145,6 +1191,20 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
     return resolved;
   };
 
+  const admitOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<Readonly<DacsWalletSpendContinuityAuthorityV2>> => {
+    const resolved = await resolveAvailableAuthority(roleId, body, requestHash);
+    validateWalletSpendAuthorityOperationV1(
+      resolved.authority.policy,
+      body.operation,
+      body.payload,
+    );
+    return resolved;
+  };
+
   const currentResponse = async (
     resolved: Readonly<DacsWalletSpendContinuityAuthorityV2>,
     body: Readonly<RemoteRequestV2>,
@@ -1175,8 +1235,9 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
     roleId: string,
     body: Readonly<RemoteRequestV2>,
     requestHash: string,
+    admittedAuthority?: Readonly<DacsWalletSpendContinuityAuthorityV2>,
   ): Promise<RemoteResponseV2> => {
-    const resolved = await resolveAvailableAuthority(roleId, body, requestHash);
+    const resolved = admittedAuthority ?? await admitOperation(roleId, body, requestHash);
     const authority = resolved.authority;
     const payload = body.payload as Record<string, unknown>;
     let result: unknown;
@@ -1286,9 +1347,15 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
     roleId: string,
     body: Readonly<RemoteRequestV2>,
     requestHash: string,
+    admittedAuthority?: Readonly<DacsWalletSpendContinuityAuthorityV2>,
   ): Promise<RemoteResponseV2> => {
     try {
-      const response = await executeOperation(roleId, body, requestHash);
+      const response = await executeOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      );
       await input.operations.complete({
         roleId, operationId: body.operationId, requestHash, response,
       });
@@ -1366,26 +1433,44 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
       if (body.operation === "inspect") {
         return jsonResponse(await executeOperation(roleId, body, requestHash));
       }
-      await input.operations.claim({
+      const admittedAuthority = await admitOperation(roleId, body, requestHash);
+      const claimed = await input.operations.claim({
         roleId, operationId: body.operationId, requestHash, request: body,
       });
-      return jsonResponse(await executeRecoverableOperation(roleId, body, requestHash));
+      if (claimed === "full") {
+        throw new DacsWalletSpendRemoteError(
+          "wallet-spend-authority-operation-capacity-exceeded",
+        );
+      }
+      return jsonResponse(await executeRecoverableOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      ));
     } catch (error) {
       const reasonCode = error instanceof DacsWalletSpendRemoteError
         ? error.reasonCode : "wallet-spend-authority-request-rejected";
-      return jsonResponse({ reasonCode }, 400);
+      return jsonResponse(
+        { reasonCode },
+        reasonCode === "wallet-spend-authority-operation-capacity-exceeded" ? 429 : 400,
+      );
     }
   };
 }
 
 /** Deterministic test/reference operation log; production services use PostgreSQL. */
-export function createInMemoryDacsWalletSpendRemoteOperationStoreV1():
+export function createInMemoryDacsWalletSpendRemoteOperationStoreV1(
+  retentionInput: Readonly<DacsWalletSpendRemoteOperationRetentionV1> = {},
+):
   DacsWalletSpendRemoteOperationStoreV1 {
+  const retention = dacsWalletSpendRemoteOperationRetentionV1(retentionInput);
   const values = new Map<string, {
     requestHash: string;
     request: RemoteRequest;
     response?: RemoteResponse;
   }>();
+  const roleOperations = new Map<string, number>();
   const key = (roleId: string, operationId: string) => `${roleId}\0${operationId}`;
   const store: DacsWalletSpendRemoteOperationStoreV1 = {
     async load(input) { return values.get(key(input.roleId, input.operationId)); },
@@ -1399,10 +1484,15 @@ export function createInMemoryDacsWalletSpendRemoteOperationStoreV1():
         }
         return "existing";
       }
+      if ((roleOperations.get(input.roleId) ?? 0) >= retention.maximumOperationsPerRole ||
+          values.size >= retention.maximumOperations) {
+        return "full";
+      }
       values.set(identity, {
         requestHash: input.requestHash,
         request: structuredClone(input.request),
       });
+      roleOperations.set(input.roleId, (roleOperations.get(input.roleId) ?? 0) + 1);
       return "new";
     },
     async complete(input) {
