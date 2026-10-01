@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createInMemoryWalletSpendStateStore,
@@ -32,6 +32,7 @@ const HASH = "a".repeat(64);
 const TOKEN = "role-scoped-test-token-which-is-long-enough";
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(roots.splice(0).map((root) =>
     rm(root, { recursive: true, force: true })));
 });
@@ -165,7 +166,118 @@ function handlerFetch(
     handler(new Request(input, init))) as typeof fetch;
 }
 
+function countedByteStream(totalBytes: number, chunkBytes = 8 * 1024) {
+  const counters = { pulls: 0, cancellations: 0, bytes: 0 };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      counters.pulls += 1;
+      const remaining = totalBytes - counters.bytes;
+      if (remaining === 0) {
+        controller.close();
+        return;
+      }
+      const length = Math.min(chunkBytes, remaining);
+      counters.bytes += length;
+      controller.enqueue(new Uint8Array(length).fill(0x20));
+    },
+    cancel() { counters.cancellations += 1; },
+  }, { highWaterMark: 0 });
+  return { stream, counters };
+}
+
 describe("remote PostgreSQL wallet authority boundary", () => {
+  it.each(["V1", "V2"] as const)(
+    "cancels an undeclared oversized %s service request before draining it",
+    async (version) => {
+      const local = version === "V1" ? server() : await serverV2();
+      const counted = countedByteStream(80 * 1024);
+      const request = new Request(
+        `http://authority.test/${version.toLowerCase()}/wallet-spend/operations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: counted.stream,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" },
+      );
+
+      const response = await local.handler(request);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-request-size-invalid",
+      });
+      expect(counted.counters.cancellations).toBe(1);
+      expect(counted.counters.pulls).toBeLessThan(10);
+      expect(counted.counters.bytes).toBeGreaterThan(64 * 1024);
+      expect(counted.counters.bytes).toBeLessThan(80 * 1024);
+    },
+  );
+
+  it.each(["V1", "V2"] as const)(
+    "cancels an undeclared oversized %s client response before draining it",
+    async (version) => {
+      const tokenFilePath = await tokenFile();
+      const counted = countedByteStream(80 * 1024);
+      const responseFetch = (async () => new Response(counted.stream, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      let inspect: () => Promise<unknown>;
+      if (version === "V1") {
+        const remote = await createDacsRemoteWalletSpendAuthorityV1({
+          policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+          allowInsecureLoopback: true, fetch: responseFetch,
+        });
+        inspect = () => remote.inspect();
+      } else {
+        const reference = createInMemoryDacsWalletSpendContinuityWitnessV1({
+          authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
+          seed: new Uint8Array(32).fill(21),
+        });
+        const remote = await createDacsRemoteWalletSpendAuthorityV2({
+          policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+          authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
+          witnessVerificationKey: reference.verificationKey,
+          allowInsecureLoopback: true, fetch: responseFetch,
+        });
+        inspect = () => remote.inspect();
+      }
+
+      await expect(inspect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-response-size-invalid",
+      });
+      expect(counted.counters.cancellations).toBe(1);
+      expect(counted.counters.pulls).toBeLessThan(10);
+      expect(counted.counters.bytes).toBeGreaterThan(64 * 1024);
+      expect(counted.counters.bytes).toBeLessThan(80 * 1024);
+    },
+  );
+
+  it("keeps the POST timeout active through response body consumption", async () => {
+    const tokenFilePath = await tokenFile();
+    let cancellations = 0;
+    const stalled = new ReadableStream<Uint8Array>({
+      pull() { /* wait for cancellation */ },
+      cancel() { cancellations += 1; },
+    }, { highWaterMark: 0 });
+    const remote = await createDacsRemoteWalletSpendAuthorityV1({
+      policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      allowInsecureLoopback: true, timeoutMs: 1_000,
+      fetch: (async () => new Response(stalled, { status: 200 })) as typeof fetch,
+    });
+    vi.useFakeTimers();
+
+    const pending = remote.inspect();
+    const rejected = expect(pending).rejects.toBeDefined();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(cancellations).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses V2 current-head proofs for reserve, current, begin, settle, reconcile and inspect", async () => {
     const tokenFilePath = await tokenFile();
     const local = await serverV2();

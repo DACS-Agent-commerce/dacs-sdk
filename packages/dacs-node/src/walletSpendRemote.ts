@@ -173,19 +173,66 @@ function responseShapeV2(value: unknown): value is RemoteResponseV2 {
     (value.revision as number) >= 0 && value.status === "ok";
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declared) ||
-      Number(declared) > MAX_BODY_BYTES)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-too-large");
+function cancelBody(body: ReadableStream<Uint8Array> | null, reason?: unknown): void {
+  if (body !== null && !body.locked) void body.cancel(reason).catch(() => {});
+}
+
+async function boundedBody(
+  source: Readonly<{ headers: Headers; body: ReadableStream<Uint8Array> | null }>,
+  errors: Readonly<{ tooLarge: string; sizeInvalid: string }>,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const declaredHeader = source.headers.get("content-length");
+  if (declaredHeader !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declaredHeader) ||
+      Number(declaredHeader) > MAX_BODY_BYTES)) {
+    cancelBody(source.body);
+    throw new DacsWalletSpendRemoteError(errors.tooLarge);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-size-invalid");
+  const declared = declaredHeader === null ? undefined : Number(declaredHeader);
+  if (source.body === null || declared === 0) {
+    cancelBody(source.body);
+    throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
   }
-  if (declared !== null && Number(declared) !== bytes.byteLength) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-size-invalid");
+  const reader = source.body.getReader();
+  const bytes = new Uint8Array(declared ?? MAX_BODY_BYTES);
+  let length = 0;
+  let cancelled = false;
+  const cancel = (reason?: unknown) => {
+    if (cancelled) return;
+    cancelled = true;
+    void reader.cancel(reason).catch(() => {});
+  };
+  const abort = () => cancel(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  try {
+    for (;;) {
+      const item = await reader.read();
+      if (item.done) break;
+      if (!(item.value instanceof Uint8Array) ||
+          item.value.byteLength > bytes.byteLength - length) {
+        cancel();
+        throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
+      }
+      bytes.set(item.value, length);
+      length += item.value.byteLength;
+    }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    reader.releaseLock();
   }
+  if (signal?.aborted) throw signal.reason;
+  if (length === 0 || (declared !== undefined && length !== declared)) {
+    throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
+  }
+  return bytes.subarray(0, length);
+}
+
+async function boundedJson(response: Response, signal?: AbortSignal): Promise<unknown> {
+  const bytes = await boundedBody(response, {
+    tooLarge: "wallet-spend-authority-response-too-large",
+    sizeInvalid: "wallet-spend-authority-response-size-invalid",
+  }, signal);
   try {
     return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
@@ -376,12 +423,13 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
     const resolveExactOperation = async (): Promise<unknown> => {
       const query = new URL(`v1/wallet-spend/operations/${operationId}`, endpoint);
       query.searchParams.set("requestHash", requestHash);
+      const signal = AbortSignal.timeout(timeoutMs);
       const resolved = await requestFetch(query, {
         method: "GET",
         headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
-      const resolvedBody = await boundedJson(resolved);
+      const resolvedBody = await boundedJson(resolved, signal);
       if (!resolved.ok || !responseShape(resolvedBody) ||
           resolvedBody.operationId !== operationId ||
           resolvedBody.requestHash !== requestHash ||
@@ -420,11 +468,11 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
         requestHash,
       );
     }
-    clearTimeout(timer);
     let body: unknown;
     try {
-      body = await boundedJson(response);
+      body = await boundedJson(response, controller.signal);
     } catch (error) {
+      clearTimeout(timer);
       if (operation !== "inspect") {
         try { return await resolveExactOperation(); } catch {
           throw new DacsWalletSpendRemoteError(
@@ -436,6 +484,7 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
       }
       throw error;
     }
+    clearTimeout(timer);
     if (!response.ok || !responseShape(body) || body.operationId !== operationId ||
         body.requestHash !== requestHash || body.revision < latestRevision) {
       if (operation !== "inspect") {
@@ -598,12 +647,13 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
     const resolveExactOperation = async (): Promise<unknown> => {
       const query = new URL(`v2/wallet-spend/operations/${operationId}`, endpoint);
       query.searchParams.set("requestHash", requestHash);
+      const signal = AbortSignal.timeout(timeoutMs);
       const resolved = await requestFetch(query, {
         method: "GET",
         headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
-      const body = await boundedJson(resolved);
+      const body = await boundedJson(resolved, signal);
       if (!resolved.ok) {
         throw new DacsWalletSpendRemoteError(
           "wallet-spend-authority-operation-unresolved", operationId, requestHash,
@@ -635,16 +685,17 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
         "wallet-spend-authority-outcome-unknown", operationId, requestHash,
       );
     }
-    clearTimeout(timer);
     let body: unknown;
     try {
-      body = await boundedJson(response);
+      body = await boundedJson(response, controller.signal);
     } catch (error) {
+      clearTimeout(timer);
       if (operation !== "inspect") {
         try { return await resolveExactOperation(); } catch { /* fail closed below */ }
       }
       throw error;
     }
+    clearTimeout(timer);
     if (!response.ok) {
       if (operation !== "inspect") {
         try { return await resolveExactOperation(); } catch { /* report refusal */ }
@@ -722,16 +773,10 @@ function bearer(request: Request): string | null {
 }
 
 async function requestJson(request: Request): Promise<unknown> {
-  const declared = request.headers.get("content-length");
-  if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declared) ||
-      Number(declared) > MAX_BODY_BYTES)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-too-large");
-  }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES ||
-      (declared !== null && Number(declared) !== bytes.byteLength)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-size-invalid");
-  }
+  const bytes = await boundedBody(request, {
+    tooLarge: "wallet-spend-authority-request-too-large",
+    sizeInvalid: "wallet-spend-authority-request-size-invalid",
+  });
   try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown; } catch {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-invalid");
   }
