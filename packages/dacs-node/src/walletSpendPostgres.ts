@@ -2161,20 +2161,18 @@ export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
     );
     const row = result.rows[0];
     if (!row) return undefined;
-    const recovered = row.response === null
-      ? await recoverReservedResponse(
-          input.roleId,
-          input.operationId,
-          row.request_hash,
-          row.request,
-        )
-      : undefined;
+    const recovered = await recoverReservedResponse(
+      input.roleId,
+      input.operationId,
+      row.request_hash,
+      row.request,
+    );
     return row.response === null && recovered === undefined
       ? { requestHash: row.request_hash, request: row.request as never }
       : {
           requestHash: row.request_hash,
           request: row.request as never,
-          response: (row.response ?? recovered) as never,
+          response: (recovered ?? row.response) as never,
         };
   };
   const store: DacsWalletSpendRemoteOperationStoreV1 = {
@@ -2198,13 +2196,36 @@ export function createDacsPostgresWalletSpendRemoteOperationStoreV1(
       return "existing";
     },
     async complete(input) {
+      const retained = (await pool.query<{
+        request_hash: string;
+        request: unknown;
+        response: unknown | null;
+      }>(
+        `SELECT request_hash, request, response FROM dacs_wallet_spend_operations
+          WHERE role_id = $1 AND operation_id = $2::uuid`,
+        [input.roleId, input.operationId],
+      )).rows[0];
+      if (retained === undefined || retained.request_hash !== input.requestHash) {
+        throw new Error("wallet-spend-authority-operation-conflict");
+      }
+      const recovered = await recoverReservedResponse(
+        input.roleId,
+        input.operationId,
+        input.requestHash,
+        retained.request,
+      );
+      const response = recovered ?? input.response;
       const result = await pool.query(
-        `UPDATE dacs_wallet_spend_operations
+        recovered === undefined
+          ? `UPDATE dacs_wallet_spend_operations
             SET response = $4::jsonb, completed_at = clock_timestamp()
           WHERE role_id = $1 AND operation_id = $2::uuid AND request_hash = $3
-            AND (response IS NULL OR response = $4::jsonb)`,
+            AND (response IS NULL OR response = $4::jsonb)`
+          : `UPDATE dacs_wallet_spend_operations
+            SET response = $4::jsonb, completed_at = clock_timestamp()
+          WHERE role_id = $1 AND operation_id = $2::uuid AND request_hash = $3`,
         [input.roleId, input.operationId, input.requestHash,
-          canonicalize(input.response)],
+          canonicalize(response)],
       );
       if (result.rowCount !== 1) {
         throw new Error("wallet-spend-authority-operation-conflict");

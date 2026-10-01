@@ -983,6 +983,45 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     return response;
   };
 
+  const reloadCompletedResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<RemoteResponseV1 | undefined> => {
+    const retained = await input.operations.load({ roleId, operationId: body.operationId });
+    if (retained === undefined) return undefined;
+    const retainedRequest = captureRequest(retained.request);
+    if (retained.requestHash !== requestHash ||
+        retainedRequest.operationId !== body.operationId ||
+        canonicalize(retainedRequest) !== canonicalize(body) ||
+        sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+      throw new Error("stored-request-invalid");
+    }
+    return retained.response === undefined
+      ? undefined
+      : revalidateStoredResponse(roleId, retainedRequest, requestHash, retained.response);
+  };
+
+  const executeRecoverableOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<RemoteResponseV1> => {
+    try {
+      const response = await executeOperation(roleId, body, requestHash);
+      await input.operations.complete({
+        roleId, operationId: body.operationId, requestHash, response,
+      });
+    } catch (error) {
+      const recovered = await reloadCompletedResponse(roleId, body, requestHash);
+      if (recovered !== undefined) return recovered;
+      throw error;
+    }
+    const completed = await reloadCompletedResponse(roleId, body, requestHash);
+    if (completed === undefined) throw new Error("stored-response-invalid");
+    return completed;
+  };
+
   return async (request) => {
     try {
       const url = new URL(request.url);
@@ -1026,11 +1065,9 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         if (retainedRequest.operation === "inspect") {
           throw new Error("stored-request-invalid");
         }
-        const resumed = await executeOperation(roleId, retainedRequest, requestHash);
-        await input.operations.complete({
-          roleId, operationId, requestHash, response: resumed,
-        });
-        return jsonResponse(resumed);
+        return jsonResponse(await executeRecoverableOperation(
+          roleId, retainedRequest, requestHash,
+        ));
       }
       if (request.method !== "POST" ||
           url.pathname !== "/v1/wallet-spend/operations" || url.search !== "") {
@@ -1054,11 +1091,7 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
       await input.operations.claim({
         roleId, operationId: body.operationId, requestHash, request: body,
       });
-      const response = await executeOperation(roleId, body, requestHash);
-      await input.operations.complete({
-        roleId, operationId: body.operationId, requestHash, response,
-      });
-      return jsonResponse(response);
+      return jsonResponse(await executeRecoverableOperation(roleId, body, requestHash));
     } catch (error) {
       const reasonCode = error instanceof DacsWalletSpendRemoteError
         ? error.reasonCode : "wallet-spend-authority-request-rejected";
@@ -1223,6 +1256,45 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
     return currentResponse(resolved, body, requestHash, response.result);
   };
 
+  const reloadCompletedResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<RemoteResponseV2 | undefined> => {
+    const retained = await input.operations.load({ roleId, operationId: body.operationId });
+    if (retained === undefined) return undefined;
+    const retainedRequest = captureRequestV2(retained.request);
+    if (retained.requestHash !== requestHash ||
+        retainedRequest.operationId !== body.operationId ||
+        canonicalize(retainedRequest) !== canonicalize(body) ||
+        sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+      throw new Error("stored-request-invalid");
+    }
+    return retained.response === undefined
+      ? undefined
+      : refreshedStoredResponse(roleId, retainedRequest, requestHash, retained.response);
+  };
+
+  const executeRecoverableOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<RemoteResponseV2> => {
+    try {
+      const response = await executeOperation(roleId, body, requestHash);
+      await input.operations.complete({
+        roleId, operationId: body.operationId, requestHash, response,
+      });
+    } catch (error) {
+      const recovered = await reloadCompletedResponse(roleId, body, requestHash);
+      if (recovered !== undefined) return recovered;
+      throw error;
+    }
+    const completed = await reloadCompletedResponse(roleId, body, requestHash);
+    if (completed === undefined) throw new Error("stored-response-invalid");
+    return completed;
+  };
+
   return async (request) => {
     try {
       const url = new URL(request.url);
@@ -1264,9 +1336,9 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
           ));
         }
         if (retainedRequest.operation === "inspect") throw new Error("stored-request-invalid");
-        const resumed = await executeOperation(roleId, retainedRequest, requestHash);
-        await input.operations.complete({ roleId, operationId, requestHash, response: resumed });
-        return jsonResponse(resumed);
+        return jsonResponse(await executeRecoverableOperation(
+          roleId, retainedRequest, requestHash,
+        ));
       }
       if (request.method !== "POST" ||
           url.pathname !== "/v2/wallet-spend/operations" || url.search !== "") {
@@ -1290,11 +1362,7 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
       await input.operations.claim({
         roleId, operationId: body.operationId, requestHash, request: body,
       });
-      const response = await executeOperation(roleId, body, requestHash);
-      await input.operations.complete({
-        roleId, operationId: body.operationId, requestHash, response,
-      });
-      return jsonResponse(response);
+      return jsonResponse(await executeRecoverableOperation(roleId, body, requestHash));
     } catch (error) {
       const reasonCode = error instanceof DacsWalletSpendRemoteError
         ? error.reasonCode : "wallet-spend-authority-request-rejected";

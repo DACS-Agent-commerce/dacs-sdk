@@ -1803,12 +1803,8 @@ describe("PostgreSQL wallet authority persistence", () => {
     const fetchWithExactRetry = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (request.method === "POST") {
-        handledPosts += 2;
-        const interrupted = await handler(request.clone());
-        expect(interrupted.status).toBe(400);
-        const recovered = await handler(request);
-        expect(recovered.status).toBe(400);
-        return recovered;
+        handledPosts += 1;
+        return handler(request);
       }
       handledGets += 1;
       return handler(request);
@@ -1833,7 +1829,7 @@ describe("PostgreSQL wallet authority persistence", () => {
           generation: 1,
         },
       });
-      expect(handledPosts).toBe(2);
+      expect(handledPosts).toBe(1);
       expect(handledGets).toBe(1);
       expect([...pool.operations.values()]).toMatchObject([{ response: null }]);
       expect(pool.row).toMatchObject({
@@ -1850,6 +1846,43 @@ describe("PostgreSQL wallet authority persistence", () => {
       expect([...pool.candidates.values()]).toMatchObject([
         { mutation_index: 8, status: "applied" },
       ]);
+
+      const operation = [...pool.operations.values()][0]!;
+      const storedRequest = operation.request as { operationId: string };
+      const bindingHash = pool.row.state.reservations[0]!.bindingHash;
+      const heldResponse = {
+        protocolVersion: "1" as const,
+        operationId: storedRequest.operationId,
+        requestHash: operation.request_hash,
+        revision: 1,
+        status: "ok" as const,
+        result: { status: "held", bindingHash, stage: "reserved" },
+      };
+      await operations.complete({
+        roleId,
+        operationId: storedRequest.operationId,
+        requestHash: operation.request_hash,
+        response: heldResponse as never,
+      });
+      expect(operation.response).toMatchObject({
+        result: {
+          status: "reserved",
+          permit: { reservationId: retainedReservation.reservationId },
+        },
+      });
+
+      operation.response = structuredClone(heldResponse);
+      await expect(operations.load({
+        roleId,
+        operationId: storedRequest.operationId,
+      })).resolves.toMatchObject({
+        response: {
+          result: {
+            status: "reserved",
+            permit: { reservationId: retainedReservation.reservationId },
+          },
+        },
+      });
     } finally {
       await rm(tokenRoot, { recursive: true, force: true });
     }
