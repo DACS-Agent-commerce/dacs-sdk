@@ -1717,6 +1717,22 @@ export async function advanceCrossChainHtlc(
         txRefs: collectRefs(snapshot, prepared),
       };
     }
+    const state = snapshot.actions["destination-lock"];
+    if (state?.state === "failed") {
+      return { status: "failed", errorClass: "counterparty", reason: state.reason ?? "htlc-destination-lock-failed" };
+    }
+    if (prepared.has("destination-lock")) {
+      if (!state || state.state === "absent") {
+        const advanced = await execute("destination-lock", {
+          sourceExpiry: sourceLock.expiresAt,
+          sourceFinalityCheckpoint,
+        });
+        return advanced
+          ? { status: "waiting", reason: "htlc-destination-lock-finality-pending" }
+          : { status: "indeterminate", reason: "htlc-destination-lock-effect-uncertain" };
+      }
+      return { status: "waiting", reason: "htlc-destination-lock-finality-pending" };
+    }
     const destinationExpiry = safeAdd(
       Math.floor(snapshot.observedAt / 1_000),
       intent.destinationTimelockSec,
@@ -1733,10 +1749,6 @@ export async function advanceCrossChainHtlc(
       "absolute expiry margin",
     )) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
-    }
-    const state = snapshot.actions["destination-lock"];
-    if (state?.state === "failed") {
-      return { status: "failed", errorClass: "counterparty", reason: state.reason ?? "htlc-destination-lock-failed" };
     }
     if (!state || state.state === "absent") {
       const advanced = await execute("destination-lock", {

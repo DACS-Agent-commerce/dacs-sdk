@@ -757,16 +757,26 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("reuses a causally bound destination lock byte-for-byte after ambiguous broadcast", async () => {
-    const h = harness({ mode: { "destination-lock": "throw-once" } });
+    const h = harness({
+      destinationExpiry: 4_900,
+      mode: { "destination-lock": "throw-once" },
+    });
     const run = runner({ adapter: h.adapter });
     await advanceCrossChainHtlc(run.shared);
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "indeterminate",
       reason: "htlc-destination-lock-effect-uncertain",
     });
+    h.setObservedAt(4_871_000);
+    run.setClock(4_871_000);
+    h.setMode("destination-lock", "final");
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "waiting",
       reason: "htlc-destination-lock-finality-pending",
+    });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
     });
     const destinationPreparations = h.prepareAction.mock.calls
       .filter((call) => call[0].action === "destination-lock");
@@ -776,6 +786,62 @@ describe("advanceCrossChainHtlc", () => {
     expect(destinationPreparations).toHaveLength(1);
     expect(destinationBroadcasts).toHaveLength(2);
     expect(destinationBroadcasts[1]).toEqual(destinationBroadcasts[0]);
+  });
+
+  test("keeps waiting for a retained pending destination lock after the preparation window", async () => {
+    const h = harness({ mode: { "destination-lock": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    h.setObservedAt(4_871_000);
+    run.setClock(4_871_000);
+
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
+
+  test("rejects a new destination lock after the preparation window before effects", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    let interruptCheckpoint = true;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordSourceFinality(input) {
+        const recorded = await base.recordSourceFinality(input);
+        if (interruptCheckpoint) {
+          interruptCheckpoint = false;
+          return { status: "stale", reason: "injected-checkpoint-result-ambiguity" };
+        }
+        return recorded;
+      },
+    };
+    const h = harness();
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-finality-persistence-uncertain",
+    });
+    h.setObservedAt(4_871_000);
+    run.setClock(4_871_000);
+
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-absolute-expiry-margin-insufficient",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock"]);
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock"]);
   });
 
   test("fails closed before effects when a runtime store lacks the checkpoint contract", async () => {
