@@ -2478,11 +2478,27 @@ describe("DACS Node SQLite durability foundation", () => {
       order: x402,
       ...liveOrderBinding(x402),
     })).toMatchObject({ status: "created" });
+    initial.createHttpInboxStore();
+    const httpDiagnostics = initial.diagnostics().httpTransport;
+    expect(httpDiagnostics.policyBound).toBe(true);
     initial.checkpoint();
     initial.close();
     databases.splice(databases.indexOf(initial), 1);
 
     const raw = new BetterSqlite3(databasePath);
+    const x402Row = raw.prepare(`
+      SELECT profile, role, job_id, binding_hash, local_binding_hash,
+        record_hash, record_json, revision, created_at, updated_at
+      FROM dacs_coordinator_orders
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).get(JOB_ID);
+    const httpRows = {
+      policy: raw.prepare("SELECT * FROM dacs_http_policy").all(),
+      usage: raw.prepare(`
+        SELECT * FROM dacs_http_usage ORDER BY dimension, dimension_key
+      `).all(),
+      lifecycle: raw.prepare("SELECT * FROM dacs_http_lifecycle").all(),
+    };
     downgradeCoordinatorSchemaToV6(raw);
     raw.exec(`
       DELETE FROM dacs_migrations WHERE version = 8;
@@ -2491,9 +2507,15 @@ describe("DACS Node SQLite durability foundation", () => {
     `);
     raw.close();
 
+    expect(inspectExistingDacsNodeSqliteDatabaseV1(options(databasePath, liveOptions)))
+      .toMatchObject({ status: "blocked", reasonCode: "database-migration-required" });
     const migrated = await open(databasePath, liveOptions);
     expect(readdirSync(root).filter((name) => name.includes(".backup-v7-")))
       .toHaveLength(1);
+    expect(migrated.diagnostics()).toMatchObject({
+      schemaVersion: 8,
+      httpTransport: httpDiagnostics,
+    });
     expect(await migrated.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
       .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
     const payDem = payDemOrder(OTHER_JOB_ID);
@@ -2502,10 +2524,33 @@ describe("DACS Node SQLite durability foundation", () => {
       order: payDem,
       ...payDemOrderBinding(payDem),
     })).toMatchObject({ status: "created", record: { protocol: PAY_DEM_PROTOCOL } });
-    expect(migrated.diagnostics().httpTransport).toMatchObject({
-      policyBound: false,
-      retainedRows: 0,
-    });
+    migrated.checkpoint();
+    migrated.close();
+    databases.splice(databases.indexOf(migrated), 1);
+
+    const verified = new BetterSqlite3(databasePath, { readonly: true });
+    expect(verified.prepare(`
+      SELECT profile, role, job_id, binding_hash, local_binding_hash,
+        record_hash, record_json, revision, created_at, updated_at
+      FROM dacs_coordinator_orders
+      WHERE profile = 'live-x402' AND role = 'buyer' AND job_id = ?
+    `).get(JOB_ID)).toEqual(x402Row);
+    expect({
+      policy: verified.prepare("SELECT * FROM dacs_http_policy").all(),
+      usage: verified.prepare(`
+        SELECT * FROM dacs_http_usage ORDER BY dimension, dimension_key
+      `).all(),
+      lifecycle: verified.prepare("SELECT * FROM dacs_http_lifecycle").all(),
+    }).toEqual(httpRows);
+    expect(verified.prepare("SELECT version FROM dacs_migrations ORDER BY version").all())
+      .toEqual(Array.from({ length: 8 }, (_, index) => ({ version: index + 1 })));
+    verified.close();
+
+    const reopened = await open(databasePath, liveOptions);
+    expect(await reopened.createLiveCoordinatorStore("buyer").load("buyer", JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: LIVE_PROTOCOL } });
+    expect(await reopened.createPayDemCoordinatorStore("buyer").load("buyer", OTHER_JOB_ID))
+      .toMatchObject({ status: "ok", record: { protocol: PAY_DEM_PROTOCOL } });
   });
 
   it("enforces live DACS-5 terminal attribution and irreversible-effect rules", async () => {
