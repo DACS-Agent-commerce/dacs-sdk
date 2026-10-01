@@ -776,7 +776,7 @@ async function requestJson(request: Request): Promise<unknown> {
   const bytes = await boundedBody(request, {
     tooLarge: "wallet-spend-authority-request-too-large",
     sizeInvalid: "wallet-spend-authority-request-size-invalid",
-  });
+  }, request.signal);
   try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown; } catch {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-invalid");
   }
@@ -926,6 +926,49 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     };
   };
 
+  const revalidateStoredResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+    response: Readonly<RemoteResponse>,
+  ): Promise<RemoteResponseV1> => {
+    if (!responseShape(response) || response.operationId !== body.operationId ||
+        response.requestHash !== requestHash) {
+      throw new Error("stored-response-invalid");
+    }
+    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    const payload = body.payload as Record<string, unknown>;
+    if (body.operation === "reserve") {
+      if (!exact(payload, ["reservation", "options"])) {
+        throw new Error("stored-request-invalid");
+      }
+      const claim = remoteClaim(
+        response.result,
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+      );
+      if (claim.status === "reserved") {
+        await resumeWalletSpendAuthorityOperationV1(authority, {
+          operation: "current",
+          permit: permitData((response.result as Record<string, unknown>).permit),
+        });
+      }
+    } else if (body.operation === "current" || body.operation === "begin" ||
+        body.operation === "settle") {
+      const expected = body.operation === "settle" ? ["permit", "observation"] : ["permit"];
+      if (!exact(payload, expected) || response.result !== null) {
+        throw new Error("stored-response-invalid");
+      }
+      await resumeWalletSpendAuthorityOperationV1(authority, {
+        operation: body.operation,
+        permit: permitData(payload.permit),
+        ...(body.operation === "settle"
+          ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
+          : {}),
+      });
+    }
+    return response;
+  };
+
   return async (request) => {
     try {
       const url = new URL(request.url);
@@ -962,13 +1005,9 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
           throw new Error("stored-request-invalid");
         }
         if (retained.response !== undefined) {
-          if (!responseShape(retained.response) ||
-              retained.response.operationId !== operationId ||
-              retained.response.requestHash !== requestHash) {
-            throw new Error("stored-response-invalid");
-          }
-          await resolveAvailableAuthority(roleId, retainedRequest, requestHash);
-          return jsonResponse(retained.response);
+          return jsonResponse(await revalidateStoredResponse(
+            roleId, retainedRequest, requestHash, retained.response,
+          ));
         }
         if (retainedRequest.operation === "inspect") {
           throw new Error("stored-request-invalid");
@@ -991,13 +1030,9 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         return jsonResponse({ reasonCode: "wallet-spend-authority-operation-conflict" }, 409);
       }
       if (prior?.response !== undefined) {
-        if (!responseShape(prior.response) ||
-            prior.response.operationId !== body.operationId ||
-            prior.response.requestHash !== requestHash) {
-          throw new Error("stored-response-invalid");
-        }
-        await resolveAvailableAuthority(roleId, body, requestHash);
-        return jsonResponse(prior.response);
+        return jsonResponse(await revalidateStoredResponse(
+          roleId, body, requestHash, prior.response,
+        ));
       }
       if (body.operation === "inspect") {
         return jsonResponse(await executeOperation(roleId, body, requestHash));

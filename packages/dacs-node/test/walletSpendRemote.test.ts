@@ -88,7 +88,7 @@ async function tokenFile(): Promise<string> {
   return path;
 }
 
-function server() {
+function server(now: () => number = () => 1_000) {
   const localPolicy = policy();
   const authority = createWalletSpendAuthorityV1(localPolicy, {
     store: createInMemoryWalletSpendStateStore(),
@@ -96,7 +96,7 @@ function server() {
     authenticateRecovery: async () => true,
     owner: "remote-service",
     leaseDurationMs: 60_000,
-    now: () => 1_000,
+    now,
   });
   const operations = createInMemoryDacsWalletSpendRemoteOperationStoreV1();
   const handler = createDacsWalletSpendAuthorityServiceV1({
@@ -278,6 +278,42 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["V1", "V2"] as const)(
+    "cancels a stalled %s request body when the request is aborted",
+    async (version) => {
+      const local = version === "V1" ? server() : await serverV2();
+      const controller = new AbortController();
+      let cancellations = 0;
+      const stalled = new ReadableStream<Uint8Array>({
+        pull() { /* wait for request cancellation */ },
+        cancel() { cancellations += 1; },
+      }, { highWaterMark: 0 });
+      const request = new Request(
+        `http://authority.test/${version.toLowerCase()}/wallet-spend/operations`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: stalled,
+          duplex: "half",
+          signal: controller.signal,
+        } as RequestInit & { duplex: "half" },
+      );
+
+      const pending = local.handler(request);
+      await Promise.resolve();
+      controller.abort();
+      const response = await pending;
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      expect(cancellations).toBe(1);
+    },
+  );
+
   it("uses V2 current-head proofs for reserve, current, begin, settle, reconcile and inspect", async () => {
     const tokenFilePath = await tokenFile();
     const local = await serverV2();
@@ -333,6 +369,49 @@ describe("remote PostgreSQL wallet authority boundary", () => {
         policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
         authorityId: local.authorityId, epoch: local.epoch,
         witnessVerificationKey: local.verificationKey,
+        allowInsecureLoopback: true, fetch: fetchWithRelease,
+      });
+      const claim = await remote.reserve(reservation());
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      loseAfter = operation;
+
+      await expect(operation === "current"
+        ? claim.permit.assertCurrent()
+        : claim.permit.beginEffect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-outcome-unknown",
+      });
+      await expect(local.authority.reserve(reservation())).resolves.toMatchObject({
+        status: "reserved",
+      });
+    },
+  );
+
+  it.each(["current", "begin"] as const)(
+    "rejects a retained V1 %s success when its permit was released before recovery",
+    async (operation) => {
+      const tokenFilePath = await tokenFile();
+      let now = 1_000;
+      const local = server(() => now);
+      let loseAfter: typeof operation | undefined;
+      const fetchWithRelease = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const body = request.method === "POST"
+          ? await request.clone().json() as { operation?: string }
+          : undefined;
+        const response = await local.handler(request);
+        if (response.ok && body?.operation === loseAfter) {
+          loseAfter = undefined;
+          now = 70_000;
+          await local.authority.reconcile(reservation(), {
+            disposition: "terminal-absent",
+            evidenceHash: "e".repeat(64),
+          });
+          throw new Error("response lost after the permit was released");
+        }
+        return response;
+      }) as typeof fetch;
+      const remote = await createDacsRemoteWalletSpendAuthorityV1({
+        policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
         allowInsecureLoopback: true, fetch: fetchWithRelease,
       });
       const claim = await remote.reserve(reservation());
