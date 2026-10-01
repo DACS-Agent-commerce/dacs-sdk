@@ -449,7 +449,7 @@ describe("pre-agreement session bootstrap transport", () => {
       buyerVetRef: Object.freeze({
         anchor: Object.freeze({
           kind: "storage-program" as const,
-          locator: compositeVerificationAddress(JOB_ID, value.buyer),
+          locator: `stor-${"a".repeat(40)}`,
         }),
         contentHash: contentHash(record as unknown as Record<string, unknown>),
         signer: value.seller,

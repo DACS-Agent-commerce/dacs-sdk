@@ -14,6 +14,8 @@ const INBOUND_TYPES = Object.freeze({
     "agreement-response",
     "payment-evidence-request",
     "bundle-signature-request",
+    "terminal-bundle-proposal-seller",
+    "terminal-bundle-contribution-seller",
   ] as const),
   seller: Object.freeze([
     "session-init",
@@ -22,6 +24,8 @@ const INBOUND_TYPES = Object.freeze({
     "pay-dem-payment-notice",
     "payment-evidence-completion",
     "bundle-signature-response",
+    "terminal-bundle-proposal-buyer",
+    "terminal-bundle-contribution-buyer",
   ] as const),
 });
 
