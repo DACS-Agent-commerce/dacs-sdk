@@ -281,6 +281,12 @@ describe("one-factory live commerce assembly", () => {
     });
     factories.buyerAudit.mockReturnValueOnce(normalAudit);
     factories.advanceTerminal.mockResolvedValueOnce(terminalResult);
+    const createInput = Object.assign(vi.fn(), {
+      registryVersions: {
+        recipeRegistryVersion: 11,
+        railRegistryVersion: 7,
+      },
+    });
 
     await createDacsBuyerLiveCommerceAssemblyV1({
       context,
@@ -294,7 +300,7 @@ describe("one-factory live commerce assembly", () => {
       audit: { resolveMaterial: vi.fn(), retryDelayMs: 23 },
       terminalBundle: {
         authenticateProduction: vi.fn(),
-        createInput: vi.fn(),
+        createInput,
       },
     } as never);
 
@@ -308,6 +314,14 @@ describe("one-factory live commerce assembly", () => {
       "job-terminal",
     );
     expect(normalAudit).not.toHaveBeenCalled();
+    expect(factories.terminalBundleTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 11,
+          railRegistryVersion: 7,
+        },
+      }),
+    );
     expect(factories.buyerSessionAgreement.mock.calls[0]![0].terminalBundle)
       .toMatchObject({ runtime: { terminal: true } });
   });

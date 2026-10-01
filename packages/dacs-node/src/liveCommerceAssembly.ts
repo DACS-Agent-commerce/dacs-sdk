@@ -75,6 +75,21 @@ import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportOptionsV1,
 } from "./terminalBundleTransportRuntime.js";
+import type { DacsFixedPriceVetTerminalInputFactoryV1 } from
+  "./fixedPriceVetTerminal.js";
+
+function terminalRegistryVersionOptions(
+  createInput: DacsSessionVetTerminalTrackV1["createInput"],
+): Readonly<Pick<
+  DacsVetTerminalBundleTransportOptionsV1,
+  "expectedRegistryVersions"
+>> | Readonly<Record<string, never>> {
+  const expectedRegistryVersions =
+    (createInput as Partial<DacsFixedPriceVetTerminalInputFactoryV1>)
+      .registryVersions;
+  return expectedRegistryVersions === undefined
+    ? Object.freeze({}) : Object.freeze({ expectedRegistryVersions });
+}
 
 export interface DacsBuyerLiveCommerceAssemblyOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -237,6 +252,7 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
     ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
         context,
         authenticateProduction: options.terminalBundle.authenticateProduction,
+        ...terminalRegistryVersionOptions(options.terminalBundle.createInput),
       });
   const agreement = createDacsBuyerAgreementTrackV1({
     ...options.agreement,
@@ -323,6 +339,7 @@ export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
     ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
         context,
         authenticateProduction: options.terminalBundle.authenticateProduction,
+        ...terminalRegistryVersionOptions(options.terminalBundle.createInput),
       });
   const x402 = await createDacsSellerX402RuntimeV1({
     ...options.x402,

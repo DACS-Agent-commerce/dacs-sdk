@@ -81,6 +81,10 @@ describe("fixed-price Vet terminal projection", () => {
 
     const projected = createInput(input() as never);
 
+    expect(createInput.registryVersions).toEqual({
+      recipeRegistryVersion: 11,
+      railRegistryVersion: 7,
+    });
     expect(projected).toMatchObject({
       jobId: JOB_ID,
       listingRef: {

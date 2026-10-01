@@ -17,6 +17,14 @@ export interface DacsFixedPriceVetTerminalProjectionOptionsV1 {
   recipeRegistryVersion: number;
 }
 
+export type DacsFixedPriceVetTerminalInputFactoryV1 =
+  DacsSessionVetTerminalTrackV1["createInput"] & Readonly<{
+    registryVersions: Readonly<{
+      recipeRegistryVersion: number;
+      railRegistryVersion: number;
+    }>;
+  }>;
+
 function deepFreeze<T>(value: T): Readonly<T> {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
@@ -36,7 +44,7 @@ function snapshot<T>(value: T): Readonly<T> {
  */
 export function createDacsFixedPriceVetTerminalInputFactoryV1(
   options: Readonly<DacsFixedPriceVetTerminalProjectionOptionsV1>,
-): DacsSessionVetTerminalTrackV1["createInput"] {
+): DacsFixedPriceVetTerminalInputFactoryV1 {
   const railProvenance = getAuthenticatedRailProvenance(options.rail);
   if (railProvenance === null ||
       !Number.isSafeInteger(railProvenance.registryVersion) ||
@@ -47,58 +55,65 @@ export function createDacsFixedPriceVetTerminalInputFactoryV1(
   }
   const railRegistryVersion = railProvenance.registryVersion;
   const recipeRegistryVersion = options.recipeRegistryVersion;
-  return (input): Readonly<PrepareVetTerminalBundleInput> => {
-    const application = captureDacsFixedPriceX402ApplicationV1(
-      input.retained.application,
-    );
-    const operation = input.operation;
-    const listingVetIndexes = application.listing.pipeline.flatMap((step, index) =>
-      step.kind === "vet-credentials" ? [index] : []);
-    if (listingVetIndexes.length !== 1 ||
-        input.retained.jobId !== operation.order.jobId ||
-        input.retained.localBindingHash !== operation.order.localBindingHash ||
-        !sameCanonicalClaimIdentity(
-          input.buyerIdentity.presentedBy,
-          operation.order.buyer,
-        ) ||
-        !sameCanonicalClaimIdentity(
-          input.sellerIdentity.presentedBy,
-          operation.order.seller,
-        ) ||
-        !Number.isSafeInteger(input.vetInvokedAt) || input.vetInvokedAt < 0 ||
-        !Number.isSafeInteger(operation.order.createdAt) ||
-        operation.order.createdAt < 0 || input.vetInvokedAt < operation.order.createdAt ||
-        !isFinalizedVetAnchorReceipt(input.production.anchorReceipt)) {
-      throw new TypeError("fixed-price Vet terminal session projection is invalid");
-    }
-    // The signed Listing is the single source of truth for the ordered
-    // pipeline. Never synthesize a Vet phase that the seller did not sign.
-    const pipeline = application.listing.pipeline;
-    const vetPhaseIndex = listingVetIndexes[0]!;
-    const production: PrepareVetTerminalBundleInput["production"] = {
-      record: input.production.record,
-      recordRef: input.production.recordRef,
-      anchorReceipt: input.production.anchorReceipt,
+  const createInput: DacsSessionVetTerminalTrackV1["createInput"] =
+    (input): Readonly<PrepareVetTerminalBundleInput> => {
+      const application = captureDacsFixedPriceX402ApplicationV1(
+        input.retained.application,
+      );
+      const operation = input.operation;
+      const listingVetIndexes = application.listing.pipeline.flatMap((step, index) =>
+        step.kind === "vet-credentials" ? [index] : []);
+      if (listingVetIndexes.length !== 1 ||
+          input.retained.jobId !== operation.order.jobId ||
+          input.retained.localBindingHash !== operation.order.localBindingHash ||
+          !sameCanonicalClaimIdentity(
+            input.buyerIdentity.presentedBy,
+            operation.order.buyer,
+          ) ||
+          !sameCanonicalClaimIdentity(
+            input.sellerIdentity.presentedBy,
+            operation.order.seller,
+          ) ||
+          !Number.isSafeInteger(input.vetInvokedAt) || input.vetInvokedAt < 0 ||
+          !Number.isSafeInteger(operation.order.createdAt) ||
+          operation.order.createdAt < 0 || input.vetInvokedAt < operation.order.createdAt ||
+          !isFinalizedVetAnchorReceipt(input.production.anchorReceipt)) {
+        throw new TypeError("fixed-price Vet terminal session projection is invalid");
+      }
+      // The signed Listing is the single source of truth for the ordered
+      // pipeline. Never synthesize a Vet phase that the seller did not sign.
+      const pipeline = application.listing.pipeline;
+      const vetPhaseIndex = listingVetIndexes[0]!;
+      const production: PrepareVetTerminalBundleInput["production"] = {
+        record: input.production.record,
+        recordRef: input.production.recordRef,
+        anchorReceipt: input.production.anchorReceipt,
+      };
+      return snapshot({
+        jobId: operation.order.jobId,
+        listingRef: {
+          listingId: application.listing.listingId,
+          version: application.listing.listingVersion,
+          contentHash: application.listingContentHash,
+        },
+        pipeline,
+        vetPhaseIndex,
+        vetInvokedAt: input.vetInvokedAt,
+        startedAt: operation.order.createdAt,
+        recipeRegistryVersion,
+        railRegistryVersion,
+        parties: [
+          { role: "buyer" as const, identityBundle: input.buyerIdentity },
+          { role: "seller" as const, identityBundle: input.sellerIdentity },
+        ],
+        evaluatedRole: input.evaluatedRole,
+        production,
+      });
     };
-    return snapshot({
-      jobId: operation.order.jobId,
-      listingRef: {
-        listingId: application.listing.listingId,
-        version: application.listing.listingVersion,
-        contentHash: application.listingContentHash,
-      },
-      pipeline,
-      vetPhaseIndex,
-      vetInvokedAt: input.vetInvokedAt,
-      startedAt: operation.order.createdAt,
+  return Object.freeze(Object.assign(createInput, {
+    registryVersions: Object.freeze({
       recipeRegistryVersion,
       railRegistryVersion,
-      parties: [
-        { role: "buyer" as const, identityBundle: input.buyerIdentity },
-        { role: "seller" as const, identityBundle: input.sellerIdentity },
-      ],
-      evaluatedRole: input.evaluatedRole,
-      production,
-    });
-  };
+    }),
+  }));
 }

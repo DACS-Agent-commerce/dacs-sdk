@@ -4,16 +4,23 @@ import { join } from "node:path";
 
 import {
   createInMemoryFencedSessionStore,
+  createTerminalBundlePlan,
   createTerminalBundleSignatureContribution,
   compositeVerificationAddress,
+  prepareVetTerminalBundle,
   terminalBundleSignedBytes,
   type PrepareVetTerminalBundleInput,
   type ProtocolAnchorReceipt,
   type TerminalBundlePlan,
 } from "@kynesyslabs/dacs";
-import type { CompositeVerificationRecord, IdentityBundle } from
+import type { CompositeVerificationRecord, IdentityBundle, Listing } from
   "@kynesyslabs/dacs/artifacts";
-import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
+  canonicalize,
+  contentHash,
+  listingAddress,
+  sha256Hex,
+} from "@kynesyslabs/dacs/canonical";
 import {
   ed25519Sign,
   privateKeyFromSeed,
@@ -37,6 +44,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import type { DacsDemosActorRuntimeV1 } from "../src/demosRuntime.js";
 import { createDacsFixedPricePayDemOrderPairV1 } from "../src/liveOrder.js";
+import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
   "../src/purchaseDemosBudget.js";
 import type {
@@ -51,7 +59,10 @@ import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportRuntimeV1,
 } from "../src/terminalBundleTransportRuntime.js";
-import type { DacsHttpAuthenticatedEnvelopeV1 } from
+import type {
+  DacsHttpAuthenticatedEnvelopeV1,
+  DacsVetTerminalBundleProposalV1,
+} from
   "../src/transport/envelope.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -62,6 +73,12 @@ const claim = (seed: Uint8Array) =>
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
 const STARTED_AT = 1_800_000_000_000;
+const LISTING_ID = "terminal-listing";
+const LISTING_VERSION = 1;
+const REGISTRY_VERSIONS = Object.freeze({
+  recipeRegistryVersion: 1,
+  railRegistryVersion: 1,
+});
 
 function identity(role: "buyer" | "seller"): IdentityBundle {
   const presentedBy = role === "buyer" ? BUYER : SELLER;
@@ -79,10 +96,79 @@ function identity(role: "buyer" | "seller"): IdentityBundle {
   };
 }
 
+function listing(paymentPhase: "pay-x402" | "pay-dem" = "pay-x402"): Listing {
+  const railId = paymentPhase === "pay-x402" ? "x402:terminal" : "demos-native:DEM";
+  const railVersion = 1;
+  return {
+    dacsVersion: "1",
+    listingVersion: LISTING_VERSION,
+    listingId: LISTING_ID,
+    seller: {
+      identity: identity("seller"),
+      displayName: "Terminal seller",
+      publicEndpoint: "https://seller.example/dacs",
+    },
+    offering: {
+      title: "Terminal result",
+      description: "Authenticated terminal transport result",
+      category: "data.test",
+      tags: ["test"],
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "vet-credentials" },
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: paymentPhase, parameters: { rail: railId } },
+      { kind: "deliver-attested-payload" },
+    ],
+    pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
+    acceptedRails: [{
+      railId,
+      railVersion,
+      parameters: paymentPhase === "pay-x402"
+        ? { network: "eip155:84532" }
+        : { network: "demos" },
+    }],
+    terms: { deadlineSecAfterCommit: 600 },
+    validity: { notBefore: STARTED_AT - 10_000, notAfter: STARTED_AT + 1_000_000 },
+    signature: {
+      algorithm: "ed25519",
+      signer: SELLER,
+      value: Buffer.alloc(64, 3).toString("base64url"),
+    },
+  };
+}
+
+function application(paymentPhase: "pay-x402" | "pay-dem" = "pay-x402") {
+  const exactListing = listing(paymentPhase);
+  const request = { query: "terminal" };
+  return {
+    applicationVersion: "1" as const,
+    listingRef: `stor-${"5".repeat(40)}`,
+    listingContentHash: contentHash(exactListing as unknown as Record<string, unknown>),
+    listingLogicalAddress: listingAddress(
+      exactListing.seller.identity.presentedBy,
+      exactListing.listingId,
+      exactListing.listingVersion,
+    ),
+    listing: exactListing,
+    demosWriteFeeCeilings: { buyer: "1", seller: "1" },
+    requestHash: sha256Hex(canonicalize(request)),
+    request,
+  };
+}
+
 function terminalInput(
   decision: CompositeVerificationRecord["overallDecision"] = "fail",
   paymentPhase: "pay-x402" | "pay-dem" = "pay-x402",
 ): PrepareVetTerminalBundleInput {
+  const exactListing = listing(paymentPhase);
   const sellerIdentity = identity("seller");
   const logicalAddress = compositeVerificationAddress(JOB_ID, SELLER);
   const record: CompositeVerificationRecord = {
@@ -107,19 +193,11 @@ function terminalInput(
   return {
     jobId: JOB_ID,
     listingRef: {
-      listingId: "terminal-listing",
-      version: 1,
-      contentHash: "8".repeat(64),
+      listingId: exactListing.listingId,
+      version: exactListing.listingVersion,
+      contentHash: contentHash(exactListing as unknown as Record<string, unknown>),
     },
-    pipeline: [
-      { kind: "vet-credentials" },
-      { kind: "negotiate-fixed-price" },
-      { kind: "commit-agreement" },
-      paymentPhase === "pay-x402"
-        ? { kind: "pay-x402", parameters: { rail: "x402:terminal" } }
-        : { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } },
-      { kind: "deliver-attested-payload" },
-    ],
+    pipeline: exactListing.pipeline,
     vetPhaseIndex: 0,
     vetInvokedAt: STARTED_AT + 50,
     startedAt: STARTED_AT,
@@ -177,6 +255,20 @@ function contribution(
       )).toString("base64url"),
     })),
   );
+}
+
+async function terminalProposal(
+  input: Readonly<PrepareVetTerminalBundleInput>,
+): Promise<Readonly<DacsVetTerminalBundleProposalV1>> {
+  const prepared = await prepareVetTerminalBundle(input, {
+    authenticateProduction: async () => ({ status: "valid" }),
+  });
+  if (prepared.status !== "terminal") throw new Error("terminal fixture did not fail Vet");
+  return Object.freeze({
+    proposalVersion: "1" as const,
+    terminalInput: input,
+    plan: createTerminalBundlePlan(prepared.authority, { kind: "co-signed" }),
+  });
 }
 
 function order(role: "buyer" | "seller"): FixedPriceX402OrderInput {
@@ -297,6 +389,11 @@ describe("role-separated Vet terminal bundle transport", () => {
         bindingHash: fixedPriceX402OrderBindingHash(exactOrder),
         localBindingHash: fixedPriceX402OrderLocalBindingHash(exactOrder),
       });
+      putDacsLiveOrderInputV1({
+        database,
+        order: exactOrder,
+        application: application("pay-x402"),
+      });
     } else {
       const pair = createDacsFixedPricePayDemOrderPairV1({
         jobId: JOB_ID,
@@ -328,6 +425,11 @@ describe("role-separated Vet terminal bundle transport", () => {
         bindingHash: pair.bindingHash,
         localBindingHash: role === "buyer"
           ? pair.buyerLocalBindingHash : pair.sellerLocalBindingHash,
+      });
+      putDacsLiveOrderInputV1({
+        database,
+        order: pair[role],
+        application: application("pay-dem"),
       });
     }
     return database;
@@ -364,10 +466,12 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     buyerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: buyerAuthenticate,
     });
     sellerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: sellerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: sellerAuthenticate,
     });
     const registered = await buyerRuntime.registerLocalTerminal(terminalInput());
@@ -410,6 +514,7 @@ describe("role-separated Vet terminal bundle transport", () => {
 
     const restartedBuyer = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: buyerAuthenticate,
     });
     await expect(restartedBuyer.transport.resolveContribution({
@@ -583,10 +688,12 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     buyerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     sellerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: sellerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     await buyerRuntime.registerLocalTerminal(terminalInput());
@@ -606,6 +713,7 @@ describe("role-separated Vet terminal bundle transport", () => {
 
     const restartedBuyer = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     await expect(restartedBuyer.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({
@@ -637,6 +745,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     buyerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({
         status: "invalid",
         reason: "Vet failure not authenticated",
@@ -644,6 +753,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
     const sellerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: sellerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     const registered = await sellerRuntime.registerLocalTerminal(terminalInput());
@@ -693,10 +803,12 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     const buyerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     sellerRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: sellerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     const registered = await buyerRuntime.registerLocalTerminal(terminalInput());
@@ -738,11 +850,13 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     const validRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     const registered = await validRuntime.registerLocalTerminal(terminalInput());
     const unavailableRuntime = createDacsVetTerminalBundleTransportRuntimeV1({
       context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({
         status: "indeterminate",
         reason: "recursive Vet evidence unavailable",
@@ -778,6 +892,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
       context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
 
@@ -794,6 +909,209 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
   });
 
+  it.each([
+    [
+      "alternate same-kind rail",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        pipeline: input.pipeline.map((step) => step.kind === "pay-x402"
+          ? { ...step, parameters: { ...step.parameters, rail: "x402:substituted" } }
+          : step),
+      }),
+      "vet-terminal-proposal-rail-mismatch",
+    ],
+    [
+      "Listing identity",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        listingRef: { ...input.listingRef, listingId: "substituted-listing" },
+      }),
+      "vet-terminal-proposal-listing-mismatch",
+    ],
+    [
+      "Listing content reference",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        listingRef: { ...input.listingRef, contentHash: "f".repeat(64) },
+      }),
+      "vet-terminal-proposal-listing-mismatch",
+    ],
+    [
+      "Listing pipeline",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        pipeline: input.pipeline.map((step, index) => index === 1
+          ? { kind: "commit-agreement" as const }
+          : step),
+      }),
+      "vet-terminal-proposal-listing-mismatch",
+    ],
+    [
+      "Listing version",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        listingRef: { ...input.listingRef, version: input.listingRef.version + 1 },
+      }),
+      "vet-terminal-proposal-version-mismatch",
+    ],
+    [
+      "recipe registry version",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        recipeRegistryVersion: input.recipeRegistryVersion + 1,
+      }),
+      "vet-terminal-proposal-version-mismatch",
+    ],
+    [
+      "rail registry version",
+      (input: PrepareVetTerminalBundleInput) => ({
+        ...input,
+        railRegistryVersion: input.railRegistryVersion + 1,
+      }),
+      "vet-terminal-proposal-version-mismatch",
+    ],
+  ] as const)("rejects a substituted %s before authentication or retention", async (
+    _label,
+    mutate,
+    reasonCode,
+  ) => {
+    const buyerDatabase = await open("buyer");
+    const authenticate = vi.fn(async () => ({ status: "valid" as const }));
+    const sendMessage = vi.fn();
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase, sendMessage,
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: authenticate,
+    });
+    await runtime.registerLocalTerminal(terminalInput());
+    authenticate.mockClear();
+    const persist = vi.spyOn(buyerDatabase, "putEffectIntent");
+    const proposal = await terminalProposal(mutate(terminalInput()));
+
+    await expect(runtime.handleMessage(
+      authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "rejected", reasonCode });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(runtime.transport.resolveProposal({
+      jobId: JOB_ID,
+      authorityHash: proposal.plan.authorityHash,
+      planHash: proposal.plan.planHash,
+    })).resolves.toEqual({
+      disposition: "authoritatively-absent",
+      reason: "vet-terminal-proposal-absent",
+    });
+  });
+
+  it.each([
+    ["recipe", (input: PrepareVetTerminalBundleInput) => ({
+      ...input,
+      recipeRegistryVersion: input.recipeRegistryVersion + 1,
+    })],
+    ["rail", (input: PrepareVetTerminalBundleInput) => ({
+      ...input,
+      railRegistryVersion: input.railRegistryVersion + 1,
+    })],
+  ] as const)("rejects a first-arriving peer %s registry mismatch", async (
+    _label,
+    mutate,
+  ) => {
+    const buyerDatabase = await open("buyer");
+    const authenticate = vi.fn(async () => ({ status: "valid" as const }));
+    const sendMessage = vi.fn();
+    const signComponent = vi.fn();
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase,
+      sessionStore: createInMemoryFencedSessionStore(),
+      demos: { signComponent },
+      sendMessage,
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: authenticate,
+    });
+    const persist = vi.spyOn(buyerDatabase, "putEffectIntent");
+    const proposal = await terminalProposal(mutate(terminalInput()));
+
+    await expect(runtime.handleMessage(
+      authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: "vet-terminal-proposal-version-mismatch",
+    });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
+      reasonCode: "vet-terminal-material-unavailable",
+    });
+    expect(signComponent).not.toHaveBeenCalled();
+  });
+
+  it("snapshots trusted registry versions before admitting a first proposal", async () => {
+    const buyerDatabase = await open("buyer");
+    const configuredVersions = {
+      recipeRegistryVersion: 1,
+      railRegistryVersion: 1,
+    };
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase, sendMessage: vi.fn(),
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: configuredVersions,
+      authenticateProduction: async () => ({ status: "valid" }),
+    });
+    configuredVersions.recipeRegistryVersion = 2;
+    configuredVersions.railRegistryVersion = 2;
+    const proposal = await terminalProposal(terminalInput());
+
+    await expect(runtime.handleMessage(
+      authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+    await expect(runtime.transport.resolveProposal({
+      jobId: JOB_ID,
+      authorityHash: proposal.plan.authorityHash,
+      planHash: proposal.plan.planHash,
+    })).resolves.toMatchObject({ disposition: "present" });
+  });
+
+  it("fails closed when a first proposal has no trusted registry authority", async () => {
+    const buyerDatabase = await open("buyer");
+    const authenticate = vi.fn(async () => ({ status: "valid" as const }));
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase, sendMessage: vi.fn(),
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      authenticateProduction: authenticate,
+    });
+    const persist = vi.spyOn(buyerDatabase, "putEffectIntent");
+    const proposal = await terminalProposal(terminalInput());
+
+    await expect(runtime.handleMessage(
+      authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: "vet-terminal-proposal-version-authority-unavailable",
+    });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
   it("rejects a contribution whose detached signature row was altered", async () => {
     const buyerDatabase = await open("buyer");
     const buyerContext = {
@@ -802,6 +1120,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     } as unknown as DacsLiveRoleOperationContextV1;
     const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
       context: buyerContext,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
     });
     const registered = await runtime.registerLocalTerminal(terminalInput());

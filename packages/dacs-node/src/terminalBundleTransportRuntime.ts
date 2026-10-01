@@ -20,11 +20,18 @@ import {
   type TerminalBundleTransportIdentity,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import type {
+  FixedPricePayDemOrderInput,
+  FixedPriceX402OrderInput,
+} from "@kynesyslabs/dacs/commerce";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity } from
   "@kynesyslabs/dacs/identity";
 
 import { createDacsDemosBundlePublicationV1 } from "./demosBundlePublication.js";
+import { captureDacsFixedPriceX402ApplicationV1 } from
+  "./fixedPriceX402Profile.js";
+import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
@@ -59,6 +66,11 @@ interface DacsVetTerminalTransportBindingV1 {
 
 export interface DacsVetTerminalBundleTransportOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
+  /** Trusted local registry snapshot selected by the live factory. */
+  expectedRegistryVersions?: Readonly<{
+    recipeRegistryVersion: number;
+    railRegistryVersion: number;
+  }>;
   /**
    * Recursively authenticate the CVR, VerifyResults, recipe provenance and
    * finalized readback. The runtime feeds this only the exact proposal input
@@ -326,7 +338,24 @@ async function loadOrder(
   buyer: string;
   seller: string;
   localBindingHash: string;
-  paymentPhase: "pay-x402" | "pay-dem";
+  rail: Readonly<{
+    registryIndexRef: string;
+    registryIndexHash: string;
+    railDefinitionRef: string;
+    railDefinitionHash: string;
+    railId: string;
+    railVersion: number;
+    railType: "x402" | "demos-native";
+    phaseHandler: "pay-x402" | "pay-dem";
+    network: string;
+    availability: "live";
+  }>;
+  listingRef: Readonly<{
+    listingId: string;
+    version: number;
+    contentHash: string;
+  }>;
+  pipeline: Readonly<PrepareVetTerminalBundleInput["pipeline"]>;
 }>> {
   const [x402, payDem] = await Promise.all([
     context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
@@ -352,12 +381,61 @@ async function loadOrder(
       )) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
   }
+  const retainedOrder = {
+    jobId: record.jobId,
+    buyer: record.buyer,
+    seller: record.seller,
+    protocol: record.protocol,
+    sdkJobs: record.sdkJobs,
+  };
+  const retained = (() => {
+    try {
+      return record.protocol.phase === "pay-dem"
+        ? loadDacsLiveOrderInputV1({
+            database: context.database,
+            order: retainedOrder as FixedPricePayDemOrderInput,
+          })
+        : loadDacsLiveOrderInputV1({
+            database: context.database,
+            order: retainedOrder as FixedPriceX402OrderInput,
+          });
+    } catch {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
+    }
+  })();
+  if (retained === undefined || retained.localBindingHash !== record.localBindingHash) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-unavailable");
+  }
+  let application: ReturnType<typeof captureDacsFixedPriceX402ApplicationV1>;
+  try {
+    application = captureDacsFixedPriceX402ApplicationV1(retained.application);
+  } catch {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
+  }
+  const listingPaymentSteps = application.listing.pipeline.filter((step) =>
+    step.kind === "pay-x402" || step.kind === "pay-dem");
+  const listingRails = application.listing.acceptedRails?.filter((rail) =>
+    rail.railId === record.protocol.rail.railId) ?? [];
+  if (listingPaymentSteps.length !== 1 ||
+      listingPaymentSteps[0]?.kind !== record.protocol.phase ||
+      listingPaymentSteps[0].parameters?.rail !== record.protocol.rail.railId ||
+      listingRails.length !== 1 ||
+      listingRails[0]?.railVersion !== record.protocol.rail.railVersion ||
+      listingRails[0]?.parameters?.network !== record.protocol.rail.network) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
+  }
   return Object.freeze({
     jobId: record.jobId,
     buyer: record.buyer,
     seller: record.seller,
     localBindingHash: record.localBindingHash,
-    paymentPhase: record.protocol.phase,
+    rail: Object.freeze(structuredClone(record.protocol.rail)),
+    listingRef: Object.freeze({
+      listingId: application.listing.listingId,
+      version: application.listing.listingVersion,
+      contentHash: application.listingContentHash,
+    }),
+    pipeline: application.listing.pipeline,
   });
 }
 
@@ -509,15 +587,33 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   options: Readonly<DacsVetTerminalBundleTransportOptionsV1>,
 ): Readonly<DacsVetTerminalBundleTransportRuntimeV1> {
   if (!plainObject(options) || !plainObject(options.context) ||
-      !exactFields(options, ["context", "authenticateProduction"]) ||
+      !exactFields(options, ["context", "authenticateProduction"], [
+        "expectedRegistryVersions",
+      ]) ||
       (options.context.role !== "buyer" && options.context.role !== "seller") ||
-      typeof options.authenticateProduction !== "function") {
+      typeof options.authenticateProduction !== "function" ||
+      (options.expectedRegistryVersions !== undefined &&
+        (!plainObject(options.expectedRegistryVersions) ||
+          !exactFields(options.expectedRegistryVersions, [
+            "recipeRegistryVersion", "railRegistryVersion",
+          ]) ||
+          !Number.isSafeInteger(
+            options.expectedRegistryVersions.recipeRegistryVersion,
+          ) || options.expectedRegistryVersions.recipeRegistryVersion <= 0 ||
+          !Number.isSafeInteger(
+            options.expectedRegistryVersions.railRegistryVersion,
+          ) || options.expectedRegistryVersions.railRegistryVersion <= 0))) {
     throw new TypeError("Vet terminal bundle transport options are invalid");
   }
   const context = options.context;
   const role = context.role;
   const peerRole = otherRole(role);
   const authenticateProduction = options.authenticateProduction;
+  const expectedRegistryVersions = options.expectedRegistryVersions === undefined
+    ? undefined : Object.freeze({
+        recipeRegistryVersion: options.expectedRegistryVersions.recipeRegistryVersion,
+        railRegistryVersion: options.expectedRegistryVersions.railRegistryVersion,
+      });
 
   const safeAuthenticator: PrepareVetTerminalBundleDeps["authenticateProduction"] =
     async (input) => {
@@ -548,13 +644,58 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
 
   const assertProposalOrder = async (
     proposal: Readonly<DacsVetTerminalBundleProposalV1>,
+    requireRegistryAuthority: boolean,
   ): Promise<void> => {
     const order = await loadOrder(context, proposal.terminalInput.jobId);
     const paymentSteps = proposal.terminalInput.pipeline.filter((step) =>
       step.kind === "pay-x402" || step.kind === "pay-dem");
-    if (paymentSteps.length !== 1 || paymentSteps[0]?.kind !== order.paymentPhase) {
+    if (paymentSteps.length !== 1 ||
+        paymentSteps[0]?.kind !== order.rail.phaseHandler ||
+        paymentSteps[0].parameters?.rail !== order.rail.railId) {
       throw new DacsVetTerminalBundleTransportError(
         "vet-terminal-proposal-rail-mismatch",
+      );
+    }
+    if (proposal.terminalInput.listingRef.version !== order.listingRef.version) {
+      throw new DacsVetTerminalBundleTransportError(
+        "vet-terminal-proposal-version-mismatch",
+      );
+    }
+    if (proposal.terminalInput.listingRef.listingId !== order.listingRef.listingId ||
+        proposal.terminalInput.listingRef.contentHash !== order.listingRef.contentHash ||
+        !canonicalEqual(proposal.terminalInput.pipeline, order.pipeline)) {
+      throw new DacsVetTerminalBundleTransportError(
+        "vet-terminal-proposal-listing-mismatch",
+      );
+    }
+    let registryVersions = expectedRegistryVersions;
+    if (registryVersions === undefined) {
+      const localMaterial = context.database.loadEffectInput(
+        "session",
+        transportId(context.role, "material", proposal.terminalInput.jobId),
+      );
+      if (localMaterial === undefined) {
+        if (requireRegistryAuthority) {
+          throw new DacsVetTerminalBundleTransportError(
+            "vet-terminal-proposal-version-authority-unavailable",
+          );
+        }
+        return;
+      }
+      const binding = captureBinding(localMaterial);
+      const retained = captureProposal(binding.payload);
+      if (binding.localBindingHash !== order.localBindingHash ||
+          binding.kind !== "material") {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+      }
+      registryVersions = retained.terminalInput;
+    }
+    if (proposal.terminalInput.recipeRegistryVersion !==
+          registryVersions.recipeRegistryVersion ||
+        proposal.terminalInput.railRegistryVersion !==
+          registryVersions.railRegistryVersion) {
+      throw new DacsVetTerminalBundleTransportError(
+        "vet-terminal-proposal-version-mismatch",
       );
     }
   };
@@ -564,6 +705,22 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     let prepared: PreparedVetTerminalBundle;
     try {
       proposal = captureProposal(value);
+    } catch {
+      return Object.freeze({
+        disposition: "rejected" as const,
+        reasonCode: "vet-terminal-proposal-invalid",
+      });
+    }
+    try {
+      await assertProposalOrder(proposal, true);
+    } catch (error) {
+      return Object.freeze({
+        disposition: "rejected" as const,
+        reasonCode: error instanceof DacsVetTerminalBundleTransportError
+          ? error.reasonCode : "vet-terminal-proposal-invalid",
+      });
+    }
+    try {
       prepared = await prepareVetTerminalBundle(proposal.terminalInput, {
         authenticateProduction: safeAuthenticator,
       });
@@ -596,7 +753,6 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         throw new DacsVetTerminalBundleTransportError("vet-terminal-proposal-mismatch");
       }
       assertPlanParties(context, derivedPlan);
-      await assertProposalOrder(proposal);
       return Object.freeze({
         disposition: "authorized" as const,
         proposal: Object.freeze({
@@ -969,7 +1125,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         plan: createTerminalBundlePlan(prepared.authority, { kind: "co-signed" }),
       });
       assertPlanParties(context, proposal.plan);
-      await assertProposalOrder(proposal);
+      await assertProposalOrder(proposal, false);
       await putBinding(context, "material", input.jobId, proposal);
       return Object.freeze({ prepared, proposal });
     },

@@ -250,6 +250,12 @@ describe("native DEM one-factory live assembly", () => {
     });
     factories.sellerAudit.mockReturnValueOnce(normalAudit);
     factories.advanceTerminal.mockResolvedValueOnce(terminalResult);
+    const createInput = Object.assign(vi.fn(), {
+      registryVersions: {
+        recipeRegistryVersion: 13,
+        railRegistryVersion: 9,
+      },
+    });
 
     await createDacsSellerPayDemLiveCommerceAssemblyV1({
       context,
@@ -268,7 +274,7 @@ describe("native DEM one-factory live assembly", () => {
       audit: { resolveMaterial: vi.fn(), retryDelayMs: 29 },
       terminalBundle: {
         authenticateProduction: vi.fn(),
-        createInput: vi.fn(),
+        createInput,
       },
     } as never);
 
@@ -282,6 +288,14 @@ describe("native DEM one-factory live assembly", () => {
       "job-terminal",
     );
     expect(normalAudit).not.toHaveBeenCalled();
+    expect(factories.terminalBundleTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 13,
+          railRegistryVersion: 9,
+        },
+      }),
+    );
     expect(factories.sellerSessionAgreement.mock.calls[0]![0].terminalBundle)
       .toMatchObject({ runtime: { terminal: true } });
   });
