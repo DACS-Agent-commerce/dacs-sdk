@@ -409,7 +409,8 @@ function generatedBuyerPaymentEffectId(
 /**
  * Authenticate generated native-DEM wallet recovery against both finalized
  * chain facts and the pre-broadcast checkpoint's exact confirmed fee debit.
- * Missing checkpoints or chain reads are not converted into invented fees.
+ * Missing checkpoints never authenticate absence because actor-local backups
+ * can roll back independently of the wallet authority and the Demos chain.
  */
 export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
   options: Readonly<DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1>,
@@ -454,15 +455,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
         effectId,
         PREPARED_CHECKPOINT,
       );
-      if (observation.disposition !== "settled") {
-        const absenceProofHash = sha256Hex(canonicalize({
-          disposition: "no-prepared-transfer",
-          settlementKey: payment.settlementKey,
-          orderLocalBindingHash: payment.orderLocalBindingHash,
-        }));
-        return checkpoint === undefined &&
-          observation.evidenceHash === absenceProofHash;
-      }
+      if (observation.disposition !== "settled") return false;
       if (checkpoint === undefined) return false;
       const prepared = capturePrepared(checkpoint.value, payment);
       if (prepared.txHash !== observation.evidenceHash ||

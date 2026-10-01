@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   resumeWalletSpendAuthorityOperationV1,
+  validateWalletSpendAuthorityOperationV1,
   type WalletSpendAuthorityReplayV1,
   type WalletSpendAuthorityV1,
   type WalletSpendPolicyV1,
@@ -14,6 +15,18 @@ import {
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 
 import { loadDacsSecretV1 } from "./secrets.js";
+import {
+  dacsWalletSpendRemoteOperationRetentionV1,
+  type DacsWalletSpendRemoteOperationRetentionV1,
+} from "./walletSpendOperationRetention.js";
+import {
+  dacsWalletSpendLineageKeyV1,
+  isDacsWalletSpendContinuityAuthorityV2,
+  verifyDacsWalletSpendContinuityReceiptV1,
+  type DacsWalletSpendContinuityAuthorityV2,
+  type DacsWalletSpendContinuityAttestationRequestV1,
+  type DacsWalletSpendContinuityReceiptV1,
+} from "./walletSpendPostgres.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -49,28 +62,62 @@ interface RemoteResponseV1 {
   result: unknown;
 }
 
+interface RemoteRequestV2 {
+  protocolVersion: "2";
+  operationId: string;
+  requestHashVersion: "1";
+  clientNonce: string;
+  authorityId: string;
+  epoch: string;
+  lineageKey: string;
+  policyHash: string;
+  wallet: string;
+  chainId: string;
+  operation: RemoteOperation;
+  payload: unknown;
+}
+
+interface RemoteResponseV2 {
+  protocolVersion: "2";
+  operationId: string;
+  requestHash: string;
+  revision: number;
+  status: "ok";
+  result: unknown;
+  continuity: Readonly<DacsWalletSpendContinuityReceiptV1>;
+}
+
+type RemoteRequest = RemoteRequestV1 | RemoteRequestV2;
+type RemoteResponse = RemoteResponseV1 | RemoteResponseV2;
+
 export interface DacsWalletSpendRemoteOperationStoreV1 {
   load(input: Readonly<{
     roleId: string;
     operationId: string;
   }>): Promise<Readonly<{
     requestHash: string;
-    request: Readonly<RemoteRequestV1>;
-    response?: Readonly<RemoteResponseV1>;
+    request: Readonly<RemoteRequest>;
+    response?: Readonly<RemoteResponse>;
   }> | undefined>;
   claim(input: Readonly<{
     roleId: string;
     operationId: string;
     requestHash: string;
-    request: Readonly<RemoteRequestV1>;
-  }>): Promise<"new" | "existing">;
+    request: Readonly<RemoteRequest>;
+  }>): Promise<"new" | "existing" | "full">;
   complete(input: Readonly<{
     roleId: string;
     operationId: string;
     requestHash: string;
-    response: Readonly<RemoteResponseV1>;
+    response: Readonly<RemoteResponse>;
   }>): Promise<void>;
 }
+
+export {
+  DACS_WALLET_SPEND_DEFAULT_MAXIMUM_OPERATIONS,
+  DACS_WALLET_SPEND_DEFAULT_MAXIMUM_OPERATIONS_PER_ROLE,
+  type DacsWalletSpendRemoteOperationRetentionV1,
+} from "./walletSpendOperationRetention.js";
 
 export class DacsWalletSpendRemoteError extends Error {
   override readonly name = "DacsWalletSpendRemoteError";
@@ -127,19 +174,76 @@ function responseShape(value: unknown): value is RemoteResponseV1 {
     (value.revision as number) >= 0 && value.status === "ok";
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declared) ||
-      Number(declared) > MAX_BODY_BYTES)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-too-large");
+function responseShapeV2(value: unknown): value is RemoteResponseV2 {
+  return plainObject(value) && exact(value, [
+    "protocolVersion", "operationId", "requestHash", "revision", "status", "result",
+    "continuity",
+  ]) && value.protocolVersion === "2" && typeof value.operationId === "string" &&
+    UUID_RE.test(value.operationId) && typeof value.requestHash === "string" &&
+    HASH_RE.test(value.requestHash) && Number.isSafeInteger(value.revision) &&
+    (value.revision as number) >= 0 && value.status === "ok";
+}
+
+function cancelBody(body: ReadableStream<Uint8Array> | null, reason?: unknown): void {
+  if (body !== null && !body.locked) void body.cancel(reason).catch(() => {});
+}
+
+async function boundedBody(
+  source: Readonly<{ headers: Headers; body: ReadableStream<Uint8Array> | null }>,
+  errors: Readonly<{ tooLarge: string; sizeInvalid: string }>,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const declaredHeader = source.headers.get("content-length");
+  if (declaredHeader !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declaredHeader) ||
+      Number(declaredHeader) > MAX_BODY_BYTES)) {
+    cancelBody(source.body);
+    throw new DacsWalletSpendRemoteError(errors.tooLarge);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-size-invalid");
+  const declared = declaredHeader === null ? undefined : Number(declaredHeader);
+  if (source.body === null || declared === 0) {
+    cancelBody(source.body);
+    throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
   }
-  if (declared !== null && Number(declared) !== bytes.byteLength) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-size-invalid");
+  const reader = source.body.getReader();
+  const bytes = new Uint8Array(declared ?? MAX_BODY_BYTES);
+  let length = 0;
+  let cancelled = false;
+  const cancel = (reason?: unknown) => {
+    if (cancelled) return;
+    cancelled = true;
+    void reader.cancel(reason).catch(() => {});
+  };
+  const abort = () => cancel(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  try {
+    for (;;) {
+      const item = await reader.read();
+      if (item.done) break;
+      if (!(item.value instanceof Uint8Array) ||
+          item.value.byteLength > bytes.byteLength - length) {
+        cancel();
+        throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
+      }
+      bytes.set(item.value, length);
+      length += item.value.byteLength;
+    }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    reader.releaseLock();
   }
+  if (signal?.aborted) throw signal.reason;
+  if (length === 0 || (declared !== undefined && length !== declared)) {
+    throw new DacsWalletSpendRemoteError(errors.sizeInvalid);
+  }
+  return bytes.subarray(0, length);
+}
+
+async function boundedJson(response: Response, signal?: AbortSignal): Promise<unknown> {
+  const bytes = await boundedBody(response, {
+    tooLarge: "wallet-spend-authority-response-too-large",
+    sizeInvalid: "wallet-spend-authority-response-size-invalid",
+  }, signal);
   try {
     return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
@@ -330,12 +434,13 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
     const resolveExactOperation = async (): Promise<unknown> => {
       const query = new URL(`v1/wallet-spend/operations/${operationId}`, endpoint);
       query.searchParams.set("requestHash", requestHash);
+      const signal = AbortSignal.timeout(timeoutMs);
       const resolved = await requestFetch(query, {
         method: "GET",
         headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
-      const resolvedBody = await boundedJson(resolved);
+      const resolvedBody = await boundedJson(resolved, signal);
       if (!resolved.ok || !responseShape(resolvedBody) ||
           resolvedBody.operationId !== operationId ||
           resolvedBody.requestHash !== requestHash ||
@@ -374,11 +479,11 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
         requestHash,
       );
     }
-    clearTimeout(timer);
     let body: unknown;
     try {
-      body = await boundedJson(response);
+      body = await boundedJson(response, controller.signal);
     } catch (error) {
+      clearTimeout(timer);
       if (operation !== "inspect") {
         try { return await resolveExactOperation(); } catch {
           throw new DacsWalletSpendRemoteError(
@@ -390,6 +495,7 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
       }
       throw error;
     }
+    clearTimeout(timer);
     if (!response.ok || !responseShape(body) || body.operationId !== operationId ||
         body.requestHash !== requestHash || body.revision < latestRevision) {
       if (operation !== "inspect") {
@@ -463,6 +569,221 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
   return Object.freeze(authority);
 }
 
+/**
+ * Continuity-capable funded client. It speaks only V2 and requires an
+ * operator-pinned witness identity; it never retries through the V1 route.
+ */
+export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
+  policy: Readonly<WalletSpendPolicyV1>;
+  endpoint: string;
+  tokenFilePath: string;
+  authorityId: string;
+  epoch: string;
+  witnessVerificationKey: string;
+  allowInsecureLoopback?: boolean;
+  timeoutMs?: number;
+  fetch?: typeof fetch;
+}>): Promise<Readonly<WalletSpendAuthorityV1>> {
+  const endpoint = endpointUrl(input.endpoint, input.allowInsecureLoopback === true);
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000 ||
+      input.authorityId.length === 0 || input.authorityId.trim() !== input.authorityId ||
+      input.authorityId.normalize("NFC") !== input.authorityId || input.epoch.length === 0 ||
+      input.epoch.trim() !== input.epoch || input.epoch.normalize("NFC") !== input.epoch ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.witnessVerificationKey)) {
+    throw new DacsWalletSpendRemoteError("wallet-spend-authority-continuity-config-invalid");
+  }
+  const requestFetch = input.fetch ?? globalThis.fetch;
+  const secret = await loadDacsSecretV1({
+    name: "wallet-spend-authority-token",
+    mode: "live-demos",
+    filePath: input.tokenFilePath,
+  });
+  const token = secret.text().trim();
+  secret.destroy();
+  if (token.length < 32 || token.length > 4_096 || /[\0\r\n]/.test(token)) {
+    throw new DacsWalletSpendRemoteError("wallet-spend-authority-token-invalid");
+  }
+  const policy = Object.freeze(JSON.parse(canonicalize(input.policy)) as WalletSpendPolicyV1);
+  const policyHash = sha256Hex(`dacs-wallet-spend-policy:v1:${canonicalize(policy)}`);
+  const lineageKey = dacsWalletSpendLineageKeyV1(policy.wallet, policy.chainId);
+  const pin = Object.freeze({
+    authorityId: input.authorityId,
+    epoch: input.epoch,
+    verificationKey: input.witnessVerificationKey,
+  });
+  let latestRevision = -1;
+  let latestStateHash: string | undefined;
+
+  const validatedResponse = (
+    value: unknown,
+    expected: Readonly<{
+      operationId: string;
+      requestHash: string;
+      clientNonce: string;
+    }>,
+  ): RemoteResponseV2 => {
+    if (!responseShapeV2(value) || value.operationId !== expected.operationId ||
+        value.requestHash !== expected.requestHash ||
+        !verifyDacsWalletSpendContinuityReceiptV1(value.continuity, pin) ||
+        value.continuity.kind !== "current" ||
+        value.continuity.lineageKey !== lineageKey ||
+        value.continuity.operationId !== expected.operationId ||
+        value.continuity.requestHash !== expected.requestHash ||
+        value.continuity.clientNonce !== expected.clientNonce ||
+        value.continuity.revision !== value.revision || value.revision < latestRevision ||
+        (value.revision === latestRevision && latestStateHash !== undefined &&
+          value.continuity.stateHash !== latestStateHash)) {
+      throw new DacsWalletSpendRemoteError(
+        "wallet-spend-authority-continuity-proof-invalid",
+        expected.operationId,
+        expected.requestHash,
+      );
+    }
+    latestRevision = value.revision;
+    latestStateHash = value.continuity.stateHash;
+    return value;
+  };
+
+  const send = async (operation: RemoteOperation, payload: unknown): Promise<unknown> => {
+    const operationId = randomUUID();
+    const clientNonce = randomBytes(32).toString("hex");
+    const request: RemoteRequestV2 = {
+      protocolVersion: "2", operationId, requestHashVersion: "1", clientNonce,
+      authorityId: input.authorityId, epoch: input.epoch, lineageKey, policyHash,
+      wallet: policy.wallet, chainId: policy.chainId, operation, payload,
+    };
+    const requestHash = sha256Hex(canonicalize(request));
+    const expected = { operationId, requestHash, clientNonce };
+    const resolveExactOperation = async (): Promise<unknown> => {
+      const query = new URL(`v2/wallet-spend/operations/${operationId}`, endpoint);
+      query.searchParams.set("requestHash", requestHash);
+      const signal = AbortSignal.timeout(timeoutMs);
+      const resolved = await requestFetch(query, {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}` },
+        signal,
+      });
+      const body = await boundedJson(resolved, signal);
+      if (!resolved.ok) {
+        throw new DacsWalletSpendRemoteError(
+          "wallet-spend-authority-operation-unresolved", operationId, requestHash,
+        );
+      }
+      return validatedResponse(body, expected).result;
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      const encoded = canonicalize(request);
+      response = await requestFetch(new URL("v2/wallet-spend/operations", endpoint), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "content-length": String(Buffer.byteLength(encoded, "utf8")),
+        },
+        body: encoded,
+        signal: controller.signal,
+      });
+    } catch {
+      clearTimeout(timer);
+      if (operation !== "inspect") {
+        try { return await resolveExactOperation(); } catch { /* fail closed below */ }
+      }
+      throw new DacsWalletSpendRemoteError(
+        "wallet-spend-authority-outcome-unknown", operationId, requestHash,
+      );
+    }
+    let body: unknown;
+    try {
+      body = await boundedJson(response, controller.signal);
+    } catch (error) {
+      clearTimeout(timer);
+      if (operation !== "inspect") {
+        try { return await resolveExactOperation(); } catch { /* fail closed below */ }
+      }
+      throw error;
+    }
+    clearTimeout(timer);
+    if (!response.ok) {
+      if (operation !== "inspect") {
+        try { return await resolveExactOperation(); } catch { /* report refusal */ }
+      }
+      throw new DacsWalletSpendRemoteError(
+        plainObject(body) && exact(body, ["reasonCode"]) &&
+            typeof body.reasonCode === "string"
+          ? body.reasonCode : "wallet-spend-authority-response-invalid",
+        operationId,
+        requestHash,
+      );
+    }
+    try {
+      return validatedResponse(body, expected).result;
+    } catch (error) {
+      if (operation !== "inspect") {
+        try { return await resolveExactOperation(); } catch { /* preserve validation failure */ }
+      }
+      throw error;
+    }
+  };
+
+  const remotePermit = (raw: unknown) => {
+    const retained = permitData(raw);
+    const invoke = async (
+      operation: "current" | "begin" | "settle",
+      observation?: unknown,
+    ): Promise<void> => {
+      const result = await send(operation, {
+        permit: retained,
+        ...(observation === undefined ? {} : { observation }),
+      });
+      if (result !== null) {
+        throw new DacsWalletSpendRemoteError("wallet-spend-authority-response-invalid");
+      }
+    };
+    return Object.freeze({
+      ...retained,
+      assertCurrent: async () => { await invoke("current"); },
+      beginEffect: async () => { await invoke("begin"); },
+      settle: async (observation: Readonly<WalletSpendSettlementObservationV1>) => {
+        await invoke("settle", observation);
+      },
+    });
+  };
+  return Object.freeze({
+    policy,
+    policyHash,
+    async reserve(reservation, options = {}) {
+      const result = await send("reserve", { reservation, options });
+      const claim = remoteClaim(result, reservation);
+      return claim.status === "reserved"
+        ? { status: "reserved" as const, permit: remotePermit(
+            (result as Record<string, unknown>).permit,
+          ) }
+        : claim;
+    },
+    async reconcile(reservation, observation) {
+      const result = await send("reconcile", { reservation, observation });
+      if (result !== "settled" && result !== "released" && result !== "existing") {
+        throw new DacsWalletSpendRemoteError("wallet-spend-authority-reconcile-invalid");
+      }
+      return result;
+    },
+    async inspect() {
+      const result = await send("inspect", {});
+      const status = remoteStatus(result);
+      if (status.revision !== latestRevision || status.policyHash !== policyHash ||
+          status.wallet !== policy.wallet || status.chainId !== policy.chainId ||
+          status.policyId !== policy.policyId) {
+        throw new DacsWalletSpendRemoteError("wallet-spend-authority-status-invalid");
+      }
+      return status;
+    },
+  } satisfies WalletSpendAuthorityV1);
+}
+
 function bearer(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   const match = /^Bearer ([^\s]{32,4096})$/.exec(authorization ?? "");
@@ -470,16 +791,10 @@ function bearer(request: Request): string | null {
 }
 
 async function requestJson(request: Request): Promise<unknown> {
-  const declared = request.headers.get("content-length");
-  if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declared) ||
-      Number(declared) > MAX_BODY_BYTES)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-too-large");
-  }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES ||
-      (declared !== null && Number(declared) !== bytes.byteLength)) {
-    throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-size-invalid");
-  }
+  const bytes = await boundedBody(request, {
+    tooLarge: "wallet-spend-authority-request-too-large",
+    sizeInvalid: "wallet-spend-authority-request-size-invalid",
+  }, request.signal);
   try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown; } catch {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-invalid");
   }
@@ -499,6 +814,31 @@ function captureRequest(value: unknown): RemoteRequestV1 {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-invalid");
   }
   return value as unknown as RemoteRequestV1;
+}
+
+function captureRequestV2(value: unknown): RemoteRequestV2 {
+  if (!plainObject(value) || !exact(value, [
+    "protocolVersion", "operationId", "requestHashVersion", "clientNonce",
+    "authorityId", "epoch", "lineageKey", "policyHash", "wallet", "chainId",
+    "operation", "payload",
+  ]) || value.protocolVersion !== "2" || typeof value.operationId !== "string" ||
+      !UUID_RE.test(value.operationId) || value.requestHashVersion !== "1" ||
+      typeof value.clientNonce !== "string" || !HASH_RE.test(value.clientNonce) ||
+      typeof value.authorityId !== "string" || value.authorityId.length === 0 ||
+      value.authorityId.trim() !== value.authorityId ||
+      value.authorityId.normalize("NFC") !== value.authorityId ||
+      typeof value.epoch !== "string" || value.epoch.length === 0 ||
+      value.epoch.trim() !== value.epoch || value.epoch.normalize("NFC") !== value.epoch ||
+      typeof value.lineageKey !== "string" || !HASH_RE.test(value.lineageKey) ||
+      typeof value.policyHash !== "string" || !HASH_RE.test(value.policyHash) ||
+      typeof value.wallet !== "string" || value.wallet.length === 0 ||
+      typeof value.chainId !== "string" || value.chainId.length === 0 ||
+      !["reserve", "current", "begin", "settle", "reconcile", "inspect"]
+        .includes(value.operation as string) || !plainObject(value.payload) ||
+      value.lineageKey !== dacsWalletSpendLineageKeyV1(value.wallet, value.chainId)) {
+    throw new DacsWalletSpendRemoteError("wallet-spend-authority-request-invalid");
+  }
+  return value as unknown as RemoteRequestV2;
 }
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -555,12 +895,27 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     return authority;
   };
 
+  const admitOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<Readonly<WalletSpendAuthorityV1>> => {
+    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    validateWalletSpendAuthorityOperationV1(
+      authority.policy,
+      body.operation,
+      body.payload,
+    );
+    return authority;
+  };
+
   const executeOperation = async (
     roleId: string,
     body: Readonly<RemoteRequestV1>,
     requestHash: string,
+    admittedAuthority?: Readonly<WalletSpendAuthorityV1>,
   ): Promise<RemoteResponseV1> => {
-    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    const authority = admittedAuthority ?? await admitOperation(roleId, body, requestHash);
     const payload = body.payload as Record<string, unknown>;
     let result: unknown;
     if (body.operation === "inspect") {
@@ -604,6 +959,108 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
     };
   };
 
+  const revalidateStoredResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+    response: Readonly<RemoteResponse>,
+  ): Promise<RemoteResponseV1> => {
+    if (!responseShape(response) || response.operationId !== body.operationId ||
+        response.requestHash !== requestHash) {
+      throw new Error("stored-response-invalid");
+    }
+    const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    const status = await authority.inspect();
+    if (response.revision > status.revision) {
+      throw new Error("stored-response-invalid");
+    }
+    const payload = body.payload as Record<string, unknown>;
+    if (body.operation === "inspect") {
+      // Inspect responses are never retained by this service. Do not disclose
+      // an injected or legacy retained snapshot in place of the live status.
+      throw new Error("stored-response-invalid");
+    } else if (body.operation === "reserve") {
+      if (!exact(payload, ["reservation", "options"])) {
+        throw new Error("stored-request-invalid");
+      }
+      const claim = remoteClaim(
+        response.result,
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+      );
+      if (claim.status === "reserved") {
+        await resumeWalletSpendAuthorityOperationV1(authority, {
+          operation: "current",
+          permit: permitData((response.result as Record<string, unknown>).permit),
+        });
+      }
+    } else if (body.operation === "current" || body.operation === "begin" ||
+        body.operation === "settle") {
+      const expected = body.operation === "settle" ? ["permit", "observation"] : ["permit"];
+      if (!exact(payload, expected) || response.result !== null) {
+        throw new Error("stored-response-invalid");
+      }
+      await resumeWalletSpendAuthorityOperationV1(authority, {
+        operation: body.operation,
+        permit: permitData(payload.permit),
+        ...(body.operation === "settle"
+          ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
+          : {}),
+      });
+    } else if (body.operation === "reconcile") {
+      if (!exact(payload, ["reservation", "observation"]) ||
+          (response.result !== "settled" && response.result !== "released" &&
+            response.result !== "existing")) {
+        throw new Error("stored-response-invalid");
+      }
+    }
+    return { ...response, revision: status.revision };
+  };
+
+  const reloadCompletedResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+  ): Promise<RemoteResponseV1 | undefined> => {
+    const retained = await input.operations.load({ roleId, operationId: body.operationId });
+    if (retained === undefined) return undefined;
+    const retainedRequest = captureRequest(retained.request);
+    if (retained.requestHash !== requestHash ||
+        retainedRequest.operationId !== body.operationId ||
+        canonicalize(retainedRequest) !== canonicalize(body) ||
+        sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+      throw new Error("stored-request-invalid");
+    }
+    return retained.response === undefined
+      ? undefined
+      : revalidateStoredResponse(roleId, retainedRequest, requestHash, retained.response);
+  };
+
+  const executeRecoverableOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV1>,
+    requestHash: string,
+    admittedAuthority?: Readonly<WalletSpendAuthorityV1>,
+  ): Promise<RemoteResponseV1> => {
+    try {
+      const response = await executeOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      );
+      await input.operations.complete({
+        roleId, operationId: body.operationId, requestHash, response,
+      });
+    } catch (error) {
+      const recovered = await reloadCompletedResponse(roleId, body, requestHash);
+      if (recovered !== undefined) return recovered;
+      throw error;
+    }
+    const completed = await reloadCompletedResponse(roleId, body, requestHash);
+    if (completed === undefined) throw new Error("stored-response-invalid");
+    return completed;
+  };
+
   return async (request) => {
     try {
       const url = new URL(request.url);
@@ -640,22 +1097,16 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
           throw new Error("stored-request-invalid");
         }
         if (retained.response !== undefined) {
-          if (!responseShape(retained.response) ||
-              retained.response.operationId !== operationId ||
-              retained.response.requestHash !== requestHash) {
-            throw new Error("stored-response-invalid");
-          }
-          await resolveAvailableAuthority(roleId, retainedRequest, requestHash);
-          return jsonResponse(retained.response);
+          return jsonResponse(await revalidateStoredResponse(
+            roleId, retainedRequest, requestHash, retained.response,
+          ));
         }
         if (retainedRequest.operation === "inspect") {
           throw new Error("stored-request-invalid");
         }
-        const resumed = await executeOperation(roleId, retainedRequest, requestHash);
-        await input.operations.complete({
-          roleId, operationId, requestHash, response: resumed,
-        });
-        return jsonResponse(resumed);
+        return jsonResponse(await executeRecoverableOperation(
+          roleId, retainedRequest, requestHash,
+        ));
       }
       if (request.method !== "POST" ||
           url.pathname !== "/v1/wallet-spend/operations" || url.search !== "") {
@@ -669,41 +1120,357 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         return jsonResponse({ reasonCode: "wallet-spend-authority-operation-conflict" }, 409);
       }
       if (prior?.response !== undefined) {
-        if (!responseShape(prior.response) ||
-            prior.response.operationId !== body.operationId ||
-            prior.response.requestHash !== requestHash) {
-          throw new Error("stored-response-invalid");
-        }
-        await resolveAvailableAuthority(roleId, body, requestHash);
-        return jsonResponse(prior.response);
+        return jsonResponse(await revalidateStoredResponse(
+          roleId, body, requestHash, prior.response,
+        ));
       }
       if (body.operation === "inspect") {
         return jsonResponse(await executeOperation(roleId, body, requestHash));
       }
-      await input.operations.claim({
+      const admittedAuthority = await admitOperation(roleId, body, requestHash);
+      const claimed = await input.operations.claim({
         roleId, operationId: body.operationId, requestHash, request: body,
       });
-      const response = await executeOperation(roleId, body, requestHash);
-      await input.operations.complete({
-        roleId, operationId: body.operationId, requestHash, response,
-      });
-      return jsonResponse(response);
+      if (claimed === "full") {
+        throw new DacsWalletSpendRemoteError(
+          "wallet-spend-authority-operation-capacity-exceeded",
+        );
+      }
+      return jsonResponse(await executeRecoverableOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      ));
     } catch (error) {
       const reasonCode = error instanceof DacsWalletSpendRemoteError
         ? error.reasonCode : "wallet-spend-authority-request-rejected";
-      return jsonResponse({ reasonCode }, 400);
+      return jsonResponse(
+        { reasonCode },
+        reasonCode === "wallet-spend-authority-operation-capacity-exceeded" ? 429 : 400,
+      );
+    }
+  };
+}
+
+/** V2-only funded service boundary with required current-head attestation. */
+export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
+  authenticate(token: string): Promise<string | null> | string | null;
+  resolveAuthority(scope: Readonly<{
+    roleId: string;
+    operationId: string;
+    requestHash: string;
+    clientNonce: string;
+    authorityId: string;
+    epoch: string;
+    lineageKey: string;
+    wallet: string;
+    chainId: string;
+    policyHash: string;
+  }>): Promise<Readonly<DacsWalletSpendContinuityAuthorityV2> | null> |
+    Readonly<DacsWalletSpendContinuityAuthorityV2> | null;
+  operations: DacsWalletSpendRemoteOperationStoreV1;
+}>): (request: Request) => Promise<Response> {
+  const resolveAvailableAuthority = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<Readonly<DacsWalletSpendContinuityAuthorityV2>> => {
+    const resolved = await input.resolveAuthority({
+      roleId, operationId: body.operationId, requestHash,
+      clientNonce: body.clientNonce, authorityId: body.authorityId, epoch: body.epoch,
+      lineageKey: body.lineageKey, wallet: body.wallet, chainId: body.chainId,
+      policyHash: body.policyHash,
+    });
+    if (!isDacsWalletSpendContinuityAuthorityV2(resolved) ||
+        resolved.authority.policyHash !== body.policyHash ||
+        resolved.authority.policy.wallet !== body.wallet ||
+        resolved.authority.policy.chainId !== body.chainId) {
+      throw new DacsWalletSpendRemoteError("wallet-spend-authority-lineage-unavailable");
+    }
+    return resolved;
+  };
+
+  const admitOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<Readonly<DacsWalletSpendContinuityAuthorityV2>> => {
+    const resolved = await resolveAvailableAuthority(roleId, body, requestHash);
+    validateWalletSpendAuthorityOperationV1(
+      resolved.authority.policy,
+      body.operation,
+      body.payload,
+    );
+    return resolved;
+  };
+
+  const currentResponse = async (
+    resolved: Readonly<DacsWalletSpendContinuityAuthorityV2>,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+    result: unknown,
+    knownStatus?: Readonly<WalletSpendStatusV1>,
+  ): Promise<RemoteResponseV2> => {
+    const status = knownStatus ?? await resolved.authority.inspect();
+    const continuity = await resolved.attestCurrent({
+      operationId: body.operationId,
+      requestHash,
+      clientNonce: body.clientNonce,
+    });
+    if (continuity.kind !== "current" || continuity.authorityId !== body.authorityId ||
+        continuity.epoch !== body.epoch || continuity.lineageKey !== body.lineageKey ||
+        continuity.operationId !== body.operationId ||
+        continuity.requestHash !== requestHash ||
+        continuity.clientNonce !== body.clientNonce || continuity.revision !== status.revision) {
+      throw new DacsWalletSpendRemoteError("wallet-spend-authority-continuity-proof-invalid");
+    }
+    return {
+      protocolVersion: "2", operationId: body.operationId, requestHash,
+      revision: status.revision, status: "ok", result, continuity,
+    };
+  };
+
+  const executeOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+    admittedAuthority?: Readonly<DacsWalletSpendContinuityAuthorityV2>,
+  ): Promise<RemoteResponseV2> => {
+    const resolved = admittedAuthority ?? await admitOperation(roleId, body, requestHash);
+    const authority = resolved.authority;
+    const payload = body.payload as Record<string, unknown>;
+    let result: unknown;
+    let status: Readonly<WalletSpendStatusV1> | undefined;
+    if (body.operation === "inspect") {
+      if (!exact(payload, [])) throw new Error("request-shape");
+      result = await authority.inspect();
+      status = result as Readonly<WalletSpendStatusV1>;
+    } else if (body.operation === "reserve") {
+      if (!exact(payload, ["reservation", "options"])) throw new Error("request-shape");
+      result = serializeClaim(await authority.reserve(
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+        payload.options as Readonly<{ operatorApproval?: string }>,
+      ));
+    } else if (body.operation === "reconcile") {
+      if (!exact(payload, ["reservation", "observation"])) throw new Error("request-shape");
+      result = await authority.reconcile(
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+        payload.observation as Readonly<WalletSpendRecoveryObservationV1>,
+      );
+    } else {
+      const expected = body.operation === "settle" ? ["permit", "observation"] : ["permit"];
+      if (!exact(payload, expected)) throw new Error("request-shape");
+      const retained = permitData(payload.permit);
+      await resumeWalletSpendAuthorityOperationV1(authority, {
+        operation: body.operation,
+        permit: retained,
+        ...(body.operation === "settle"
+          ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
+          : {}),
+      });
+      result = null;
+    }
+    return currentResponse(resolved, body, requestHash, result, status);
+  };
+
+  const refreshedStoredResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+    response: Readonly<RemoteResponse>,
+  ): Promise<RemoteResponseV2> => {
+    // The PostgreSQL operation store can reconstruct the exact reserved result
+    // from an applied candidate after a lost response-log write. Its internal
+    // recovery envelope predates V2; it is never sent directly and is upgraded
+    // here only after the current authority and witness are re-resolved.
+    if ((!responseShapeV2(response) && !responseShape(response)) ||
+        response.operationId !== body.operationId || response.requestHash !== requestHash) {
+      throw new Error("stored-response-invalid");
+    }
+    const resolved = await resolveAvailableAuthority(roleId, body, requestHash);
+    const payload = body.payload as Record<string, unknown>;
+    if (body.operation === "inspect") {
+      if (!exact(payload, [])) throw new Error("stored-request-invalid");
+      const status = await resolved.authority.inspect();
+      return currentResponse(resolved, body, requestHash, status, status);
+    }
+    if (body.operation === "reserve") {
+      if (!exact(payload, ["reservation", "options"])) throw new Error("stored-request-invalid");
+      const claim = remoteClaim(
+        response.result,
+        payload.reservation as Readonly<WalletSpendReservationV1>,
+      );
+      if (claim.status === "reserved") {
+        await resumeWalletSpendAuthorityOperationV1(resolved.authority, {
+          operation: "current",
+          permit: permitData((response.result as Record<string, unknown>).permit),
+        });
+      }
+    } else if (body.operation === "current" || body.operation === "begin" ||
+        body.operation === "settle") {
+      const expected = body.operation === "settle" ? ["permit", "observation"] : ["permit"];
+      if (!exact(payload, expected) || response.result !== null) {
+        throw new Error("stored-response-invalid");
+      }
+      await resumeWalletSpendAuthorityOperationV1(resolved.authority, {
+        operation: body.operation,
+        permit: permitData(payload.permit),
+        ...(body.operation === "settle"
+          ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
+          : {}),
+      });
+    }
+    return currentResponse(resolved, body, requestHash, response.result);
+  };
+
+  const reloadCompletedResponse = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+  ): Promise<RemoteResponseV2 | undefined> => {
+    const retained = await input.operations.load({ roleId, operationId: body.operationId });
+    if (retained === undefined) return undefined;
+    const retainedRequest = captureRequestV2(retained.request);
+    if (retained.requestHash !== requestHash ||
+        retainedRequest.operationId !== body.operationId ||
+        canonicalize(retainedRequest) !== canonicalize(body) ||
+        sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+      throw new Error("stored-request-invalid");
+    }
+    return retained.response === undefined
+      ? undefined
+      : refreshedStoredResponse(roleId, retainedRequest, requestHash, retained.response);
+  };
+
+  const executeRecoverableOperation = async (
+    roleId: string,
+    body: Readonly<RemoteRequestV2>,
+    requestHash: string,
+    admittedAuthority?: Readonly<DacsWalletSpendContinuityAuthorityV2>,
+  ): Promise<RemoteResponseV2> => {
+    try {
+      const response = await executeOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      );
+      await input.operations.complete({
+        roleId, operationId: body.operationId, requestHash, response,
+      });
+    } catch (error) {
+      const recovered = await reloadCompletedResponse(roleId, body, requestHash);
+      if (recovered !== undefined) return recovered;
+      throw error;
+    }
+    const completed = await reloadCompletedResponse(roleId, body, requestHash);
+    if (completed === undefined) throw new Error("stored-response-invalid");
+    return completed;
+  };
+
+  return async (request) => {
+    try {
+      const url = new URL(request.url);
+      const token = bearer(request);
+      if (token === null) {
+        return jsonResponse({ reasonCode: "wallet-spend-authority-authentication-required" }, 401);
+      }
+      const roleId = await input.authenticate(token);
+      if (roleId === null || roleId.length === 0 || roleId.trim() !== roleId ||
+          roleId.normalize("NFC") !== roleId) {
+        return jsonResponse({ reasonCode: "wallet-spend-authority-authentication-invalid" }, 403);
+      }
+      const queryMatch = /^\/v2\/wallet-spend\/operations\/([0-9a-f-]+)$/i.exec(
+        url.pathname,
+      );
+      if (request.method === "GET" && queryMatch !== null) {
+        const operationId = queryMatch[1]!;
+        const requestHash = url.searchParams.get("requestHash");
+        if (!UUID_RE.test(operationId) || requestHash === null ||
+            !HASH_RE.test(requestHash) || [...url.searchParams.keys()].some((key) =>
+              key !== "requestHash")) {
+          return jsonResponse({ reasonCode: "wallet-spend-authority-query-invalid" }, 400);
+        }
+        const retained = await input.operations.load({ roleId, operationId });
+        if (retained === undefined) {
+          return jsonResponse({ reasonCode: "wallet-spend-authority-operation-missing" }, 404);
+        }
+        if (retained.requestHash !== requestHash) {
+          return jsonResponse({ reasonCode: "wallet-spend-authority-operation-conflict" }, 409);
+        }
+        const retainedRequest = captureRequestV2(retained.request);
+        if (retainedRequest.operationId !== operationId ||
+            sha256Hex(canonicalize(retainedRequest)) !== requestHash) {
+          throw new Error("stored-request-invalid");
+        }
+        if (retained.response !== undefined) {
+          return jsonResponse(await refreshedStoredResponse(
+            roleId, retainedRequest, requestHash, retained.response,
+          ));
+        }
+        if (retainedRequest.operation === "inspect") throw new Error("stored-request-invalid");
+        return jsonResponse(await executeRecoverableOperation(
+          roleId, retainedRequest, requestHash,
+        ));
+      }
+      if (request.method !== "POST" ||
+          url.pathname !== "/v2/wallet-spend/operations" || url.search !== "") {
+        return jsonResponse({ reasonCode: "wallet-spend-authority-route-not-found" }, 404);
+      }
+      const body = captureRequestV2(await requestJson(request));
+      const requestHash = sha256Hex(canonicalize(body));
+      const prior = await input.operations.load({ roleId, operationId: body.operationId });
+      if (prior !== undefined && (prior.requestHash !== requestHash ||
+          canonicalize(prior.request) !== canonicalize(body))) {
+        return jsonResponse({ reasonCode: "wallet-spend-authority-operation-conflict" }, 409);
+      }
+      if (prior?.response !== undefined) {
+        return jsonResponse(await refreshedStoredResponse(
+          roleId, body, requestHash, prior.response,
+        ));
+      }
+      if (body.operation === "inspect") {
+        return jsonResponse(await executeOperation(roleId, body, requestHash));
+      }
+      const admittedAuthority = await admitOperation(roleId, body, requestHash);
+      const claimed = await input.operations.claim({
+        roleId, operationId: body.operationId, requestHash, request: body,
+      });
+      if (claimed === "full") {
+        throw new DacsWalletSpendRemoteError(
+          "wallet-spend-authority-operation-capacity-exceeded",
+        );
+      }
+      return jsonResponse(await executeRecoverableOperation(
+        roleId,
+        body,
+        requestHash,
+        admittedAuthority,
+      ));
+    } catch (error) {
+      const reasonCode = error instanceof DacsWalletSpendRemoteError
+        ? error.reasonCode : "wallet-spend-authority-request-rejected";
+      return jsonResponse(
+        { reasonCode },
+        reasonCode === "wallet-spend-authority-operation-capacity-exceeded" ? 429 : 400,
+      );
     }
   };
 }
 
 /** Deterministic test/reference operation log; production services use PostgreSQL. */
-export function createInMemoryDacsWalletSpendRemoteOperationStoreV1():
+export function createInMemoryDacsWalletSpendRemoteOperationStoreV1(
+  retentionInput: Readonly<DacsWalletSpendRemoteOperationRetentionV1> = {},
+):
   DacsWalletSpendRemoteOperationStoreV1 {
+  const retention = dacsWalletSpendRemoteOperationRetentionV1(retentionInput);
   const values = new Map<string, {
     requestHash: string;
-    request: RemoteRequestV1;
-    response?: RemoteResponseV1;
+    request: RemoteRequest;
+    response?: RemoteResponse;
   }>();
+  const roleOperations = new Map<string, number>();
   const key = (roleId: string, operationId: string) => `${roleId}\0${operationId}`;
   const store: DacsWalletSpendRemoteOperationStoreV1 = {
     async load(input) { return values.get(key(input.roleId, input.operationId)); },
@@ -717,10 +1484,15 @@ export function createInMemoryDacsWalletSpendRemoteOperationStoreV1():
         }
         return "existing";
       }
+      if ((roleOperations.get(input.roleId) ?? 0) >= retention.maximumOperationsPerRole ||
+          values.size >= retention.maximumOperations) {
+        return "full";
+      }
       values.set(identity, {
         requestHash: input.requestHash,
         request: structuredClone(input.request),
       });
+      roleOperations.set(input.roleId, (roleOperations.get(input.roleId) ?? 0) + 1);
       return "new";
     },
     async complete(input) {

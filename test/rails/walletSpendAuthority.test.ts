@@ -177,6 +177,56 @@ describe("wallet-wide spend authority (#291)", () => {
     });
   });
 
+  test("checks current permits through the read path without mutating state", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const calls = { reads: 0, transactions: 0 };
+    const store: WalletSpendStateStore = {
+      async read(scope) {
+        calls.reads += 1;
+        return retained.read!(scope);
+      },
+      async transact(scope, operation) {
+        calls.transactions += 1;
+        return retained.transact(scope, operation);
+      },
+    };
+    const clock = { value: 1_000 };
+    const wallet = authority({ store, currentTime: clock });
+    const item = reservation("read-current");
+    const claim = await wallet.reserve(item);
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    const afterReserve = calls.transactions;
+
+    await expect(claim.permit.assertCurrent()).resolves.toBeUndefined();
+    expect(calls).toEqual({ reads: 1, transactions: afterReserve });
+
+    clock.value = 1_101;
+    await expect(claim.permit.assertCurrent()).rejects.toThrow(/no longer current/);
+    expect(calls).toEqual({ reads: 2, transactions: afterReserve });
+    await expect(wallet.reconcile(item, {
+      disposition: "not-invoked",
+      evidenceHash: HASH_C,
+    })).resolves.toBe("released");
+    const afterRelease = calls.transactions;
+    await expect(claim.permit.assertCurrent()).rejects.toThrow(/no longer current/);
+    expect(calls).toEqual({ reads: 3, transactions: afterRelease });
+
+    const fallbackRetained = createInMemoryWalletSpendStateStore();
+    let fallbackTransactions = 0;
+    const fallbackStore: WalletSpendStateStore = {
+      async transact(scope, operation) {
+        fallbackTransactions += 1;
+        return fallbackRetained.transact(scope, operation);
+      },
+    };
+    const fallback = authority({ store: fallbackStore });
+    const fallbackClaim = await fallback.reserve(reservation("transaction-current"));
+    if (fallbackClaim.status !== "reserved") throw new Error("expected fallback reservation");
+    const afterFallbackReserve = fallbackTransactions;
+    await expect(fallbackClaim.permit.assertCurrent()).resolves.toBeUndefined();
+    expect(fallbackTransactions).toBe(afterFallbackReserve + 1);
+  });
+
   test("serializes independent authorities and retains ambiguous effects", async () => {
     const store = createInMemoryWalletSpendStateStore();
     const first = authority({ store, owner: "worker-a" });
