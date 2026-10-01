@@ -678,6 +678,65 @@ describe("advanceCrossChainHtlc", () => {
     });
   });
 
+  test("accepts fresh source-finality evidence metadata without replacing the checkpoint", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const recordSourceFinality = vi.fn(base.recordSourceFinality.bind(base));
+    const store: CrossChainHtlcStore = { ...base, recordSourceFinality };
+    const h = harness();
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const sourceLock = h.actions["source-lock"];
+    if (!sourceLock || sourceLock.state !== "final") throw new Error("source lock not final");
+    h.actions["source-lock"] = {
+      ...sourceLock,
+      finalityObservedAt: sourceLock.finalityObservedAt + 1,
+      authenticationHash: "d".repeat(64),
+    };
+
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    expect(recordSourceFinality).toHaveBeenCalledTimes(1);
+    expect(recordSourceFinality.mock.calls[0]![0].checkpoint).toMatchObject({
+      finalityObservedAt: sourceLock.finalityObservedAt,
+      authenticationHash: AUTH_HASH,
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toContain("destination-claim");
+  });
+
+  test.each(["inclusion", "expiry"] as const)(
+    "fails closed when a final source-lock changes its stable %s fact",
+    async (changedFact) => {
+      const h = harness();
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      const sourceLock = h.actions["source-lock"];
+      if (!sourceLock || sourceLock.state !== "final" || sourceLock.includedAt === undefined ||
+          sourceLock.expiresAt === undefined) {
+        throw new Error("source lock not final");
+      }
+      h.actions["source-lock"] = changedFact === "inclusion"
+        ? {
+          ...sourceLock,
+          includedAt: sourceLock.includedAt + 1,
+          finalityObservedAt: sourceLock.finalityObservedAt + 1,
+        }
+        : { ...sourceLock, expiresAt: sourceLock.expiresAt + 1 };
+      const preparations = h.prepareAction.mock.calls.length;
+
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "failed",
+        errorClass: "permanent",
+        reason: "htlc-source-finality-checkpoint-conflict",
+      });
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    },
+  );
+
   test("does not prepare a destination lock when source-finality persistence fails", async () => {
     const base = createInMemoryCrossChainHtlcStore();
     const store: CrossChainHtlcStore = {
@@ -791,6 +850,64 @@ describe("advanceCrossChainHtlc", () => {
       reason: "dest-revealed-source-unclaimed-expired",
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
+  });
+
+  test("accepts fresh reveal evidence metadata without replacing the checkpoint", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const recordRevealFinal = vi.fn(base.recordRevealFinal.bind(base));
+    const store: CrossChainHtlcStore = { ...base, recordRevealFinal };
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const destinationClaim = h.actions["destination-claim"];
+    if (!destinationClaim || destinationClaim.state !== "final") {
+      throw new Error("destination claim not final");
+    }
+    h.actions["destination-claim"] = {
+      ...destinationClaim,
+      finalityObservedAt: destinationClaim.finalityObservedAt + 1,
+      authenticationHash: "d".repeat(64),
+    };
+
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      reason: "dest-revealed-source-unclaimed",
+    });
+    expect(recordRevealFinal).toHaveBeenCalledTimes(1);
+    expect(recordRevealFinal.mock.calls[0]![0].checkpoint).toMatchObject({
+      finalityObservedAt: destinationClaim.finalityObservedAt,
+      authenticationHash: AUTH_HASH,
+    });
+  });
+
+  test("fails closed when a final reveal changes its retained transaction", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const destinationClaim = h.actions["destination-claim"];
+    if (!destinationClaim || destinationClaim.state !== "final" ||
+        destinationClaim.txRef.kind !== "htlc-reveal") {
+      throw new Error("destination claim not final");
+    }
+    h.actions["destination-claim"] = {
+      ...destinationClaim,
+      txRef: { ...destinationClaim.txRef, revealTxHash: "tx-destination-claim-other" },
+    };
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
   });
 
   test("atomically replaces an authenticated failed source claim and settles", async () => {

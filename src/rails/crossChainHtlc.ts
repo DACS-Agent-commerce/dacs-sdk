@@ -1448,7 +1448,10 @@ export async function advanceCrossChainHtlc(
       authenticationHash: sourceLock.authenticationHash,
     });
     if (sourceFinalityCheckpoint &&
-        canonicalize(sourceFinalityCheckpoint) !== canonicalize(observedCheckpoint)) {
+        (sourceFinalityCheckpoint.sourceLockEffectHash !== observedCheckpoint.sourceLockEffectHash ||
+          !sameRef(sourceFinalityCheckpoint.sourceLockTxRef, observedCheckpoint.sourceLockTxRef) ||
+          sourceFinalityCheckpoint.includedAt !== observedCheckpoint.includedAt ||
+          sourceFinalityCheckpoint.sourceExpiry !== observedCheckpoint.sourceExpiry)) {
       return {
         status: "failed",
         errorClass: "permanent",
@@ -1567,8 +1570,6 @@ export async function advanceCrossChainHtlc(
       return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-invalid" };
     }
     if (checkpoint && (checkpoint.sourceExpiry !== sourceLock.expiresAt ||
-        checkpoint.finalityObservedAt !== destinationClaim.finalityObservedAt ||
-        checkpoint.authenticationHash !== destinationClaim.authenticationHash ||
         !sameRef(checkpoint.revealTxRef, destinationClaim.txRef))) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-reveal-checkpoint-conflict" };
     }
