@@ -213,9 +213,9 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
 }
 
 /**
- * Reconcile only the exact signed hash retained before broadcast. Absence of a
- * prepared checkpoint is a local proof that the rail never reached broadcast;
- * a missing chain result after preparation remains indeterminate forever.
+ * Reconcile only the exact signed hash retained before broadcast. A missing
+ * prepared checkpoint requires operator recovery because actor-local backups
+ * can roll back independently of the wallet authority and the Demos chain.
  */
 export function createDacsFixedPricePayDemBuyerReconciliationV1(
   observeDemosTransfer: (txHash: string) => Promise<DemosTransferObservation>,
@@ -229,12 +229,8 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
     await fence.assertCurrent();
     if (prepared === undefined) {
       return Object.freeze({
-        status: "absent" as const,
-        absenceProofHash: sha256Hex(canonicalize({
-          disposition: "no-prepared-transfer",
-          settlementKey: payment.settlementKey,
-          orderLocalBindingHash: payment.orderLocalBindingHash,
-        })),
+        status: "operator-action" as const,
+        reasonCode: "pay-dem-prepared-transfer-checkpoint-missing",
       });
     }
     let observation: DemosTransferObservation;

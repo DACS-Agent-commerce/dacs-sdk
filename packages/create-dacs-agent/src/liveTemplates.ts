@@ -13,7 +13,7 @@ export interface LiveProjectTemplateOptions {
 
 const SDK_VERSION = "0.1.0-alpha.0";
 const BETTER_SQLITE_VERSION = "12.6.2";
-const STANDARD_REVISION = "662be1d4899a2cadf327fe2d5523e93a80334e5f";
+const STANDARD_REVISION = "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 8;
 
@@ -349,15 +349,29 @@ export function actorSecretPath(
 export function configuredWalletSpendAuthorityConnection(): Readonly<{
   endpoint: string;
   tokenFilePath: string;
+  authorityId: string;
+  epoch: string;
+  witnessVerificationKey: string;
   allowInsecureLoopback: boolean;
 }> | undefined {
   const endpoint = process.env.DACS_WALLET_AUTHORITY_URL;
   const tokenFilePath = process.env.DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE;
+  const authorityId = process.env.DACS_WALLET_AUTHORITY_ID;
+  const epoch = process.env.DACS_WALLET_AUTHORITY_EPOCH;
+  const witnessVerificationKey = process.env.DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY;
   if (endpoint === undefined || endpoint.trim() === "" ||
-      tokenFilePath === undefined || tokenFilePath.trim() === "") return undefined;
+      tokenFilePath === undefined || tokenFilePath.trim() === "" ||
+      authorityId === undefined || authorityId.trim() === "" ||
+      epoch === undefined || epoch.trim() === "" ||
+      witnessVerificationKey === undefined || witnessVerificationKey.trim() === "") {
+    return undefined;
+  }
   return Object.freeze({
     endpoint,
     tokenFilePath: resolve(tokenFilePath),
+    authorityId,
+    epoch,
+    witnessVerificationKey,
     allowInsecureLoopback:
       process.env.DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK === "1",
   });
@@ -524,7 +538,7 @@ import {
   createDacsDemosRailRegistryProviderV1,
   createDacsRoleReadinessLatchV1,
   createDacsRoleServiceDoctorProbesV1,
-  createDacsRemoteWalletSpendAuthorityV1,
+  createDacsRemoteWalletSpendAuthorityV2,
   createViemDacsX402BalanceReadClientV1,
   dacsLiveRailProfiles,
   deriveDacsEvmRoleIdentityV1,
@@ -1078,10 +1092,13 @@ function baseProbes(
       } else {
         policy = configuredPayDemWalletSpendPolicy(buyer.runtime.walletAddress);
       }
-      const authority = await createDacsRemoteWalletSpendAuthorityV1({
+      const authority = await createDacsRemoteWalletSpendAuthorityV2({
         policy,
         endpoint: connection.endpoint,
         tokenFilePath: connection.tokenFilePath,
+        authorityId: connection.authorityId,
+        epoch: connection.epoch,
+        witnessVerificationKey: connection.witnessVerificationKey,
         allowInsecureLoopback: connection.allowInsecureLoopback,
       });
       return authority.inspect();
@@ -3682,7 +3699,7 @@ import {
   createDacsFixedPriceX402SellerLiveV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
-  createDacsRemoteWalletSpendAuthorityV1,
+  createDacsRemoteWalletSpendAuthorityV2,
   dacsLiveRailProfiles,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
@@ -3829,12 +3846,16 @@ async function main(): Promise<void> {
             const decimals = x402Asset!.decimals;
             const chainId = config.rail.requestedNetwork;
             const wallet = context.evm.address.toLowerCase();
-            return createDacsRemoteWalletSpendAuthorityV1({
+            return createDacsRemoteWalletSpendAuthorityV2({
               policy: configuredX402WalletSpendPolicy({
                 wallet, chainId, asset, decimals,
               }),
               endpoint: walletSpendAuthorityConnection!.endpoint,
               tokenFilePath: walletSpendAuthorityConnection!.tokenFilePath,
+              authorityId: walletSpendAuthorityConnection!.authorityId,
+              epoch: walletSpendAuthorityConnection!.epoch,
+              witnessVerificationKey:
+                walletSpendAuthorityConnection!.witnessVerificationKey,
               allowInsecureLoopback:
                 walletSpendAuthorityConnection!.allowInsecureLoopback,
             });
@@ -3842,12 +3863,16 @@ async function main(): Promise<void> {
         const payDemObserver = payDemRail === undefined ? undefined :
           createPayDemSellerObserver({ rpc: config.demos.rpcUrl }).observeDemosTransfer;
         const payDemWalletSpendAuthority = payDemRail === undefined ? undefined :
-          await createDacsRemoteWalletSpendAuthorityV1({
+          await createDacsRemoteWalletSpendAuthorityV2({
             policy: configuredPayDemWalletSpendPolicy(
               context.demos.walletAddress,
             ),
             endpoint: walletSpendAuthorityConnection!.endpoint,
             tokenFilePath: walletSpendAuthorityConnection!.tokenFilePath,
+            authorityId: walletSpendAuthorityConnection!.authorityId,
+            epoch: walletSpendAuthorityConnection!.epoch,
+            witnessVerificationKey:
+              walletSpendAuthorityConnection!.witnessVerificationKey,
             allowInsecureLoopback:
               walletSpendAuthorityConnection!.allowInsecureLoopback,
           });
@@ -4556,6 +4581,9 @@ services:
       DACS_BUYER_DEMOS_SECRET_FILE: /run/secrets/demos-identity
       DACS_BUYER_EVM_SECRET_FILE: /run/secrets/evm-wallet
       DACS_WALLET_AUTHORITY_URL: \${DACS_WALLET_AUTHORITY_URL:?set DACS_WALLET_AUTHORITY_URL}
+      DACS_WALLET_AUTHORITY_ID: \${DACS_WALLET_AUTHORITY_ID:?set DACS_WALLET_AUTHORITY_ID}
+      DACS_WALLET_AUTHORITY_EPOCH: \${DACS_WALLET_AUTHORITY_EPOCH:?set DACS_WALLET_AUTHORITY_EPOCH}
+      DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY: \${DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY:?set DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY}
       DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK: \${DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK:-0}
       DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE: /run/secrets/wallet-authority-token
       DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
@@ -4665,6 +4693,9 @@ DACS_SELLER_EVM_PAYEE=
 DACS_BUYER_DEMOS_SECRET_FILE=
 DACS_BUYER_EVM_SECRET_FILE=
 DACS_WALLET_AUTHORITY_URL=
+DACS_WALLET_AUTHORITY_ID=
+DACS_WALLET_AUTHORITY_EPOCH=
+DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY=
 DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=0
 DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE=
 DACS_SELLER_DEMOS_SECRET_FILE=
@@ -4723,8 +4754,12 @@ generator. Compose uses that same identity and bind-mounts only that role's
 files read-only under /run/secrets; no secret is shared across roles.
 The optional funded doctor uses a separate, named disposable Demos wallet through
 \`DACS_FUNDED_DOCTOR_DEMOS_SECRET_FILE\`; it must not reuse either role wallet.
-The buyer requires \`DACS_WALLET_AUTHORITY_URL\` and a role-scoped bearer secret
-at \`DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE\`. The separately operated authority
+The buyer requires \`DACS_WALLET_AUTHORITY_URL\`, the operator-controlled
+\`DACS_WALLET_AUTHORITY_ID\`, \`DACS_WALLET_AUTHORITY_EPOCH\`, and
+\`DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY\` pins, plus a role-scoped bearer
+secret at \`DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE\`. The generated buyer speaks
+only the continuity-capable V2 authority protocol and has no V1 or filesystem
+fallback. The separately operated authority
 retains PostgreSQL credentials, wallet/chain lineage, policy migration and all
 authoritative accounting; never place those capabilities in this project or
 mount them into the buyer. Use HTTPS. Plain HTTP is accepted only for an
