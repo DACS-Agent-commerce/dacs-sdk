@@ -110,8 +110,10 @@ function server(now: () => number = () => 1_000) {
   return { authority, handler, operations };
 }
 
-async function serverV2(now: () => number = () => 1_000) {
-  const selected = policy();
+async function serverV2(
+  now: () => number = () => 1_000,
+  selected: WalletSpendPolicyV1 = policy(),
+) {
   const reference = createInMemoryDacsWalletSpendContinuityWitnessV1({
     authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
     seed: new Uint8Array(32).fill(21),
@@ -339,6 +341,110 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       revision: 3,
       assets: [{ cumulativeSettledDebit: "25" }],
     });
+  });
+
+  it("recovers a committed V2 mutation whose successful response arrives out of order", async () => {
+    const tokenFilePath = await tokenFile();
+    const selected = { ...policy(), maximumConcurrentEffects: 2 };
+    const local = await serverV2(() => 1_000, selected);
+    let releaseReserveResponse!: () => void;
+    const reserveResponseGate = new Promise<void>((resolve) => {
+      releaseReserveResponse = resolve;
+    });
+    let markReserveResponseReady!: () => void;
+    const reserveResponseReady = new Promise<void>((resolve) => {
+      markReserveResponseReady = resolve;
+    });
+    let delayReserveResponse = true;
+    let exactOperationGets = 0;
+    const fetchOutOfOrder = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = request.method === "POST"
+        ? await request.clone().json() as { operation?: string }
+        : undefined;
+      if (request.method === "GET") exactOperationGets += 1;
+      const response = await local.handler(request);
+      if (response.ok && body?.operation === "reserve" && delayReserveResponse) {
+        delayReserveResponse = false;
+        markReserveResponseReady();
+        await reserveResponseGate;
+      }
+      return response;
+    }) as typeof fetch;
+    const remote = await createDacsRemoteWalletSpendAuthorityV2({
+      policy: selected, endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      authorityId: local.authorityId, epoch: local.epoch,
+      witnessVerificationKey: local.verificationKey,
+      allowInsecureLoopback: true, fetch: fetchOutOfOrder,
+    });
+    const concurrentRemote = await createDacsRemoteWalletSpendAuthorityV2({
+      policy: selected, endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      authorityId: local.authorityId, epoch: local.epoch,
+      witnessVerificationKey: local.verificationKey,
+      allowInsecureLoopback: true, fetch: handlerFetch(local.handler),
+    });
+
+    const delayedReserve = remote.reserve(reservation());
+    await reserveResponseReady;
+    const otherReservation = {
+      ...reservation(),
+      reservationId: "remote-two",
+      jobId: "job-two",
+    };
+    await expect(concurrentRemote.reserve(otherReservation)).resolves.toMatchObject({
+      status: "reserved",
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ revision: 2 });
+    releaseReserveResponse();
+
+    await expect(delayedReserve).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "remote-one" },
+    });
+    expect(exactOperationGets).toBe(1);
+  });
+
+  it("recovers a committed V2 mutation after an invalid successful proof", async () => {
+    const tokenFilePath = await tokenFile();
+    const local = await serverV2();
+    let corruptReserveResponse = true;
+    let exactOperationGets = 0;
+    const fetchWithInvalidProof = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const requestBody = request.method === "POST"
+        ? await request.clone().json() as { operation?: string }
+        : undefined;
+      if (request.method === "GET") exactOperationGets += 1;
+      const response = await local.handler(request);
+      if (response.ok && corruptReserveResponse && requestBody?.operation === "reserve") {
+        corruptReserveResponse = false;
+        const body = await response.json() as Record<string, unknown>;
+        const continuity = body.continuity as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          ...body,
+          continuity: {
+            ...continuity,
+            signature: { algorithm: "ed25519", value: "A".repeat(86) },
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return response;
+    }) as typeof fetch;
+    const remote = await createDacsRemoteWalletSpendAuthorityV2({
+      policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      authorityId: local.authorityId, epoch: local.epoch,
+      witnessVerificationKey: local.verificationKey,
+      allowInsecureLoopback: true, fetch: fetchWithInvalidProof,
+    });
+
+    await expect(remote.reserve(reservation())).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "remote-one" },
+    });
+    expect(exactOperationGets).toBe(1);
   });
 
   it.each(["current", "begin"] as const)(

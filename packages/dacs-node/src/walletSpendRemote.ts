@@ -708,7 +708,14 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
         requestHash,
       );
     }
-    return validatedResponse(body, expected).result;
+    try {
+      return validatedResponse(body, expected).result;
+    } catch (error) {
+      if (operation !== "inspect") {
+        try { return await resolveExactOperation(); } catch { /* preserve validation failure */ }
+      }
+      throw error;
+    }
   };
 
   const remotePermit = (raw: unknown) => {
