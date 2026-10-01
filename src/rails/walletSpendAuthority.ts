@@ -1025,21 +1025,55 @@ export function createWalletSpendAuthorityV1(
     });
   };
 
+  const requireCurrentPermit = (
+    state: Readonly<WalletSpendStateV1>,
+    reservation: Readonly<WalletSpendReservationV1>,
+    binding: string,
+    token: Readonly<WalletSpendLeaseTokenV1>,
+    timestamp: number,
+    staleMessage: string,
+  ): void => {
+    const row = state.reservations.find(({ reservationId }) =>
+      reservationId === reservation.reservationId);
+    if (!row || row.bindingHash !== binding || row.owner !== token.owner ||
+        row.generation !== token.generation || !active(row) ||
+        (row.leaseExpiresAt ?? 0) < timestamp) {
+      throw new DacsError(staleMessage);
+    }
+  };
+
+  const assertCurrentPermit = async (
+    reservation: Readonly<WalletSpendReservationV1>,
+    binding: string,
+    token: Readonly<WalletSpendLeaseTokenV1>,
+    staleMessage: string,
+  ): Promise<void> => {
+    if (read === undefined) {
+      await update((state, timestamp) => {
+        requireCurrentPermit(state, reservation, binding, token, timestamp, staleMessage);
+        return { state, value: undefined };
+      });
+      return;
+    }
+    const timestamp = safeInteger(
+      serverNow === undefined ? now() : await serverNow(),
+      "wallet spend clock",
+    );
+    const state = captureState(await read(scope), policy, policyHash);
+    requireCurrentPermit(state, reservation, binding, token, timestamp, staleMessage);
+  };
+
   const permitFor = (
     reservation: Readonly<WalletSpendReservationV1>,
     binding: string,
     token: Readonly<WalletSpendLeaseTokenV1>,
   ): WalletSpendPermitV1 => {
-    const assertCurrent = async (): Promise<void> => update((state, timestamp) => {
-      const row = state.reservations.find(({ reservationId }) =>
-        reservationId === reservation.reservationId);
-      if (!row || row.bindingHash !== binding || row.owner !== token.owner ||
-          row.generation !== token.generation || !active(row) ||
-          (row.leaseExpiresAt ?? 0) < timestamp) {
-        throw new DacsError("wallet spend effect fence is no longer current");
-      }
-      return { state, value: undefined };
-    });
+    const assertCurrent = async (): Promise<void> => assertCurrentPermit(
+      reservation,
+      binding,
+      token,
+      "wallet spend effect fence is no longer current",
+    );
 
     const permit: WalletSpendPermitV1 = {
       reservationId: reservation.reservationId,
@@ -1243,18 +1277,21 @@ export function createWalletSpendAuthorityV1(
       await settleStored(reservation, binding, observation, token);
       return;
     }
+    if (captured.operation === "current") {
+      await assertCurrentPermit(
+        reservation,
+        binding,
+        token,
+        "wallet spend claimed current operation is stale",
+      );
+      return;
+    }
     await update((state, timestamp) => {
       const row = state.reservations.find(({ reservationId }) =>
         reservationId === reservation.reservationId);
       if (!row || row.bindingHash !== binding || row.owner !== token.owner ||
           row.generation !== token.generation) {
         throw new DacsError("wallet spend claimed operation replay is stale");
-      }
-      if (captured.operation === "current") {
-        if (!active(row) || (row.leaseExpiresAt ?? 0) < timestamp) {
-          throw new DacsError("wallet spend claimed current operation is stale");
-        }
-        return { state, value: undefined };
       }
       if (row.stage === "effect-pending") {
         return { state, value: undefined };

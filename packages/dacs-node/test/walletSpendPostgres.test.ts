@@ -504,8 +504,9 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
   }
 }
 
-async function fakePool(): Promise<FakePostgresPool> {
-  const selected = policy("policy-a");
+async function fakePool(
+  selected: WalletSpendPolicyV1 = policy("policy-a"),
+): Promise<FakePostgresPool> {
   const policyHash = dacsWalletSpendPolicyHashV1(selected);
   const state: WalletSpendStateV1 = {
     stateVersion: WALLET_SPEND_STATE_VERSION,
@@ -1883,6 +1884,147 @@ describe("PostgreSQL wallet authority persistence", () => {
           },
         },
       });
+    } finally {
+      await rm(tokenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates an exact reserve without reusing its pruning ordinal", async () => {
+    const selected = { ...policy("policy-a"), maximumConcurrentEffects: 2 };
+    const pool = await fakePool(selected);
+    const roleId = "buyer";
+    const token = "buyer-role-token-which-is-long-enough";
+    const item = (id: string): WalletSpendReservationV1 => ({
+      reservationVersion: "1",
+      reservationId: id,
+      jobId: `job-${id}`,
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    const observation = (suffix: string) => ({
+      disposition: "settled" as const,
+      evidenceHash: suffix.repeat(64),
+      debits: [{ asset: "ASSET", purpose: "service" as const, amount: "25" }],
+    });
+    const localAuthority = (identity: string, owner: string) =>
+      createWalletSpendAuthorityV1(selected, {
+        store: createDacsPostgresWalletSpendStateStoreV1({
+          pool,
+          wallet: selected.wallet,
+          chainId: selected.chainId,
+          continuity: pool.continuity,
+          operation: () => ({
+            roleId: `seed-${identity}`,
+            operationId: `00000000-0000-4000-8000-0000000000${identity}`,
+            requestHash: identity.at(-1)!.repeat(64),
+          }),
+        }),
+        readBalance: async () => "1000",
+        authenticateRecovery: async () => true,
+        owner,
+        leaseDurationMs: 1_000_000,
+      });
+    const settle = async (
+      authority: ReturnType<typeof localAuthority>,
+      reservation: WalletSpendReservationV1,
+      evidence: string,
+    ) => {
+      const claim = await authority.reserve(reservation);
+      if (claim.status !== "reserved") throw new Error("expected seed reservation");
+      await claim.permit.beginEffect();
+      await claim.permit.settle(observation(evidence));
+    };
+
+    await settle(localAuthority("91", "seed-one"), item("expired-one"), "d");
+    pool.nowMs = 70_001;
+
+    const operations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (presented) => presented === token ? roleId : null,
+      resolveAuthority: ({ roleId: requestedRole, operationId, requestHash,
+        wallet, chainId, policyHash }) => {
+        if (requestedRole !== roleId || wallet !== selected.wallet ||
+            chainId !== selected.chainId ||
+            policyHash !== dacsWalletSpendPolicyHashV1(selected)) {
+          return null;
+        }
+        return createWalletSpendAuthorityV1(selected, {
+          store: createDacsPostgresWalletSpendStateStoreV1({
+            pool,
+            wallet: selected.wallet,
+            chainId: selected.chainId,
+            continuity: pool.continuity,
+            operation: () => ({ roleId, operationId, requestHash }),
+          }),
+          readBalance: async () => "1000",
+          authenticateRecovery: async () => true,
+          owner: "wallet-service",
+          leaseDurationMs: 1_000_000,
+        });
+      },
+      operations,
+    });
+    const tokenRoot = await mkdtemp(join(tmpdir(), "dacs-postgres-current-read-"));
+    const tokenPath = join(tokenRoot, "token");
+    await writeFile(tokenPath, `${token}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(tokenPath, 0o600);
+    let handledPosts = 0;
+    let handledGets = 0;
+    let remoteRequestHash = "";
+    const fetchWithLostResponse = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.method === "GET") {
+        handledGets += 1;
+        return handler(request);
+      }
+      handledPosts += 1;
+      const body = await request.clone().json();
+      remoteRequestHash = sha256Hex(canonicalize(body));
+      const response = await handler(request);
+      await settle(localAuthority("92", "seed-two"), item("expired-two"), "e");
+      pool.nowMs = 131_002;
+      throw new Error(`lost response ${response.status}`);
+    }) as typeof fetch;
+
+    try {
+      const remote = await createDacsRemoteWalletSpendAuthorityV1({
+        policy: selected,
+        endpoint: "http://127.0.0.1:8080/",
+        tokenFilePath: tokenPath,
+        allowInsecureLoopback: true,
+        fetch: fetchWithLostResponse,
+      });
+      await expect(remote.reserve(item("retained-reserve"))).resolves.toMatchObject({
+        status: "reserved",
+        permit: { reservationId: "retained-reserve", owner: "wallet-service" },
+      });
+      expect(handledPosts).toBe(1);
+      expect(handledGets).toBe(1);
+      expect([...pool.candidates.values()]
+        .filter((candidate) => candidate.role_id === roleId &&
+          candidate.request_hash === remoteRequestHash)
+        .map(({ mutation_index, status }) => ({ mutation_index, status })))
+        .toEqual([
+          { mutation_index: 0, status: "applied" },
+          { mutation_index: 8, status: "applied" },
+        ]);
+      expect(pool.row.state.rollingEvents).toMatchObject([
+        { reservationId: "expired-two", settledAt: 70_001 },
+      ]);
     } finally {
       await rm(tokenRoot, { recursive: true, force: true });
     }
