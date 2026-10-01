@@ -987,7 +987,7 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
         throw new Error("stored-response-invalid");
       }
     }
-    return response;
+    return { ...response, revision: status.revision };
   };
 
   const reloadCompletedResponse = async (

@@ -88,8 +88,10 @@ async function tokenFile(): Promise<string> {
   return path;
 }
 
-function server(now: () => number = () => 1_000) {
-  const localPolicy = policy();
+function server(
+  now: () => number = () => 1_000,
+  localPolicy: WalletSpendPolicyV1 = policy(),
+) {
   const authority = createWalletSpendAuthorityV1(localPolicy, {
     store: createInMemoryWalletSpendStateStore(),
     readBalance: async () => "1000",
@@ -404,6 +406,63 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     expect(exactOperationGets).toBe(1);
   });
 
+  it("recovers a committed V1 mutation whose successful response arrives out of order", async () => {
+    const tokenFilePath = await tokenFile();
+    const selected = { ...policy(), maximumConcurrentEffects: 2 };
+    const local = server(() => 1_000, selected);
+    let releaseReserveResponse!: () => void;
+    const reserveResponseGate = new Promise<void>((resolve) => {
+      releaseReserveResponse = resolve;
+    });
+    let markReserveResponseReady!: () => void;
+    const reserveResponseReady = new Promise<void>((resolve) => {
+      markReserveResponseReady = resolve;
+    });
+    let delayReserveResponse = true;
+    let exactOperationGets = 0;
+    const fetchOutOfOrder = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = request.method === "POST"
+        ? await request.clone().json() as { operation?: string }
+        : undefined;
+      if (request.method === "GET") exactOperationGets += 1;
+      const response = await local.handler(request);
+      if (response.ok && body?.operation === "reserve" && delayReserveResponse) {
+        delayReserveResponse = false;
+        markReserveResponseReady();
+        await reserveResponseGate;
+      }
+      return response;
+    }) as typeof fetch;
+    const remote = await createDacsRemoteWalletSpendAuthorityV1({
+      policy: selected, endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      allowInsecureLoopback: true, fetch: fetchOutOfOrder,
+    });
+    const concurrentRemote = await createDacsRemoteWalletSpendAuthorityV1({
+      policy: selected, endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+      allowInsecureLoopback: true, fetch: handlerFetch(local.handler),
+    });
+
+    const delayedReserve = remote.reserve(reservation());
+    await reserveResponseReady;
+    const otherReservation = {
+      ...reservation(),
+      reservationId: "remote-two",
+      jobId: "job-two",
+    };
+    await expect(concurrentRemote.reserve(otherReservation)).resolves.toMatchObject({
+      status: "reserved",
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ revision: 2 });
+    releaseReserveResponse();
+
+    await expect(delayedReserve).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "remote-one" },
+    });
+    expect(exactOperationGets).toBe(1);
+  });
+
   it("recovers a committed V2 mutation after an invalid successful proof", async () => {
     const tokenFilePath = await tokenFile();
     const local = await serverV2();
@@ -660,7 +719,7 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     })).resolves.toMatchObject({ status: "reserved" });
     const ahead = await send();
     expect(ahead.status).toBe(200);
-    await expect(ahead.json()).resolves.toEqual(retained);
+    await expect(ahead.json()).resolves.toEqual({ ...retained, revision: 4 });
 
     activeAuthority = behind;
     const rejected = await send();
