@@ -1259,18 +1259,20 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         throw new DacsVetTerminalBundleTransportError("vet-terminal-proposal-conflict");
       }
       const message = role === "buyer"
-        ? await context.sendMessage({
-            type: "terminal-bundle-proposal-buyer",
-            jobId: input.identity.jobId,
-            payload: assessment.proposal,
-            idempotencyKey: `vet-terminal-proposal:v1:${plan.planHash}`,
-          } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-buyer">)
-        : await context.sendMessage({
-            type: "terminal-bundle-proposal-seller",
-            jobId: input.identity.jobId,
-            payload: assessment.proposal,
-            idempotencyKey: `vet-terminal-proposal:v1:${plan.planHash}`,
-          } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-seller">);
+        ? await invokeConflictFenced(context, input.identity.jobId, () =>
+            context.sendMessage({
+              type: "terminal-bundle-proposal-buyer",
+              jobId: input.identity.jobId,
+              payload: assessment.proposal,
+              idempotencyKey: `vet-terminal-proposal:v1:${plan.planHash}`,
+            } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-buyer">))
+        : await invokeConflictFenced(context, input.identity.jobId, () =>
+            context.sendMessage({
+              type: "terminal-bundle-proposal-seller",
+              jobId: input.identity.jobId,
+              payload: assessment.proposal,
+              idempotencyKey: `vet-terminal-proposal:v1:${plan.planHash}`,
+            } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-seller">));
       const disposition = acknowledgementDisposition(message);
       if (disposition !== "accepted" && disposition !== "existing") {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-proposal-rejected");
@@ -1343,18 +1345,20 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         );
       }
       const message = role === "buyer"
-        ? await context.sendMessage({
-            type: "terminal-bundle-contribution-buyer",
-            jobId: input.identity.jobId,
-            payload: contribution,
-            idempotencyKey: `vet-terminal-contribution:v1:${contribution.contributionHash}`,
-          } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-contribution-buyer">)
-        : await context.sendMessage({
-            type: "terminal-bundle-contribution-seller",
-            jobId: input.identity.jobId,
-            payload: contribution,
-            idempotencyKey: `vet-terminal-contribution:v1:${contribution.contributionHash}`,
-          } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-contribution-seller">);
+        ? await invokeConflictFenced(context, input.identity.jobId, () =>
+            context.sendMessage({
+              type: "terminal-bundle-contribution-buyer",
+              jobId: input.identity.jobId,
+              payload: contribution,
+              idempotencyKey: `vet-terminal-contribution:v1:${contribution.contributionHash}`,
+            } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-contribution-buyer">))
+        : await invokeConflictFenced(context, input.identity.jobId, () =>
+            context.sendMessage({
+              type: "terminal-bundle-contribution-seller",
+              jobId: input.identity.jobId,
+              payload: contribution,
+              idempotencyKey: `vet-terminal-contribution:v1:${contribution.contributionHash}`,
+            } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-contribution-seller">));
       const disposition = acknowledgementDisposition(message);
       if (disposition !== "accepted" && disposition !== "existing") {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-contribution-rejected");

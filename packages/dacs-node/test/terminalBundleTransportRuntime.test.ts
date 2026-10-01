@@ -85,12 +85,14 @@ const TERMINAL_TRANSPORT_ID_DOMAIN =
 
 function terminalTransportEffectId(
   role: "buyer" | "seller",
-  kind: "material" | "proposal" | "conflict",
+  kind: "material" | "proposal" | "contribution" | "conflict",
+  signerRole?: "buyer" | "seller",
 ): string {
   return sha256Hex(`${TERMINAL_TRANSPORT_ID_DOMAIN}${canonicalize({
     role,
     kind,
     jobId: JOB_ID,
+    ...(signerRole === undefined ? {} : { signerRole }),
   })}`);
 }
 
@@ -1445,6 +1447,124 @@ describe("role-separated Vet terminal bundle transport", () => {
     expect(signComponent).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["proposal", "before"],
+    ["proposal", "inside"],
+    ["contribution", "before"],
+    ["contribution", "inside"],
+  ] as const)(
+    "fences the %s send when a conflict is sealed %s",
+    async (kind, timing) => {
+      const database = await open("buyer");
+      let enter = (): void => undefined;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let pauseEnabled = false;
+      let paused = false;
+      const pause = async (candidateTiming: PauseTiming) => {
+        if (pauseEnabled && !paused && candidateTiming === timing) {
+          paused = true;
+          enter();
+          await released;
+        }
+      };
+      const sendMessage = vi.fn(async () => {
+        await pause("inside");
+        return acknowledgement("accepted");
+      });
+      const signComponent = vi.fn();
+      const anchorWriteOnce = vi.fn();
+      const context = {
+        role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        database,
+        demos: { signComponent, adapter: { anchorWriteOnce } },
+        sendMessage,
+      } as unknown as DacsLiveRoleOperationContextV1;
+      const publisher = createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => {
+          await pause("before");
+          return { status: "valid" as const };
+        },
+      });
+      const sealer = createDacsVetTerminalBundleTransportRuntimeV1({
+        context,
+        expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => ({ status: "valid" }),
+      });
+      const registered = await publisher.registerLocalTerminal(
+        terminalInput("fail", "pay-x402", "seller"),
+      );
+      const identity = {
+        jobId: JOB_ID,
+        authorityHash: registered.proposal.plan.authorityHash,
+        planHash: registered.proposal.plan.planHash,
+      };
+      if (kind === "contribution") {
+        await publisher.handleMessage(
+          authenticated(
+            "terminal-bundle-proposal-seller",
+            registered.proposal,
+            SELLER,
+            BUYER,
+          ),
+          { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+        );
+      }
+      pauseEnabled = true;
+      const publishing = kind === "proposal"
+        ? publisher.transport.publishProposal({
+            identity,
+            plan: registered.proposal.plan,
+          }, {} as never)
+        : publisher.transport.publishContribution({
+            identity,
+            contribution: contribution(registered.proposal.plan, "buyer"),
+          }, {} as never);
+      await entered;
+      try {
+        const conflicting = await terminalProposal(
+          terminalInput("fail", "pay-x402", "buyer"),
+        );
+        await expect(sealer.validatePayload({
+          type: "terminal-bundle-proposal-seller",
+          payload: conflicting,
+          jobId: JOB_ID,
+          sender: SELLER,
+          audience: BUYER,
+        })).resolves.toEqual({
+          status: "invalid",
+          reasonCode: "vet-terminal-binding-conflict",
+        });
+      } finally {
+        release();
+      }
+      await expect(publishing).rejects.toMatchObject({
+        reasonCode: "vet-terminal-binding-conflict",
+      });
+      expect(sendMessage).toHaveBeenCalledTimes(timing === "inside" ? 1 : 0);
+      expect(database.loadEffectInput(
+        "session",
+        terminalTransportEffectId(
+          "buyer",
+          kind,
+          kind === "contribution" ? "buyer" : undefined,
+        ),
+      )).toBeUndefined();
+      await expect(publisher.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
+        reasonCode: "vet-terminal-binding-conflict",
+      });
+      expect(signComponent).not.toHaveBeenCalled();
+      expect(anchorWriteOnce).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["signer", "before", 0, 0],
