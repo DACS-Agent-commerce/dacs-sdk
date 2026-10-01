@@ -325,4 +325,69 @@ describe("one-factory live commerce assembly", () => {
     expect(factories.buyerSessionAgreement.mock.calls[0]![0].terminalBundle)
       .toMatchObject({ runtime: { terminal: true } });
   });
+
+  it("forwards explicit trusted versions for a custom buyer terminal input", async () => {
+    await createDacsBuyerLiveCommerceAssemblyV1({
+      context: { role: "buyer" },
+      workerId: "buyer-worker",
+      sessionBootstrap: { resolveRequirements: vi.fn() },
+      agreement: { buildDraft: vi.fn() },
+      payment: { resolvePreparation: vi.fn() },
+      paymentEvidence: { verifyEvidence: vi.fn() },
+      buyerReceived: { resolvePaymentScope: vi.fn() },
+      bundleTransport: { resolveVerification: vi.fn() },
+      audit: { resolveMaterial: vi.fn() },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput: vi.fn(),
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 17,
+          railRegistryVersion: 5,
+        },
+      },
+    } as never);
+
+    expect(factories.terminalBundleTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 17,
+          railRegistryVersion: 5,
+        },
+      }),
+    );
+  });
+
+  it("rejects disagreeing explicit and factory-derived seller versions", async () => {
+    const createInput = Object.assign(vi.fn(), {
+      registryVersions: {
+        recipeRegistryVersion: 11,
+        railRegistryVersion: 7,
+      },
+    });
+
+    await expect(createDacsSellerLiveCommerceAssemblyV1({
+      context: { role: "seller" },
+      workerId: "seller-worker",
+      sessionBootstrap: {
+        admitInit: vi.fn(),
+        resolveBuyerRequirement: vi.fn(),
+        resolveSellerRequirement: vi.fn(),
+      },
+      agreementTransport: { admitProposal: vi.fn() },
+      agreement: { resolveAuthenticatedAgreementContext: vi.fn() },
+      x402: { publicBaseUrl: "https://seller.example" },
+      paymentEvidence: {},
+      settlement: { resolvePublication: vi.fn() },
+      audit: { resolveMaterial: vi.fn() },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput,
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 12,
+          railRegistryVersion: 7,
+        },
+      },
+    } as never)).rejects.toThrow(/registry version authorities disagree/);
+    expect(factories.terminalBundleTransport).not.toHaveBeenCalled();
+  });
 });

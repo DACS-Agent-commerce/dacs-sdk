@@ -89,14 +89,24 @@ import type { DacsFixedPriceVetTerminalInputFactoryV1 } from
   "./fixedPriceVetTerminal.js";
 
 function terminalRegistryVersionOptions(
-  createInput: DacsSessionVetTerminalTrackV1["createInput"],
+  terminalBundle: Readonly<Pick<
+    DacsVetTerminalBundleTransportOptionsV1,
+    "expectedRegistryVersions"
+  > & Pick<DacsSessionVetTerminalTrackV1, "createInput">>,
 ): Readonly<Pick<
   DacsVetTerminalBundleTransportOptionsV1,
   "expectedRegistryVersions"
 >> | Readonly<Record<string, never>> {
-  const expectedRegistryVersions =
-    (createInput as Partial<DacsFixedPriceVetTerminalInputFactoryV1>)
+  const derived =
+    (terminalBundle.createInput as Partial<DacsFixedPriceVetTerminalInputFactoryV1>)
       .registryVersions;
+  const explicit = terminalBundle.expectedRegistryVersions;
+  if (derived !== undefined && explicit !== undefined &&
+      (derived.recipeRegistryVersion !== explicit.recipeRegistryVersion ||
+        derived.railRegistryVersion !== explicit.railRegistryVersion)) {
+    throw new TypeError("Vet terminal registry version authorities disagree");
+  }
+  const expectedRegistryVersions = derived ?? explicit;
   return expectedRegistryVersions === undefined
     ? Object.freeze({}) : Object.freeze({ expectedRegistryVersions });
 }
@@ -256,7 +266,7 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
     ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
         context,
         authenticateProduction: options.terminalBundle.authenticateProduction,
-        ...terminalRegistryVersionOptions(options.terminalBundle.createInput),
+        ...terminalRegistryVersionOptions(options.terminalBundle),
       });
   const agreement = createDacsPayDemBuyerAgreementTrackV1({
     ...options.agreement,
@@ -340,7 +350,7 @@ export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
     ? undefined : createDacsVetTerminalBundleTransportRuntimeV1({
         context,
         authenticateProduction: options.terminalBundle.authenticateProduction,
-        ...terminalRegistryVersionOptions(options.terminalBundle.createInput),
+        ...terminalRegistryVersionOptions(options.terminalBundle),
       });
   const agreement = createDacsPayDemSellerAgreementTrackV1({
     ...options.agreement,

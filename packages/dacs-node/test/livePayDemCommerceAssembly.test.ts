@@ -299,4 +299,75 @@ describe("native DEM one-factory live assembly", () => {
     expect(factories.sellerSessionAgreement.mock.calls[0]![0].terminalBundle)
       .toMatchObject({ runtime: { terminal: true } });
   });
+
+  it("forwards explicit trusted versions for a custom seller terminal input", async () => {
+    await createDacsSellerPayDemLiveCommerceAssemblyV1({
+      context: { role: "seller", database: {} },
+      workerId: "seller-worker",
+      sessionBootstrap: {
+        admitInit: vi.fn(),
+        resolveBuyerRequirement: vi.fn(),
+        resolveSellerRequirement: vi.fn(),
+      },
+      agreementTransport: { admitProposal: vi.fn() },
+      agreement: { resolveAuthenticatedAgreementContext: vi.fn() },
+      payment: { resolvePayerPayingKey: vi.fn(), intakeDeps: {} },
+      paymentEvidence: {},
+      settlement: { resolvePublication: vi.fn() },
+      fulfilment: { fulfilment: {} },
+      audit: { resolveMaterial: vi.fn() },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput: vi.fn(),
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 19,
+          railRegistryVersion: 3,
+        },
+      },
+    } as never);
+
+    expect(factories.terminalBundleTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 19,
+          railRegistryVersion: 3,
+        },
+      }),
+    );
+  });
+
+  it("rejects disagreeing explicit and factory-derived buyer versions", async () => {
+    const createInput = Object.assign(vi.fn(), {
+      registryVersions: {
+        recipeRegistryVersion: 13,
+        railRegistryVersion: 9,
+      },
+    });
+    const rail = { address: "aa".repeat(32), settle: vi.fn() };
+
+    await expect(createDacsBuyerPayDemLiveCommerceAssemblyV1({
+      context: {
+        role: "buyer",
+        demos: { payDem: { rail } },
+        database: {},
+      },
+      workerId: "buyer-worker",
+      sessionBootstrap: { resolveRequirements: vi.fn() },
+      agreement: { buildDraft: vi.fn() },
+      payment: { resolveAuthority: vi.fn(), reconcile: vi.fn() },
+      paymentEvidence: { verifyEvidence: vi.fn() },
+      buyerReceived: { authorizeReceived: vi.fn() },
+      bundleTransport: { resolveVerification: vi.fn() },
+      audit: { resolveMaterial: vi.fn() },
+      terminalBundle: {
+        authenticateProduction: vi.fn(),
+        createInput,
+        expectedRegistryVersions: {
+          recipeRegistryVersion: 13,
+          railRegistryVersion: 10,
+        },
+      },
+    } as never)).rejects.toThrow(/registry version authorities disagree/);
+    expect(factories.terminalBundleTransport).not.toHaveBeenCalled();
+  });
 });
