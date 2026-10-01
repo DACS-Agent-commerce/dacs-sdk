@@ -90,10 +90,10 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
   const scanValue = (depth: number): boolean => {
     skipWhitespace();
     const character = source[offset];
-    if ((character === "{" || character === "[") && depth >= MAX_NESTING_DEPTH) {
-      throw new Error("JSON nesting exceeds canonical limit");
-    }
     if (character === "{") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new Error("JSON nesting exceeds canonical limit");
+      }
       offset += 1;
       skipWhitespace();
       const names = new Set<string>();
@@ -119,6 +119,9 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
       }
     }
     if (character === "[") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new Error("JSON nesting exceeds canonical limit");
+      }
       offset += 1;
       skipWhitespace();
       if (source[offset] === "]") {

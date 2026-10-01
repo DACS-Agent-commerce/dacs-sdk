@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  canonicalize,
   ed25519Sign,
   ed25519Verify,
   identityBundleHash,
@@ -10,6 +11,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
   signComponentArtifact,
+  sha256Hex,
   type CompositeBundleRequirement,
   type IdentityBundle,
   type RecipeDescriptor,
@@ -81,17 +83,18 @@ function attempt(
   claimSubject: string,
   recipePin: PartyVetAttemptInput["recipePin"],
   classification: PartyVetAttemptInput["classification"] = "dealSpecific",
+  methodInput: PartyVetAttemptInput["methodInput"] = {
+    kind: "self-signed",
+    assertion: claimSubject,
+    signature: "a".repeat(128),
+  },
 ): PartyVetAttemptInput {
   return {
     requirementPath,
     claimSubject,
     classification,
     recipePin,
-    methodInput: {
-      kind: "self-signed",
-      assertion: claimSubject,
-      signature: "a".repeat(128),
-    },
+    methodInput,
   };
 }
 
@@ -99,6 +102,7 @@ interface AttemptSpec {
   requirementPath: PartyVetAttemptInput["requirementPath"];
   claimSubject: string;
   classification?: PartyVetAttemptInput["classification"];
+  methodInput?: PartyVetAttemptInput["methodInput"];
 }
 
 function requirementAtPath(
@@ -134,7 +138,7 @@ async function pinnedAttempts(
       requirementPath: spec.requirementPath,
       claimSubject: spec.claimSubject,
       classification: spec.classification ?? "dealSpecific",
-      methodInput: {
+      methodInput: spec.methodInput ?? {
         kind: "self-signed" as const,
         assertion: spec.claimSubject,
         signature: "a".repeat(128),
@@ -163,6 +167,7 @@ async function pinnedAttempts(
     spec.claimSubject,
     pins[index]!,
     spec.classification,
+    spec.methodInput,
   ));
 }
 
@@ -404,7 +409,7 @@ describe("party-scoped multi-claim Vet planning", () => {
     expect(state.overallDecision).toBe("fail");
   });
 
-  test("rejects duplicate result addresses and out-of-order outcomes", async () => {
+  test("groups compatible duplicate result addresses and rejects out-of-order outcomes", async () => {
     const alpha = claim("alpha", "alice");
     const jobId = "job-144-duplicate";
     const requirement: CompositeBundleRequirement = {
@@ -419,14 +424,97 @@ describe("party-scoped multi-claim Vet planning", () => {
         claimSubject: alpha,
       },
     ]);
-    expect(() => createPartyVetPlan({
+    const shared = createPartyVetPlan({
       jobId,
       evaluatedParty: alpha,
       identityBundle: bundle(alpha, [alpha]),
       requirement,
       verifier: { algorithm: "ed25519", signer: VERIFIER },
       attempts: duplicateAttempts,
-    })).toThrow(/duplicate result address/);
+    });
+    expect(shared.attempts).toHaveLength(2);
+    expect(shared.attempts[0]!.sharedResultGroup).toMatch(/^[0-9a-f]{64}$/);
+    expect(shared.attempts[1]!.sharedResultGroup).toBe(
+      shared.attempts[0]!.sharedResultGroup,
+    );
+    const firstShared = await resultOutcome(shared.attempts[0]!, "pass");
+    const completeShared = advancePartyVetPlan(shared, [
+      firstShared,
+      {
+        attemptId: shared.attempts[1]!.attemptId,
+        result: firstShared.result,
+      },
+    ]);
+    expect(completeShared).toMatchObject({
+      status: "complete",
+      overallDecision: "pass",
+    });
+
+    const incompatibleJobId = "job-144-incompatible-duplicate";
+    const incompatibleAttempts = await pinnedAttempts(
+      incompatibleJobId,
+      alpha,
+      requirement,
+      [
+        { requirementPath: { kind: "required", index: 0 }, claimSubject: alpha },
+        {
+          requirementPath: { kind: "oneOf", groupIndex: 0, alternativeIndex: 0 },
+          claimSubject: alpha,
+          methodInput: {
+            kind: "self-signed",
+            assertion: `${alpha}:different-authority-input`,
+            signature: "a".repeat(128),
+          },
+        },
+      ],
+    );
+    expect(sha256Hex(canonicalize(incompatibleAttempts[0]!.methodInput))).not.toBe(
+      sha256Hex(canonicalize(incompatibleAttempts[1]!.methodInput)),
+    );
+    expect(() => createPartyVetPlan({
+      jobId: incompatibleJobId,
+      evaluatedParty: alpha,
+      identityBundle: bundle(alpha, [alpha]),
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: incompatibleAttempts,
+    })).toThrow(/incompatible duplicate result address/);
+
+    const unprojectableJobId = "job-144-unprojectable-duplicate";
+    const unprojectableRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          parameters: { assertionPolicy: "first" },
+        },
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          parameters: { assertionPolicy: "second" },
+        },
+      ],
+    };
+    const unprojectableAttempts = await pinnedAttempts(
+      unprojectableJobId,
+      alpha,
+      unprojectableRequirement,
+      [0, 1].map((index) => ({
+        requirementPath: { kind: "required" as const, index },
+        claimSubject: alpha,
+      })),
+    );
+    expect(() => createPartyVetPlan({
+      jobId: unprojectableJobId,
+      evaluatedParty: alpha,
+      identityBundle: bundle(alpha, [alpha]),
+      requirement: unprojectableRequirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: unprojectableAttempts,
+    })).toThrow(/incompatible duplicate result address/);
 
     const plan = await requiredPlan();
     const second = await resultOutcome(plan.attempts[1]!, "pass");

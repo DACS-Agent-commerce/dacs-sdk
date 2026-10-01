@@ -670,10 +670,10 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
   const scanValue = (depth: number): boolean => {
     skipWhitespace();
     const character = source[offset];
-    if ((character === "{" || character === "[") && depth >= MAX_NESTING_DEPTH) {
-      throw new DacsError("x402 buyer JSON exceeds the supported depth");
-    }
     if (character === "{") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new DacsError("x402 buyer JSON exceeds the supported depth");
+      }
       offset += 1;
       skipWhitespace();
       const names = new Set<string>();
@@ -699,6 +699,9 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
       }
     }
     if (character === "[") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new DacsError("x402 buyer JSON exceeds the supported depth");
+      }
       offset += 1;
       skipWhitespace();
       if (source[offset] === "]") {

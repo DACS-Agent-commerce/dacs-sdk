@@ -118,6 +118,42 @@ function intentDraft(): X402BuyerSettlementIntentDraft {
 const makeIntent = (): Readonly<X402BuyerSettlementIntent> =>
   createX402BuyerSettlementIntent(intentDraft());
 
+describe("x402 buyer settlement JSON depth matches canonical CF-5 (128)", () => {
+  // Count the enclosing payload and requirement containers too: the complete
+  // canonical value, not just the extra subtree, determines the depth limit.
+  const chain = (levels: number): unknown =>
+    levels <= 0 ? true : { a: chain(levels - 1) };
+
+  const draftWithExtraDepth = (levels: number): X402BuyerSettlementIntentDraft => {
+    const draft = intentDraft();
+    (draft.chosenRequirements.extra as Record<string, unknown>).deep = chain(levels);
+    // signedPaymentPayload.accepted references the same chosenRequirements
+    // object, so re-encode the header to keep it byte-consistent with extra.
+    draft.paymentHeader = {
+      name: "PAYMENT-SIGNATURE",
+      value: Buffer.from(JSON.stringify(draft.signedPaymentPayload), "utf8").toString("base64"),
+    };
+    return draft;
+  };
+
+  // Before the fix the rail scanners capped nesting at 64 and rejected payloads
+  // that core canonicalization admits, splitting accept/reject between the two.
+  // A payload nested well past 64 must now be admitted by the rail...
+  test("admits nesting past the old 64 cap (matches canonical CF-5)", () => {
+    const draft = draftWithExtraDepth(80);
+    expect(() => canonicalize(draft.signedPaymentPayload)).not.toThrow();
+    expect(() => createX402BuyerSettlementIntent(draft)).not.toThrow();
+  });
+
+  // ...while genuinely over-deep nesting is still rejected on the depth guard,
+  // just as canonicalize rejects it.
+  test("still rejects nesting the canonical form rejects", () => {
+    const draft = draftWithExtraDepth(200);
+    expect(() => canonicalize(draft.signedPaymentPayload)).toThrow();
+    expect(() => createX402BuyerSettlementIntent(draft)).toThrow(/depth/i);
+  });
+});
+
 function receiptResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     success: true,
@@ -407,15 +443,17 @@ describe("durable buyer x402 intent", () => {
       },
     })).toThrow(/JSON/);
   });
+});
 
+describe("x402 intent exact JSON depth boundary", () => {
   test.each(["object", "array"] as const)(
     "captures a depth-128 x402 intent with signed %s data and refuses depth 129",
     (kind) => {
       const atDepth = (depth: number): X402BuyerSettlementIntentDraft => {
         const draft = intentDraft();
         const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
-        // The public canonical value wraps this chain in the intent and signed
-        // payload records, so subtract both containers from the target depth.
+        // The complete canonical intent wraps this chain in the intent and
+        // signed payload records, so subtract both containers from its depth.
         payload.depthProbe = nestedContainer(depth - 2, kind);
         draft.signedPaymentPayload =
           payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];

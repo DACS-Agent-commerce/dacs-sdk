@@ -78,6 +78,7 @@ interface HarnessState {
   inflight: Map<string, Promise<unknown>>;
   artifacts: Map<string, StoredArtifact>;
   decisions: Map<string, "pass" | "fail" | "indeterminate" | "error">;
+  proxyBodies: Map<string, string>;
   effects: {
     methods: number;
     signs: number;
@@ -105,6 +106,7 @@ function state(): HarnessState {
     inflight: new Map(),
     artifacts: new Map(),
     decisions: new Map(),
+    proxyBodies: new Map(),
     effects: { methods: 0, signs: 0, anchors: 0 },
     effectStore: createInMemoryFencedSessionStore(),
     now: NOW,
@@ -198,6 +200,9 @@ function deps(
     presentationValid?: boolean;
     randomSignatures?: boolean;
     presentedClaimControlled?: boolean;
+    matchRequirementParameters?: NonNullable<
+      PartyVetDeps<Uint8Array>["matchRequirementParameters"]
+    >;
   } = {},
 ): PartyVetDeps<Uint8Array> {
   if (!harness.effectLease) {
@@ -208,7 +213,7 @@ function deps(
       harness.effects.methods += 1;
       const scheme = new URL(url).pathname.split("/").filter(Boolean)[0]!;
       const decision = harness.decisions.get(scheme) ?? "pass";
-      const body = JSON.stringify(
+      const body = harness.proxyBodies.get(scheme) ?? JSON.stringify(
         decision === "pass"
           ? { ok: true }
           : decision === "indeterminate"
@@ -480,13 +485,14 @@ function deps(
       store: harness.effectStore,
       leaseToken: harness.effectLease,
     },
-    matchRequirementParameters: () => true,
+    matchRequirementParameters: options.matchRequirementParameters ?? (() => true),
   };
 }
 
 async function recipe(
   scheme: string,
   availability: RecipeDescriptor["availability"] = "live",
+  dataMap?: Record<string, string>,
 ) {
   const descriptor: RecipeDescriptor = {
     recipeVersion: 1,
@@ -503,6 +509,7 @@ async function recipe(
       format: "json",
       successJsonPath: "$.ok",
       indeterminateOn: [{ jsonPath: "$.pending" }],
+      ...(dataMap === undefined ? {} : { dataMap }),
     },
     retryClass: "permanent",
     availability,
@@ -629,7 +636,9 @@ async function pinnedRequestFixture(
     sessionStartHash: partyPlanHash,
     partyPlanHash,
     bundleRequirement: requirement,
-    recipes: specs.map((spec) => spec.recipe),
+    recipes: [...new Map(
+      specs.map((spec) => [canonicalize(spec.recipe), spec.recipe] as const),
+    ).values()],
     attempts: specs.map((spec) => ({
       requirementPath: spec.requirementPath,
       requirement: requirementAtPath(requirement, spec.requirementPath),
@@ -992,6 +1001,224 @@ describe("partyVetCore durable party-level producer", () => {
     const replay = await partyVetCore(request, deps(harness));
     expect(canonicalize(replay)).toBe(canonicalize(production));
     expect(harness.effects).toEqual({ methods: 2, signs: 3, anchors: 3 });
+  });
+
+  test("coalesces compatible paths and requalifies each predicate after recovery", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const authorityBody = JSON.stringify({
+      ok: true,
+      jurisdiction: "GB",
+      status: "active",
+    });
+    harness.proxyBodies.set("alpha", authorityBody);
+    const signedRecipe = await recipe("alpha", "live", {
+      jurisdiction: "$.jurisdiction",
+      status: "$.status",
+    });
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          maxAge: 3_600,
+          parameters: { jurisdiction: "GB" },
+        },
+        {
+          scheme: "alpha",
+          verificationRequired: true,
+          recipeVersion: 1,
+          maxAge: 3_600,
+          parameters: { status: "active" },
+        },
+      ],
+    };
+    const jobId = "job-party-shared-result";
+    const identity = await bundle(subject, [subject]);
+    const paths = [
+      { kind: "required" as const, index: 0 },
+      { kind: "required" as const, index: 1 },
+    ];
+    const request: PartyVetRequest = {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identity,
+        requirement,
+        paths.map((requirementPath) => ({
+          requirementPath,
+          claimSubject: subject,
+          recipe: signedRecipe,
+        })),
+      ),
+    };
+    await activateEffectLease(harness, jobId);
+    let parameterQualifications = 0;
+    const partyDeps = deps(harness, {
+      matchRequirementParameters: ({ requirement: member }) => {
+        parameterQualifications += 1;
+        return !Object.prototype.hasOwnProperty.call(
+          member.parameters ?? {},
+          "status",
+        );
+      },
+    });
+    harness.loseAuthorizedResponseAt = "verify-result-anchor";
+    harness.beforeAuthorizedEffect = ({ step }) => {
+      if (step === "composite") {
+        harness.now += 2_000;
+        harness.beforeAuthorizedEffect = undefined;
+      }
+    };
+
+    await expect(partyVetCore(request, partyDeps)).rejects.toThrow(
+      /party Vet verify-result-anchor authorized run failed/,
+    );
+    const production = await partyVetCore(request, partyDeps);
+    expect(production.record.overallDecision).toBe("fail");
+    expect(production.record.dealSpecific).toHaveLength(1);
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(harness.checkpoints.size).toBe(2);
+    expect(parameterQualifications).toBe(2);
+
+    let resultResolutions = 0;
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: [{
+          ref: production.record.dealSpecific[0]!,
+          scheme: "alpha",
+          identifier: "alice",
+          method: "consensus-backed-proxy",
+          requirement: requirement.required[0]!,
+        }],
+      },
+      {
+        nowMs: () => harness.now,
+        resolve: async (ref) => {
+          const stored = [...harness.artifacts.values()].find(
+            (entry) => entry.ref.anchor.locator === ref.anchor.locator,
+          );
+          if (stored) {
+            resultResolutions += 1;
+            return {
+              encoding: "canonical-json" as const,
+              value: structuredClone(stored.artifact),
+            };
+          }
+          return ref.anchor.locator === "https://authority.example/evidence/alpha"
+            ? {
+                encoding: "bytes" as const,
+                value: Uint8Array.from(Buffer.from(authorityBody)),
+              }
+            : null;
+        },
+        resolveRecipe: async () => signedRecipe,
+        isRecipeSignerAuthorized: (_candidate, signature) =>
+          signature.signer === STEWARD,
+        isVerifyResultSignerAuthorized: (_result, signature) =>
+          signature.signer === VERIFIER,
+        resolvePublicKey: (signature) => {
+          if (signature.signer === VERIFIER) return VERIFIER_KEY;
+          if (signature.signer === STEWARD) return STEWARD_KEY;
+          return null;
+        },
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "valid",
+        verifyRequirementParameters: ({ result, expected }) =>
+          !Object.prototype.hasOwnProperty.call(
+            expected.requirement.parameters ?? {},
+            "status",
+          ) && Object.entries(expected.requirement.parameters ?? {}).every(
+            ([key, value]) =>
+              result.data !== undefined &&
+              Object.prototype.hasOwnProperty.call(result.data, key) &&
+              canonicalize(result.data[key]) === canonicalize(value),
+          ),
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+      dealSpecific: [{ data: { jurisdiction: "GB", status: "active" } }],
+    });
+    expect(resultResolutions).toBe(1);
+
+    const replay = await partyVetCore(request, partyDeps);
+    expect(canonicalize(replay)).toBe(canonicalize(production));
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 2 });
+    expect(parameterQualifications).toBe(2);
+  });
+
+  test("refuses to anchor or return a recovered pass after shared maxAge expires", async () => {
+    const harness = state();
+    const subject = "alpha:alice";
+    const signedRecipe = await recipe("alpha");
+    const member = {
+      scheme: "alpha",
+      verificationRequired: true,
+      recipeVersion: 1,
+      maxAge: 1,
+    } as const;
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [member, member],
+    };
+    const jobId = "job-party-shared-result-expiry";
+    const identity = await bundle(subject, [subject]);
+    const request: PartyVetRequest = {
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      attempts: await pinnedRequestAttempts(
+        jobId,
+        subject,
+        identity,
+        requirement,
+        [0, 1].map((index) => ({
+          requirementPath: { kind: "required" as const, index },
+          claimSubject: subject,
+          recipe: signedRecipe,
+        })),
+      ),
+    };
+    await activateEffectLease(harness, jobId);
+    const partyDeps = deps(harness);
+    harness.loseAuthorizedResponseAt = "composite";
+
+    await expect(partyVetCore(request, partyDeps)).rejects.toThrow(
+      /party Vet composite authorized run failed/,
+    );
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 1 });
+
+    harness.now += 2_000;
+    await expect(partyVetCore(request, partyDeps)).rejects.toThrow(
+      /composite decision is no longer current/,
+    );
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 1 });
+
+    await expect(partyVetCore(request, partyDeps)).rejects.toThrow(
+      /composite decision is no longer current/,
+    );
+    expect(harness.effects).toEqual({ methods: 1, signs: 2, anchors: 1 });
   });
 
   test("records a failing oneOf attempt, passes on fallback, and short-circuits", async () => {
