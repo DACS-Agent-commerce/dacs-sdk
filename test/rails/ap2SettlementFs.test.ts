@@ -152,6 +152,46 @@ describe("filesystem AP2-7 binding store", () => {
     })).rejects.toThrow(/timed out waiting/);
   });
 
+  test("reuses one prepared lock candidate across occupied retries and cleans it", async () => {
+    const dir = await directory();
+    await createFsAp2BindingStore({ dir });
+    const locksDir = join(dir, "locks");
+    const lockName = `${sha256Hex(TX)}.lock`;
+    const lock = join(locksDir, lockName);
+    await mkdir(lock, { mode: 0o700 });
+    await writeFile(join(lock, "owner"), JSON.stringify({
+      token: "00000000-0000-4000-8000-000000000010",
+      pid: process.pid,
+    }), { mode: 0o600 });
+    await utimes(lock, 0, 0);
+    const contender = await createFsAp2BindingStore({
+      dir, lockTimeoutMs: 150, lockStaleMs: 5, lockPollMs: 10,
+    });
+    const pending = contender.claim({
+      intent: intent(), owner: "a", now: 1, leaseDurationMs: 10,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    const observed = new Set<string>();
+    while (!settled) {
+      for (const name of await readdir(locksDir)) {
+        if (name.startsWith(`${lockName}.`) && name.endsWith(".candidate")) {
+          observed.add(name);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    expect(String(await pending)).toMatch(/timed out waiting/);
+    expect([...observed]).toHaveLength(1);
+    expect((await readdir(locksDir)).filter((name) =>
+      name.startsWith(`${lockName}.`) && name.endsWith(".candidate")
+    )).toEqual([]);
+  });
+
   test("reclaims an aged lock whose owner process no longer exists", async () => {
     const dir = await directory();
     await createFsAp2BindingStore({ dir });
