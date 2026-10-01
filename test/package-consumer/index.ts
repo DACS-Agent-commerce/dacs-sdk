@@ -45,6 +45,10 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
+  advanceCrossChainHtlc,
+  deriveHtlcPreimage,
+  type CrossChainHtlcAdapter,
+  type CrossChainHtlcStore,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -78,6 +82,8 @@ const priceAccepted: boolean = isNegotiablePriceWithinBand("95", {
 });
 const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
+const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
+const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
@@ -130,6 +136,8 @@ const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
+declare const htlcAdapter: CrossChainHtlcAdapter;
+declare const htlcStore: CrossChainHtlcStore;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
 declare const qualificationMember: ClaimQualificationRequirement;
@@ -180,6 +188,10 @@ void replaySettlementVerified;
 void adapter;
 void journal;
 void result;
+void htlcAdvance;
+void htlcPreimage;
+void htlcAdapter;
+void htlcStore;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;
