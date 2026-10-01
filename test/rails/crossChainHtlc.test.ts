@@ -28,15 +28,18 @@ const AGREEMENT_HASH = "a".repeat(64);
 const RAIL_HASH = "b".repeat(64);
 const AUTH_HASH = "c".repeat(64);
 const SALT = Uint8Array.from({ length: 16 }, () => 1);
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+const OTHER_JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7G";
+const RESERVATION_JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7H";
 const PREIMAGE_HEX = Buffer.from(deriveHtlcPreimage({
   buyerSalt: SALT,
-  jobId: "job-1",
+  jobId: JOB_ID,
   agreementHash: AGREEMENT_HASH,
 })).toString("hex");
 
 function authority(overrides: Partial<CrossChainHtlcAuthority> = {}): CrossChainHtlcAuthority {
   return {
-    jobId: "job-1",
+    jobId: JOB_ID,
     phaseIndex: 2,
     railId: "htlc-route-1",
     railDescriptorHash: RAIL_HASH,
@@ -344,10 +347,10 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
   test("derives the byte-exact RFC 5869 SHA-256 preimage", () => {
     expect(Buffer.from(deriveHtlcPreimage({
       buyerSalt: SALT,
-      jobId: "job-1",
+      jobId: JOB_ID,
       agreementHash: AGREEMENT_HASH,
     })).toString("hex")).toBe(
-      "19b43e7a733e307df369891e948e92a4142bb330ddfe3ccbd8b7feb68d77d1bb",
+      "436862ce4c59949393192d25592fa09197d439760bfdea3509697dda4863282e",
     );
   });
 
@@ -361,10 +364,11 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     const { intent } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
     const preimageHex = Buffer.from(deriveHtlcPreimage({
       buyerSalt: SALT,
-      jobId: "job-1",
+      jobId: JOB_ID,
       agreementHash: AGREEMENT_HASH,
     })).toString("hex");
     expect(intent).toMatchObject({
+      jobId: JOB_ID,
       amount: "1.25",
       sourceAmountBaseUnits: "1250000",
       destinationAmountBaseUnits: "1250000",
@@ -395,8 +399,54 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
   });
 
   test("uses an unambiguous structured settlement-key preimage", () => {
-    expect(crossChainHtlcSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
-      .not.toBe(crossChainHtlcSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
+    expect(crossChainHtlcSettlementKey({ jobId: JOB_ID, railId: "c", phaseIndex: 1 }))
+      .not.toBe(crossChainHtlcSettlementKey({
+        jobId: OTHER_JOB_ID,
+        railId: "b:c",
+        phaseIndex: 1,
+      }));
+  });
+
+  test.each([
+    ["lowercase", JOB_ID.toLowerCase()],
+    ["leading whitespace", ` ${JOB_ID}`],
+    ["trailing whitespace", `${JOB_ID} `],
+    ["Unicode normalization alias", JOB_ID.replace("K", "\u212a")],
+    ["wrong length", JOB_ID.slice(0, -1)],
+    ["non-ULID alphabet", JOB_ID.replace("K", "I")],
+  ])("rejects a %s jobId before derivation or effects", async (_name, jobId) => {
+    expect(() => deriveHtlcPreimage({
+      buyerSalt: SALT,
+      jobId,
+      agreementHash: AGREEMENT_HASH,
+    })).toThrow("jobId must be a canonical uppercase ULID");
+    expect(() => crossChainHtlcSettlementKey({
+      jobId,
+      railId: "htlc-route-1",
+      phaseIndex: 2,
+    })).toThrow("jobId must be a canonical uppercase ULID");
+
+    const deriveHashlock = vi.fn(hashlocks.deriveHashlock);
+    const store = createInMemoryCrossChainHtlcStore();
+    const claim = vi.spyOn(store, "claim");
+    const h = harness();
+    const result = await advanceCrossChainHtlc(runner({
+      authority: authority({ jobId }),
+      hashlocks: { deriveHashlock },
+      store,
+      adapter: h.adapter,
+    }).shared);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "jobId must be a canonical uppercase ULID",
+    });
+    expect(deriveHashlock).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.prepareAction).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
   test("binds the required destination finality budget into the canonical intent", () => {
@@ -491,7 +541,7 @@ describe("advanceCrossChainHtlc", () => {
     await advanceCrossChainHtlc(first.shared);
     first.setClock(2_000_000);
     const second = runner({
-      authority: authority({ jobId: "job-2" }),
+      authority: authority({ jobId: OTHER_JOB_ID }),
       store,
       adapter: harness().adapter,
       now: () => 2_000_000,
@@ -1632,7 +1682,7 @@ describe("source-claim replacement store contract", () => {
     });
 
     const other = createCrossChainHtlcIntent(
-      authority({ jobId: "reservation-probe" }),
+      authority({ jobId: RESERVATION_JOB_ID }),
       Uint8Array.from({ length: 16 }, () => 2),
       hashlocks,
     );

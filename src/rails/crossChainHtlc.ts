@@ -7,6 +7,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_LEASE_MS = 30_000;
@@ -458,6 +459,7 @@ export function deriveHtlcPreimage(input: {
   jobId: string;
   agreementHash: string;
 }): Uint8Array {
+  const jobId = requireCanonicalJobId(input.jobId);
   if (!(input.buyerSalt instanceof Uint8Array) || input.buyerSalt.byteLength < 16) {
     throw new DacsError("pay-cross-chain-htlc: buyerSalt requires at least 128 bits");
   }
@@ -468,7 +470,7 @@ export function deriveHtlcPreimage(input: {
   return new Uint8Array(hkdfSync(
     "sha256",
     buyerSalt,
-    Buffer.from(requireString(input.jobId, "jobId").normalize("NFC"), "utf8"),
+    Buffer.from(jobId, "utf8"),
     Buffer.from(input.agreementHash, "utf8"),
     32,
   ));
@@ -479,9 +481,10 @@ export function crossChainHtlcSettlementKey(input: {
   railId: string;
   phaseIndex: number;
 }): string {
+  const jobId = requireCanonicalJobId(input.jobId);
   const phaseIndex = requireUInt(input.phaseIndex, "phaseIndex");
   return sha256Hex(`dacs-cross-chain-htlc:v1:${canonicalize({
-    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    jobId,
     phaseIndex,
     railId: requireString(input.railId, "railId").normalize("NFC"),
   })}`);
@@ -499,6 +502,7 @@ export function createCrossChainHtlcIntent(
   deriver: HtlcHashlockDeriver,
 ): Readonly<{ intent: Readonly<CrossChainHtlcIntent>; secrets: Readonly<CrossChainHtlcSecrets> }> {
   const authority = Object.freeze({ ...inputAuthority });
+  const jobId = requireCanonicalJobId(authority.jobId);
   if (!(buyerSalt instanceof Uint8Array)) {
     throw new DacsError("pay-cross-chain-htlc: buyerSalt must be bytes");
   }
@@ -564,7 +568,7 @@ export function createCrossChainHtlcIntent(
   const destinationAmountBaseUnits = baseUnits(amount, destinationTokenDecimals);
   const preimage = deriveHtlcPreimage({
     buyerSalt: capturedBuyerSalt,
-    jobId: authority.jobId,
+    jobId,
     agreementHash: authority.agreementHash,
   });
   const sourceHashlock = requireString(
@@ -580,7 +584,7 @@ export function createCrossChainHtlcIntent(
   const unsigned = {
     intentVersion: "1" as const,
     settlementKey: crossChainHtlcSettlementKey(authority),
-    jobId: requireString(authority.jobId, "jobId").normalize("NFC"),
+    jobId,
     phaseIndex: authority.phaseIndex,
     railId: requireString(authority.railId, "railId").normalize("NFC"),
     railDescriptorHash: authority.railDescriptorHash,
