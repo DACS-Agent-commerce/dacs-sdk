@@ -4,7 +4,7 @@ import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
   verifyBundleCore,
   type VerifyBundleDeps,
-} from "../../src/agent/verifyBundleCore.js";
+} from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
@@ -467,6 +467,34 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     ]);
     expect(res.refs.every((r) => r.verdict === "ok")).toBe(true);
     expect(res.bundle?.outcome).toBe("completed");
+  });
+
+  test("public verifier admits a signed depth-128 artifact and refuses depth 129", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    let nested: unknown = null;
+    // The outer bundle is container 1; this signed extension adds 127.
+    for (let index = 0; index < 127; index += 1) nested = [nested];
+    fx.bundle.extension = nested;
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const accepted = await verifyBundleCore("ref", depsFor(fx));
+    expect(accepted.ok).toBe(true);
+    expect(accepted.fullyVerified).toBe(true);
+    expect(accepted.signatures.every((entry) => entry.verdict === "valid")).toBe(true);
+
+    fx.bundle.extension = [nested];
+    // Signing itself must refuse the now-over-limit artifact.
+    await expect(resignFixture(fx, [{ party: buyerDid, sign: signBuyer }]))
+      .rejects.toThrow(/canonical JSON/);
+    let keyReads = 0;
+    const refused = await verifyBundleCore("ref", depsFor(fx, {
+      resolve: (did) => { keyReads += 1; return resolveFromDid(did); },
+    }));
+    expect(refused.ok).toBe(false);
+    expect(refused.fullyVerified).toBe(false);
+    expect(keyReads).toBe(0); // Admission refusal, not merely an invalid signature.
   });
 
   test("does not reinterpret Ed25519 bytes under another algorithm label", async () => {

@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
+import { MAX_NESTING_DEPTH } from "../../src/canonical/jcs.js";
+
 import {
   ARTIFACT_SEPARATORS,
   canonicalize,
@@ -997,7 +999,11 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     extraPropertyArray.hidden = true;
     const overNested: Record<string, unknown> = {};
     let nestedCursor = overNested;
-    for (let depth = 0; depth < 70; depth += 1) {
+    // Depth-derived, not a hardcoded number: this must exceed whatever CF-5's shared
+    // container bound (src/canonical/jcs.ts MAX_NESTING_DEPTH) actually is, or this fixture
+    // silently stops testing rejection the next time that bound changes (as it just did:
+    // 64 -> 128, PR #325, which the previous hardcoded depth-70 fixture fell under).
+    for (let depth = 0; depth < MAX_NESTING_DEPTH + 6; depth += 1) {
       const next: Record<string, unknown> = {};
       nestedCursor.next = next;
       nestedCursor = next;
