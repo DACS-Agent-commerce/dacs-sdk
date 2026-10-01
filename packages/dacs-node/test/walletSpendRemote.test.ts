@@ -429,6 +429,141 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     },
   );
 
+  it("requires an authoritative read before returning a retained denied V1 reserve", async () => {
+    const selected = policy();
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "remote-service",
+      now: () => 1_000,
+    });
+    let inspectFails = false;
+    const guardedAuthority = Object.freeze({
+      policy: authority.policy,
+      policyHash: authority.policyHash,
+      reserve: authority.reserve,
+      reconcile: authority.reconcile,
+      inspect: async () => {
+        if (inspectFails) throw new Error("authoritative read unavailable");
+        return authority.inspect();
+      },
+    });
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (token) => token === TOKEN ? "buyer" : null,
+      resolveAuthority: () => guardedAuthority,
+      operations: createInMemoryDacsWalletSpendRemoteOperationStoreV1(),
+    });
+    const body = {
+      protocolVersion: "1",
+      operationId: "00000000-0000-4000-8000-000000000080",
+      policyHash: authority.policyHash,
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      operation: "reserve",
+      payload: {
+        reservation: {
+          ...reservation(),
+          debits: [{
+            asset: "ASSET", purpose: "service", expectedAmount: "101", maximumAmount: "101",
+          }],
+        },
+        options: {},
+      },
+    };
+    const send = () => handler(new Request(
+      "http://authority.test/v1/wallet-spend/operations",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ));
+
+    const initial = await send();
+    expect(initial.status).toBe(200);
+    const retained = await initial.json() as Record<string, unknown>;
+    expect(retained.result).toEqual({ status: "denied", reason: "per-order-limit" });
+    const current = await send();
+    expect(current.status).toBe(200);
+    await expect(current.json()).resolves.toEqual(retained);
+
+    inspectFails = true;
+    const unavailable = await send();
+    expect(unavailable.status).toBe(400);
+    await expect(unavailable.json()).resolves.toEqual({
+      reasonCode: "wallet-spend-authority-request-rejected",
+    });
+  });
+
+  it("rejects a retained V1 reconcile response ahead of the authoritative head", async () => {
+    const selected = policy();
+    let now = 1_000;
+    const createAuthority = () => createWalletSpendAuthorityV1(selected, {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "remote-service",
+      leaseDurationMs: 60_000,
+      now: () => now,
+    });
+    const authority = createAuthority();
+    const behind = createAuthority();
+    let activeAuthority = authority;
+    const handler = createDacsWalletSpendAuthorityServiceV1({
+      authenticate: (token) => token === TOKEN ? "buyer" : null,
+      resolveAuthority: () => activeAuthority,
+      operations: createInMemoryDacsWalletSpendRemoteOperationStoreV1(),
+    });
+    const item = reservation();
+    const claim = await authority.reserve(item);
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await claim.permit.beginEffect();
+    now = 70_000;
+    const body = {
+      protocolVersion: "1",
+      operationId: "00000000-0000-4000-8000-000000000081",
+      policyHash: authority.policyHash,
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      operation: "reconcile",
+      payload: {
+        reservation: item,
+        observation: { disposition: "terminal-absent", evidenceHash: "e".repeat(64) },
+      },
+    };
+    const send = () => handler(new Request(
+      "http://authority.test/v1/wallet-spend/operations",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ));
+
+    const initial = await send();
+    expect(initial.status).toBe(200);
+    const retained = await initial.json() as Record<string, unknown>;
+    expect(retained.result).toBe("released");
+    const current = await send();
+    expect(current.status).toBe(200);
+    await expect(current.json()).resolves.toEqual(retained);
+
+    await expect(authority.reserve({
+      ...reservation(), reservationId: "remote-two", jobId: "job-two",
+    })).resolves.toMatchObject({ status: "reserved" });
+    const ahead = await send();
+    expect(ahead.status).toBe(200);
+    await expect(ahead.json()).resolves.toEqual(retained);
+
+    activeAuthority = behind;
+    const rejected = await send();
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toEqual({
+      reasonCode: "wallet-spend-authority-request-rejected",
+    });
+  });
+
   it("rejects an independently paired same-revision attester with a different state hash", async () => {
     const tokenFilePath = await tokenFile();
     const local = server();

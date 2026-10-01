@@ -937,8 +937,16 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
       throw new Error("stored-response-invalid");
     }
     const authority = await resolveAvailableAuthority(roleId, body, requestHash);
+    const status = await authority.inspect();
+    if (response.revision > status.revision) {
+      throw new Error("stored-response-invalid");
+    }
     const payload = body.payload as Record<string, unknown>;
-    if (body.operation === "reserve") {
+    if (body.operation === "inspect") {
+      // Inspect responses are never retained by this service. Do not disclose
+      // an injected or legacy retained snapshot in place of the live status.
+      throw new Error("stored-response-invalid");
+    } else if (body.operation === "reserve") {
       if (!exact(payload, ["reservation", "options"])) {
         throw new Error("stored-request-invalid");
       }
@@ -965,6 +973,12 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
           ? { observation: payload.observation as WalletSpendAuthorityReplayV1["observation"] }
           : {}),
       });
+    } else if (body.operation === "reconcile") {
+      if (!exact(payload, ["reservation", "observation"]) ||
+          (response.result !== "settled" && response.result !== "released" &&
+            response.result !== "existing")) {
+        throw new Error("stored-response-invalid");
+      }
     }
     return response;
   };
