@@ -119,10 +119,8 @@ const makeIntent = (): Readonly<X402BuyerSettlementIntent> =>
   createX402BuyerSettlementIntent(intentDraft());
 
 describe("x402 buyer settlement JSON depth matches canonical CF-5 (128)", () => {
-  // A chain of `levels` nested objects with a scalar leaf. The deepest object
-  // sits at depth index `levels` (extra itself is depth 0), so canonicalize
-  // (which rejects an object at depth >= 128) admits levels <= 127 and rejects
-  // levels >= 128. The rail scanners must draw the exact same line.
+  // Count the enclosing payload and requirement containers too: the complete
+  // canonical value, not just the extra subtree, determines the depth limit.
   const chain = (levels: number): unknown =>
     levels <= 0 ? true : { a: chain(levels - 1) };
 
@@ -171,6 +169,14 @@ function receiptResponse(overrides: Record<string, unknown> = {}): Record<string
 
 const encode = (value: unknown): string =>
   Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
+}
 
 function disclosure(overrides: Partial<X402BuyerSettlementDisclosure> = {}) {
   return {
@@ -437,6 +443,28 @@ describe("durable buyer x402 intent", () => {
       },
     })).toThrow(/JSON/);
   });
+});
+
+describe("x402 intent exact JSON depth boundary", () => {
+  test.each(["object", "array"] as const)(
+    "captures a depth-128 x402 intent with signed %s data and refuses depth 129",
+    (kind) => {
+      const atDepth = (depth: number): X402BuyerSettlementIntentDraft => {
+        const draft = intentDraft();
+        const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+        // The complete canonical intent wraps this chain in the intent and
+        // signed payload records, so subtract both containers from its depth.
+        payload.depthProbe = nestedContainer(depth - 2, kind);
+        draft.signedPaymentPayload =
+          payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+        draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+        return draft;
+      };
+
+      expect(() => createX402BuyerSettlementIntent(atDepth(128))).not.toThrow();
+      expect(() => createX402BuyerSettlementIntent(atDepth(129))).toThrow(/depth|JSON/);
+    },
+  );
 });
 
 describe("advanceX402BuyerSettlement", () => {
