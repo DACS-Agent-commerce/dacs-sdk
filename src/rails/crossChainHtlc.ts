@@ -949,6 +949,7 @@ function captureRevealCheckpoint(
 function validateSnapshot(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+  sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[],
 ): void {
   requireUInt(snapshot.observedAt, "snapshot observedAt");
   if (!HASH_RE.test(snapshot.authenticationHash)) {
@@ -974,7 +975,10 @@ function validateSnapshot(
     const action = key as HtlcAction;
     if (observed.state === "absent") continue;
     const retained = prepared.get(action);
-    if (!retained || !sameRef(observed.txRef, retained.txRef)) {
+    const retainedHistoricalFailure = action === "source-claim" &&
+      observed.state === "failed" &&
+      sourceClaimAttemptHistory.some((entry) => sameRef(observed.txRef, entry.prepared.txRef));
+    if ((!retained || !sameRef(observed.txRef, retained.txRef)) && !retainedHistoricalFailure) {
       throw new DacsError(`pay-cross-chain-htlc: ${action} observation is not retained`);
     }
     if (observed.state === "pending" || observed.state === "failed") {
@@ -1215,7 +1219,7 @@ export async function advanceCrossChainHtlc(
       await fence.assertCurrent();
       const snapshot = await observeLedger(intent, fence);
       await fence.assertCurrent();
-      validateSnapshot(snapshot, prepared);
+      validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory);
       return snapshot;
     } catch {
       return null;
@@ -1609,7 +1613,9 @@ export async function advanceCrossChainHtlc(
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
         sourceClaimState.state === "failed") {
-      const advanced = sourceClaimState?.state === "failed"
+      const activeSourceClaim = prepared.get("source-claim");
+      const advanced = sourceClaimState?.state === "failed" &&
+          activeSourceClaim !== undefined && sameRef(sourceClaimState.txRef, activeSourceClaim.txRef)
         ? await replaceFailedSourceClaim(
           sourceClaimState as Readonly<HtlcFailedObservation>,
           checkpoint.sourceExpiry,

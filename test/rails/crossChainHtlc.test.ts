@@ -1079,6 +1079,7 @@ describe("advanceCrossChainHtlc", () => {
   test("reuses a persisted ambiguous replacement byte-for-byte without a third preparation", async () => {
     const h = harness({ mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
+    const replacePreparedSourceClaim = vi.spyOn(run.shared.store, "replacePreparedSourceClaim");
     await advanceCrossChainHtlc(run.shared);
     await advanceCrossChainHtlc(run.nextOwner());
     await advanceCrossChainHtlc(run.nextOwner());
@@ -1097,7 +1098,6 @@ describe("advanceCrossChainHtlc", () => {
       status: "indeterminate",
       reason: "htlc-source-claim-effect-uncertain",
     });
-    h.actions["source-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
     h.setMode("source-claim", "final");
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
     const sourceClaimPreparations = h.prepareAction.mock.calls
@@ -1110,7 +1110,62 @@ describe("advanceCrossChainHtlc", () => {
         prepared.txRef.claimTxHash.includes("attempt-2"));
     expect(replacementBroadcasts).toHaveLength(2);
     expect(replacementBroadcasts[1]).toEqual(replacementBroadcasts[0]);
+    expect(replacePreparedSourceClaim).toHaveBeenCalledTimes(1);
   });
+
+  test.each(["historical pending", "historical final", "unknown failed"] as const)(
+    "rejects a %s source-claim observation after durable replacement",
+    async (observation) => {
+      const h = harness({ mode: { "source-claim": "pending" } });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      const prior = h.broadcastRetained.mock.calls
+        .map((call) => call[0])
+        .find((prepared) => prepared.action === "source-claim");
+      if (!prior || prior.txRef.kind !== "htlc-claim") throw new Error("expected source claim");
+      h.actions["source-claim"] = {
+        state: "failed",
+        txRef: prior.txRef,
+        authenticationHash: AUTH_HASH,
+      };
+      h.setMode("source-claim", "throw-once");
+      await advanceCrossChainHtlc(run.nextOwner());
+
+      if (observation === "historical pending") {
+        h.actions["source-claim"] = {
+          state: "pending",
+          txRef: prior.txRef,
+          authenticationHash: AUTH_HASH,
+        };
+      } else if (observation === "historical final") {
+        h.actions["source-claim"] = {
+          state: "final",
+          txRef: prior.txRef,
+          finalityReachedAt: 1_000_000,
+          finalityObservedAt: 1_000_000,
+          authenticationHash: AUTH_HASH,
+        };
+      } else {
+        h.actions["source-claim"] = {
+          state: "failed",
+          txRef: { ...prior.txRef, claimTxHash: "tx-source-claim-unknown" },
+          authenticationHash: AUTH_HASH,
+        };
+      }
+      const preparations = h.prepareAction.mock.calls.length;
+      const broadcasts = h.broadcastRetained.mock.calls.length;
+
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-ledger-observation-unavailable",
+      });
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    },
+  );
 
   test("never replaces a pending or expired source claim", async () => {
     const h = harness({
