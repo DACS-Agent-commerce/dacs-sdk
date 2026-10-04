@@ -1,4 +1,5 @@
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 
 /** DACS-4 §9.5.7 X402-1..X402-4 verification disposition. */
 export type X402ReceiptDisposition = "pass" | "fail" | "error";
@@ -87,10 +88,12 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
   };
 
   const scanValue = (depth: number): boolean => {
-    if (depth > 64) throw new Error("JSON nesting exceeds canonical limit");
     skipWhitespace();
     const character = source[offset];
     if (character === "{") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new Error("JSON nesting exceeds canonical limit");
+      }
       offset += 1;
       skipWhitespace();
       const names = new Set<string>();
@@ -116,6 +119,9 @@ function hasDuplicateJsonObjectNames(source: string): boolean {
       }
     }
     if (character === "[") {
+      if (depth >= MAX_NESTING_DEPTH) {
+        throw new Error("JSON nesting exceeds canonical limit");
+      }
       offset += 1;
       skipWhitespace();
       if (source[offset] === "]") {
