@@ -2062,8 +2062,13 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
           await supersedeRetained();
           throw error;
         }
-        if (canonicalize(revalidated.state) !== canonicalize(result.state) ||
-            !candidateValueMatches(retained.candidate_value, revalidated.value)) {
+        // Time-derived state (reservation/event timestamps and rolling-event
+        // pruning) can legitimately differ by milliseconds on every sample.
+        // The retained candidate was already authorized at the earlier sample;
+        // accept it when the fresh evaluation reaches the same decision. Lease
+        // expiry and other newly nonauthorizing boundaries either throw or
+        // return a different value and therefore never reach witness CAS.
+        if (!candidateValueMatches(retained.candidate_value, revalidated.value)) {
           await supersedeRetained();
           continue;
         }

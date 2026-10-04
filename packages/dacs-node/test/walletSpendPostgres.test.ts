@@ -321,6 +321,7 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
   failNextCommitAfterApply = false;
   failNextSerializableAdvance = false;
   nowMs = 1_000;
+  serverNowStepMs = 0;
   advanceNowAfterNextLoad?: number;
   advanceNowAfterNextCandidateInsert?: number;
   private lockTail: Promise<void> = Promise.resolve();
@@ -343,7 +344,9 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
     values: readonly unknown[] = [],
   ): Promise<{ rows: Row[]; rowCount: number }> {
     if (text.startsWith("SELECT floor")) {
-      return { rows: [{ now_ms: String(this.nowMs) } as Row], rowCount: 1 };
+      const nowMs = this.nowMs;
+      this.nowMs += this.serverNowStepMs;
+      return { rows: [{ now_ms: String(nowMs) } as Row], rowCount: 1 };
     }
     if (text.startsWith("SELECT request_hash")) {
       const operation = this.operations.get(`${String(values[0])}\0${String(values[1])}`);
@@ -1646,6 +1649,55 @@ describe("PostgreSQL wallet authority persistence", () => {
       reservationId: "serialized-clock",
       stage: "reserved",
     });
+  });
+
+  it("accepts equivalent authorization across advancing PostgreSQL timestamps", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    pool.serverNowStepMs = 1;
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+
+    await expect(authority.reserve({
+      reservationVersion: "1",
+      reservationId: "advancing-clock",
+      jobId: "job-advancing-clock",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    })).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "advancing-clock" },
+    });
+    expect([...pool.candidates.values()]).toMatchObject([{
+      status: "applied",
+      candidate_state: {
+        reservations: [{ reservationId: "advancing-clock" }],
+      },
+    }]);
   });
 
   it("revalidates expiry after candidate persistence and before witness CAS", async () => {
