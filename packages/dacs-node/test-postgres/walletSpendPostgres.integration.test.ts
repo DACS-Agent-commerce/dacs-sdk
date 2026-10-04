@@ -656,6 +656,70 @@ describe("real PostgreSQL wallet spend authority", () => {
     }
   });
 
+  it("recovers exact fresh provisioning after the activation commit loses confirmation", async () => {
+    const harness = await createHarness();
+    try {
+      await harness.raw.query(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1);
+      const selected = policy("fresh-provisioning-recovery");
+      const basePin = continuity(44);
+      let failRead = true;
+      const uncertainPin: DacsWalletSpendContinuityPinV1 = {
+        ...basePin,
+        witness: {
+          ...basePin.witness,
+          async readCurrent(input) {
+            if (failRead) {
+              failRead = false;
+              throw new Error("continuity confirmation acknowledgement lost");
+            }
+            return basePin.witness.readCurrent(input);
+          },
+        },
+      };
+      const operationId = "00000000-0000-4000-8000-000000000308";
+      const evidence = {
+        sourceIdentity: "authenticated-new-postgres-recovery-test",
+        evidenceHash: "5".repeat(64),
+      };
+      const input = {
+        policy: selected,
+        operationId,
+        continuity: uncertainPin,
+        newLineageEvidence: evidence,
+        authenticateEvidence: () => true,
+      };
+
+      await expect(provisionDacsWalletSpendPostgresLineageV1(harness.pool, input))
+        .rejects.toThrow(/confirmation acknowledgement lost/);
+      await expect(harness.raw.query(
+        `SELECT l.continuity_status, c.status, count(*) OVER ()::text AS candidate_count
+           FROM dacs_wallet_spend_lineages l
+           JOIN dacs_wallet_spend_candidates c USING (lineage_key)`,
+      )).resolves.toMatchObject({ rows: [{
+        continuity_status: "active",
+        status: "applied",
+        candidate_count: "1",
+      }] });
+
+      await expect(provisionDacsWalletSpendPostgresLineageV1(harness.pool, {
+        ...input,
+        continuity: basePin,
+      })).resolves.toBeUndefined();
+      await expect(provisionDacsWalletSpendPostgresLineageV1(harness.pool, {
+        ...input,
+        continuity: basePin,
+        operationId: "00000000-0000-4000-8000-000000000309",
+      })).rejects.toThrow(/initialization-conflict/);
+      await expect(provisionDacsWalletSpendPostgresLineageV1(harness.pool, {
+        ...input,
+        continuity: basePin,
+        newLineageEvidence: { ...evidence, evidenceHash: "4".repeat(64) },
+      })).rejects.toThrow(/initialization-conflict/);
+    } finally {
+      await destroyHarness(harness);
+    }
+  });
+
   it("adopts the initial schema and rejects an ambiguous legacy candidate role", async () => {
     const selected = policy("legacy-postgres-policy");
     const accepted = await createHarness();

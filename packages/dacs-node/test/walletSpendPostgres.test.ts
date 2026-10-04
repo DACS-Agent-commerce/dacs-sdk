@@ -841,11 +841,11 @@ describe("PostgreSQL wallet authority persistence", () => {
     await expect(importDacsWalletSpendPostgresLegacyStateV1(pool, {
       policy: selected,
       state,
-      operationId: "00000000-0000-4000-8000-000000000041",
+      operationId: "00000000-0000-4000-8000-000000000040",
       continuity: newContinuity(8),
       sourceEvidence: evidence,
       authenticateEvidence: () => true,
-    })).rejects.toThrow(/already-exists/);
+    })).rejects.toThrow(/initialization-conflict/);
   });
 
   it("requires authenticated evidence for both legacy import and a demonstrably new lineage", async () => {
@@ -1330,6 +1330,116 @@ describe("PostgreSQL wallet authority persistence", () => {
       await expect(adoptDacsWalletSpendPostgresContinuityV1(pool, input)).resolves.toBeUndefined();
     },
   );
+
+  it("re-confirms an exact active lineage initialization and rejects another operation or shape", async () => {
+    const selected = policy("policy-initialization-recovery");
+    const policyHash = dacsWalletSpendPolicyHashV1(selected);
+    const state: WalletSpendStateV1 = {
+      stateVersion: WALLET_SPEND_STATE_VERSION,
+      policyHash,
+      generation: 0,
+      reservations: [],
+      totals: [],
+      rollingEvents: [],
+    };
+    const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+    const stateHash = hashState(state);
+    const operationId = "00000000-0000-4000-8000-000000000059";
+    const evidence = {
+      sourceIdentity: "authenticated-new-postgres:test",
+      evidenceHash: "1".repeat(64),
+    };
+    const baseContinuity = newContinuity(35);
+    const requestHash = sha256Hex(canonicalize({
+      operation: "initialize-lineage",
+      lineage,
+      provisioningKind: "fresh",
+      policyHash,
+      stateHash,
+      evidence,
+      authorityId: baseContinuity.authorityId,
+      epoch: baseContinuity.epoch,
+    }));
+    const candidateId = "00000000-0000-4000-8000-000000000060";
+    const roleId = "operator:fresh";
+    const transitionIdentity = {
+      authorityId: baseContinuity.authorityId,
+      epoch: baseContinuity.epoch,
+      lineageKey: lineage,
+      candidateId,
+      roleId,
+      operationId,
+      requestHash,
+      mutationIndex: 0,
+    };
+    const receipt = await baseContinuity.witness.compareAndSet({
+      ...transitionIdentity,
+      predecessor: null,
+      next: { revision: 0, stateHash },
+      clientNonce: sha256Hex(
+        `dacs-wallet-spend-continuity-advance-nonce:v1:${canonicalize(transitionIdentity)}`,
+      ),
+    });
+    let headReads = 0;
+    const continuity: DacsWalletSpendContinuityPinV1 = {
+      ...baseContinuity,
+      witness: {
+        ...baseContinuity.witness,
+        async readCurrent(input) {
+          headReads += 1;
+          return baseContinuity.witness.readCurrent(input);
+        },
+      },
+    };
+    const pool = new RecoveryPostgresPool({
+      writer_contract_version: 2,
+      authority_id: continuity.authorityId,
+      continuity_epoch: continuity.epoch,
+      continuity_verification_key: continuity.verificationKey,
+      continuity_status: "active",
+      continuity_receipt: receipt,
+      policy_hash: policyHash,
+      revision: 0,
+      state_hash: stateHash,
+      state,
+    });
+    pool.candidates.set(`${lineage}\0${roleId}\0${operationId}\0${0}`, {
+      candidate_id: candidateId,
+      authority_id: continuity.authorityId,
+      continuity_epoch: continuity.epoch,
+      role_id: roleId,
+      request_hash: requestHash,
+      mutation_index: 0,
+      prior_revision: null,
+      prior_state_hash: null,
+      next_revision: 0,
+      next_state_hash: stateHash,
+      candidate_state: state,
+      candidate_value: { valueVersion: "1", defined: false, value: null },
+      continuity_receipt: receipt,
+      status: "applied",
+    });
+    const input = {
+      policy: selected,
+      operationId,
+      continuity,
+      newLineageEvidence: evidence,
+      authenticateEvidence: () => true,
+    };
+
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, input))
+      .resolves.toBeUndefined();
+    expect(headReads).toBe(1);
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, {
+      ...input,
+      operationId: "00000000-0000-4000-8000-000000000061",
+    })).rejects.toThrow(/initialization-conflict/);
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, {
+      ...input,
+      newLineageEvidence: { ...evidence, evidenceHash: "2".repeat(64) },
+    })).rejects.toThrow(/initialization-conflict/);
+    expect(headReads).toBe(1);
+  });
 
   it("fails continuity adoption closed when an advanced witness loses its candidate", async () => {
     const selected = policy("policy-adoption-missing-candidate");

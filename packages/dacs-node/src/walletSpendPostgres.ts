@@ -1424,7 +1424,7 @@ async function initializeLineage(
   );
   const priorLineage = existing.rows[0];
   if (priorLineage !== undefined) {
-    if (priorLineage.continuity_status !== "pending" ||
+    if (safeRevision(priorLineage.writer_contract_version) !== 2 ||
         priorLineage.authority_id !== pin.authorityId ||
         priorLineage.continuity_epoch !== pin.epoch ||
         priorLineage.continuity_verification_key !== pin.verificationKey ||
@@ -1432,6 +1432,48 @@ async function initializeLineage(
         safeRevision(priorLineage.revision) !== input.state.generation ||
         priorLineage.state_hash !== nextHash ||
         canonicalize(priorLineage.state) !== canonicalize(input.state)) {
+      throw new Error("wallet-spend-lineage-already-exists");
+    }
+    if (priorLineage.continuity_status === "active") {
+      const retained = await loadExactCandidate(pool, {
+        lineageKey: lineage, roleId, operationId: input.operationId, mutationIndex: 0,
+      });
+      const receipt = retained?.continuity_receipt;
+      const transitionIdentity = retained === undefined ? undefined : {
+        authorityId: pin.authorityId, epoch: pin.epoch, lineageKey: lineage,
+        candidateId: retained.candidate_id, roleId, operationId: input.operationId,
+        requestHash, mutationIndex: 0,
+      };
+      if (!retained || retained.authority_id !== pin.authorityId ||
+          retained.continuity_epoch !== pin.epoch || retained.role_id !== roleId ||
+          retained.request_hash !== requestHash || safeRevision(retained.mutation_index) !== 0 ||
+          retained.prior_revision !== null || retained.prior_state_hash !== null ||
+          safeRevision(retained.next_revision) !== input.state.generation ||
+          retained.next_state_hash !== nextHash ||
+          canonicalize(retained.candidate_state) !== canonicalize(input.state) ||
+          !candidateValueMatches(retained.candidate_value, undefined) ||
+          retained.status !== "applied" || receipt === null ||
+          !verifyDacsWalletSpendContinuityReceiptV1(receipt, pin) ||
+          receipt.kind !== "advance" || receipt.lineageKey !== lineage ||
+          receipt.candidateId !== retained.candidate_id ||
+          receipt.operationId !== input.operationId || receipt.requestHash !== requestHash ||
+          receipt.mutationIndex !== 0 || receipt.priorRevision !== null ||
+          receipt.priorStateHash !== null || receipt.revision !== input.state.generation ||
+          receipt.stateHash !== nextHash || transitionIdentity === undefined ||
+          receipt.clientNonce !== advanceNonce(transitionIdentity) ||
+          priorLineage.continuity_receipt === null ||
+          canonicalize(priorLineage.continuity_receipt) !== canonicalize(receipt)) {
+        throw new Error("wallet-spend-continuity-initialization-conflict");
+      }
+      await confirmContinuityHead(pool, pin, {
+        lineageKey: lineage,
+        head: { revision: input.state.generation, stateHash: nextHash },
+        operationId: input.operationId, requestHash,
+      });
+      return;
+    }
+    if (priorLineage.continuity_status !== "pending" ||
+        priorLineage.continuity_receipt !== null) {
       throw new Error("wallet-spend-lineage-already-exists");
     }
     const retained = await pool.query<CandidateRow>(
