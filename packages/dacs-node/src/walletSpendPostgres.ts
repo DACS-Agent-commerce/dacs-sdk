@@ -1071,6 +1071,39 @@ function candidateValueMatches(value: unknown, expected: unknown): boolean {
   return expected !== undefined && canonicalize(decoded.value) === canonicalize(expected);
 }
 
+function walletSpendDecisionState(state: Readonly<WalletSpendStateV1>): string {
+  return canonicalize({
+    ...state,
+    reservations: state.reservations.map((row) => {
+      const {
+        createdAt: _createdAt,
+        updatedAt: _updatedAt,
+        leaseExpiresAt: _leaseExpiresAt,
+        ...decision
+      } = row;
+      return decision;
+    }),
+    rollingEvents: state.rollingEvents.map((event) => {
+      const { settledAt: _settledAt, ...decision } = event;
+      return decision;
+    }),
+  });
+}
+
+function changedActiveLeasesAreCurrent(
+  prior: Readonly<WalletSpendStateV1>,
+  candidate: Readonly<WalletSpendStateV1>,
+  timestamp: number,
+): boolean {
+  const priorRows = new Map(prior.reservations.map((row) => [row.reservationId, row]));
+  return candidate.reservations.every((row) => {
+    const priorRow = priorRows.get(row.reservationId);
+    if (priorRow !== undefined && canonicalize(priorRow) === canonicalize(row)) return true;
+    if (row.stage !== "reserved" && row.stage !== "effect-pending") return true;
+    return row.leaseExpiresAt !== undefined && row.leaseExpiresAt >= timestamp;
+  });
+}
+
 function postgresErrorCode(error: unknown): string | undefined {
   if (error === null || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
@@ -2053,22 +2086,31 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
           state: Readonly<WalletSpendStateV1>;
           value: T;
         }>;
+        let revalidationTimestamp: number;
         try {
+          revalidationTimestamp = await store.serverNow!();
           revalidated = operation(
             structuredClone(prior.state),
-            await store.serverNow!(),
+            revalidationTimestamp,
           );
         } catch (error) {
           await supersedeRetained();
           throw error;
         }
-        // Time-derived state (reservation/event timestamps and rolling-event
-        // pruning) can legitimately differ by milliseconds on every sample.
-        // The retained candidate was already authorized at the earlier sample;
-        // accept it when the fresh evaluation reaches the same decision. Lease
-        // expiry and other newly nonauthorizing boundaries either throw or
-        // return a different value and therefore never reach witness CAS.
-        if (!candidateValueMatches(retained.candidate_value, revalidated.value)) {
+        // Time-derived fields can legitimately differ by milliseconds on every
+        // sample. Compare the full decision state while excluding only those
+        // fields: rolling membership and all accounting content must remain
+        // identical. A changed active lease must also still be current at the
+        // fresh sample. `settledAt` intentionally remains the authenticated
+        // settlement-evaluation time, which precedes candidate persistence.
+        if (!candidateValueMatches(retained.candidate_value, revalidated.value) ||
+            walletSpendDecisionState(revalidated.state) !==
+              walletSpendDecisionState(result.state) ||
+            !changedActiveLeasesAreCurrent(
+              prior.state,
+              result.state,
+              revalidationTimestamp,
+            )) {
           await supersedeRetained();
           continue;
         }
