@@ -39,7 +39,7 @@ function intrinsicByteLength(input: Uint8Array): number {
     return Reflect.apply(typedArrayByteLength, input, []) as number;
   } catch {
     // Proxies and objects forged with Uint8Array.prototype have no typed-array
-    // internal slots even when they pass instanceof.
+    // internal slots even when they imitate its prototype chain.
     return reject("parse", "BYTE-INPUT-REQUIRED");
   }
 }
@@ -63,7 +63,9 @@ function numberProfileError(token: string): string | undefined {
   const digits = (whole! + fraction).replace(/^0+/, "");
   if (digits === "") return undefined; // Exact zero, including arbitrarily large exponents.
   const value = Number(token);
-  if (!Number.isFinite(value) || value === 0) {
+  // The Standard reference oracle checks binary64 conversion first for
+  // fractional/exponent tokens; bare integers fail exact magnitude instead.
+  if (/[.eE]/.test(token) && (!Number.isFinite(value) || value === 0)) {
     return "NUMBER-NOT-BINARY64";
   }
   // No exponent-sized allocation or big-integer exponentiation. For a finite

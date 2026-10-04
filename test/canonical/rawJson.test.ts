@@ -132,13 +132,21 @@ describe("CORE CF-5 exact-byte admission", () => {
 
 // Exact comparisons that binary64 conversion alone cannot establish.
 describe("raw decimal boundary siblings", () => {
-  it("classifies binary64 overflow independently of decimal spelling", () => {
-    for (const token of ["1e309", `1${"0".repeat(309)}`, "-1e309", `-1${"0".repeat(309)}`]) {
+  it("retains the Standard oracle's token-form precedence for overflow", () => {
+    for (const token of ["1e309", "-1e309"]) {
       try {
         admitRawJson(Buffer.from(token));
         throw new Error("expected admission failure");
       } catch (error) {
         expect(error).toMatchObject({ stage: "profile", code: "NUMBER-NOT-BINARY64" });
+      }
+    }
+    for (const token of [`1${"0".repeat(309)}`, `-1${"0".repeat(309)}`]) {
+      try {
+        admitRawJson(Buffer.from(token));
+        throw new Error("expected admission failure");
+      } catch (error) {
+        expect(error).toMatchObject({ stage: "profile", code: "NUMBER-OUTSIDE-DACS-MAGNITUDE" });
       }
     }
     expect(() => admitRawJson(Buffer.from(`1${"0".repeat(308)}`)))
