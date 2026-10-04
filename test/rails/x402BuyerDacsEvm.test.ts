@@ -10,6 +10,7 @@ import { keccak256, recoverTypedDataAddress, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, test } from "vitest";
 
+import { canonicalize } from "../../src/canonical/jcs.js";
 import {
   createDacsX402BuyerEvmChallengeClient,
   prepareX402BuyerSettlement,
@@ -206,19 +207,28 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         extra: {
           name: "USD Coin",
           version: "2",
-          depthProbe: nestedContainer(depth - 1, kind),
+          // Count both the enclosing requirements object and extra record.
+          depthProbe: nestedContainer(depth - 2, kind),
         },
       });
+      const accepted = atDepth(128);
+      const rejected = atDepth(129);
 
+      // The complete requirements value is the independent depth oracle.
+      expect(() => canonicalize(accepted)).not.toThrow();
+      expect(() => canonicalize(rejected)).toThrow(/nesting depth exceeds 128/);
+
+      const client = await createDacsX402BuyerEvmChallengeClient({
+        evmPrivateKey: PRIVATE_KEY,
+        authority: authority(),
+        expectedRequirements: accepted,
+      });
+      expect(client.address).toBe(ACCOUNT.address);
+      expect(client.isPaymentRequirementsAuthorized?.(accepted)).toBe(true);
       await expect(createDacsX402BuyerEvmChallengeClient({
         evmPrivateKey: PRIVATE_KEY,
         authority: authority(),
-        expectedRequirements: atDepth(128),
-      })).resolves.toMatchObject({ address: ACCOUNT.address });
-      await expect(createDacsX402BuyerEvmChallengeClient({
-        evmPrivateKey: PRIVATE_KEY,
-        authority: authority(),
-        expectedRequirements: atDepth(129),
+        expectedRequirements: rejected,
       })).rejects.toThrow(/exactly match/);
     },
   );

@@ -1384,7 +1384,8 @@ describe("filesystem x402 buyer settlement recovery", () => {
       expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
       expect(results.filter((result) => result.status === "indeterminate")).toHaveLength(1);
       expect((await readdir(join(dir, "locks"))).filter((name) =>
-        name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
+        name.includes(".reclaim") || name.endsWith(".candidate") ||
+        name.endsWith(".stale") || name.endsWith(".released")
       )).toEqual([]);
     }
   }, 45_000);
@@ -1447,6 +1448,53 @@ describe("filesystem x402 buyer settlement recovery", () => {
       now: 1_000,
       leaseDurationMs: 100,
     })).rejects.toThrow(/timed out/);
+    await expect(readFile(join(path, "owner.json"), "utf8"))
+      .resolves.toBe(JSON.stringify(owner));
+  });
+
+  test("reuses one prepared lock candidate across occupied retries and cleans it", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const store = await createFsX402BuyerSettlementStore({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 150,
+      lockPollMs: 10,
+    });
+    const locksDir = join(dir, "locks");
+    const lockName = `${sha256Hex(intent.settlementKey)}.lock`;
+    const path = join(locksDir, lockName);
+    const owner = { pid: process.pid, token: "live-candidate-owner" };
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(join(path, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    await utimes(path, new Date(0), new Date(0));
+
+    const pending = store.claim({
+      intent,
+      owner: "contender",
+      now: 1_000,
+      leaseDurationMs: 100,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    const observed = new Set<string>();
+    while (!settled) {
+      for (const name of await readdir(locksDir)) {
+        if (name.startsWith(`${lockName}.`) && name.endsWith(".candidate")) {
+          observed.add(name);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    expect(String(await pending)).toMatch(/timed out acquiring/);
+    expect([...observed]).toHaveLength(1);
+    expect((await readdir(locksDir)).filter((name) =>
+      name.startsWith(`${lockName}.`) && name.endsWith(".candidate")
+    )).toEqual([]);
     await expect(readFile(join(path, "owner.json"), "utf8"))
       .resolves.toBe(JSON.stringify(owner));
   });
