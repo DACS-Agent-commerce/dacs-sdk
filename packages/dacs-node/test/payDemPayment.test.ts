@@ -453,6 +453,7 @@ describe("native DEM buyer payment track", () => {
   function instrumentPaymentDatabase(
     database: DacsNodeSqliteDatabase,
     events: string[],
+    staleAfterBroadcastIntent = false,
   ): void {
     const recordEffectCheckpoint = database.recordEffectCheckpoint.bind(database);
     Object.defineProperty(database, "recordEffectCheckpoint", {
@@ -467,6 +468,9 @@ describe("native DEM buyer payment track", () => {
     Object.defineProperty(database, "isCurrentEffect", {
       configurable: true,
       value: (...args: Parameters<DacsNodeSqliteDatabase["isCurrentEffect"]>) => {
+        if (staleAfterBroadcastIntent && events.includes("broadcast-intent")) {
+          return false;
+        }
         const result = isCurrentEffect(...args);
         if (events.at(-1) === "wallet-effect-begun") {
           events.push("outer-authority-guard");
@@ -575,6 +579,69 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
+  it("keeps funded wallet settlement indeterminate without an accounted network fee", async () => {
+    const database = await open(join(root(), "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const publishNotice = vi.fn();
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        return {
+          ok: true,
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+        };
+      },
+    });
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-missing-fee",
+      rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice,
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-missing-fee",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "indeterminate" });
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ cumulativeSettledDebit: "0" }],
+    });
+  });
+
   it("composes the generated Demos wrapper through the wallet pre-broadcast boundary", async () => {
     const directory = root();
     const database = await open(join(directory, "buyer.sqlite"));
@@ -584,7 +651,8 @@ describe("native DEM buyer payment track", () => {
     const innerRail: PayDemRail = {
       address: PAYER,
       async settle(input, effectFence) {
-        expect(effectFence).toBeUndefined();
+        expect(effectFence).toBeDefined();
+        await effectFence!.assertCurrent();
         await input.journalPreparedTransfer!({
           txHash: TX_HASH,
           nonce: 7,
@@ -598,6 +666,8 @@ describe("native DEM buyer payment track", () => {
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
+        events.push("rail-effect-guard");
+        await effectFence!.assertCurrent();
         events.push("broadcast");
         return {
           ok: true,
@@ -648,6 +718,7 @@ describe("native DEM buyer payment track", () => {
       "outer-authority-guard",
       "demos-authority-guard",
       "broadcast-intent",
+      "rail-effect-guard",
       "broadcast",
       "canonical-confirmed",
       "notice-queued",
@@ -668,6 +739,115 @@ describe("native DEM buyer payment track", () => {
     }]);
     await retained.release();
   });
+
+  it.each(["actor", "wallet"] as const)(
+    "does not broadcast when the %s fence goes stale during the Demos intent journal",
+    async (staleFence) => {
+      const directory = root();
+      const database = await open(join(directory, "buyer.sqlite"));
+      putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+      const events: string[] = [];
+      instrumentPaymentDatabase(database, events, staleFence === "actor");
+      let broadcasts = 0;
+      const publishNotice = vi.fn();
+      const innerRail: PayDemRail = {
+        address: PAYER,
+        async settle(input, effectFence) {
+          await effectFence?.assertCurrent();
+          await input.journalPreparedTransfer!({
+            txHash: TX_HASH,
+            nonce: 7,
+            payer: PAYER,
+            payee: PAYEE,
+            amountOs: AUTHORITY.amountOs,
+            denomination: "os",
+            network: "demos",
+            maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+            confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+            recovery: input.recovery!,
+          });
+          await input.assertCurrentBeforeBroadcast!();
+          events.push("rail-effect-guard");
+          await effectFence?.assertCurrent();
+          broadcasts += 1;
+          return {
+            ok: true,
+            txHash: TX_HASH,
+            chainId: "demos",
+            payer: PAYER,
+            payee: PAYEE,
+            finality: { model: "bft-final" },
+            blockNumber: 42,
+            txRefKind: "demos",
+            networkFeeOs: "1000000000",
+          };
+        },
+      };
+      const generated = await composedGeneratedRail(directory, innerRail, events);
+      const authority = createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER,
+        chainId: "demos",
+        asset: "DEM",
+        maximumConcurrentEffects: 1,
+      });
+      const walletSpendAuthority: WalletSpendAuthorityV1 = staleFence === "actor"
+        ? authority
+        : Object.freeze({
+            policy: authority.policy,
+            policyHash: authority.policyHash,
+            async reserve(...args: Parameters<WalletSpendAuthorityV1["reserve"]>) {
+              const claim = await authority.reserve(...args);
+              if (claim.status !== "reserved") return claim;
+              return Object.freeze({
+                status: "reserved" as const,
+                permit: Object.freeze({
+                  ...claim.permit,
+                  async assertCurrent(): Promise<void> {
+                    if (events.includes("broadcast-intent")) {
+                      throw new Error("wallet fence became stale after intent journal");
+                    }
+                    await claim.permit.assertCurrent();
+                  },
+                }),
+              });
+            },
+            reconcile: (...args: Parameters<WalletSpendAuthorityV1["reconcile"]>) =>
+              authority.reconcile(...args),
+            inspect: () => authority.inspect(),
+          });
+      const payment = createDacsPayDemBuyerPaymentTrackV1({
+        walletSpendAuthority,
+        database,
+        workerId: "buyer-dem-stale-after-intent",
+        rail: generated.rail,
+        resolveAuthority: () => AUTHORITY,
+        reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+        publishNotice,
+      });
+      const coordinator = createFixedPricePayDemBuyerCoordinator({
+        store: database.createPayDemCoordinatorStore("buyer"),
+        workerId: "buyer-coordinator-stale-after-intent",
+        operations: { agreement: success, payment },
+      });
+
+      await coordinator.startOrder(ORDER);
+      await coordinator.runPending({ limit: 2 });
+
+      expect(events).toContain("broadcast-intent");
+      expect(events).toContain("rail-effect-guard");
+      expect(broadcasts).toBe(0);
+      expect(publishNotice).not.toHaveBeenCalled();
+      expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+        .toMatchObject({ state: "indeterminate" });
+      expect(await walletSpendAuthority.inspect()).toMatchObject({ activeEffects: 1 });
+      const retained = await generated.journal.acquire({
+        chainIdentity: "pay-dem-composition-chain",
+        wallet: PAYER,
+      });
+      expect(retained.snapshot.records).toMatchObject([{ stage: "broadcast-intent" }]);
+      await retained.release();
+    },
+  );
 
   it("keeps the generated Demos record prepared when wallet reserve is denied", async () => {
     const directory = root();

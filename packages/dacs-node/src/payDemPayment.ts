@@ -542,20 +542,23 @@ function capturePrepared(
 function captureSettlement(
   value: unknown,
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  requireNetworkFee = true,
 ): Readonly<SettleResult> {
   if (!plainObject(value) || !exactKeys(value, [
     "ok", "txHash", "chainId", "payer", "payee", "finality",
-    "blockNumber", "txRefKind", "networkFeeOs",
-  ]) || value.ok !== true || typeof value.txHash !== "string" ||
+    "blockNumber", "txRefKind", ...(requireNetworkFee ? ["networkFeeOs"] : []),
+  ], requireNetworkFee ? [] : ["networkFeeOs"]) ||
+      value.ok !== true || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) || value.chainId !== payment.network ||
       canonicalAddress(value.payer) !== payment.payer ||
       canonicalAddress(value.payee) !== payment.payee ||
       !plainObject(value.finality) || !exactKeys(value.finality, ["model"]) ||
       value.finality.model !== "bft-final" ||
-      typeof value.networkFeeOs !== "string" ||
-      !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
-      BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
-        BigInt(payment.maxTotalDebitOs) ||
+      (Object.hasOwn(value, "networkFeeOs") &&
+        (typeof value.networkFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
+          BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
+            BigInt(payment.maxTotalDebitOs))) ||
       !Number.isSafeInteger(value.blockNumber) || (value.blockNumber as number) < 0 ||
       value.txRefKind !== "demos") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-settlement-invalid");
@@ -576,7 +579,9 @@ export function createDacsPayDemPaymentNoticeV1(
   settlement: Readonly<SettleResult>,
 ): Readonly<DacsPayDemPaymentNoticeV1> {
   const capturedPayment = capturePaymentInput(payment);
-  const capturedSettlement = captureSettlement(settlement, capturedPayment);
+  // The public v1 notice predates funded wallet accounting and has no fee
+  // field on the wire. Internal funded settlement paths still require it.
+  const capturedSettlement = captureSettlement(settlement, capturedPayment, false);
   return Object.freeze({
     paymentNoticeVersion: "1",
     payment: capturedPayment,
@@ -843,10 +848,21 @@ export function createDacsPayDemBuyerPaymentTrackV1(
                 async assertCurrent(): Promise<void> {
                   await actorEffectFence.assertCurrent();
                   if (claim === undefined) {
+                    // The core rail asserts once before preparing a transfer.
+                    // Deferred reservation is safe there only while no
+                    // prepared checkpoint exists; the mandatory pre-broadcast
+                    // hook acquires and begins the wallet effect later.
+                    if (!preparedCheckpointed) return;
                     throw new DacsPayDemBuyerPaymentError(
                       "pay-dem-wallet-reservation-missing",
                     );
                   }
+                  if (beginEffect === undefined) {
+                    throw new DacsPayDemBuyerPaymentError(
+                      "pay-dem-wallet-effect-not-begun",
+                    );
+                  }
+                  await beginEffect;
                   await claim.permit.assertCurrent();
                 },
               })

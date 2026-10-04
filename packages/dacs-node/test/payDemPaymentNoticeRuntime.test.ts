@@ -175,10 +175,24 @@ describe("native DEM payment notice runtime", () => {
     expect(runtimePayloadHash).toMatch(/^[0-9a-f]{64}$/);
     expect(isDacsPayDemPaymentNoticeV1(original)).toBe(true);
     expect(isDacsPayDemPaymentNoticeV1(extended)).toBe(false);
+    expect(createDacsPayDemPaymentNoticeV1(PAYMENT, original.settlement))
+      .toEqual(original);
     expect(createDacsPayDemPaymentNoticeV1(PAYMENT, {
       ...original.settlement,
       networkFeeOs: "1",
     })).toEqual(original);
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "-1",
+    })).toThrow("pay-dem-settlement-invalid");
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: undefined,
+    })).toThrow("pay-dem-settlement-invalid");
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "1000000001",
+    })).toThrow("pay-dem-settlement-invalid");
   });
 
   it("retains the first authenticated notice and accepts exact transport renewal", async () => {
