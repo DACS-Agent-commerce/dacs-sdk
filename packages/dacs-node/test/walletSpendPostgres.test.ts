@@ -18,6 +18,7 @@ import {
   DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1,
   DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1,
   adoptDacsWalletSpendPostgresContinuityV1,
+  createDacsWalletSpendContinuityAuthorityV2,
   createInMemoryDacsWalletSpendContinuityWitnessV1,
   createDacsPostgresWalletSpendStateStoreV1,
   createDacsPostgresWalletSpendRemoteOperationStoreV1,
@@ -33,7 +34,9 @@ import {
 } from "../src/walletSpendPostgres.js";
 import {
   createDacsRemoteWalletSpendAuthorityV1,
+  createDacsRemoteWalletSpendAuthorityV2,
   createDacsWalletSpendAuthorityServiceV1,
+  createDacsWalletSpendAuthorityServiceV2,
 } from "../src/walletSpendRemote.js";
 
 function policy(policyId: string): WalletSpendPolicyV1 {
@@ -2280,5 +2283,184 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(pool.row.state.generation).toBe(1);
     expect([...pool.candidates.values()].filter(({ status }) => status === "applied"))
       .toHaveLength(1);
+  });
+
+  it("serves the generated V2 client from PostgreSQL and fences a restored database", async () => {
+    // Generated funded buyers use exactly this composition: V2 client -> V2
+    // service -> branded continuity binding over the PostgreSQL state store and
+    // PostgreSQL operation log, with the witness surviving a database restore.
+    const selected = { ...policy("policy-a"), maximumConcurrentEffects: 2 };
+    const pool = await fakePool(selected);
+    const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+    const roleId = "buyer";
+    const token = "buyer-role-token-which-is-long-enough";
+    const durableOperations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    let loseNextCompletion = false;
+    const handler = createDacsWalletSpendAuthorityServiceV2({
+      authenticate: (presented) => presented === token ? roleId : null,
+      resolveAuthority: (scope) => {
+        if (scope.roleId !== roleId || scope.authorityId !== pool.continuity.authorityId ||
+            scope.epoch !== pool.continuity.epoch || scope.lineageKey !== lineage ||
+            scope.wallet !== selected.wallet || scope.chainId !== selected.chainId ||
+            scope.policyHash !== dacsWalletSpendPolicyHashV1(selected)) {
+          return null;
+        }
+        return createDacsWalletSpendContinuityAuthorityV2({
+          policy: selected,
+          store: createDacsPostgresWalletSpendStateStoreV1({
+            pool,
+            wallet: selected.wallet,
+            chainId: selected.chainId,
+            continuity: pool.continuity,
+            operation: () => ({
+              roleId,
+              operationId: scope.operationId,
+              requestHash: scope.requestHash,
+            }),
+          }),
+          dependencies: {
+            readBalance: async () => "1000",
+            authenticateRecovery: async () => true,
+            owner: "wallet-service",
+            leaseDurationMs: 60_000,
+          },
+        });
+      },
+      operations: {
+        load: (input) => durableOperations.load(input),
+        claim: (input) => durableOperations.claim(input),
+        async complete(input) {
+          if (loseNextCompletion) {
+            loseNextCompletion = false;
+            throw new Error("response log write lost after commit");
+          }
+          await durableOperations.complete(input);
+        },
+      },
+    });
+    const item = (id: string): WalletSpendReservationV1 => ({
+      reservationVersion: "1",
+      reservationId: id,
+      jobId: `job-${id}`,
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    const tokenRoot = await mkdtemp(join(tmpdir(), "dacs-postgres-v2-"));
+    const tokenPath = join(tokenRoot, "token");
+    await writeFile(tokenPath, `${token}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(tokenPath, 0o600);
+    const methods: string[] = [];
+    const fetchHandler = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      methods.push(request.method);
+      return handler(request);
+    }) as typeof fetch;
+    const client = () => createDacsRemoteWalletSpendAuthorityV2({
+      policy: selected,
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath: tokenPath,
+      authorityId: pool.continuity.authorityId,
+      epoch: pool.continuity.epoch,
+      witnessVerificationKey: pool.continuity.verificationKey,
+      allowInsecureLoopback: true,
+      fetch: fetchHandler,
+    });
+
+    try {
+      const remote = await client();
+      loseNextCompletion = true;
+      const claim = await remote.reserve(item("v2-postgres-reserve"));
+      expect(claim).toMatchObject({
+        status: "reserved",
+        permit: {
+          reservationId: "v2-postgres-reserve",
+          owner: "wallet-service",
+          generation: 1,
+        },
+      });
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      // The lost response-log write was recovered on the same POST from the
+      // applied PostgreSQL candidate and re-attested as a V2 response.
+      expect(methods).toEqual(["POST"]);
+      expect([...pool.operations.values()]).toMatchObject([{ response: null }]);
+      expect(pool.row.revision).toBe(1);
+
+      const restorePoint = {
+        row: structuredClone(pool.row),
+        candidates: structuredClone([...pool.candidates]),
+        operations: structuredClone([...pool.operations]),
+        operationCounts: [...pool.operationCounts],
+      };
+      await claim.permit.beginEffect();
+      await claim.permit.settle({
+        disposition: "settled",
+        evidenceHash: "d".repeat(64),
+        debits: [{ asset: "ASSET", purpose: "service", amount: "25" }],
+      });
+      await expect(remote.inspect()).resolves.toMatchObject({
+        revision: 3,
+        activeEffects: 0,
+        assets: [{ cumulativeSettledDebit: "25" }],
+      });
+      // Control: a brand-new client with no retained head accepts the live head.
+      await expect((await client()).inspect()).resolves.toMatchObject({ revision: 3 });
+
+      // Restore every PostgreSQL table to the self-consistent reserve point.
+      Object.assign(pool.row, restorePoint.row);
+      pool.candidates.clear();
+      for (const [key, value] of restorePoint.candidates) pool.candidates.set(key, value);
+      pool.operations.clear();
+      for (const [key, value] of restorePoint.operations) pool.operations.set(key, value);
+      pool.operationCounts.clear();
+      for (const [key, value] of restorePoint.operationCounts) {
+        pool.operationCounts.set(key, value);
+      }
+      expect(pool.row.revision).toBe(1);
+      await expect(createDacsPostgresWalletSpendStateStoreV1({
+        pool, wallet: selected.wallet, chainId: selected.chainId, continuity: pool.continuity,
+      }).read!(lineage)).rejects.toThrow(/continuity-head-mismatch/);
+
+      // A brand-new client has no local head memory, so only the service-side
+      // witness fence can refuse the restored status and the restored budget.
+      const restoredClient = await client();
+      await expect(restoredClient.inspect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      methods.length = 0;
+      await expect(restoredClient.reserve(item("after-restore"))).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      expect(methods).toEqual(["POST", "GET"]);
+      expect(pool.row.revision).toBe(1);
+      expect(pool.row.state.reservations.map(({ reservationId }) => reservationId))
+        .toEqual(["v2-postgres-reserve"]);
+      expect([...pool.candidates.values()].filter(({ candidate_state }) =>
+        candidate_state.reservations.some(({ reservationId }) =>
+          reservationId === "after-restore"))).toEqual([]);
+      await expect(pool.continuity.witness.readCurrent({
+        authorityId: pool.continuity.authorityId,
+        epoch: pool.continuity.epoch,
+        lineageKey: lineage,
+        operationId: "00000000-0000-4000-8000-000000000201",
+        requestHash: "2".repeat(64),
+        clientNonce: "3".repeat(64),
+      })).resolves.toMatchObject({ revision: 3 });
+    } finally {
+      await rm(tokenRoot, { recursive: true, force: true });
+    }
   });
 });
