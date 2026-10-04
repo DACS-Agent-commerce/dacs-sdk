@@ -33,6 +33,7 @@ import {
   type DacsLiveAgentConfig,
 } from "./config.js";
 import type { DacsLoadedSecretV1 } from "./secrets.js";
+import { markDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
 import type {
   DacsHttpEnvelopeSigner,
   DacsHttpIdentityResolverV1,
@@ -439,6 +440,9 @@ export async function createDacsDemosActorRuntimeV1(
           chainIdentity: () => adapter.getChainIdentity!(),
           wallet: adapter.getAddress(),
         });
+        if (rawOptions.createPayDemRail === undefined) {
+          payDemRail = markDacsSdkPreparedPayDemRailV1(payDemRail);
+        }
       }
     } catch {
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");

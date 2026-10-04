@@ -35,6 +35,8 @@ import {
   type DacsPayDemBuyerPaymentInputV1,
 } from "../src/payDemPayment.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { markDacsSdkPreparedPayDemRailV1 } from
+  "../src/payDemRailCapabilities.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -253,6 +255,7 @@ function observeWalletEffectBegin(
     async reserve(...args: Parameters<WalletSpendAuthorityV1["reserve"]>) {
       const claim = await authority.reserve(...args);
       if (claim.status !== "reserved") return claim;
+      events.push("wallet-reserved");
       return Object.freeze({
         status: "reserved" as const,
         permit: Object.freeze({
@@ -303,9 +306,9 @@ describe("native DEM buyer payment track", () => {
     const database = await open(join(root(), "buyer.sqlite"));
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const events: string[] = [];
-    const rail: PayDemRail = {
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
       address: PAYER,
-      async settle(input) {
+      async settle(input, effectFence) {
         expect(input.maxTotalDebitOs).toBe(AUTHORITY.maxTotalDebitOs);
         const prepared = {
           txHash: TX_HASH,
@@ -321,6 +324,7 @@ describe("native DEM buyer payment track", () => {
         await input.journalPreparedTransfer!(prepared);
         events.push("journal-committed");
         await input.assertCurrentBeforeBroadcast!();
+        await effectFence!.assertCurrent();
         events.push("broadcast");
         return {
           ok: true,
@@ -334,12 +338,13 @@ describe("native DEM buyer payment track", () => {
           networkFeeOs: "1000000000",
         };
       },
-    };
+    });
     const walletSpendAuthority = observeWalletEffectBegin(
       createAccountingTestWalletSpendAuthorityV1({
         wallet: PAYER,
         chainId: "demos",
         asset: "DEM",
+        maximumConcurrentEffects: 1,
       }),
       events,
     );
@@ -375,6 +380,7 @@ describe("native DEM buyer payment track", () => {
 
     expect(events).toEqual([
       "journal-committed",
+      "wallet-reserved",
       "wallet-effect-begun",
       "broadcast",
       "notice-queued",
@@ -388,9 +394,46 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
-  it("does not begin wallet ambiguity when rail preparation fails", async () => {
+  it.each([
+    {
+      name: "generated SDK rail leaves no wallet reservation when preparation fails",
+      sdkDefaultRail: true,
+      expectedRevision: 0,
+      expectedActiveEffects: 0,
+      expectedPreparationCalls: 2,
+      expectedSecondState: "indeterminate",
+    },
+    {
+      name: "custom rail retains wallet ambiguity when preparation fails",
+      sdkDefaultRail: false,
+      expectedRevision: 1,
+      expectedActiveEffects: 1,
+      expectedPreparationCalls: 1,
+      expectedSecondState: "operator-action",
+    },
+  ])("$name", async ({
+    sdkDefaultRail,
+    expectedRevision,
+    expectedActiveEffects,
+    expectedPreparationCalls,
+    expectedSecondState,
+  }) => {
     const database = await open(join(root(), "buyer.sqlite"));
+    const secondJobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+    const secondOrder: FixedPricePayDemOrderInput = {
+      ...ORDER,
+      jobId: secondJobId,
+      sdkJobs: {
+        role: "buyer",
+        agreement: `buyer:agreement:${secondJobId}`,
+        payment: `buyer:payment:${secondJobId}`,
+        paymentEvidence: `buyer:payment-evidence:${secondJobId}`,
+        buyerReceived: `buyer:received:${secondJobId}`,
+        audit: `buyer:audit:${secondJobId}`,
+      },
+    };
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    putDacsLiveOrderInputV1({ database, order: secondOrder, application: {} });
     const events: string[] = [];
     let broadcasts = 0;
     const prepareTransfer = vi.fn(async () => {
@@ -402,33 +445,43 @@ describe("native DEM buyer payment track", () => {
         wallet: PAYER,
         chainId: "demos",
         asset: "DEM",
+        maximumConcurrentEffects: 1,
       }),
       events,
     );
+    const rawRail: PayDemRail = {
+      address: PAYER,
+      async settle() {
+        events.push("rail-preparation-started");
+        await prepareTransfer();
+        broadcasts += 1;
+        return {
+          ok: true,
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+          networkFeeOs: "1000000000",
+        };
+      },
+    };
+    const rail = sdkDefaultRail
+      ? markDacsSdkPreparedPayDemRailV1(rawRail)
+      : rawRail;
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-preparation-failure",
-      rail: {
-        address: PAYER,
-        async settle() {
-          events.push("rail-preparation-started");
-          await prepareTransfer();
-          broadcasts += 1;
-          return {
-            ok: true,
-            txHash: TX_HASH,
-            chainId: "demos",
-            payer: PAYER,
-            payee: PAYEE,
-            finality: { model: "bft-final" },
-            blockNumber: 42,
-            txRefKind: "demos",
-            networkFeeOs: "1000000000",
-          };
-        },
-      },
-      resolveAuthority: () => AUTHORITY,
+      rail,
+      // A caller-supplied lookalike cannot activate the private capability.
+      ...(sdkDefaultRail ? {} : { deferWalletReservationUntilPrepared: true }),
+      resolveAuthority: ({ operation }) => ({
+        ...AUTHORITY,
+        jobId: operation.order.jobId,
+      }),
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
       publishNotice,
     });
@@ -441,16 +494,26 @@ describe("native DEM buyer payment track", () => {
     await coordinator.startOrder(ORDER);
     await coordinator.runPending({ limit: 2 });
 
-    expect(events).toEqual(["rail-preparation-started"]);
+    expect(events).toEqual(sdkDefaultRail
+      ? ["rail-preparation-started"]
+      : ["wallet-reserved", "rail-preparation-started"]);
     expect(prepareTransfer).toHaveBeenCalledOnce();
     expect(broadcasts).toBe(0);
     expect(publishNotice).not.toHaveBeenCalled();
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "indeterminate" });
     expect(await walletSpendAuthority.inspect()).toMatchObject({
-      revision: 1,
+      revision: expectedRevision,
+      activeEffects: expectedActiveEffects,
       assets: [{ cumulativeSettledDebit: "0" }],
     });
+    await coordinator.startOrder(secondOrder);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(prepareTransfer).toHaveBeenCalledTimes(expectedPreparationCalls);
+    expect(broadcasts).toBe(0);
+    expect((await coordinator.getOrderStatus(secondJobId))?.tracks.payment)
+      .toMatchObject({ state: expectedSecondState });
   });
 
   it("rejects custom rail success that never invokes the pre-broadcast fence", async () => {
@@ -499,7 +562,7 @@ describe("native DEM buyer payment track", () => {
     await coordinator.startOrder(ORDER);
     await coordinator.runPending({ limit: 2 });
 
-    expect(events).toEqual([]);
+    expect(events).toEqual(["wallet-reserved"]);
     expect(publishNotice).not.toHaveBeenCalled();
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "indeterminate" });

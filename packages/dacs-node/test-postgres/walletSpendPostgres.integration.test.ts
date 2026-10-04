@@ -602,7 +602,7 @@ describe("real PostgreSQL wallet spend authority", () => {
         await blocker.query("BEGIN");
         await blocker.query(
           "SELECT lineage_key FROM dacs_wallet_spend_lineages " +
-            "WHERE lineage_key = $1 FOR UPDATE",
+            "WHERE lineage_key = $1 FOR NO KEY UPDATE",
           [lineage],
         );
         observeAdvance = true;
