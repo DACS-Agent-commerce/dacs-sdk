@@ -4195,6 +4195,18 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     ...backup,
     release: { ...backup.release, configSchemaVersion: backup.release.configSchemaVersion + 1 },
   }), /restore-backup-release-incompatible/);
+  assert.throws(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, sqliteSchemaVersion: backup.release.sqliteSchemaVersion + 1 },
+  }), /restore-backup-release-incompatible/);
+  assert.throws(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, sqliteSchemaVersion: 0 },
+  }), /restore-backup-release-incompatible/);
+  assert.doesNotThrow(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, sqliteSchemaVersion: 1 },
+  }));
 
   await Promise.all([
     writeFile(join(buyer, "actor.sqlite"), "buyer-changed", "utf8"),

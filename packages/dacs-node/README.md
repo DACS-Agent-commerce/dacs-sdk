@@ -368,6 +368,7 @@ The transport callbacks are intentionally host-owned. The identity resolver
 must dereference and verify Demos identity material; the payload validator must
 use public SDK validators plus independently retained session facts. Returning
 `valid` solely because an envelope is signed is not sufficient authorization.
+
 The public v2, v3, and v4 schemas are immutable migration inputs. A v2 database
 contains only the coordinator order table and its runnable index; the
 integrity-checked track projection is created and backfilled by v3. Schema v4
