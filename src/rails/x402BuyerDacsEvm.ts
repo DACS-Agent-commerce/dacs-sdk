@@ -158,7 +158,9 @@ function captureRequirements(
     descriptors[key]!.value;
   const network = read("network");
   const chainMatch = typeof network === "string" ? NETWORK_RE.exec(network) : null;
-  const extra = captureJson(read("extra"));
+  // The complete PaymentRequirements record is container 1. Snapshot extra at
+  // depth 2 so this admission agrees with canonicalizing the full record.
+  const extra = captureJson(read("extra"), new Set<object>(), 1);
   if (read("scheme") !== "exact" || !chainMatch ||
       !Number.isSafeInteger(Number(chainMatch[1])) ||
       typeof read("amount") !== "string" || !AMOUNT_RE.test(read("amount") as string) ||
