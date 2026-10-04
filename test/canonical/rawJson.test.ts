@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   admitRawJson,
@@ -110,9 +111,14 @@ describe("CORE CF-5 exact-byte admission", () => {
   it("rejects forged and proxied typed-array values as byte input", () => {
     const forged = Object.create(Uint8Array.prototype) as Uint8Array;
     const proxied = new Proxy(new Uint8Array([0x30]), {});
-    for (const input of [forged, proxied]) {
-      expect(() => admitRawJson(input)).toThrow(/BYTE-INPUT-REQUIRED/);
+    for (const input of [forged, proxied, new Uint16Array([0x30]), new Uint8ClampedArray([0x30])]) {
+      expect(() => admitRawJson(input as Uint8Array)).toThrow(/BYTE-INPUT-REQUIRED/);
     }
+  });
+  it("admits a genuine Uint8Array from another JavaScript realm", () => {
+    const foreign = runInNewContext("new Uint8Array([0x30])") as Uint8Array;
+    expect(foreign instanceof Uint8Array).toBe(false);
+    expect(admitRawJson(foreign, { maxBytes: 1 })).toBe(0);
   });
   it("rejects hostile depth before a recursive parser sees it", () => {
     expect(() => admitRawJson(Buffer.from("[".repeat(100_000))))
@@ -126,6 +132,18 @@ describe("CORE CF-5 exact-byte admission", () => {
 
 // Exact comparisons that binary64 conversion alone cannot establish.
 describe("raw decimal boundary siblings", () => {
+  it("classifies binary64 overflow independently of decimal spelling", () => {
+    for (const token of ["1e309", `1${"0".repeat(309)}`, "-1e309", `-1${"0".repeat(309)}`]) {
+      try {
+        admitRawJson(Buffer.from(token));
+        throw new Error("expected admission failure");
+      } catch (error) {
+        expect(error).toMatchObject({ stage: "profile", code: "NUMBER-NOT-BINARY64" });
+      }
+    }
+    expect(() => admitRawJson(Buffer.from(`1${"0".repeat(308)}`)))
+      .toThrow(/NUMBER-OUTSIDE-DACS-MAGNITUDE/);
+  });
   it.each(["9007199254740991.0000000000001", "-9007199254740991.0000000000001", "90071992547409910001e-4"])("rejects %s before rounding", (token) => {
     expect(() => admitRawJson(Buffer.from(token))).toThrow(/NUMBER-OUTSIDE-DACS-MAGNITUDE/);
   });

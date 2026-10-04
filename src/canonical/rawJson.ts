@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { DacsError } from "../errors.js";
 
 export type RawJsonAdmissionStage = "parse" | "profile";
@@ -61,7 +63,7 @@ function numberProfileError(token: string): string | undefined {
   const digits = (whole! + fraction).replace(/^0+/, "");
   if (digits === "") return undefined; // Exact zero, including arbitrarily large exponents.
   const value = Number(token);
-  if (/[.eE]/.test(token) && (!Number.isFinite(value) || value === 0)) {
+  if (!Number.isFinite(value) || value === 0) {
     return "NUMBER-NOT-BINARY64";
   }
   // No exponent-sized allocation or big-integer exponentiation. For a finite
@@ -89,7 +91,10 @@ export function admitRawJson(
   input: Uint8Array,
   options: Readonly<RawJsonAdmissionOptions> = {},
 ): unknown {
-  if (!(input instanceof Uint8ArrayIntrinsic)) reject("parse", "BYTE-INPUT-REQUIRED");
+  // A genuine view from another JavaScript realm does not pass instanceof.
+  // The Node brand check accepts it without broadening admission to other
+  // typed-array element types, forged prototypes, or proxies.
+  if (!nodeTypes.isUint8Array(input)) reject("parse", "BYTE-INPUT-REQUIRED");
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("raw JSON admission options are invalid");
   }
