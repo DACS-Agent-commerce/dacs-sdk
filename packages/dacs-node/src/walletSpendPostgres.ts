@@ -1071,6 +1071,39 @@ function candidateValueMatches(value: unknown, expected: unknown): boolean {
   return expected !== undefined && canonicalize(decoded.value) === canonicalize(expected);
 }
 
+function walletSpendDecisionState(state: Readonly<WalletSpendStateV1>): string {
+  return canonicalize({
+    ...state,
+    reservations: state.reservations.map((row) => {
+      const {
+        createdAt: _createdAt,
+        updatedAt: _updatedAt,
+        leaseExpiresAt: _leaseExpiresAt,
+        ...decision
+      } = row;
+      return decision;
+    }),
+    rollingEvents: state.rollingEvents.map((event) => {
+      const { settledAt: _settledAt, ...decision } = event;
+      return decision;
+    }),
+  });
+}
+
+function changedActiveLeasesAreCurrent(
+  prior: Readonly<WalletSpendStateV1>,
+  candidate: Readonly<WalletSpendStateV1>,
+  timestamp: number,
+): boolean {
+  const priorRows = new Map(prior.reservations.map((row) => [row.reservationId, row]));
+  return candidate.reservations.every((row) => {
+    const priorRow = priorRows.get(row.reservationId);
+    if (priorRow !== undefined && canonicalize(priorRow) === canonicalize(row)) return true;
+    if (row.stage !== "reserved" && row.stage !== "effect-pending") return true;
+    return row.leaseExpiresAt !== undefined && row.leaseExpiresAt >= timestamp;
+  });
+}
+
 function postgresErrorCode(error: unknown): string | undefined {
   if (error === null || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
@@ -1944,6 +1977,7 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
       scope: string,
       operation: (
         current: Readonly<WalletSpendStateV1> | null,
+        serializedNow?: number,
       ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
     ): Promise<T> {
       if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
@@ -1966,7 +2000,10 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
         if (priorRevision === Number.MAX_SAFE_INTEGER) {
           throw new Error("wallet-spend-postgres-revision-exhausted");
         }
-        const result = operation(structuredClone(prior.state));
+        // Sample after the authoritative head load on every retry. This keeps
+        // lease checks from using time captured before a database/load wait;
+        // the external witness CAS below remains the mutation linearization.
+        const result = operation(structuredClone(prior.state), await store.serverNow!());
         if (canonicalize(result.state) === canonicalize(prior.state)) return result.value;
         if (!Number.isSafeInteger(result.state.generation) ||
             result.state.generation !== priorRevision + 1) {
@@ -2026,6 +2063,55 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
           // witness attempt failed. Leave that immutable row available in case
           // the original CAS still wins, but never ask the witness to advance
           // it unless a fresh operation evaluation reproduces it exactly.
+          continue;
+        }
+
+        const supersedeRetained = async (): Promise<void> => {
+          const superseded = await input.pool.query(
+            `UPDATE dacs_wallet_spend_candidates
+                SET status = 'superseded'
+              WHERE candidate_id = $1::uuid AND status = 'prepared'`,
+            [retained.candidate_id],
+          );
+          if (superseded.rowCount !== 1) {
+            throw new Error("wallet-spend-postgres-operation-conflict");
+          }
+        };
+        // Candidate persistence may itself wait. Re-evaluate against the same
+        // head and a fresh database timestamp immediately before asking the
+        // witness to linearize it. A successful witness CAS is irreversible
+        // authority, so all later database work is mandatory catch-up and must
+        // not perform a new lease decision.
+        let revalidated: Readonly<{
+          state: Readonly<WalletSpendStateV1>;
+          value: T;
+        }>;
+        let revalidationTimestamp: number;
+        try {
+          revalidationTimestamp = await store.serverNow!();
+          revalidated = operation(
+            structuredClone(prior.state),
+            revalidationTimestamp,
+          );
+        } catch (error) {
+          await supersedeRetained();
+          throw error;
+        }
+        // Time-derived fields can legitimately differ by milliseconds on every
+        // sample. Compare the full decision state while excluding only those
+        // fields: rolling membership and all accounting content must remain
+        // identical. A changed active lease must also still be current at the
+        // fresh sample. `settledAt` intentionally remains the authenticated
+        // settlement-evaluation time, which precedes candidate persistence.
+        if (!candidateValueMatches(retained.candidate_value, revalidated.value) ||
+            walletSpendDecisionState(revalidated.state) !==
+              walletSpendDecisionState(result.state) ||
+            !changedActiveLeasesAreCurrent(
+              prior.state,
+              result.state,
+              revalidationTimestamp,
+            )) {
+          await supersedeRetained();
           continue;
         }
 

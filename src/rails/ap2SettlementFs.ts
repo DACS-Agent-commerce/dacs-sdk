@@ -480,6 +480,24 @@ export async function createFsAp2BindingStore(
     return true;
   }
 
+  async function lockAvailability(
+    path: string,
+  ): Promise<"absent" | "occupied" | "reclaimable"> {
+    const observed = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!observed) return "absent";
+    if (Date.now() - observed.mtimeMs <= lockStaleMs) return "occupied";
+    if (!observed.isDirectory() || observed.isSymbolicLink()) {
+      throw new DacsError("AP2 settlement-store lock is unsafe");
+    }
+    const owner = await lockOwner(path);
+    return owner !== undefined && processIsAlive(owner.pid)
+      ? "occupied"
+      : "reclaimable";
+  }
+
   async function reclaimStaleLock(transactionId: string, path: string): Promise<boolean> {
     const gate = { token: randomUUID(), pid: process.pid };
     if (!await acquireGate(transactionId, gate)) return false;
@@ -548,25 +566,38 @@ export async function createFsAp2BindingStore(
     const path = lockPath(transactionId);
     const owner = { token: randomUUID(), pid: process.pid };
     const deadline = Date.now() + lockTimeoutMs;
-    for (;;) {
-      // Prepare the complete owner under a unique, unpublished directory. Both
-      // normal publication and stale recovery hold the same transition gate.
-      const candidate = `${path}.${randomUUID()}.candidate`;
+    // Prepare one complete owner before waiting. Rebuilding and fsyncing a new
+    // candidate on every occupied-lock poll can consume the entire bounded wait
+    // under contention without improving the no-overwrite publication check.
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: DIR_MODE });
       try {
-        await mkdir(candidate, { mode: DIR_MODE });
+        const handle = await open(join(candidate, "owner"), "wx", FILE_MODE);
         try {
-          const handle = await open(join(candidate, "owner"), "wx", FILE_MODE);
-          try {
-            await handle.writeFile(JSON.stringify(owner), "utf8");
-            await handle.sync();
-          } finally {
-            await handle.close();
-          }
-        } catch (error) {
-          await rm(candidate, { recursive: true, force: true });
-          throw error;
+          await handle.writeFile(JSON.stringify(owner), "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
         }
-        await syncDirectory(candidate);
+      } catch (error) {
+        await rm(candidate, { recursive: true, force: true });
+        throw error;
+      }
+      await syncDirectory(candidate);
+
+      for (;;) {
+        const availability = await lockAvailability(path);
+        if (availability === "occupied") {
+          if (Date.now() >= deadline) {
+            throw new DacsError("timed out waiting for the AP2 settlement-store lock");
+          }
+          await new Promise((resolve) => setTimeout(resolve, lockPollMs));
+          continue;
+        }
+        if (availability === "reclaimable") {
+          await reclaimStaleLock(transactionId, path);
+        }
         if (await publishLockCandidate(transactionId, candidate, path)) {
           return async () => {
             const observed = await lockOwner(path);
@@ -588,14 +619,13 @@ export async function createFsAp2BindingStore(
             }
           };
         }
-        await reclaimStaleLock(transactionId, path);
         if (Date.now() >= deadline) {
           throw new DacsError("timed out waiting for the AP2 settlement-store lock");
         }
         await new Promise((resolve) => setTimeout(resolve, lockPollMs));
-      } finally {
-        await rm(candidate, { recursive: true, force: true }).catch(() => {});
       }
+    } finally {
+      await rm(candidate, { recursive: true, force: true }).catch(() => {});
     }
   }
 

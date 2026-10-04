@@ -13,6 +13,7 @@ import {
   type WalletSpendAuthorityDependenciesV1,
   type WalletSpendAuthorityV1,
   type WalletSpendRecoveryObservationV1,
+  type WalletSpendReservationClaimV1,
   type WalletSpendReservationV1,
   type WalletSpendSettlementObservationV1,
 } from "@kynesyslabs/dacs";
@@ -34,6 +35,7 @@ import {
   loadDacsLiveOrderInputForTrackV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
+import { isDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -540,20 +542,23 @@ function capturePrepared(
 function captureSettlement(
   value: unknown,
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  requireNetworkFee = true,
 ): Readonly<SettleResult> {
   if (!plainObject(value) || !exactKeys(value, [
     "ok", "txHash", "chainId", "payer", "payee", "finality",
-    "blockNumber", "txRefKind", "networkFeeOs",
-  ]) || value.ok !== true || typeof value.txHash !== "string" ||
+    "blockNumber", "txRefKind", ...(requireNetworkFee ? ["networkFeeOs"] : []),
+  ], requireNetworkFee ? [] : ["networkFeeOs"]) ||
+      value.ok !== true || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) || value.chainId !== payment.network ||
       canonicalAddress(value.payer) !== payment.payer ||
       canonicalAddress(value.payee) !== payment.payee ||
       !plainObject(value.finality) || !exactKeys(value.finality, ["model"]) ||
       value.finality.model !== "bft-final" ||
-      typeof value.networkFeeOs !== "string" ||
-      !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
-      BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
-        BigInt(payment.maxTotalDebitOs) ||
+      (Object.hasOwn(value, "networkFeeOs") &&
+        (typeof value.networkFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
+          BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
+            BigInt(payment.maxTotalDebitOs))) ||
       !Number.isSafeInteger(value.blockNumber) || (value.blockNumber as number) < 0 ||
       value.txRefKind !== "demos") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-settlement-invalid");
@@ -574,7 +579,9 @@ export function createDacsPayDemPaymentNoticeV1(
   settlement: Readonly<SettleResult>,
 ): Readonly<DacsPayDemPaymentNoticeV1> {
   const capturedPayment = capturePaymentInput(payment);
-  const capturedSettlement = captureSettlement(settlement, capturedPayment);
+  // The public v1 notice predates funded wallet accounting and has no fee
+  // field on the wire. Internal funded settlement paths still require it.
+  const capturedSettlement = captureSettlement(settlement, capturedPayment, false);
   return Object.freeze({
     paymentNoticeVersion: "1",
     payment: capturedPayment,
@@ -625,6 +632,21 @@ function control(reasonCode: string): DacsLiveEffectExecutionControlV1 {
     effectControlVersion: "1",
     status: "indeterminate",
     reasonCode,
+  });
+}
+
+function walletClaimControl(
+  claim: Exclude<WalletSpendReservationClaimV1, { status: "reserved" }>,
+): DacsLiveEffectExecutionControlV1 {
+  if (claim.status === "held" || claim.status === "settled") {
+    return control("wallet-spend-reconciliation-required");
+  }
+  return Object.freeze({
+    effectControlVersion: "1" as const,
+    status: "operator-action" as const,
+    reasonCode: claim.status === "denied"
+      ? `wallet-spend-${claim.reason}`
+      : `wallet-spend-${claim.status}`,
   });
 }
 
@@ -747,6 +769,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   const database = options.database;
   const rail = options.rail;
   const walletSpendAuthority = options.walletSpendAuthority;
+  const deferWalletReservationUntilPrepared = isDacsSdkPreparedPayDemRailV1(rail);
 
   return createDacsLiveEffectTrackV1<
     DacsPayDemBuyerPaymentInputV1,
@@ -782,44 +805,98 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         const payment = capturePaymentInput(input);
         await fence.assertCurrent();
         const reservation = walletReservation(payment);
-        const claim = await walletSpendAuthority.reserve(reservation);
-        if (claim.status !== "reserved") {
-          if (claim.status === "held" || claim.status === "settled") {
-            return control("wallet-spend-reconciliation-required");
+        let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
+          undefined;
+        let claimFailure: DacsLiveEffectExecutionControlV1 | undefined;
+        const reserveWallet = async (): Promise<NonNullable<typeof claim>> => {
+          if (claim !== undefined) return claim;
+          const next = await walletSpendAuthority.reserve(reservation);
+          if (next.status !== "reserved") {
+            claimFailure = walletClaimControl(next);
+            throw new DacsPayDemBuyerPaymentError(
+              "pay-dem-wallet-reservation-unavailable",
+            );
           }
-          return Object.freeze({
-            effectControlVersion: "1" as const,
-            status: "operator-action" as const,
-            reasonCode: claim.status === "denied"
-              ? `wallet-spend-${claim.reason}`
-              : `wallet-spend-${claim.status}`,
-          });
+          claim = next;
+          return next;
+        };
+        if (!deferWalletReservationUntilPrepared) {
+          try {
+            await reserveWallet();
+          } catch {
+            return claimFailure ?? control("pay-dem-wallet-reservation-unavailable");
+          }
         }
         let settlement: Readonly<SettleResult>;
         try {
-          await claim.permit.beginEffect();
+          let preparedCheckpointed = false;
+          let beginEffect: Promise<void> | undefined;
+          const beginPreparedEffect = async (): Promise<void> => {
+            if (!preparedCheckpointed) {
+              throw new DacsPayDemBuyerPaymentError(
+                "pay-dem-prepared-transfer-checkpoint-missing",
+              );
+            }
+            const reserved = await reserveWallet();
+            beginEffect ??= reserved.permit.beginEffect();
+            await beginEffect;
+          };
+          const actorEffectFence = settlementFence(payment, fence);
+          const railEffectFence = deferWalletReservationUntilPrepared
+            ? Object.freeze({
+                ...actorEffectFence,
+                async assertCurrent(): Promise<void> {
+                  await actorEffectFence.assertCurrent();
+                  if (claim === undefined) {
+                    // The core rail asserts once before preparing a transfer.
+                    // Deferred reservation is safe there only while no
+                    // prepared checkpoint exists; the mandatory pre-broadcast
+                    // hook acquires and begins the wallet effect later.
+                    if (!preparedCheckpointed) return;
+                    throw new DacsPayDemBuyerPaymentError(
+                      "pay-dem-wallet-reservation-missing",
+                    );
+                  }
+                  if (beginEffect === undefined) {
+                    throw new DacsPayDemBuyerPaymentError(
+                      "pay-dem-wallet-effect-not-begun",
+                    );
+                  }
+                  await beginEffect;
+                  await claim.permit.assertCurrent();
+                },
+              })
+            : combineWalletSpendEffectFenceV1(actorEffectFence, claim!.permit);
           const raw = await rail.settle({
             recipient: payment.payee,
             amount: payment.amountOs,
             maxTotalDebitOs: payment.maxTotalDebitOs,
             network: payment.network,
             recovery: recoveryContext(payment),
-            journalPreparedTransfer: async (prepared) => {
-              const captured = capturePrepared(prepared, payment);
+            journalPreparedTransfer: async (rawPrepared) => {
+              const captured = capturePrepared(rawPrepared, payment);
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
+              preparedCheckpointed = true;
             },
-            assertCurrentBeforeBroadcast: () => fence.assertCurrent(),
-          }, combineWalletSpendEffectFenceV1(
-            settlementFence(payment, fence),
-            claim.permit,
-          ));
+            assertCurrentBeforeBroadcast: async () => {
+              await beginPreparedEffect();
+              await fence.assertCurrent();
+            },
+          }, railEffectFence);
+          if (beginEffect === undefined) {
+            throw new DacsPayDemBuyerPaymentError(
+              "pay-dem-pre-broadcast-fence-not-invoked",
+            );
+          }
+          await beginEffect;
           settlement = captureSettlement(raw, payment);
-          await claim.permit.settle(walletSettlement(payment, settlement));
+          await claim!.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
             notice: createDacsPayDemPaymentNoticeV1(payment, settlement),
             fence,
           });
         } catch {
+          if (claimFailure !== undefined) return claimFailure;
           return control("pay-dem-settlement-ambiguous");
         }
         return result(settlement);

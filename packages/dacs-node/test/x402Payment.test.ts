@@ -30,6 +30,7 @@ import {
   type X402BuyerSettlementIntent,
   type X402BuyerSettlementStore,
   type WalletSpendAuthorityDependenciesV1,
+  type WalletSpendAuthorityV1,
   type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -632,6 +633,102 @@ describe("coordinator x402 buyer payment track", () => {
       assets: [{ cumulativeSettledDebit: "1000" }],
     });
   });
+
+  it.each([false, true])(
+    "checks actor and wallet authority at the paid side-effect boundary (stale=%s)",
+    async (staleAtPaidBoundary) => {
+      const opened = await database();
+      const retained = intent();
+      const settlementStore = createInMemoryX402BuyerSettlementStore();
+      const events: string[] = [];
+      let paidBoundary = false;
+      let sideEffects = 0;
+      const authority = createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER.toLowerCase(),
+        chainId: "eip155:84532",
+        asset: ASSET.toLowerCase(),
+        maximumConcurrentEffects: 1,
+      });
+      const walletSpendAuthority: WalletSpendAuthorityV1 = Object.freeze({
+        policy: authority.policy,
+        policyHash: authority.policyHash,
+        async reserve(...args: Parameters<WalletSpendAuthorityV1["reserve"]>) {
+          events.push("reserve");
+          const claim = await authority.reserve(...args);
+          if (claim.status !== "reserved") return claim;
+          return Object.freeze({
+            status: "reserved" as const,
+            permit: Object.freeze({
+              ...claim.permit,
+              async beginEffect(): Promise<void> {
+                events.push("begin-effect");
+                await claim.permit.beginEffect();
+              },
+              async assertCurrent(): Promise<void> {
+                if (paidBoundary) {
+                  events.push("wallet-current");
+                  if (staleAtPaidBoundary) throw new Error("stale wallet permit");
+                }
+                await claim.permit.assertCurrent();
+              },
+            }),
+          });
+        },
+        reconcile: (...args: Parameters<WalletSpendAuthorityV1["reconcile"]>) =>
+          authority.reconcile(...args),
+        inspect: () => authority.inspect(),
+      });
+      const invocation = operationInput();
+      const actorFence: FixedPriceX402EffectFence = Object.freeze({
+        ...invocation.fence,
+        async assertCurrent(): Promise<void> {
+          if (paidBoundary) events.push("actor-current");
+          await invocation.fence.assertCurrent();
+        },
+      });
+      const transport: X402BuyerPaidRequestTransport = {
+        async submitRetained(_candidate, fence) {
+          paidBoundary = true;
+          try {
+            await fence.assertCurrent();
+          } finally {
+            paidBoundary = false;
+          }
+          events.push("side-effect");
+          sideEffects += 1;
+          return { disposition: "response", disclosure: disclosure() };
+        },
+      };
+      const track = createDacsX402BuyerPaymentTrackV1({
+        walletSpendAuthority,
+        finalityBlocks: 1,
+        database: opened,
+        workerId: "buyer-payment-paid-boundary",
+        settlementStore,
+        authorizationProvider: provider(retained, [
+          { disposition: "settled-same", settlement: captured(retained) },
+          { disposition: "settled-same", settlement: captured(retained) },
+        ]),
+        transport,
+        prepareIntent: async () => retained,
+        authorizePreparedIntent: async () => true,
+        retryDelayMs: 1,
+      });
+
+      const outcome = await track({ ...invocation, fence: actorFence });
+      expect(events).toEqual(staleAtPaidBoundary
+        ? ["reserve", "begin-effect", "actor-current", "wallet-current"]
+        : ["reserve", "begin-effect", "actor-current", "wallet-current", "side-effect"]);
+      expect(sideEffects).toBe(staleAtPaidBoundary ? 0 : 1);
+      expect(outcome).toMatchObject(staleAtPaidBoundary
+        ? { status: "indeterminate" }
+        : { status: "final", outcome: "success" });
+      expect(await walletSpendAuthority.inspect()).toMatchObject({
+        activeEffects: staleAtPaidBoundary ? 1 : 0,
+        assets: [{ cumulativeSettledDebit: staleAtPaidBoundary ? "0" : "1000" }],
+      });
+    },
+  );
 
   it("recovers an ambiguous paid response from chain without submitting again", async () => {
     const opened = await database();

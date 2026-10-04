@@ -118,6 +118,42 @@ function intentDraft(): X402BuyerSettlementIntentDraft {
 const makeIntent = (): Readonly<X402BuyerSettlementIntent> =>
   createX402BuyerSettlementIntent(intentDraft());
 
+describe("x402 buyer settlement JSON depth matches canonical CF-5 (128)", () => {
+  // Count the enclosing payload and requirement containers too: the complete
+  // canonical value, not just the extra subtree, determines the depth limit.
+  const chain = (levels: number): unknown =>
+    levels <= 0 ? true : { a: chain(levels - 1) };
+
+  const draftWithExtraDepth = (levels: number): X402BuyerSettlementIntentDraft => {
+    const draft = intentDraft();
+    (draft.chosenRequirements.extra as Record<string, unknown>).deep = chain(levels);
+    // signedPaymentPayload.accepted references the same chosenRequirements
+    // object, so re-encode the header to keep it byte-consistent with extra.
+    draft.paymentHeader = {
+      name: "PAYMENT-SIGNATURE",
+      value: Buffer.from(JSON.stringify(draft.signedPaymentPayload), "utf8").toString("base64"),
+    };
+    return draft;
+  };
+
+  // Before the fix the rail scanners capped nesting at 64 and rejected payloads
+  // that core canonicalization admits, splitting accept/reject between the two.
+  // A payload nested well past 64 must now be admitted by the rail...
+  test("admits nesting past the old 64 cap (matches canonical CF-5)", () => {
+    const draft = draftWithExtraDepth(80);
+    expect(() => canonicalize(draft.signedPaymentPayload)).not.toThrow();
+    expect(() => createX402BuyerSettlementIntent(draft)).not.toThrow();
+  });
+
+  // ...while genuinely over-deep nesting is still rejected on the depth guard,
+  // just as canonicalize rejects it.
+  test("still rejects nesting the canonical form rejects", () => {
+    const draft = draftWithExtraDepth(200);
+    expect(() => canonicalize(draft.signedPaymentPayload)).toThrow();
+    expect(() => createX402BuyerSettlementIntent(draft)).toThrow(/depth/i);
+  });
+});
+
 function receiptResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     success: true,
@@ -133,6 +169,14 @@ function receiptResponse(overrides: Record<string, unknown> = {}): Record<string
 
 const encode = (value: unknown): string =>
   Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
+}
 
 function disclosure(overrides: Partial<X402BuyerSettlementDisclosure> = {}) {
   return {
@@ -399,6 +443,28 @@ describe("durable buyer x402 intent", () => {
       },
     })).toThrow(/JSON/);
   });
+});
+
+describe("x402 intent exact JSON depth boundary", () => {
+  test.each(["object", "array"] as const)(
+    "captures a depth-128 x402 intent with signed %s data and refuses depth 129",
+    (kind) => {
+      const atDepth = (depth: number): X402BuyerSettlementIntentDraft => {
+        const draft = intentDraft();
+        const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+        // The complete canonical intent wraps this chain in the intent and
+        // signed payload records, so subtract both containers from its depth.
+        payload.depthProbe = nestedContainer(depth - 2, kind);
+        draft.signedPaymentPayload =
+          payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+        draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+        return draft;
+      };
+
+      expect(() => createX402BuyerSettlementIntent(atDepth(128))).not.toThrow();
+      expect(() => createX402BuyerSettlementIntent(atDepth(129))).toThrow(/depth|JSON/);
+    },
+  );
 });
 
 describe("advanceX402BuyerSettlement", () => {
@@ -1318,7 +1384,8 @@ describe("filesystem x402 buyer settlement recovery", () => {
       expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);
       expect(results.filter((result) => result.status === "indeterminate")).toHaveLength(1);
       expect((await readdir(join(dir, "locks"))).filter((name) =>
-        name.includes(".reclaim") || name.endsWith(".stale") || name.endsWith(".released")
+        name.includes(".reclaim") || name.endsWith(".candidate") ||
+        name.endsWith(".stale") || name.endsWith(".released")
       )).toEqual([]);
     }
   }, 90_000);
@@ -1381,6 +1448,53 @@ describe("filesystem x402 buyer settlement recovery", () => {
       now: 1_000,
       leaseDurationMs: 100,
     })).rejects.toThrow(/timed out/);
+    await expect(readFile(join(path, "owner.json"), "utf8"))
+      .resolves.toBe(JSON.stringify(owner));
+  });
+
+  test("reuses one prepared lock candidate across occupied retries and cleans it", async () => {
+    const dir = await tempStoreDir();
+    const intent = makeIntent();
+    const store = await createFsX402BuyerSettlementStore({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 150,
+      lockPollMs: 10,
+    });
+    const locksDir = join(dir, "locks");
+    const lockName = `${sha256Hex(intent.settlementKey)}.lock`;
+    const path = join(locksDir, lockName);
+    const owner = { pid: process.pid, token: "live-candidate-owner" };
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(join(path, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    await utimes(path, new Date(0), new Date(0));
+
+    const pending = store.claim({
+      intent,
+      owner: "contender",
+      now: 1_000,
+      leaseDurationMs: 100,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    const observed = new Set<string>();
+    while (!settled) {
+      for (const name of await readdir(locksDir)) {
+        if (name.startsWith(`${lockName}.`) && name.endsWith(".candidate")) {
+          observed.add(name);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    expect(String(await pending)).toMatch(/timed out acquiring/);
+    expect([...observed]).toHaveLength(1);
+    expect((await readdir(locksDir)).filter((name) =>
+      name.startsWith(`${lockName}.`) && name.endsWith(".candidate")
+    )).toEqual([]);
     await expect(readFile(join(path, "owner.json"), "utf8"))
       .resolves.toBe(JSON.stringify(owner));
   });
