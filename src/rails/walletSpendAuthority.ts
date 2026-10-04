@@ -145,9 +145,11 @@ export interface WalletSpendStateStore {
    * Serialize one wallet/chain policy transaction. Implementations used across
    * processes MUST hold an exclusive, crash-recoverable lock until `operation`
    * returns and durably publish the returned state before resolving. A store
-   * with an asynchronous authoritative clock SHOULD pass a timestamp sampled
+   * with an asynchronous authoritative clock MUST pass a timestamp sampled
    * after acquiring that serialization boundary. The optional parameter keeps
-   * existing one-argument custom stores source-compatible.
+   * existing one-argument custom stores without such a clock source-compatible;
+   * clock-bearing stores that omit it fail closed rather than using a stale
+   * pre-lock timestamp for a spend-authority decision.
    */
   transact<T>(
     scope: string,
@@ -1191,14 +1193,14 @@ export function createWalletSpendAuthorityV1(
       value: T;
     }>,
   ): Promise<T> => {
-    // Legacy custom stores may expose an asynchronous clock without supplying
-    // it at their serialization point. Retain their historical behavior while
-    // official stores pass a fresh serialized timestamp below.
-    const legacyServerTimestamp = serverNow === undefined ? undefined :
-      safeInteger(await serverNow(), "wallet spend clock");
     return transact(scope, (stored, serializedNow) => {
+      if (serverNow !== undefined && serializedNow === undefined) {
+        throw new DacsError(
+          "wallet spend authoritative clock must be sampled after serialization",
+        );
+      }
       const timestamp = safeInteger(
-        serializedNow ?? legacyServerTimestamp ?? now(),
+        serializedNow ?? now(),
         "wallet spend clock",
       );
       const state = captureState(stored, policy, policyHash);
@@ -1247,11 +1249,14 @@ export function createWalletSpendAuthorityV1(
     token: Readonly<WalletSpendLeaseTokenV1>,
     staleMessage: string,
   ): Promise<void> => {
-    const legacyServerTimestamp = serverNow === undefined ? undefined :
-      safeInteger(await serverNow(), "wallet spend clock");
     await transact(scope, (stored, serializedNow) => {
+      if (serverNow !== undefined && serializedNow === undefined) {
+        throw new DacsError(
+          "wallet spend authoritative clock must be sampled after serialization",
+        );
+      }
       const timestamp = safeInteger(
-        serializedNow ?? legacyServerTimestamp ?? now(),
+        serializedNow ?? now(),
         "wallet spend clock",
       );
       const state = captureState(stored, policy, policyHash);

@@ -262,6 +262,47 @@ describe("wallet-wide spend authority (#291)", () => {
     await expect(wallet.inspect()).resolves.toMatchObject({ revision: 1 });
   });
 
+  test("fails closed when an authoritative store omits its serialized clock", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const clock = { value: 1_000 };
+    let omitSerializedNow = false;
+    let releaseTransaction: (() => void) | undefined;
+    let transactionEntered: (() => void) | undefined;
+    const transactionIsEntered = new Promise<void>((resolve) => {
+      transactionEntered = resolve;
+    });
+    const transactionCanContinue = new Promise<void>((resolve) => {
+      releaseTransaction = resolve;
+    });
+    const store: WalletSpendStateStore = {
+      serverNow: async () => clock.value,
+      async transact(scope, operation) {
+        if (omitSerializedNow) {
+          transactionEntered?.();
+          await transactionCanContinue;
+        }
+        return retained.transact(scope, (state) =>
+          operation(state, omitSerializedNow ? undefined : clock.value));
+      },
+    };
+    const wallet = authority({ store, currentTime: clock });
+    const claim = await wallet.reserve(reservation("serialized-clock"));
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    omitSerializedNow = true;
+    const begin = claim.permit.beginEffect();
+    await transactionIsEntered;
+    clock.value = 1_101;
+    releaseTransaction?.();
+
+    await expect(begin).rejects.toThrow(/authoritative clock must be sampled after serialization/);
+    await expect(claim.permit.assertCurrent()).rejects.toThrow(
+      /authoritative clock must be sampled after serialization/,
+    );
+    omitSerializedNow = false;
+    await expect(wallet.inspect()).resolves.toMatchObject({ revision: 1 });
+  });
+
   test("serializes independent authorities and retains ambiguous effects", async () => {
     const store = createInMemoryWalletSpendStateStore();
     const first = authority({ store, owner: "worker-a" });

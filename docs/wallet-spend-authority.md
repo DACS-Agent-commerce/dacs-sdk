@@ -87,6 +87,10 @@ The integrity key must be loaded from the host secret provider and must not be
 stored inside the state directory. Multi-host wallets need a transactional
 shared implementation of `WalletSpendStateStore`; host-local filesystem locks
 must not be placed on a network filesystem.
+If a custom store exposes the asynchronous authoritative `serverNow()` clock,
+its `transact()` callback must also receive a timestamp sampled after acquiring
+serialization. The authority fails closed when that timestamp is missing;
+sampling the clock before a transaction wait can authorize an expired permit.
 
 ## Minimal integration shape
 
