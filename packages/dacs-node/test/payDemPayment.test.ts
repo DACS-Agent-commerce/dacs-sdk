@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,12 @@ import {
   type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import type {
+  DemosWriteJournal,
+  DemosWriteJournalLease,
+  DemosWriteJournalRecord,
+} from "@kynesyslabs/dacs/substrate";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -25,6 +31,11 @@ import {
 } from "@kynesyslabs/dacs/commerce";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
+import {
+  createDacsDemosActorRuntimeV1,
+  type DacsDemosAdapterV1,
+} from "../src/demosRuntime.js";
+import { loadDacsSecretV1 } from "../src/secrets.js";
 import {
   createDacsFixedPricePayDemBuyerReconciliationV1,
 } from "../src/fixedPricePayDemBuyerPayment.js";
@@ -52,6 +63,8 @@ const SELLER = "did:example:pay-dem-seller";
 const PAYER = "1".repeat(64);
 const PAYEE = "2".repeat(64);
 const TX_HASH = "3".repeat(64);
+const PAYER_PUBLIC_KEY = Uint8Array.from({ length: 32 }, () => 0x11);
+const PAYER_AUTHORITY = demosAgentClaimRef(PAYER_PUBLIC_KEY);
 
 const PROTOCOL: FixedPricePayDemProtocolBinding = {
   commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -273,6 +286,93 @@ function observeWalletEffectBegin(
   });
 }
 
+function payDemRuntimeConfig(directory: string) {
+  return {
+    mode: "live-demos" as const,
+    profile: DACS_NODE_LIVE_PROFILE,
+    role: "buyer" as const,
+    dataDirectory: directory,
+    demos: { rpcUrl: "http://127.0.0.1:5350" },
+    rail: {
+      registryIndexRef: "dacs4:registry:v0.1",
+      requestedNetwork: "demos",
+      enabledProfiles: ["pay-dem"] as const,
+    },
+    limits: {
+      maxServiceAmount: { asset: "DEM", amount: "1" },
+      maxSetupSpendDem: "10",
+      maxDemosNetworkFeeDem: "2",
+      maxEvmNetworkFeeEth: "0",
+    },
+  };
+}
+
+function generatedDemosAdapter(
+  wallet: string,
+  overrides: Partial<DacsDemosAdapterV1> = {},
+): DacsDemosAdapterV1 {
+  return {
+    raw: {
+      getNetworkInfo: vi.fn(async () => ({ chain: "test" })),
+      getAddressNonce: vi.fn(async () => 7),
+      getAddressInfo: vi.fn(async () => ({ balance: "10" })),
+    },
+    connect: vi.fn(async () => undefined),
+    getChainIdentity: vi.fn(async () => "pay-dem-composition-chain"),
+    getAddress: vi.fn(() => wallet),
+    getPublicKey: vi.fn(async () => Uint8Array.from(PAYER_PUBLIC_KEY)),
+    sign: vi.fn(async () => new Uint8Array(64).fill(7)),
+    resolveIdentity: vi.fn(async (ref) => ({
+      ref,
+      boundTo: ref,
+      raw: { identity: "authenticated-test-fixture" },
+    })),
+    readAnchor: vi.fn(async () => null),
+    resolveAnchorByName: vi.fn(async () => ({ status: "absent" as const })),
+    scanOwnAnchorsByNamePrefix: vi.fn(async () => ({
+      status: "ok" as const,
+      anchors: [],
+    })),
+    anchorWriteOnce: vi.fn(async () => ({ address: "stor:test" })),
+    verifyDemosAnchorReceipt: vi.fn(async () => true),
+    resolveDemosAnchorReceipt: vi.fn(async () => null),
+    reconcileWalletJournal: vi.fn(async () => undefined),
+    reconcileNativeTransferJournal: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+function instrumentJournal(
+  journal: DemosWriteJournal,
+  events: string[],
+): void {
+  const acquire = journal.acquire.bind(journal);
+  Object.defineProperty(journal, "acquire", {
+    configurable: true,
+    value: async (...args: Parameters<DemosWriteJournal["acquire"]>) => {
+      const lease = await acquire(...args);
+      return {
+        key: lease.key,
+        generation: lease.generation,
+        get snapshot() {
+          return lease.snapshot;
+        },
+        async put(record: DemosWriteJournalRecord) {
+          if (record.stage === "prepared") events.push("demos-prepared");
+          if (record.stage === "broadcast-intent") events.push("broadcast-intent");
+          if (record.stage === "canonical-confirmed") events.push("canonical-confirmed");
+          await lease.put(record);
+        },
+        async assertCurrent() {
+          events.push("demos-authority-guard");
+          await lease.assertCurrent();
+        },
+        release: () => lease.release(),
+      } satisfies DemosWriteJournalLease;
+    },
+  });
+}
+
 describe("native DEM buyer payment track", () => {
   const roots: string[] = [];
   const databases: DacsNodeSqliteDatabase[] = [];
@@ -293,6 +393,87 @@ describe("native DEM buyer payment track", () => {
     });
     databases.push(database);
     return database;
+  }
+
+  async function composedGeneratedRail(
+    directory: string,
+    innerRail: Readonly<PayDemRail>,
+    events: string[],
+  ): Promise<Readonly<{
+    rail: Readonly<PayDemRail>;
+    journal: DemosWriteJournal;
+  }>> {
+    const secretPath = join(directory, "demos.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const secret = await loadDacsSecretV1({
+      name: "buyer-demos-identity",
+      mode: "live-demos",
+      filePath: secretPath,
+    });
+    let journal!: DemosWriteJournal;
+    const adapter = generatedDemosAdapter(PAYER, {
+      async reconcileWalletJournal(lease) {
+        const intent = lease.snapshot.records.find((record) =>
+          record.kind === "native-transfer" && record.stage === "broadcast-intent");
+        if (intent === undefined) return;
+        await lease.put({
+          ...intent,
+          stage: "canonical-confirmed",
+          blockNumber: 42,
+          blockHash: "a".repeat(64),
+          blockTimestamp: 1_780_000_000_000,
+          finalityProof: "test-only-finality-proof",
+          finalityProofHash: "b".repeat(64),
+          updatedAt: Date.now(),
+        });
+      },
+    });
+    const runtime = await createDacsDemosActorRuntimeV1({
+      config: payDemRuntimeConfig(directory),
+      role: "buyer",
+      authority: PAYER_AUTHORITY,
+      demosIdentity: secret,
+      createAdapter: async (input) => {
+        journal = input.writeJournal;
+        instrumentJournal(journal, events);
+        return adapter;
+      },
+      createPayDemRail: async () => innerRail,
+    });
+    if (runtime.payDem === undefined) throw new Error("expected native DEM rail");
+    // T1 independently proves the default factory marks this exact frozen
+    // wrapper. Marking here composes that capability with a deterministic
+    // inner-rail fixture without replacing the real wrapper or journal.
+    return Object.freeze({
+      rail: markDacsSdkPreparedPayDemRailV1(runtime.payDem.rail),
+      journal,
+    });
+  }
+
+  function instrumentPaymentDatabase(
+    database: DacsNodeSqliteDatabase,
+    events: string[],
+  ): void {
+    const recordEffectCheckpoint = database.recordEffectCheckpoint.bind(database);
+    Object.defineProperty(database, "recordEffectCheckpoint", {
+      configurable: true,
+      value: (...args: Parameters<DacsNodeSqliteDatabase["recordEffectCheckpoint"]>) => {
+        const result = recordEffectCheckpoint(...args);
+        if (args[0].name === "pay-dem-prepared-transfer") events.push("checkpoint");
+        return result;
+      },
+    });
+    const isCurrentEffect = database.isCurrentEffect.bind(database);
+    Object.defineProperty(database, "isCurrentEffect", {
+      configurable: true,
+      value: (...args: Parameters<DacsNodeSqliteDatabase["isCurrentEffect"]>) => {
+        const result = isCurrentEffect(...args);
+        if (events.at(-1) === "wallet-effect-begun") {
+          events.push("outer-authority-guard");
+        }
+        return result;
+      },
+    });
   }
 
   afterEach(() => {
@@ -392,6 +573,284 @@ describe("native DEM buyer payment track", () => {
       retainedReservations: 1,
       assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
     });
+  });
+
+  it("composes the generated Demos wrapper through the wallet pre-broadcast boundary", async () => {
+    const directory = root();
+    const database = await open(join(directory, "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const events: string[] = [];
+    instrumentPaymentDatabase(database, events);
+    const innerRail: PayDemRail = {
+      address: PAYER,
+      async settle(input, effectFence) {
+        expect(effectFence).toBeUndefined();
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        events.push("broadcast");
+        return {
+          ok: true,
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+          networkFeeOs: "1000000000",
+        };
+      },
+    };
+    const generated = await composedGeneratedRail(directory, innerRail, events);
+    const walletSpendAuthority = observeWalletEffectBegin(
+      createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER,
+        chainId: "demos",
+        asset: "DEM",
+        maximumConcurrentEffects: 1,
+      }),
+      events,
+    );
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-generated-composition",
+      rail: generated.rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice: () => { events.push("notice-queued"); },
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-generated-composition",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(events).toEqual([
+      "checkpoint",
+      "demos-prepared",
+      "wallet-reserved",
+      "wallet-effect-begun",
+      "outer-authority-guard",
+      "demos-authority-guard",
+      "broadcast-intent",
+      "broadcast",
+      "canonical-confirmed",
+      "notice-queued",
+    ]);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "final", outcome: "success" });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
+    });
+    const retained = await generated.journal.acquire({
+      chainIdentity: "pay-dem-composition-chain",
+      wallet: PAYER,
+    });
+    expect(retained.snapshot.records).toMatchObject([{
+      stage: "canonical-confirmed",
+      txRef: TX_HASH,
+    }]);
+    await retained.release();
+  });
+
+  it("keeps the generated Demos record prepared when wallet reserve is denied", async () => {
+    const directory = root();
+    const database = await open(join(directory, "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const events: string[] = [];
+    instrumentPaymentDatabase(database, events);
+    let broadcasts = 0;
+    const innerRail: PayDemRail = {
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 8,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        broadcasts += 1;
+        throw new Error("unreachable broadcast fixture");
+      },
+    };
+    const generated = await composedGeneratedRail(directory, innerRail, events);
+    const authority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    const blocker = await authority.reserve({
+      ...recoveryReservation(),
+      reservationId: "pay-dem:existing-wallet-effect",
+      jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+    });
+    expect(blocker.status).toBe("reserved");
+    const walletSpendAuthority = observeWalletEffectBegin(authority, events);
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-generated-denial",
+      rail: generated.rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice: vi.fn(),
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-generated-denial",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(events).toEqual(["checkpoint", "demos-prepared"]);
+    expect(broadcasts).toBe(0);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "operator-action",
+      reasonCode: "wallet-spend-concurrency-limit",
+    });
+    expect(await authority.inspect()).toMatchObject({ activeEffects: 1, revision: 1 });
+    const retained = await generated.journal.acquire({
+      chainIdentity: "pay-dem-composition-chain",
+      wallet: PAYER,
+    });
+    expect(retained.snapshot.records).toMatchObject([{
+      stage: "prepared",
+      txRef: TX_HASH,
+    }]);
+    await retained.release();
+  });
+
+  it("keeps a reserved row fail-closed when beginEffect acknowledgement fails", async () => {
+    const database = await open(join(root(), "buyer.sqlite"));
+    const secondJobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7G";
+    const secondOrder: FixedPricePayDemOrderInput = {
+      ...ORDER,
+      jobId: secondJobId,
+      sdkJobs: {
+        role: "buyer",
+        agreement: `buyer:agreement:${secondJobId}`,
+        payment: `buyer:payment:${secondJobId}`,
+        paymentEvidence: `buyer:payment-evidence:${secondJobId}`,
+        buyerReceived: `buyer:received:${secondJobId}`,
+        audit: `buyer:audit:${secondJobId}`,
+      },
+    };
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    putDacsLiveOrderInputV1({ database, order: secondOrder, application: {} });
+    const now = { value: 1_000 };
+    const authenticateRecovery = vi.fn(async () => true);
+    const authority = recoveryWalletAuthority(authenticateRecovery, now);
+    const events: string[] = [];
+    const walletSpendAuthority: WalletSpendAuthorityV1 = Object.freeze({
+      policy: authority.policy,
+      policyHash: authority.policyHash,
+      async reserve(...args: Parameters<WalletSpendAuthorityV1["reserve"]>) {
+        const claim = await authority.reserve(...args);
+        if (claim.status !== "reserved") return claim;
+        events.push("wallet-reserved");
+        return Object.freeze({
+          status: "reserved" as const,
+          permit: Object.freeze({
+            ...claim.permit,
+            async beginEffect(): Promise<void> {
+              events.push("wallet-begin-ack-unknown");
+              throw new Error("simulated remote begin acknowledgement failure");
+            },
+          }),
+        });
+      },
+      reconcile: (...args: Parameters<WalletSpendAuthorityV1["reconcile"]>) =>
+        authority.reconcile(...args),
+      inspect: () => authority.inspect(),
+    });
+    let broadcasts = 0;
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 9,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        broadcasts += 1;
+        throw new Error("unreachable broadcast fixture");
+      },
+    });
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-begin-ack-unknown",
+      rail,
+      resolveAuthority: ({ operation }) => ({
+        ...AUTHORITY,
+        jobId: operation.order.jobId,
+      }),
+      reconcile: () => ({ status: "operator-action",
+        reasonCode: "pay-dem-prepared-transfer-checkpoint-missing" }),
+      publishNotice: vi.fn(),
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-begin-ack-unknown",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+    expect(events).toEqual(["wallet-reserved", "wallet-begin-ack-unknown"]);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "indeterminate" });
+    // The remote acknowledgement is uncertain and no independent terminal
+    // chain observation proves non-invocation. Expiry therefore escalates the
+    // exact reservation for operator action; it never authorizes release.
+    now.value = 1_101;
+    expect(await authority.inspect()).toMatchObject({
+      activeEffects: 1,
+      operatorActionReservations: [expect.any(String)],
+    });
+
+    await coordinator.startOrder(secondOrder);
+    await coordinator.runPending({ limit: 2 });
+    expect(broadcasts).toBe(0);
+    expect((await coordinator.getOrderStatus(secondJobId))?.tracks.payment).toMatchObject({
+      state: "operator-action",
+      reasonCode: "wallet-spend-concurrency-limit",
+    });
+    expect(authenticateRecovery).not.toHaveBeenCalled();
   });
 
   it.each([
