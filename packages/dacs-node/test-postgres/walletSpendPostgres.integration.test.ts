@@ -464,6 +464,198 @@ describe("real PostgreSQL wallet spend authority", () => {
     }
   });
 
+  it("rejects expiry before linearization and completes witnessed catch-up", async () => {
+    const expiryHarness = await createHarness();
+    try {
+      await expiryHarness.raw.query(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1);
+      const selected = policy("postgres-lock-expiry");
+      const pin = continuity(44);
+      const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+      await provisionDacsWalletSpendPostgresLineageV1(expiryHarness.pool, {
+        policy: selected,
+        operationId: "00000000-0000-4000-8000-000000000308",
+        continuity: pin,
+        newLineageEvidence: {
+          sourceIdentity: "authenticated-lock-expiry-test",
+          evidenceHash: "5".repeat(64),
+        },
+        authenticateEvidence: () => true,
+      });
+      const authority = createDacsWalletSpendContinuityAuthorityV2({
+        policy: selected,
+        store: createDacsPostgresWalletSpendStateStoreV1({
+          pool: expiryHarness.pool,
+          wallet: selected.wallet,
+          chainId: selected.chainId,
+          continuity: pin,
+        }),
+        dependencies: {
+          readBalance: async () => "1000",
+          authenticateRecovery: async () => true,
+          owner: "postgres-lock-expiry-test",
+          leaseDurationMs: 100,
+        },
+      }).authority;
+      const claim = await authority.reserve(reservation("postgres-lock-expiry"));
+      if (claim.status !== "reserved") throw new Error("expected PostgreSQL reservation");
+      const before = await expiryHarness.raw.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dacs_wallet_spend_candidates",
+      );
+      const blocker = await expiryHarness.raw.connect();
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "LOCK TABLE dacs_wallet_spend_lineages IN ACCESS EXCLUSIVE MODE",
+        );
+        let beginSettled = false;
+        let currentSettled = false;
+        const begin = claim.permit.beginEffect();
+        const current = claim.permit.assertCurrent();
+        void begin.then(
+          () => { beginSettled = true; },
+          () => { beginSettled = true; },
+        );
+        void current.then(
+          () => { currentSettled = true; },
+          () => { currentSettled = true; },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect({ beginSettled, currentSettled }).toEqual({
+          beginSettled: false,
+          currentSettled: false,
+        });
+        await blocker.query("COMMIT");
+        const results = await Promise.allSettled([begin, current]);
+        expect(results).toHaveLength(2);
+        for (const result of results) {
+          expect(result.status).toBe("rejected");
+          if (result.status === "rejected") {
+            expect(String(result.reason)).toMatch(/no longer current|cannot begin an effect/);
+          }
+        }
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+      }
+      await expect(expiryHarness.raw.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM dacs_wallet_spend_candidates",
+      )).resolves.toMatchObject({ rows: before.rows });
+      await expect(authority.inspect()).resolves.toMatchObject({ revision: 1 });
+    } finally {
+      await destroyHarness(expiryHarness);
+    }
+
+    const catchUpHarness = await createHarness();
+    try {
+      await catchUpHarness.raw.query(DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1);
+      const selected = policy("postgres-witness-catch-up");
+      const reference = continuity(45);
+      let observeAdvance = false;
+      let signalAdvance: (() => void) | undefined;
+      const witnessAdvanced = new Promise<void>((resolve) => {
+        signalAdvance = resolve;
+      });
+      const pin: DacsWalletSpendContinuityPinV1 = {
+        authorityId: reference.authorityId,
+        epoch: reference.epoch,
+        verificationKey: reference.verificationKey,
+        witness: {
+          readCurrent: (input) => reference.witness.readCurrent(input),
+          async compareAndSet(input) {
+            const receipt = await reference.witness.compareAndSet(input);
+            if (observeAdvance) signalAdvance?.();
+            return receipt;
+          },
+          lookupAdvance: (input) => reference.witness.lookupAdvance(input),
+        },
+      };
+      const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+      await provisionDacsWalletSpendPostgresLineageV1(catchUpHarness.pool, {
+        policy: selected,
+        operationId: "00000000-0000-4000-8000-000000000309",
+        continuity: pin,
+        newLineageEvidence: {
+          sourceIdentity: "authenticated-witness-catch-up-test",
+          evidenceHash: "4".repeat(64),
+        },
+        authenticateEvidence: () => true,
+      });
+      const authority = createDacsWalletSpendContinuityAuthorityV2({
+        policy: selected,
+        store: createDacsPostgresWalletSpendStateStoreV1({
+          pool: catchUpHarness.pool,
+          wallet: selected.wallet,
+          chainId: selected.chainId,
+          continuity: pin,
+        }),
+        dependencies: {
+          readBalance: async () => "1000",
+          authenticateRecovery: async () => true,
+          owner: "postgres-witness-catch-up-test",
+          leaseDurationMs: 2_000,
+        },
+      }).authority;
+      const claim = await authority.reserve(reservation("postgres-witness-catch-up"));
+      if (claim.status !== "reserved") throw new Error("expected PostgreSQL reservation");
+      const blocker = await catchUpHarness.raw.connect();
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT lineage_key FROM dacs_wallet_spend_lineages " +
+            "WHERE lineage_key = $1 FOR UPDATE",
+          [lineage],
+        );
+        observeAdvance = true;
+        let beginSettled = false;
+        const begin = claim.permit.beginEffect();
+        void begin.then(
+          () => { beginSettled = true; },
+          () => { beginSettled = true; },
+        );
+        let signalTimeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            witnessAdvanced,
+            new Promise<never>((_resolve, reject) => {
+              signalTimeout = setTimeout(
+                () => reject(new Error("witness advance was not observed")),
+                3_000,
+              );
+            }),
+          ]);
+        } finally {
+          if (signalTimeout !== undefined) clearTimeout(signalTimeout);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+        expect(beginSettled).toBe(false);
+        await blocker.query("COMMIT");
+        await expect(begin).resolves.toBeUndefined();
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        blocker.release();
+      }
+      await expect(authority.inspect()).resolves.toMatchObject({ activeEffects: 1 });
+      await expect(catchUpHarness.raw.query<{ state: WalletSpendStateV1 }>(
+        "SELECT state FROM dacs_wallet_spend_lineages WHERE lineage_key = $1",
+        [lineage],
+      )).resolves.toMatchObject({ rows: [{
+        state: {
+          generation: 2,
+          reservations: [{
+            reservationId: "postgres-witness-catch-up",
+            stage: "effect-pending",
+          }],
+        },
+      }] });
+      await expect(catchUpHarness.raw.query(
+        "SELECT status, count(*)::text AS count FROM dacs_wallet_spend_candidates " +
+          "GROUP BY status ORDER BY status",
+      )).resolves.toMatchObject({ rows: [{ status: "applied", count: "3" }] });
+    } finally {
+      await destroyHarness(catchUpHarness);
+    }
+  });
+
   it("adopts the initial schema and rejects an ambiguous legacy candidate role", async () => {
     const selected = policy("legacy-postgres-policy");
     const accepted = await createHarness();

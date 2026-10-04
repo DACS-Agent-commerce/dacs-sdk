@@ -321,6 +321,8 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
   failNextCommitAfterApply = false;
   failNextSerializableAdvance = false;
   nowMs = 1_000;
+  advanceNowAfterNextLoad?: number;
+  advanceNowAfterNextCandidateInsert?: number;
   private lockTail: Promise<void> = Promise.resolve();
 
   constructor(readonly row: {
@@ -373,7 +375,12 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
     }
     if (text.includes("FROM dacs_wallet_spend_lineages") &&
         !text.includes("FOR UPDATE")) {
-      return { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+      const result = { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+      if (this.advanceNowAfterNextLoad !== undefined) {
+        this.nowMs = this.advanceNowAfterNextLoad;
+        this.advanceNowAfterNextLoad = undefined;
+      }
+      return result;
     }
     if (text.startsWith("INSERT INTO dacs_wallet_spend_candidates")) {
       const key = `${String(values[1])}\0${String(values[4])}\0${String(values[5])}` +
@@ -395,6 +402,10 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
           continuity_receipt: null,
           status: "prepared",
         });
+        if (this.advanceNowAfterNextCandidateInsert !== undefined) {
+          this.nowMs = this.advanceNowAfterNextCandidateInsert;
+          this.advanceNowAfterNextCandidateInsert = undefined;
+        }
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
@@ -428,6 +439,13 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
         rows: candidate === undefined ? [] : [structuredClone(candidate) as Row],
         rowCount: candidate === undefined ? 0 : 1,
       };
+    }
+    if (text.startsWith("UPDATE dacs_wallet_spend_candidates")) {
+      const candidate = [...this.candidates.values()].find(({ candidate_id }) =>
+        candidate_id === String(values[0]));
+      if (candidate?.status !== "prepared") return { rows: [], rowCount: 0 };
+      candidate.status = "superseded";
+      return { rows: [], rowCount: 1 };
     }
     throw new Error(`unexpected pool query: ${text}`);
   }
@@ -1578,6 +1596,110 @@ describe("PostgreSQL wallet authority persistence", () => {
       createdAt: 2_000,
       updatedAt: 2_000,
       leaseExpiresAt: 32_000,
+    });
+  });
+
+  it("samples PostgreSQL time after loading the serialized head", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+    const claim = await authority.reserve({
+      reservationVersion: "1",
+      reservationId: "serialized-clock",
+      jobId: "job-serialized-clock",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    pool.advanceNowAfterNextLoad = 1_101;
+    await expect(claim.permit.beginEffect()).rejects.toThrow(
+      /cannot begin an effect/,
+    );
+    expect(pool.candidates.size).toBe(1);
+    expect(pool.row.state.reservations[0]).toMatchObject({
+      reservationId: "serialized-clock",
+      stage: "reserved",
+    });
+  });
+
+  it("revalidates expiry after candidate persistence and before witness CAS", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+    const claim = await authority.reserve({
+      reservationVersion: "1",
+      reservationId: "pre-witness-expiry",
+      jobId: "job-pre-witness-expiry",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    pool.advanceNowAfterNextCandidateInsert = 1_101;
+    await expect(claim.permit.beginEffect()).rejects.toThrow(
+      /cannot begin an effect/,
+    );
+    expect([...pool.candidates.values()].map(({ status }) => status)).toEqual([
+      "applied",
+      "superseded",
+    ]);
+    expect(pool.row).toMatchObject({
+      revision: 1,
+      state: {
+        generation: 1,
+        reservations: [{ reservationId: "pre-witness-expiry", stage: "reserved" }],
+      },
     });
   });
 

@@ -797,22 +797,42 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         }
         let settlement: Readonly<SettleResult>;
         try {
-          await claim.permit.beginEffect();
+          let preparedCheckpointed = false;
+          let beginEffect: Promise<void> | undefined;
+          const beginPreparedEffect = (): Promise<void> => {
+            if (!preparedCheckpointed) {
+              throw new DacsPayDemBuyerPaymentError(
+                "pay-dem-prepared-transfer-checkpoint-missing",
+              );
+            }
+            beginEffect ??= claim.permit.beginEffect();
+            return beginEffect;
+          };
           const raw = await rail.settle({
             recipient: payment.payee,
             amount: payment.amountOs,
             maxTotalDebitOs: payment.maxTotalDebitOs,
             network: payment.network,
             recovery: recoveryContext(payment),
-            journalPreparedTransfer: async (prepared) => {
-              const captured = capturePrepared(prepared, payment);
+            journalPreparedTransfer: async (rawPrepared) => {
+              const captured = capturePrepared(rawPrepared, payment);
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
+              preparedCheckpointed = true;
             },
-            assertCurrentBeforeBroadcast: () => fence.assertCurrent(),
+            assertCurrentBeforeBroadcast: async () => {
+              await beginPreparedEffect();
+              await fence.assertCurrent();
+            },
           }, combineWalletSpendEffectFenceV1(
             settlementFence(payment, fence),
             claim.permit,
           ));
+          if (beginEffect === undefined) {
+            throw new DacsPayDemBuyerPaymentError(
+              "pay-dem-pre-broadcast-fence-not-invoked",
+            );
+          }
+          await beginEffect;
           settlement = captureSettlement(raw, payment);
           await claim.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
