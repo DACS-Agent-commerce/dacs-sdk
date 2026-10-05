@@ -4612,6 +4612,7 @@ RUN groupadd --system --gid 10001 dacs && useradd --system --uid 10001 --gid dac
 COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
+ENTRYPOINT []
 USER 10001:10001
 CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]
 `;

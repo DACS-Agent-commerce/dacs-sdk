@@ -518,6 +518,7 @@ describe("create-dacs-agent", () => {
     expect(dockerfile).toContain("npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund");
     expect(dockerfile).toContain("--mode=0755 /app");
     expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).toContain("ENTRYPOINT []");
     expect(dockerfile).toContain(
       'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
     );
