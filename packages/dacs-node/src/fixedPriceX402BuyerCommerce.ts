@@ -80,6 +80,16 @@ function paymentRailContext(rail: Readonly<AuthenticatedRailDefinition>) {
   });
 }
 
+function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
+  const value = rail.parameters.finalityBlocks;
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new TypeError(
+      "fixed-price buyer commerce requires a positive x402 finalityBlocks parameter",
+    );
+  }
+  return Number(value);
+}
+
 function agreementPrice(value: unknown): Readonly<{ amount: string; currency: string }> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const terms = (value as Record<string, unknown>).terms;
@@ -154,6 +164,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
     throw new TypeError("fixed-price buyer commerce options are invalid");
   }
   const railContext = paymentRailContext(options.rail);
+  const finalityBlocks = requiredFinalityBlocks(options.rail);
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
     throw new TypeError("fixed-price buyer commerce requires an ERC-20 rail");
@@ -185,6 +196,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             reason: "buyer settlement finality is unavailable" };
         }
         const event = request.evidence.paymentTxRefs?.[0];
+        const evidenceFinalityBlocks =
+          request.evidence.settlementFinality?.finalityBlocks;
         const captured = stored.outcome.settlement.signedEvent;
         const price = agreementPrice(agreement.artifact);
         if (request.evidence.phase !== "pay-x402" ||
@@ -196,6 +209,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             event.protocolVersion !== captured.protocolVersion ||
             price === null || request.evidence.paymentAmount.amount !== price.amount ||
             request.evidence.paymentAmount.currency !== price.currency ||
+            (evidenceFinalityBlocks !== undefined &&
+              evidenceFinalityBlocks !== finalityBlocks) ||
             baseUnits(
               request.evidence.paymentAmount.amount,
               asset.decimals,

@@ -73,6 +73,7 @@ export function createAccountingTestWalletSpendAuthorityV1(input: Readonly<{
   chainId: string;
   asset: string;
   balance?: string;
+  maximumConcurrentEffects?: number;
 }>): WalletSpendAuthorityV1 {
   const ceiling = "999999999999999999999999999999";
   return createWalletSpendAuthorityV1({
@@ -80,7 +81,7 @@ export function createAccountingTestWalletSpendAuthorityV1(input: Readonly<{
     policyId: "test-accounting-wallet-authority",
     wallet: input.wallet,
     chainId: input.chainId,
-    maximumConcurrentEffects: 10,
+    maximumConcurrentEffects: input.maximumConcurrentEffects ?? 10,
     maximumRetainedReservations: 100,
     assets: [{
       asset: input.asset,

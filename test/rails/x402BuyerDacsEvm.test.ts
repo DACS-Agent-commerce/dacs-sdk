@@ -10,6 +10,7 @@ import { keccak256, recoverTypedDataAddress, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, test } from "vitest";
 
+import { canonicalize } from "../../src/canonical/jcs.js";
 import {
   createDacsX402BuyerEvmChallengeClient,
   prepareX402BuyerSettlement,
@@ -73,6 +74,14 @@ function requirements(
     },
     ...overrides,
   } as PaymentRequirements & X402BuyerPaymentRequirements;
+}
+
+function nestedContainer(depth: number, kind: "object" | "array"): unknown {
+  let value: unknown = kind === "object" ? {} : [];
+  for (let index = 1; index < depth; index += 1) {
+    value = kind === "object" ? { value } : [value];
+  }
+  return value;
 }
 
 function challenge(
@@ -190,6 +199,39 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       expect(result.intent.signedPaymentPayload.accepted).toEqual(wireRequirements);
     }
   });
+
+  test.each(["object", "array"] as const)(
+    "captures depth-128 expected requirement %s data and refuses depth 129",
+    async (kind) => {
+      const atDepth = (depth: number) => requirements({
+        extra: {
+          name: "USD Coin",
+          version: "2",
+          // Count both the enclosing requirements object and extra record.
+          depthProbe: nestedContainer(depth - 2, kind),
+        },
+      });
+      const accepted = atDepth(128);
+      const rejected = atDepth(129);
+
+      // The complete requirements value is the independent depth oracle.
+      expect(() => canonicalize(accepted)).not.toThrow();
+      expect(() => canonicalize(rejected)).toThrow(/nesting depth exceeds 128/);
+
+      const client = await createDacsX402BuyerEvmChallengeClient({
+        evmPrivateKey: PRIVATE_KEY,
+        authority: authority(),
+        expectedRequirements: accepted,
+      });
+      expect(client.address).toBe(ACCOUNT.address);
+      expect(client.isPaymentRequirementsAuthorized?.(accepted)).toBe(true);
+      await expect(createDacsX402BuyerEvmChallengeClient({
+        evmPrivateKey: PRIVATE_KEY,
+        authority: authority(),
+        expectedRequirements: rejected,
+      })).rejects.toThrow(/exactly match/);
+    },
+  );
 
   test("rejects the stock ExactEvmScheme random nonce at durable preparation", async () => {
     const core = new x402Client().register(

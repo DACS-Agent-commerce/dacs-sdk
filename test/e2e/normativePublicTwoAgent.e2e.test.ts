@@ -2052,8 +2052,11 @@ async function settleAndRecover(input: {
     state,
   });
   const intent = await prepareSettlementIntent(input);
+  // This offline fetch performs the fsync-heavy seller workflow inline, not
+  // just an HTTP round trip. Bound it below the enclosing test's budget without
+  // mistaking slow fixture I/O for loss of the PAYMENT-RESPONSE disclosure.
   const paidTransport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test" },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("retained payment header absent");
@@ -3626,8 +3629,10 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   });
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
+  // Process A performs the same inline durable seller work as settleAndRecover.
+  // Keep its fixture deadline below the whole-process stage's 25-second budget.
   const transport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test" },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("process A lost its retained payment header");

@@ -640,6 +640,10 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("dacs-generated-upgrade-check/v1");
     expect(combined).toContain("inspectDacsNodeSqliteUpgradeSafetyV1");
     expect(combined.match(/httpTransport: Object\.freeze/g)).toHaveLength(2);
+    expect(combined).toContain(
+      "sqliteSchemaVersion: backup.release.sqliteSchemaVersion + 1",
+    );
+    expect(combined).toContain("release: { ...backup.release, sqliteSchemaVersion: 0 }");
     expect(combined).toContain("registry.npmjs.org");
     expect(combined).toContain("automatic-upgrade-not-supported");
     expect(combined).not.toContain('availableVersion: "not-queried"');

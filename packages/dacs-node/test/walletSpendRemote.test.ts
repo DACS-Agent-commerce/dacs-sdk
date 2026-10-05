@@ -10,7 +10,7 @@ import {
   type WalletSpendPolicyV1,
   type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
-import { sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 
 import {
   createDacsRemoteWalletSpendAuthorityV1,
@@ -25,6 +25,7 @@ import {
   createInMemoryDacsWalletSpendContinuityStateStoreV1,
   createInMemoryDacsWalletSpendContinuityWitnessV1,
   dacsWalletSpendLineageKeyV1,
+  type DacsWalletSpendContinuityReceiptV1,
 } from "../src/walletSpendPostgres.js";
 
 const roots: string[] = [];
@@ -1125,6 +1126,169 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     await expect(remote.inspect()).rejects.toMatchObject({
       reasonCode: "wallet-spend-authority-continuity-proof-invalid",
     });
+  });
+
+  it.each(["older-revision", "same-revision-fork"] as const)(
+    "rejects a validly signed V2 %s head after observing a newer head",
+    async (fork) => {
+      const tokenFilePath = await tokenFile();
+      const live = await serverV2();
+      // Same authority id, epoch and witness key with an independent head: a
+      // restored or forked authority whose receipts verify in isolation.
+      const forked = await serverV2();
+      expect(forked.verificationKey).toBe(live.verificationKey);
+      let target = live;
+      const remote = await createDacsRemoteWalletSpendAuthorityV2({
+        policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+        authorityId: live.authorityId, epoch: live.epoch,
+        witnessVerificationKey: live.verificationKey,
+        allowInsecureLoopback: true,
+        fetch: (async (input: RequestInfo | URL, init?: RequestInit) =>
+          target.handler(new Request(input, init))) as typeof fetch,
+      });
+      await expect(remote.reserve(reservation())).resolves.toMatchObject({
+        status: "reserved",
+      });
+      await expect(remote.inspect()).resolves.toMatchObject({ revision: 1 });
+      if (fork === "same-revision-fork") {
+        await expect(forked.authority.reserve({
+          ...reservation(), reservationId: "forked", jobId: "job-forked",
+        })).resolves.toMatchObject({ status: "reserved" });
+      }
+      // Control: the forked proof is otherwise valid for a client that has
+      // not observed the newer head.
+      const unobserved = await createDacsRemoteWalletSpendAuthorityV2({
+        policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+        authorityId: live.authorityId, epoch: live.epoch,
+        witnessVerificationKey: live.verificationKey,
+        allowInsecureLoopback: true, fetch: handlerFetch(forked.handler),
+      });
+      await expect(unobserved.inspect()).resolves.toMatchObject({
+        revision: fork === "older-revision" ? 0 : 1,
+      });
+
+      target = forked;
+      await expect(remote.inspect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-continuity-proof-invalid",
+      });
+      target = live;
+      await expect(remote.inspect()).resolves.toMatchObject({ revision: 1 });
+    },
+  );
+
+  it.each(["envelope-revision", "advance-kind"] as const)(
+    "rejects a V2 response whose %s is not the signed current head",
+    async (tamper) => {
+      const tokenFilePath = await tokenFile();
+      const local = await serverV2();
+      // Same seed as serverV2: mints an advance receipt that matches the
+      // request's operation, request hash, nonce, revision and state hash.
+      const minting = createInMemoryDacsWalletSpendContinuityWitnessV1({
+        authorityId: local.authorityId, epoch: local.epoch,
+        seed: new Uint8Array(32).fill(21),
+      });
+      let tamperNext = false;
+      const tampering = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const response = await local.handler(new Request(input, init));
+        if (!tamperNext || !response.ok) return response;
+        tamperNext = false;
+        const body = await response.json() as Record<string, unknown>;
+        const continuity = body.continuity as DacsWalletSpendContinuityReceiptV1;
+        const changed = tamper === "envelope-revision"
+          ? {
+              ...body,
+              revision: 5,
+              result: { ...(body.result as Record<string, unknown>), revision: 5 },
+            }
+          : {
+              ...body,
+              continuity: await minting.witness.compareAndSet({
+                authorityId: local.authorityId, epoch: local.epoch,
+                lineageKey: continuity.lineageKey, predecessor: null,
+                next: { revision: continuity.revision, stateHash: continuity.stateHash },
+                candidateId: "00000000-0000-4000-8000-000000000078", roleId: "buyer",
+                operationId: continuity.operationId, requestHash: continuity.requestHash,
+                mutationIndex: 0, clientNonce: continuity.clientNonce,
+              }),
+            };
+        return new Response(JSON.stringify(changed), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+      const remote = await createDacsRemoteWalletSpendAuthorityV2({
+        policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath,
+        authorityId: local.authorityId, epoch: local.epoch,
+        witnessVerificationKey: local.verificationKey,
+        allowInsecureLoopback: true, fetch: tampering,
+      });
+
+      await expect(remote.inspect()).resolves.toMatchObject({ revision: 0 });
+      tamperNext = true;
+      await expect(remote.inspect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-continuity-proof-invalid",
+      });
+      // The rejected envelope did not advance the client's retained head.
+      await expect(remote.inspect()).resolves.toMatchObject({ revision: 0 });
+    },
+  );
+
+  it("scopes V2 retained-operation recovery to the authenticated role", async () => {
+    const local = await serverV2();
+    const otherToken = "other-role-scoped-test-token-which-is-long-enough";
+    const binding = createDacsWalletSpendContinuityAuthorityV2(local.bindingInput);
+    // Both roles may use this wallet; only the role-keyed operation log
+    // separates their retained requests and responses.
+    const handler = createDacsWalletSpendAuthorityServiceV2({
+      authenticate: (token) => token === TOKEN ? "buyer" :
+        token === otherToken ? "auditor" : null,
+      resolveAuthority: () => binding,
+      operations: createInMemoryDacsWalletSpendRemoteOperationStoreV1(),
+    });
+    const selected = policy();
+    const operationId = "00000000-0000-4000-8000-000000000106";
+    const clientNonce = "3".repeat(64);
+    const body = {
+      protocolVersion: "2",
+      operationId,
+      requestHashVersion: "1",
+      clientNonce,
+      authorityId: local.authorityId,
+      epoch: local.epoch,
+      lineageKey: dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId),
+      policyHash: local.authority.policyHash,
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      operation: "reserve",
+      payload: { reservation: reservation(), options: {} },
+    };
+    const requestHash = sha256Hex(canonicalize(body));
+    const created = await postService("2", handler, body);
+    expect(created.status).toBe(200);
+    await expect(created.json()).resolves.toMatchObject({
+      operationId, requestHash, revision: 1, result: { status: "reserved" },
+    });
+    const query = (token: string) => handler(new Request(
+      `http://authority.test/v2/wallet-spend/operations/${operationId}` +
+        `?requestHash=${requestHash}`,
+      { headers: { authorization: `Bearer ${token}` } },
+    ));
+
+    const foreign = await query(otherToken);
+    expect(foreign.status).toBe(404);
+    await expect(foreign.json()).resolves.toEqual({
+      reasonCode: "wallet-spend-authority-operation-missing",
+    });
+    const owned = await query(TOKEN);
+    expect(owned.status).toBe(200);
+    await expect(owned.json()).resolves.toMatchObject({
+      operationId,
+      requestHash,
+      revision: 1,
+      result: { status: "reserved", permit: { reservationId: "remote-one" } },
+      continuity: { kind: "current", operationId, requestHash, clientNonce, revision: 1 },
+    });
+    await expect(binding.authority.inspect()).resolves.toMatchObject({ revision: 1 });
   });
 
   it("does not downgrade a generated-style V2 client to a V1 endpoint", async () => {

@@ -2311,6 +2311,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         if (dir) await rm(dir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
 
   test("replays a failed phase after the session is globally finalised", async () => {

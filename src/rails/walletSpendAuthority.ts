@@ -144,12 +144,18 @@ export interface WalletSpendStateStore {
   /**
    * Serialize one wallet/chain policy transaction. Implementations used across
    * processes MUST hold an exclusive, crash-recoverable lock until `operation`
-   * returns and durably publish the returned state before resolving.
+   * returns and durably publish the returned state before resolving. A store
+   * with an asynchronous authoritative clock MUST pass a timestamp sampled
+   * after acquiring that serialization boundary. The optional parameter keeps
+   * existing one-argument custom stores without such a clock source-compatible;
+   * clock-bearing stores that omit it fail closed rather than using a stale
+   * pre-lock timestamp for a spend-authority decision.
    */
   transact<T>(
     scope: string,
     operation: (
       current: Readonly<WalletSpendStateV1> | null,
+      serializedNow?: number,
     ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
   ): Promise<T>;
 }
@@ -1187,11 +1193,16 @@ export function createWalletSpendAuthorityV1(
       value: T;
     }>,
   ): Promise<T> => {
-    const timestamp = safeInteger(
-      serverNow === undefined ? now() : await serverNow(),
-      "wallet spend clock",
-    );
-    return transact(scope, (stored) => {
+    return transact(scope, (stored, serializedNow) => {
+      if (serverNow !== undefined && serializedNow === undefined) {
+        throw new DacsError(
+          "wallet spend authoritative clock must be sampled after serialization",
+        );
+      }
+      const timestamp = safeInteger(
+        serializedNow ?? now(),
+        "wallet spend clock",
+      );
       const state = captureState(stored, policy, policyHash);
       const before = canonicalize(state);
       const priorGeneration = state.generation;
@@ -1238,19 +1249,20 @@ export function createWalletSpendAuthorityV1(
     token: Readonly<WalletSpendLeaseTokenV1>,
     staleMessage: string,
   ): Promise<void> => {
-    if (read === undefined) {
-      await update((state, timestamp) => {
-        requireCurrentPermit(state, reservation, binding, token, timestamp, staleMessage);
-        return { state, value: undefined };
-      });
-      return;
-    }
-    const timestamp = safeInteger(
-      serverNow === undefined ? now() : await serverNow(),
-      "wallet spend clock",
-    );
-    const state = captureState(await read(scope), policy, policyHash);
-    requireCurrentPermit(state, reservation, binding, token, timestamp, staleMessage);
+    await transact(scope, (stored, serializedNow) => {
+      if (serverNow !== undefined && serializedNow === undefined) {
+        throw new DacsError(
+          "wallet spend authoritative clock must be sampled after serialization",
+        );
+      }
+      const timestamp = safeInteger(
+        serializedNow ?? now(),
+        "wallet spend clock",
+      );
+      const state = captureState(stored, policy, policyHash);
+      requireCurrentPermit(state, reservation, binding, token, timestamp, staleMessage);
+      return { state, value: undefined };
+    });
   };
 
   const permitFor = (
@@ -1743,11 +1755,11 @@ export function createWalletSpendAuthorityV1(
           });
       };
       if (read !== undefined) {
+        const state = captureState(await read(scope), policy, policyHash);
         const timestamp = safeInteger(
           serverNow === undefined ? now() : await serverNow(),
           "wallet spend clock",
         );
-        const state = captureState(await read(scope), policy, policyHash);
         state.rollingEvents = recentEvents(state, policy, timestamp);
         return project(state, timestamp);
       }

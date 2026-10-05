@@ -177,7 +177,7 @@ describe("wallet-wide spend authority (#291)", () => {
     });
   });
 
-  test("checks current permits through the read path without mutating state", async () => {
+  test("checks current permits in the serialized transaction without mutating state", async () => {
     const retained = createInMemoryWalletSpendStateStore();
     const calls = { reads: 0, transactions: 0 };
     const store: WalletSpendStateStore = {
@@ -198,18 +198,18 @@ describe("wallet-wide spend authority (#291)", () => {
     const afterReserve = calls.transactions;
 
     await expect(claim.permit.assertCurrent()).resolves.toBeUndefined();
-    expect(calls).toEqual({ reads: 1, transactions: afterReserve });
+    expect(calls).toEqual({ reads: 0, transactions: afterReserve + 1 });
 
     clock.value = 1_101;
     await expect(claim.permit.assertCurrent()).rejects.toThrow(/no longer current/);
-    expect(calls).toEqual({ reads: 2, transactions: afterReserve });
+    expect(calls).toEqual({ reads: 0, transactions: afterReserve + 2 });
     await expect(wallet.reconcile(item, {
       disposition: "not-invoked",
       evidenceHash: HASH_C,
     })).resolves.toBe("released");
     const afterRelease = calls.transactions;
     await expect(claim.permit.assertCurrent()).rejects.toThrow(/no longer current/);
-    expect(calls).toEqual({ reads: 3, transactions: afterRelease });
+    expect(calls).toEqual({ reads: 0, transactions: afterRelease + 1 });
 
     const fallbackRetained = createInMemoryWalletSpendStateStore();
     let fallbackTransactions = 0;
@@ -225,6 +225,82 @@ describe("wallet-wide spend authority (#291)", () => {
     const afterFallbackReserve = fallbackTransactions;
     await expect(fallbackClaim.permit.assertCurrent()).resolves.toBeUndefined();
     expect(fallbackTransactions).toBe(afterFallbackReserve + 1);
+  });
+
+  test("samples a legacy store clock only after its transaction wait", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const clock = { value: 1_000 };
+    let delayTransactions = false;
+    let releaseTransaction: (() => void) | undefined;
+    let transactionEntered: (() => void) | undefined;
+    const transactionIsEntered = new Promise<void>((resolve) => {
+      transactionEntered = resolve;
+    });
+    const transactionCanContinue = new Promise<void>((resolve) => {
+      releaseTransaction = resolve;
+    });
+    const store: WalletSpendStateStore = {
+      async transact(scope, operation) {
+        if (delayTransactions) {
+          transactionEntered?.();
+          await transactionCanContinue;
+        }
+        return retained.transact(scope, operation);
+      },
+    };
+    const wallet = authority({ store, currentTime: clock });
+    const claim = await wallet.reserve(reservation("transaction-wait"));
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    delayTransactions = true;
+    const begin = claim.permit.beginEffect();
+    await transactionIsEntered;
+    clock.value = 1_101;
+    releaseTransaction?.();
+
+    await expect(begin).rejects.toThrow(/cannot begin an effect/);
+    await expect(wallet.inspect()).resolves.toMatchObject({ revision: 1 });
+  });
+
+  test("fails closed when an authoritative store omits its serialized clock", async () => {
+    const retained = createInMemoryWalletSpendStateStore();
+    const clock = { value: 1_000 };
+    let omitSerializedNow = false;
+    let releaseTransaction: (() => void) | undefined;
+    let transactionEntered: (() => void) | undefined;
+    const transactionIsEntered = new Promise<void>((resolve) => {
+      transactionEntered = resolve;
+    });
+    const transactionCanContinue = new Promise<void>((resolve) => {
+      releaseTransaction = resolve;
+    });
+    const store: WalletSpendStateStore = {
+      serverNow: async () => clock.value,
+      async transact(scope, operation) {
+        if (omitSerializedNow) {
+          transactionEntered?.();
+          await transactionCanContinue;
+        }
+        return retained.transact(scope, (state) =>
+          operation(state, omitSerializedNow ? undefined : clock.value));
+      },
+    };
+    const wallet = authority({ store, currentTime: clock });
+    const claim = await wallet.reserve(reservation("serialized-clock"));
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    omitSerializedNow = true;
+    const begin = claim.permit.beginEffect();
+    await transactionIsEntered;
+    clock.value = 1_101;
+    releaseTransaction?.();
+
+    await expect(begin).rejects.toThrow(/authoritative clock must be sampled after serialization/);
+    await expect(claim.permit.assertCurrent()).rejects.toThrow(
+      /authoritative clock must be sampled after serialization/,
+    );
+    omitSerializedNow = false;
+    await expect(wallet.inspect()).resolves.toMatchObject({ revision: 1 });
   });
 
   test("serializes independent authorities and retains ambiguous effects", async () => {

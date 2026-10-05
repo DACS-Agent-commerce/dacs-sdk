@@ -264,6 +264,30 @@ describe("authenticated HTTP listener and durable client", () => {
     await expect(outbox.load(replay.envelopeId)).resolves.toBeUndefined();
   });
 
+  it("refuses to report an envelope identity the outbox did not return", async () => {
+    const buyerDatabase = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const outbox = buyerDatabase.createHttpOutboxStore();
+    const client = createDacsHttpMessageClientV1({
+      endpoint: "http://127.0.0.1:1/dacs-transport/v1/messages",
+      authority: BUYER,
+      outbox: {
+        ...outbox,
+        put: async (input) => ({ status: (await outbox.put(input)).status }),
+      },
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-recordless-store-worker",
+      fetch: vi.fn<typeof fetch>(),
+    });
+    const signed = await proposal(await outbox.readTime(), 34);
+
+    await expect(client.queue(signed)).rejects.toMatchObject({
+      reasonCode: "outbox-envelope-conflict",
+    });
+    await expect(client.queue(signed)).rejects.toMatchObject({
+      reasonCode: "outbox-envelope-conflict",
+    });
+  });
+
   it("recovers a pending inbox reservation after restart before acknowledging replay", async () => {
     const databasePath = join(root(), "seller.sqlite");
     let sellerDatabase = await open(databasePath, SELLER, "seller");

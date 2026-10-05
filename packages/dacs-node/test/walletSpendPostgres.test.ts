@@ -18,6 +18,7 @@ import {
   DACS_WALLET_SPEND_POSTGRES_SCHEMA_V1,
   DACS_WALLET_SPEND_POSTGRES_CONTINUITY_ADOPTION_SCHEMA_V1,
   adoptDacsWalletSpendPostgresContinuityV1,
+  createDacsWalletSpendContinuityAuthorityV2,
   createInMemoryDacsWalletSpendContinuityWitnessV1,
   createDacsPostgresWalletSpendStateStoreV1,
   createDacsPostgresWalletSpendRemoteOperationStoreV1,
@@ -33,7 +34,9 @@ import {
 } from "../src/walletSpendPostgres.js";
 import {
   createDacsRemoteWalletSpendAuthorityV1,
+  createDacsRemoteWalletSpendAuthorityV2,
   createDacsWalletSpendAuthorityServiceV1,
+  createDacsWalletSpendAuthorityServiceV2,
 } from "../src/walletSpendRemote.js";
 
 function policy(policyId: string): WalletSpendPolicyV1 {
@@ -318,6 +321,9 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
   failNextCommitAfterApply = false;
   failNextSerializableAdvance = false;
   nowMs = 1_000;
+  serverNowStepMs = 0;
+  advanceNowAfterNextLoad?: number;
+  advanceNowAfterNextCandidateInsert?: number;
   private lockTail: Promise<void> = Promise.resolve();
 
   constructor(readonly row: {
@@ -338,7 +344,9 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
     values: readonly unknown[] = [],
   ): Promise<{ rows: Row[]; rowCount: number }> {
     if (text.startsWith("SELECT floor")) {
-      return { rows: [{ now_ms: String(this.nowMs) } as Row], rowCount: 1 };
+      const nowMs = this.nowMs;
+      this.nowMs += this.serverNowStepMs;
+      return { rows: [{ now_ms: String(nowMs) } as Row], rowCount: 1 };
     }
     if (text.startsWith("SELECT request_hash")) {
       const operation = this.operations.get(`${String(values[0])}\0${String(values[1])}`);
@@ -370,7 +378,12 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
     }
     if (text.includes("FROM dacs_wallet_spend_lineages") &&
         !text.includes("FOR UPDATE")) {
-      return { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+      const result = { rows: [structuredClone(this.row) as Row], rowCount: 1 };
+      if (this.advanceNowAfterNextLoad !== undefined) {
+        this.nowMs = this.advanceNowAfterNextLoad;
+        this.advanceNowAfterNextLoad = undefined;
+      }
+      return result;
     }
     if (text.startsWith("INSERT INTO dacs_wallet_spend_candidates")) {
       const key = `${String(values[1])}\0${String(values[4])}\0${String(values[5])}` +
@@ -392,6 +405,10 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
           continuity_receipt: null,
           status: "prepared",
         });
+        if (this.advanceNowAfterNextCandidateInsert !== undefined) {
+          this.nowMs = this.advanceNowAfterNextCandidateInsert;
+          this.advanceNowAfterNextCandidateInsert = undefined;
+        }
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
@@ -425,6 +442,13 @@ class FakePostgresPool implements DacsPostgresPoolV1 {
         rows: candidate === undefined ? [] : [structuredClone(candidate) as Row],
         rowCount: candidate === undefined ? 0 : 1,
       };
+    }
+    if (text.startsWith("UPDATE dacs_wallet_spend_candidates")) {
+      const candidate = [...this.candidates.values()].find(({ candidate_id }) =>
+        candidate_id === String(values[0]));
+      if (candidate?.status !== "prepared") return { rows: [], rowCount: 0 };
+      candidate.status = "superseded";
+      return { rows: [], rowCount: 1 };
     }
     throw new Error(`unexpected pool query: ${text}`);
   }
@@ -817,11 +841,11 @@ describe("PostgreSQL wallet authority persistence", () => {
     await expect(importDacsWalletSpendPostgresLegacyStateV1(pool, {
       policy: selected,
       state,
-      operationId: "00000000-0000-4000-8000-000000000041",
+      operationId: "00000000-0000-4000-8000-000000000040",
       continuity: newContinuity(8),
       sourceEvidence: evidence,
       authenticateEvidence: () => true,
-    })).rejects.toThrow(/already-exists/);
+    })).rejects.toThrow(/initialization-conflict/);
   });
 
   it("requires authenticated evidence for both legacy import and a demonstrably new lineage", async () => {
@@ -1307,6 +1331,116 @@ describe("PostgreSQL wallet authority persistence", () => {
     },
   );
 
+  it("re-confirms an exact active lineage initialization and rejects another operation or shape", async () => {
+    const selected = policy("policy-initialization-recovery");
+    const policyHash = dacsWalletSpendPolicyHashV1(selected);
+    const state: WalletSpendStateV1 = {
+      stateVersion: WALLET_SPEND_STATE_VERSION,
+      policyHash,
+      generation: 0,
+      reservations: [],
+      totals: [],
+      rollingEvents: [],
+    };
+    const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+    const stateHash = hashState(state);
+    const operationId = "00000000-0000-4000-8000-000000000059";
+    const evidence = {
+      sourceIdentity: "authenticated-new-postgres:test",
+      evidenceHash: "1".repeat(64),
+    };
+    const baseContinuity = newContinuity(35);
+    const requestHash = sha256Hex(canonicalize({
+      operation: "initialize-lineage",
+      lineage,
+      provisioningKind: "fresh",
+      policyHash,
+      stateHash,
+      evidence,
+      authorityId: baseContinuity.authorityId,
+      epoch: baseContinuity.epoch,
+    }));
+    const candidateId = "00000000-0000-4000-8000-000000000060";
+    const roleId = "operator:fresh";
+    const transitionIdentity = {
+      authorityId: baseContinuity.authorityId,
+      epoch: baseContinuity.epoch,
+      lineageKey: lineage,
+      candidateId,
+      roleId,
+      operationId,
+      requestHash,
+      mutationIndex: 0,
+    };
+    const receipt = await baseContinuity.witness.compareAndSet({
+      ...transitionIdentity,
+      predecessor: null,
+      next: { revision: 0, stateHash },
+      clientNonce: sha256Hex(
+        `dacs-wallet-spend-continuity-advance-nonce:v1:${canonicalize(transitionIdentity)}`,
+      ),
+    });
+    let headReads = 0;
+    const continuity: DacsWalletSpendContinuityPinV1 = {
+      ...baseContinuity,
+      witness: {
+        ...baseContinuity.witness,
+        async readCurrent(input) {
+          headReads += 1;
+          return baseContinuity.witness.readCurrent(input);
+        },
+      },
+    };
+    const pool = new RecoveryPostgresPool({
+      writer_contract_version: 2,
+      authority_id: continuity.authorityId,
+      continuity_epoch: continuity.epoch,
+      continuity_verification_key: continuity.verificationKey,
+      continuity_status: "active",
+      continuity_receipt: receipt,
+      policy_hash: policyHash,
+      revision: 0,
+      state_hash: stateHash,
+      state,
+    });
+    pool.candidates.set(`${lineage}\0${roleId}\0${operationId}\0${0}`, {
+      candidate_id: candidateId,
+      authority_id: continuity.authorityId,
+      continuity_epoch: continuity.epoch,
+      role_id: roleId,
+      request_hash: requestHash,
+      mutation_index: 0,
+      prior_revision: null,
+      prior_state_hash: null,
+      next_revision: 0,
+      next_state_hash: stateHash,
+      candidate_state: state,
+      candidate_value: { valueVersion: "1", defined: false, value: null },
+      continuity_receipt: receipt,
+      status: "applied",
+    });
+    const input = {
+      policy: selected,
+      operationId,
+      continuity,
+      newLineageEvidence: evidence,
+      authenticateEvidence: () => true,
+    };
+
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, input))
+      .resolves.toBeUndefined();
+    expect(headReads).toBe(1);
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, {
+      ...input,
+      operationId: "00000000-0000-4000-8000-000000000061",
+    })).rejects.toThrow(/initialization-conflict/);
+    await expect(provisionDacsWalletSpendPostgresLineageV1(pool, {
+      ...input,
+      newLineageEvidence: { ...evidence, evidenceHash: "2".repeat(64) },
+    })).rejects.toThrow(/initialization-conflict/);
+    expect(headReads).toBe(1);
+  });
+
   it("fails continuity adoption closed when an advanced witness loses its candidate", async () => {
     const selected = policy("policy-adoption-missing-candidate");
     const state = legacyState(selected);
@@ -1575,6 +1709,268 @@ describe("PostgreSQL wallet authority persistence", () => {
       createdAt: 2_000,
       updatedAt: 2_000,
       leaseExpiresAt: 32_000,
+    });
+  });
+
+  it("samples PostgreSQL time after loading the serialized head", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+    const claim = await authority.reserve({
+      reservationVersion: "1",
+      reservationId: "serialized-clock",
+      jobId: "job-serialized-clock",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    pool.advanceNowAfterNextLoad = 1_101;
+    await expect(claim.permit.beginEffect()).rejects.toThrow(
+      /cannot begin an effect/,
+    );
+    expect(pool.candidates.size).toBe(1);
+    expect(pool.row.state.reservations[0]).toMatchObject({
+      reservationId: "serialized-clock",
+      stage: "reserved",
+    });
+  });
+
+  it("accepts equivalent authorization across advancing PostgreSQL timestamps", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    pool.serverNowStepMs = 1;
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+
+    await expect(authority.reserve({
+      reservationVersion: "1",
+      reservationId: "advancing-clock",
+      jobId: "job-advancing-clock",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    })).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "advancing-clock" },
+    });
+    expect([...pool.candidates.values()]).toMatchObject([{
+      status: "applied",
+      candidate_state: {
+        reservations: [{ reservationId: "advancing-clock" }],
+      },
+    }]);
+  });
+
+  it("retries a reserve whose candidate delay consumes its lease", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+    pool.advanceNowAfterNextCandidateInsert = 1_200;
+
+    await expect(authority.reserve({
+      reservationVersion: "1",
+      reservationId: "candidate-delay",
+      jobId: "job-candidate-delay",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    })).resolves.toMatchObject({
+      status: "reserved",
+      permit: { reservationId: "candidate-delay" },
+    });
+    expect([...pool.candidates.values()]).toMatchObject([
+      { status: "superseded" },
+      {
+        status: "applied",
+        candidate_state: {
+          reservations: [{
+            reservationId: "candidate-delay",
+            createdAt: 1_200,
+            leaseExpiresAt: 1_300,
+          }],
+        },
+      },
+    ]);
+  });
+
+  it("retains authenticated settlement time across candidate persistence delay", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 1_000,
+    });
+    const reservation: WalletSpendReservationV1 = {
+      reservationVersion: "1",
+      reservationId: "settlement-candidate-delay",
+      jobId: "job-settlement-candidate-delay",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    };
+    const claim = await authority.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await claim.permit.beginEffect();
+    pool.advanceNowAfterNextCandidateInsert = 1_200;
+
+    await claim.permit.settle({
+      disposition: "settled",
+      evidenceHash: "d".repeat(64),
+      debits: [{ asset: "ASSET", purpose: "service", amount: "25" }],
+    });
+    expect(pool.row.state).toMatchObject({
+      reservations: [{ reservationId: reservation.reservationId, stage: "settled" }],
+      rollingEvents: [{ reservationId: reservation.reservationId, settledAt: 1_000 }],
+    });
+    expect([...pool.candidates.values()].at(-1)).toMatchObject({ status: "applied" });
+  });
+
+  it("revalidates expiry after candidate persistence and before witness CAS", async () => {
+    const selected = policy("policy-a");
+    const pool = await fakePool(selected);
+    const authority = createWalletSpendAuthorityV1(selected, {
+      store: createDacsPostgresWalletSpendStateStoreV1({
+        pool,
+        wallet: selected.wallet,
+        chainId: selected.chainId,
+        continuity: pool.continuity,
+      }),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      owner: "wallet-service",
+      leaseDurationMs: 100,
+    });
+    const claim = await authority.reserve({
+      reservationVersion: "1",
+      reservationId: "pre-witness-expiry",
+      jobId: "job-pre-witness-expiry",
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+
+    pool.advanceNowAfterNextCandidateInsert = 1_101;
+    await expect(claim.permit.beginEffect()).rejects.toThrow(
+      /cannot begin an effect/,
+    );
+    expect([...pool.candidates.values()].map(({ status }) => status)).toEqual([
+      "applied",
+      "superseded",
+    ]);
+    expect(pool.row).toMatchObject({
+      revision: 1,
+      state: {
+        generation: 1,
+        reservations: [{ reservationId: "pre-witness-expiry", stage: "reserved" }],
+      },
     });
   });
 
@@ -2280,5 +2676,184 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(pool.row.state.generation).toBe(1);
     expect([...pool.candidates.values()].filter(({ status }) => status === "applied"))
       .toHaveLength(1);
+  });
+
+  it("serves the generated V2 client from PostgreSQL and fences a restored database", async () => {
+    // Generated funded buyers use exactly this composition: V2 client -> V2
+    // service -> branded continuity binding over the PostgreSQL state store and
+    // PostgreSQL operation log, with the witness surviving a database restore.
+    const selected = { ...policy("policy-a"), maximumConcurrentEffects: 2 };
+    const pool = await fakePool(selected);
+    const lineage = dacsWalletSpendLineageKeyV1(selected.wallet, selected.chainId);
+    const roleId = "buyer";
+    const token = "buyer-role-token-which-is-long-enough";
+    const durableOperations = createDacsPostgresWalletSpendRemoteOperationStoreV1(pool);
+    let loseNextCompletion = false;
+    const handler = createDacsWalletSpendAuthorityServiceV2({
+      authenticate: (presented) => presented === token ? roleId : null,
+      resolveAuthority: (scope) => {
+        if (scope.roleId !== roleId || scope.authorityId !== pool.continuity.authorityId ||
+            scope.epoch !== pool.continuity.epoch || scope.lineageKey !== lineage ||
+            scope.wallet !== selected.wallet || scope.chainId !== selected.chainId ||
+            scope.policyHash !== dacsWalletSpendPolicyHashV1(selected)) {
+          return null;
+        }
+        return createDacsWalletSpendContinuityAuthorityV2({
+          policy: selected,
+          store: createDacsPostgresWalletSpendStateStoreV1({
+            pool,
+            wallet: selected.wallet,
+            chainId: selected.chainId,
+            continuity: pool.continuity,
+            operation: () => ({
+              roleId,
+              operationId: scope.operationId,
+              requestHash: scope.requestHash,
+            }),
+          }),
+          dependencies: {
+            readBalance: async () => "1000",
+            authenticateRecovery: async () => true,
+            owner: "wallet-service",
+            leaseDurationMs: 60_000,
+          },
+        });
+      },
+      operations: {
+        load: (input) => durableOperations.load(input),
+        claim: (input) => durableOperations.claim(input),
+        async complete(input) {
+          if (loseNextCompletion) {
+            loseNextCompletion = false;
+            throw new Error("response log write lost after commit");
+          }
+          await durableOperations.complete(input);
+        },
+      },
+    });
+    const item = (id: string): WalletSpendReservationV1 => ({
+      reservationVersion: "1",
+      reservationId: id,
+      jobId: `job-${id}`,
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet: selected.wallet,
+      chainId: selected.chainId,
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{
+        asset: "ASSET",
+        purpose: "service",
+        expectedAmount: "25",
+        maximumAmount: "25",
+      }],
+    });
+    const tokenRoot = await mkdtemp(join(tmpdir(), "dacs-postgres-v2-"));
+    const tokenPath = join(tokenRoot, "token");
+    await writeFile(tokenPath, `${token}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(tokenPath, 0o600);
+    const methods: string[] = [];
+    const fetchHandler = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      methods.push(request.method);
+      return handler(request);
+    }) as typeof fetch;
+    const client = () => createDacsRemoteWalletSpendAuthorityV2({
+      policy: selected,
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath: tokenPath,
+      authorityId: pool.continuity.authorityId,
+      epoch: pool.continuity.epoch,
+      witnessVerificationKey: pool.continuity.verificationKey,
+      allowInsecureLoopback: true,
+      fetch: fetchHandler,
+    });
+
+    try {
+      const remote = await client();
+      loseNextCompletion = true;
+      const claim = await remote.reserve(item("v2-postgres-reserve"));
+      expect(claim).toMatchObject({
+        status: "reserved",
+        permit: {
+          reservationId: "v2-postgres-reserve",
+          owner: "wallet-service",
+          generation: 1,
+        },
+      });
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      // The lost response-log write was recovered on the same POST from the
+      // applied PostgreSQL candidate and re-attested as a V2 response.
+      expect(methods).toEqual(["POST"]);
+      expect([...pool.operations.values()]).toMatchObject([{ response: null }]);
+      expect(pool.row.revision).toBe(1);
+
+      const restorePoint = {
+        row: structuredClone(pool.row),
+        candidates: structuredClone([...pool.candidates]),
+        operations: structuredClone([...pool.operations]),
+        operationCounts: [...pool.operationCounts],
+      };
+      await claim.permit.beginEffect();
+      await claim.permit.settle({
+        disposition: "settled",
+        evidenceHash: "d".repeat(64),
+        debits: [{ asset: "ASSET", purpose: "service", amount: "25" }],
+      });
+      await expect(remote.inspect()).resolves.toMatchObject({
+        revision: 3,
+        activeEffects: 0,
+        assets: [{ cumulativeSettledDebit: "25" }],
+      });
+      // Control: a brand-new client with no retained head accepts the live head.
+      await expect((await client()).inspect()).resolves.toMatchObject({ revision: 3 });
+
+      // Restore every PostgreSQL table to the self-consistent reserve point.
+      Object.assign(pool.row, restorePoint.row);
+      pool.candidates.clear();
+      for (const [key, value] of restorePoint.candidates) pool.candidates.set(key, value);
+      pool.operations.clear();
+      for (const [key, value] of restorePoint.operations) pool.operations.set(key, value);
+      pool.operationCounts.clear();
+      for (const [key, value] of restorePoint.operationCounts) {
+        pool.operationCounts.set(key, value);
+      }
+      expect(pool.row.revision).toBe(1);
+      await expect(createDacsPostgresWalletSpendStateStoreV1({
+        pool, wallet: selected.wallet, chainId: selected.chainId, continuity: pool.continuity,
+      }).read!(lineage)).rejects.toThrow(/continuity-head-mismatch/);
+
+      // A brand-new client has no local head memory, so only the service-side
+      // witness fence can refuse the restored status and the restored budget.
+      const restoredClient = await client();
+      await expect(restoredClient.inspect()).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      methods.length = 0;
+      await expect(restoredClient.reserve(item("after-restore"))).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-request-rejected",
+      });
+      expect(methods).toEqual(["POST", "GET"]);
+      expect(pool.row.revision).toBe(1);
+      expect(pool.row.state.reservations.map(({ reservationId }) => reservationId))
+        .toEqual(["v2-postgres-reserve"]);
+      expect([...pool.candidates.values()].filter(({ candidate_state }) =>
+        candidate_state.reservations.some(({ reservationId }) =>
+          reservationId === "after-restore"))).toEqual([]);
+      await expect(pool.continuity.witness.readCurrent({
+        authorityId: pool.continuity.authorityId,
+        epoch: pool.continuity.epoch,
+        lineageKey: lineage,
+        operationId: "00000000-0000-4000-8000-000000000201",
+        requestHash: "2".repeat(64),
+        clientNonce: "3".repeat(64),
+      })).resolves.toMatchObject({ revision: 3 });
+    } finally {
+      await rm(tokenRoot, { recursive: true, force: true });
+    }
   });
 });
