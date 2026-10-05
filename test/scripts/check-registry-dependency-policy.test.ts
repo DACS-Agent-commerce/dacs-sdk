@@ -19,6 +19,7 @@ function fixture() {
   const lock: { packages: Record<string, {
     resolved?: string;
     dependencies: Record<string, string>;
+    peerDependencies?: Record<string, string>;
     link?: boolean;
   }> } = { packages: {
     "": { dependencies },
@@ -50,12 +51,16 @@ describe("isolated-registry dependency policy", () => {
     lock.packages["node_modules/alias"]!.dependencies.alias =
       "https://example.invalid/alias.tgz";
     lock.packages["node_modules/alias"]!.dependencies.other = "owner/repo#main";
+    lock.packages["node_modules/alias"]!.peerDependencies = {
+      peer: "https://example.invalid/peer.tgz",
+    };
     const report = inspectRegistryDependencyPolicy(manifest, lock, registry);
     expect(report.passed).toBe(false);
     expect(report.violations).toEqual(expect.arrayContaining([
       expect.objectContaining({ location: "package.json", field: "dependencies.viem" }),
       expect.objectContaining({ location: "node_modules/alias", field: "dependencies.alias" }),
       expect.objectContaining({ location: "node_modules/alias", field: "dependencies.other" }),
+      expect.objectContaining({ location: "node_modules/alias", field: "peerDependencies.peer" }),
     ]));
   });
 

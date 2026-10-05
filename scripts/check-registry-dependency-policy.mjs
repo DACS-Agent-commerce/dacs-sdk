@@ -33,7 +33,7 @@ export function inspectRegistryDependencyPolicy(manifest, lock, registry) {
       violations.push({ location: "package.json", field: `dependencies.${name}`, reason: "missing" });
     }
   }
-  for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+  for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
     for (const [name, value] of Object.entries(manifest[section] ?? {})) {
       if (typeof value !== "string" || externalSourceSpec(value)) {
         violations.push({ location: "package.json", field: `${section}.${name}`, value });
@@ -55,7 +55,7 @@ export function inspectRegistryDependencyPolicy(manifest, lock, registry) {
         violations.push({ location, field, value: entry[field] });
       }
     }
-    for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
       for (const [name, value] of Object.entries(entry[section] ?? {})) {
         if (typeof value !== "string" || externalSourceSpec(value)) {
           violations.push({ location, field: `${section}.${name}`, value });
