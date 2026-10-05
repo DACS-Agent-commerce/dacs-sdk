@@ -40,6 +40,7 @@ registry_config="$acceptance_root/verdaccio.yaml"
 consumer_root="$acceptance_root/consumer"
 artifact_stage="$acceptance_root/artifacts"
 mkdir "$consumer_root" "$artifact_stage"
+acceptance_stage=release_set
 
 run_id=local
 run_attempt=0
@@ -58,6 +59,12 @@ network_started=0
 image_started=0
 
 cleanup() {
+  exit_status=$?
+  if [ "$exit_status" -ne 0 ] && [ -d "$artifact_stage" ] && [ ! -e "$output_dir" ]; then
+    printf '{"stage":"%s","exitCode":%s}\n' "$acceptance_stage" "$exit_status" \
+      > "$artifact_stage/acceptance-failure.json" || true
+    mv -- "$artifact_stage" "$output_dir" || true
+  fi
   if [ "$registry_started" -eq 1 ]; then
     docker rm --force "$registry_container" >/dev/null 2>&1 || true
   fi
@@ -121,6 +128,7 @@ NODE
 
 docker network create "$registry_network" >/dev/null
 network_started=1
+acceptance_stage=registry_start
 docker run --detach \
   --name "$registry_container" \
   --network "$registry_network" \
@@ -179,6 +187,7 @@ for package in \
   "$release_set/kynesyslabs-dacs-node-$version.tgz" \
   "$release_set/create-dacs-agent-$version.tgz"
 do
+  acceptance_stage=local_publish
   test -f "$package"
   DACS_LOCAL_REGISTRY_TOKEN="$auth_token" \
     node scripts/publish-exact-local-registry.mjs "$package" "$host_registry"
@@ -189,6 +198,7 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
   test "$observed" = "$version"
 done
 
+acceptance_stage=generated_consumer
 docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
@@ -237,66 +247,11 @@ docker run --rm \
   ' | tee "$artifact_stage/generation.log"
 
 project="$consumer_root/one-click-agent"
-node - "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json" <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
-const root = process.argv[2];
-const registry = process.argv[3];
-const reportPath = process.argv[4];
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const lockSource = fs.readFileSync(path.join(root, "package-lock.json"), "utf8");
-const lock = JSON.parse(lockSource);
-const dependencies = manifest.dependencies ?? {};
-const violations = [];
-for (const name of [
-  "@kynesyslabs/dacs",
-  "@kynesyslabs/dacs-node",
-  "@kynesyslabs/demosdk",
-  "@x402/core",
-  "@x402/evm",
-  "@x402/fetch",
-  "better-sqlite3",
-  "viem",
-]) {
-  if (typeof dependencies[name] !== "string") {
-    throw new Error("dual-rail consumer is missing " + name);
-  }
-}
-for (const value of Object.values(dependencies)) {
-  if (/^(?:file:|git\+|https?:\/\/github\.com\/)/.test(value)) {
-    violations.push({ location: "package.json", value });
-  }
-}
-for (const [location, entry] of Object.entries(lock.packages ?? {})) {
-  for (const [field, value] of Object.entries(entry ?? {})) {
-    if (typeof value === "string" &&
-        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
-      violations.push({ location, field, value });
-    }
-  }
-  for (const [name, value] of Object.entries(entry?.dependencies ?? {})) {
-    if (typeof value === "string" &&
-        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
-      violations.push({ location, field: `dependencies.${name}`, value });
-    }
-  }
-}
-for (const name of [
-  "node_modules/@kynesyslabs/dacs",
-  "node_modules/@kynesyslabs/dacs-node",
-]) {
-  const resolved = lock.packages?.[name]?.resolved;
-  if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
-    throw new Error("candidate package did not resolve through the isolated registry: " + name);
-  }
-}
-fs.writeFileSync(reportPath, JSON.stringify({
-  schema: "dacs-registry-dependency-policy/v1",
-  passed: violations.length === 0,
-  violations,
-}, null, 2) + "\n");
-NODE
+acceptance_stage=dependency_policy
+node "$repo_root/scripts/check-registry-dependency-policy.mjs" \
+  "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json"
 
+acceptance_stage=audit_policy
 node - "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json" <<'NODE'
 const fs = require("node:fs");
 const audit = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -314,6 +269,7 @@ fs.writeFileSync(process.argv[3], JSON.stringify({
 process.stdout.write(JSON.stringify(counts) + "\n");
 NODE
 
+acceptance_stage=compose_render
 env \
   DACS_RUNTIME_UID=10001 \
   DACS_RUNTIME_GID=10001 \
@@ -334,6 +290,7 @@ env \
   docker compose --file "$project/compose.yaml" config \
     > "$artifact_stage/compose.rendered.yaml"
 
+acceptance_stage=docker_build
 docker build \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
@@ -341,6 +298,7 @@ docker build \
   | tee "$artifact_stage/docker-build.log"
 image_started=1
 
+acceptance_stage=runtime_checks
 image_id=$(docker image inspect --format '{{.Id}}' "$runtime_image")
 case "$image_id" in
   sha256:????????????????????????????????????????????????????????????????) ;;
@@ -432,6 +390,7 @@ cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
 cp "$consumer_root/engine-strict.log" "$artifact_stage/"
 cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
 
+acceptance_stage=summary
 node - "$artifact_stage" "$version" "$runtime_image" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
@@ -467,7 +426,7 @@ const summary = {
   generatedMode: "live-demos",
   generatedRole: "seller",
   generatedRails: ["x402", "pay-dem"],
-  registryDependencyOnly: true,
+  registryDependencyOnly: dependencyPolicy.passed,
   generatedTestsPassed: true,
   functionalPassed: runtimeImagePolicy.functionalPassed,
   doctor: {
