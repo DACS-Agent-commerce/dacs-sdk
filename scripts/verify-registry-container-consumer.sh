@@ -341,19 +341,27 @@ docker build \
   | tee "$artifact_stage/docker-build.log"
 image_started=1
 
-docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"
-image_user=$(docker image inspect --format '{{.Config.User}}' "$runtime_image")
-runtime_uid=$(docker run --rm --entrypoint id "$runtime_image" -u)
-typescript_present=false
-if docker run --rm --entrypoint test "$runtime_image" -d node_modules/typescript; then
-  typescript_present=true
-fi
-rubic_present=false
-if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
-  rubic_present=true
-fi
+image_id=$(docker image inspect --format '{{.Id}}' "$runtime_image")
+case "$image_id" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "built image did not resolve to an immutable ID" >&2; exit 1 ;;
+esac
+docker image inspect "$image_id" > "$artifact_stage/docker-image.json"
+image_user=$(docker image inspect --format '{{.Config.User}}' "$image_id")
+runtime_uid=$(docker run --rm --network none --read-only --entrypoint id "$image_id" -u)
+smoke_status=0
+(cd "$project" && npm run --silent dacs:image:smoke -- "$image_id") \
+  > "$artifact_stage/generated-image-smoke.json" \
+  2> "$artifact_stage/generated-image-smoke.err" || smoke_status=$?
+package_scan_status=0
+docker run --rm --network none --read-only \
+  --volume "$repo_root/scripts/inspect-installed-package-tree.mjs:/inspect-installed-package-tree.mjs:ro" \
+  --entrypoint node "$image_id" \
+  /inspect-installed-package-tree.mjs /app/node_modules \
+  > "$artifact_stage/runtime-package-tree.json" \
+  2> "$artifact_stage/runtime-package-tree.err" || package_scan_status=$?
 runtime_imports_passed=false
-if docker run --rm --entrypoint sh "$runtime_image" -ceu '
+if docker run --rm --network none --read-only --entrypoint sh "$image_id" -ceu '
   node --import @kynesyslabs/dacs-node/demos-loader --input-type=module -e "
     Promise.all([
       import(\"@kynesyslabs/dacs\"),
@@ -371,24 +379,40 @@ fi
 
 IMAGE_USER="$image_user" \
 RUNTIME_UID="$runtime_uid" \
-TYPESCRIPT_PRESENT="$typescript_present" \
-RUBIC_PRESENT="$rubic_present" \
 RUNTIME_IMPORTS_PASSED="$runtime_imports_passed" \
-  node - "$artifact_stage/runtime-image-policy.json" <<'NODE'
+SMOKE_STATUS="$smoke_status" \
+PACKAGE_SCAN_STATUS="$package_scan_status" \
+  node - "$artifact_stage/runtime-image-policy.json" "$artifact_stage/generated-image-smoke.json" "$artifact_stage/runtime-package-tree.json" "$image_id" <<'NODE'
 const fs = require("node:fs");
+function readJson(file, status) {
+  if (status !== 0) return null;
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch { return null; }
+}
+const smoke = readJson(process.argv[3], Number(process.env.SMOKE_STATUS));
+const packageTree = readJson(process.argv[4], Number(process.env.PACKAGE_SCAN_STATUS));
 const policy = {
   schema: "dacs-runtime-image-policy/v1",
+  imageId: process.argv[5],
   expectedUser: "10001:10001",
   observedUser: process.env.IMAGE_USER,
   observedUid: process.env.RUNTIME_UID,
   runtimeImportsPassed: process.env.RUNTIME_IMPORTS_PASSED === "true",
-  typescriptPresent: process.env.TYPESCRIPT_PRESENT === "true",
-  rubicSdkPresent: process.env.RUBIC_PRESENT === "true",
+  generatedSmokeExitCode: Number(process.env.SMOKE_STATUS),
+  generatedSmokePassed: smoke?.status === "pass" && smoke.imageId === process.argv[5] &&
+    smoke.runtime?.status === "pass",
+  packageScanExitCode: Number(process.env.PACKAGE_SCAN_STATUS),
+  packageTree,
 };
 policy.functionalPassed = policy.observedUser === policy.expectedUser &&
-  policy.observedUid === "10001" && policy.runtimeImportsPassed;
-policy.productionDependencyPolicyPassed = !policy.typescriptPresent &&
-  !policy.rubicSdkPresent;
+  policy.observedUid === "10001" && policy.runtimeImportsPassed &&
+  policy.generatedSmokePassed;
+policy.productionDependencyPolicyPassed = packageTree?.schema === "dacs-installed-package-tree/v1" &&
+  packageTree.root === "/app/node_modules" && packageTree.passed === true &&
+  Array.isArray(packageTree.packages?.typescript) &&
+  packageTree.packages.typescript.length === 0 &&
+  Array.isArray(packageTree.packages?.["rubic-sdk"]) &&
+  packageTree.packages["rubic-sdk"].length === 0;
 fs.writeFileSync(process.argv[2], JSON.stringify(policy, null, 2) + "\n");
 NODE
 
