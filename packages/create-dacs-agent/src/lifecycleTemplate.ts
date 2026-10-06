@@ -57,6 +57,11 @@ interface BackupManifestV1 {
 
 const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+function authorityStatePath(path: string): boolean {
+  const first = path.split("/")[0];
+  return first === "wallet-spend" || first?.startsWith("wallet-spend-") === true;
+}
+
 export interface GeneratedLifecyclePathsV1 {
   buyer: string;
   seller: string;
@@ -223,6 +228,9 @@ async function copyTree(
       throw new Error("backup-source-entry-invalid");
     }
     const relativePath = prefix === "" ? entry.name : prefix + "/" + entry.name;
+    if (authorityStatePath(relativePath)) {
+      throw new Error("backup-authority-state-rejected");
+    }
     const sourcePath = resolve(source, entry.name);
     const targetPath = resolve(target, entry.name);
     const observed = await lstat(sourcePath);
@@ -373,6 +381,7 @@ function parsedManifest(value: unknown): BackupManifestV1 {
       const file = fileValue as Record<string, unknown>;
       if (!exactKeys(file, ["bytes", "path", "sha256"]) ||
           typeof file.path !== "string" || !safeRelative(file.path) ||
+          authorityStatePath(file.path) ||
           !Number.isSafeInteger(file.bytes) || Number(file.bytes) < 0 ||
           typeof file.sha256 !== "string" ||
           !/^[0-9a-f]{64}$/.test(file.sha256)) {
@@ -446,7 +455,9 @@ export async function inspectGeneratedBackupV1(input: Readonly<{
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
         const relativePath = prefix === "" ? entry.name : prefix + "/" + entry.name;
-        if (!safeRelative(relativePath)) throw new Error("backup-entry-invalid");
+        if (!safeRelative(relativePath) || authorityStatePath(relativePath)) {
+          throw new Error("backup-entry-invalid");
+        }
         const entryPath = resolve(directory, entry.name);
         const observed = await lstat(entryPath);
         if (observed.isSymbolicLink()) throw new Error("backup-symlink-rejected");
