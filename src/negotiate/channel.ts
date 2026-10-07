@@ -180,6 +180,19 @@ function isRegisteredClaim(value: unknown): value is string {
   return parsed !== null && parsed.schemeStatus === "registered";
 }
 
+/**
+ * CH-10 frozen historical grammar: a registered scheme or the historical
+ * generic `cci:` scheme carried by the archived corpus. Anything else (for
+ * example the unregistered `demos:0x…` spelling emitted by demosdk 4.0.11 to
+ * 4.0.18, DEMOS-MAPPING A.1) is outside the frozen registry and rejects.
+ */
+function isHistoricalClaim(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed !== null &&
+    (parsed.schemeStatus === "registered" || parsed.identity.scheme === "cci");
+}
+
 function sameParty(left: string, right: string): boolean {
   return left === right || sameCanonicalClaimIdentity(left, right);
 }
@@ -352,7 +365,8 @@ function validateMessage(
       ["refs"],
     ) ||
     typeof value.signature !== "string" ||
-    !LEGACY_HEX_SIGNATURE.test(value.signature)
+    !LEGACY_HEX_SIGNATURE.test(value.signature) ||
+    !isHistoricalClaim(value.sender)
   ) {
     return false;
   }

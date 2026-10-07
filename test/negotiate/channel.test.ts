@@ -7,10 +7,12 @@ import type { KeyObject } from "node:crypto";
 
 import {
   admitChannelMessage,
+  canonicalize,
   canonicalChannelMessageSignedBytes,
   ed25519Verify,
   publicKeyFromRaw,
   prepareChannelMessageSigningInput,
+  sha256Hex,
   CANONICAL_CHANNEL_MESSAGE_DOMAIN,
   type ChannelAdmissionContext,
   type ChannelMessageSignatureVerifier,
@@ -580,6 +582,27 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     expect((await admitChannelMessage(other, context(), verifier)).decision).toBe("fail");
     expect((await admitChannelMessage({ ...signed, sender: `cci:${rawKey.toString("hex")}`, signature: { ...signed.signature, signer: `cci:${rawKey.toString("hex")}` } }, context(), verifier)).decision).toBe("error");
     expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, value: `${signed.signature.value}=` } }, context(), verifier)).decision).toBe("error");
+  });
+
+  test("refuses the demosdk 4.0.11–4.0.18 wire and its demos:0x sender on both operations (DACS-Standard#414)", async () => {
+    const senderHex = rawKey.toString("hex");
+    const unsignedDemos = { channelId: CHANNEL, sequence: 1, sender: `demos:0x${senderHex}`, sentAt: 1_750_000_000_000, type: "offer" as const, body: { price: "10" } };
+    const digestHex = sha256Hex(canonicalize(unsignedDemos));
+    // demosdk: UTF8("dacs-channelmsg:v1:" + hex-ASCII digest), signature { sigVersion, "0x" + hex }
+    const demosdkSignature = `0x${nodeSign(null, Buffer.from(`dacs-channelmsg:v1:${digestHex}`, "utf8"), keys.privateKey).toString("hex")}`;
+    const demosdkMessage = { ...unsignedDemos, signature: { sigVersion: "1", signature: demosdkSignature } };
+    expect((await admitChannelMessage(demosdkMessage, context(), () => "pass")).decision).toBe("error");
+    expect((await admitChannelMessage(demosdkMessage, context(), () => "pass", LEGACY)).decision).toBe("error");
+    // Frozen-arm bytes but the unregistered demos:0x sender: outside the historical registry.
+    const frozenBytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(digestHex, "hex")]);
+    const frozenShape = { ...unsignedDemos, signature: nodeSign(null, frozenBytes, keys.privateKey).toString("hex") };
+    expect((await admitChannelMessage(frozenShape, context(), () => "pass", LEGACY)).decision).toBe("error");
+    expect((await admitChannelMessage(frozenShape, context(), () => "pass")).decision).toBe("error");
+    // The same frozen-arm bytes under the historical cci: scheme are importable.
+    const cci = { ...unsignedDemos, sender: `cci:${senderHex}` };
+    const cciBytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(sha256Hex(canonicalize(cci)), "hex")]);
+    const cciShape = { ...cci, signature: nodeSign(null, cciBytes, keys.privateKey).toString("hex") };
+    expect((await admitChannelMessage(cciShape, context(), () => "pass", LEGACY)).decision).toBe("pass");
   });
 
   test("replays the canonical-channel-message-v0.6 corpus", async () => {
