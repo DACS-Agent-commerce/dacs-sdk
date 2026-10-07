@@ -161,6 +161,7 @@ async function acceptedSession(
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
   const offer = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 1,
     sender: parties.buyer.identityBundle.presentedBy,
@@ -180,7 +181,7 @@ async function acceptedSession(
         ...(meteredQuantity === undefined ? {} : { meteredQuantity }),
       },
     },
-    signature: "adapter-signature",
+    signature: { signatureVersion: "1" as const, signer: parties.buyer.identityBundle.presentedBy, algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
   };
   const offered = await advanceRfqSession(
     opened.state as RfqSessionState,
@@ -192,6 +193,7 @@ async function acceptedSession(
   const accepted = await advanceRfqSession(
     offered.state as RfqSessionState,
     {
+      canonicalChannelMessageVersion: "1" as const,
       channelId: offered.state.channelId,
       sequence: 2,
       sender: parties.seller.identityBundle.presentedBy,
@@ -199,7 +201,7 @@ async function acceptedSession(
       type: "accept",
       body: { rfqBodyVersion: "1", acceptedSequence: 1 },
       refs: { repliesTo: 1 },
-      signature: "adapter-signature",
+      signature: { signatureVersion: "1" as const, signer: parties.seller.identityBundle.presentedBy, algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
     },
     NOW + 2,
     () => "pass",

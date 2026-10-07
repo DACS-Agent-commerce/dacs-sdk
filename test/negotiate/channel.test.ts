@@ -2,13 +2,19 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { createPublicKey, generateKeyPairSync, sign as nodeSign, verify as nodeVerify } from "node:crypto";
+import type { KeyObject } from "node:crypto";
+
 import {
   admitChannelMessage,
+  canonicalChannelMessageSignedBytes,
   ed25519Verify,
   publicKeyFromRaw,
   prepareChannelMessageSigningInput,
+  CANONICAL_CHANNEL_MESSAGE_DOMAIN,
   type ChannelAdmissionContext,
   type ChannelMessageSignatureVerifier,
+  type ChannelMessageSignatureV1,
   type VerificationDecision,
 } from "../../src/index.js";
 
@@ -25,6 +31,9 @@ const OLD_CHANNEL_SIGNATURE =
   "ecd5a03258f042f604eaa80b4ceb196451b15856d372c6ac9543ef871904c8ecf6d5b3da13f3f25056c700fde4f93009742ba89f76876b4aeb6974b141237a0c";
 const UNRESOLVABLE_SIGNATURE =
   "dbde1dd6bc3913a0e79f88aebb5e3ae3fbb8e163a05513908435f5859919f24cc94605a3cfa8df412b6cdf97e632c5ce5abddb30153be6378eb49b7e34554b0d";
+
+/** Every pre-existing case in this file is the frozen historical Demos wire. */
+const LEGACY = { operation: "legacy-import" } as const;
 
 const CHANNEL_VECTORS = JSON.parse(
   readFileSync(
@@ -110,11 +119,7 @@ describe("DACS-3 channel admission", () => {
   test("replays the exact adopted-next channel corpus without collapsing decisions", async () => {
     expect(CHANNEL_VECTORS.vectors).toHaveLength(CHANNEL_VECTORS.count);
     for (const vector of CHANNEL_VECTORS.vectors) {
-      const result = await admitChannelMessage(
-        vector.message,
-        vector.ctx,
-        verifyStandardVectorSignature,
-      );
+      const result = await admitChannelMessage(vector.message, vector.ctx, verifyStandardVectorSignature, LEGACY);
       expect(result.decision, vector.name).toBe(vector.expected);
     }
   });
@@ -231,11 +236,7 @@ describe("DACS-3 channel admission", () => {
   ])(
     "replays Standard vector $name as $expected",
     async ({ candidate, ctx, expected }) => {
-      const result = await admitChannelMessage(
-        candidate,
-        ctx,
-        verifyStandardVectorSignature,
-      );
+      const result = await admitChannelMessage(candidate, ctx, verifyStandardVectorSignature, LEGACY);
       expect(result.decision).toBe(expected);
     },
   );
@@ -258,7 +259,7 @@ describe("DACS-3 channel admission", () => {
       return "pass";
     });
 
-    const result = await admitChannelMessage(candidate, context(), verifier);
+    const result = await admitChannelMessage(candidate, context(), verifier, LEGACY);
     candidate.body = { changed: true };
 
     expect(result.decision).toBe("pass");
@@ -279,7 +280,7 @@ describe("DACS-3 channel admission", () => {
       type: "offer",
       body: { nested: { signature: "ordinary-body-data" } },
     };
-    const prepared = prepareChannelMessageSigningInput(candidate);
+    const prepared = prepareChannelMessageSigningInput(candidate, LEGACY);
     candidate.body = { nested: { signature: "changed-after-capture" } };
 
     expect(prepared.envelopeHash).toBe(
@@ -293,11 +294,11 @@ describe("DACS-3 channel admission", () => {
     expect(() => prepareChannelMessageSigningInput({
       ...candidate,
       signature: "must-not-be-present-yet",
-    })).toThrow(/omit signature/);
+    }, LEGACY)).toThrow(/omit signature/);
     expect(() => prepareChannelMessageSigningInput({
       ...candidate,
       transportRouting: "outside-the-signed-envelope",
-    })).toThrow(/malformed/);
+    }, LEGACY)).toThrow(/malformed/);
   });
 
   test.each([
@@ -323,6 +324,7 @@ describe("DACS-3 channel admission", () => {
         message(),
         context(),
         verifier as ChannelMessageSignatureVerifier,
+        LEGACY,
       );
       expect(result.decision).toBe(expected);
     },
@@ -339,21 +341,265 @@ describe("DACS-3 channel admission", () => {
     sparse.body = new Array(2);
 
     await expect(
-      admitChannelMessage(accessor, context(), verifier),
+      admitChannelMessage(accessor, context(), verifier, LEGACY),
     ).resolves.toMatchObject({ decision: "error" });
     await expect(
-      admitChannelMessage(new Proxy(message(), {}), context(), verifier),
+      admitChannelMessage(new Proxy(message(), {}), context(), verifier, LEGACY),
     ).resolves.toMatchObject({ decision: "error" });
     await expect(
-      admitChannelMessage(sparse, context(), verifier),
+      admitChannelMessage(sparse, context(), verifier, LEGACY),
     ).resolves.toMatchObject({ decision: "error" });
     expect(verifier).not.toHaveBeenCalled();
   });
 
   test("does not invoke signature verification for replay failures", async () => {
     const verifier = vi.fn<ChannelMessageSignatureVerifier>(() => "pass");
-    const result = await admitChannelMessage(message(), context(1), verifier);
+    const result = await admitChannelMessage(message(), context(1), verifier, LEGACY);
     expect(result.decision).toBe("fail");
     expect(verifier).not.toHaveBeenCalled();
+  });
+});
+
+
+/* -------------------------------------------------------------------------- */
+/* DACS-3 v0.6 CanonicalChannelMessage (DACS-Standard PR #367, SDK #330)       */
+/* -------------------------------------------------------------------------- */
+
+const CANONICAL_CORPUS = JSON.parse(
+  readFileSync(
+    new URL(
+      "../fixtures/standard-next/canonical-channel-message-v0.6.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as {
+  set: string;
+  count: number;
+  authenticatedKeyFixtures: Array<{ claim: string; algorithm: string; publicKey: string }>;
+  correctiveProfileFixture: { releasePin: string; moduleVersions: Record<string, string> };
+  vectors: Array<{
+    name: string;
+    expected: VerificationDecision;
+    operation: "current-read" | "legacy-import";
+    note?: string;
+    message: unknown;
+    ctx: unknown;
+    profileAdmission?: unknown;
+  }>;
+};
+
+/** The fixture's verifier-owned CH-1 roster (participantIdentities of every valid vector). */
+const CORPUS_ROSTER = [
+  "did:example:dacs-349-ecdsa",
+  "did:example:dacs-349-sr1-root",
+  "did:example:unresolved",
+  "key:e70a5bcf97758337d7191df8e32ddd310933ce077937e36723b8b3be4dd69f57",
+  "key:ea0c2afe8504c5500e1c28d05d4a2f214c076c8fc2c0db3225d13d1c1513d693",
+];
+const LEGACY_ROSTER = [
+  "cci:e70a5bcf97758337d7191df8e32ddd310933ce077937e36723b8b3be4dd69f57",
+  "cci:acdcc8494d458f44a7aaac1d6a84ec624daee88436db2ae26e67ba645a106228",
+];
+/** Vectors whose only unimplemented step is SR-1 aggregate verification. */
+const SR1_VECTORS = new Set([
+  "canonical-sr1-aggregate-valid",
+  "canonical-sr1-aggregate-tampered-body",
+  "canonical-sr1-aggregate-cross-domain",
+  "canonical-sr1-aggregate-raw-digest-framing",
+]);
+
+const SECP256K1_P = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F");
+const SECP256K1_N = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
+function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  let result = 1n;
+  let b = base % modulus;
+  let e = exponent;
+  while (e > 0n) {
+    if (e & 1n) result = (result * b) % modulus;
+    b = (b * b) % modulus;
+    e >>= 1n;
+  }
+  return result;
+}
+function secp256k1Key(compressed: Uint8Array): KeyObject | null {
+  if (compressed.length !== 33) return null;
+  const x = BigInt(`0x${Buffer.from(compressed.subarray(1)).toString("hex")}`);
+  const rhs = (modPow(x, 3n, SECP256K1_P) + 7n) % SECP256K1_P;
+  let y = modPow(rhs, (SECP256K1_P + 1n) / 4n, SECP256K1_P);
+  if ((y * y) % SECP256K1_P !== rhs) return null;
+  if ((y & 1n) !== BigInt(compressed[0]! & 1)) y = SECP256K1_P - y;
+  const point = Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(x.toString(16).padStart(64, "0"), "hex"),
+    Buffer.from(y.toString(16).padStart(64, "0"), "hex"),
+  ]);
+  const prefix = Buffer.from("3056301006072a8648ce3d020106052b8104000a034200", "hex");
+  return createPublicKey({ key: Buffer.concat([prefix, point]), format: "der", type: "spki" });
+}
+function lowSDer(der: Buffer): boolean {
+  if (der[0] !== 0x30 || der[1] !== der.length - 2 || der[2] !== 0x02) return false;
+  const rLen = der[3]!;
+  const sStart = 4 + rLen;
+  if (der[sStart] !== 0x02) return false;
+  const sLen = der[sStart + 1]!;
+  const s = der.subarray(sStart + 2, sStart + 2 + sLen);
+  if (sStart + 2 + sLen !== der.length || (s[0]! & 0x80) !== 0) return false;
+  const sv = BigInt(`0x${s.toString("hex")}`);
+  return sv > 0n && sv <= SECP256K1_N / 2n;
+}
+function identityOf(claim: string): string {
+  const q = claim.indexOf("?");
+  return q === -1 ? claim : claim.slice(0, q);
+}
+
+/**
+ * Adapter-side verifier for the corpus: membership against the fixed roster,
+ * key resolution from the sender claim or the fixture table, then algorithm
+ * dispatch over the SDK-supplied `signedBytes`. The SDK owns structural
+ * selection, replay gates and framing; the adapter owns keys.
+ */
+function corpusVerifier(roster: readonly string[]): ChannelMessageSignatureVerifier {
+  return ({ message: candidate, signedBytes, operation }) => {
+    const sender = identityOf(candidate.sender);
+    if (roster.filter((member) => identityOf(member) === sender).length !== 1) return "fail";
+    if (operation === "legacy-import") {
+      const raw = /^cci:([0-9a-f]{64})$/.exec(sender);
+      if (raw === null) return "indeterminate";
+      try {
+        return ed25519Verify(signedBytes, Buffer.from(candidate.signature as string, "hex"), publicKeyFromRaw(Buffer.from(raw[1]!, "hex")))
+          ? "pass" : "fail";
+      } catch { return "error"; }
+    }
+    const signature = candidate.signature as ChannelMessageSignatureV1;
+    const fixture = CANONICAL_CORPUS.authenticatedKeyFixtures.find((f) => f.claim === sender);
+    const keyClaim = /^key:([0-9a-f]{64})$/.exec(sender);
+    const algorithm = fixture?.algorithm ?? (keyClaim ? "ed25519" : null);
+    if (algorithm === null) return "indeterminate";
+    if (algorithm !== signature.algorithm) return "fail";
+    const value = Buffer.from(signature.value, "base64url");
+    try {
+      if (algorithm === "ed25519") {
+        if (value.length !== 64) return "fail";
+        return ed25519Verify(signedBytes, value, publicKeyFromRaw(Buffer.from(keyClaim![1]!, "hex"))) ? "pass" : "fail";
+      }
+      if (algorithm === "ecdsa-secp256k1") {
+        const key = secp256k1Key(Buffer.from(fixture!.publicKey, "hex"));
+        if (key === null) return "indeterminate";
+        if (!lowSDer(value)) return "fail";
+        return nodeVerify("sha256", signedBytes, { key, dsaEncoding: "der" }, value) ? "pass" : "fail";
+      }
+      return "indeterminate"; // sr1-aggregate: no verifier available here
+    } catch {
+      return "fail";
+    }
+  };
+}
+
+/**
+ * CORE §11.1.2 corrective profile authority is verifier-owned session input
+ * outside the admission seam (follow-up to #330). The seven `current-profile-*`
+ * vectors are checked through this test-side gate before admission.
+ */
+function profileGate(vector: typeof CANONICAL_CORPUS.vectors[number]): VerificationDecision | null {
+  if (vector.operation !== "current-read") return null;
+  const ctx = vector.ctx as { sessionChannelId?: unknown };
+  const profile = vector.profileAdmission as Record<string, unknown> | undefined;
+  const expected = CANONICAL_CORPUS.correctiveProfileFixture;
+  if (profile === undefined) return "indeterminate";
+  if (profile.authenticated !== true) return "error";
+  const versions = profile.moduleVersions as Record<string, string> | undefined;
+  if (versions === undefined || Object.keys(expected.moduleVersions).some((m) => !(m in versions))) return "error";
+  const participants = (profile.participantIdentities as string[]).map(identityOf);
+  if (new Set(participants).size !== participants.length) return "error";
+  if (profile.sessionId !== ctx.sessionChannelId) return "fail";
+  if (profile.releasePin !== expected.releasePin) return "fail";
+  const roster = new Set(CORPUS_ROSTER.map(identityOf));
+  if (participants.length !== roster.size || !participants.every((p) => roster.has(p))) return "fail";
+  return null;
+}
+
+describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
+  const keys = generateKeyPairSync("ed25519");
+  const rawKey = (keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32);
+  const claim = `key:${rawKey.toString("hex")}`;
+  const unsigned = {
+    canonicalChannelMessageVersion: "1" as const,
+    channelId: CHANNEL,
+    sequence: 1,
+    sender: claim,
+    sentAt: 1_750_000_000_000,
+    type: "offer" as const,
+    body: { price: "10" },
+    experimentalHint: { future: true },
+  };
+  const verifier: ChannelMessageSignatureVerifier = ({ message: m, signedBytes, operation }) => {
+    const signature = m.signature as ChannelMessageSignatureV1;
+    return operation === "current-read" && signature.signer === m.sender &&
+      ed25519Verify(signedBytes, Buffer.from(signature.value, "base64url"), keys.publicKey)
+      ? "pass" : "fail";
+  };
+  async function produce(envelope: Record<string, unknown> = unsigned) {
+    const input = prepareChannelMessageSigningInput(envelope);
+    const value = nodeSign(null, Buffer.from(input.signedBytes), keys.privateKey).toString("base64url");
+    // The signing input is deeply frozen; hand the reader an owned copy.
+    return { ...structuredClone(input.unsignedEnvelope), signature: { signatureVersion: "1", signer: claim, algorithm: "ed25519", value } };
+  }
+
+  test("producer signs CH-8 bytes and a current-read admits the exact message, retaining unknown members", async () => {
+    const input = prepareChannelMessageSigningInput(unsigned);
+    expect(input.operation).toBe("current-read");
+    expect(Buffer.from(input.signedBytes).toString("utf8")).toBe(`${CANONICAL_CHANNEL_MESSAGE_DOMAIN}${input.envelopeHash}`);
+    expect(input.unsignedEnvelope).toHaveProperty("experimentalHint");
+    const signed = await produce();
+    const admitted = await admitChannelMessage(signed, context(), verifier);
+    expect(admitted.decision).toBe("pass");
+    if (admitted.decision === "pass") {
+      expect(admitted.envelopeHash).toBe(input.envelopeHash);
+      expect(admitted.unsignedEnvelope).toHaveProperty("experimentalHint");
+    }
+    // Stripping the unknown member changes the signed scope.
+    const { experimentalHint: _hint, ...stripped } = signed as Record<string, unknown>;
+    expect((await admitChannelMessage(stripped, context(), verifier)).decision).toBe("fail");
+  });
+
+  test("never falls back between arms", async () => {
+    const signed = await produce();
+    expect((await admitChannelMessage(signed, context(), verifier, LEGACY)).decision).toBe("error");
+    expect((await admitChannelMessage(message(), context(), verifyStandardVectorSignature)).decision).toBe("error");
+    const { canonicalChannelMessageVersion: _v, ...undiscriminated } = signed;
+    expect((await admitChannelMessage(undiscriminated, context(), verifier)).decision).toBe("error");
+    expect((await admitChannelMessage({ ...signed, signature: FIRST_SIGNATURE }, context(), verifier)).decision).toBe("error");
+    expect(() => prepareChannelMessageSigningInput(unsigned, LEGACY)).toThrow(/malformed/);
+    expect(() => prepareChannelMessageSigningInput(unsigned, { operation: "guess" } as never)).toThrow(/operation/);
+  });
+
+  test("refuses a signer that does not identify the sender and an unregistered sender scheme", async () => {
+    const signed = await produce();
+    const other = { ...signed, signature: { ...signed.signature, signer: `key:${"0".repeat(64)}` } };
+    expect((await admitChannelMessage(other, context(), verifier)).decision).toBe("fail");
+    expect((await admitChannelMessage({ ...signed, sender: `cci:${rawKey.toString("hex")}`, signature: { ...signed.signature, signer: `cci:${rawKey.toString("hex")}` } }, context(), verifier)).decision).toBe("error");
+    expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, value: `${signed.signature.value}=` } }, context(), verifier)).decision).toBe("error");
+  });
+
+  test("replays the canonical-channel-message-v0.6 corpus", async () => {
+    expect(CANONICAL_CORPUS.set).toBe("canonical-channel-message-v0.6");
+    expect(CANONICAL_CORPUS.vectors).toHaveLength(55);
+    const current = corpusVerifier(CORPUS_ROSTER);
+    const legacy = corpusVerifier(LEGACY_ROSTER);
+    let matched = 0;
+    for (const vector of CANONICAL_CORPUS.vectors) {
+      const gated = profileGate(vector);
+      const result = gated !== null
+        ? { decision: gated }
+        : await admitChannelMessage(vector.message, vector.ctx, vector.operation === "legacy-import" ? legacy : current, { operation: vector.operation });
+      if (SR1_VECTORS.has(vector.name)) {
+        expect(result.decision, vector.name).toBe("indeterminate");
+        continue;
+      }
+      expect(result.decision, `${vector.name}: ${vector.note ?? ""}`).toBe(vector.expected);
+      matched += 1;
+    }
+    expect(matched).toBe(55 - SR1_VECTORS.size);
   });
 });

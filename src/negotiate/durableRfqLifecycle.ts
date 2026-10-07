@@ -29,6 +29,7 @@ import {
   type RfqTurnBody,
 } from "./rfq.js";
 import {
+  CANONICAL_CHANNEL_MESSAGE_VERSION,
   prepareChannelMessageSigningInput,
   type ChannelMessage,
   type ChannelMessageSignatureVerifier,
@@ -1662,6 +1663,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     }
     const repliesTo = record.session.standingProposal?.sequence;
     const unsigned = {
+      canonicalChannelMessageVersion: CANONICAL_CHANNEL_MESSAGE_VERSION,
       channelId: record.channelId,
       sequence: record.session.lastSequence + 1,
       sender,

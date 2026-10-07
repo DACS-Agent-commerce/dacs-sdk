@@ -18,6 +18,8 @@ import {
   rfqLifecyclePacketId,
   type AttestationRef,
   type ChannelMessageSignatureVerificationInput,
+  type ChannelMessageSigningInput,
+  type ChannelMessageSignatureV1,
   type DurableRfqLifecycleClient,
   type DurableRfqLifecycleStore,
   type DurableRfqLifecycleTransport,
@@ -129,23 +131,27 @@ function verified(value = listing()): VerifiedListingInput {
   };
 }
 
-function channelSigner(privateKey: KeyObject) {
-  return (input: { envelopeHash: string }) =>
-    ed25519Sign(null, Buffer.from(input.envelopeHash, "utf8"), privateKey).toString(
-      "base64url",
-    );
+function channelSigner(signer: string, privateKey: KeyObject) {
+  return (input: Readonly<ChannelMessageSigningInput<RfqTurnBody>>): ChannelMessageSignatureV1 => ({
+    signatureVersion: "1",
+    signer,
+    algorithm: "ed25519",
+    value: ed25519Sign(null, Buffer.from(input.signedBytes), privateKey).toString("base64url"),
+  });
 }
 
 function verifyChannel(
-  input: Readonly<ChannelMessageSignatureVerificationInput<RfqTurnBody, string>>,
+  input: Readonly<ChannelMessageSignatureVerificationInput<RfqTurnBody, ChannelMessageSignatureV1>>,
 ) {
   const key = publicKeys.get(input.message.sender);
   return key !== undefined &&
+    input.operation === "current-read" &&
+    input.message.signature.signer === input.message.sender &&
     ed25519Verify(
       null,
-      Buffer.from(input.envelopeHash, "utf8"),
+      Buffer.from(input.signedBytes),
       key,
-      Buffer.from(input.message.signature, "base64url"),
+      Buffer.from(input.message.signature.value, "base64url"),
     )
     ? ("pass" as const)
     : ("fail" as const);
@@ -198,16 +204,16 @@ function openInput() {
 }
 
 function clients(
-  transport: DurableRfqLifecycleTransport<string>,
+  transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1>,
   reservation = durableReservation(),
   nowMs = () => NOW,
 ) {
   const buyerClient = createDurableRfqLifecycleClient({
     role: "buyer",
-    store: createInMemoryDurableRfqLifecycleStore<string>(),
+    store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
     transport,
     reserveChannelId: reservation,
-    signChannelMessage: channelSigner(buyerKeys.privateKey),
+    signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
     verifyChannelMessage: verifyChannel,
     agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
     verifyAgreementContribution: verifyAgreement,
@@ -215,10 +221,10 @@ function clients(
   });
   const sellerClient = createDurableRfqLifecycleClient({
     role: "seller",
-    store: createInMemoryDurableRfqLifecycleStore<string>(),
+    store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
     transport,
     reserveChannelId: reservation,
-    signChannelMessage: channelSigner(sellerKeys.privateKey),
+    signChannelMessage: channelSigner(SELLER, sellerKeys.privateKey),
     verifyChannelMessage: verifyChannel,
     agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
     verifyAgreementContribution: verifyAgreement,
@@ -228,9 +234,9 @@ function clients(
 }
 
 async function deliver(
-  network: ReturnType<typeof createInMemoryRfqLifecycleNetwork<string>>,
+  network: ReturnType<typeof createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>>,
   recipient: string,
-  client: DurableRfqLifecycleClient<string>,
+  client: DurableRfqLifecycleClient<ChannelMessageSignatureV1>,
 ) {
   const packet = network.take(recipient);
   if (packet === undefined) throw new Error(`no packet for ${recipient}`);
@@ -241,7 +247,7 @@ async function deliver(
 
 describe("durable two-agent RFQ lifecycle", () => {
   test("fails closed as indeterminate when its durable store is unavailable", async () => {
-    const unavailableStore: DurableRfqLifecycleStore<string> = {
+    const unavailableStore: DurableRfqLifecycleStore<ChannelMessageSignatureV1> = {
       load() {
         throw new Error("database offline");
       },
@@ -252,13 +258,13 @@ describe("durable two-agent RFQ lifecycle", () => {
         throw new Error("database offline");
       },
     };
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const client = createDurableRfqLifecycleClient({
       role: "buyer",
       store: unavailableStore,
       transport: network.transport,
       reserveChannelId: durableReservation(),
-      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
@@ -286,7 +292,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("negotiates, replays safely, and produces the same dual-signed agreement", async () => {
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const { buyerClient, sellerClient } = clients(network.transport);
     const buyerOpened = await buyerClient.open(openInput());
     const sellerOpened = await sellerClient.open(openInput());
@@ -347,7 +353,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("policy hooks cannot bypass the Listing price band", async () => {
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const { buyerClient, sellerClient } = clients(network.transport);
     await buyerClient.open(openInput());
     await sellerClient.open(openInput());
@@ -374,9 +380,9 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("reconciles an ambiguous publish before redriving the exact packet", async () => {
-    const accepted = new Map<string, RfqLifecyclePacket<string>>();
+    const accepted = new Map<string, RfqLifecyclePacket<ChannelMessageSignatureV1>>();
     let first = true;
-    const publish = vi.fn(async (packet: Readonly<RfqLifecyclePacket<string>>) => {
+    const publish = vi.fn(async (packet: Readonly<RfqLifecyclePacket<ChannelMessageSignatureV1>>) => {
       if (first) {
         first = false;
         return { disposition: "indeterminate" as const, reason: "lost response" };
@@ -384,7 +390,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       accepted.set(packet.packetId, structuredClone(packet));
       return { disposition: "acknowledged" as const };
     });
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       publish,
       async reconcile(packet) {
         return accepted.has(packet.packetId)
@@ -392,8 +398,8 @@ describe("durable two-agent RFQ lifecycle", () => {
           : { disposition: "absent" as const };
       },
     };
-    const sign = vi.fn(channelSigner(buyerKeys.privateKey));
-    const store = createInMemoryDurableRfqLifecycleStore<string>();
+    const sign = vi.fn(channelSigner(BUYER, buyerKeys.privateKey));
+    const store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
     const clientOptions = {
       role: "buyer",
       store,
@@ -438,7 +444,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       const started = new Promise<void>((resolve) => {
         publishStarted = resolve;
       });
-      const transport: DurableRfqLifecycleTransport<string> = {
+      const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
         async publish() {
           publishStarted();
           await publishGate;
@@ -450,13 +456,13 @@ describe("durable two-agent RFQ lifecycle", () => {
             : { disposition: "rejected", reason: reconciledReason! };
         },
       };
-      const store = createInMemoryDurableRfqLifecycleStore<string>();
+      const store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
       const client = createDurableRfqLifecycleClient({
         role: "buyer",
         store,
         transport,
         reserveChannelId: durableReservation(),
-        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
         verifyChannelMessage: verifyChannel,
         agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
         verifyAgreementContribution: verifyAgreement,
@@ -497,7 +503,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   test.each(["jobId", "channelId"] as const)(
     "rejects an outbox packet with a foreign %s before reconciliation",
     async (field) => {
-      const base = createInMemoryDurableRfqLifecycleStore<string>();
+      const base = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
       let tamper = false;
       const store = {
         async load(role: "buyer" | "seller", jobId: string) {
@@ -532,7 +538,7 @@ describe("durable two-agent RFQ lifecycle", () => {
           reconcile,
         },
         reserveChannelId: durableReservation(),
-        signChannelMessage: channelSigner(buyerKeys.privateKey),
+        signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
         verifyChannelMessage: verifyChannel,
         agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
         verifyAgreementContribution: verifyAgreement,
@@ -555,7 +561,7 @@ describe("durable two-agent RFQ lifecycle", () => {
 
   test("uses its trusted clock to persist timeout without signing or publishing a late turn", async () => {
     let now = NOW;
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const { buyerClient, sellerClient } = clients(
       network.transport,
       durableReservation(),
@@ -589,8 +595,8 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("persists permanent transport rejection as a terminal channel failure", async () => {
-    const sign = vi.fn(channelSigner(buyerKeys.privateKey));
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const sign = vi.fn(channelSigner(BUYER, buyerKeys.privateKey));
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "rejected", reason: "member transport refused packet" };
       },
@@ -600,7 +606,7 @@ describe("durable two-agent RFQ lifecycle", () => {
     };
     const client = createDurableRfqLifecycleClient({
       role: "buyer",
-      store: createInMemoryDurableRfqLifecycleStore<string>(),
+      store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
       transport,
       reserveChannelId: durableReservation(),
       signChannelMessage: sign,
@@ -634,7 +640,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("rejects a cryptographically valid agreement plan that changes accepted terms", async () => {
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const { buyerClient, sellerClient } = clients(network.transport);
     await buyerClient.open(openInput());
     await sellerClient.open(openInput());
@@ -680,7 +686,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("owns a proposal before the first asynchronous store read", async () => {
-    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    const base = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
     let pauseLoads = false;
     let releaseLoad!: () => void;
     const loadGate = new Promise<void>((resolve) => {
@@ -694,13 +700,13 @@ describe("durable two-agent RFQ lifecycle", () => {
       create: base.create.bind(base),
       compareAndSwap: base.compareAndSwap.bind(base),
     };
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const client = createDurableRfqLifecycleClient({
       role: "buyer",
       store,
       transport: network.transport,
       reserveChannelId: durableReservation(),
-      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
@@ -724,7 +730,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("captures receiver-bound dependencies once at client construction", async () => {
-    const baseStore = createInMemoryDurableRfqLifecycleStore<string>();
+    const baseStore = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
     const store = {
       backing: baseStore,
       load(role: "buyer" | "seller", jobId: string) {
@@ -742,13 +748,13 @@ describe("durable two-agent RFQ lifecycle", () => {
         return this.backing.compareAndSwap(role, jobId, revision, record);
       },
     };
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const options = {
       role: "buyer" as const,
       store,
       transport: network.transport,
       reserveChannelId: durableReservation(),
-      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
@@ -779,7 +785,7 @@ describe("durable two-agent RFQ lifecycle", () => {
   });
 
   test("rejects malformed store success and distinct reopen authority", async () => {
-    const base = createInMemoryDurableRfqLifecycleStore<string>();
+    const base = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
     let malformedLoad = false;
     const store = {
       load(role: "buyer" | "seller", jobId: string) {
@@ -790,13 +796,13 @@ describe("durable two-agent RFQ lifecycle", () => {
       create: base.create.bind(base),
       compareAndSwap: base.compareAndSwap.bind(base),
     };
-    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const client = createDurableRfqLifecycleClient({
       role: "buyer",
       store,
       transport: network.transport,
       reserveChannelId: durableReservation(),
-      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,

@@ -46,16 +46,34 @@ if (opened.decision !== "pass") {
 and monotonic-sequence gates. A mandatory adapter verifier authenticates the
 sender signature and returns `pass`, `fail`, `indeterminate`, or `error`.
 
+Channel messages follow DACS-3 v0.6 §8.3.3 (DACS-Standard PR #367, resolving
+#349). A reader selects one of two operations structurally, before any
+cryptography, and never falls back to the other for the same object:
+
+- `current-read` (default) requires the exclusive
+  `canonicalChannelMessageVersion: "1"` discriminator, a registered sender
+  claim scheme, and the version-1 signature envelope
+  `{ signatureVersion: "1", signer, algorithm, value }` with a SIG-6 unpadded
+  Base64URL `value`. Unknown top-level members are retained in the signed
+  scope (SIG-5). A signer that does not identify the sender (CF-3) is a CH-7
+  `fail`.
+- `legacy-import` must be selected explicitly (`{ operation: "legacy-import" }`)
+  and admits only the frozen historical Demos wire: no discriminator, the
+  exact seven-member envelope, and a bare 128-character lowercase-hex
+  signature. New producers MUST NOT emit it.
+
 For a sender, `prepareChannelMessageSigningInput()` validates the unsigned
-envelope and returns the same immutable envelope/hash pair. The adapter then
-applies its steward-approved signature framing and attaches the signature.
+envelope and returns the immutable envelope, its lowercase-hex SHA-256 hash,
+and the exact `signedBytes` for the operation: CH-8
+`UTF8("dacs-canonical-channel-message:v1:") || ASCII(hex)` for `current-read`,
+or the historical `UTF8("dacs-channelmsg:v1:") || raw digest` for
+`legacy-import`. The adapter signs those bytes with the member's primary key
+and attaches the envelope.
 
 The verifier receives an owned, deeply frozen message, the exact unsigned
-envelope, and its lowercase-hex SHA-256 hash. The core deliberately does not
-construct signature bytes. Current DACS prose, conformance vectors, and Demos
-L2PS disagree about signature framing and encoding; that upstream decision is
-tracked in DACS-Standard#349. Baking one private interpretation into this API
-would make the other two incompatible.
+envelope, its hash, the same `signedBytes`, and the selected operation. It
+owns member-key resolution and algorithm dispatch (Ed25519, ECDSA secp256k1,
+SR-1 aggregate) and returns the four-value decision.
 
 ## Advancing an RFQ
 
@@ -241,6 +259,7 @@ encrypted publisher.
 The live Demos L2PS adapter also remains separate. Until it lands, the SDK
 supplies the complete transport-neutral, durable buyer/seller RFQ lifecycle,
 agreement/commitment and transcript-policy core but not a complete live
-`negotiate-rfq` phase handler.
-DACS-Standard#349 must resolve the current channel signature-framing conflict
-before the adapter can safely choose a normative wire format.
+`negotiate-rfq` phase handler. The channel wire itself is now fixed by
+DACS-3 v0.6 (see "Admitting channel messages"); `@kynesyslabs/demosdk@4.0.16`
+`l2ps.channel` still emits a historical shape and is not a conforming
+producer (DACS-Standard#414).

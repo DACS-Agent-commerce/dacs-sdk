@@ -9,6 +9,7 @@ import {
   validateRfqProposal,
   type AttestationRef,
   type ChannelMessageSignatureVerifier,
+  type ChannelMessageSignatureV1,
   type FixedPricePartyInput,
   type IdentityBundle,
   type Listing,
@@ -138,7 +139,7 @@ function openInput(value = listing()) {
 }
 
 const reserve: RfqChannelReservation = () => "pass";
-const verify: ChannelMessageSignatureVerifier<RfqTurnBody, string> = () =>
+const verify: ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1> = () =>
   "pass";
 
 function turn(
@@ -152,17 +153,24 @@ function turn(
     sentAt?: number;
   } = {},
 ) {
+  const sender = options.sender ?? state.expectedSender;
   return {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: state.channelId,
     sequence: options.sequence ?? state.lastSequence + 1,
-    sender: options.sender ?? state.expectedSender,
+    sender,
     sentAt: options.sentAt ?? NOW,
     type,
     body,
     ...(options.repliesTo === undefined
       ? {}
       : { refs: { repliesTo: options.repliesTo } }),
-    signature: "adapter-owned-signature",
+    signature: {
+      signatureVersion: "1" as const,
+      signer: sender,
+      algorithm: "ed25519" as const,
+      value: Buffer.alloc(64, 7).toString("base64url"),
+    },
   };
 }
 
@@ -492,7 +500,7 @@ describe("bounded RFQ turn reducer", () => {
     expect(second.state).toMatchObject({ status: "max-turns", turnCount: 2 });
 
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     const replay = await advanceRfqSession(
       second.state as RfqSessionState,
@@ -510,7 +518,7 @@ describe("bounded RFQ turn reducer", () => {
   test("uses trusted receipt time, not sender sentAt, and times out without verification", async () => {
     const state = await opened(listing({ timeoutSec: 2 }));
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     const result = await advanceRfqSession(
       state,
@@ -566,7 +574,7 @@ describe("bounded RFQ turn reducer", () => {
     cases.push(missingAdmittedHash);
 
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     for (const corrupted of cases) {
       await expect(

@@ -10,6 +10,7 @@ import {
   signRfqAgreement,
   type AttestationRef,
   type ChannelMessage,
+  type ChannelMessageSignatureV1,
   type IdentityBundle,
   type Listing,
   type RfqSessionState,
@@ -129,7 +130,8 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
     () => "pass",
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
-  const offer: ChannelMessage<RfqTurnBody, string> = {
+  const offer: ChannelMessage<RfqTurnBody, ChannelMessageSignatureV1> = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 1,
     sender: BUYER,
@@ -142,7 +144,7 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
         price: { amount: "9.5", currency: "USDC" },
       },
     },
-    signature: "buyer-channel-signature",
+    signature: { signatureVersion: "1" as const, signer: BUYER, algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
   };
   const offered = await advanceRfqSession(
     opened.state as RfqSessionState,
@@ -151,7 +153,8 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
     () => "pass",
   );
   if (offered.decision !== "pass") throw new Error(offered.reason);
-  const accept: ChannelMessage<RfqTurnBody, string> = {
+  const accept: ChannelMessage<RfqTurnBody, ChannelMessageSignatureV1> = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 2,
     sender: SELLER,
@@ -159,7 +162,7 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
     type: "accept",
     body: { rfqBodyVersion: "1", acceptedSequence: 1 },
     refs: { repliesTo: 1 },
-    signature: "seller-channel-signature",
+    signature: { signatureVersion: "1" as const, signer: SELLER, algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
   };
   const accepted = await advanceRfqSession(
     offered.state as RfqSessionState,
@@ -423,7 +426,7 @@ describe("RFQ transcript disclosure policy", () => {
         },
         {
           verifyMessageSignature: ({ message }) =>
-            message.signature === "buyer-channel-signature" ? "pass" : "fail",
+            message.signature.signer === BUYER ? "pass" : "fail",
           verifyConsent,
         },
       ),

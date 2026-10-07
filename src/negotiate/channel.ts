@@ -4,6 +4,10 @@ import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 /** DACS-3 §8.3.3 v0.x closed channel-message type set. */
 export type ChannelMessageType =
@@ -16,11 +20,44 @@ export type ChannelMessageType =
   | "abort";
 
 /**
- * Substrate-independent DACS-3 channel envelope. The signature stays generic
- * until DACS-Standard#349 resolves the normative signature container and byte
- * representation used by current Demos L2PS.
+ * DACS-3 v0.6 §8.3.3 reader operations (DACS-Standard PR #367). A reader
+ * selects the arm structurally before any cryptography and never falls back
+ * to the other arm for the same object.
+ */
+export type ChannelMessageOperation = "current-read" | "legacy-import";
+
+export const CANONICAL_CHANNEL_MESSAGE_VERSION = "1" as const;
+/** CH-8 signed-byte domain for the current message type. */
+export const CANONICAL_CHANNEL_MESSAGE_DOMAIN =
+  "dacs-canonical-channel-message:v1:" as const;
+/** Frozen historical Demos domain; `legacy-import` only. New producers MUST NOT emit it. */
+export const LEGACY_CHANNEL_MESSAGE_DOMAIN = "dacs-channelmsg:v1:" as const;
+
+export const CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS = Object.freeze([
+  "ed25519",
+  "ecdsa-secp256k1",
+  "sr1-aggregate",
+] as const);
+export type ChannelMessageSignatureAlgorithm =
+  typeof CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS[number];
+
+/** Version-1 signature envelope carried by a `CanonicalChannelMessage`. */
+export interface ChannelMessageSignatureV1 {
+  signatureVersion: "1";
+  signer: string;
+  algorithm: ChannelMessageSignatureAlgorithm;
+  /** CORE §B.7 SIG-6 unpadded Base64URL. */
+  value: string;
+}
+
+/**
+ * Substrate-independent DACS-3 channel envelope. `TSignature` is
+ * `ChannelMessageSignatureV1` on `current-read` and a bare lowercase-hex
+ * string on `legacy-import`; admission enforces the shape per operation.
  */
 export interface ChannelMessage<TBody = unknown, TSignature = unknown> {
+  /** Exclusive current-message discriminator; absent only on the frozen historical wire. */
+  canonicalChannelMessageVersion?: typeof CANONICAL_CHANNEL_MESSAGE_VERSION;
   channelId: string;
   sequence: number;
   sender: string;
@@ -45,7 +82,11 @@ export type UnsignedChannelMessage<TBody = unknown> = Omit<
 
 export interface ChannelMessageSigningInput<TBody = unknown> {
   unsignedEnvelope: Readonly<UnsignedChannelMessage<TBody>>;
+  /** Lowercase-hex SHA-256 of the JCS unsigned envelope (CH-8 `message_hash`). */
   envelopeHash: string;
+  /** Exact bytes to sign for the selected operation (CH-8 current, CH-10 legacy). */
+  signedBytes: Uint8Array;
+  operation: ChannelMessageOperation;
 }
 
 /**
@@ -62,6 +103,14 @@ export interface ChannelMessageSignatureVerificationInput<
     Omit<ChannelMessage<TBody, TSignature>, "signature">
   >;
   envelopeHash: string;
+  /** Exact bytes the sender signed under the selected operation's framing. */
+  signedBytes: Uint8Array;
+  operation: ChannelMessageOperation;
+}
+
+export interface ChannelMessageAdmissionOptions {
+  /** Defaults to `current-read`. `legacy-import` must be selected explicitly. */
+  operation?: ChannelMessageOperation;
 }
 
 export type ChannelMessageSignatureVerifier<
@@ -111,6 +160,77 @@ const DECISIONS: ReadonlySet<string> = new Set<VerificationDecision>([
 
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
+const SIGNATURE_ALGORITHMS: ReadonlySet<string> = new Set(
+  CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS,
+);
+const LEGACY_HEX_SIGNATURE = /^[0-9a-f]{128}$/;
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+function isCanonicalBase64Url(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || !BASE64URL.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, "base64url").toString("base64url") === value;
+}
+
+/** CH-7: a registered DACS-1 claim scheme; the historical generic `cci:` is refused. */
+function isRegisteredClaim(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed !== null && parsed.schemeStatus === "registered";
+}
+
+function sameParty(left: string, right: string): boolean {
+  return left === right || sameCanonicalClaimIdentity(left, right);
+}
+
+function validateSignatureEnvelopeV1(
+  value: unknown,
+): value is ChannelMessageSignatureV1 {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ["signatureVersion", "signer", "algorithm", "value"]) &&
+    value.signatureVersion === "1" &&
+    isNonEmptyString(value.signer) &&
+    typeof value.algorithm === "string" &&
+    SIGNATURE_ALGORITHMS.has(value.algorithm) &&
+    isCanonicalBase64Url(value.value)
+  );
+}
+
+/** CH-8: `UTF8(domain) || ASCII(lowercase-hex sha256(JCS(unsigned_message)))`. */
+export function canonicalChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
+  return Buffer.concat([
+    Buffer.from(CANONICAL_CHANNEL_MESSAGE_DOMAIN, "utf8"),
+    Buffer.from(envelopeHash, "ascii"),
+  ]);
+}
+
+/** CH-10 frozen historical framing: `UTF8(domain) || raw 32-byte sha256 digest`. */
+export function legacyChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
+  return Buffer.concat([
+    Buffer.from(LEGACY_CHANNEL_MESSAGE_DOMAIN, "utf8"),
+    Buffer.from(envelopeHash, "hex"),
+  ]);
+}
+
+function signedBytesFor(
+  operation: ChannelMessageOperation,
+  envelopeHash: string,
+): Uint8Array {
+  return operation === "current-read"
+    ? canonicalChannelMessageSignedBytes(envelopeHash)
+    : legacyChannelMessageSignedBytes(envelopeHash);
+}
+
+function selectOperation(options: unknown): ChannelMessageOperation | null {
+  if (options === undefined) return "current-read";
+  if (!isRecord(options) || !exactKeys(options, [], ["operation"])) return null;
+  const operation = options.operation ?? "current-read";
+  return operation === "current-read" || operation === "legacy-import"
+    ? operation
+    : null;
+}
 
 function isRecord(value: unknown): value is DataRecord {
   return (
@@ -152,7 +272,10 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
     value === null ||
     typeof value !== "object" ||
     seen.has(value as object) ||
-    Object.isFrozen(value)
+    Object.isFrozen(value) ||
+    // Typed arrays with elements cannot be frozen; `signedBytes` is a fresh
+    // owned copy per call, so leaving it unfrozen exposes no shared state.
+    ArrayBuffer.isView(value)
   ) {
     return value;
   }
@@ -188,11 +311,33 @@ function validateContext(value: unknown): value is ChannelAdmissionContext {
   return value.priorChannelIds.every(isNonEmptyString);
 }
 
+/**
+ * Structural selection per DACS-3 v0.6 §8.3.3. `current-read` requires the
+ * exclusive discriminator, a registered sender scheme, the version-1
+ * signature envelope whose signer identifies the sender (CF-3), and retains
+ * unknown top-level members in the signed scope (SIG-5). `legacy-import`
+ * requires the discriminator to be absent, the exact historical member set,
+ * and a bare 128-character lowercase-hex signature. Partial mixtures reject
+ * on both operations.
+ */
 function validateMessage(
   value: unknown,
+  operation: ChannelMessageOperation,
 ): value is ChannelMessage<unknown, unknown> {
-  if (
-    !isRecord(value) ||
+  if (!isRecord(value)) return false;
+  if (operation === "current-read") {
+    if (
+      value.canonicalChannelMessageVersion !== CANONICAL_CHANNEL_MESSAGE_VERSION ||
+      !["channelId", "sequence", "sender", "sentAt", "type", "body", "signature"]
+        .every((key) => hasOwn(value, key)) ||
+      Object.values(value).some((member) => member === undefined) ||
+      !isRegisteredClaim(value.sender) ||
+      !validateSignatureEnvelopeV1(value.signature)
+    ) {
+      return false;
+    }
+  } else if (
+    hasOwn(value, "canonicalChannelMessageVersion") ||
     !exactKeys(
       value,
       [
@@ -206,6 +351,12 @@ function validateMessage(
       ],
       ["refs"],
     ) ||
+    typeof value.signature !== "string" ||
+    !LEGACY_HEX_SIGNATURE.test(value.signature)
+  ) {
+    return false;
+  }
+  if (
     !isNonEmptyString(value.channelId) ||
     !Number.isSafeInteger(value.sequence) ||
     (value.sequence as number) < 1 ||
@@ -232,16 +383,13 @@ function validateMessage(
 function unsignedEnvelope<TBody, TSignature>(
   message: Readonly<ChannelMessage<TBody, TSignature>>,
 ): Omit<ChannelMessage<TBody, TSignature>, "signature"> {
-  const { channelId, sequence, sender, sentAt, type, body, refs } = message;
-  return {
-    channelId,
-    sequence,
-    sender,
-    sentAt,
-    type,
-    body,
-    ...(refs === undefined ? {} : { refs }),
-  };
+  // CH-8 / SIG-5: the signed scope is the complete received message with only
+  // the top-level `signature` member omitted; unknown members are retained.
+  const unsigned: DataRecord = {};
+  for (const key of Object.keys(message)) {
+    if (key !== "signature") unsigned[key] = (message as DataRecord)[key];
+  }
+  return unsigned as Omit<ChannelMessage<TBody, TSignature>, "signature">;
 }
 
 /**
@@ -251,7 +399,12 @@ function unsignedEnvelope<TBody, TSignature>(
  */
 export function prepareChannelMessageSigningInput<TBody = unknown>(
   candidate: unknown,
+  options?: Readonly<ChannelMessageAdmissionOptions>,
 ): Readonly<ChannelMessageSigningInput<TBody>> {
+  const operation = selectOperation(options);
+  if (operation === null) {
+    throw new DacsError("channel message operation is malformed");
+  }
   const envelope = snapshotCanonicalJson(
     candidate,
     "unsigned channel message",
@@ -259,16 +412,31 @@ export function prepareChannelMessageSigningInput<TBody = unknown>(
   if (!isRecord(envelope) || hasOwn(envelope, "signature")) {
     throw new DacsError("unsigned channel message must omit signature");
   }
-  const probe = { ...envelope, signature: "validation-probe" };
-  if (!validateMessage(probe)) {
+  // Probe with a structurally valid signature for the selected arm so the
+  // remaining envelope rules are checked exactly as a reader would check them.
+  const probe = operation === "current-read"
+    ? {
+        ...envelope,
+        signature: {
+          signatureVersion: "1",
+          signer: envelope.sender,
+          algorithm: "ed25519",
+          value: "AA",
+        },
+      }
+    : { ...envelope, signature: "0".repeat(128) };
+  if (!validateMessage(probe, operation)) {
     throw new DacsError("unsigned channel message envelope is malformed");
   }
   const owned = deepFreeze(
     envelope as unknown as UnsignedChannelMessage<TBody>,
   );
+  const envelopeHash = sha256Hex(canonicalize(owned));
   return deepFreeze({
     unsignedEnvelope: owned,
-    envelopeHash: sha256Hex(canonicalize(owned)),
+    envelopeHash,
+    signedBytes: signedBytesFor(operation, envelopeHash),
+    operation,
   });
 }
 
@@ -288,6 +456,7 @@ export async function admitChannelMessage<
   candidate: unknown,
   candidateContext: unknown,
   verifySignature: ChannelMessageSignatureVerifier<TBody, TSignature>,
+  options?: Readonly<ChannelMessageAdmissionOptions>,
 ): Promise<ChannelMessageAdmissionResult<TBody, TSignature>> {
   if (
     typeof verifySignature !== "function" ||
@@ -297,6 +466,10 @@ export async function admitChannelMessage<
       "error",
       "channel signature verifier is unavailable or unsafe",
     );
+  }
+  const operation = selectOperation(options);
+  if (operation === null) {
+    return failure("error", "channel message operation is malformed");
   }
 
   let message: ChannelMessage<TBody, TSignature>;
@@ -320,8 +493,19 @@ export async function admitChannelMessage<
   if (!validateContext(context)) {
     return failure("error", "channel admission context is malformed");
   }
-  if (!validateMessage(message)) {
+  if (!validateMessage(message, operation)) {
     return failure("error", "channel message envelope is malformed");
+  }
+  if (
+    operation === "current-read" &&
+    !sameParty(
+      (message.signature as ChannelMessageSignatureV1).signer,
+      message.sender,
+    )
+  ) {
+    // CH-7: a well-formed envelope whose signer is another party is a
+    // binding failure attributable to the message, not malformed input.
+    return failure("fail", "signature signer does not identify the sender (CH-7)");
   }
   if (context.priorChannelIds.includes(context.sessionChannelId)) {
     return failure(
@@ -343,6 +527,8 @@ export async function admitChannelMessage<
     message: ownedMessage,
     unsignedEnvelope: unsigned,
     envelopeHash,
+    signedBytes: signedBytesFor(operation, envelopeHash),
+    operation,
   });
 
   let decision: unknown;
