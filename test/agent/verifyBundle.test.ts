@@ -1,4 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
+import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
+import type { AnchorResolution } from "../../src/substrate/anchorResolution.js";
 
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -7,7 +11,12 @@ import {
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { contentHash } from "../../src/canonical/index.js";
+import {
+  contentHash,
+  listingAddress,
+  logicalToStorageProgramName,
+  paymentEvidenceAddress,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -2010,5 +2019,256 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     for (const [, , parties] of seen) {
       expect(parties).toEqual(fx.bundle.parties);
     }
+  });
+});
+
+const EVIDENCE_NATIVE = "stor-evidence-native";
+const buyerOwner = Buffer.from(resolveFromDid(buyerDid)!).toString("hex");
+const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
+
+async function logicalAgentFixture(locator = paymentEvidenceAddress(JOB_ID, "x402:default", 0)) {
+  const fx = await buildFixture(buyerDid, signBuyer);
+  const evidenceScope = { ...fx.evidence };
+  delete evidenceScope.signature;
+  evidenceScope.paymentAmount = { amount: "1", currency: "USDC" };
+  fx.evidence = {
+    ...evidenceScope,
+    signature: await componentSignature(
+      evidenceScope, ARTIFACT_SEPARATORS.SettlementEvidence, sellerDid, signSeller,
+    ),
+  };
+  const evidenceRef = {
+    anchor: { kind: "storage-program" as const, locator },
+    contentHash: contentHash(fx.evidence),
+    signer: sellerDid,
+  };
+  fx.bundle.anchoredByRole = "seller";
+  fx.bundle.settlementEvidence = [evidenceRef];
+  fx.bundle.phaseSummary = [{
+    index: 0,
+    kind: "pay-x402",
+    outcome: "ok",
+    txRefs: fx.evidence.paymentTxRefs,
+    attestationRef: evidenceRef,
+  }];
+  await resignFixture(fx, [
+    { party: buyerDid, sign: signBuyer },
+    { party: sellerDid, sign: signSeller },
+  ]);
+  const store = new Map([
+    ["stor-bundle", fx.bundle],
+    [LISTING_ADDR, fx.listing],
+    ["agreement-j1", fx.agreement],
+    [EVIDENCE_NATIVE, fx.evidence],
+    // A logical direct read must never rescue absent writer authority.
+    [locator, fx.evidence],
+  ]);
+  const listingName = logicalToStorageProgramName(listingAddress(sellerDid, "svc", 1));
+  const evidenceName = logicalToStorageProgramName(locator);
+  let resolution: AnchorResolution = { status: "present", address: EVIDENCE_NATIVE };
+  const readAnchor = vi.fn(async (address: string) => store.get(address) ?? null);
+  const resolveAnchorByName = vi.fn(async (name: string, owner: string): Promise<AnchorResolution> => {
+    if (name === listingName && owner === sellerOwner) {
+      return { status: "present", address: LISTING_ADDR };
+    }
+    return name === evidenceName && owner === buyerOwner
+      ? resolution
+      : { status: "absent" };
+  });
+  const config: AgentConfig = {
+    demosRpc: "mem",
+    resolveAttestationAnchorWriter: () => buyerDid,
+    resolveSettlementEvidenceContext: () => ({
+      orchestrator: sellerDid,
+      rail: {
+        railId: "x402:default",
+        railType: "x402",
+        asset: "USDC",
+        handler: "pay-x402",
+        network: "eip155:84532",
+      },
+    }),
+  };
+  const agent = () => buildAgent({ readAnchor, resolveAnchorByName } as unknown as SubstrateAdapter, config);
+  return {
+    fx, store, evidenceRef, evidenceName, config, agent, readAnchor, resolveAnchorByName,
+    setResolution: (value: AnchorResolution) => { resolution = value; },
+  };
+}
+
+function evidenceCheck(result: Awaited<ReturnType<ReturnType<typeof buildAgent>["verifyBundle"]>>) {
+  return result.refs.find((entry) => entry.kind === "dacs-4-evidence");
+}
+
+describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
+  test("resolves encoded name with buyer writer despite seller signer and anchoredByRole", async () => {
+    const f = await logicalAgentFixture();
+    const writer = vi.fn<NonNullable<AgentConfig["resolveAttestationAnchorWriter"]>>(() => buyerDid);
+    f.config.resolveAttestationAnchorWriter = writer;
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result, result.reason).toMatchObject({ ok: true, fullyVerified: true });
+    expect(writer).toHaveBeenCalledWith({
+      ref: f.evidenceRef, jobId: JOB_ID, parties: f.fx.bundle.parties,
+    });
+    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+    expect(f.resolveAnchorByName).not.toHaveBeenCalledWith(f.evidenceName, sellerOwner);
+    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+    expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
+  });
+
+  test.each(["missing", "wrong", "indeterminate", "ambiguous", "throws", "noncanonical", "unresolved-key"])(
+    "%s writer authority leaves the reference unresolved", async (mode) => {
+      const f = await logicalAgentFixture();
+      if (mode === "missing") delete f.config.resolveAttestationAnchorWriter;
+      else f.config.resolveAttestationAnchorWriter = () => {
+        if (mode === "throws") throw new Error("receipt unavailable");
+        if (mode === "wrong") return sellerDid;
+        if (mode === "ambiguous") return [buyerDid, sellerDid] as unknown as string;
+        if (mode === "noncanonical") return buyerOwner;
+        if (mode === "unresolved-key") return "did:example:writer";
+        return null;
+      };
+      const result = await f.agent().verifyBundle("stor-bundle");
+      expect(result.ok).toBe(false);
+      // The existing resolver contract represents a null read as `missing`.
+      expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+      expect(f.readAnchor).not.toHaveBeenCalledWith(EVIDENCE_NATIVE);
+      expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
+      const lookups = f.resolveAnchorByName.mock.calls.filter(([name]) => name === f.evidenceName);
+      expect(lookups).toEqual(mode === "wrong" ? [[f.evidenceName, sellerOwner]] : []);
+    },
+  );
+
+  test.each([
+    paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0),
+    `dacs4:payment:${JOB_ID}:x402%3adefault:0`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:00`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:9007199254740992`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:0:extra`,
+    `dacs4:payment:${JOB_ID}:x402%41default:0`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:-1`,
+  ])("rejects mismatched job or noncanonical tuple before writer/index lookup: %s", async (locator) => {
+    const f = await logicalAgentFixture(locator);
+    const writer = vi.fn(() => buyerDid);
+    f.config.resolveAttestationAnchorWriter = writer;
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+    expect(writer).not.toHaveBeenCalled();
+    expect(f.resolveAnchorByName.mock.calls.filter(([name]) => name === f.evidenceName)).toEqual([]);
+    expect(f.readAnchor).not.toHaveBeenCalledWith(locator);
+  });
+
+  test.each(["absent", "indeterminate", "logical-address", "empty-address", "throws"])(
+    "does not read a native anchor after %s name resolution", async (mode) => {
+      const f = await logicalAgentFixture();
+      if (mode === "throws") {
+        const resolve = f.resolveAnchorByName.getMockImplementation()!;
+        f.resolveAnchorByName.mockImplementation(async (name, owner) => {
+          if (name === f.evidenceName) throw new Error("index unavailable");
+          return resolve(name, owner);
+        });
+      }
+      else f.setResolution(mode === "absent" ? { status: "absent" }
+        : mode === "indeterminate" ? { status: "indeterminate", reason: "multiple matching owners" }
+        : { status: "present", address: mode === "logical-address" ? f.evidenceRef.anchor.locator : "" });
+      const result = await f.agent().verifyBundle("stor-bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+      expect(f.readAnchor).not.toHaveBeenCalledWith(EVIDENCE_NATIVE);
+      expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
+    },
+  );
+
+  test("uses the canonical key resolver for an independently authenticated foreign writer claim", async () => {
+    const f = await logicalAgentFixture();
+    f.config.resolveAttestationAnchorWriter = () => "did:example:writer";
+    const key = vi.fn(() => resolveFromDid(buyerDid));
+    f.config.resolveIdentitySigningPublicKey = key;
+    expect(await f.agent().verifyBundle("stor-bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(key).toHaveBeenCalledWith("did:example:writer");
+    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+  });
+
+  test("resolves a canonical :resolved locator before applying content integrity checks", async () => {
+    const f = await logicalAgentFixture(paymentEvidenceAddress(JOB_ID, "x402:default", 0, true));
+    f.fx.evidence.observedAt = 1780000000001;
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "hash-mismatch" });
+    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+  });
+
+  test("rejects accessor-backed callback configuration without invoking it", async () => {
+    const f = await logicalAgentFixture();
+    const getter = vi.fn(() => () => buyerDid);
+    Object.defineProperty(f.config, "resolveAttestationAnchorWriter", { get: getter });
+    expect(f.agent).toThrow("AgentConfig.resolveAttestationAnchorWriter must be stable data");
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  test("captures the callback once and isolates mutations of callback input", async () => {
+    const f = await logicalAgentFixture();
+    f.config.resolveAttestationAnchorWriter = ({ ref, parties }) => {
+      (ref.anchor as { locator: string }).locator = "tampered";
+      (parties[0] as { primaryClaim: string }).primaryClaim = sellerDid;
+      return buyerDid;
+    };
+    const agent = f.agent();
+    f.config.resolveAttestationAnchorWriter = () => sellerDid;
+    expect(await agent.verifyBundle("stor-bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+  });
+
+  test("native agreement references preserve direct reads without a writer callback", async () => {
+    const f = await logicalAgentFixture();
+    f.fx.bundle.settlementEvidence = [];
+    f.fx.bundle.phaseSummary = [];
+    await resignFixture(f.fx, [
+      { party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller },
+    ]);
+    const writer = vi.fn(() => { throw new Error("must not resolve native writer"); });
+    f.config.resolveAttestationAnchorWriter = writer;
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result).toMatchObject({ ok: true, fullyVerified: true });
+    expect(result.refs.find((entry) => entry.kind === "dacs-3-agreement")).toMatchObject({ verdict: "ok" });
+    expect(f.readAnchor).toHaveBeenCalledWith("agreement-j1");
+    expect(writer).not.toHaveBeenCalled();
+    expect(f.resolveAnchorByName.mock.calls).toHaveLength(1); // Listing only.
+  });
+
+  test("native evidence retains direct reads and existing PC-2 binding rejection", async () => {
+    const f = await logicalAgentFixture(EVIDENCE_NATIVE);
+    const writer = vi.fn(() => buyerDid);
+    f.config.resolveAttestationAnchorWriter = writer;
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "invalid-evidence" });
+    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+    expect(writer).not.toHaveBeenCalled();
+  });
+
+  test.each(["hash", "signature", "job", "phase"])("retains %s rejection after successful logical resolution", async (tamper) => {
+    const f = await logicalAgentFixture();
+    if (tamper === "hash") f.fx.evidence.observedAt = 1780000000001;
+    if (tamper === "signature") (f.fx.evidence.signature as { value: string }).value = Buffer.alloc(64).toString("base64url");
+    if (tamper === "job") {
+      f.fx.evidence.jobId = OTHER_JOB_ID;
+      f.evidenceRef.contentHash = contentHash(f.fx.evidence);
+    }
+    if (tamper === "phase") {
+      (f.fx.bundle.phaseSummary as Array<{ index: number }>)[0]!.index = 1;
+    }
+    if (tamper === "job" || tamper === "phase") {
+      await resignFixture(f.fx, [{ party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller }]);
+    }
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result.ok).toBe(false);
+    const verdict = {
+      hash: "hash-mismatch", signature: "signature-invalid",
+      job: "invalid-binding", phase: "invalid-evidence",
+    }[tamper];
+    expect(evidenceCheck(result)).toMatchObject({ verdict });
+    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
   });
 });
