@@ -273,21 +273,23 @@ describe("DACS-3 channel admission", () => {
     expect(verifier).toHaveBeenCalledOnce();
   });
 
-  test("prepares the same immutable digest for a producer without choosing signature framing", () => {
+  test("prepares the same immutable digest for a producer, current wire only", () => {
     const candidate = {
+      canonicalChannelMessageVersion: "1",
       channelId: CHANNEL,
       sequence: 1,
-      sender: SENDER,
+      sender: `key:${"ab".repeat(32)}`,
       sentAt: 1_750_000_000_000,
       type: "offer",
       body: { nested: { signature: "ordinary-body-data" } },
     };
-    const prepared = prepareChannelMessageSigningInput(candidate, LEGACY);
+    const prepared = prepareChannelMessageSigningInput(candidate);
     candidate.body = { nested: { signature: "changed-after-capture" } };
 
     expect(prepared.envelopeHash).toBe(
-      "a000b81119271adcdca85ce626df36862fa2bb6b8c3aba2a477837b77023aa22",
+      "656b0c8de65efedbd633d60a6f6eecdc0142fb72278c1c7d78b8bf48ad628be3",
     );
+    expect(prepared.operation).toBe("current-read");
     expect(prepared.unsignedEnvelope.body).toEqual({
       nested: { signature: "ordinary-body-data" },
     });
@@ -296,11 +298,19 @@ describe("DACS-3 channel admission", () => {
     expect(() => prepareChannelMessageSigningInput({
       ...candidate,
       signature: "must-not-be-present-yet",
-    }, LEGACY)).toThrow(/omit signature/);
-    expect(() => prepareChannelMessageSigningInput({
+    })).toThrow(/omit signature/);
+    // The frozen historical envelope (no discriminator) is not a producer
+    // input: CH-10 says new producers MUST NOT emit it, so there is no
+    // option that returns its bytes.
+    const { canonicalChannelMessageVersion: _v, ...historical } = candidate;
+    expect(() => prepareChannelMessageSigningInput(historical)).toThrow(/malformed/);
+    // SIG-5: an unknown top-level member is retained inside the signed scope.
+    const extended = prepareChannelMessageSigningInput({
       ...candidate,
-      transportRouting: "outside-the-signed-envelope",
-    }, LEGACY)).toThrow(/malformed/);
+      transportRouting: "inside-the-signed-envelope",
+    });
+    expect(extended.unsignedEnvelope).toHaveProperty("transportRouting");
+    expect(extended.envelopeHash).not.toBe(prepared.envelopeHash);
   });
 
   test.each([
@@ -559,6 +569,7 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     if (admitted.decision === "pass") {
       expect(admitted.envelopeHash).toBe(input.envelopeHash);
       expect(admitted.unsignedEnvelope).toHaveProperty("experimentalHint");
+      expect(admitted.operation).toBe("current-read");
     }
     // Stripping the unknown member changes the signed scope.
     const { experimentalHint: _hint, ...stripped } = signed as Record<string, unknown>;
@@ -572,8 +583,13 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     const { canonicalChannelMessageVersion: _v, ...undiscriminated } = signed;
     expect((await admitChannelMessage(undiscriminated, context(), verifier)).decision).toBe("error");
     expect((await admitChannelMessage({ ...signed, signature: FIRST_SIGNATURE }, context(), verifier)).decision).toBe("error");
-    expect(() => prepareChannelMessageSigningInput(unsigned, LEGACY)).toThrow(/malformed/);
-    expect(() => prepareChannelMessageSigningInput(unsigned, { operation: "guess" } as never)).toThrow(/operation/);
+    // Producer side is current-only (F-332-1): the signing input never carries
+    // the frozen wire's `dacs-channelmsg:v1:` || raw-digest bytes.
+    const prepared = prepareChannelMessageSigningInput(unsigned);
+    expect(prepared.operation).toBe("current-read");
+    expect(Buffer.from(prepared.signedBytes).equals(
+      Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(prepared.envelopeHash, "hex")]),
+    )).toBe(false);
   });
 
   test("refuses a signer that does not identify the sender and an unregistered sender scheme", async () => {
@@ -603,6 +619,42 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     const cciBytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(sha256Hex(canonicalize(cci)), "hex")]);
     const cciShape = { ...cci, signature: nodeSign(null, cciBytes, keys.privateKey).toString("hex") };
     expect((await admitChannelMessage(cciShape, context(), () => "pass", LEGACY)).decision).toBe("pass");
+  });
+
+  test("a signer that does not parse is malformed input, not an attributable failure (F-332-2)", async () => {
+    const signed = await produce();
+    for (const signer of ["not a claim", " ", `cci:${rawKey.toString("hex")}`, "key:not-hex", "demos:0x" + rawKey.toString("hex")]) {
+      expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, signer } }, context(), verifier)).decision, signer).toBe("error");
+    }
+    // Only a well-formed signer that names another party is the CH-7 `fail`.
+    const other = { ...signed, signature: { ...signed.signature, signer: `key:${"0".repeat(64)}` } };
+    expect((await admitChannelMessage(other, context(), verifier)).decision).toBe("fail");
+  });
+
+  test("legacy-import admits exactly the frozen historical sender grammar (F-332-3)", async () => {
+    const senderHex = rawKey.toString("hex");
+    const legacyShape = (sender: string) => {
+      const envelope = { channelId: CHANNEL, sequence: 1, sender, sentAt: 1_750_000_000_000, type: "offer" as const, body: { price: "10" } };
+      const bytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(sha256Hex(canonicalize(envelope)), "hex")]);
+      return { ...envelope, signature: nodeSign(null, bytes, keys.privateKey).toString("hex") };
+    };
+    const reached: string[] = [];
+    const recorder: ChannelMessageSignatureVerifier = ({ message: m }) => { reached.push(m.sender); return "pass"; };
+    // The reference reader's parse_historical_claim_ref: cci:<64 lowercase hex> or did:<method>:<id>.
+    const admitted = [`cci:${senderHex}`, "did:example:member"];
+    const refused = [
+      `key:${senderHex}`, `cci-xm:evm:mainnet:0x${senderHex}`, "lei:5493001kjtiigc8y1r12", "cci:not-hex",
+      `cci:${senderHex.slice(0, 62)}`, `demos:0x${senderHex}`, "did:example", `cci:${senderHex}?v=1`, `CCI:${senderHex}`,
+    ];
+    for (const sender of admitted) {
+      const result = await admitChannelMessage(legacyShape(sender), context(), recorder, LEGACY);
+      expect(result.decision, sender).toBe("pass");
+      if (result.decision === "pass") expect(result.operation).toBe("legacy-import");
+    }
+    for (const sender of refused) {
+      expect((await admitChannelMessage(legacyShape(sender), context(), recorder, LEGACY)).decision, sender).toBe("error");
+    }
+    expect(reached).toEqual(admitted);
   });
 
   test("replays the canonical-channel-message-v0.6 corpus", async () => {

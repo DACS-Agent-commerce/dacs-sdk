@@ -84,9 +84,10 @@ export interface ChannelMessageSigningInput<TBody = unknown> {
   unsignedEnvelope: Readonly<UnsignedChannelMessage<TBody>>;
   /** Lowercase-hex SHA-256 of the JCS unsigned envelope (CH-8 `message_hash`). */
   envelopeHash: string;
-  /** Exact bytes to sign for the selected operation (CH-8 current, CH-10 legacy). */
+  /** Exact CH-8 bytes to sign. Producers emit the current wire only (CH-10). */
   signedBytes: Uint8Array;
-  operation: ChannelMessageOperation;
+  /** Always `current-read`: `legacy-import` is a reader operation (§8.3.3). */
+  operation: "current-read";
 }
 
 /**
@@ -136,6 +137,12 @@ export type ChannelMessageAdmissionResult<
         Omit<ChannelMessage<TBody, TSignature>, "signature">
       >;
       envelopeHash: string;
+      /**
+       * The operation that admitted the message. §8.3.3 keeps historical
+       * audit state separate from live negotiation state; a caller can check
+       * that separation on the value instead of remembering the option.
+       */
+      operation: ChannelMessageOperation;
     }
   | ChannelMessageAdmissionFailure;
 
@@ -180,23 +187,47 @@ function isRegisteredClaim(value: unknown): value is string {
   return parsed !== null && parsed.schemeStatus === "registered";
 }
 
+const HISTORICAL_CCI_IDENTIFIER = /^[0-9a-f]{64}$/;
+const HISTORICAL_DID_IDENTIFIER = /^[a-z0-9]+:[A-Za-z0-9._-]+$/;
+
 /**
- * CH-10 frozen historical grammar: a registered scheme or the historical
- * generic `cci:` scheme carried by the archived corpus. Anything else (for
- * example the unregistered `demos:0x…` spelling emitted by demosdk 4.0.11 to
- * 4.0.18, DEMOS-MAPPING A.1) is outside the frozen registry and rejects.
+ * CH-10 frozen historical ClaimReference grammar, closed to exactly the two
+ * spellings the archived `channel-message-replay-v0.1` corpus carries (the
+ * Standard reference reader's `parse_historical_claim_ref`): the generic
+ * `cci:<64 lowercase hex>` Ed25519 sender and a pre-profile `did:<method>:<id>`.
+ * The whole value must be lowercase and carry no `?` qualifier. Every other
+ * spelling, registered or not (for example `key:`, `lei:`, `cci-xm:` or the
+ * unregistered `demos:0x…` emitted by demosdk 4.0.11 to 4.0.18, DEMOS-MAPPING
+ * A.1), is outside the frozen registry and rejects. Never reachable from
+ * `current-read`, which uses the registered parser above.
  */
 function isHistoricalClaim(value: unknown): value is string {
-  if (!isNonEmptyString(value)) return false;
-  const parsed = parseCanonicalClaimReference(value);
-  return parsed !== null &&
-    (parsed.schemeStatus === "registered" || parsed.identity.scheme === "cci");
+  if (
+    !isNonEmptyString(value) ||
+    value !== value.toLowerCase() ||
+    value.includes("?")
+  ) {
+    return false;
+  }
+  const colon = value.indexOf(":");
+  if (colon <= 0 || colon === value.length - 1) return false;
+  const scheme = value.slice(0, colon);
+  const identifier = value.slice(colon + 1);
+  if (scheme === "cci") return HISTORICAL_CCI_IDENTIFIER.test(identifier);
+  if (scheme === "did") return HISTORICAL_DID_IDENTIFIER.test(identifier);
+  return false;
 }
 
 function sameParty(left: string, right: string): boolean {
   return left === right || sameCanonicalClaimIdentity(left, right);
 }
 
+/**
+ * Version-1 signature envelope. `signer` must parse under the current
+ * registered ClaimReference grammar: a signer that does not parse is
+ * malformed input (`error`), and only a well-formed signer naming another
+ * party reaches the CH-7 comparison that yields an attributable `fail`.
+ */
 function validateSignatureEnvelopeV1(
   value: unknown,
 ): value is ChannelMessageSignatureV1 {
@@ -204,7 +235,7 @@ function validateSignatureEnvelopeV1(
     isRecord(value) &&
     exactKeys(value, ["signatureVersion", "signer", "algorithm", "value"]) &&
     value.signatureVersion === "1" &&
-    isNonEmptyString(value.signer) &&
+    isRegisteredClaim(value.signer) &&
     typeof value.algorithm === "string" &&
     SIGNATURE_ALGORITHMS.has(value.algorithm) &&
     isCanonicalBase64Url(value.value)
@@ -407,18 +438,16 @@ function unsignedEnvelope<TBody, TSignature>(
 }
 
 /**
- * Validate and own a producer envelope, then expose the exact canonical digest
- * that a substrate-specific signer must frame after DACS-Standard#349 is
- * resolved. This function intentionally returns no guessed `signedBytes`.
+ * Validate and own a producer envelope and expose the exact CH-8 bytes a
+ * substrate-specific signer must sign. This is producer-side and therefore
+ * current-only: `legacy-import` is a reader operation (DACS-3 §8.3.3) and
+ * CH-10 forbids new producers from emitting the frozen historical wire, so
+ * no option can select it here.
  */
 export function prepareChannelMessageSigningInput<TBody = unknown>(
   candidate: unknown,
-  options?: Readonly<ChannelMessageAdmissionOptions>,
 ): Readonly<ChannelMessageSigningInput<TBody>> {
-  const operation = selectOperation(options);
-  if (operation === null) {
-    throw new DacsError("channel message operation is malformed");
-  }
+  const operation = "current-read" as const;
   const envelope = snapshotCanonicalJson(
     candidate,
     "unsigned channel message",
@@ -426,19 +455,17 @@ export function prepareChannelMessageSigningInput<TBody = unknown>(
   if (!isRecord(envelope) || hasOwn(envelope, "signature")) {
     throw new DacsError("unsigned channel message must omit signature");
   }
-  // Probe with a structurally valid signature for the selected arm so the
+  // Probe with a structurally valid current signature envelope so the
   // remaining envelope rules are checked exactly as a reader would check them.
-  const probe = operation === "current-read"
-    ? {
-        ...envelope,
-        signature: {
-          signatureVersion: "1",
-          signer: envelope.sender,
-          algorithm: "ed25519",
-          value: "AA",
-        },
-      }
-    : { ...envelope, signature: "0".repeat(128) };
+  const probe = {
+    ...envelope,
+    signature: {
+      signatureVersion: "1",
+      signer: envelope.sender,
+      algorithm: "ed25519",
+      value: "AA",
+    },
+  };
   if (!validateMessage(probe, operation)) {
     throw new DacsError("unsigned channel message envelope is malformed");
   }
@@ -449,7 +476,7 @@ export function prepareChannelMessageSigningInput<TBody = unknown>(
   return deepFreeze({
     unsignedEnvelope: owned,
     envelopeHash,
-    signedBytes: signedBytesFor(operation, envelopeHash),
+    signedBytes: canonicalChannelMessageSignedBytes(envelopeHash),
     operation,
   });
 }
@@ -569,5 +596,6 @@ export async function admitChannelMessage<
     message: ownedMessage,
     unsignedEnvelope: unsigned,
     envelopeHash,
+    operation,
   };
 }

@@ -59,21 +59,30 @@ cryptography, and never falls back to the other for the same object:
   `fail`.
 - `legacy-import` must be selected explicitly (`{ operation: "legacy-import" }`)
   and admits only the frozen historical Demos wire: no discriminator, the
-  exact seven-member envelope, and a bare 128-character lowercase-hex
-  signature. New producers MUST NOT emit it.
+  exact seven-member envelope, a bare 128-character lowercase-hex signature,
+  and a sender in the frozen historical grammar (`cci:<64 lowercase hex>` or
+  a pre-profile `did:<method>:<id>`, the Standard reference reader's
+  `parse_historical_claim_ref`). New producers MUST NOT emit it.
+- A `signature.signer` that does not parse under the current registered
+  grammar is malformed input (`error`); only a well-formed signer that names
+  another party is the CH-7 `fail`.
 
 For a sender, `prepareChannelMessageSigningInput()` validates the unsigned
 envelope and returns the immutable envelope, its lowercase-hex SHA-256 hash,
-and the exact `signedBytes` for the operation: CH-8
-`UTF8("dacs-canonical-channel-message:v1:") || ASCII(hex)` for `current-read`,
-or the historical `UTF8("dacs-channelmsg:v1:") || raw digest` for
-`legacy-import`. The adapter signs those bytes with the member's primary key
-and attaches the envelope.
+and the exact CH-8 `signedBytes`
+`UTF8("dacs-canonical-channel-message:v1:") || ASCII(hex)`. It is
+producer-side and therefore current-only: `legacy-import` is a reader
+operation and CH-10 forbids emitting the historical wire, so no option can
+select the `UTF8("dacs-channelmsg:v1:") || raw digest` framing here. The
+adapter signs those bytes with the member's primary key and attaches the
+envelope.
 
 The verifier receives an owned, deeply frozen message, the exact unsigned
 envelope, its hash, the same `signedBytes`, and the selected operation. It
 owns member-key resolution and algorithm dispatch (Ed25519, ECDSA secp256k1,
-SR-1 aggregate) and returns the four-value decision.
+SR-1 aggregate) and returns the four-value decision. A `pass` result carries
+the admitting `operation`, so a caller can keep historical audit state apart
+from live negotiation state (§8.3.3) by checking the value itself.
 
 ## Advancing an RFQ
 
