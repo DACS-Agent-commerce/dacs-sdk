@@ -40,8 +40,44 @@ reference fail closed; exact duplicates are collapsed deterministically.
 The decoded response is bounded before snapshotting: 2 MiB encoded-size
 budget, depth 32, 20,000 nodes, 4,096 entries per array, 1,024 keys per object,
 and 512 KiB per string. `DemosAdapter.resolveIdentity()` applies the same
-decoded-value bound at its substrate boundary. The underlying transport must
-additionally cap HTTP/RPC bytes before JSON decoding.
+decoded-value bound at its substrate boundary.
+
+For GCR identity reads, the adapter also caps the raw HTTP response body at
+2 MiB (2,097,152 bytes) before UTF-8 or JSON decoding. It checks a declared
+`Content-Length` and counts the streamed bytes even when that header is missing,
+invalid, or understates the body. The count covers the bytes delivered by Fetch,
+including decompressed bytes. On overflow it cancels the body, retains no raw
+payload, and throws a permanent `DacsError` with the stable message
+`Demos GCR identity response exceeds maxResponseBytes`. A body exactly at the
+ceiling is admitted, subject to the existing structural limits.
+
+Each raw identity request has one fixed 5,000 ms deadline, matching the x402
+outbound transport default. It covers connection establishment, response
+headers, and the complete body read; receiving headers or chunks does not reset
+it. On expiry the adapter aborts the request, cancels an active body reader,
+and throws a permanent `DacsError` with the stable message
+`Demos GCR identity read timed out`, without retaining response text. The
+deadline also bounds an injected transport that ignores abort, or a body whose
+cancellation never settles; a response arriving after expiry is cancelled
+without decoding. There is no public timeout configuration.
+
+Identity requests use Fetch's `redirect: "error"`. The adapter additionally
+rejects a response marked `redirected` or with any 3xx status, including one
+returned by an injected transport, before reading or decoding its body. It
+cancels that body and throws a permanent `DacsError` with the stable message
+`Demos GCR identity response redirect refused`.
+
+`DemosAdapterConfig.identityMaxResponseBytes` can tighten the raw ceiling to a
+positive safe integer; values above the hard maximum of 2,097,152 are rejected
+at construction. The default is also the hard maximum. Structural limits remain
+fixed. `DemosAdapterConfig.identityFetch` optionally injects a Fetch-compatible
+raw response transport for CCI reads; it must return a streamed `Response`,
+without decoding or prebuffering the body. The adapter owns byte counting and
+decoding even with an injected transport. The default uses global `fetch` and
+preserves demosdk's `gcr_routine` request and wallet authentication headers.
+HTTP failures throw `SubstrateError`; invalid UTF-8/JSON fails closed without
+retaining response text in the error. Self-certifying primary Demos agent DIDs
+continue to resolve locally.
 
 Reverse lookup currently follows the operations exported by Demos SDK:
 

@@ -23,6 +23,10 @@ export interface DemosAdapterConfig {
    * zero from the connected node before its first write.
    */
   chainIdentity?: string;
+  /** Raw identity response ceiling: default/max 2 MiB; positive safe integer only. */
+  identityMaxResponseBytes?: number;
+  /** Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding. */
+  identityFetch?: typeof fetch;
 }
 
 /**

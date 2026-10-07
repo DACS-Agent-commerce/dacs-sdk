@@ -27,6 +27,10 @@ import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
 import {
+  DEMOS_CCI_MAX_RESPONSE_BYTES,
+  readDemosCciResponse,
+} from "./demosCciTransport.js";
+import {
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
@@ -1012,6 +1016,10 @@ export class DemosAdapter implements SubstrateAdapter {
     const maximumFeeOs = stableAdapterConfigValue(config, "maximumFeeOs");
     const writeJournal = stableAdapterConfigValue(config, "writeJournal");
     const chainIdentity = stableAdapterConfigValue(config, "chainIdentity");
+    const configuredIdentityMaxResponseBytes = stableAdapterConfigValue(config, "identityMaxResponseBytes");
+    const identityMaxResponseBytes = configuredIdentityMaxResponseBytes === undefined
+      ? DEMOS_CCI_MAX_RESPONSE_BYTES : configuredIdentityMaxResponseBytes;
+    const identityFetch = stableAdapterConfigValue(config, "identityFetch");
     if (typeof rpc !== "string" || rpc.length === 0) {
       throw new Error("DemosAdapter requires an rpc URL");
     }
@@ -1027,8 +1035,20 @@ export class DemosAdapter implements SubstrateAdapter {
     if (chainIdentity !== undefined && typeof chainIdentity !== "string") {
       throw new DacsError("DemosAdapterConfig.chainIdentity must be a string");
     }
+    if (typeof identityMaxResponseBytes !== "number" ||
+        !Number.isSafeInteger(identityMaxResponseBytes) || identityMaxResponseBytes <= 0 ||
+        identityMaxResponseBytes > DEMOS_CCI_MAX_RESPONSE_BYTES) {
+      throw new DacsError(
+        "DemosAdapterConfig.identityMaxResponseBytes must be a positive safe integer at most 2097152",
+      );
+    }
+    if (identityFetch !== undefined && typeof identityFetch !== "function") {
+      throw new DacsError("DemosAdapterConfig.identityFetch must be a function");
+    }
     this.config = Object.freeze({
       rpc,
+      identityMaxResponseBytes,
+      ...(identityFetch === undefined ? {} : { identityFetch: identityFetch as typeof fetch }),
       ...(writeJournal === undefined
         ? {}
         : { writeJournal: writeJournal as DemosWriteJournal }),
@@ -4066,14 +4086,33 @@ export class DemosAdapter implements SubstrateAdapter {
         },
       };
     }
-    const raw = await new Identities().getIdentities(
-      this.#demos,
-      "getIdentities",
+    // Match demosdk rpcCall's public/authenticated headers without allowing
+    // its Axios transport to decode an unbounded body first.
+    const headers = {
+      "Content-Type": "application/json",
+      identity: `${this.#demos.algorithm}:`,
+      signature: "",
+      timestamp: "",
+    };
+    if (this.#demos.walletConnected) {
+      headers.identity += Buffer.from(this.#demos.keypair.publicKey).toString("hex");
+      headers.timestamp = Date.now().toString();
+      const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
+      const signed = await this.#demos.crypto.sign(
+        this.#demos.algorithm,
+        new TextEncoder().encode(authMessage),
+      );
+      headers.signature = Buffer.from(signed.signature).toString("hex");
+    }
+    const raw = await readDemosCciResponse(
+      this.config.rpc,
       ref,
+      headers,
+      this.config.identityFetch ?? fetch,
+      this.config.identityMaxResponseBytes ?? DEMOS_CCI_MAX_RESPONSE_BYTES,
     );
-    // The demosdk has already decoded the RPC response at this boundary. Bound
-    // it before returning it to any higher-level caller; Agent parsing applies
-    // the same check again before retaining a snapshot.
+    // Keep the decoded structural guard before returning to higher-level
+    // callers; Agent parsing repeats it before retaining a snapshot.
     assertDemosCciResponseBounds(raw);
     return { ref, boundTo: ref, raw };
   }
