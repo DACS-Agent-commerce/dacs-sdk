@@ -46,6 +46,7 @@ export {
   validateRfqProposal,
   openRfqSession,
   advanceRfqSession,
+  resolveRfqMember,
   rfqSessionCheckpointHash,
   type RfqPriceBand,
   type RfqPricing,

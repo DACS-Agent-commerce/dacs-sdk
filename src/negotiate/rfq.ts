@@ -658,6 +658,26 @@ function terminalReason(body: unknown): string | undefined {
   return body.reason as string | undefined;
 }
 
+/**
+ * CH-7 / CF-3: parameter-only ClaimReference variants name the same member and
+ * MUST NOT select a different one. Resolve an admitted sender to the matching
+ * member's stored primary claim, so every byte comparison downstream
+ * (`expectedSender`, `standingProposal.proposer`, persisted-state validation)
+ * works on the primary claim rather than on the wire spelling.
+ */
+export function resolveRfqMember(
+  state: Readonly<Pick<RfqSessionState, "buyer" | "seller">>,
+  sender: string,
+): string | null {
+  if (sameCanonicalClaimIdentity(sender, state.buyer.primaryClaim)) {
+    return state.buyer.primaryClaim;
+  }
+  if (sameCanonicalClaimIdentity(sender, state.seller.primaryClaim)) {
+    return state.seller.primaryClaim;
+  }
+  return null;
+}
+
 function otherMember(state: Readonly<RfqSessionState>, sender: string): string {
   return sender === state.buyer.primaryClaim
     ? state.seller.primaryClaim
@@ -950,7 +970,10 @@ export async function advanceRfqSession<TSignature = unknown>(
   const message = admitted.message as Readonly<
     ChannelMessage<RfqTurnBody, TSignature>
   >;
-  if (message.sender !== state.expectedSender) {
+  // Compare on the member's primary claim (CH-7): the channel layer admits
+  // parameter-qualified spellings of the same identity.
+  const sender = resolveRfqMember(state, message.sender);
+  if (sender === null || sender !== state.expectedSender) {
     return failure("fail", "RFQ turn is signed by the wrong member");
   }
   if (
@@ -977,7 +1000,7 @@ export async function advanceRfqSession<TSignature = unknown>(
       const standingProposal = deepFreeze({
         ...proposal,
         sequence: message.sequence,
-        proposer: message.sender,
+        proposer: sender,
       });
       if (turnCount >= state.maxTurns) {
         return {
@@ -1002,7 +1025,7 @@ export async function advanceRfqSession<TSignature = unknown>(
           turnCount,
           standingProposal,
           awaitingSince: receivedAt,
-          expectedSender: otherMember(state, message.sender),
+          expectedSender: otherMember(state, sender),
         }),
       };
     }

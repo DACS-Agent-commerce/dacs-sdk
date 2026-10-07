@@ -86,8 +86,13 @@ from live negotiation state (§8.3.3) by checking the value itself.
 
 ## Advancing an RFQ
 
-`advanceRfqSession()` first authenticates the channel message, then applies the
-RFQ rules in one pure state transition:
+`advanceRfqSession()` first authenticates the channel message, resolves the
+admitted sender to the matching member's primary claim (CH-7: parameter-only
+ClaimReference variants name the same member and never select a different
+one; `resolveRfqMember()`), then applies the RFQ rules in one pure state
+transition. `expectedSender` and `standingProposal.proposer` always hold the
+primary claim, whatever spelling arrived on the wire; the transcript
+re-verifier resolves the same way.
 
 - the Listing-selected initiator must send the first `offer`;
 - members alternate, and a reply can bind the standing proposal with

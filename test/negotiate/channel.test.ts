@@ -663,6 +663,7 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     const current = corpusVerifier(CORPUS_ROSTER);
     const legacy = corpusVerifier(LEGACY_ROSTER);
     let matched = 0;
+    let gatedCount = 0;
     for (const vector of CANONICAL_CORPUS.vectors) {
       const gated = profileGate(vector);
       const result = gated !== null
@@ -673,8 +674,12 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
         continue;
       }
       expect(result.decision, `${vector.name}: ${vector.note ?? ""}`).toBe(vector.expected);
-      matched += 1;
+      // Counted apart: the seven current-profile-* vectors are decided by the
+      // test-side profileGate, not by admitChannelMessage.
+      if (gated !== null) gatedCount += 1;
+      else matched += 1;
     }
-    expect(matched).toBe(55 - SR1_VECTORS.size);
+    expect(gatedCount).toBe(7);
+    expect(matched).toBe(55 - SR1_VECTORS.size - gatedCount);
   });
 });

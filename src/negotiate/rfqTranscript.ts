@@ -16,6 +16,7 @@ import {
   type ChannelMessageSignatureVerifier,
 } from "./channel.js";
 import {
+  resolveRfqMember,
   rfqSessionCheckpointHash,
   validateRfqProposal,
   type RfqAcceptBody,
@@ -275,7 +276,10 @@ export async function prepareRfqTranscript<TSignature = unknown>(
     );
     if (admitted.decision !== "pass") return admitted;
     const message = admitted.message;
-    if (message.sender !== expectedSender) {
+    // CH-7: resolve the admitted sender to the member's primary claim before
+    // any byte comparison; the reducer does the same.
+    const sender = resolveRfqMember(session, message.sender);
+    if (sender === null || sender !== expectedSender) {
       return {
         decision: "fail",
         reason: "RFQ transcript member turn order is invalid",
@@ -302,7 +306,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
         standingProposal = {
           ...proposal,
           sequence: message.sequence,
-          proposer: message.sender,
+          proposer: sender,
         };
       } else if (
         message.type !== "accept" ||
@@ -323,7 +327,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
     priorSequence = message.sequence;
     lastHash = admitted.envelopeHash;
     expectedSender =
-      message.sender === session.buyer.primaryClaim
+      sender === session.buyer.primaryClaim
         ? session.seller.primaryClaim
         : session.buyer.primaryClaim;
   }

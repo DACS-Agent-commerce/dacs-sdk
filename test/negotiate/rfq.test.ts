@@ -387,6 +387,42 @@ describe("RFQ session opening", () => {
 });
 
 describe("bounded RFQ turn reducer", () => {
+  test("a parameter-qualified sender names the same member (CH-7) and is stored as the primary claim", async () => {
+    const state0 = await opened();
+    // Channel admission accepts the qualified spelling; the reducer must not
+    // treat it as a different member or persist it in place of the primary claim.
+    const first = await advanceRfqSession(
+      state0,
+      turn(state0, "offer", proposal("10"), { sender: `${BUYER}?role=buyer` }),
+      NOW + 1_000,
+      verify,
+    );
+    expect(first.decision).toBe("pass");
+    if (first.decision !== "pass") return;
+    expect(first.state.standingProposal?.proposer).toBe(BUYER);
+    expect(first.state.expectedSender).toBe(SELLER);
+    // The persisted state validates on rehydrate and the qualified counterparty continues the session.
+    const rehydrated = JSON.parse(JSON.stringify(first.state)) as RfqSessionState;
+    const second = await advanceRfqSession(
+      rehydrated,
+      turn(rehydrated, "counter", proposal("9.5"), { sender: `${SELLER}?role=seller`, repliesTo: 1 }),
+      NOW + 2_000,
+      verify,
+    );
+    expect(second.decision).toBe("pass");
+    if (second.decision !== "pass") return;
+    expect(second.state.standingProposal?.proposer).toBe(SELLER);
+    expect(second.state.expectedSender).toBe(BUYER);
+    // A qualified spelling of a non-member is still the wrong member.
+    const outsider = await advanceRfqSession(
+      second.state as RfqSessionState,
+      turn(second.state as RfqSessionState, "counter", proposal("9.7"), { sender: "did:demos:outsider?role=buyer", repliesTo: 2 }),
+      NOW + 3_000,
+      verify,
+    );
+    expect(outsider).toMatchObject({ decision: "fail", reason: "RFQ turn is signed by the wrong member" });
+  });
+
   test("runs offer → counter → exact acceptance and produces immutable recovery state", async () => {
     const state0 = await opened();
     const first = await advanceRfqSession(

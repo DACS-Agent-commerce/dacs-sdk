@@ -116,7 +116,13 @@ function verified(value: Listing) {
   };
 }
 
-async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) {
+async function fixture(
+  policy?: Listing["terms"]["transcriptDisclosurePolicy"],
+  options: { qualifiedSenders?: boolean } = {},
+) {
+  // CH-7: a parameter-qualified spelling names the same member.
+  const spell = (claim: string, role: string) =>
+    options.qualifiedSenders ? `${claim}?role=${role}` : claim;
   const value = listing(policy);
   const opened = await openRfqSession(
     {
@@ -134,7 +140,7 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
     canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 1,
-    sender: BUYER,
+    sender: spell(BUYER, "buyer"),
     sentAt: NOW + 1,
     type: "offer",
     body: {
@@ -144,7 +150,7 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
         price: { amount: "9.5", currency: "USDC" },
       },
     },
-    signature: { signatureVersion: "1" as const, signer: BUYER, algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
+    signature: { signatureVersion: "1" as const, signer: spell(BUYER, "buyer"), algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
   };
   const offered = await advanceRfqSession(
     opened.state as RfqSessionState,
@@ -157,12 +163,12 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
     canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 2,
-    sender: SELLER,
+    sender: spell(SELLER, "seller"),
     sentAt: NOW + 2,
     type: "accept",
     body: { rfqBodyVersion: "1", acceptedSequence: 1 },
     refs: { repliesTo: 1 },
-    signature: { signatureVersion: "1" as const, signer: SELLER, algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
+    signature: { signatureVersion: "1" as const, signer: spell(SELLER, "seller"), algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
   };
   const accepted = await advanceRfqSession(
     offered.state as RfqSessionState,
@@ -212,6 +218,19 @@ describe("RFQ private transcript verification", () => {
     });
     expect(Object.isFrozen(result.transcript)).toBe(true);
     expect(Object.isFrozen(result.transcript.messages[0])).toBe(true);
+  });
+
+  test("re-verifies a transcript whose wire senders are parameter-qualified spellings of the members (CH-7)", async () => {
+    const value = await fixture(undefined, { qualifiedSenders: true });
+    expect(value.session.standingProposal?.proposer).toBe(BUYER);
+    const result = await prepareRfqTranscript(
+      { session: value.session, agreement: value.agreement, messages: value.messages, generatedAt: NOW + 4 },
+      () => "pass",
+    );
+    expect(result.decision, result.decision === "pass" ? "" : result.reason).toBe("pass");
+    if (result.decision !== "pass") return;
+    expect(result.transcript.members).toEqual([BUYER, SELLER]);
+    expect(result.transcript.messages[0]?.sender).toBe(`${BUYER}?role=buyer`);
   });
 
   test("fails closed on omitted, reordered, tampered, or uncertain messages", async () => {
