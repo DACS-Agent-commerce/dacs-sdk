@@ -3,10 +3,11 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
+import { readDoctorSecretFile, type DoctorSecretFile } from "../cli/secretFile.js";
+import { runDoctorForCli } from "../cli/doctor.js";
 import {
   formatDoctorText,
   rpcSensitiveNeedles,
-  runDoctor,
   sanitizeText,
   type DoctorOptions,
 } from "../cli/index.js";
@@ -17,6 +18,7 @@ export interface CliIO {
 }
 
 interface DoctorCliOptions extends DoctorOptions {
+  secretFiles?: readonly DoctorSecretFile[];
   rpcEnv?: string;
   rpcFile?: string;
   walletSecretEnv?: string;
@@ -39,11 +41,20 @@ function readValue(args: string[], index: number, flag: string): string {
   return value;
 }
 
-function readSecretInput(path: string, label: string): string {
+function readSecretInput(path: string, source: "rpc" | "wallet", options: DoctorCliOptions): string | undefined {
   if (path === "-" && isatty(0)) {
-    throw new Error(`${label} requires piped stdin when path is -`);
+    throw new Error(`${source} input requires piped stdin when path is -`);
   }
-  return readFileSync(path === "-" ? 0 : path, "utf8").trimEnd();
+  if (path === "-") {
+    try {
+      return readFileSync(0, "utf8").trimEnd();
+    } catch {
+      throw new Error(`Could not read ${source} credential from stdin`);
+    }
+  }
+  const { value, file } = readDoctorSecretFile(path, source);
+  options.secretFiles = [...(options.secretFiles ?? []), file];
+  return value;
 }
 
 function assertDirectRpcIsOriginOnly(rpc: string): void {
@@ -93,8 +104,9 @@ export function parseDoctorArgs(args: string[]): DoctorCliOptions {
   return opts;
 }
 
-function resolveDoctorOptions(opts: DoctorCliOptions): DoctorOptions {
-  const { rpcEnv, rpcFile, walletSecretEnv, walletSecretFile, ...doctorOptions } = opts;
+function resolveDoctorOptions(opts: DoctorCliOptions): DoctorCliOptions {
+  const { rpcEnv, rpcFile, walletSecretEnv, walletSecretFile, ...rest } = opts;
+  const doctorOptions: DoctorCliOptions = rest;
   const rpcSources = [doctorOptions.rpc, rpcEnv, rpcFile].filter(Boolean);
   if (rpcSources.length > 1) {
     throw new Error("use only one of --rpc, --rpc-env, or --rpc-file");
@@ -106,7 +118,7 @@ function resolveDoctorOptions(opts: DoctorCliOptions): DoctorOptions {
     throw new Error("only one secret source can read from stdin");
   }
   if (rpcFile) {
-    doctorOptions.rpc = readSecretInput(rpcFile, "--rpc-file -");
+    doctorOptions.rpc = readSecretInput(rpcFile, "rpc", doctorOptions);
   } else if (rpcEnv) {
     const value = process.env[rpcEnv];
     if (!value) throw new Error(`${rpcEnv} is not set`);
@@ -117,7 +129,7 @@ function resolveDoctorOptions(opts: DoctorCliOptions): DoctorOptions {
     throw new Error("use only one of --wallet-secret-env or --wallet-secret-file");
   }
   if (walletSecretFile) {
-    doctorOptions.walletSecret = readSecretInput(walletSecretFile, "--wallet-secret-file -");
+    doctorOptions.walletSecret = readSecretInput(walletSecretFile, "wallet", doctorOptions);
   } else if (walletSecretEnv) {
     const value = process.env[walletSecretEnv];
     if (!value) throw new Error(`${walletSecretEnv} is not set`);
@@ -158,7 +170,7 @@ export async function runCli(args: string[], io: CliIO): Promise<number> {
     return 2;
   }
 
-  let doctorOptions: DoctorOptions;
+  let doctorOptions: DoctorCliOptions;
   try {
     doctorOptions = resolveDoctorOptions(opts);
   } catch (err) {
@@ -167,7 +179,7 @@ export async function runCli(args: string[], io: CliIO): Promise<number> {
   }
 
   try {
-    const report = await runDoctor(doctorOptions);
+    const report = await runDoctorForCli(doctorOptions, doctorOptions.secretFiles ?? []);
     io.stdout(opts.json ? `${JSON.stringify(report, null, 2)}\n` : formatDoctorText(report));
     return report.exitCode;
   } catch (err) {
