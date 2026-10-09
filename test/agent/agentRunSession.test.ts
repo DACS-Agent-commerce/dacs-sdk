@@ -1456,6 +1456,41 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(verifierCalls).toBe(2);
     expect(evidenceContextCalls).toBe(2);
 
+    // CORE §5.1 SR2-12: an otherwise fully configured Agent whose host holds
+    // no receipt reports the PC-2 anchor unresolved, not missing, and excludes it.
+    const noReceiptAgent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: normativeBuyerDid },
+      resolveAttestationAnchorReceipt: () => null,
+      verifyCompositeRecord: async (record) => ({
+        status: "valid",
+        record: structuredClone(record),
+        freshness: [],
+        dealSpecific: [],
+        freshnessRecipes: [],
+        dealSpecificRecipes: [],
+      }),
+      resolveSettlementEvidenceContext: async () => ({
+        orchestrator: sellerDid,
+        rail: {
+          railId: "x402:default",
+          railType: "x402",
+          asset: "USDC",
+          handler: "pay-x402",
+          network: "eip155:84532",
+        },
+      }),
+    });
+    const noReceiptVerdict = await noReceiptAgent.verifyBundle("stor:bundle");
+    expect(noReceiptVerdict.ok).toBe(false);
+    expect(
+      noReceiptVerdict.refs.find((entry) => entry.kind === "dacs-4-evidence"),
+    ).toMatchObject({ verdict: "unresolved" });
+    await expect(
+      noReceiptAgent.getReputation(normativeBuyerDid, ["stor:bundle"]),
+    ).resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
+
     const suffixAlias = `did:ethr:${sellerHex}`;
     const { signature: _originalEvidenceSignature, ...evidenceBody } = evidence;
     const aliasedEvidence = await signComponentArtifact(

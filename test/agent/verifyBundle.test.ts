@@ -2146,14 +2146,8 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
       code: "invalid-bundle", ref: "bundle" }));
   });
 
-  test.each([
-    ["absent callback", undefined],
-    ["no receipt", (): null => null],
-    ["undefined result", (): undefined => undefined],
-    ["callback throws", () => { throw new Error("unavailable"); }],
-    ["callback rejects", () => Promise.reject(new Error("unavailable"))],
-  ] as const)("%s remains missing without guessing", async (_label, receipt) => {
-    const h = await harness({ receipt: receipt as never });
+  test("absent callback remains missing without guessing", async () => {
+    const h = await harness();
     const result = await h.agent.verifyBundle("bundle");
     expect(result.ok).toBe(false);
     expect(evidenceVerdict(result)).toBe("missing");
@@ -2161,6 +2155,29 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
     expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
     expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
     expect(h.evidenceCalls()).toHaveLength(0);
+  });
+
+  // CORE §5.1 SR2-12: with no qualifying carrier the resolution result is
+  // indeterminate, never authoritative absence.
+  test.each([
+    ["no receipt", (): null => null],
+    ["undefined result", (): undefined => undefined],
+    ["callback throws", () => { throw new Error("unavailable"); }],
+    ["callback rejects", () => Promise.reject(new Error("unavailable"))],
+  ] as const)("%s is unresolved, not missing, without guessing", async (_label, receipt) => {
+    const h = await harness({ receipt: receipt as never });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result).not.toMatchObject({ ok: true, fullyVerified: true });
+    expect(evidenceVerdict(result)).toBe("unresolved");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
   });
 
   test.each<[string, (honest: AnchorReceipt) => unknown]>([

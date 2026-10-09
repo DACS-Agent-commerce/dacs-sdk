@@ -554,8 +554,10 @@ export interface AgentConfig {
    * orchestrator (DACS-5 SEB-3). A receipt-tuple mismatch is
    * `invalid-binding`; a writer that is not the orchestrator is
    * `invalid-evidence`; a malformed receipt is `invalid-shape`; an unmet
-   * lifecycle gate is `unresolved`; null or a throw is `missing`. Captured at
-   * construction; native-reference reads are unchanged.
+   * lifecycle gate is `unresolved`. Null, undefined, a throw or a rejection is
+   * also `unresolved`: with no qualifying carrier the result is indeterminate,
+   * never authoritative absence (CORE §5.1 SR2-12), so the bundle is not `ok`.
+   * Captured at construction; native-reference reads are unchanged.
    *
    * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
    * expires. Without that option the SDK sets no deadline, and a host MUST
@@ -720,7 +722,7 @@ function captureAttestationAnchorReceipt(
   value: unknown,
   logicalAddress: string,
   expectedContentHash: string,
-  bundleOutcome: string,
+  bundleOutcome: string | undefined,
 ): Readonly<ProtocolAnchorReceipt> {
   let receipt: unknown;
   try {
@@ -755,10 +757,12 @@ function captureAttestationAnchorReceipt(
   // DACS-5 SEB-1 SR-2 lifecycle: a completed bundle's SettlementEvidence must
   // be finalized (ST-11); a failed or aborted terminal's may be included or
   // finalized. An indeterminate observation satisfies neither gate (SR2-11).
+  // An unknown outcome (a direct call without one) gets the strictest gate.
   if (
     !(
       receipt.state === "finalized" ||
       (receipt.state === "included" &&
+        bundleOutcome !== undefined &&
         FAILED_OR_ABORTED_OUTCOMES.has(bundleOutcome))
     ) ||
     receipt.observationDisposition !== "established"
@@ -1710,6 +1714,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         const resolved = await withAttestationAnchorDeadline(
           attestationAnchorReceiptTimeoutMs as number | undefined,
           async (signal) => {
+            // CORE §5.1 SR2-12: with no qualifying carrier the result is
+            // indeterminate, never authoritative absence (`missing`).
             let candidate: unknown;
             try {
               candidate = await resolveAttestationAnchorReceipt({
@@ -1719,10 +1725,17 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
                 signal,
               });
             } catch {
-              return null;
+              throw new AttestationRefRejection(
+                "indeterminate",
+                "PC-2 anchor receipt callback failed",
+              );
             }
-            if (candidate === null || candidate === undefined || signal.aborted) {
-              return null;
+            if (signal.aborted) return null;
+            if (candidate === null || candidate === undefined) {
+              throw new AttestationRefRejection(
+                "indeterminate",
+                "PC-2 anchor receipt is unavailable",
+              );
             }
             const receipt = captureAttestationAnchorReceipt(
               candidate,

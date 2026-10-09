@@ -885,8 +885,33 @@ Public `AttestationRef` values use the DACS-2 §7.5.2
 (`TxRef`) is the DACS-4 §9.3 discriminated union, and `SettlementEvidence`
 contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
 `verifyBundleCore` resolves normative references through
-`resolveAttestationRef(ref, jobId, parties)` so the signed locator is never
-discarded.
+`resolveAttestationRef(ref, jobId, parties, outcome?)` so the signed locator is
+never discarded. `verifyBundleCore` always passes the bundle's validated
+`outcome`, for outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). It is
+optional in the type, so existing three-parameter resolvers and direct
+three-argument calls still compile; a resolver called without it must apply its
+strictest gate (`finalized` only). A `null` result is reported `missing`. To
+classify a refusal instead, throw `AttestationRefRejection` with disposition
+`"fail"` (`invalid-binding`), `"error"` (`invalid-shape`) or `"indeterminate"`
+(`unresolved`); any other error propagates.
+
+```ts
+import { AttestationRefRejection, type VerifyBundleDeps } from "@kynesyslabs/dacs";
+
+const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] = async (
+  ref,
+  jobId,
+  parties,
+  outcome, // undefined on a direct three-argument call: use the strictest gate
+) => {
+  const artifact = await myVerifiedStore.read(ref.anchor.locator, outcome);
+  // No qualifying carrier is indeterminate, not absence (CORE §5.1 SR2-12).
+  if (artifact === undefined) {
+    throw new AttestationRefRejection("indeterminate", "no verified carrier");
+  }
+  return artifact; // null only when absence is established
+};
+```
 
 Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the

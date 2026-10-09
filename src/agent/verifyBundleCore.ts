@@ -218,17 +218,21 @@ export interface VerifyBundleDeps {
    * artifacts. `parties` is the bundle's party list; derive the anchoring
    * party's substrate address from its primaryClaim. Returns null if
    * unresolvable. Omit only if dereferencing isn't possible — the refs then
-   * report `unresolved` and the bundle cannot be `ok`. Throw an
-   * {@link AttestationRefRejection} to classify a refused reference instead of
-   * reporting it `missing`; any other thrown error propagates. `outcome` is the
-   * bundle's validated outcome, for outcome-dependent SR-2 lifecycle gates
-   * (DACS-5 SEB-1).
+   * report `unresolved` and the bundle cannot be `ok`. A null return is
+   * reported `missing`. Throw an {@link AttestationRefRejection} to classify a
+   * refused reference instead, e.g. `indeterminate` when no qualifying carrier
+   * exists but absence is not established (CORE §5.1 SR2-12); any other thrown
+   * error propagates. `outcome` is the bundle's validated outcome, for
+   * outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). `verifyBundleCore`
+   * always passes it; it is optional so three-argument callers still compile,
+   * and an implementation called without it MUST apply its strictest gate
+   * (`finalized` only), never a looser one.
    */
   resolveAttestationRef?: (
     ref: Readonly<AttestationRef>,
     jobId: string,
     parties: readonly BundleParty[],
-    outcome: AnyAttestationBundle["outcome"],
+    outcome?: AnyAttestationBundle["outcome"],
   ) => Promise<Record<string, unknown> | null>;
   /** Resolve the exact DACS-1 LR-1 Listing tuple carried by a normative bundle. */
   resolveListingRef?: (
@@ -343,7 +347,7 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
               ref: Readonly<AttestationRef>,
               jobId: string,
               parties: readonly BundleParty[],
-              outcome: AnyAttestationBundle["outcome"],
+              outcome?: AnyAttestationBundle["outcome"],
             ) =>
               snapshotRecord(
                 await resolveAttestationSource(
