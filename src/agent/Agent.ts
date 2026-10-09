@@ -5,7 +5,6 @@ import type {
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
   ChainTxRef,
-  ClaimRef,
   BundleParty,
   CompositeVerificationRecord,
   IdentityBundle,
@@ -17,6 +16,7 @@ import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   isAnyAttestationBundle,
   isAgreementArtifact,
+  isAnchorReceipt,
   isAttestationRef,
   isChainTxRef,
   isIdentityBundle,
@@ -65,7 +65,7 @@ import {
   type CciTlsnSessionContext,
   type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
-import { generateCanonicalJobId } from "../negotiate/jobId.js";
+import { generateCanonicalJobId, isCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   DemosWriteEvidence,
   SubstrateAdapter,
@@ -130,6 +130,7 @@ import {
   type EvidenceContext,
 } from "./verifySettlementEvidence.js";
 import {
+  AttestationRefRejection,
   verifyBundleCore,
   type SignatureCheck,
   type BundleVerification,
@@ -533,18 +534,44 @@ export interface AgentConfig {
    */
   resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
   /**
-   * Independently authenticate the SR-2 writer of a PC-2 logical attestation
-   * anchor from retained receipt/session state. Return its canonical ClaimRef,
-   * or null when authority is missing or ambiguous. The ref signer, bundle
-   * parties and anchoredByRole are context, never proof of the storage writer.
-   * Captured at construction; required only for PC-2 logical storage locators.
-   * Native-reference reads and artifact verification remain unchanged.
+   * Return the verified SR-2 `AnchorReceipt` for a DACS-4 PC-2 logical
+   * attestation anchor (`dacs4:payment:…`), or null when the host holds none.
+   * CORE §5.1 logical-to-native resolution: the host obtains the receipt by
+   * direct delivery or from retained session state and MUST already have
+   * verified its binding-defined `evidence` (SR2-4; on Demos, e.g.
+   * `DemosAdapter.verifyDemosAnchorReceipt`). The SDK never resolves this
+   * locator through the program-name index (DEMOS-MAPPING A.2). It requires an
+   * exact receipt whose `logicalAddress` is the locator, whose `contentHash` is
+   * the ref's, with a canonical `writer`, a transaction and a nonce, a
+   * Demos native `nativeAddress`, and an established `finalized` state. It
+   * then reads only that `nativeAddress` and, during evidence verification,
+   * requires the writer to be the authenticated phase orchestrator (DACS-5
+   * SEB-3). A mismatch is `invalid-binding`, a malformed receipt
+   * `invalid-shape`, an unmet lifecycle gate `unresolved`; null or a throw is
+   * `missing`. Captured at construction; native-reference reads are unchanged.
+   *
+   * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
+   * expires. Without that option the SDK sets no deadline, and a host MUST
+   * bound this callback and its adapter's `readAnchor` itself, or a call that
+   * never settles stalls `verifyBundle` and `getReputation`.
    */
-  resolveAttestationAnchorWriter?: (input: Readonly<{
+  resolveAttestationAnchorReceipt?: (input: Readonly<{
     ref: Readonly<AttestationRef>;
     jobId: string;
     parties: readonly BundleParty[];
-  }>) => Promise<ClaimRef | null> | ClaimRef | null;
+    signal: AbortSignal;
+  }>) =>
+    | Promise<ProtocolAnchorReceipt | null>
+    | ProtocolAnchorReceipt
+    | null;
+  /**
+   * Deadline in milliseconds for resolving one PC-2 anchor: the
+   * `resolveAttestationAnchorReceipt` callback plus the read of its native
+   * address. Expiry aborts the callback's `signal` and reports the ref
+   * `unresolved`; a late result is ignored. Positive safe integer; omitted
+   * means no SDK deadline.
+   */
+  attestationAnchorReceiptTimeoutMs?: number;
 
   /**
    * Optional Demos CCI trust capabilities. Authenticated identity resolution
@@ -664,6 +691,92 @@ function captureSettlementEvidenceContext(
   }
 
   return context as unknown as AgentSettlementEvidenceContext;
+}
+
+/**
+ * CORE §5.1 logical-to-native resolution, steps 2–4, for one host-supplied
+ * PC-2 receipt. SR2-4 evidence authentication is the host's; the SDK binds
+ * the tuple to what it knows independently. The fetched content is checked
+ * against `ref.contentHash` (equal to `receipt.contentHash`) by the caller.
+ */
+function captureAttestationAnchorReceipt(
+  value: unknown,
+  logicalAddress: string,
+  expectedContentHash: string,
+): Readonly<ProtocolAnchorReceipt> {
+  let receipt: unknown;
+  try {
+    receipt = snapshotCanonicalJsonRead(value, "PC-2 AnchorReceipt");
+  } catch {
+    receipt = undefined;
+  }
+  if (
+    !isAnchorReceipt(receipt) ||
+    // Demos native SR-2 address profile (also enforced by demosHistory).
+    !/^stor-[0-9a-f]{40}$/.test(receipt.nativeAddress) ||
+    !isCanonicalClaimReference(receipt.writer) ||
+    // Demos native addresses fold in the writer's create-time nonce.
+    receipt.nonce === undefined
+  ) {
+    throw new AttestationRefRejection("error", "PC-2 anchor receipt is malformed");
+  }
+  // SR2-5: a mismatch in any binding rejects the receipt.
+  if (
+    receipt.logicalAddress !== logicalAddress ||
+    receipt.contentHash !== expectedContentHash
+  ) {
+    throw new AttestationRefRejection(
+      "fail",
+      "PC-2 anchor receipt does not bind this reference",
+    );
+  }
+  // SR2-11 lifecycle gate: a terminal bundle's referenced artifacts must be
+  // finalized, and an indeterminate observation cannot promote that state.
+  if (
+    receipt.state !== "finalized" ||
+    receipt.observationDisposition !== "established"
+  ) {
+    throw new AttestationRefRejection(
+      "indeterminate",
+      "PC-2 anchor receipt is not an established finalized observation",
+    );
+  }
+  return Object.freeze(receipt);
+}
+
+const ATTESTATION_ANCHOR_EXPIRED = Symbol("attestation-anchor-expired");
+
+/**
+ * Bound one PC-2 resolution. Expiry aborts `signal` and rejects as
+ * indeterminate. The race has then settled, so the work's late result is
+ * ignored and its late rejection is already handled by the race.
+ */
+async function withAttestationAnchorDeadline<T>(
+  timeoutMs: number | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const work = run(controller.signal);
+  if (timeoutMs === undefined) return work;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<typeof ATTESTATION_ANCHOR_EXPIRED>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error("attestation-anchor-timeout"));
+      resolve(ATTESTATION_ANCHOR_EXPIRED);
+    }, timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([work, expired]);
+    if (outcome === ATTESTATION_ANCHOR_EXPIRED) {
+      throw new AttestationRefRejection(
+        "indeterminate",
+        "PC-2 anchor resolution deadline expired",
+      );
+    }
+    return outcome as T;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export interface AgentBindingConfig {
@@ -943,7 +1056,8 @@ function captureAgentRuntimeConfig(
     "listingValidationDeps",
     "verifyCompositeRecord",
     "resolveSettlementEvidenceContext",
-    "resolveAttestationAnchorWriter",
+    "resolveAttestationAnchorReceipt",
+    "attestationAnchorReceiptTimeoutMs",
     "bindings",
   ] as const) {
     const value = capturedCreateConfigValue(config, key);
@@ -1320,14 +1434,29 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.verifyCompositeRecord",
     true,
   );
-  const resolveAttestationAnchorWriter = stableAgentMethod<
-    AgentConfig["resolveAttestationAnchorWriter"]
+  const resolveAttestationAnchorReceipt = stableAgentMethod<
+    AgentConfig["resolveAttestationAnchorReceipt"]
   >(
     config,
-    "resolveAttestationAnchorWriter",
-    "AgentConfig.resolveAttestationAnchorWriter",
+    "resolveAttestationAnchorReceipt",
+    "AgentConfig.resolveAttestationAnchorReceipt",
     true,
   );
+  const attestationAnchorReceiptTimeoutMs = stableAgentData(
+    config,
+    "attestationAnchorReceiptTimeoutMs",
+    "AgentConfig.attestationAnchorReceiptTimeoutMs",
+  );
+  if (
+    attestationAnchorReceiptTimeoutMs !== undefined &&
+    (typeof attestationAnchorReceiptTimeoutMs !== "number" ||
+      !Number.isSafeInteger(attestationAnchorReceiptTimeoutMs) ||
+      attestationAnchorReceiptTimeoutMs <= 0)
+  ) {
+    throw new DacsError(
+      "AgentConfig.attestationAnchorReceiptTimeoutMs must be a positive safe integer",
+    );
+  }
   const resolveSettlementEvidenceContext = stableAgentMethod<
     AgentConfig["resolveSettlementEvidenceContext"]
   >(
@@ -1506,7 +1635,13 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       evaluatedAt,
     );
   };
-  const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
+  // `pc2Receipts` is fresh per verification: the receipts verified while
+  // resolving its PC-2 refs, keyed by canonical AttestationRef, so evidence
+  // verification can bind each writer to the phase orchestrator.
+  const verifyBundleAtRef = (
+    ref: string,
+    pc2Receipts = new Map<string, Readonly<ProtocolAnchorReceipt>>(),
+  ): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => publicReads.readAnchor(artifactRef),
       // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
@@ -1518,36 +1653,59 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         if (!locator.startsWith("dacs4:payment:")) {
           return publicReads.readAnchor(locator);
         }
-        // Validate the complete PC-2 tuple before consulting host authority or
-        // the index. Roundtrip rejects aliases, extra segments and unsafe ints.
+        // DACS-4 SB-1: validate the complete PC-2 tuple before consulting host
+        // authority. Roundtrip rejects aliases, extra segments and unsafe ints.
         const tuple = locator.split(":");
-        if ((tuple.length !== 5 && tuple.length !== 6) || tuple[2] !== jobId ||
-            (tuple.length === 6 && tuple[5] !== "resolved")) return null;
+        let canonical: string | null = null;
         try {
-          const canonical = paymentEvidenceAddress(
-            tuple[2]!, decodeAddressSegment(tuple[3]!), Number(tuple[4]),
-            tuple.length === 6,
-          );
-          if (canonical !== locator || !resolveAttestationAnchorWriter) return null;
-          const writer = await resolveAttestationAnchorWriter({
-            ref: structuredClone(artifactRef), jobId, parties: structuredClone(parties),
-          });
-          if (typeof writer !== "string") return null;
-          const key = await resolveCanonicalSigningKeyForRead(writer);
-          if (!key) return null;
-          const resolved = await publicReads.resolveAnchorByName(
-            logicalToStorageProgramName(canonical), Buffer.from(key).toString("hex"),
-          );
-          // Demos native SR-2 address profile (also enforced by demosHistory).
-          // Never fall back to a logical/name-only read on uncertain authority.
-          return resolved.status === "present" &&
-              typeof resolved.address === "string" &&
-              /^stor-[0-9a-f]{40}$/.test(resolved.address)
-            ? await publicReads.readAnchor(resolved.address)
-            : null;
+          if (isCanonicalJobId(tuple[2]) && (tuple.length === 5 ||
+              (tuple.length === 6 && tuple[5] === "resolved"))) {
+            canonical = paymentEvidenceAddress(
+              tuple[2]!, decodeAddressSegment(tuple[3]!), Number(tuple[4]),
+              tuple.length === 6,
+            );
+          }
         } catch {
-          return null;
+          canonical = null;
         }
+        if (canonical !== locator) {
+          throw new AttestationRefRejection("error", "PC-2 locator is not canonical");
+        }
+        if (tuple[2] !== jobId) {
+          throw new AttestationRefRejection("fail", "PC-2 locator names another job");
+        }
+        if (!resolveAttestationAnchorReceipt) return null;
+        const resolved = await withAttestationAnchorDeadline(
+          attestationAnchorReceiptTimeoutMs as number | undefined,
+          async (signal) => {
+            let candidate: unknown;
+            try {
+              candidate = await resolveAttestationAnchorReceipt({
+                ref: structuredClone(artifactRef),
+                jobId,
+                parties: structuredClone(parties),
+                signal,
+              });
+            } catch {
+              return null;
+            }
+            if (candidate === null || candidate === undefined || signal.aborted) {
+              return null;
+            }
+            const receipt = captureAttestationAnchorReceipt(
+              candidate,
+              locator,
+              artifactRef.contentHash,
+            );
+            // CORE §5.1 step 5: fetch only the exact verified native address,
+            // never a name-index result. Substrate faults propagate (#70).
+            const value = await publicReads.readAnchor(receipt.nativeAddress);
+            return value === null ? null : { receipt, value };
+          },
+        );
+        if (!resolved) return null;
+        pc2Receipts.set(canonicalize(artifactRef), resolved.receipt);
+        return resolved.value;
       },
       resolveListingRef: async (listingRef, parties) => {
         const seller = parties.find((party) => party.role === "seller");
@@ -1627,6 +1785,20 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         }
         if (!resolvedContext) {
           return { decision: "error" as const, authorizedSigner: null };
+        }
+        // DACS-5 SEB-3 / DACS-4 PC-2 / CORE SR2-11: the verified receipt's
+        // writer for a PC-2 anchor must be the authenticated phase orchestrator.
+        if (
+          context.evidenceRef.anchor.kind === "storage-program" &&
+          context.evidenceRef.anchor.locator.startsWith("dacs4:payment:")
+        ) {
+          const receipt = pc2Receipts.get(canonicalize(context.evidenceRef));
+          if (!sameCanonicalClaimIdentity(receipt?.writer, resolvedContext.orchestrator)) {
+            return {
+              decision: "fail" as const,
+              authorizedSigner: resolvedContext.orchestrator,
+            };
+          }
         }
         let exactPhase:
           | Readonly<(typeof context.bundle.phaseSummary)[number]>

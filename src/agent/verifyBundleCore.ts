@@ -178,6 +178,33 @@ export interface AlternativePaymentBundleVerificationResult {
   reason?: string;
 }
 
+/**
+ * Thrown by `resolveAttestationRef` when it refuses to dereference a reference
+ * for a reason other than absence, so the ref is not reported as `missing`.
+ * DACS-4 §9.5.8 SB-1: a well-formed PC-2 tuple mismatch is `fail`
+ * (`invalid-binding`) and a malformed or non-canonical address is `error`
+ * (`invalid-shape`). A resolution that cannot establish its CORE §5.1 receipt
+ * or lifecycle gate, including an expired deadline, is `indeterminate`
+ * (`unresolved`). Substrate faults are not rejections and propagate unchanged.
+ */
+export class AttestationRefRejection extends DacsError {
+  readonly disposition: "fail" | "error" | "indeterminate";
+
+  constructor(disposition: "fail" | "error" | "indeterminate", message: string) {
+    super(message);
+    this.name = "AttestationRefRejection";
+    this.disposition = disposition;
+  }
+}
+
+const ATTESTATION_REF_REJECTION_VERDICT: Readonly<
+  Record<AttestationRefRejection["disposition"], RefVerdict>
+> = Object.freeze({
+  fail: "invalid-binding",
+  error: "invalid-shape",
+  indeterminate: "unresolved",
+});
+
 export interface VerifyBundleDeps {
   /** Read a signed artifact at a storage ref (null if absent). */
   readArtifact: (ref: string) => Promise<Record<string, unknown> | null>;
@@ -191,7 +218,9 @@ export interface VerifyBundleDeps {
    * artifacts. `parties` is the bundle's party list; derive the anchoring
    * party's substrate address from its primaryClaim. Returns null if
    * unresolvable. Omit only if dereferencing isn't possible — the refs then
-   * report `unresolved` and the bundle cannot be `ok`.
+   * report `unresolved` and the bundle cannot be `ok`. Throw an
+   * {@link AttestationRefRejection} to classify a refused reference instead of
+   * reporting it `missing`; any other thrown error propagates.
    */
   resolveAttestationRef?: (
     ref: Readonly<AttestationRef>,
@@ -1489,14 +1518,28 @@ export async function verifyBundleCore(
     isAttestationRef(ref) ? ref.anchor.locator : ref.id;
   const resolveReadableRef = async (
     ref: ReadableAttestationRef,
-  ): Promise<{ supported: boolean; value: Record<string, unknown> | null }> => {
+  ): Promise<{
+    supported: boolean;
+    value: Record<string, unknown> | null;
+    rejected?: RefVerdict;
+  }> => {
     if (isAttestationRef(ref)) {
       if (!deps.resolveAttestationRef) return { supported: false, value: null };
-      const resolved = await deps.resolveAttestationRef(
-        structuredClone(ref),
-        bundle.jobId,
-        structuredClone(bundle.parties),
-      );
+      let resolved: Record<string, unknown> | null;
+      try {
+        resolved = await deps.resolveAttestationRef(
+          structuredClone(ref),
+          bundle.jobId,
+          structuredClone(bundle.parties),
+        );
+      } catch (error) {
+        if (!(error instanceof AttestationRefRejection)) throw error;
+        return {
+          supported: true,
+          value: null,
+          rejected: ATTESTATION_REF_REJECTION_VERDICT[error.disposition],
+        };
+      }
       return {
         supported: true,
         value: snapshotDependencyRecord(
@@ -1536,6 +1579,12 @@ export async function verifyBundleCore(
           id: refLocator(ref),
           verdict: "unresolved",
         },
+        value: null,
+      };
+    }
+    if (resolved.rejected !== undefined) {
+      return {
+        check: { kind: artifactKind, id: refLocator(ref), verdict: resolved.rejected },
         value: null,
       };
     }

@@ -1137,7 +1137,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
   });
 
   test("public verifyBundle/getReputation require authenticated vet and settlement context", async () => {
-    const { adapter, store, resolveAnchorByName } = memAdapter();
+    const { adapter, store } = memAdapter();
     const listingRef = await anchorListing(store);
     const listing = store.get(listingRef)!;
 
@@ -1276,14 +1276,25 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       directEvidenceVerdict.reasons.join("; "),
     ).toBe("pass");
     const nativeEvidence = "stor-" + "e".repeat(40);
-    const resolveExisting = resolveAnchorByName.getMockImplementation()!;
-    resolveAnchorByName.mockImplementation(async (name: string, owner?: string) =>
-      name === logicalToStorageProgramName(evidenceRef.anchor.locator) &&
-          owner === Buffer.from(buyerPublicKey).toString("hex")
-        ? { status: "present" as const, address: nativeEvidence }
-        : resolveExisting(name),
-    );
     store.set(nativeEvidence, evidence as unknown as Record<string, unknown>);
+    // Verified SR-2 receipt for the PC-2 anchor, written by the pay-phase
+    // orchestrator (the seller), as DACS-5 SEB-3 requires.
+    const resolveAttestationAnchorReceipt = () => ({
+      receiptVersion: "1" as const,
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress: evidenceRef.anchor.locator,
+      nativeAddress: nativeEvidence,
+      contentHash: evidenceRef.contentHash,
+      transactionRef: { kind: "demos-storage-program", value: "0x" + "7".repeat(64) },
+      writer: sellerDid,
+      nonce: "3",
+      state: "finalized" as const,
+      observationDisposition: "established" as const,
+      observedAt: 1786363150000,
+      blockRef: { id: "0x" + "8".repeat(64), height: "12", timestamp: 1786363150000 },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "e30" },
+    });
 
     const composite: CompositeVerificationRecord = {
       recordVersion: "1",
@@ -1375,7 +1386,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
-      resolveAttestationAnchorWriter: () => normativeBuyerDid,
+      resolveAttestationAnchorReceipt,
     });
     const unconfiguredVerdict = await unconfiguredAgent.verifyBundle(
       "stor:bundle",
@@ -1401,7 +1412,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
-      resolveAttestationAnchorWriter: () => normativeBuyerDid,
+      resolveAttestationAnchorReceipt,
       verifyCompositeRecord: async (record, bundle) => {
         verifierCalls += 1;
         expect(bundle.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");
