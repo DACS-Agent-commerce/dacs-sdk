@@ -37,3 +37,5 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:870
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:899
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:921
+# Published Base-Sepolia USDC token address in the settlement restart worker fixture (PR #336).
+63e41f1d35536884cce585b7c390dcc95b47730d:test/fixtures/settlementProcessWorker.ts:generic-api-key:23
