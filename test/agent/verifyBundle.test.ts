@@ -2171,6 +2171,11 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
     ["no nonce", ({ nonce: _n, ...rest }) => rest],
     ["a non-canonical writer", (honest) => ({ ...honest, writer: sellerDid.toUpperCase() })],
     ["a non-ClaimRef writer", (honest) => ({ ...honest, writer: "seller" })],
+    ["another substrate", (honest) => ({ ...honest, substrate: "ethereum" })],
+    ...["not-a-number", "03", "-1", "+1", "1.0", "1e3", " 3", "0x3", "３",
+      "9007199254740992",
+    ].map((nonce): [string, (honest: AnchorReceipt) => unknown] => [
+      `nonce ${JSON.stringify(nonce)}`, (honest) => ({ ...honest, nonce })]),
     ...["", " " + nativeEvidence, "stor-" + "e".repeat(39), "stor-" + "e".repeat(64),
       "stor-" + "E".repeat(40), "stor-" + "g".repeat(40), paymentEvidenceAddress(JOB_ID, "x402:default", 0),
     ].map((nativeAddress): [string, (honest: AnchorReceipt) => unknown] => [
@@ -2199,19 +2204,55 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
     expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
   });
 
-  test.each([
-    ["submitted", { state: "submitted", blockRef: undefined }],
-    ["accepted", { state: "accepted", blockRef: undefined }],
-    ["included", { state: "included" }],
-    ["reorged", { state: "reorged" }],
-    ["indeterminate over finalized", { observationDisposition: "indeterminate",
-      preservedReceiptHash: h("6") }],
-  ])("a receipt below the finalized lifecycle gate (%s) is unresolved", async (_label, overrides) => {
-    const h = await harness({ receipt: (honest) => JSON.parse(JSON.stringify({ ...honest, ...overrides })) });
-    const result = await h.agent.verifyBundle("bundle");
-    expect(result.ok).toBe(false);
-    expect(evidenceVerdict(result)).toBe("unresolved");
-    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+  describe("outcome-aware lifecycle gate (DACS-5 SEB-1 SR-2 lifecycle)", () => {
+    // DACS-5 §10.3.1: the failed and aborted terminal outcome classes.
+    const failedOrAborted = ["failed-perm", "failed-counterparty", "failed-substrate",
+      "aborted-by-self", "aborted-by-other"] as const;
+    const belowEveryGate: Array<[string, Partial<Record<keyof AnchorReceipt, unknown>>]> = [
+      ["submitted", { state: "submitted", blockRef: undefined }],
+      ["accepted", { state: "accepted", blockRef: undefined }],
+      ["reorged", { state: "reorged" }],
+      ["indeterminate over included", { state: "included",
+        observationDisposition: "indeterminate", preservedReceiptHash: h("6") }],
+      ["indeterminate over finalized", { observationDisposition: "indeterminate",
+        preservedReceiptHash: h("6") }],
+    ];
+
+    async function withOutcome(
+      receipt: (honest: AnchorReceipt) => unknown,
+      outcome: string,
+    ) {
+      const h = await harness({ receipt });
+      h.fx.bundle.outcome = outcome;
+      await resignFixture(h.fx, [{ party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller }]);
+      return h;
+    }
+
+    test.each(failedOrAborted)("outcome %s admits an established included receipt", async (outcome) => {
+      const h = await withOutcome((honest) => ({ ...honest, state: "included" }), outcome);
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    });
+
+    test.each(["completed", ...failedOrAborted] as const)(
+      "outcome %s admits an established finalized receipt", async (outcome) => {
+        const h = await withOutcome((honest) => honest, outcome);
+        expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      });
+
+    test.each([
+      ["completed", "included", { state: "included" }] as const,
+      ...(["completed", ...failedOrAborted] as const).flatMap((outcome) =>
+        belowEveryGate.map(([state, overrides]) => [outcome, state, overrides] as const)),
+    ])("outcome %s refuses receipt state %s as unresolved", async (outcome, _state, overrides) => {
+      const h = await withOutcome(
+        (honest) => JSON.parse(JSON.stringify({ ...honest, ...overrides })), outcome);
+      const result = await h.agent.verifyBundle("bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceVerdict(result)).toBe("unresolved");
+      expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    });
   });
 
   test.each([
@@ -2307,7 +2348,15 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
       expect(exclusion?.reason).toMatch(/dacs-4-evidence\/dacs4:payment:.* unresolved$/);
     }, 2_000);
 
-    test.each([0, -1, 1.5, Number.NaN, "20"])("rejects timeout %o at construction", async (value) => {
+    // Node's setTimeout fires after ~1 ms for any delay above 2^31 - 1.
+    test("accepts the timer maximum and still admits a receipt that arrives after 30 ms", async () => {
+      const h = await harness({ config: { attestationAnchorReceiptTimeoutMs: 2_147_483_647 },
+        receipt: (honest) => new Promise((resolve) => setTimeout(() => resolve(honest), 30)) });
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    }, 2_000);
+
+    test.each([0, -1, 1.5, Number.NaN, "20", 2_147_483_648, Number.MAX_SAFE_INTEGER,
+    ])("rejects timeout %o at construction", async (value) => {
       await expect(harness({ receipt: "honest",
         config: { attestationAnchorReceiptTimeoutMs: value as number } }))
         .rejects.toThrow(/attestationAnchorReceiptTimeoutMs/);

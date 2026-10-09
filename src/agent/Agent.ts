@@ -537,18 +537,25 @@ export interface AgentConfig {
    * Return the verified SR-2 `AnchorReceipt` for a DACS-4 PC-2 logical
    * attestation anchor (`dacs4:payment:…`), or null when the host holds none.
    * CORE §5.1 logical-to-native resolution: the host obtains the receipt by
-   * direct delivery or from retained session state and MUST already have
-   * verified its binding-defined `evidence` (SR2-4; on Demos, e.g.
-   * `DemosAdapter.verifyDemosAnchorReceipt`). The SDK never resolves this
-   * locator through the program-name index (DEMOS-MAPPING A.2). It requires an
-   * exact receipt whose `logicalAddress` is the locator, whose `contentHash` is
-   * the ref's, with a canonical `writer`, a transaction and a nonce, a
-   * Demos native `nativeAddress`, and an established `finalized` state. It
-   * then reads only that `nativeAddress` and, during evidence verification,
-   * requires the writer to be the authenticated phase orchestrator (DACS-5
-   * SEB-3). A mismatch is `invalid-binding`, a malformed receipt
-   * `invalid-shape`, an unmet lifecycle gate `unresolved`; null or a throw is
-   * `missing`. Captured at construction; native-reference reads are unchanged.
+   * direct delivery or from retained session state. Before returning it, the
+   * host MUST have verified it against the same connected Demos chain that
+   * this Agent reads: its binding-defined `evidence` (SR2-4) and the full
+   * SR2-5 tuple (logical address, native address, content hash, transaction,
+   * writer and nonce), e.g. with `DemosAdapter.verifyDemosAnchorReceipt` on
+   * the Agent's adapter. The SDK cannot authenticate the receipt itself. It
+   * never resolves this locator through the program-name index (DEMOS-MAPPING
+   * A.2). It requires an exact receipt with `substrate: "demos"`, a Demos
+   * native `nativeAddress`, a canonical `writer`, a transaction and a
+   * decimal nonce, whose `logicalAddress` is the locator and whose
+   * `contentHash` is the ref's, in an established `finalized` state, or
+   * `included` when the bundle outcome is failed or aborted (DACS-5 SEB-1).
+   * It then reads only that `nativeAddress` and, during evidence
+   * verification, requires the writer to be the authenticated phase
+   * orchestrator (DACS-5 SEB-3). A receipt-tuple mismatch is
+   * `invalid-binding`; a writer that is not the orchestrator is
+   * `invalid-evidence`; a malformed receipt is `invalid-shape`; an unmet
+   * lifecycle gate is `unresolved`; null or a throw is `missing`. Captured at
+   * construction; native-reference reads are unchanged.
    *
    * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
    * expires. Without that option the SDK sets no deadline, and a host MUST
@@ -568,8 +575,9 @@ export interface AgentConfig {
    * Deadline in milliseconds for resolving one PC-2 anchor: the
    * `resolveAttestationAnchorReceipt` callback plus the read of its native
    * address. Expiry aborts the callback's `signal` and reports the ref
-   * `unresolved`; a late result is ignored. Positive safe integer; omitted
-   * means no SDK deadline.
+   * `unresolved`; a late result is ignored. A positive integer no greater
+   * than 2147483647 (2^31 - 1, the largest delay `setTimeout` honours);
+   * other values are refused at construction. Omitted means no SDK deadline.
    */
   attestationAnchorReceiptTimeoutMs?: number;
 
@@ -693,6 +701,15 @@ function captureSettlementEvidenceContext(
   return context as unknown as AgentSettlementEvidenceContext;
 }
 
+// DACS-5 §10.3.1: the failed and aborted terminal outcome classes.
+const FAILED_OR_ABORTED_OUTCOMES: ReadonlySet<string> = new Set([
+  "failed-perm",
+  "failed-counterparty",
+  "failed-substrate",
+  "aborted-by-self",
+  "aborted-by-other",
+]);
+
 /**
  * CORE §5.1 logical-to-native resolution, steps 2–4, for one host-supplied
  * PC-2 receipt. SR2-4 evidence authentication is the host's; the SDK binds
@@ -703,6 +720,7 @@ function captureAttestationAnchorReceipt(
   value: unknown,
   logicalAddress: string,
   expectedContentHash: string,
+  bundleOutcome: string,
 ): Readonly<ProtocolAnchorReceipt> {
   let receipt: unknown;
   try {
@@ -712,11 +730,15 @@ function captureAttestationAnchorReceipt(
   }
   if (
     !isAnchorReceipt(receipt) ||
+    receipt.substrate !== "demos" ||
     // Demos native SR-2 address profile (also enforced by demosHistory).
     !/^stor-[0-9a-f]{40}$/.test(receipt.nativeAddress) ||
     !isCanonicalClaimReference(receipt.writer) ||
-    // Demos native addresses fold in the writer's create-time nonce.
-    receipt.nonce === undefined
+    // Demos native addresses fold in the writer's create-time nonce, a
+    // decimal safe integer (as in decodeDemosAnchorReceiptProof).
+    receipt.nonce === undefined ||
+    !/^(0|[1-9][0-9]*)$/.test(receipt.nonce) ||
+    !Number.isSafeInteger(Number(receipt.nonce))
   ) {
     throw new AttestationRefRejection("error", "PC-2 anchor receipt is malformed");
   }
@@ -730,21 +752,28 @@ function captureAttestationAnchorReceipt(
       "PC-2 anchor receipt does not bind this reference",
     );
   }
-  // SR2-11 lifecycle gate: a terminal bundle's referenced artifacts must be
-  // finalized, and an indeterminate observation cannot promote that state.
+  // DACS-5 SEB-1 SR-2 lifecycle: a completed bundle's SettlementEvidence must
+  // be finalized (ST-11); a failed or aborted terminal's may be included or
+  // finalized. An indeterminate observation satisfies neither gate (SR2-11).
   if (
-    receipt.state !== "finalized" ||
+    !(
+      receipt.state === "finalized" ||
+      (receipt.state === "included" &&
+        FAILED_OR_ABORTED_OUTCOMES.has(bundleOutcome))
+    ) ||
     receipt.observationDisposition !== "established"
   ) {
     throw new AttestationRefRejection(
       "indeterminate",
-      "PC-2 anchor receipt is not an established finalized observation",
+      "PC-2 anchor receipt does not meet the bundle outcome's lifecycle gate",
     );
   }
   return Object.freeze(receipt);
 }
 
 const ATTESTATION_ANCHOR_EXPIRED = Symbol("attestation-anchor-expired");
+/** Largest delay `setTimeout` honours (2^31 - 1 ms, about 24.8 days). */
+const MAX_ATTESTATION_ANCHOR_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * Bound one PC-2 resolution. Expiry aborts `signal` and rejects as
@@ -1451,10 +1480,13 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     attestationAnchorReceiptTimeoutMs !== undefined &&
     (typeof attestationAnchorReceiptTimeoutMs !== "number" ||
       !Number.isSafeInteger(attestationAnchorReceiptTimeoutMs) ||
-      attestationAnchorReceiptTimeoutMs <= 0)
+      attestationAnchorReceiptTimeoutMs <= 0 ||
+      // setTimeout fires after ~1 ms for any delay above 2^31 - 1.
+      attestationAnchorReceiptTimeoutMs > MAX_ATTESTATION_ANCHOR_TIMEOUT_MS)
   ) {
     throw new DacsError(
-      "AgentConfig.attestationAnchorReceiptTimeoutMs must be a positive safe integer",
+      "AgentConfig.attestationAnchorReceiptTimeoutMs must be a positive integer " +
+        `no greater than ${MAX_ATTESTATION_ANCHOR_TIMEOUT_MS}`,
     );
   }
   const resolveSettlementEvidenceContext = stableAgentMethod<
@@ -1647,7 +1679,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
       // This adapter owns storage-program reads; other registered anchor kinds
       // need a transport-specific resolver supplied to verifyBundleCore.
-      resolveAttestationRef: async (artifactRef, jobId, parties) => {
+      resolveAttestationRef: async (artifactRef, jobId, parties, outcome) => {
         if (artifactRef.anchor.kind !== "storage-program") return null;
         const locator = artifactRef.anchor.locator;
         if (!locator.startsWith("dacs4:payment:")) {
@@ -1696,6 +1728,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               candidate,
               locator,
               artifactRef.contentHash,
+              outcome,
             );
             // CORE §5.1 step 5: fetch only the exact verified native address,
             // never a name-index result. Substrate faults propagate (#70).
