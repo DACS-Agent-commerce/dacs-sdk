@@ -24,6 +24,14 @@ export {
   type BoundArtifactWriteResult,
 } from "./boundArtifactRepository.js";
 export {
+  createScanningArtifactRepository,
+  type ScanningArtifactRepository,
+  type ScanningArtifactRepositoryDeps,
+  type ArtifactScanState,
+  type ScannedArtifactRead,
+  type ArtifactScanPage,
+} from "./scanningArtifactRepository.js";
+export {
   queryListingCatalog,
   createCatalogBindingIndex,
   type CatalogReachabilityHint,

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   createInMemoryBindingIndex,
@@ -40,6 +40,116 @@ function depsWith(
 }
 
 describe("resolveAndRead (#54 typed read-with-verification)", () => {
+  test.each(["status", "reason", "code"] as const)(
+    "indeterminate: a throwing %s accessor returns an owned diagnostic",
+    async (field) => {
+      for (const proxy of [false, true]) {
+        const resolution = { status: "indeterminate", reason: "unavailable" };
+        const getter = vi.fn(() => { throw new Error(`hostile ${field} getter`); });
+        const hostile = proxy
+          ? new Proxy(resolution, {
+              get(target, key, receiver) {
+                return key === field ? getter() : Reflect.get(target, key, receiver);
+              },
+            })
+          : Object.defineProperty(resolution, field, { get: getter });
+        const read = vi.fn(async () => RECORD);
+        const verifySignature = vi.fn(() => true);
+        await expect(resolveAndRead(
+          { resolve: async () => hostile as never }, LOGICAL, SELLER,
+          depsWith({}, { read, verifySignature }),
+        )).resolves.toEqual({
+          status: "indeterminate",
+          reason: `binding resolution failed: hostile ${field} getter`,
+        });
+        expect(getter).toHaveBeenCalledOnce();
+        expect(read).not.toHaveBeenCalled();
+        expect(verifySignature).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  test.each([undefined, null, 7, {}, ["disagree"]])(
+    "indeterminate: a malformed reason (%j) cannot claim a binding conflict",
+    async (reason) => {
+      const read = vi.fn(async () => RECORD);
+      const verifySignature = vi.fn(() => true);
+      await expect(resolveAndRead(
+        { resolve: async () => ({ status: "indeterminate", reason, code: "binding-conflict" }) as never },
+        LOGICAL, SELLER, depsWith({}, { read, verifySignature }),
+      )).resolves.toEqual({
+        status: "indeterminate",
+        reason: "binding resolution failed: binding index returned an invalid reason",
+      });
+      expect(read).not.toHaveBeenCalled();
+      expect(verifySignature).not.toHaveBeenCalled();
+    },
+  );
+
+  test("indeterminate: an unknown index status cannot authorize a valid binding", async () => {
+    const read = vi.fn(async () => RECORD);
+    await expect(resolveAndRead(
+      { resolve: async () => ({ status: "attacker-status", binding: binding() }) as never },
+      LOGICAL, SELLER, depsWith({}, { read, verifySignature: () => true }),
+    )).resolves.toEqual({
+      status: "indeterminate",
+      reason: "binding resolution failed: binding index returned an unknown status",
+    });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  // Values whose formatting throws: string coercion, a message getter, instanceof.
+  const hostileErrors = (): [string, () => unknown][] => [
+    ["a null-prototype object", () => Object.create(null)],
+    ["an Error with a throwing message getter", () =>
+      Object.defineProperty(new Error("hidden"), "message", {
+        get() { throw new Error("message trap"); },
+      })],
+    ["a Proxy whose prototype lookup throws", () =>
+      new Proxy(new Error("hidden"), {
+        getPrototypeOf() { throw new Error("prototype trap"); },
+      })],
+  ];
+  const throwing = (value: unknown) => () => { throw value; };
+
+  test.each(hostileErrors())(
+    "hostile thrown value (%s) never makes resolveAndRead reject",
+    async (_name, make) => {
+      const statusTrap = (value: unknown) => new Proxy({}, {
+        get(_target, key) { return key === "status" ? throwing(value)() : undefined; },
+      });
+      const cases: [string, VerifiedReadDeps, Parameters<typeof resolveAndRead>[0]][] = [
+        ["binding resolution failed",
+          depsWith({ "stor-real": RECORD }),
+          { resolve: async () => { throw make(); } }],
+        ["binding resolution failed",
+          depsWith({ "stor-real": RECORD }),
+          { resolve: async () => statusTrap(make()) as never }],
+        ["binding snapshot failed",
+          depsWith({ "stor-real": RECORD }),
+          { resolve: async () => ({ status: "present", get binding() { return throwing(make())(); } }) as never }],
+        ["read of stor-real failed",
+          depsWith({}, { read: async () => { throw make(); } }),
+          createInMemoryBindingIndex([binding()])],
+        ["read record snapshot failed",
+          depsWith({}, { read: async () => ({ get field() { return throwing(make())(); } }) }),
+          createInMemoryBindingIndex([binding()])],
+        ["content hash computation failed",
+          depsWith({ "stor-real": RECORD }, { contentHashOf: throwing(make()) as never }),
+          createInMemoryBindingIndex([binding()])],
+        ["signature verification threw",
+          depsWith({ "stor-real": RECORD }, { verifySignature: throwing(make()) as never }),
+          createInMemoryBindingIndex([binding()])],
+      ];
+      for (const [prefix, deps, index] of cases) {
+        // Hash and verifier failures keep the record; earlier failures are retryable.
+        const status = /^(content|signature)/.test(prefix) ? "unverifiable" : "indeterminate";
+        await expect(resolveAndRead(index, LOGICAL, SELLER, deps))
+          .resolves.toMatchObject({ status, reason: `${prefix}: unknown error` });
+      }
+    },
+  );
+
   test("verified: binding resolves and the artifact-specific verifier authorizes the record", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith(
@@ -101,6 +211,72 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     ]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith({}));
     expect(r.status).toBe("indeterminate");
+    expect(r).toMatchObject({ code: "binding-conflict" });
+  });
+
+  test("indeterminate: an index status getter cannot turn into a verified result", async () => {
+    let statusReads = 0;
+    const forged = {
+      get status() {
+        return statusReads++ === 0 ? "indeterminate" : "verified";
+      },
+      reason: "index unavailable",
+      nativeAddress: "stor-attacker",
+      record: { forged: true },
+    };
+    let reads = 0;
+    let verifications = 0;
+    const r = await resolveAndRead(
+      { resolve: async () => forged as never },
+      LOGICAL,
+      SELLER,
+      depsWith({}, {
+        read: async () => { reads++; return null; },
+        verifySignature: () => { verifications++; return true; },
+      }),
+    );
+    expect(r).toEqual({ status: "indeterminate", reason: "index unavailable" });
+    expect(reads).toBe(0);
+    expect(verifications).toBe(0);
+  });
+
+  test("indeterminate: only a known conflict code is copied from the index", async () => {
+    const resolveWith = (result: unknown) => resolveAndRead(
+      { resolve: async () => result as never },
+      LOGICAL,
+      SELLER,
+      depsWith({}),
+    );
+    expect(await resolveWith({
+      status: "indeterminate", reason: "disagree", code: "binding-conflict",
+    })).toEqual({ status: "indeterminate", reason: "disagree", code: "binding-conflict" });
+    expect(await resolveWith({
+      status: "indeterminate", reason: "busy", code: "other", nativeAddress: "stor-x",
+    })).toEqual({ status: "indeterminate", reason: "busy" });
+  });
+
+  test("indeterminate: a conflict-code getter is read once with status and reason", async () => {
+    const fieldReads = { status: 0, reason: 0, code: 0 };
+    const resolution = {
+      get status() { return fieldReads.status++ === 0 ? "indeterminate" : "verified"; },
+      get reason() { return fieldReads.reason++ === 0 ? "disagree" : "attacker-reason"; },
+      get code() { return fieldReads.code++ === 0 ? "binding-conflict" : "attacker-value"; },
+    };
+    let reads = 0;
+    let verifications = 0;
+    const result = await resolveAndRead(
+      { resolve: async () => resolution as never },
+      LOGICAL,
+      SELLER,
+      depsWith({}, {
+        read: async () => { reads++; return null; },
+        verifySignature: () => { verifications++; return true; },
+      }),
+    );
+    expect(result).toEqual({ status: "indeterminate", reason: "disagree", code: "binding-conflict" });
+    expect(fieldReads).toEqual({ status: 1, reason: 1, code: 1 });
+    expect(reads).toBe(0);
+    expect(verifications).toBe(0);
   });
 
   test("unreadable: the resolved native address holds no record", async () => {
@@ -174,6 +350,15 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       contentHashOf,
       verifySignature: (rec) => rec.signature === "sig-real",
     });
+    expect(r.status).toBe("signature-invalid");
+  });
+
+  test("signature verifier: a truthy non-boolean result cannot verify a record", async () => {
+    const index = createInMemoryBindingIndex([binding()]);
+    const r = await resolveAndRead(index, LOGICAL, SELLER, depsWith(
+      { "stor-real": RECORD },
+      { verifySignature: () => ({}) as unknown as boolean },
+    ));
     expect(r.status).toBe("signature-invalid");
   });
 

@@ -678,6 +678,85 @@ current traversal reached its end. Upsert results idempotently by
 `(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
 repaired after its history page was already consumed.
 
+For other artifact kinds, `createScanningArtifactRepository` composes the bound
+repository with `scanAnchorPage` and `resolveAndRead`. Supply the adapter,
+published index, explicit authorized publisher, expected owner, page fetcher and
+artifact verifier. Scanning only reads; `write` retains the bound repository's
+explicit publication path. A connected Demos adapter supplies the fetcher through
+`adapter.createAnchorHistoryPageFetcher(expectedOwner)`; the helper never connects
+or selects a service itself.
+
+This offline example inspects an unsigned synthetic candidate. It deliberately
+returns `unverifiable` until a signature and authorization provider is supplied:
+
+```ts
+import {
+  contentHash,
+  createInMemoryBindingStore,
+  createScanningArtifactRepository,
+} from "@kynesyslabs/dacs";
+
+const expectedOwner = "offline-seller";
+const logicalAddress = "dacs1:offline-seller:example:v1";
+const nativeAddress = "stor-offline-example";
+const artifact = { listingVersion: 1 }; // Synthetic, unsigned inspection bytes.
+const bindings = createInMemoryBindingStore([{
+  logicalAddress, nativeAddress, owner: expectedOwner,
+  contentHash: contentHash(artifact), version: 1,
+}]);
+const repository = createScanningArtifactRepository({
+  expectedOwner,
+  index: bindings,
+  publisher: bindings, // Explicit in-memory target; scanPage never publishes.
+  adapter: {
+    getAddress: () => "offline-reader",
+    anchorWriteOnce: async () => { throw new Error("read-only demo"); },
+    readAnchor: async (address) => address === nativeAddress ? artifact : null,
+  },
+  fetchPage: async (cursor) => cursor === null
+    ? { entries: [{ logicalAddress, nativeAddress, owner: expectedOwner }],
+        nextCursor: "second-page" }
+    : { entries: [], nextCursor: null },
+  verifyArtifact: () => {
+    throw new Error("no offline signature and authorization provider");
+  },
+});
+const first = await repository.scanPage(); // outcome.status: "unverifiable"
+const second = await repository.scanPage(first.state); // Empty, exhausted page.
+```
+
+Keep the returned `state` with its owner, cursor, `seen` and `metadata` maps,
+`consumedCursors` set, `pagesConsumed` count and `exhausted` flag. Persist maps as
+entries and reconstruct them with `new Map(entries)`; persist the set as values
+and reconstruct it with `new Set(values)`. Only fully handled rows enter `seen`;
+filtered rows remain in `metadata` for conflict detection and can be read on an
+overlapping page when `includeUnknown` is enabled. Cursor cycles stop with
+`indeterminate` without advancing or reading that page. Traversals stop before
+fetching after 10,000 consumed pages. A transient
+`indeterminate` outcome retains the page's starting cursor and only remembers its
+handled prefix: pass that state back to re-fetch and re-read the failed row. The
+remaining rows are not read until the retry succeeds. Input state is unchanged.
+Other diagnostics advance after handling; start a fresh traversal to revisit
+repaired candidates. Overlapping pages deduplicate by native address while
+rejecting conflicting logical metadata, including a row whose persisted `seen`
+and `metadata` entries disagree.
+
+Each result retains its classified `anchor` and discriminated `outcome`: `absent`
+(unresolved), `conflict`, `binding-mismatch`, `unreadable`, `hash-mismatch`,
+`signature-invalid`, `unverifiable`, `indeterminate` or `verified`. Known binding
+conflicts carry `code: "binding-conflict"` in the underlying resolver/read API;
+an untagged indeterminate index result stays retryable. History metadata conflicts
+stop the page with `status: "conflict"` and the unchanged cursor. Only an exact
+binding hash plus literal `true` from the artifact-specific signature and
+authorization verifier yields `verified`. The verifier must check signed scope,
+domain, supported version, expected owner/role and logical slot for each kind.
+Unsupported kinds or unavailable verification must throw. Throws produce
+`unverifiable`. Return `false` only for a completed negative signature or
+authorization check, which produces `signature-invalid`.
+Neither classification, a verified artifact nor `exhausted: true` proves complete
+enumeration, freshness, or non-revocation; perform the artifact's protocol-specific
+admission and revocation checks before using it.
+
 Global/category discovery uses the open DACS-1 §6.3.6 catalog surface. Catalog
 summaries are untrusted candidates: use `queryListingCatalog` to search, then
 give `createCatalogBindingIndex` to the Agent so `readListing` dereferences and

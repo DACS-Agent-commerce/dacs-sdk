@@ -23,6 +23,8 @@
  *    history (`nextCursor: null`), not a swallowed error.
  */
 
+import { describeError } from "./describeError.js";
+
 export type AnchorKind =
   | "listing"
   | "listing-revocation"
@@ -109,7 +111,12 @@ export interface ScannedAnchor {
 
 export type ScanPage =
   | { status: "page"; anchors: ScannedAnchor[]; nextCursor: string | null }
-  | { status: "indeterminate"; reason: string; cursor: string | null };
+  | {
+      status: "indeterminate";
+      reason: string;
+      cursor: string | null;
+      code?: "metadata-conflict";
+    };
 
 /**
  * Incremental dedup state. A Map is preferred because its logical-address value
@@ -127,6 +134,13 @@ export interface ScanOptions {
    * yielded addresses are added to it.
    */
   seen?: ScanSeen;
+  /**
+   * Optional separate logical metadata for conflict detection, including filtered
+   * rows. Newly observed metadata is added only after a page passes validation.
+   * Entries here do not mark an address as handled in `seen`. It is checked in
+   * addition to, never instead of, the metadata already held by `seen`.
+   */
+  logicalMetadata?: Map<string, string>;
   /** Keep `unknown`-kind anchors (default drops them — they aren't DACS artifacts). */
   includeUnknown?: boolean;
 }
@@ -196,13 +210,19 @@ export async function scanAnchorPage(
 ): Promise<ScanPage> {
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const seen = opts.seen ?? new Map<string, string>();
-  let seenLogicalMetadata: Map<string, string>;
+  let dedupLogicalMetadata: Map<string, string>;
   if (seen instanceof Map) {
-    seenLogicalMetadata = seen;
+    dedupLogicalMetadata = seen;
   } else {
-    seenLogicalMetadata = logicalMetadataByLegacySeenSet.get(seen) ?? new Map();
-    logicalMetadataByLegacySeenSet.set(seen, seenLogicalMetadata);
+    dedupLogicalMetadata = logicalMetadataByLegacySeenSet.get(seen) ?? new Map();
+    logicalMetadataByLegacySeenSet.set(seen, dedupLogicalMetadata);
   }
+  // Separate metadata adds to, never replaces, the dedup state's metadata.
+  const logicalMetadata = opts.logicalMetadata;
+  const seenLogicalMetadata = logicalMetadata ?? dedupLogicalMetadata;
+  const knownLogicalMetadata = logicalMetadata === undefined
+    ? [dedupLogicalMetadata]
+    : [logicalMetadata, dedupLogicalMetadata];
 
   if (!Number.isSafeInteger(limit) || limit <= 0) {
     return {
@@ -221,7 +241,7 @@ export async function scanAnchorPage(
   } catch (e) {
     return {
       status: "indeterminate",
-      reason: `page fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+      reason: `page fetch failed: ${describeError(e)}`,
       cursor,
     };
   }
@@ -231,15 +251,14 @@ export async function scanAnchorPage(
   const pendingSeen = new Set<string>();
   for (const entry of page.entries) {
     if (!entry.logicalAddress) continue; // not a DACS anchor (no logical metadata)
-    const previousLogicalAddress =
-      pendingLogicalMetadata.get(entry.nativeAddress) ??
-      seenLogicalMetadata.get(entry.nativeAddress);
-    if (
-      previousLogicalAddress !== undefined &&
-      previousLogicalAddress !== entry.logicalAddress
-    ) {
+    const previousLogicalAddress = [
+      pendingLogicalMetadata.get(entry.nativeAddress),
+      ...knownLogicalMetadata.map((metadata) => metadata.get(entry.nativeAddress)),
+    ].find((logical) => logical !== undefined && logical !== entry.logicalAddress);
+    if (previousLogicalAddress !== undefined) {
       return {
         status: "indeterminate",
+        code: "metadata-conflict",
         reason:
           `conflicting logical metadata for ${entry.nativeAddress}: ` +
           `${previousLogicalAddress} vs ${entry.logicalAddress}`,
