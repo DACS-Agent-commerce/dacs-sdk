@@ -92,6 +92,7 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
     const b = binding({ nativeAddress: "stor-bbb" });
     const r = resolveBinding([a, b], logicalFor(1), SELLER);
     expect(r.status).toBe("indeterminate");
+    expect(r).toMatchObject({ code: "binding-conflict" });
   });
 
   test("CONFLICT: the same native address with different hash/version is still indeterminate", () => {

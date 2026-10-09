@@ -79,7 +79,12 @@ export interface AnchorBinding {
 export type BindingResolution =
   | { status: "present"; binding: AnchorBinding }
   | { status: "absent" }
-  | { status: "indeterminate"; reason: string };
+  | {
+      status: "indeterminate";
+      reason: string;
+      /** Known disagreement, distinct from an unavailable index. */
+      code?: "binding-conflict";
+    };
 
 /** Bindings claiming the requested logical address and owner, in any state. */
 function matchingBindings(
@@ -118,6 +123,7 @@ export function resolveBinding(
   if (matches.some((candidate) => !sameBinding(first, candidate))) {
     return {
       status: "indeterminate",
+      code: "binding-conflict",
       reason: `published bindings disagree on the anchor kind, native address, content hash, version, or state for ${logicalAddress}`,
     };
   }

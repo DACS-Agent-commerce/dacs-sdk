@@ -113,8 +113,74 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
       status: "indeterminate",
       cursor: "1",
       reason: expect.stringContaining("conflicting logical metadata"),
+      code: "metadata-conflict",
     });
   });
+
+  test("separate logical metadata still conflicts with existing dedup metadata", async () => {
+    const seen = new Map([["stor-a", "dacs1:s:a:v1"]]);
+    const logicalMetadata = new Map<string, string>();
+    const fetch = pagedFetcher([
+      { entries: [entry("stor-a", "dacs1:s:b:v1")], nextCursor: null },
+    ]);
+    expect(await scanAnchorPage(fetch, null, { seen, logicalMetadata })).toMatchObject({
+      status: "indeterminate",
+      cursor: null,
+      code: "metadata-conflict",
+    });
+    expect(seen).toEqual(new Map([["stor-a", "dacs1:s:a:v1"]]));
+    expect(logicalMetadata.size).toBe(0);
+  });
+
+  test.each([
+    ["a null-prototype object", () => Object.create(null)],
+    ["an Error with a throwing message getter", () =>
+      Object.defineProperty(new Error("hidden"), "message", {
+        get() { throw new Error("message trap"); },
+      })],
+    ["a Proxy whose prototype lookup throws", () =>
+      new Proxy(new Error("hidden"), {
+        getPrototypeOf() { throw new Error("prototype trap"); },
+      })],
+  ])("a fetch rejecting with %s stays indeterminate at the same cursor", async (_name, make) => {
+    await expect(scanAnchorPage(async () => { throw make(); }, "start")).resolves.toEqual({
+      status: "indeterminate",
+      reason: "page fetch failed: unknown error",
+      cursor: "start",
+    });
+  });
+
+  test("snapshots logicalMetadata once before checking and retaining metadata", async () => {
+    const retained = new Map([["stor-a", "dacs1:s:a:v1"]]);
+    const empty = new Map<string, string>();
+    const seen = new Map<string, string>();
+    const metadataGetter = vi.fn(() => metadataGetter.mock.calls.length === 1 ? retained : empty);
+    const result = await scanAnchorPage(
+      async () => ({ entries: [entry("stor-a", "dacs1:s:b:v1")], nextCursor: null }),
+      "start", { seen, get logicalMetadata() { return metadataGetter(); } },
+    );
+    expect(result).toMatchObject({ status: "indeterminate", code: "metadata-conflict", cursor: "start" });
+    expect(metadataGetter).toHaveBeenCalledOnce();
+    expect(retained).toEqual(new Map([["stor-a", "dacs1:s:a:v1"]]));
+    expect(seen.size).toBe(0);
+    expect(empty.size).toBe(0);
+  });
+
+  test.each(["dacs1:s:a:v1", "dacs1:s:b:v1"])(
+    "a row cannot hide disagreeing dedup and separate metadata (%s)",
+    async (logical) => {
+      const seen = new Map([["stor-a", "dacs1:s:a:v1"]]);
+      const logicalMetadata = new Map([["stor-a", "dacs1:s:b:v1"]]);
+      const fetch = pagedFetcher([
+        { entries: [entry("stor-a", logical)], nextCursor: null },
+      ]);
+      expect(await scanAnchorPage(fetch, null, { seen, logicalMetadata })).toMatchObject({
+        status: "indeterminate",
+        code: "metadata-conflict",
+      });
+      expect(logicalMetadata.get("stor-a")).toBe("dacs1:s:b:v1");
+    },
+  );
 
   test("NO SKIPPED PAGES: a fetch that throws → indeterminate carrying the SAME cursor", async () => {
     const fetch = async (): Promise<RawScanPage> => {
