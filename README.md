@@ -908,13 +908,14 @@ The package ships a read-only preflight command:
 
 ```sh
 dacs doctor --offline
+dacs doctor --offline --rail pay-dem
 dacs doctor --json --rpc https://node2.demos.sh
 dacs doctor --json --rpc-file ./rpc.url
 dacs doctor --json --wallet-secret-file ./wallet.secret --rpc https://node2.demos.sh
 ```
 
 The first slice checks runtime/package state, optional RPC reachability, secret
-redaction, and rail availability without funding, transferring, anchoring, or
+redaction, and rail classification without funding, transferring, anchoring, or
 broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
@@ -929,6 +930,24 @@ credentials, path tokens, query strings, or fragments, use `--rpc-file <path>`,
 `--wallet-secret-file <path>`, `--wallet-secret-file -`, or
 `--wallet-secret-env <name>` so secret material
 does not appear in shell history or process listings.
+
+For file inputs, doctor reports symlink status and the owner and mode of the
+file it inspects, without printing paths or contents. POSIX files
+must belong to the current user and have exactly mode `0600`, matching the
+Node host's live secret-file policy. Like the host, doctor applies this policy
+to the path before opening and again to the opened descriptor. Other modes,
+owner mismatches, and symlinks fail admission (exit code `1`); the secret is not
+read and no adapter is created. Symlinks are rejected before opening. Files must
+be non-empty and are limited to 65,536 bytes, with path and descriptor size
+checks and bounded reads that also reject growth beyond the limit. Empty,
+oversized, or unreadable files produce path-free usage errors (exit code `2`). Windows
+mode and owner checks report unavailable (`skip`); Windows ACLs are not checked.
+Stdin and environment inputs do not receive file checks.
+
+The shipped `pay-dem` handler is recognized as a known native DEM rail. Its
+availability and funding are not checked. Balance, nonce, storage, and cost
+checks remain `blocked`, including in offline mode, which makes no connections,
+writes, or payments.
 
 Exit codes are stable:
 

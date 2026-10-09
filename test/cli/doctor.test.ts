@@ -1,9 +1,91 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
+import { runDoctorForCli } from "../../src/cli/doctor.js";
+import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
+
 describe("dacs doctor", () => {
+  it("recognizes native DEM without claiming availability or funding or making offline effects", async () => {
+    const adapter = {
+      connect: vi.fn(), getAddress: vi.fn(), write: vi.fn(), transfer: vi.fn(),
+      broadcast: vi.fn(), settle: vi.fn(),
+    };
+    const factory = vi.fn(() => adapter);
+    const fetch = vi.fn(() => { throw new Error("unexpected network call"); });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const report = await runDoctor({
+        offline: true, rail: "pay-dem", rpc: "https://node.example",
+        walletSecret: randomBytes(32).toString("hex"), adapterFactory: factory,
+      });
+      expect(report.exitCode).toBe(5);
+      expect(report.checks.find((c) => c.id === "rail.availability")).toMatchObject({
+        status: "warn", data: { rail: "pay-dem", known: true },
+        summary: "Native DEM rail is known; availability and funding were not checked",
+      });
+      for (const id of ["wallet.balance", "wallet.nonce", "storage.binding-resolution", "cost.estimate"]) {
+        expect(report.checks.find((c) => c.id === id)?.status).toBe("blocked");
+      }
+      expect(factory).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      for (const method of Object.values(adapter)) expect(method).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  const inspectedFile: DoctorSecretFile = {
+    source: "wallet", symlink: false, mode: 0o600, ownerUid: 1000,
+    currentUid: 1000, platform: "linux",
+  };
+
+  it("ignores fabricated credential metadata supplied to public runDoctor", async () => {
+    const untrusted = { offline: true, secretFiles: [inspectedFile] };
+    const report = await runDoctor(untrusted);
+    expect(report.checks.filter((c) => c.id.startsWith("config.wallet-file"))).toEqual([]);
+  });
+
+  it.each([
+    { ...inspectedFile, symlink: true },
+    { ...inspectedFile, mode: 0o644 },
+    { ...inspectedFile, ownerUid: 1001 },
+  ])("fails credential admission and prevents adapter use: %j", async (file) => {
+    const adapter = { connect: vi.fn(), getAddress: vi.fn() };
+    const factory = vi.fn(() => adapter);
+    const report = await runDoctorForCli({ rpc: "https://node.example", walletSecret: randomBytes(32).toString("hex"),
+      adapterFactory: factory }, [file]);
+    expect(report.exitCode).toBe(1);
+    expect(factory).not.toHaveBeenCalled();
+    expect(adapter.connect).not.toHaveBeenCalled();
+    expect(adapter.getAddress).not.toHaveBeenCalled();
+  });
+
+  it("reports mismatched credential owners without paths", async () => {
+    const report = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, ownerUid: 1001 }]);
+    expect(report.checks.find((c) => c.id === "config.wallet-file.owner")).toMatchObject({
+      status: "fail", data: { ownerUid: 1001, currentUid: 1000 },
+    });
+    expect(formatDoctorText(report)).toContain("Credential file owner differs from the current user");
+    expect(report.exitCode).toBe(1);
+  });
+
+  it("does not infer Windows ACL safety from POSIX metadata", async () => {
+    const report = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, platform: "win32" }]);
+    expect(report.checks.find((c) => c.id === "config.wallet-file.mode")).toMatchObject({ status: "skip" });
+    expect(report.checks.find((c) => c.id === "config.wallet-file.mode")?.summary).toContain("unavailable");
+    expect(report.checks.find((c) => c.id === "config.wallet-file.owner")?.status).toBe("skip");
+  });
+
+  it("reports owner assessment unavailable without a current UID", async () => {
+    const report = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, currentUid: undefined }]);
+    expect(report.checks.find((c) => c.id === "config.wallet-file.owner")).toMatchObject({
+      status: "skip", summary: "Credential file owner check is unavailable",
+    });
+  });
+
   it("runs offline without touching the network", async () => {
     const report = await runDoctor({
       offline: true,

@@ -1,6 +1,7 @@
 import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
 import { readFileSync } from "node:fs";
+import type { DoctorSecretFile } from "./secretFile.js";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
 export type DoctorMode = "offline" | "read-only";
@@ -175,6 +176,14 @@ async function defaultAdapterFactory(config: {
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
+  return runDoctorForCli(options, []);
+}
+
+/** Internal CLI entry point; intentionally absent from public barrels. */
+export async function runDoctorForCli(
+  options: DoctorOptions,
+  secretFiles: readonly DoctorSecretFile[],
+): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   const generatedAt = (options.now?.() ?? new Date()).toISOString();
   const nodeVersion = options.nodeVersion ?? process.version;
@@ -221,8 +230,39 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
       : check("config.secrets", "skip", "No wallet secret provided"),
   );
 
+  for (const file of secretFiles) {
+    const prefix = `config.${file.source}-file`;
+    checks.push(check(`${prefix}.symlink`, file.symlink ? "fail" : "pass",
+      file.symlink ? "Credential file is a symbolic link" : "Credential file is not a symbolic link", {
+        remediation: file.symlink ? "Use a regular credential file directly." : undefined,
+      }));
+    const posix = file.platform !== "win32" && !file.symlink;
+    // Match the Node host's live secret-file policy: exactly 0600 and current UID.
+    const mode = (file.mode ?? 0) & 0o777;
+    checks.push(posix && file.mode !== undefined
+      ? check(`${prefix}.mode`, mode === 0o600 ? "pass" : "fail",
+          mode === 0o600 ? "Credential file mode is 0600" : "Credential file mode is unsafe", {
+            data: { mode: mode.toString(8).padStart(4, "0") },
+            remediation: mode === 0o600 ? undefined : "Set the credential file mode to 0600.",
+          })
+      : check(`${prefix}.mode`, "skip", file.platform === "win32"
+          ? "Credential file mode check is unavailable on Windows; ACLs were not checked"
+          : "Credential file mode check is unavailable because the file was not opened"));
+    const ownerAvailable = posix && file.currentUid !== undefined && file.ownerUid !== undefined;
+    const ownerMatches = file.ownerUid === file.currentUid;
+    checks.push(ownerAvailable
+      ? check(`${prefix}.owner`, ownerMatches ? "pass" : "fail",
+          ownerMatches ? "Credential file belongs to the current user" : "Credential file owner differs from the current user", {
+            data: { ownerUid: file.ownerUid, currentUid: file.currentUid },
+            remediation: ownerMatches ? undefined : "Use a credential file owned by the current user.",
+          })
+      : check(`${prefix}.owner`, "skip", "Credential file owner check is unavailable"));
+  }
+
   let adapter: DoctorAdapter | null = null;
-  if (options.offline) {
+  if (checks.some((c) => c.id.startsWith("config.") && c.status === "fail")) {
+    checks.push(check(RPC_REACHABLE, "skip", "Credential file admission failed; RPC connection skipped"));
+  } else if (options.offline) {
     checks.push(check(RPC_REACHABLE, "skip", "Offline mode skips RPC reachability"));
   } else if (!options.rpc) {
     checks.push(check(RPC_REACHABLE, "skip", "No RPC URL provided"));
@@ -312,6 +352,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   if (!options.rail) {
     checks.push(check("rail.availability", "skip", "No rail selected"));
+  } else if (options.rail === "pay-dem") {
+    checks.push(
+      check("rail.availability", "warn", "Native DEM rail is known; availability and funding were not checked", {
+        data: { rail: options.rail, known: true },
+      }),
+    );
   } else if (options.rail === "pay-d402") {
     checks.push(
       check("rail.availability", "warn", "pay-d402 is experimental, not live", {
@@ -328,7 +374,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     checks.push(
       check("rail.availability", "fail", "Unknown rail selected", {
         data: { rail: options.rail },
-        remediation: "Use x402, evm-erc20, or pay-d402.",
+        remediation: "Use pay-dem, x402, evm-erc20, or pay-d402.",
       }),
     );
   }
