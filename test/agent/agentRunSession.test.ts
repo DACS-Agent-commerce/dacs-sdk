@@ -1276,7 +1276,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       directEvidenceVerdict.reasons.join("; "),
     ).toBe("pass");
     store.set(
-      evidenceRef.anchor.locator,
+      `stor:${logicalToStorageProgramName(evidenceRef.anchor.locator)}`,
       evidence as unknown as Record<string, unknown>,
     );
 
@@ -1370,6 +1370,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
+      resolveAttestationAnchorWriter: () => normativeBuyerDid,
     });
     const unconfiguredVerdict = await unconfiguredAgent.verifyBundle(
       "stor:bundle",
@@ -1395,6 +1396,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
+      resolveAttestationAnchorWriter: () => normativeBuyerDid,
       verifyCompositeRecord: async (record, bundle) => {
         verifierCalls += 1;
         expect(bundle.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");

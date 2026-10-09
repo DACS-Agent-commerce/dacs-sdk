@@ -165,6 +165,23 @@ expected deliverable locator (for delivery), plus key resolution and signature
 verification. Missing trust inputs fail as configuration errors rather than
 being silently skipped.
 
+For PC-2 logical settlement-evidence locators, configure
+`AgentConfig.resolveAttestationAnchorWriter({ ref, jobId, parties })`. This
+optional callback is captured when the Agent is constructed and must return a
+single anchor-writer ClaimRef (synchronously or asynchronously), or `null` when
+authority is missing or ambiguous. Obtain that claim from independently
+authenticated retained SR-2 receipt/session state. The attestation's `signer`
+identifies its issuer or validator set; neither it, the bundle parties, nor
+`anchoredByRole` establishes the storage writer. The SDK validates and
+round-trips the complete PC-2 tuple and checks its job ID before calling the
+resolver, resolves the writer's exact Demos key (using
+`resolveIdentitySigningPublicKey` for non-intrinsic claims), then looks up the
+encoded storage name with that owner and reads only a present native address.
+Missing, wrong, or indeterminate authority fails closed without name-only
+lookup or a direct logical-address fallback. Existing hash, signature, and
+job/phase checks still apply. Native-reference locators retain direct reads
+without invoking this callback. No artifact wire format changes.
+
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
 process termination; multi-host writers need a shared journal backend with the
