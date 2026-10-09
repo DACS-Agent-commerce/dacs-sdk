@@ -51,6 +51,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   agreementPublication: vi.fn(),
+  bundleRequest: vi.fn(),
   nativeAgreementPublication: vi.fn(),
   nativeSessionFacts: vi.fn(),
   observeX402Transfer: vi.fn(),
@@ -67,6 +68,11 @@ vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/fixedPriceX402Profile.js")>()),
   loadDacsFixedPriceX402BuyerAgreementPublicationV1:
     mocks.agreementPublication,
+}));
+
+vi.mock("../src/bundleTransportRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/bundleTransportRuntime.js")>()),
+  loadDacsBuyerBundleSignatureRequestForOrderV1: mocks.bundleRequest,
 }));
 
 vi.mock("../src/fixedPricePayDemProfile.js", async (importOriginal) => ({
@@ -644,6 +650,152 @@ async function payDemFixture() {
     preliminaryRequest, rail, receipts };
 }
 
+async function x402AuditHarness() {
+  const f = await fixture();
+  const root = mkdtempSync(join(tmpdir(), "dacs-buyer-audit-"));
+  roots.push(root);
+  const database = await openDacsNodeSqliteDatabase({
+    databasePath: join(root, "buyer.sqlite"),
+    mode: "live-demos",
+    profile: DACS_NODE_LIVE_PROFILE,
+    role: "buyer",
+    authority: BUYER,
+  });
+  databases.push(database);
+  const pair = createDacsFixedPriceX402OrderPairV1({
+    jobId: JOB_ID,
+    buyer: BUYER,
+    seller: SELLER,
+    protocol: protocol(),
+  });
+  await database.createLiveCoordinatorStore("buyer").create({
+    role: "buyer",
+    order: pair.buyer,
+    bindingHash: fixedPriceX402OrderBindingHash(pair.buyer),
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
+  });
+  expect(putDacsLiveOrderInputV1({
+    database,
+    order: pair.buyer,
+    application: f.application,
+  }).status).toBe("created");
+  mocks.provenance.mockReturnValue({
+    registryVersion: 7,
+    indexContentHash: "a".repeat(64),
+    definitionContentHash: "b".repeat(64),
+  });
+  mocks.sessionFacts.mockReturnValue({
+    factsVersion: "1",
+    role: "buyer",
+    jobId: JOB_ID,
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
+    buyerIdentity: f.buyerIdentity,
+    sellerIdentity: f.sellerIdentity,
+    buyerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+    buyerVetRecord: f.buyerVet,
+    buyerVetRef: f.buyerVetRef,
+    buyerVetReceipt: f.receipts.get(f.buyerVetNative),
+    sellerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
+    sellerVetRecord: f.sellerVet,
+    sellerVetRef: f.sellerVetRef,
+    sellerVetReceipt: f.receipts.get(f.sellerVetNative),
+  });
+  mocks.agreementPublication.mockReturnValue({
+    publicationVersion: "1",
+    jobId: JOB_ID,
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
+    writer: BUYER,
+    logicalAddress: f.agreementLogicalAddress,
+    agreementHash: f.agreementHash,
+    artifact: f.agreement,
+  });
+  const observation = {
+    status: "finalized" as const,
+    chainId: 84_532,
+    txHash: `0x${f.event.settlementTxHash}`,
+    logIndex: 0,
+    payer: BUYER_EVM,
+    payee: SELLER_EVM,
+    amountBaseUnits: "1000000",
+    asset: { contract: ASSET, symbol: "USDC", decimals: 6 },
+    confirmations: 3,
+    includedAt: NOW - 5_000,
+    finalityObservedAt: NOW - 3_000,
+    sessionBinding: { kind: "eip3009" as const,
+      nonce: x402Eip3009Nonce(JOB_ID, 2) },
+  };
+  mocks.observeX402Transfer.mockResolvedValue(observation);
+  const adapter = {
+    resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
+      const address = f.names.get(logicalAddress);
+      return address === undefined
+        ? { status: "absent" as const }
+        : { status: "present" as const, address };
+    }),
+    readAnchor: vi.fn(async (address: string) =>
+      structuredClone(f.artifacts.get(address) ?? null)),
+    resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
+      structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
+    verifyDemosAnchorReceipt: vi.fn(async () => true),
+    anchorWriteOnce: vi.fn(),
+    sign: vi.fn(),
+  };
+  const context = {
+    role: "buyer",
+    authority: BUYER,
+    peerAuthority: SELLER,
+    database,
+    demos: { publicKey: BUYER_KEY, adapter,
+      signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 4))) },
+    evm: { role: "buyer", address: BUYER_EVM },
+  } as unknown as DacsLiveRoleOperationContextV1;
+  const audit = createDacsFixedPriceX402BuyerAuditV1({
+    context,
+    rail: f.rail as never,
+    evmRpcUrl: "https://rpc.example",
+    authorizationSearchFromBlock: 1,
+    recipeRegistryVersion: 1,
+  });
+  const authenticated = {
+    envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
+  } as never;
+  return { audit, authenticated, f, observation, pair };
+}
+
+function requestWithFinality(
+  f: Awaited<ReturnType<typeof fixture>>,
+  finalityBlocks: number | undefined,
+) {
+  const { signature: _signature, ...unsigned } = structuredClone(f.paymentEvidence);
+  const evidence = signComponent({
+    ...unsigned,
+    settlementFinality: {
+      model: "block-depth" as const,
+      ...(finalityBlocks === undefined ? {} : { finalityBlocks }),
+      finalityObservedAt: NOW - 3_000,
+    },
+  }, ARTIFACT_SEPARATORS.SettlementEvidence, SELLER);
+  const logicalAddress = f.paymentRef.anchor.locator;
+  const nativeAddress = f.names.get(logicalAddress);
+  if (nativeAddress === undefined) throw new Error("payment fixture anchor is missing");
+  f.artifacts.set(nativeAddress, evidence);
+  f.receipts.set(nativeAddress, receipt(
+    logicalAddress,
+    nativeAddress,
+    evidence,
+    BUYER,
+    NOW - 3_000,
+  ));
+  const paymentRef = ref(logicalAddress, evidence, SELLER);
+  const signedScope = structuredClone(f.preliminaryRequest.signedScope);
+  signedScope.settlementEvidence[0] = paymentRef;
+  signedScope.phaseSummary[2] = {
+    ...signedScope.phaseSummary[2]!,
+    attestationRef: paymentRef,
+  };
+  return { ...f.preliminaryRequest, signedScope };
+}
+
 describe("fixed-price x402 buyer audit reconstruction", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => {
@@ -652,7 +804,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
   });
 
   it("independently reconstructs and verifies the exact seller review request", async () => {
-    const f = await fixture();
+    const { audit, authenticated, f, observation, pair } = await x402AuditHarness();
     for (const evidence of [f.paymentEvidence, f.deliveryEvidence]) {
       expect(isSettlementEvidence(evidence)).toBe(true);
       expect(ed25519Verify(
@@ -661,113 +813,6 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         publicKeyFromRaw(SELLER_KEY),
       )).toBe(true);
     }
-    const root = mkdtempSync(join(tmpdir(), "dacs-buyer-audit-"));
-    roots.push(root);
-    const database = await openDacsNodeSqliteDatabase({
-      databasePath: join(root, "buyer.sqlite"),
-      mode: "live-demos",
-      profile: DACS_NODE_LIVE_PROFILE,
-      role: "buyer",
-      authority: BUYER,
-    });
-    databases.push(database);
-    const pair = createDacsFixedPriceX402OrderPairV1({
-      jobId: JOB_ID,
-      buyer: BUYER,
-      seller: SELLER,
-      protocol: protocol(),
-    });
-    await database.createLiveCoordinatorStore("buyer").create({
-      role: "buyer",
-      order: pair.buyer,
-      bindingHash: fixedPriceX402OrderBindingHash(pair.buyer),
-      localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
-    });
-    expect(putDacsLiveOrderInputV1({
-      database,
-      order: pair.buyer,
-      application: f.application,
-    }).status).toBe("created");
-    mocks.provenance.mockReturnValue({
-      registryVersion: 7,
-      indexContentHash: "a".repeat(64),
-      definitionContentHash: "b".repeat(64),
-    });
-    mocks.sessionFacts.mockReturnValue({
-      factsVersion: "1",
-      role: "buyer",
-      jobId: JOB_ID,
-      localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
-      buyerIdentity: f.buyerIdentity,
-      sellerIdentity: f.sellerIdentity,
-      buyerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-      buyerVetRecord: f.buyerVet,
-      buyerVetRef: f.buyerVetRef,
-      buyerVetReceipt: f.receipts.get(f.buyerVetNative),
-      sellerRequirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-      sellerVetRecord: f.sellerVet,
-      sellerVetRef: f.sellerVetRef,
-      sellerVetReceipt: f.receipts.get(f.sellerVetNative),
-    });
-    mocks.agreementPublication.mockReturnValue({
-      publicationVersion: "1",
-      jobId: JOB_ID,
-      localBindingHash: fixedPriceX402OrderLocalBindingHash(pair.buyer),
-      writer: BUYER,
-      logicalAddress: f.agreementLogicalAddress,
-      agreementHash: f.agreementHash,
-      artifact: f.agreement,
-    });
-    const observation = {
-      status: "finalized" as const,
-      chainId: 84_532,
-      txHash: `0x${f.event.settlementTxHash}`,
-      logIndex: 0,
-      payer: BUYER_EVM,
-      payee: SELLER_EVM,
-      amountBaseUnits: "1000000",
-      asset: { contract: ASSET, symbol: "USDC", decimals: 6 },
-      confirmations: 3,
-      includedAt: NOW - 5_000,
-      finalityObservedAt: NOW - 3_000,
-      sessionBinding: { kind: "eip3009" as const,
-        nonce: x402Eip3009Nonce(JOB_ID, 2) },
-    };
-    mocks.observeX402Transfer.mockResolvedValue(observation);
-    const adapter = {
-      resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
-        const address = f.names.get(logicalAddress);
-        return address === undefined
-          ? { status: "absent" as const }
-          : { status: "present" as const, address };
-      }),
-      readAnchor: vi.fn(async (address: string) =>
-        structuredClone(f.artifacts.get(address) ?? null)),
-      resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
-        structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
-      verifyDemosAnchorReceipt: vi.fn(async () => true),
-      anchorWriteOnce: vi.fn(),
-      sign: vi.fn(),
-    };
-    const context = {
-      role: "buyer",
-      authority: BUYER,
-      peerAuthority: SELLER,
-      database,
-      demos: { publicKey: BUYER_KEY, adapter,
-        signComponent: vi.fn(async () => Uint8Array.from(Buffer.alloc(64, 4))) },
-      evm: { role: "buyer", address: BUYER_EVM },
-    } as unknown as DacsLiveRoleOperationContextV1;
-    const audit = createDacsFixedPriceX402BuyerAuditV1({
-      context,
-      rail: f.rail as never,
-      evmRpcUrl: "https://rpc.example",
-      authorizationSearchFromBlock: 1,
-      recipeRegistryVersion: 1,
-    });
-    const authenticated = {
-      envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
-    } as never;
     const preliminary = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: f.preliminaryRequest,
@@ -778,6 +823,15 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         ...preliminary.input.seller,
         signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
       },
+    });
+    mocks.bundleRequest.mockResolvedValue(exactRequest);
+    const material = await audit.audit.resolveMaterial({
+      operation: { order: pair.buyer },
+      retained: { application: f.application },
+    } as never);
+    expect(material.input.settlementContext.rail.finality).toEqual({
+      model: "block-depth",
+      finalityBlocks: 2,
     });
     const exact = await audit.bundleTransport.resolveVerification({
       authenticated,
@@ -801,6 +855,45 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       authenticated,
       request: exactRequest,
     })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+  });
+
+  it("rejects evidence whose finality echo differs from authenticated policy", async () => {
+    const { audit, authenticated, f } = await x402AuditHarness();
+    const observationCalls = mocks.observeX402Transfer.mock.calls.length;
+
+    for (const finalityBlocks of [undefined, 1, 3]) {
+      await expect(audit.bundleTransport.resolveVerification({
+        authenticated,
+        request: requestWithFinality(f, finalityBlocks),
+      })).rejects.toMatchObject({ reasonCode: "buyer-audit-evidence-invalid" });
+    }
+    expect(mocks.observeX402Transfer).toHaveBeenCalledTimes(observationCalls);
+  });
+
+  it.each([
+    {},
+    { finalityBlocks: 0 },
+    { finalityBlocks: 1.5 },
+  ])("rejects an unavailable or invalid authenticated x402 finality depth", async (
+    parameters,
+  ) => {
+    const f = await fixture();
+    mocks.provenance.mockReturnValue({
+      registryVersion: 7,
+      indexContentHash: "a".repeat(64),
+      definitionContentHash: "b".repeat(64),
+    });
+
+    expect(() => createDacsFixedPriceX402BuyerAuditV1({
+      context: {
+        role: "buyer",
+        evm: { role: "buyer", address: BUYER_EVM },
+      } as never,
+      rail: { ...f.rail, parameters } as never,
+      evmRpcUrl: "https://rpc.example",
+      authorizationSearchFromBlock: 1,
+      recipeRegistryVersion: 1,
+    })).toThrow(TypeError);
   });
 
   it("independently re-observes native DEM before accepting the audit request", async () => {
