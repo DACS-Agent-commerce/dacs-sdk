@@ -5,6 +5,8 @@ import type {
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
   ChainTxRef,
+  ClaimRef,
+  BundleParty,
   CompositeVerificationRecord,
   IdentityBundle,
   ListingDraft,
@@ -25,6 +27,8 @@ import {
 import {
   canonicalize,
   contentHash,
+  decodeAddressSegment,
+  paymentEvidenceAddress,
   listingAddress,
   logicalToStorageProgramName,
 } from "../canonical/index.js";
@@ -528,6 +532,19 @@ export interface AgentConfig {
    * evidence. Omission fails closed instead of accepting hash-only evidence.
    */
   resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
+  /**
+   * Independently authenticate the SR-2 writer of a PC-2 logical attestation
+   * anchor from retained receipt/session state. Return its canonical ClaimRef,
+   * or null when authority is missing or ambiguous. The ref signer, bundle
+   * parties and anchoredByRole are context, never proof of the storage writer.
+   * Captured at construction; required only for PC-2 logical storage locators.
+   * Native-reference reads and artifact verification remain unchanged.
+   */
+  resolveAttestationAnchorWriter?: (input: Readonly<{
+    ref: Readonly<AttestationRef>;
+    jobId: string;
+    parties: readonly BundleParty[];
+  }>) => Promise<ClaimRef | null> | ClaimRef | null;
 
   /**
    * Optional Demos CCI trust capabilities. Authenticated identity resolution
@@ -926,6 +943,7 @@ function captureAgentRuntimeConfig(
     "listingValidationDeps",
     "verifyCompositeRecord",
     "resolveSettlementEvidenceContext",
+    "resolveAttestationAnchorWriter",
     "bindings",
   ] as const) {
     const value = capturedCreateConfigValue(config, key);
@@ -1302,6 +1320,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.verifyCompositeRecord",
     true,
   );
+  const resolveAttestationAnchorWriter = stableAgentMethod<
+    AgentConfig["resolveAttestationAnchorWriter"]
+  >(
+    config,
+    "resolveAttestationAnchorWriter",
+    "AgentConfig.resolveAttestationAnchorWriter",
+    true,
+  );
   const resolveSettlementEvidenceContext = stableAgentMethod<
     AgentConfig["resolveSettlementEvidenceContext"]
   >(
@@ -1486,10 +1512,43 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
       // This adapter owns storage-program reads; other registered anchor kinds
       // need a transport-specific resolver supplied to verifyBundleCore.
-      resolveAttestationRef: async (artifactRef) =>
-        artifactRef.anchor.kind === "storage-program"
-          ? publicReads.readAnchor(artifactRef.anchor.locator)
-          : null,
+      resolveAttestationRef: async (artifactRef, jobId, parties) => {
+        if (artifactRef.anchor.kind !== "storage-program") return null;
+        const locator = artifactRef.anchor.locator;
+        if (!locator.startsWith("dacs4:payment:")) {
+          return publicReads.readAnchor(locator);
+        }
+        // Validate the complete PC-2 tuple before consulting host authority or
+        // the index. Roundtrip rejects aliases, extra segments and unsafe ints.
+        const tuple = locator.split(":");
+        if ((tuple.length !== 5 && tuple.length !== 6) || tuple[2] !== jobId ||
+            (tuple.length === 6 && tuple[5] !== "resolved")) return null;
+        try {
+          const canonical = paymentEvidenceAddress(
+            tuple[2]!, decodeAddressSegment(tuple[3]!), Number(tuple[4]),
+            tuple.length === 6,
+          );
+          if (canonical !== locator || !resolveAttestationAnchorWriter) return null;
+          const writer = await resolveAttestationAnchorWriter({
+            ref: structuredClone(artifactRef), jobId, parties: structuredClone(parties),
+          });
+          if (typeof writer !== "string") return null;
+          const key = await resolveCanonicalSigningKeyForRead(writer);
+          if (!key) return null;
+          const resolved = await publicReads.resolveAnchorByName(
+            logicalToStorageProgramName(canonical), Buffer.from(key).toString("hex"),
+          );
+          // Demos native SR-2 address profile (also enforced by demosHistory).
+          // Never fall back to a logical/name-only read on uncertain authority.
+          return resolved.status === "present" &&
+              typeof resolved.address === "string" &&
+              /^stor-[0-9a-f]{40}$/.test(resolved.address)
+            ? await publicReads.readAnchor(resolved.address)
+            : null;
+        } catch {
+          return null;
+        }
+      },
       resolveListingRef: async (listingRef, parties) => {
         const seller = parties.find((party) => party.role === "seller");
         const key = seller

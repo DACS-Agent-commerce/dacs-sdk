@@ -1,5 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
+import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
   verifyBundleCore,
@@ -7,7 +8,7 @@ import {
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { contentHash } from "../../src/canonical/index.js";
+import { contentHash, logicalToStorageProgramName, paymentEvidenceAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -2010,5 +2011,201 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     for (const [, , parties] of seen) {
       expect(parties).toEqual(fx.bundle.parties);
     }
+  });
+});
+
+
+describe("Agent PC-2 anchor writer resolution (#316)", () => {
+  const nativeEvidence = "stor-" + "e".repeat(40);
+
+  async function fixture(locator = paymentEvidenceAddress(JOB_ID, "x402:default", 0)) {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // The buyer stores the evidence, while the seller is its authenticated
+    // phase orchestrator/signer. Neither signature nor anchoredByRole is writer authority.
+    const { signature: _signature, ...scope } = fx.evidence;
+    fx.evidence = {
+      ...scope,
+      signature: await componentSignature(scope, ARTIFACT_SEPARATORS.SettlementEvidence,
+        sellerDid, signSeller),
+    };
+    const ref = {
+      anchor: { kind: "storage-program" as const, locator },
+      contentHash: contentHash(fx.evidence),
+      signer: sellerDid,
+    };
+    fx.bundle.settlementEvidence = [ref];
+    fx.bundle.phaseSummary = [{ index: 0, kind: "pay-x402", outcome: "ok",
+      txRefs: fx.evidence.paymentTxRefs, attestationRef: ref }];
+    await resignFixture(fx, [{ party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller }]);
+    return { fx, ref, locator };
+  }
+
+  async function harness(options: {
+    locator?: string;
+    writer?: AgentConfig["resolveAttestationAnchorWriter"];
+    config?: Partial<AgentConfig>;
+    resolution?: { status: "present"; address: string } |
+      { status: "absent" } | { status: "indeterminate"; reason: string };
+    tamper?: (fx: Fixture) => void;
+  } = {}) {
+    const { fx, ref, locator } = await fixture(options.locator);
+    options.tamper?.(fx);
+    const buyerOwner = Buffer.from(resolveFromDid(buyerDid)!).toString("hex");
+    const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
+    const readAnchor = vi.fn(async (address: string) => {
+      if (address === "bundle") return fx.bundle;
+      if (address === "listing") return fx.listing;
+      if (address === "agreement-j1") return fx.agreement;
+      if (address === nativeEvidence) return fx.evidence;
+      // Native references retain the existing direct-read path.
+      if (address === "settlement-j1") return fx.evidence;
+      return null;
+    });
+    const resolveAnchorByName = vi.fn(async (name: string, owner: string) => {
+      if (name.startsWith("dacs1%3A") && owner === sellerOwner)
+        return { status: "present" as const, address: "listing" };
+      if (name === logicalToStorageProgramName(locator) && owner === buyerOwner)
+        return options.resolution ?? { status: "present" as const, address: nativeEvidence };
+      return { status: "absent" as const };
+    });
+    const config: AgentConfig = {
+      demosRpc: "mem",
+      ...(options.writer === undefined ? {} : { resolveAttestationAnchorWriter: options.writer }),
+      resolveSettlementEvidenceContext: () => ({
+        orchestrator: sellerDid,
+        rail: { railId: "x402:default", railType: "x402", asset: "USDC",
+          handler: "pay-x402", network: "eip155:84532" },
+      }),
+      ...options.config,
+    };
+    const agent = buildAgent({ readAnchor, resolveAnchorByName } as never, config);
+    return { agent, config, fx, ref, locator, buyerOwner, sellerOwner, readAnchor,
+      resolveAnchorByName, evidenceCalls: () => resolveAnchorByName.mock.calls.filter(
+        ([name]) => name.startsWith("dacs4")) };
+  }
+
+  test("encoded logical lookup uses the buyer writer, distinct from seller signer", async () => {
+    const writer = vi.fn(() => buyerDid);
+    const h = await harness({ writer });
+    expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(writer).toHaveBeenCalledExactlyOnceWith({ ref: h.ref, jobId: JOB_ID,
+      parties: h.fx.bundle.parties });
+    expect(h.evidenceCalls()).toEqual([[logicalToStorageProgramName(h.locator), h.buyerOwner]]);
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+  });
+
+  test.each([
+    ["absent callback", undefined], ["missing writer", (): null => null],
+    ["wrong writer", () => sellerDid], ["indeterminate writer", () => { throw new Error("unavailable"); }],
+    ["malformed claim", (): string => "buyer"], ["ambiguous writer", () => [buyerDid, sellerDid] as never],
+  ] as const)("%s remains unresolved without guessing", async (_label, writer) => {
+    const h = await harness({ writer });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result.refs.find((r) => r.kind === "dacs-4-evidence")).toMatchObject({ verdict: "missing" });
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    if (_label !== "wrong writer") expect(h.evidenceCalls()).toHaveLength(0);
+    else expect(h.evidenceCalls()).toEqual([[logicalToStorageProgramName(h.locator), h.sellerOwner]]);
+  });
+
+  test.each([
+    paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0),
+    `dacs4:payment:${JOB_ID}:x402%3adefault:0`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:00`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:9007199254740992`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:0:extra`,
+    `dacs4:payment:${JOB_ID}:x402%3Adefault:0:resolved:extra`,
+  ])("rejects job mismatch or noncanonical tuple before authority/lookup: %s", async (locator) => {
+    const writer = vi.fn(() => buyerDid);
+    const h = await harness({ locator, writer });
+    expect((await h.agent.verifyBundle("bundle")).ok).toBe(false);
+    expect(writer).not.toHaveBeenCalled();
+    expect(h.evidenceCalls()).toHaveLength(0);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(locator);
+  });
+
+  test.each([
+    { status: "absent" as const },
+    { status: "indeterminate" as const, reason: "ambiguous owner index" },
+    { status: "present" as const, address: "" },
+    { status: "present" as const, address: paymentEvidenceAddress(JOB_ID, "x402:default", 0) },
+    ...["dacs1:seller:listing:v1", "dacs2:job:claim:v1", "dacs5:rating:job:rater",
+      "stor-" + "e".repeat(64), "stor-" + "e".repeat(39),
+      "stor-" + "E".repeat(40), "stor-" + "g".repeat(40),
+      " stor-" + "e".repeat(40)].map((address) => ({ status: "present" as const, address })),
+  ])("reads only a present native address: %j", async (resolution) => {
+    const h = await harness({ writer: () => buyerDid, resolution });
+    expect((await h.agent.verifyBundle("bundle")).ok).toBe(false);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    if (resolution.status === "present") {
+      expect(h.readAnchor).not.toHaveBeenCalledWith(resolution.address);
+    }
+    expect(h.evidenceCalls()).toHaveLength(1);
+  });
+
+  test("a hash mismatch still fails after successful owner-bound lookup", async () => {
+    const h = await harness({ writer: () => buyerDid, tamper: (fx) => {
+      fx.evidence.observedAt = 1780000000001;
+    } });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result.refs.find((r) => r.kind === "dacs-4-evidence")).toMatchObject({ verdict: "hash-mismatch" });
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+  });
+
+  test("native refs and callback-absent behavior retain direct reads", async () => {
+    const absent = await harness({ locator: "settlement-j1" });
+    const writer = vi.fn(() => { throw new Error("native reads must not call writer"); });
+    const configured = await harness({ locator: "settlement-j1", writer });
+    expect(await configured.agent.verifyBundle("bundle")).toEqual(await absent.agent.verifyBundle("bundle"));
+    expect(writer).not.toHaveBeenCalled();
+    for (const h of [absent, configured]) {
+      expect(h.readAnchor).toHaveBeenCalledWith("settlement-j1");
+      expect(h.readAnchor).toHaveBeenCalledWith("agreement-j1");
+      expect(h.evidenceCalls()).toHaveLength(0);
+    }
+  });
+
+  test("callback absent preserves successful verification of an all-native bundle", async () => {
+    const writer = vi.fn(() => buyerDid);
+    for (const configured of [false, true]) {
+      const h = await harness({ writer: configured ? writer : undefined });
+      h.fx.bundle.outcome = "aborted-by-self";
+      h.fx.bundle.settlementEvidence = [];
+      h.fx.bundle.phaseSummary = [];
+      await resignFixture(h.fx, [{ party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller }]);
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      expect(h.readAnchor).toHaveBeenCalledWith("agreement-j1");
+      expect(h.evidenceCalls()).toHaveLength(0);
+    }
+    expect(writer).not.toHaveBeenCalled();
+  });
+
+  test("writer callback is captured once and cannot mutate verification input", async () => {
+    const writer = vi.fn((input) => {
+      input.ref.contentHash = "0".repeat(64);
+      input.parties.length = 0;
+      return buyerDid;
+    });
+    const h = await harness({ writer });
+    h.config.resolveAttestationAnchorWriter = () => sellerDid;
+    expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(h.fx.bundle.parties).toHaveLength(2);
+  });
+
+  test("uses the existing canonical key resolver for a foreign writer claim", async () => {
+    const writerClaim = "did:ethr:0x" + "1".repeat(40);
+    const resolveKey = vi.fn(() => resolveFromDid(buyerDid));
+    const h = await harness({ writer: () => writerClaim,
+      config: { resolveIdentitySigningPublicKey: resolveKey } });
+    expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(resolveKey).toHaveBeenCalledWith(writerClaim);
+    expect(h.evidenceCalls()[0]?.[1]).toBe(h.buyerOwner);
   });
 });
