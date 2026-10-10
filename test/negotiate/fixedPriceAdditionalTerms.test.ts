@@ -4,6 +4,7 @@ import {
   ARTIFACT_SEPARATORS,
   canonicalize,
   contentHash,
+  createFixedPriceAgreementSigningPlan,
   deriveFixedPriceAgreement,
   ed25519Sign,
   ed25519Verify,
@@ -227,6 +228,51 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
     }
   });
 
+  test.each(VARIANTS)(
+    "%s: the producer accepts exactly the numbers the signing plan accepts",
+    (_name, build) => {
+      const base = deriveFixedPriceAgreement(build());
+      const accepts = (fn: () => unknown): boolean => {
+        try {
+          fn();
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (const [label, value, expected] of [
+        ["0", 0, true],
+        ["1", 1, true],
+        ["-1", -1, true],
+        ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER, true],
+        ["MIN_SAFE_INTEGER", Number.MIN_SAFE_INTEGER, true],
+        ["4.5", 4.5, false],
+        ["-4.5", -4.5, false],
+        ["0.1", 0.1, false],
+        ["1e-7", 1e-7, false],
+        ["2^51 + 0.5", 2 ** 51 + 0.5, false],
+        ["2^53", 2 ** 53, false],
+        ["-(2^53)", -(2 ** 53), false],
+        ["1e21", 1e21, false],
+        ["-0", -0, false],
+        ["NaN", Number.NaN, false],
+        ["Infinity", Number.POSITIVE_INFINITY, false],
+        ["-Infinity", Number.NEGATIVE_INFINITY, false],
+      ] as const) {
+        const terms = { "acme:x:v1": { value } };
+        const producer = accepts(() =>
+          deriveFixedPriceAgreement(withTerms(build(), terms))
+        );
+        // Bypass the producer: the same value placed directly in a draft.
+        const draft = structuredClone(base);
+        (draft.terms as { additionalTerms?: unknown }).additionalTerms = terms;
+        const plan = accepts(() => createFixedPriceAgreementSigningPlan(draft));
+        expect(producer, label).toBe(expected);
+        expect(plan, label).toBe(expected);
+      }
+    },
+  );
+
   describe.each(VARIANTS)("%s refusals", (_name, build) => {
     test("non-record values", () => {
       for (const value of [[], [SERVICE_REQUEST_TERMS], null, "terms", 1, true]) {
@@ -347,6 +393,29 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
       }))).toThrow(/not stable canonical JSON/);
     });
 
+    test("numbers that are not safe integers, top-level and nested", () => {
+      for (const [label, value] of [
+        ["top-level fraction", 4.5],
+        ["negative fraction", -4.5],
+        ["small fraction", 0.1],
+        ["exponent fraction", 1e-7],
+        ["fraction above 2^51", 2 ** 51 + 0.5],
+        ["nested fraction", { score: 4.5 }],
+        ["fraction in an array", [1, 2, 0.5]],
+        ["deep fraction", { a: [{ b: { c: 4.5 } }] }],
+      ] as const) {
+        expect(
+          () => deriveFixedPriceAgreement(withTerms(build(), { "acme:x:v1": value })),
+          label,
+        ).toThrow(/additionalTerms numbers must be safe integers; carry decimals as strings/);
+      }
+      // The same values as decimal strings are carried verbatim.
+      expect(
+        deriveFixedPriceAgreement(withTerms(build(), { "acme:x:v1": { score: "4.5" } }))
+          .terms.additionalTerms,
+      ).toEqual({ "acme:x:v1": { score: "4.5" } });
+    });
+
     test("values JSON cannot represent, without invoking accessors", () => {
       let getterCalls = 0;
       const accessor = {};
@@ -365,8 +434,11 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
         ["function", () => 1],
         ["NaN", Number.NaN],
         ["Infinity", Number.POSITIVE_INFINITY],
+        ["-Infinity", Number.NEGATIVE_INFINITY],
         ["negative zero", -0],
         ["unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+        ["negative unsafe integer", -(2 ** 53)],
+        ["1e21", 1e21],
         ["bigint", 1n],
         ["Date", new Date(NOW)],
         ["Map", new Map([["a", 1]])],

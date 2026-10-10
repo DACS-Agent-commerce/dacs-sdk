@@ -43,17 +43,27 @@ field existed; `terms` then has no `additionalTerms` key. An explicit
 `undefined` is refused, as for every other optional member of this input.
 
 The producer applies a narrower profile than the Standard's open record, so two
-parties derive the same bytes and an extension cannot read as a Standard term:
+parties derive the same bytes, every value survives the two-party exchange, and
+an entry cannot reuse an exact top-level §8.5 term member name:
 
 | Rule | Limit | Why |
 | --- | --- | --- |
-| Value | An exact JSON record (`isExactJsonRecord`) after the canonical snapshot: no arrays, `null`, `undefined`, functions, `NaN`/infinities, `-0`, unsafe integers, BigInt, accessors, proxies, cycles, symbols, lone surrogates, or non-plain prototypes | The bytes must be the JSON both parties hash (CORE §B.2) |
+| Value | An exact JSON record (`isExactJsonRecord`) after the canonical snapshot: no arrays, `null`, `undefined`, functions, `NaN`/infinities, `-0`, unsafe integers, BigInt, accessors, proxies, cycles, symbols, lone surrogates, or non-plain prototypes. Every number, at any depth, must be a safe integer: `4.5`, `0.1`, `1e21`, and `2**53` are refused; carry decimals as strings | The bytes must be the JSON both parties hash (CORE §B.2). CORE's number rule allows fractions, but the signing plan, durable exchange, and seller responder carry only safe integers, so a fraction would sign locally and then fail to exchange |
 | Empty record | Refused | `{}` and omission would be two byte-different Agreements with the same meaning |
 | Top-level key | `<namespace>:<name>:v<n>`, at most 128 characters: namespace `[a-z0-9]+([.-][a-z0-9]+)*`, name `[a-z0-9]+(-[a-z0-9]+)*`, version a positive integer without leading zeros | Independent extensions cannot collide; a reader can recognise a key it does not support; a new version is a new key, never a silent change. CF-1 does not normalise member names, so case or non-ASCII freedom would allow byte-different spellings of one visible key |
-| Shadowing | Namespace `dacs` is reserved for the Standard. A name that spells a §8.5 term member once hyphens are removed (`deliverable`, `price`, `metered-quantity`, `rail`, `deadline`, `price-anchor`, `fee-schedule`, `payout-bindings`, `prior-payment-disposition-ref`, `additional-terms`) is refused | An entry cannot pose as a second price, rail, deadline, payout, or deliverable |
+| Shadowing | Namespace `dacs` is reserved for the Standard. A name that spells a §8.5 term member once hyphens are removed (`deliverable`, `price`, `metered-quantity`, `rail`, `deadline`, `price-anchor`, `fee-schedule`, `payout-bindings`, `prior-payment-disposition-ref`, `additional-terms`) is refused | An entry cannot reuse an exact top-level §8.5 term member name. This is a name check only; see below |
 | Size | Canonical UTF-8 form at most 8,192 bytes | The terms ride inside the anchored SR-2 Agreement (DACS-4 §9.6.1, 128 KB Storage Program soft limit; DACS-1 LR-2 holds a whole Listing to 16 KiB). 8 KiB leaves room for parties, signatures, and the storage wrapper |
 | Depth | At most 8 container levels, counting the record itself | Independent readers recurse a bounded amount, well inside the 128-level canonical-form cap |
 | Member names | `__proto__`, `constructor`, and `prototype` are refused at any depth | Inert as JSON, but they rebind prototypes in a consumer that merges entries by assignment |
+
+**Consumers must never read Standard meaning from `additionalTerms`.** The
+shadowing rule compares names only. An entry such as
+`acme:payment-details:v1` may still contain `price`, `rail`, or `deadline`
+members, and free text may describe anything. The Agreement's price, rail,
+deadline, payout, deliverable, and Vet result are the §8.5 members outside
+`additionalTerms`, and nothing else. Never flatten or merge `additionalTerms`
+into those terms, and show each entry under its full namespaced key, apart
+from the Standard terms, in any user interface or model prompt.
 
 Example:
 
@@ -76,6 +86,44 @@ stage before any seller signature. The query's `candidateDraft` shows the
 buyer's proposed entries; a resolver may read them as untrusted input, but it
 must return only entries that seller policy admits (known key, schema, limits,
 recomputed hashes). Copying them unchecked signs whatever the buyer wrote.
+
+A resolver that admits one request entry rebuilds it rather than returning the
+buyer's object:
+
+```ts
+const REQUEST_KEY = "dacs-chatgpt-plugin:public-service-request:v1";
+
+resolveAuthenticatedAgreementContext: async (query) => {
+  // Listing, identities, Vet refs, rail, payout, and clock from seller state.
+  const context = await authenticatedSellerContext(query);
+  const offered = query.candidateDraft.terms.additionalTerms;
+  if (offered === undefined) return { disposition: "present", value: context };
+  if (Object.keys(offered).length !== 1 || !(REQUEST_KEY in offered)) {
+    return { disposition: "rejected", reason: "unsupported additional terms" };
+  }
+  // Seller-owned schema and limits; returns a fresh value holding only the
+  // admitted fields, or undefined.
+  const request = admitPublicServiceRequest(
+    (offered[REQUEST_KEY] as { request?: unknown }).request,
+  );
+  if (request === undefined) {
+    return { disposition: "rejected", reason: "request fails seller policy" };
+  }
+  return {
+    disposition: "present",
+    value: {
+      ...context,
+      additionalTerms: {
+        // Hash recomputed by the seller, never copied from the buyer.
+        [REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },
+      },
+    },
+  };
+},
+```
+
+If the buyer's entry carried an extra field or a different `requestHash`, the
+rebuilt entry differs and the exact plan comparison rejects the proposal.
 
 Readers keep the Standard's rule. `isAgreementArtifact` and
 `validateFixedPriceAgreementBinding` accept any exact JSON record in

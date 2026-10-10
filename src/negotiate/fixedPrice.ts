@@ -356,8 +356,8 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
 /**
  * Producer profile for caller-supplied `terms.additionalTerms`. DACS-3 §8.5
  * types the member as an open `Record<string, unknown>`; signing it needs a
- * narrower rule so both parties derive the same bytes and an extension cannot
- * pose as a Standard term.
+ * narrower rule so both parties derive the same bytes and an entry cannot reuse
+ * an exact top-level §8.5 term member name.
  *
  * - Each top-level key is `<namespace>:<name>:v<n>` in lowercase ASCII
  *   (`ADDITIONAL_TERMS_KEY`). Independent extensions cannot collide, a
@@ -365,10 +365,15 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  *   key rather than a silent change. CF-1 does not normalise member names, so
  *   case or non-ASCII freedom would allow byte-different spellings of one key.
  * - The `dacs` namespace is reserved for the Standard, and a `<name>` that
- *   spells a §8.5 term member (ignoring hyphens) is refused, so an entry
- *   cannot read as a second price, rail, deadline, payout, or deliverable.
+ *   spells a top-level §8.5 term member (ignoring hyphens) is refused, so an
+ *   entry cannot reuse that exact member name. This is a name check only:
+ *   other names and nested members may still restate a price, rail, or
+ *   deadline, so consumers must never flatten `additionalTerms` or read
+ *   Standard meaning from it.
  * - An empty record is refused: `{}` and omission would be two byte-different
  *   Agreements with the same meaning.
+ * - Every number is a safe integer, as in the signing plan, durable exchange,
+ *   and seller responder; carry decimals as strings.
  * - The canonical UTF-8 form is capped at 8 KiB. The terms ride inside the
  *   anchored SR-2 Agreement (DACS-4 §9.6.1 soft limit 128 KB per Storage
  *   Program; DACS-1 LR-2 holds a whole Listing to 16 KiB), which must still
@@ -404,6 +409,13 @@ const PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function requireBoundedAdditionalTermsValue(value: unknown, depth: number): void {
+  // The signing plan, durable exchange, and seller responder carry numbers
+  // only as safe integers; anything else would sign locally but never exchange.
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
+    throw new DacsError(
+      "additionalTerms numbers must be safe integers; carry decimals as strings",
+    );
+  }
   if (value === null || typeof value !== "object") return;
   if (depth > ADDITIONAL_TERMS_MAX_DEPTH) {
     throw new DacsError(

@@ -1061,5 +1061,38 @@ describe("seller responder with fixed-price additionalTerms", () => {
         .toMatch(/seller-local agreement derivation rejected the proposal/);
       expect(h.state.calls.signature).toBe(0);
     });
+
+    test("a number the producer refuses is refused before any signature", async () => {
+      // The buyer's producer refuses it, so no SDK proposal can carry it.
+      expect(() => deriveFixedPriceAgreement(withTerms(
+        agreementContext(jobId, payeeBound),
+        { "acme:rating:v1": { score: 4.5 } },
+      ))).toThrow(/carry decimals as strings/);
+      // A seller context carrying one is not valid context data. The responder
+      // refuses it while capturing the context, as it refuses every number that
+      // is not a safe integer anywhere in the context: indeterminate, before
+      // derivation, buyer verification, signing, or publication.
+      for (const sellerTerms of [
+        { "acme:rating:v1": 4.5 },
+        { "acme:rating:v1": { score: 4.5 } },
+        { "acme:rating:v1": { score: 2 ** 53 } },
+      ]) {
+        const label = JSON.stringify(sellerTerms);
+        const { h, result } = await respond(
+          jobId,
+          payeeBound,
+          { "acme:rating:v1": { score: 4 } },
+          sellerTerms,
+        );
+        expect(result, label).toMatchObject({ disposition: "indeterminate", stage: "context" });
+        expect(result.disposition === "complete" ? "" : result.reason, label).toMatch(
+          /seller agreement context resolution failed: .*contains a non-canonical number/,
+        );
+        expect(h.state.calls.context, label).toBe(1);
+        expect(h.state.calls.verifyBuyer, label).toBe(0);
+        expect(h.state.calls.signature, label).toBe(0);
+        expect(h.state.calls.publication, label).toBe(0);
+      }
+    });
   });
 });
