@@ -528,6 +528,102 @@ function admittedProfile(participants: readonly string[], sessionId = CHANNEL): 
   };
 }
 
+describe("CH-7 membership before cryptography", () => {
+  const memberKeys = generateKeyPairSync("ed25519");
+  const outsiderKeys = generateKeyPairSync("ed25519");
+  const claimOf = (keys: { publicKey: KeyObject }) =>
+    `key:${(keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex")}`;
+  const MEMBER = claimOf(memberKeys);
+  const OUTSIDER = claimOf(outsiderKeys);
+  const registry = new Map([[MEMBER, memberKeys.publicKey], [OUTSIDER, outsiderKeys.publicKey]]);
+  /** Signature-only: resolves any registered key and does no membership lookup of its own. */
+  const signatureOnly: ChannelMessageSignatureVerifier = ({ message: m, signedBytes }) => {
+    const key = registry.get(identityOf(m.sender));
+    const signature = m.signature as ChannelMessageSignatureV1;
+    return key !== undefined && ed25519Verify(signedBytes, Buffer.from(signature.value, "base64url"), key)
+      ? "pass" : "fail";
+  };
+  function signedBy(keys: { privateKey: KeyObject }, sender: string) {
+    const input = prepareChannelMessageSigningInput({
+      canonicalChannelMessageVersion: "1",
+      channelId: CHANNEL,
+      sequence: 1,
+      sender,
+      sentAt: 1_750_000_000_000,
+      type: "offer",
+      body: { price: "10" },
+    });
+    const value = nodeSign(null, Buffer.from(input.signedBytes), keys.privateKey).toString("base64url");
+    return {
+      ...structuredClone(input.unsignedEnvelope),
+      signature: { signatureVersion: "1", signer: sender, algorithm: "ed25519", value },
+    };
+  }
+
+  test("a valid signature by a non-member is fail and the verifier is never called", async () => {
+    const verifier = vi.fn(signatureOnly);
+    const message = signedBy(outsiderKeys, OUTSIDER);
+    expect(await admitChannelMessage(message, context(), verifier, { profileAdmission: admittedProfile([MEMBER]) }))
+      .toEqual({ decision: "fail", reason: "sender is not a member of the channel (CH-7)" });
+    // A member set that names the sender twice, or no member set at all, is a
+    // profile-admission refusal, also before any cryptography.
+    expect((await admitChannelMessage(message, context(), verifier, {
+      profileAdmission: admittedProfile([OUTSIDER, `${OUTSIDER}?role=buyer`]),
+    })).decision).toBe("error");
+    expect((await admitChannelMessage(message, context(), verifier)).decision).toBe("indeterminate");
+    expect(verifier).not.toHaveBeenCalled();
+    // The signature itself is valid: inside the set the same message passes.
+    expect((await admitChannelMessage(message, context(), verifier, {
+      profileAdmission: admittedProfile([MEMBER, OUTSIDER]),
+    })).decision).toBe("pass");
+  });
+
+  test("a parameter-only variant of a member is admitted as that member", async () => {
+    const verifier = vi.fn(signatureOnly);
+    const result = await admitChannelMessage(signedBy(memberKeys, `${MEMBER}?role=buyer`), context(), verifier, {
+      profileAdmission: admittedProfile([MEMBER, OUTSIDER]),
+    });
+    expect(result.decision).toBe("pass");
+    expect(verifier).toHaveBeenCalledOnce();
+    expect(verifier.mock.calls[0]![0].member).toBe(MEMBER);
+  });
+
+  test("optional admission members are read only as own properties", async () => {
+    const message = signedBy(memberKeys, MEMBER);
+    const verifier = vi.fn(signatureOnly);
+    const inherited = async (key: string, value: unknown, run: () => Promise<void>) => {
+      Object.defineProperty(Object.prototype, key, { value, configurable: true, writable: true, enumerable: false });
+      try {
+        await run();
+      } finally {
+        delete (Object.prototype as Record<string, unknown>)[key];
+      }
+    };
+    await inherited("profileAdmission", admittedProfile([MEMBER]), async () => {
+      expect((await admitChannelMessage(message, context(), verifier)).decision).toBe("indeterminate");
+      expect((await admitChannelMessage(message, context(), verifier, { operation: "current-read" })).decision)
+        .toBe("indeterminate");
+    });
+    await inherited("authority", admittedProfile([MEMBER]).authority, async () => {
+      expect((await admitChannelMessage(message, context(), verifier, {
+        profileAdmission: { profile: CORRECTIVE_PROFILE, participantIdentities: [MEMBER] },
+      })).decision).toBe("indeterminate");
+    });
+    expect(verifier).not.toHaveBeenCalled();
+    // An inherited operation or source changes nothing about an own capability.
+    await inherited("operation", "legacy-import", async () => {
+      expect((await admitChannelMessage(message, context(), verifier, {
+        profileAdmission: admittedProfile([MEMBER]),
+      })).decision).toBe("pass");
+    });
+    await inherited("source", 1, async () => {
+      expect((await admitChannelMessage(message, context(), verifier, {
+        profileAdmission: admittedProfile([MEMBER]),
+      })).decision).toBe("pass");
+    });
+  });
+});
+
 describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
   const keys = generateKeyPairSync("ed25519");
   const rawKey = (keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32);

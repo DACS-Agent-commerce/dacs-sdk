@@ -110,6 +110,13 @@ export interface ChannelMessageSignatureVerificationInput<
   /** Exact bytes the sender signed under the selected operation's framing. */
   signedBytes: Uint8Array;
   operation: ChannelMessageOperation;
+  /**
+   * `current-read` only: the authenticated CH-1 member the sender resolved to
+   * by CF-3 identity (CH-7), spelled as in the verifier-owned member set.
+   * Resolve the key and key type for this member, never for the self-declared
+   * `sender` or `signature.signer`. The profile capability carries no keys.
+   */
+  member?: string;
 }
 
 /** CORE §11.1.2(2) exact corrective profile: release pin plus the complete module tuple. */
@@ -330,9 +337,12 @@ function signedBytesFor(
 
 function selectOperation(options: unknown): {
   operation: ChannelMessageOperation;
-  profileAdmission?: unknown;
+  /** Always an own member, so reading it back never reaches the prototype. */
+  profileAdmission: unknown;
 } | null {
-  if (options === undefined) return { operation: "current-read" };
+  if (options === undefined) {
+    return { operation: "current-read", profileAdmission: undefined };
+  }
   let owned: unknown;
   try {
     owned = snapshotCanonicalJsonConfig(options, "channel admission options");
@@ -345,10 +355,15 @@ function selectOperation(options: unknown): {
   ) {
     return null;
   }
-  const operation = owned.operation ?? "current-read";
+  // Optional members are read only as own properties, never inherited.
+  const operation = ownMember(owned, "operation") ?? "current-read";
   return operation === "current-read" || operation === "legacy-import"
-    ? { operation, profileAdmission: owned.profileAdmission }
+    ? { operation, profileAdmission: ownMember(owned, "profileAdmission") }
     : null;
+}
+
+function ownMember(value: Readonly<DataRecord>, key: string): unknown {
+  return hasOwn(value, key) ? value[key] : undefined;
 }
 
 function claimIdentity(value: unknown): string | null {
@@ -417,7 +432,7 @@ export function channelProfileAdmissionFailure(
   if (members === null) {
     return failure("error", "corrective-profile admission members are malformed");
   }
-  const authority = admission.authority;
+  const authority = ownMember(admission, "authority");
   if (authority === undefined) {
     return failure(
       "indeterminate",
@@ -440,7 +455,7 @@ export function channelProfileAdmissionFailure(
     typeof authority.authenticated !== "boolean" ||
     !isNonEmptyString(authority.sessionId) ||
     !isNonEmptyString(authority.releasePin) ||
-    (authority.source !== undefined && typeof authority.source !== "string")
+    (hasOwn(authority, "source") && typeof authority.source !== "string")
   ) {
     return failure("error", "corrective-profile authority is malformed");
   }
@@ -652,6 +667,12 @@ function unsignedEnvelope<TBody, TSignature>(
  * current-only: `legacy-import` is a reader operation (DACS-3 §8.3.3) and
  * CH-10 forbids new producers from emitting the frozen historical wire, so
  * no option can select it here.
+ *
+ * Profile admission is not checked here: this is also the CH-8 hash of a
+ * stored or received current envelope, which has no producer authority. A
+ * caller that signs the result MUST first admit the exact corrective profile
+ * for the session (CORE §11.1.2(3)). The durable RFQ client does so before
+ * it signs.
  */
 export function prepareChannelMessageSigningInput<TBody = unknown>(
   candidate: unknown,
@@ -767,6 +788,19 @@ export async function admitChannelMessage<
     // binding failure attributable to the message, not malformed input.
     return failure("fail", "signature signer does not identify the sender (CH-7)");
   }
+  let member: string | undefined;
+  if (operation === "current-read") {
+    // CH-7: before any cryptography, the sender's CF-3 identity must occur in
+    // the verifier-owned CH-1 member set. The profile gate above has already
+    // refused a missing, malformed or duplicated set, so a match is unique.
+    const identity = claimIdentity(message.sender);
+    member = (
+      selected.profileAdmission as ChannelProfileAdmission
+    ).participantIdentities.find((entry) => claimIdentity(entry) === identity);
+    if (member === undefined) {
+      return failure("fail", "sender is not a member of the channel (CH-7)");
+    }
+  }
   if (context.priorChannelIds.includes(context.sessionChannelId)) {
     return failure(
       "fail",
@@ -789,6 +823,7 @@ export async function admitChannelMessage<
     envelopeHash,
     signedBytes: signedBytesFor(operation, envelopeHash),
     operation,
+    ...(member === undefined ? {} : { member }),
   });
 
   let decision: unknown;

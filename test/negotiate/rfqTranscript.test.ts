@@ -141,6 +141,7 @@ async function fixture(
       startedAt: NOW,
     },
     () => "pass",
+    PROFILE,
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
   const offer: ChannelMessage<RfqTurnBody, ChannelMessageSignatureV1> = {

@@ -162,6 +162,7 @@ async function acceptedSession(
       startedAt: NOW,
     },
     () => "pass",
+    PROFILE,
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
   const offer = {

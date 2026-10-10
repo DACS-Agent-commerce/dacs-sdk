@@ -36,6 +36,20 @@ import {
 } from "../../src/index.js";
 
 import { rfqProfileAdmission } from "./correctiveProfile.js";
+import { malformedNestedRecords } from "./malformedRecords.js";
+
+/** Lets a test make the record validator throw, to exercise the store's own guard. */
+const validatorFault = vi.hoisted(() => ({ throwing: false }));
+vi.mock("../../src/negotiate/durableRfqLifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/negotiate/durableRfqLifecycle.js")>();
+  return {
+    ...actual,
+    durableRfqLifecycleRecordViolation: (value: unknown) => {
+      if (validatorFault.throwing) throw new TypeError("validator fault");
+      return actual.durableRfqLifecycleRecordViolation(value);
+    },
+  };
+});
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
@@ -884,7 +898,43 @@ describe("filesystem RFQ records written before the v0.6 channel wire", () => {
     );
     await expect(store.load("buyer", STORE_V1.jobId)).resolves.toEqual({
       status: "corrupt",
-      reason: "RFQ record cannot be validated",
+      reason: "record session or authority is malformed",
     });
+  });
+});
+
+describe("filesystem RFQ store caller candidates", () => {
+  async function store() {
+    return createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir: join(await root(), "buyer-rfq"),
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+  }
+
+  test("create() and compareAndSwap() return corrupt for primitive and null nested values", async () => {
+    const fs = await store();
+    for (const [label, candidate] of malformedNestedRecords(STORE_V1.buyerFinalized)) {
+      await expect(fs.create(candidate as never), label).resolves.toMatchObject({ status: "corrupt" });
+      await expect(
+        fs.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, candidate as never),
+        label,
+      ).resolves.toMatchObject({ status: "corrupt" });
+    }
+  });
+
+  test("a validator exception is corrupt, never a rejected create() or compareAndSwap()", async () => {
+    const fs = await store();
+    const candidate = structuredClone(STORE_V1.buyerFinalized);
+    validatorFault.throwing = true;
+    try {
+      const corrupt = { status: "corrupt", reason: "RFQ record cannot be validated" };
+      await expect(fs.create(candidate as never)).resolves.toEqual(corrupt);
+      await expect(
+        fs.compareAndSwap("buyer", STORE_V1.jobId, candidate.revision, candidate as never),
+      ).resolves.toEqual(corrupt);
+    } finally {
+      validatorFault.throwing = false;
+    }
   });
 });

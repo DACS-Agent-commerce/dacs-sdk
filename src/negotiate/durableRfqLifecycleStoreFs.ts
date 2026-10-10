@@ -92,6 +92,15 @@ function exactKeys(value: DataRecord, required: readonly string[]): boolean {
   return keys.length === required.length && required.every((key) => keys.includes(key));
 }
 
+/** A record the validator cannot read is `corrupt`, never a rejected store call. */
+function recordViolation<TSignature>(record: unknown): string | null {
+  try {
+    return durableRfqLifecycleRecordViolation<TSignature>(record);
+  } catch {
+    return "RFQ record cannot be validated";
+  }
+}
+
 function positiveInteger(value: unknown, fallback: number, label: string): number {
   const selected = value === undefined ? fallback : value;
   if (!Number.isSafeInteger(selected) || (selected as number) <= 0) {
@@ -382,12 +391,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     ) {
       return { status: "unsupported", version };
     }
-    let violation: string | null;
-    try {
-      violation = durableRfqLifecycleRecordViolation<TSignature>(parsed.record);
-    } catch {
-      violation = "RFQ record cannot be validated";
-    }
+    const violation = recordViolation<TSignature>(parsed.record);
     if (violation !== null) return { status: "corrupt", reason: violation };
     const record = parsed.record as unknown as DurableRfqLifecycleRecord<TSignature>;
     if (record.role !== role || record.jobId !== jobId) {
@@ -687,7 +691,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       if (ownedCandidate.role !== captured.role) {
         return { status: "corrupt", reason: "RFQ store role isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
+      const violation = recordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
         return await withLock(ownedCandidate.role, ownedCandidate.jobId, async () => {
@@ -737,7 +741,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       ) {
         return { status: "corrupt", reason: "RFQ store role/path isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
+      const violation = recordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
         return await withLock(role, jobId, async () => {

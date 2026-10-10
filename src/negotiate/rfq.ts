@@ -545,10 +545,15 @@ function rfqAuthority(input: OpenRfqSessionInput): {
   };
 }
 
-/** Open a CH-6-reserved RFQ session from the exact signed Listing authority. */
+/**
+ * Open a CH-6-reserved RFQ session from the exact signed Listing authority.
+ * `profileAdmission` is the verifier-owned CORE §11.1.2(3) authority for the
+ * session; without it nothing is reserved and no state is issued.
+ */
 export async function openRfqSession(
   callerInput: OpenRfqSessionInput,
   reserveChannelId: RfqChannelReservation,
+  profileAdmission: RfqProfileAdmission | undefined,
 ): Promise<OpenRfqSessionResult> {
   if (
     typeof reserveChannelId !== "function" ||
@@ -559,6 +564,45 @@ export async function openRfqSession(
       "durable RFQ channel reservation is unavailable or unsafe",
     );
   }
+  const planned = planRfqSession(callerInput);
+  if (planned.decision !== "pass") return planned;
+  // CORE §11.1.2(3): admit the exact profile before reserving or issuing state.
+  const refused = rfqProfileAdmissionFailure(planned.state, profileAdmission);
+  if (refused !== null) return refused;
+
+  let decision: unknown;
+  try {
+    decision = await reserveChannelId(planned.reservation);
+  } catch {
+    return failure("error", "durable RFQ channel reservation failed");
+  }
+  if (typeof decision !== "string" || !DECISIONS.has(decision)) {
+    return failure(
+      "error",
+      "durable RFQ channel reservation returned malformed state",
+    );
+  }
+  if (decision !== "pass") {
+    return failure(
+      decision as Exclude<VerificationDecision, "pass">,
+      `durable RFQ channel reservation returned ${decision}`,
+    );
+  }
+  return { decision: "pass", state: planned.state };
+}
+
+/**
+ * Validate open input and derive the session it would open, without
+ * reserving the channel or consulting profile admission. Package-internal:
+ * the durable client uses it to bind an existing record without a reservation.
+ */
+export function planRfqSession(callerInput: OpenRfqSessionInput):
+  | {
+      decision: "pass";
+      reservation: Readonly<RfqChannelReservationInput>;
+      state: Readonly<RfqSessionState>;
+    }
+  | ChannelMessageAdmissionFailure {
   let input: OpenRfqSessionInput;
   let authority: ReturnType<typeof rfqAuthority>;
   try {
@@ -587,31 +631,13 @@ export async function openRfqSession(
       string,
     ],
   });
-  let decision: unknown;
-  try {
-    decision = await reserveChannelId(reservation);
-  } catch {
-    return failure("error", "durable RFQ channel reservation failed");
-  }
-  if (typeof decision !== "string" || !DECISIONS.has(decision)) {
-    return failure(
-      "error",
-      "durable RFQ channel reservation returned malformed state",
-    );
-  }
-  if (decision !== "pass") {
-    return failure(
-      decision as Exclude<VerificationDecision, "pass">,
-      `durable RFQ channel reservation returned ${decision}`,
-    );
-  }
-
   const initiator =
     authority.initiator === "buyer"
       ? authority.buyer.primaryClaim
       : authority.seller.primaryClaim;
   return {
     decision: "pass",
+    reservation,
     state: deepFreeze({
       rfqSessionVersion: "1",
       jobId: input.jobId,
@@ -996,6 +1022,19 @@ export async function advanceRfqSession<TSignature = unknown>(
       "RFQ session state or trusted receipt time is inconsistent",
     );
   }
+  // CORE §11.1.2(3): admit the exact profile before any state transition,
+  // including the timeout below.
+  let channelProfileAdmission: ChannelProfileAdmission | undefined;
+  try {
+    channelProfileAdmission = rfqChannelProfileAdmission(state, profileAdmission);
+  } catch {
+    return failure("error", "RFQ profile admission is malformed");
+  }
+  const refused = channelProfileAdmissionFailure(
+    channelProfileAdmission,
+    state.channelId,
+  );
+  if (refused !== null) return refused;
   if (state.status !== "open") {
     return failure("fail", "RFQ session is already terminal");
   }
@@ -1014,12 +1053,6 @@ export async function advanceRfqSession<TSignature = unknown>(
     };
   }
 
-  let channelProfileAdmission: ChannelProfileAdmission | undefined;
-  try {
-    channelProfileAdmission = rfqChannelProfileAdmission(state, profileAdmission);
-  } catch {
-    return failure("error", "RFQ profile admission is malformed");
-  }
   const admitted = await admitChannelMessage<RfqTurnBody, TSignature>(
     candidateMessage,
     {

@@ -39,6 +39,7 @@ import {
 } from "../../src/index.js";
 
 import { rfqProfileAdmission } from "./correctiveProfile.js";
+import { malformedNestedRecords } from "./malformedRecords.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
@@ -287,9 +288,10 @@ describe("durable two-agent RFQ lifecycle", () => {
       nowMs: () => NOW,
     });
 
+    // Open loads the job first, so an unavailable store fails before any reservation.
     await expect(client.open(openInput())).resolves.toEqual({
       status: "indeterminate",
-      reason: "RFQ lifecycle store create failed",
+      reason: "RFQ lifecycle store load failed",
     });
     await expect(
       client.sendOffer(JOB_ID, {
@@ -956,7 +958,7 @@ describe("durable RFQ records written before the v0.6 channel wire", () => {
     delete (record.transcript[0] as { canonicalChannelMessageVersion?: string }).canonicalChannelMessageVersion;
     expect(() => durableRfqLifecycleRecordViolation(record)).not.toThrow();
     expect(durableRfqLifecycleRecordViolation(record)).toBe(
-      "transcript endpoint does not match the RFQ checkpoint",
+      "transcript turn is not of the record's store version",
     );
 
     // The same turn on the wire is refused with the packet's own violation.
@@ -1070,56 +1072,198 @@ describe("durable RFQ with CH-7-qualified sender spellings", () => {
 });
 
 describe("durable RFQ corrective-profile admission", () => {
-  test.each([
-    ["no authority", () => undefined],
-    ["a failing resolver", () => {
-      throw new Error("authority service offline");
-    }],
-  ])("refuses to sign or admit a turn with %s", async (_label, resolver) => {
+  /** A client whose resolver grants only while `access.granted` is set, and otherwise behaves as `refuse`. */
+  function harness(refuse: RfqLifecycleProfileAdmission, role: "buyer" | "seller" = "buyer") {
     const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
-    const sign = vi.fn(channelSigner(BUYER, buyerKeys.privateKey));
+    const access = { granted: false };
+    const clock = { now: NOW };
+    const reserve = vi.fn(durableReservation());
+    const sign = vi.fn(role === "buyer"
+      ? channelSigner(BUYER, buyerKeys.privateKey)
+      : channelSigner(SELLER, sellerKeys.privateKey));
     const client = createDurableRfqLifecycleClient({
-      role: "buyer",
+      role,
       store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
       transport: network.transport,
-      reserveChannelId: durableReservation(),
+      reserveChannelId: reserve,
       signChannelMessage: sign,
       verifyChannelMessage: verifyChannel,
-      profileAdmission: resolver,
-      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      profileAdmission: (request) => (access.granted ? grantProfile(request) : refuse(request)),
+      agreementSigner: role === "buyer"
+        ? agreementSigner(BUYER, buyerKeys.privateKey)
+        : agreementSigner(SELLER, sellerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
-      nowMs: () => NOW,
+      nowMs: () => clock.now,
     });
+    return { network, access, clock, reserve, sign, client };
+  }
+  const offer = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+
+  test.each([
+    ["no authority", () => undefined],
+    ["a throwing resolver", () => {
+      throw new Error("authority service offline");
+    }],
+    ["a rejecting resolver", () => Promise.reject(new Error("authority service offline"))],
+  ])("refuses to open, sign or admit with %s", async (_label, refuse) => {
+    const { network, access, reserve, sign, client } = harness(refuse);
+    // Without authority nothing is reserved, stored or issued.
+    await expect(client.open(openInput())).resolves.toMatchObject({ status: "indeterminate" });
+    expect(reserve).not.toHaveBeenCalled();
+    await expect(client.getStatus(JOB_ID)).resolves.toEqual({ status: "missing" });
+    access.granted = true;
     await expect(client.open(openInput())).resolves.toMatchObject({ status: "ready" });
-    await expect(
-      client.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } }),
-    ).resolves.toMatchObject({ status: "indeterminate" });
+    // Reopening an existing current record reserves nothing more, and is
+    // refused once the authority is gone.
+    await expect(client.open(openInput())).resolves.toMatchObject({ status: "duplicate" });
+    expect(reserve).toHaveBeenCalledOnce();
+    access.granted = false;
+    await expect(client.open(openInput())).resolves.toMatchObject({ status: "indeterminate" });
+    // A session opened under authority signs nothing once the authority is gone.
+    await expect(client.sendOffer(JOB_ID, offer)).resolves.toMatchObject({ status: "indeterminate" });
     expect(sign).not.toHaveBeenCalled();
     expect(network.pending(SELLER)).toBe(0);
   });
 
-  test("refuses an inbound turn when the authority binds another session", async () => {
-    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
-    const { buyerClient } = clients(network.transport);
-    const seller = createDurableRfqLifecycleClient({
-      role: "seller",
-      store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
-      transport: network.transport,
-      reserveChannelId: durableReservation(),
-      signChannelMessage: channelSigner(SELLER, sellerKeys.privateKey),
-      verifyChannelMessage: verifyChannel,
-      profileAdmission: ({ participantIdentities }) =>
-        rfqProfileAdmission("another-private-channel", participantIdentities),
-      agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
-      verifyAgreementContribution: verifyAgreement,
-      nowMs: () => NOW,
-    });
-    await buyerClient.open(openInput());
-    await seller.open(openInput());
-    await buyerClient.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
-    await expect(seller.receive(network.take(SELLER))).resolves.toMatchObject({
+  test("refuses to open, and refuses an inbound turn, when the authority binds another session", async () => {
+    const seller = harness(({ participantIdentities }) =>
+      rfqProfileAdmission("another-private-channel", participantIdentities), "seller");
+    await expect(seller.client.open(openInput())).resolves.toMatchObject({
       status: "rejected",
       reason: "corrective-profile authority binds another session",
     });
+    expect(seller.reserve).not.toHaveBeenCalled();
+    seller.access.granted = true;
+    await expect(seller.client.open(openInput())).resolves.toMatchObject({ status: "ready" });
+    const { buyerClient } = clients(seller.network.transport);
+    await buyerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, offer);
+    seller.access.granted = false;
+    await expect(seller.client.receive(seller.network.take(SELLER))).resolves.toMatchObject({
+      status: "rejected",
+      reason: "corrective-profile authority binds another session",
+    });
+  });
+
+  test("an expired inbound turn without authority persists no timeout", async () => {
+    const seller = harness(() => undefined, "seller");
+    seller.access.granted = true;
+    await seller.client.open(openInput());
+    const { buyerClient } = clients(seller.network.transport);
+    await buyerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, offer);
+    const before = await seller.client.getStatus(JOB_ID);
+    seller.access.granted = false;
+    seller.clock.now = NOW + 10_001;
+    await expect(seller.client.receive(seller.network.take(SELLER))).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    await expect(seller.client.getStatus(JOB_ID)).resolves.toEqual(before);
+  });
+
+  test("a resolver that returns only the profile signs nothing when Object.prototype carries an authority", async () => {
+    const profileOnly: RfqLifecycleProfileAdmission = ({ channelId, participantIdentities }) => ({
+      profile: rfqProfileAdmission(channelId, participantIdentities).profile,
+    });
+    const opened = harness(profileOnly);
+    opened.access.granted = true;
+    await opened.client.open(openInput());
+    opened.access.granted = false;
+    const fresh = harness(profileOnly);
+    Object.defineProperty(Object.prototype, "authority", {
+      value: rfqProfileAdmission(openInput().channelId, [BUYER, SELLER]).authority,
+      configurable: true,
+      writable: true,
+      enumerable: false,
+    });
+    try {
+      await expect(opened.client.sendOffer(JOB_ID, offer)).resolves.toMatchObject({ status: "indeterminate" });
+      await expect(fresh.client.open(openInput())).resolves.toMatchObject({ status: "indeterminate" });
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).authority;
+    }
+    expect(opened.sign).not.toHaveBeenCalled();
+    expect(opened.network.pending(SELLER)).toBe(0);
+    expect(fresh.reserve).not.toHaveBeenCalled();
+  });
+});
+
+describe("durable RFQ record validation", () => {
+  test("opening a job whose record is store version 1 reserves nothing", async () => {
+    const record = STORE_V1.buyerMidNegotiation;
+    const store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    await store.create(record as never);
+    const reserve = vi.fn(() => "pass" as const);
+    const profileAdmission = vi.fn(grantProfile);
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>().transport,
+      reserveChannelId: reserve,
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      profileAdmission,
+      agreementSigner: agreementSigner(record.session.buyer.primaryClaim, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => record.createdAt,
+    });
+    await expect(client.open({
+      jobId: record.jobId,
+      verifiedListing: record.authority.verifiedListing,
+      buyer: record.authority.buyer,
+      seller: record.authority.seller,
+      channelId: record.channelId,
+    })).resolves.toMatchObject({ status: "rejected", reason: ARCHIVAL, record: { storeVersion: 1 } });
+    expect(reserve).not.toHaveBeenCalled();
+    expect(profileAdmission).not.toHaveBeenCalled();
+  });
+
+  test("the record validator returns a violation for primitive and null nested values", () => {
+    for (const [label, candidate] of malformedNestedRecords(STORE_V1.buyerFinalized)) {
+      let violation: unknown;
+      expect(() => {
+        violation = durableRfqLifecycleRecordViolation(candidate);
+      }, label).not.toThrow();
+      expect(typeof violation, label).toBe("string");
+    }
+    const base = STORE_V1.buyerFinalized;
+    expect(durableRfqLifecycleRecordViolation({ ...structuredClone(base), session: null }))
+      .toBe("record session or authority is malformed");
+    expect(durableRfqLifecycleRecordViolation({ ...structuredClone(base), transcript: [null, ...base.transcript.slice(1)] }))
+      .toBe("transcript turn is malformed");
+    // A defect no named check covers is still a violation.
+    expect(durableRfqLifecycleRecordViolation({ ...structuredClone(base), session: { ...structuredClone(base.session), buyer: {} } }))
+      .toBe("record cannot be validated");
+  });
+
+  test("every transcript turn is hashed under its record's store version", async () => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const { buyerClient, sellerClient } = clients(network.transport);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.respond(JOB_ID, () => ({
+      action: "counter",
+      proposal: { rfqProposalVersion: "1", price: { amount: "9.5", currency: "USDC" } },
+    }));
+    await deliver(network, BUYER, buyerClient);
+    const status = await buyerClient.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error(status.status);
+    expect(status.record.transcript).toHaveLength(2);
+    expect(durableRfqLifecycleRecordViolation(status.record)).toBeNull();
+    const reason = "transcript turn is not of the record's store version";
+
+    const undiscriminated = structuredClone(status.record);
+    delete (undiscriminated.transcript[0] as { canonicalChannelMessageVersion?: string }).canonicalChannelMessageVersion;
+    expect(durableRfqLifecycleRecordViolation(undiscriminated)).toBe(reason);
+    const junk = structuredClone(status.record);
+    (junk.transcript as unknown[])[0] = { channelId: junk.channelId, sender: BUYER, sequence: 1 };
+    expect(durableRfqLifecycleRecordViolation(junk)).toBe(reason);
+
+    const historical = structuredClone(STORE_V1.buyerFinalized);
+    expect(historical.transcript.length).toBeGreaterThan(1);
+    (historical.transcript[0] as unknown as Record<string, unknown>).canonicalChannelMessageVersion = "1";
+    expect(durableRfqLifecycleRecordViolation(historical)).toBe(reason);
   });
 });

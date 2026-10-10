@@ -22,6 +22,7 @@ import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   advanceRfqSession,
   openRfqSession,
+  planRfqSession,
   rfqProfileAdmissionFailure,
   rfqSessionCheckpointHash,
   type OpenRfqSessionInput,
@@ -665,6 +666,17 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
   } catch {
     return "record is not canonical JSON data";
   }
+  // Total: a defect the checks below do not name is still a violation.
+  try {
+    return recordViolation(record);
+  } catch {
+    return "record cannot be validated";
+  }
+}
+
+function recordViolation<TSignature>(
+  record: DurableRfqLifecycleRecord<TSignature>,
+): string | null {
   if (!isRecord(record)) return "record must be an object";
   const recordKeys = [
     "storeVersion",
@@ -691,6 +703,14 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
     return "unsupported store version";
   }
   const storeVersion = record.storeVersion;
+  if (
+    !isRecord(record.session) ||
+    !isRecord(record.session.buyer) ||
+    !isRecord(record.session.seller) ||
+    !isRecord(record.authority)
+  ) {
+    return "record session or authority is malformed";
+  }
   if (
     !Number.isSafeInteger(record.revision) ||
     record.revision < 0 ||
@@ -738,6 +758,11 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
   const transcriptSequences = new Set<number>();
   let previousSequence = 0;
   for (const message of record.transcript) {
+    if (!isRecord(message)) return "transcript turn is malformed";
+    // The record version selects how every stored turn is hashed.
+    if (storedEnvelopeHash(message, storeVersion) === null) {
+      return "transcript turn is not of the record's store version";
+    }
     if (
       message.channelId !== record.channelId ||
       (!sameParty(message.sender, record.session.buyer.primaryClaim) &&
@@ -1516,17 +1541,17 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
 
   /** A resolver that throws leaves the session without authority (fail closed). */
   async function sessionProfileAdmission(
-    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+    session: Readonly<RfqSessionState>,
   ): Promise<RfqProfileAdmission | undefined> {
     try {
       return await resolveProfileAdmission(
         deepFreeze({
           role,
-          jobId: record.jobId,
-          channelId: record.channelId,
+          jobId: session.jobId,
+          channelId: session.channelId,
           participantIdentities: [
-            record.session.buyer.primaryClaim,
-            record.session.seller.primaryClaim,
+            session.buyer.primaryClaim,
+            session.seller.primaryClaim,
           ] as const,
         }),
       );
@@ -1788,7 +1813,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       return { status: "rejected", reason: "counterparty owns the next RFQ turn", record };
     }
     // CORE §11.1.2(3): admit the exact profile before creating a signature.
-    const profile = await sessionProfileAdmission(record);
+    const profile = await sessionProfileAdmission(record.session);
     const refused = rfqProfileAdmissionFailure(record.session, profile);
     if (refused !== null) return admissionFailure(refused, record);
     let sentAt: number;
@@ -1885,7 +1910,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       structuredClone(packet.message),
       receivedAt,
       verifyChannelMessage,
-      await sessionProfileAdmission(record),
+      await sessionProfileAdmission(record.session),
     );
     if (advanced.decision !== "pass") {
       return admissionFailure(advanced, record);
@@ -2037,6 +2062,21 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       } catch {
         return { status: "rejected", reason: "durable RFQ open input is malformed" };
       }
+      if (!isNonEmptyCanonical(input.jobId)) {
+        return { status: "rejected", reason: "durable RFQ open input is malformed" };
+      }
+      // CORE §11.1.2(4): an existing job is loaded first, so a store-version-1
+      // record is refused before any reservation, resolver or current lookup.
+      // Only a job without a record reserves its channel.
+      const loaded = await load(input.jobId);
+      if (loaded.status !== "ok" && loaded.status !== "missing") {
+        return loadFailure(loaded);
+      }
+      const existing = loaded.status === "ok" ? loaded.record : undefined;
+      if (existing !== undefined) {
+        const archival = archivalRefusal(existing);
+        if (archival !== null) return archival;
+      }
       let startedAt: number;
       try {
         startedAt = trustedNow();
@@ -2046,21 +2086,24 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
           reason: cause instanceof Error ? cause.message : "RFQ clock failed",
         };
       }
-      const opened = await openRfqSession(
-        { ...structuredClone(input), startedAt },
-        reserveChannelId,
-      );
-      if (opened.decision !== "pass") {
-        return admissionFailure(opened);
-      }
-      const session = opened.state as RfqSessionState;
+      const openInput = { ...structuredClone(input), startedAt };
+      const planned = planRfqSession(openInput);
+      if (planned.decision !== "pass") return admissionFailure(planned);
+      // CORE §11.1.2(3): admit the exact profile before reserving or issuing state.
+      const profile = await sessionProfileAdmission(planned.state);
+      const refused = rfqProfileAdmissionFailure(planned.state, profile);
+      if (refused !== null) return admissionFailure(refused);
       const expectedClaim =
-        role === "buyer" ? session.buyer.primaryClaim : session.seller.primaryClaim;
+        role === "buyer"
+          ? planned.state.buyer.primaryClaim
+          : planned.state.seller.primaryClaim;
       if (agreementSigner.party !== expectedClaim) {
         return { status: "rejected", reason: "agreement signer does not own local RFQ role" };
       }
       const authority = authorityFromInput(input);
-      const record: DurableRfqLifecycleRecord<TSignature> = {
+      const recordFor = (
+        session: RfqSessionState,
+      ): DurableRfqLifecycleRecord<TSignature> => ({
         storeVersion: DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
         revision: 0,
         role,
@@ -2074,7 +2117,24 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         outbox: [],
         createdAt: session.startedAt,
         updatedAt: session.startedAt,
-      };
+      });
+      if (existing !== undefined) {
+        // The existing record already holds this job's reservation.
+        return existing.bindingHash ===
+          recordFor(planned.state as RfqSessionState).bindingHash &&
+          existing.role === role &&
+          existing.jobId === planned.state.jobId
+          ? { status: "duplicate", record: existing }
+          : {
+              status: "conflict",
+              reason: "RFQ lifecycle store returned a different job authority",
+            };
+      }
+      const opened = await openRfqSession(openInput, reserveChannelId, profile);
+      if (opened.decision !== "pass") {
+        return admissionFailure(opened);
+      }
+      const record = recordFor(opened.state as RfqSessionState);
       let created: DurableRfqRecordCreate<TSignature>;
       let rawCreated: unknown;
       try {
