@@ -67,6 +67,23 @@ cryptography, and never falls back to the other for the same object:
   grammar is malformed input (`error`); only a well-formed signer that names
   another party is the CH-7 `fail`.
 
+`current-read` also requires the CORE §11.1.2(3) corrective-profile
+admission, passed as the verifier-owned `profileAdmission` option: the exact
+profile the deployment runs (`releasePin` plus the complete `moduleVersions`
+tuple), the authenticated CH-1 member set, and the `authority` resolved for
+this session from trusted context outside the message and admission context.
+Admission checks it before any message processing and has no default:
+
+- no capability or no authority refuses the session as `indeterminate`;
+- a malformed capability or authority, a partial or extended module tuple,
+  duplicate participants, or `authenticated: false` is `error`;
+- an authority for another session, release pin, module version or member set
+  (compared by CF-3 identity) is `fail`.
+
+`legacy-import` is the archival path of §11.1.2(4) and does not consult it.
+The SDK decides all 51 non-SR-1 vectors of `canonical-channel-message-v0.6`
+this way, including the seven `current-profile-*` vectors.
+
 For a sender, `prepareChannelMessageSigningInput()` validates the unsigned
 envelope and returns the immutable envelope, its lowercase-hex SHA-256 hash,
 and the exact CH-8 `signedBytes`
@@ -103,12 +120,19 @@ re-verifier resolves the same way.
 - `maxTurns`, reject, abort, and trusted-receipt-clock timeout are terminal;
 - terminal state cannot be reopened by replay.
 
+The RFQ layer passes its own buyer and seller as the participants, so the
+caller's `RfqProfileAdmission` carries only `profile` and `authority`. Without
+it every turn is refused. `openRfqSession()` refuses, before reserving the
+channel, members whose claim scheme is not registered: `current-read` could
+never admit their turns.
+
 ```ts
 const advanced = await advanceRfqSession(
   storedState,
   receivedEnvelope,
   trustedReceivedAt,
   adapter.verifyChannelMessage,
+  { profile: deploymentProfile, authority: sessionProfileAuthority },
 );
 
 if (advanced.decision === "pass") {
@@ -148,6 +172,10 @@ const buyerRfq = createDurableRfqLifecycleClient({
   reserveChannelId,
   signChannelMessage: buyerChannelSigner,
   verifyChannelMessage,
+  // Resolves { profile, authority } for { role, jobId, channelId,
+  // participantIdentities }; no authority, or a throw, refuses the turn
+  // before anything is signed.
+  profileAdmission: resolveSessionProfileAdmission,
   agreementSigner: buyerAgreementSigner,
   verifyAgreementContribution,
   nowMs: trustedClock,
@@ -206,6 +234,23 @@ atomic compare-and-swap, and generation fencing when multiple hosts can write.
 implementations. The in-memory store is not a production authenticity or
 restart boundary.
 
+### Records written before the v0.6 channel wire
+
+Records whose turns use the v0.6 `CanonicalChannelMessage` wire have
+`storeVersion: 2` (`DURABLE_RFQ_LIFECYCLE_STORE_VERSION`). Records written
+before it have `storeVersion: 1`
+(`DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION`) and hold the historical
+envelope. The record version, never the message shape, selects how a stored
+turn is hashed, and the version-1 reader checks the original bytes. Such a
+record still loads, validates and is returned by `getStatus()`, so a
+finalized Agreement stays reachable. The pre-v0.6 session itself is abandoned
+(CORE §11.1.2(4)): `open`, `send*`, `respond`, `receive`, `resumeOutbox` and
+`startAgreement` return a non-retryable `rejected` without signing,
+publishing, admitting or reconciling anything, and no store transition can
+write a version-1 record. Start a new session, with a new `jobId` and
+`channelId`, under the current profile.
+
+
 ## Finalizing and committing an accepted agreement
 
 `deriveRfqAgreement()` accepts only a validated `accepted` checkpoint and the
@@ -257,8 +302,14 @@ const committed = await commitRfqAgreement(
 
 `prepareRfqTranscript()` re-verifies the complete ordered private message set,
 member turns, proposal bounds, exact acceptance and final-message hook against
-the accepted session and signed Agreement. `planRfqTranscriptDisclosure()`
-then applies the Listing policy and permits encrypted publication only when
+the accepted session and signed Agreement, reading every turn with
+`current-read` under the caller's `RfqProfileAdmission`. A transcript written
+before the v0.6 channel wire (any turn without the discriminator) returns
+`error` ("predates the DACS-3 v0.6 channel wire; it is archival only"): it is
+never re-verified as current and cannot feed disclosure.
+`planRfqTranscriptDisclosure()`, whose verifiers object carries the same
+`profileAdmission`, then applies the Listing policy and permits encrypted
+publication only when
 every member's injected consent verifier returns `pass`. The default `none`
 policy never invokes the verifier and retains the transcript privately;
 recommended publication may be omitted, while required publication fails
@@ -277,3 +328,28 @@ agreement/commitment and transcript-policy core but not a complete live
 DACS-3 v0.6 (see "Admitting channel messages"); `@kynesyslabs/demosdk@4.0.16`
 `l2ps.channel` still emits a historical shape and is not a conforming
 producer (DACS-Standard#414).
+
+## Changelog
+
+Unreleased: DACS-3 v0.6 channel wire (breaking pre-v1 correction, CORE
+§11.1.2).
+
+- **Breaking:** `prepareChannelMessageSigningInput()` requires the
+  `canonicalChannelMessageVersion: "1"` discriminator and throws without it;
+  its result adds `signedBytes` (CH-8 bytes to sign) and `operation`.
+  Producers sign `signedBytes`, not the hex hash.
+- **Breaking:** `admitChannelMessage()` defaults to `current-read` and needs
+  the verifier-owned `profileAdmission` option; the historical wire needs
+  `{ operation: "legacy-import" }`. `advanceRfqSession()` and
+  `prepareRfqTranscript()` take an `RfqProfileAdmission` argument,
+  `planRfqTranscriptDisclosure()` verifiers a `profileAdmission` member, and
+  `createDurableRfqLifecycleClient()` a `profileAdmission` resolver.
+- **Breaking:** `DURABLE_RFQ_LIFECYCLE_STORE_VERSION` is now `2`. Records
+  written by earlier SDK versions (`storeVersion: 1`) stay readable through
+  `getStatus()`, including finalized Agreements, but are read-only: their
+  sessions cannot continue and must be restarted. Pre-v0.6 transcripts are
+  refused by `prepareRfqTranscript()` with `error`.
+- `openRfqSession()` refuses members with unregistered claim schemes.
+- `canonicalChannelMessageSignedBytes()` and
+  `legacyChannelMessageSignedBytes()` throw unless given 64 lowercase hex
+  characters, and return an unpooled `Uint8Array`.

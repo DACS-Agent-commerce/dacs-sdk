@@ -4,6 +4,7 @@ import {
   verify as ed25519Verify,
   type KeyObject,
 } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -15,7 +16,12 @@ import {
   createFixedPriceAgreementSigningPlan,
   createInMemoryDurableRfqLifecycleStore,
   createInMemoryRfqLifecycleNetwork,
+  DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION,
+  durableRfqLifecycleRecordViolation,
+  durableRfqLifecycleTransitionViolation,
+  prepareChannelMessageSigningInput,
   rfqLifecyclePacketId,
+  type DurableRfqLifecycleRecord,
   type AttestationRef,
   type ChannelMessageSignatureVerificationInput,
   type ChannelMessageSigningInput,
@@ -27,14 +33,21 @@ import {
   type Listing,
   type RfqChannelReservationInput,
   type RfqLifecyclePacket,
+  type RfqLifecycleProfileAdmission,
   type RfqTurnBody,
   type VerifiedListingInput,
 } from "../../src/index.js";
+
+import { rfqProfileAdmission } from "./correctiveProfile.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-durable-rfq";
 const SELLER = "did:demos:seller-durable-rfq";
+
+/** Verifier-owned CORE §11.1.2(3) profile admission for each requested session. */
+const grantProfile: RfqLifecycleProfileAdmission = ({ channelId, participantIdentities }) =>
+  rfqProfileAdmission(channelId, participantIdentities);
 
 const buyerKeys = generateKeyPairSync("ed25519");
 const sellerKeys = generateKeyPairSync("ed25519");
@@ -215,6 +228,7 @@ function clients(
     reserveChannelId: reservation,
     signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
     verifyChannelMessage: verifyChannel,
+    profileAdmission: grantProfile,
     agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
     verifyAgreementContribution: verifyAgreement,
     nowMs,
@@ -226,6 +240,7 @@ function clients(
     reserveChannelId: reservation,
     signChannelMessage: channelSigner(SELLER, sellerKeys.privateKey),
     verifyChannelMessage: verifyChannel,
+    profileAdmission: grantProfile,
     agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
     verifyAgreementContribution: verifyAgreement,
     nowMs,
@@ -266,6 +281,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -407,6 +423,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: sign,
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -464,6 +481,7 @@ describe("durable two-agent RFQ lifecycle", () => {
         reserveChannelId: durableReservation(),
         signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
         verifyChannelMessage: verifyChannel,
+        profileAdmission: grantProfile,
         agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
         verifyAgreementContribution: verifyAgreement,
         nowMs: () => NOW,
@@ -540,6 +558,7 @@ describe("durable two-agent RFQ lifecycle", () => {
         reserveChannelId: durableReservation(),
         signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
         verifyChannelMessage: verifyChannel,
+        profileAdmission: grantProfile,
         agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
         verifyAgreementContribution: verifyAgreement,
         nowMs: () => NOW,
@@ -611,6 +630,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: sign,
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -708,6 +728,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -756,6 +777,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -804,6 +826,7 @@ describe("durable two-agent RFQ lifecycle", () => {
       reserveChannelId: durableReservation(),
       signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
       verifyChannelMessage: verifyChannel,
+      profileAdmission: grantProfile,
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
       verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
@@ -823,6 +846,280 @@ describe("durable two-agent RFQ lifecycle", () => {
     malformedLoad = true;
     await expect(client.getStatus(JOB_ID)).resolves.toMatchObject({
       status: "corrupt",
+    });
+  });
+});
+
+/** Store-version-1 records written by SDK main before the v0.6 channel wire. */
+const STORE_V1 = JSON.parse(
+  readFileSync(new URL("../fixtures/durable-rfq-store-v1.json", import.meta.url), "utf8"),
+) as {
+  jobId: string;
+  buyerMidNegotiation: DurableRfqLifecycleRecord<string>;
+  buyerFinalized: DurableRfqLifecycleRecord<string>;
+  sellerFinalized: DurableRfqLifecycleRecord<string>;
+};
+const ARCHIVAL = "RFQ lifecycle record predates the DACS-3 v0.6 channel wire; it is read-only";
+
+describe("durable RFQ records written before the v0.6 channel wire", () => {
+  function archivalClient(record: DurableRfqLifecycleRecord<string>) {
+    const store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    const sign = vi.fn(channelSigner(BUYER, buyerKeys.privateKey));
+    const publish = vi.fn(async () => ({ disposition: "acknowledged" as const }));
+    const reconcile = vi.fn(async () => ({ disposition: "absent" as const }));
+    const profileAdmission = vi.fn(grantProfile);
+    const client = createDurableRfqLifecycleClient({
+      role: record.role,
+      store,
+      transport: { publish, reconcile },
+      reserveChannelId: () => "pass",
+      signChannelMessage: sign,
+      verifyChannelMessage: verifyChannel,
+      profileAdmission,
+      agreementSigner: record.role === "buyer"
+        ? agreementSigner(BUYER, buyerKeys.privateKey)
+        : agreementSigner(SELLER, sellerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    return { store, client, sign, publish, reconcile, profileAdmission };
+  }
+
+  test("load, validate and keep a finalized agreement readable", async () => {
+    for (const record of [STORE_V1.buyerMidNegotiation, STORE_V1.buyerFinalized, STORE_V1.sellerFinalized]) {
+      expect(record.storeVersion).toBe(1);
+      expect(durableRfqLifecycleRecordViolation(record)).toBeNull();
+    }
+    expect(DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION).toBe(1);
+    const { store, client } = archivalClient(STORE_V1.buyerFinalized);
+    await expect(store.create(STORE_V1.buyerFinalized as never)).toMatchObject({ status: "created" });
+    const status = await client.getStatus(STORE_V1.jobId);
+    expect(status.status).toBe("ok");
+    if (status.status !== "ok") return;
+    expect(status.record.storeVersion).toBe(1);
+    expect(status.record.agreement?.finalized).toEqual(STORE_V1.buyerFinalized.agreement?.finalized);
+    expect(status.record.agreement?.finalized).toEqual(STORE_V1.sellerFinalized.agreement?.finalized);
+  });
+
+  test("refuse every live operation without signing, publishing or admitting", async () => {
+    const finalized = archivalClient(STORE_V1.buyerFinalized);
+    await finalized.store.create(STORE_V1.buyerFinalized as never);
+    const sellerPacket = STORE_V1.sellerFinalized.outbox.at(-1)!.packet;
+    const refused = { status: "rejected", reason: ARCHIVAL };
+    await expect(finalized.client.open(openInput())).resolves.toMatchObject(refused);
+    await expect(finalized.client.startAgreement(STORE_V1.jobId)).resolves.toMatchObject(refused);
+    await expect(finalized.client.resumeOutbox(STORE_V1.jobId)).resolves.toMatchObject(refused);
+    await expect(finalized.client.sendAbort(STORE_V1.jobId, "late")).resolves.toMatchObject(refused);
+    await expect(finalized.client.receive(sellerPacket)).resolves.toMatchObject(refused);
+
+    const open = archivalClient(STORE_V1.buyerMidNegotiation);
+    await open.store.create(STORE_V1.buyerMidNegotiation as never);
+    const policy = vi.fn(() => ({ action: "abort" as const }));
+    await expect(open.client.respond(STORE_V1.jobId, policy)).resolves.toMatchObject(refused);
+    expect(policy).not.toHaveBeenCalled();
+
+    for (const harness of [finalized, open]) {
+      expect(harness.sign).not.toHaveBeenCalled();
+      expect(harness.publish).not.toHaveBeenCalled();
+      expect(harness.reconcile).not.toHaveBeenCalled();
+      expect(harness.profileAdmission).not.toHaveBeenCalled();
+    }
+  });
+
+  test("store transitions never write a store-version-1 record", async () => {
+    const store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    await store.create(STORE_V1.buyerFinalized as never);
+    const next = {
+      ...structuredClone(STORE_V1.buyerFinalized),
+      revision: STORE_V1.buyerFinalized.revision + 1,
+      updatedAt: STORE_V1.buyerFinalized.updatedAt + 1,
+    };
+    expect(durableRfqLifecycleTransitionViolation(STORE_V1.buyerFinalized, next)).toBe(
+      "historical store-version-1 records are read-only",
+    );
+    await expect(
+      store.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, next as never),
+    ).toMatchObject({ status: "corrupt", reason: "historical store-version-1 records are read-only" });
+  });
+
+  test("a current record whose turn is not current is a violation, not an exception", async () => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const { buyerClient, sellerClient } = clients(network.transport);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    const sent = await buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    if (sent.status !== "ready") throw new Error(JSON.stringify(sent));
+    const record = structuredClone(sent.record) as DurableRfqLifecycleRecord<ChannelMessageSignatureV1>;
+    delete (record.transcript[0] as { canonicalChannelMessageVersion?: string }).canonicalChannelMessageVersion;
+    expect(() => durableRfqLifecycleRecordViolation(record)).not.toThrow();
+    expect(durableRfqLifecycleRecordViolation(record)).toBe(
+      "transcript endpoint does not match the RFQ checkpoint",
+    );
+
+    // The same turn on the wire is refused with the packet's own violation.
+    const packet = structuredClone(network.take(SELLER)!) as RfqLifecyclePacket<ChannelMessageSignatureV1>;
+    if (packet.kind !== "turn") throw new Error("expected a turn packet");
+    delete (packet.message as { canonicalChannelMessageVersion?: string }).canonicalChannelMessageVersion;
+    const { packetId: _packetId, ...unsigned } = packet;
+    packet.packetId = rfqLifecyclePacketId(unsigned);
+    await expect(sellerClient.receive(packet)).resolves.toEqual({
+      status: "rejected",
+      reason: "RFQ turn packet does not bind its routing envelope",
+    });
+  });
+});
+
+describe("durable RFQ with CH-7-qualified sender spellings", () => {
+  const QUALIFIED_BUYER = `${BUYER}?role=buyer`;
+  const identityOf = (claim: string) => claim.split("?")[0]!;
+  function verifyQualified(
+    input: Readonly<ChannelMessageSignatureVerificationInput<RfqTurnBody, ChannelMessageSignatureV1>>,
+  ) {
+    const key = publicKeys.get(identityOf(input.message.sender));
+    return key !== undefined &&
+      identityOf(input.message.signature.signer) === identityOf(input.message.sender) &&
+      ed25519Verify(null, Buffer.from(input.signedBytes), key, Buffer.from(input.message.signature.value, "base64url"))
+      ? ("pass" as const)
+      : ("fail" as const);
+  }
+  function qualifiedOffer(packetSender: string, recipient = SELLER) {
+    const signing = prepareChannelMessageSigningInput<RfqTurnBody>({
+      canonicalChannelMessageVersion: "1",
+      channelId: openInput().channelId,
+      sequence: 1,
+      sender: QUALIFIED_BUYER,
+      sentAt: NOW,
+      type: "offer",
+      body: { rfqBodyVersion: "1", proposal: { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } } },
+    });
+    const message = {
+      ...structuredClone(signing.unsignedEnvelope),
+      signature: channelSigner(QUALIFIED_BUYER, buyerKeys.privateKey)(signing),
+    };
+    const unsigned = {
+      packetVersion: "1" as const,
+      jobId: JOB_ID,
+      channelId: openInput().channelId,
+      sender: packetSender,
+      recipient,
+      kind: "turn" as const,
+      message,
+    };
+    return { message, packet: { ...unsigned, packetId: rfqLifecyclePacketId(unsigned) } };
+  }
+  function sellerClient(store = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>()) {
+    return createDurableRfqLifecycleClient({
+      role: "seller",
+      store,
+      transport: createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>().transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(SELLER, sellerKeys.privateKey),
+      verifyChannelMessage: verifyQualified,
+      profileAdmission: grantProfile,
+      agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+  }
+
+  test.each([
+    ["the primary claim", BUYER],
+    ["the qualified spelling", QUALIFIED_BUYER],
+  ])("a session advanced by a qualified sender stays consistent when the packet routes by %s", async (_label, packetSender) => {
+    const client = sellerClient();
+    await client.open(openInput());
+    const { message, packet } = qualifiedOffer(packetSender);
+    const received = await client.receive(packet);
+    expect(received, JSON.stringify(received)).toMatchObject({ status: "ready" });
+    const countered = await client.respond(JOB_ID, () => ({
+      action: "counter",
+      proposal: { rfqProposalVersion: "1", price: { amount: "9.5", currency: "USDC" } },
+    }));
+    expect(countered, JSON.stringify(countered)).toMatchObject({ status: "ready" });
+    const status = await client.getStatus(JOB_ID);
+    expect(status.status).toBe("ok");
+    if (status.status !== "ok") return;
+    // The exact signed bytes are kept; the session state holds the primary claim.
+    expect(status.record.transcript[0]).toEqual(message);
+    expect(status.record.session.standingProposal?.proposer).toBe(SELLER);
+    expect(status.record.session.expectedSender).toBe(BUYER);
+    expect(durableRfqLifecycleRecordViolation(status.record)).toBeNull();
+
+    // An outbox packet routed by a qualified spelling of the local member is
+    // the same party.
+    const record = structuredClone(status.record);
+    const outbound = record.outbox[0]!.packet;
+    outbound.sender = `${SELLER}?role=seller`;
+    const { packetId: _packetId, ...unsigned } = outbound;
+    outbound.packetId = rfqLifecyclePacketId(unsigned);
+    expect(durableRfqLifecycleRecordViolation(record)).toBeNull();
+  });
+
+  test("a packet addressed from a party to itself is malformed", async () => {
+    const client = sellerClient();
+    await client.open(openInput());
+    const { packet } = qualifiedOffer(BUYER, QUALIFIED_BUYER);
+    await expect(client.receive(packet)).resolves.toEqual({
+      status: "rejected",
+      reason: "RFQ lifecycle packet is malformed",
+    });
+  });
+});
+
+describe("durable RFQ corrective-profile admission", () => {
+  test.each([
+    ["no authority", () => undefined],
+    ["a failing resolver", () => {
+      throw new Error("authority service offline");
+    }],
+  ])("refuses to sign or admit a turn with %s", async (_label, resolver) => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const sign = vi.fn(channelSigner(BUYER, buyerKeys.privateKey));
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: sign,
+      verifyChannelMessage: verifyChannel,
+      profileAdmission: resolver,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await expect(client.open(openInput())).resolves.toMatchObject({ status: "ready" });
+    await expect(
+      client.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } }),
+    ).resolves.toMatchObject({ status: "indeterminate" });
+    expect(sign).not.toHaveBeenCalled();
+    expect(network.pending(SELLER)).toBe(0);
+  });
+
+  test("refuses an inbound turn when the authority binds another session", async () => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const { buyerClient } = clients(network.transport);
+    const seller = createDurableRfqLifecycleClient({
+      role: "seller",
+      store: createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>(),
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(SELLER, sellerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      profileAdmission: ({ participantIdentities }) =>
+        rfqProfileAdmission("another-private-channel", participantIdentities),
+      agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    await buyerClient.open(openInput());
+    await seller.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+    await expect(seller.receive(network.take(SELLER))).resolves.toMatchObject({
+      status: "rejected",
+      reason: "corrective-profile authority binds another session",
     });
   });
 });

@@ -9,6 +9,7 @@ import {
   admitChannelMessage,
   canonicalize,
   canonicalChannelMessageSignedBytes,
+  legacyChannelMessageSignedBytes,
   ed25519Verify,
   publicKeyFromRaw,
   prepareChannelMessageSigningInput,
@@ -17,6 +18,7 @@ import {
   type ChannelAdmissionContext,
   type ChannelMessageSignatureVerifier,
   type ChannelMessageSignatureV1,
+  type ChannelProfileAdmission,
   type VerificationDecision,
 } from "../../src/index.js";
 
@@ -509,32 +511,28 @@ function corpusVerifier(roster: readonly string[]): ChannelMessageSignatureVerif
 }
 
 /**
- * CORE §11.1.2 corrective profile authority is verifier-owned session input
- * outside the admission seam (follow-up to #330). The seven `current-profile-*`
- * vectors are checked through this test-side gate before admission.
+ * The deployment's exact CORE §11.1.2 corrective profile: the fixture's
+ * release pin and complete module tuple.
  */
-function profileGate(vector: typeof CANONICAL_CORPUS.vectors[number]): VerificationDecision | null {
-  if (vector.operation !== "current-read") return null;
-  const ctx = vector.ctx as { sessionChannelId?: unknown };
-  const profile = vector.profileAdmission as Record<string, unknown> | undefined;
-  const expected = CANONICAL_CORPUS.correctiveProfileFixture;
-  if (profile === undefined) return "indeterminate";
-  if (profile.authenticated !== true) return "error";
-  const versions = profile.moduleVersions as Record<string, string> | undefined;
-  if (versions === undefined || Object.keys(expected.moduleVersions).some((m) => !(m in versions))) return "error";
-  const participants = (profile.participantIdentities as string[]).map(identityOf);
-  if (new Set(participants).size !== participants.length) return "error";
-  if (profile.sessionId !== ctx.sessionChannelId) return "fail";
-  if (profile.releasePin !== expected.releasePin) return "fail";
-  const roster = new Set(CORPUS_ROSTER.map(identityOf));
-  if (participants.length !== roster.size || !participants.every((p) => roster.has(p))) return "fail";
-  return null;
+const CORRECTIVE_PROFILE = {
+  releasePin: CANONICAL_CORPUS.correctiveProfileFixture.releasePin,
+  moduleVersions: CANONICAL_CORPUS.correctiveProfileFixture.moduleVersions,
+};
+
+/** Verifier-owned profile admission whose authority binds `participants` on `sessionId`. */
+function admittedProfile(participants: readonly string[], sessionId = CHANNEL): ChannelProfileAdmission {
+  return {
+    profile: CORRECTIVE_PROFILE,
+    participantIdentities: participants,
+    authority: { authenticated: true, sessionId, participantIdentities: participants, ...CORRECTIVE_PROFILE },
+  };
 }
 
 describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
   const keys = generateKeyPairSync("ed25519");
   const rawKey = (keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32);
   const claim = `key:${rawKey.toString("hex")}`;
+  const CURRENT = { profileAdmission: admittedProfile([claim]) };
   const unsigned = {
     canonicalChannelMessageVersion: "1" as const,
     channelId: CHANNEL,
@@ -564,7 +562,7 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     expect(Buffer.from(input.signedBytes).toString("utf8")).toBe(`${CANONICAL_CHANNEL_MESSAGE_DOMAIN}${input.envelopeHash}`);
     expect(input.unsignedEnvelope).toHaveProperty("experimentalHint");
     const signed = await produce();
-    const admitted = await admitChannelMessage(signed, context(), verifier);
+    const admitted = await admitChannelMessage(signed, context(), verifier, CURRENT);
     expect(admitted.decision).toBe("pass");
     if (admitted.decision === "pass") {
       expect(admitted.envelopeHash).toBe(input.envelopeHash);
@@ -573,16 +571,16 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     }
     // Stripping the unknown member changes the signed scope.
     const { experimentalHint: _hint, ...stripped } = signed as Record<string, unknown>;
-    expect((await admitChannelMessage(stripped, context(), verifier)).decision).toBe("fail");
+    expect((await admitChannelMessage(stripped, context(), verifier, CURRENT)).decision).toBe("fail");
   });
 
   test("never falls back between arms", async () => {
     const signed = await produce();
     expect((await admitChannelMessage(signed, context(), verifier, LEGACY)).decision).toBe("error");
-    expect((await admitChannelMessage(message(), context(), verifyStandardVectorSignature)).decision).toBe("error");
+    expect((await admitChannelMessage(message(), context(), verifyStandardVectorSignature, CURRENT)).decision).toBe("error");
     const { canonicalChannelMessageVersion: _v, ...undiscriminated } = signed;
-    expect((await admitChannelMessage(undiscriminated, context(), verifier)).decision).toBe("error");
-    expect((await admitChannelMessage({ ...signed, signature: FIRST_SIGNATURE }, context(), verifier)).decision).toBe("error");
+    expect((await admitChannelMessage(undiscriminated, context(), verifier, CURRENT)).decision).toBe("error");
+    expect((await admitChannelMessage({ ...signed, signature: FIRST_SIGNATURE }, context(), verifier, CURRENT)).decision).toBe("error");
     // Producer side is current-only (F-332-1): the signing input never carries
     // the frozen wire's `dacs-channelmsg:v1:` || raw-digest bytes.
     const prepared = prepareChannelMessageSigningInput(unsigned);
@@ -595,9 +593,9 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
   test("refuses a signer that does not identify the sender and an unregistered sender scheme", async () => {
     const signed = await produce();
     const other = { ...signed, signature: { ...signed.signature, signer: `key:${"0".repeat(64)}` } };
-    expect((await admitChannelMessage(other, context(), verifier)).decision).toBe("fail");
-    expect((await admitChannelMessage({ ...signed, sender: `cci:${rawKey.toString("hex")}`, signature: { ...signed.signature, signer: `cci:${rawKey.toString("hex")}` } }, context(), verifier)).decision).toBe("error");
-    expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, value: `${signed.signature.value}=` } }, context(), verifier)).decision).toBe("error");
+    expect((await admitChannelMessage(other, context(), verifier, CURRENT)).decision).toBe("fail");
+    expect((await admitChannelMessage({ ...signed, sender: `cci:${rawKey.toString("hex")}`, signature: { ...signed.signature, signer: `cci:${rawKey.toString("hex")}` } }, context(), verifier, CURRENT)).decision).toBe("error");
+    expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, value: `${signed.signature.value}=` } }, context(), verifier, CURRENT)).decision).toBe("error");
   });
 
   test("refuses the demosdk 4.0.11–4.0.18 wire and its demos:0x sender on both operations (DACS-Standard#414)", async () => {
@@ -607,13 +605,13 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     // demosdk: UTF8("dacs-channelmsg:v1:" + hex-ASCII digest), signature { sigVersion, "0x" + hex }
     const demosdkSignature = `0x${nodeSign(null, Buffer.from(`dacs-channelmsg:v1:${digestHex}`, "utf8"), keys.privateKey).toString("hex")}`;
     const demosdkMessage = { ...unsignedDemos, signature: { sigVersion: "1", signature: demosdkSignature } };
-    expect((await admitChannelMessage(demosdkMessage, context(), () => "pass")).decision).toBe("error");
+    expect((await admitChannelMessage(demosdkMessage, context(), () => "pass", CURRENT)).decision).toBe("error");
     expect((await admitChannelMessage(demosdkMessage, context(), () => "pass", LEGACY)).decision).toBe("error");
     // Frozen-arm bytes but the unregistered demos:0x sender: outside the historical registry.
     const frozenBytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(digestHex, "hex")]);
     const frozenShape = { ...unsignedDemos, signature: nodeSign(null, frozenBytes, keys.privateKey).toString("hex") };
     expect((await admitChannelMessage(frozenShape, context(), () => "pass", LEGACY)).decision).toBe("error");
-    expect((await admitChannelMessage(frozenShape, context(), () => "pass")).decision).toBe("error");
+    expect((await admitChannelMessage(frozenShape, context(), () => "pass", CURRENT)).decision).toBe("error");
     // The same frozen-arm bytes under the historical cci: scheme are importable.
     const cci = { ...unsignedDemos, sender: `cci:${senderHex}` };
     const cciBytes = Buffer.concat([Buffer.from("dacs-channelmsg:v1:", "utf8"), Buffer.from(sha256Hex(canonicalize(cci)), "hex")]);
@@ -624,11 +622,11 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
   test("a signer that does not parse is malformed input, not an attributable failure (F-332-2)", async () => {
     const signed = await produce();
     for (const signer of ["not a claim", " ", `cci:${rawKey.toString("hex")}`, "key:not-hex", "demos:0x" + rawKey.toString("hex")]) {
-      expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, signer } }, context(), verifier)).decision, signer).toBe("error");
+      expect((await admitChannelMessage({ ...signed, signature: { ...signed.signature, signer } }, context(), verifier, CURRENT)).decision, signer).toBe("error");
     }
     // Only a well-formed signer that names another party is the CH-7 `fail`.
     const other = { ...signed, signature: { ...signed.signature, signer: `key:${"0".repeat(64)}` } };
-    expect((await admitChannelMessage(other, context(), verifier)).decision).toBe("fail");
+    expect((await admitChannelMessage(other, context(), verifier, CURRENT)).decision).toBe("fail");
   });
 
   test("legacy-import admits exactly the frozen historical sender grammar (F-332-3)", async () => {
@@ -663,23 +661,111 @@ describe("DACS-3 v0.6 CanonicalChannelMessage admission", () => {
     const current = corpusVerifier(CORPUS_ROSTER);
     const legacy = corpusVerifier(LEGACY_ROSTER);
     let matched = 0;
-    let gatedCount = 0;
     for (const vector of CANONICAL_CORPUS.vectors) {
-      const gated = profileGate(vector);
-      const result = gated !== null
-        ? { decision: gated }
-        : await admitChannelMessage(vector.message, vector.ctx, vector.operation === "legacy-import" ? legacy : current, { operation: vector.operation });
+      // Every vector is decided by admitChannelMessage. A current-read gets the
+      // verifier-owned capability: the deployment profile, the CH-1 roster and
+      // the vector's authority (absent for current-profile-missing-authority).
+      const options = vector.operation === "legacy-import"
+        ? { operation: vector.operation }
+        : {
+            operation: vector.operation,
+            profileAdmission: {
+              profile: CORRECTIVE_PROFILE,
+              participantIdentities: CORPUS_ROSTER,
+              ...(vector.profileAdmission === undefined ? {} : { authority: vector.profileAdmission }),
+            } as ChannelProfileAdmission,
+          };
+      const result = await admitChannelMessage(vector.message, vector.ctx, vector.operation === "legacy-import" ? legacy : current, options);
       if (SR1_VECTORS.has(vector.name)) {
         expect(result.decision, vector.name).toBe("indeterminate");
         continue;
       }
       expect(result.decision, `${vector.name}: ${vector.note ?? ""}`).toBe(vector.expected);
-      // Counted apart: the seven current-profile-* vectors are decided by the
-      // test-side profileGate, not by admitChannelMessage.
-      if (gated !== null) gatedCount += 1;
-      else matched += 1;
+      matched += 1;
     }
-    expect(gatedCount).toBe(7);
-    expect(matched).toBe(55 - SR1_VECTORS.size - gatedCount);
+    expect(matched).toBe(55 - SR1_VECTORS.size);
+  });
+
+  test("current-read without verifier-owned profile admission refuses the session (CORE §11.1.2(3))", async () => {
+    const signed = await produce();
+    const reached = vi.fn(verifier);
+    // No capability, a capability without authority, and every current-profile-*
+    // vector on its own: none may reach the verifier or pass.
+    expect(await admitChannelMessage(signed, context(), reached)).toMatchObject({ decision: "indeterminate" });
+    expect(await admitChannelMessage(signed, context(), reached, { operation: "current-read" })).toMatchObject({ decision: "indeterminate" });
+    expect(await admitChannelMessage(signed, context(), reached, {
+      profileAdmission: { profile: CORRECTIVE_PROFILE, participantIdentities: [claim] },
+    })).toMatchObject({ decision: "indeterminate" });
+    const profileVectors = CANONICAL_CORPUS.vectors.filter((vector) => vector.name.startsWith("current-profile-"));
+    expect(profileVectors).toHaveLength(7);
+    for (const vector of profileVectors) {
+      expect((await admitChannelMessage(vector.message, vector.ctx, () => "pass")).decision, vector.name).toBe("indeterminate");
+    }
+    expect(reached).not.toHaveBeenCalled();
+    // The legacy-import archival path does not consult profile admission.
+    const legacyVector = CANONICAL_CORPUS.vectors.find((vector) => vector.name === "legacy-byte-preserving-read-only-import")!;
+    expect((await admitChannelMessage(legacyVector.message, legacyVector.ctx, corpusVerifier(LEGACY_ROSTER), LEGACY)).decision).toBe("pass");
+  });
+
+  test("profile admission compares the complete module tuple and the capability shape", async () => {
+    const signed = await produce();
+    const withAuthority = (patch: Record<string, unknown>) => ({
+      profileAdmission: { ...admittedProfile([claim]), authority: { ...admittedProfile([claim]).authority!, ...patch } },
+    });
+    expect((await admitChannelMessage(signed, context(), verifier, CURRENT)).decision).toBe("pass");
+    // A complete tuple with a different module version is another profile.
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({
+      moduleVersions: { ...CORRECTIVE_PROFILE.moduleVersions, dacs3: "0.5" },
+    }))).decision).toBe("fail");
+    // A partial or extended tuple is malformed.
+    const { dacs5: _dacs5, ...partial } = CORRECTIVE_PROFILE.moduleVersions;
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({ moduleVersions: partial }))).decision).toBe("error");
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({
+      moduleVersions: { ...CORRECTIVE_PROFILE.moduleVersions, dacs6: "0.1" },
+    }))).decision).toBe("error");
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({
+      moduleVersions: { ...partial, dacs6: "0.7" },
+    }))).decision).toBe("error");
+    // Participants compare by CF-3 identity; another party is a binding failure.
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({
+      participantIdentities: [`${claim}?role=buyer`],
+    }))).decision).toBe("pass");
+    expect((await admitChannelMessage(signed, context(), verifier, withAuthority({
+      participantIdentities: [`key:${"1".repeat(64)}`],
+    }))).decision).toBe("fail");
+    // A malformed capability is malformed input, never a pass.
+    for (const profileAdmission of [
+      null,
+      { participantIdentities: [claim] },
+      { ...admittedProfile([claim]), profile: { releasePin: CORRECTIVE_PROFILE.releasePin } },
+      { ...admittedProfile([claim]), participantIdentities: [] },
+      { ...admittedProfile([claim]), extra: true },
+    ]) {
+      expect((await admitChannelMessage(signed, context(), verifier, { profileAdmission } as never)).decision, JSON.stringify(profileAdmission)).toBe("error");
+    }
+  });
+
+  test("signed-byte helpers require a 64-character lowercase hex hash", () => {
+    const hash = "ab".repeat(32);
+    expect(Buffer.from(canonicalChannelMessageSignedBytes(hash)).toString("utf8")).toBe(`${CANONICAL_CHANNEL_MESSAGE_DOMAIN}${hash}`);
+    expect(legacyChannelMessageSignedBytes(hash)).toHaveLength("dacs-channelmsg:v1:".length + 32);
+    for (const bad of [hash.toUpperCase(), hash.slice(0, 63), `${hash}0`, `${hash.slice(0, 62)}zz`, `0x${hash.slice(2)}`, ""]) {
+      expect(() => canonicalChannelMessageSignedBytes(bad), bad).toThrow(/64 lowercase hex/);
+      expect(() => legacyChannelMessageSignedBytes(bad), bad).toThrow(/64 lowercase hex/);
+    }
+  });
+
+  test("signedBytes owns its entire buffer", async () => {
+    const owns = (bytes: Uint8Array) =>
+      bytes.byteOffset === 0 && bytes.buffer.byteLength === bytes.byteLength;
+    expect(owns(prepareChannelMessageSigningInput(unsigned).signedBytes)).toBe(true);
+    expect(owns(canonicalChannelMessageSignedBytes("ab".repeat(32)))).toBe(true);
+    expect(owns(legacyChannelMessageSignedBytes("ab".repeat(32)))).toBe(true);
+    let seen: Uint8Array | undefined;
+    await admitChannelMessage(await produce(), context(), (input) => {
+      seen = input.signedBytes;
+      return verifier(input);
+    }, CURRENT);
+    expect(seen !== undefined && owns(seen)).toBe(true);
   });
 });

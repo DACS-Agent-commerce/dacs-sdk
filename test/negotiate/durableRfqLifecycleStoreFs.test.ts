@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -31,12 +32,19 @@ import {
   type IdentityBundle,
   type Listing,
   type RfqLifecyclePacket,
+  type RfqLifecycleProfileAdmission,
 } from "../../src/index.js";
+
+import { rfqProfileAdmission } from "./correctiveProfile.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-rfq-filesystem";
 const SELLER = "did:demos:seller-rfq-filesystem";
+
+/** Verifier-owned CORE §11.1.2(3) profile admission for each requested session. */
+const grantProfile: RfqLifecycleProfileAdmission = ({ channelId, participantIdentities }) =>
+  rfqProfileAdmission(channelId, participantIdentities);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 const boundaryTest = process.env.DACS_SLOW_BOUNDARY === "1" ? test : test.skip;
 const temporaryRoots: string[] = [];
@@ -165,6 +173,7 @@ function clientOptions(
     reserveChannelId: () => "pass" as const,
     signChannelMessage: sign,
     verifyChannelMessage: () => "pass" as const,
+    profileAdmission: grantProfile,
     agreementSigner: {
       party: BUYER,
       algorithm: "ed25519" as const,
@@ -790,5 +799,92 @@ describe("keyed durable RFQ filesystem store", () => {
       reason: expect.stringContaining("hard links"),
     });
     await unlink(aliasPath);
+  });
+});
+
+/** Store-version-1 records written by SDK main before the v0.6 channel wire. */
+const STORE_V1 = JSON.parse(
+  readFileSync(new URL("../fixtures/durable-rfq-store-v1.json", import.meta.url), "utf8"),
+) as { jobId: string; buyerFinalized: DurableRfqLifecycleRecord<string> };
+
+/**
+ * The exact bytes the filesystem store writes for a buyer record: the keyed
+ * envelope is unchanged since SDK main, whose store produced these same bytes
+ * for the fixture's finalized buyer record.
+ */
+function storedBuyerEnvelope(record: unknown, integrityKey: Uint8Array): string {
+  const jobKeyHash = createHash("sha256").update(`buyer\u0000${STORE_V1.jobId}`).digest("hex");
+  const material = { envelopeVersion: 1, role: "buyer", jobKeyHash, record };
+  const mac = createHmac("sha256", integrityKey)
+    .update("dacs-rfq-lifecycle-local-store:v1:", "utf8")
+    .update(canonicalize(material), "utf8")
+    .digest("hex");
+  return canonicalize({ ...material, mac });
+}
+
+function buyerRecordPath(dir: string): string {
+  const hash = createHash("sha256").update(`buyer\u0000${STORE_V1.jobId}`).digest("hex");
+  return join(dir, "records", `${hash}.json`);
+}
+
+describe("filesystem RFQ records written before the v0.6 channel wire", () => {
+  const silentTransport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
+    async publish() {
+      return { disposition: "acknowledged" };
+    },
+    async reconcile() {
+      return { disposition: "acknowledged" };
+    },
+  };
+
+  test("load and keep the finalized agreement reachable; the session is read-only", async () => {
+    const dir = join(await root(), "buyer-rfq");
+    const integrityKey = Buffer.alloc(32, 0x5a);
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir,
+      role: "buyer",
+      integrityKey,
+    });
+    await writeFile(
+      buyerRecordPath(dir),
+      storedBuyerEnvelope(STORE_V1.buyerFinalized, integrityKey),
+      { mode: 0o600 },
+    );
+    const loaded = await store.load("buyer", STORE_V1.jobId);
+    expect(loaded.status).toBe("ok");
+    if (loaded.status !== "ok") return;
+    expect(loaded.record.storeVersion).toBe(1);
+    expect(loaded.record.agreement?.finalized).toEqual(STORE_V1.buyerFinalized.agreement?.finalized);
+
+    const sign = vi.fn();
+    const client = createDurableRfqLifecycleClient(clientOptions(store, silentTransport, sign));
+    const status = await client.getStatus(STORE_V1.jobId);
+    expect(status.status).toBe("ok");
+    const archival = {
+      status: "rejected",
+      reason: "RFQ lifecycle record predates the DACS-3 v0.6 channel wire; it is read-only",
+    };
+    await expect(client.resumeOutbox(STORE_V1.jobId)).resolves.toMatchObject(archival);
+    await expect(client.sendAbort(STORE_V1.jobId, "late")).resolves.toMatchObject(archival);
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  test("an authenticated record the validator cannot read is corrupt, never a rejected load", async () => {
+    const dir = join(await root(), "buyer-rfq");
+    const integrityKey = randomBytes(32);
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir,
+      role: "buyer",
+      integrityKey,
+    });
+    await writeFile(
+      buyerRecordPath(dir),
+      storedBuyerEnvelope({ ...structuredClone(STORE_V1.buyerFinalized), session: null }, integrityKey),
+      { mode: 0o600 },
+    );
+    await expect(store.load("buyer", STORE_V1.jobId)).resolves.toEqual({
+      status: "corrupt",
+      reason: "RFQ record cannot be validated",
+    });
   });
 });

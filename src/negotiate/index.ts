@@ -16,6 +16,9 @@ export {
   type ChannelMessageAdmissionOptions,
   type ChannelMessageSignatureV1,
   type ChannelMessageSignatureAlgorithm,
+  type ChannelCorrectiveProfile,
+  type ChannelProfileAuthority,
+  type ChannelProfileAdmission,
   type ChannelMessageSignatureVerificationInput,
   type ChannelMessageSignatureVerifier,
   type ChannelMessageAdmissionFailure,
@@ -43,6 +46,7 @@ export {
   type OpenRfqSessionInput,
   type RfqChannelReservationInput,
   type RfqChannelReservation,
+  type RfqProfileAdmission,
   type OpenRfqSessionResult,
   type AdvanceRfqSessionResult,
 } from "./rfq.js";
@@ -66,6 +70,9 @@ export {
 } from "./rfqTranscript.js";
 export {
   DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
+  DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION,
+  type DurableRfqLifecycleStoreVersion,
+  type RfqLifecycleProfileAdmission,
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
   createInMemoryRfqLifecycleNetwork,

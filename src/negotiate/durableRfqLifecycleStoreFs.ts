@@ -23,6 +23,7 @@ import {
   readPrivateFile,
 } from "../filesystem/privateStore.js";
 import {
+  DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION,
   DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
@@ -375,10 +376,18 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     if (typeof version !== "number") {
       return { status: "corrupt", reason: "RFQ record is missing storeVersion" };
     }
-    if (version !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION) {
+    if (
+      version !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION &&
+      version !== DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION
+    ) {
       return { status: "unsupported", version };
     }
-    const violation = durableRfqLifecycleRecordViolation<TSignature>(parsed.record);
+    let violation: string | null;
+    try {
+      violation = durableRfqLifecycleRecordViolation<TSignature>(parsed.record);
+    } catch {
+      violation = "RFQ record cannot be validated";
+    }
     if (violation !== null) return { status: "corrupt", reason: violation };
     const record = parsed.record as unknown as DurableRfqLifecycleRecord<TSignature>;
     if (record.role !== role || record.jobId !== jobId) {

@@ -28,6 +28,8 @@ import {
   type RfqSessionState,
 } from "../../src/index.js";
 
+import { rfqProfileAdmission } from "./correctiveProfile.js";
+
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 41));
@@ -37,6 +39,8 @@ const claim = (seed: Uint8Array) =>
   `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
+/** Verifier-owned CORE §11.1.2(3) profile admission for the session. */
+const PROFILE = rfqProfileAdmission("l2ps-rfq-channel-01", [BUYER, SELLER]);
 const ORCHESTRATOR = claim(ORCHESTRATOR_SEED);
 const SUBSTITUTE = claim(Uint8Array.from(Buffer.alloc(32, 44)));
 const HASH = "a".repeat(64);
@@ -188,6 +192,7 @@ async function acceptedSession(
     offer,
     NOW + 1,
     () => "pass",
+    PROFILE,
   );
   if (offered.decision !== "pass") throw new Error(offered.reason);
   const accepted = await advanceRfqSession(
@@ -205,6 +210,7 @@ async function acceptedSession(
     },
     NOW + 2,
     () => "pass",
+    PROFILE,
   );
   if (accepted.decision !== "pass") throw new Error(accepted.reason);
   return accepted.state as RfqSessionState;

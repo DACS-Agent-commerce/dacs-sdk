@@ -18,12 +18,15 @@ import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   advanceRfqSession,
   openRfqSession,
+  rfqProfileAdmissionFailure,
   rfqSessionCheckpointHash,
   type OpenRfqSessionInput,
   type RfqChannelReservation,
+  type RfqProfileAdmission,
   type RfqProposal,
   type RfqSessionState,
   type RfqTurnBody,
@@ -49,7 +52,18 @@ import {
 } from "./rfqAgreement.js";
 import type { AgreementSigner } from "./fixedPrice.js";
 
-export const DURABLE_RFQ_LIFECYCLE_STORE_VERSION = 1 as const;
+/** Records whose turns use the DACS-3 v0.6 `CanonicalChannelMessage` wire. */
+export const DURABLE_RFQ_LIFECYCLE_STORE_VERSION = 2 as const;
+/**
+ * Records written before the DACS-3 v0.6 channel wire. They still load and
+ * validate, so a finalized agreement stays readable, but they are archival
+ * (CORE §11.1.2(4)): the client never signs, sends, receives or reconciles
+ * for them, and no store transition may write one.
+ */
+export const DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION = 1 as const;
+export type DurableRfqLifecycleStoreVersion =
+  | typeof DURABLE_RFQ_LIFECYCLE_STORE_VERSION
+  | typeof DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION;
 
 export type DurableRfqLifecycleRole = "buyer" | "seller";
 
@@ -127,7 +141,7 @@ export interface DurableRfqLifecycleFailure {
  * hash is not treated as a substitute for keyed local authenticity.
  */
 export interface DurableRfqLifecycleRecord<TSignature = unknown> {
-  storeVersion: typeof DURABLE_RFQ_LIFECYCLE_STORE_VERSION;
+  storeVersion: DurableRfqLifecycleStoreVersion;
   revision: number;
   role: DurableRfqLifecycleRole;
   jobId: string;
@@ -228,6 +242,18 @@ export type RfqLifecyclePolicy = (
   }>,
 ) => Promise<RfqLifecyclePolicyDecision> | RfqLifecyclePolicyDecision;
 
+export type RfqLifecycleProfileAdmission = (
+  request: Readonly<{
+    role: DurableRfqLifecycleRole;
+    jobId: string;
+    channelId: string;
+    participantIdentities: readonly [string, string];
+  }>,
+) =>
+  | Promise<RfqProfileAdmission | undefined>
+  | RfqProfileAdmission
+  | undefined;
+
 export interface DurableRfqLifecycleClientOptions<TSignature = unknown> {
   role: DurableRfqLifecycleRole;
   store: DurableRfqLifecycleStore<TSignature>;
@@ -238,6 +264,12 @@ export interface DurableRfqLifecycleClientOptions<TSignature = unknown> {
     RfqTurnBody,
     TSignature
   >;
+  /**
+   * Verifier-owned CORE §11.1.2(3) profile admission for a session. Without
+   * an authority that binds the session, its members and the exact profile,
+   * the client neither signs nor admits a turn.
+   */
+  profileAdmission: RfqLifecycleProfileAdmission;
   agreementSigner: AgreementSigner;
   verifyAgreementContribution: FixedPriceAgreementContributionVerifier;
   /** Trusted role-local wall clock; policy callbacks never supply protocol time. */
@@ -318,6 +350,54 @@ const roleClaim = (
 const otherRole = (role: DurableRfqLifecycleRole): DurableRfqLifecycleRole =>
   role === "buyer" ? "seller" : "buyer";
 
+/**
+ * CH-7 / CF-3: parameter-qualified spellings name the same party. Routing and
+ * transcript claims compare by identity; stored messages keep their exact bytes.
+ */
+const sameParty = (left: unknown, right: unknown): boolean =>
+  left === right || sameCanonicalClaimIdentity(left, right);
+
+const HISTORICAL_MESSAGE_KEYS = [
+  "channelId",
+  "sequence",
+  "sender",
+  "sentAt",
+  "type",
+  "body",
+] as const;
+
+/**
+ * The stored turn's CH-8 `message_hash`, or `null` when the turn is not of the
+ * kind its record version stores. Store version 1 holds the historical
+ * envelope (no discriminator), hashed as `sha256(JCS(unsigned))` exactly as
+ * it was written; current records hold the current wire. Never throws.
+ */
+function storedEnvelopeHash(
+  message: unknown,
+  storeVersion: DurableRfqLifecycleStoreVersion,
+): string | null {
+  try {
+    if (
+      !isRecord(message) ||
+      !Object.prototype.hasOwnProperty.call(message, "signature") ||
+      message.signature === null
+    ) {
+      return null;
+    }
+    const { signature: _signature, ...unsigned } = message;
+    if (storeVersion === DURABLE_RFQ_LIFECYCLE_STORE_VERSION) {
+      return prepareChannelMessageSigningInput(structuredClone(unsigned))
+        .envelopeHash;
+    }
+    return exactKeys(unsigned, HISTORICAL_MESSAGE_KEYS) ||
+      exactKeys(unsigned, [...HISTORICAL_MESSAGE_KEYS, "refs"])
+      ? sha256Hex(canonicalize(unsigned))
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   if (
     value === null ||
@@ -391,7 +471,25 @@ function withPacketId<TSignature>(
   ) as Readonly<RfqLifecyclePacket<TSignature>>;
 }
 
-function capturePacket<TSignature>(value: unknown): RfqLifecyclePacket<TSignature> {
+/** Own and validate a packet; every defect is returned as a violation, never thrown. */
+function capturePacket<TSignature>(
+  value: unknown,
+  storeVersion: DurableRfqLifecycleStoreVersion = DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
+): { packet: RfqLifecyclePacket<TSignature> } | { violation: string } {
+  try {
+    return { packet: requirePacket<TSignature>(value, storeVersion) };
+  } catch (cause) {
+    return {
+      violation:
+        cause instanceof DacsError ? cause.message : "RFQ lifecycle packet is malformed",
+    };
+  }
+}
+
+function requirePacket<TSignature>(
+  value: unknown,
+  storeVersion: DurableRfqLifecycleStoreVersion,
+): RfqLifecyclePacket<TSignature> {
   const packet = snapshot(value, "RFQ lifecycle packet") as RfqLifecyclePacket<TSignature>;
   const required =
     packet.kind === "turn"
@@ -436,7 +534,7 @@ function capturePacket<TSignature>(value: unknown): RfqLifecyclePacket<TSignatur
     !isNonEmptyCanonical(packet.channelId) ||
     !isNonEmptyCanonical(packet.sender) ||
     !isNonEmptyCanonical(packet.recipient) ||
-    packet.sender === packet.recipient ||
+    sameParty(packet.sender, packet.recipient) ||
     !["turn", "agreement-proposal", "agreement-contribution"].includes(packet.kind)
   ) {
     throw new DacsError("RFQ lifecycle packet is malformed");
@@ -446,16 +544,10 @@ function capturePacket<TSignature>(value: unknown): RfqLifecyclePacket<TSignatur
     throw new DacsError("RFQ lifecycle packetId does not match exact bytes");
   }
   if (packet.kind === "turn") {
-    const { signature: _signature, ...message } = packet.message;
-    const prepared = prepareChannelMessageSigningInput(
-      structuredClone(message),
-    );
     if (
-      !Object.prototype.hasOwnProperty.call(packet.message, "signature") ||
-      packet.message.signature === null ||
+      storedEnvelopeHash(packet.message, storeVersion) === null ||
       packet.message.channelId !== packet.channelId ||
-      packet.message.sender !== packet.sender ||
-      prepared.envelopeHash.length !== 64
+      !sameParty(packet.message.sender, packet.sender)
     ) {
       throw new DacsError("RFQ turn packet does not bind its routing envelope");
     }
@@ -592,9 +684,13 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
     ...(record.failure === undefined ? [] : ["failure"]),
   ];
   if (!exactKeys(record, recordKeys)) return "record fields are malformed";
-  if (record.storeVersion !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION) {
+  if (
+    record.storeVersion !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION &&
+    record.storeVersion !== DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION
+  ) {
     return "unsupported store version";
   }
+  const storeVersion = record.storeVersion;
   if (
     !Number.isSafeInteger(record.revision) ||
     record.revision < 0 ||
@@ -644,8 +740,8 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
   for (const message of record.transcript) {
     if (
       message.channelId !== record.channelId ||
-      (message.sender !== record.session.buyer.primaryClaim &&
-        message.sender !== record.session.seller.primaryClaim) ||
+      (!sameParty(message.sender, record.session.buyer.primaryClaim) &&
+        !sameParty(message.sender, record.session.seller.primaryClaim)) ||
       transcriptSequences.has(message.sequence) ||
       message.sequence <= previousSequence
     ) {
@@ -661,38 +757,34 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
         record.session.lastMessageHash !== undefined)) ||
     (lastMessage !== undefined &&
       (lastMessage.sequence !== record.session.lastSequence ||
-        prepareChannelMessageSigningInput(
-          structuredClone((({ signature: _signature, ...rest }) => rest)(lastMessage)),
-        ).envelopeHash !== record.session.lastMessageHash))
+        storedEnvelopeHash(lastMessage, storeVersion) !==
+          record.session.lastMessageHash))
   ) {
     return "transcript endpoint does not match the RFQ checkpoint";
   }
   const packetIds = new Set<string>();
   for (const entry of record.outbox) {
-    let packet: RfqLifecyclePacket<TSignature>;
-    try {
-      if (
-        !isRecord(entry) ||
-        !exactKeys(entry, [
-          "packet",
-          "state",
-          "attempts",
-          "updatedAt",
-          ...(entry.reason === undefined ? [] : ["reason"]),
-        ])
-      ) {
-        return "outbox entry fields are malformed";
-      }
-      packet = capturePacket(entry.packet);
-    } catch {
-      return "outbox contains a malformed packet";
+    if (
+      !isRecord(entry) ||
+      !exactKeys(entry, [
+        "packet",
+        "state",
+        "attempts",
+        "updatedAt",
+        ...(entry.reason === undefined ? [] : ["reason"]),
+      ])
+    ) {
+      return "outbox entry fields are malformed";
     }
+    const captured = capturePacket<TSignature>(entry.packet, storeVersion);
+    if ("violation" in captured) return "outbox contains a malformed packet";
+    const packet = captured.packet;
     if (
       packetIds.has(packet.packetId) ||
       packet.jobId !== record.jobId ||
       packet.channelId !== record.channelId ||
-      packet.sender !== roleClaim(record, record.role) ||
-      packet.recipient !== roleClaim(record, otherRole(record.role)) ||
+      !sameParty(packet.sender, roleClaim(record, record.role)) ||
+      !sameParty(packet.recipient, roleClaim(record, otherRole(record.role))) ||
       !["pending", "indeterminate", "acknowledged", "rejected"].includes(entry.state) ||
       !Number.isSafeInteger(entry.attempts) ||
       entry.attempts < 0 ||
@@ -811,6 +903,12 @@ export function durableRfqLifecycleTransitionViolation<TSignature = unknown>(
   if (nextViolation !== null) return `next record: ${nextViolation}`;
   const prior = priorValue as DurableRfqLifecycleRecord<TSignature>;
   const next = nextValue as DurableRfqLifecycleRecord<TSignature>;
+  if (
+    prior.storeVersion !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION ||
+    next.storeVersion !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION
+  ) {
+    return "historical store-version-1 records are read-only";
+  }
   if (
     next.role !== prior.role ||
     next.jobId !== prior.jobId ||
@@ -1112,15 +1210,11 @@ export function createInMemoryRfqLifecycleNetwork<TSignature = unknown>():
   return {
     transport: {
       async publish(candidate) {
-        let packet: RfqLifecyclePacket<TSignature>;
-        try {
-          packet = capturePacket(candidate);
-        } catch (cause) {
-          return {
-            disposition: "rejected",
-            reason: cause instanceof Error ? cause.message : "packet is malformed",
-          };
+        const captured = capturePacket<TSignature>(candidate);
+        if ("violation" in captured) {
+          return { disposition: "rejected", reason: captured.violation };
         }
+        const packet = captured.packet;
         const existing = packets.get(packet.packetId);
         if (existing !== undefined) {
           return canonicalize(existing) === canonicalize(packet)
@@ -1137,15 +1231,11 @@ export function createInMemoryRfqLifecycleNetwork<TSignature = unknown>():
         return { disposition: "acknowledged" };
       },
       async reconcile(candidate) {
-        let packet: RfqLifecyclePacket<TSignature>;
-        try {
-          packet = capturePacket(candidate);
-        } catch (cause) {
-          return {
-            disposition: "rejected",
-            reason: cause instanceof Error ? cause.message : "packet is malformed",
-          };
+        const captured = capturePacket<TSignature>(candidate);
+        if ("violation" in captured) {
+          return { disposition: "rejected", reason: captured.violation };
         }
+        const packet = captured.packet;
         const existing = packets.get(packet.packetId);
         if (existing === undefined) return { disposition: "absent" };
         return canonicalize(existing) === canonicalize(packet)
@@ -1161,9 +1251,9 @@ export function createInMemoryRfqLifecycleNetwork<TSignature = unknown>():
       const packetId = queue?.shift();
       if (packetId === undefined) return undefined;
       const packet = packets.get(packetId);
-      return packet === undefined
-        ? undefined
-        : capturePacket<TSignature>(packet);
+      if (packet === undefined) return undefined;
+      const captured = capturePacket<TSignature>(packet);
+      return "packet" in captured ? captured.packet : undefined;
     },
     pending(recipient) {
       return queues.get(recipient)?.length ?? 0;
@@ -1187,6 +1277,24 @@ function loadFailure<TSignature>(
         ? `RFQ lifecycle store version ${loaded.version} is unsupported`
         : loaded.reason,
   };
+}
+
+/**
+ * CORE §11.1.2(4): a store-version-1 record predates the DACS-3 v0.6 channel
+ * wire. It stays readable through `getStatus`, but the session is abandoned:
+ * no new signature, packet, admission or reconciliation is made for it.
+ */
+function archivalRefusal<TSignature>(
+  record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+): DurableRfqLifecycleResult<TSignature> | null {
+  return record.storeVersion === DURABLE_RFQ_LIFECYCLE_STORE_VERSION
+    ? null
+    : {
+        status: "rejected",
+        reason:
+          "RFQ lifecycle record predates the DACS-3 v0.6 channel wire; it is read-only",
+        record,
+      };
 }
 
 function admissionFailure<TSignature>(input: {
@@ -1379,6 +1487,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
   const verifyChannelMessage = bindCallable<
     ChannelMessageSignatureVerifier<RfqTurnBody, TSignature>
   >(options, "verifyChannelMessage", "RFQ lifecycle verifyChannelMessage");
+  const resolveProfileAdmission = bindCallable<RfqLifecycleProfileAdmission>(
+    options,
+    "profileAdmission",
+    "RFQ lifecycle profileAdmission",
+  );
   const verifyAgreementContribution = bindCallable<
     FixedPriceAgreementContributionVerifier
   >(
@@ -1399,6 +1512,27 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       throw new DacsError("durable RFQ clock returned an invalid unix-ms value");
     }
     return value;
+  }
+
+  /** A resolver that throws leaves the session without authority (fail closed). */
+  async function sessionProfileAdmission(
+    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+  ): Promise<RfqProfileAdmission | undefined> {
+    try {
+      return await resolveProfileAdmission(
+        deepFreeze({
+          role,
+          jobId: record.jobId,
+          channelId: record.channelId,
+          participantIdentities: [
+            record.session.buyer.primaryClaim,
+            record.session.seller.primaryClaim,
+          ] as const,
+        }),
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   async function load(jobId: string) {
@@ -1637,6 +1771,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     const loaded = await load(jobId);
     if (loaded.status !== "ok") return loadFailure(loaded);
     const record = loaded.record;
+    const archival = archivalRefusal(record);
+    if (archival !== null) return archival;
     if (record.failure !== undefined) {
       return {
         status: "rejected",
@@ -1651,6 +1787,10 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     if (record.session.expectedSender !== sender) {
       return { status: "rejected", reason: "counterparty owns the next RFQ turn", record };
     }
+    // CORE §11.1.2(3): admit the exact profile before creating a signature.
+    const profile = await sessionProfileAdmission(record);
+    const refused = rfqProfileAdmissionFailure(record.session, profile);
+    if (refused !== null) return admissionFailure(refused, record);
     let sentAt: number;
     try {
       sentAt = trustedNow();
@@ -1689,6 +1829,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       structuredClone(message),
       sentAt,
       verifyChannelMessage,
+      profile,
     );
     if (advanced.decision !== "pass") {
       return admissionFailure(advanced, record);
@@ -1744,6 +1885,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       structuredClone(packet.message),
       receivedAt,
       verifyChannelMessage,
+      await sessionProfileAdmission(record),
     );
     if (advanced.decision !== "pass") {
       return admissionFailure(advanced, record);
@@ -1967,6 +2109,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
             reason: "RFQ lifecycle store returned a different job authority",
           };
         }
+        const archival = archivalRefusal(created.record);
+        if (archival !== null) return archival;
         return { status: created.status === "created" ? "ready" : "duplicate", record: created.record };
       }
       if (created.status === "unsupported") {
@@ -2025,6 +2169,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       }
       const loaded = await load(jobId);
       if (loaded.status !== "ok") return loadFailure(loaded);
+      const archival = archivalRefusal(loaded.record);
+      if (archival !== null) return archival;
       let decision: RfqLifecyclePolicyDecision;
       try {
         decision = snapshot(
@@ -2068,15 +2214,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       return { status: "rejected", reason: "RFQ policy returned an unknown action" };
     },
     async receive(candidate) {
-      let packet: RfqLifecyclePacket<TSignature>;
-      try {
-        packet = capturePacket(candidate);
-      } catch (cause) {
-        return {
-          status: "rejected",
-          reason: cause instanceof Error ? cause.message : "RFQ packet is malformed",
-        };
+      const captured = capturePacket<TSignature>(candidate);
+      if ("violation" in captured) {
+        return { status: "rejected", reason: captured.violation };
       }
+      const packet = captured.packet;
       let receivedAt: number;
       try {
         receivedAt = trustedNow();
@@ -2090,6 +2232,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         const loaded = await load(packet.jobId);
         if (loaded.status !== "ok") return loadFailure(loaded);
         const record = loaded.record;
+        const archival = archivalRefusal(record);
+        if (archival !== null) return archival;
         if (record.failure !== undefined) {
           return {
             status: "rejected",
@@ -2099,8 +2243,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         }
         if (
           packet.channelId !== record.channelId ||
-          packet.recipient !== roleClaim(record, role) ||
-          packet.sender !== roleClaim(record, otherRole(role))
+          !sameParty(packet.recipient, roleClaim(record, role)) ||
+          !sameParty(packet.sender, roleClaim(record, otherRole(role)))
         ) {
           return { status: "rejected", reason: "RFQ packet routing does not bind this session", record };
         }
@@ -2120,6 +2264,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     async resumeOutbox(jobId) {
       const loaded = await load(jobId);
       if (loaded.status !== "ok") return loadFailure(loaded);
+      const archival = archivalRefusal(loaded.record);
+      if (archival !== null) return archival;
       if (loaded.record.failure !== undefined) {
         return {
           status: "rejected",
@@ -2167,6 +2313,8 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       const loaded = await load(jobId);
       if (loaded.status !== "ok") return loadFailure(loaded);
       const record = loaded.record;
+      const archival = archivalRefusal(record);
+      if (archival !== null) return archival;
       if (record.failure !== undefined) {
         return { status: "rejected", reason: record.failure.reason, record };
       }

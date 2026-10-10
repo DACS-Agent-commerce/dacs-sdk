@@ -2,7 +2,10 @@ import { types as nodeTypes } from "node:util";
 
 import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import {
   parseCanonicalClaimReference,
@@ -109,9 +112,44 @@ export interface ChannelMessageSignatureVerificationInput<
   operation: ChannelMessageOperation;
 }
 
+/** CORE §11.1.2(2) exact corrective profile: release pin plus the complete module tuple. */
+export interface ChannelCorrectiveProfile {
+  releasePin: string;
+  moduleVersions: Readonly<Record<string, string>>;
+}
+
+/**
+ * CORE §11.1.2(3) profile-admission evidence for one session, as resolved from
+ * verifier- or orchestrator-owned trusted context. It never comes from the
+ * message or the admission context.
+ */
+export interface ChannelProfileAuthority extends ChannelCorrectiveProfile {
+  /** Provenance label only; it carries no authority by itself. */
+  source?: string;
+  authenticated: boolean;
+  sessionId: string;
+  participantIdentities: readonly string[];
+}
+
+/**
+ * Verifier-owned profile-admission capability for one session. `current-read`
+ * refuses the session when it is absent (CORE §11.1.2(3)); `legacy-import` is
+ * the archival path of §11.1.2(4) and does not consult it.
+ */
+export interface ChannelProfileAdmission {
+  /** The exact profile this deployment is configured for. */
+  profile: ChannelCorrectiveProfile;
+  /** The authenticated fixed member set (CH-1) the authority must bind exactly. */
+  participantIdentities: readonly string[];
+  /** Authority for this session; absent when none was established. */
+  authority?: ChannelProfileAuthority;
+}
+
 export interface ChannelMessageAdmissionOptions {
   /** Defaults to `current-read`. `legacy-import` must be selected explicitly. */
   operation?: ChannelMessageOperation;
+  /** Required by `current-read`; see {@link ChannelProfileAdmission}. */
+  profileAdmission?: ChannelProfileAdmission;
 }
 
 export type ChannelMessageSignatureVerifier<
@@ -242,20 +280,43 @@ function validateSignatureEnvelopeV1(
   );
 }
 
+const ENVELOPE_HASH = /^[0-9a-f]{64}$/;
+
+function requireEnvelopeHash(envelopeHash: unknown): string {
+  if (typeof envelopeHash !== "string" || !ENVELOPE_HASH.test(envelopeHash)) {
+    throw new DacsError(
+      "channel message hash must be 64 lowercase hex characters",
+    );
+  }
+  return envelopeHash;
+}
+
+/**
+ * Concatenate into an unpooled allocation: the result owns its entire
+ * `ArrayBuffer`, so a signer that passes `.buffer` sees only these bytes.
+ */
+function framedBytes(domain: string, payload: Uint8Array): Uint8Array {
+  const prefix = Buffer.from(domain, "utf8");
+  const bytes = new Uint8Array(prefix.length + payload.length);
+  bytes.set(prefix, 0);
+  bytes.set(payload, prefix.length);
+  return bytes;
+}
+
 /** CH-8: `UTF8(domain) || ASCII(lowercase-hex sha256(JCS(unsigned_message)))`. */
 export function canonicalChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
-  return Buffer.concat([
-    Buffer.from(CANONICAL_CHANNEL_MESSAGE_DOMAIN, "utf8"),
-    Buffer.from(envelopeHash, "ascii"),
-  ]);
+  return framedBytes(
+    CANONICAL_CHANNEL_MESSAGE_DOMAIN,
+    Buffer.from(requireEnvelopeHash(envelopeHash), "ascii"),
+  );
 }
 
 /** CH-10 frozen historical framing: `UTF8(domain) || raw 32-byte sha256 digest`. */
 export function legacyChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
-  return Buffer.concat([
-    Buffer.from(LEGACY_CHANNEL_MESSAGE_DOMAIN, "utf8"),
-    Buffer.from(envelopeHash, "hex"),
-  ]);
+  return framedBytes(
+    LEGACY_CHANNEL_MESSAGE_DOMAIN,
+    Buffer.from(requireEnvelopeHash(envelopeHash), "hex"),
+  );
 }
 
 function signedBytesFor(
@@ -267,13 +328,160 @@ function signedBytesFor(
     : legacyChannelMessageSignedBytes(envelopeHash);
 }
 
-function selectOperation(options: unknown): ChannelMessageOperation | null {
-  if (options === undefined) return "current-read";
-  if (!isRecord(options) || !exactKeys(options, [], ["operation"])) return null;
-  const operation = options.operation ?? "current-read";
+function selectOperation(options: unknown): {
+  operation: ChannelMessageOperation;
+  profileAdmission?: unknown;
+} | null {
+  if (options === undefined) return { operation: "current-read" };
+  let owned: unknown;
+  try {
+    owned = snapshotCanonicalJsonConfig(options, "channel admission options");
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(owned) ||
+    !exactKeys(owned, [], ["operation", "profileAdmission"])
+  ) {
+    return null;
+  }
+  const operation = owned.operation ?? "current-read";
   return operation === "current-read" || operation === "legacy-import"
-    ? operation
+    ? { operation, profileAdmission: owned.profileAdmission }
     : null;
+}
+
+function claimIdentity(value: unknown): string | null {
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed === null
+    ? null
+    : `${parsed.identity.scheme}:${parsed.identity.identifier}`;
+}
+
+/** CF-3 identities of a non-empty member list; null when malformed or duplicated. */
+function identitySet(values: unknown): Set<string> | null {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const identities = new Set<string>();
+  for (const value of values) {
+    const identity = claimIdentity(value);
+    if (identity === null || identities.has(identity)) return null;
+    identities.add(identity);
+  }
+  return identities;
+}
+
+function isModuleTuple(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length > 0 &&
+    Object.values(value).every(isNonEmptyString)
+  );
+}
+
+function isCorrectiveProfile(value: unknown): value is ChannelCorrectiveProfile {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ["releasePin", "moduleVersions"]) &&
+    isNonEmptyString(value.releasePin) &&
+    isModuleTuple(value.moduleVersions)
+  );
+}
+
+/**
+ * CORE §11.1.2(3) corrective-profile admission for a `current-read` session.
+ * Returns `null` only when verifier-owned authority binds this exact session,
+ * the deployment's exact release pin and complete module tuple, and exactly
+ * the authenticated participants (compared by CF-3 identity). A missing
+ * capability or authority refuses the session as `indeterminate`; malformed,
+ * partial, duplicated or unauthenticated evidence is `error`; well-formed
+ * evidence for another session, profile or member set is `fail`.
+ */
+export function channelProfileAdmissionFailure(
+  admission: unknown,
+  sessionChannelId: string,
+): ChannelMessageAdmissionFailure | null {
+  if (admission === undefined) {
+    return failure(
+      "indeterminate",
+      "corrective-profile admission is unavailable; the session is refused (CORE §11.1.2(3))",
+    );
+  }
+  if (
+    !isRecord(admission) ||
+    !exactKeys(admission, ["profile", "participantIdentities"], ["authority"]) ||
+    !isCorrectiveProfile(admission.profile)
+  ) {
+    return failure("error", "corrective-profile admission is malformed");
+  }
+  const members = identitySet(admission.participantIdentities);
+  if (members === null) {
+    return failure("error", "corrective-profile admission members are malformed");
+  }
+  const authority = admission.authority;
+  if (authority === undefined) {
+    return failure(
+      "indeterminate",
+      "no corrective-profile authority exists for this session (CORE §11.1.2(3))",
+    );
+  }
+  if (
+    !isRecord(authority) ||
+    !exactKeys(
+      authority,
+      [
+        "authenticated",
+        "sessionId",
+        "participantIdentities",
+        "releasePin",
+        "moduleVersions",
+      ],
+      ["source"],
+    ) ||
+    typeof authority.authenticated !== "boolean" ||
+    !isNonEmptyString(authority.sessionId) ||
+    !isNonEmptyString(authority.releasePin) ||
+    (authority.source !== undefined && typeof authority.source !== "string")
+  ) {
+    return failure("error", "corrective-profile authority is malformed");
+  }
+  if (authority.authenticated !== true) {
+    return failure("error", "corrective-profile authority is unauthenticated");
+  }
+  const expected = admission.profile.moduleVersions;
+  const observed = authority.moduleVersions;
+  if (
+    !isModuleTuple(observed) ||
+    Object.keys(observed).length !== Object.keys(expected).length ||
+    !Object.keys(expected).every((module) => hasOwn(observed, module))
+  ) {
+    return failure("error", "corrective-profile module tuple is partial or malformed");
+  }
+  const participants = identitySet(authority.participantIdentities);
+  if (participants === null) {
+    return failure(
+      "error",
+      "corrective-profile participants are duplicated or malformed",
+    );
+  }
+  if (authority.sessionId !== sessionChannelId) {
+    return failure("fail", "corrective-profile authority binds another session");
+  }
+  if (
+    authority.releasePin !== admission.profile.releasePin ||
+    Object.keys(expected).some((module) => observed[module] !== expected[module])
+  ) {
+    return failure("fail", "corrective-profile authority names another profile");
+  }
+  if (
+    participants.size !== members.size ||
+    ![...participants].every((participant) => members.has(participant))
+  ) {
+    return failure(
+      "fail",
+      "corrective-profile authority binds other participants",
+    );
+  }
+  return null;
 }
 
 function isRecord(value: unknown): value is DataRecord {
@@ -318,7 +526,8 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
     seen.has(value as object) ||
     Object.isFrozen(value) ||
     // Typed arrays with elements cannot be frozen; `signedBytes` is a fresh
-    // owned copy per call, so leaving it unfrozen exposes no shared state.
+    // unpooled allocation per call, so leaving it unfrozen exposes no shared
+    // state.
     ArrayBuffer.isView(value)
   ) {
     return value;
@@ -508,10 +717,11 @@ export async function admitChannelMessage<
       "channel signature verifier is unavailable or unsafe",
     );
   }
-  const operation = selectOperation(options);
-  if (operation === null) {
+  const selected = selectOperation(options);
+  if (selected === null) {
     return failure("error", "channel message operation is malformed");
   }
+  const { operation } = selected;
 
   let message: ChannelMessage<TBody, TSignature>;
   let context: ChannelAdmissionContext;
@@ -533,6 +743,15 @@ export async function admitChannelMessage<
 
   if (!validateContext(context)) {
     return failure("error", "channel admission context is malformed");
+  }
+  if (operation === "current-read") {
+    // CORE §11.1.2(3): the exact corrective profile is admitted before any
+    // current channel processing; there is no default authority.
+    const refused = channelProfileAdmissionFailure(
+      selected.profileAdmission,
+      context.sessionChannelId,
+    );
+    if (refused !== null) return refused;
   }
   if (!validateMessage(message, operation)) {
     return failure("error", "channel message envelope is malformed");

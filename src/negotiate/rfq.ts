@@ -20,16 +20,22 @@ import {
 } from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
-import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import {
   admitChannelMessage,
+  channelProfileAdmissionFailure,
   type ChannelMessage,
   type ChannelMessageAdmissionFailure,
   type ChannelMessageSignatureVerifier,
+  type ChannelProfileAdmission,
 } from "./channel.js";
 import {
   deriveMeteredPriceTerm,
@@ -509,6 +515,14 @@ function rfqAuthority(input: OpenRfqSessionInput): {
     throw new DacsError("RFQ timeout overflows unix ms");
   const buyer = partyBinding("buyer", input.buyer);
   const seller = partyBinding("seller", input.seller);
+  // CH-7: `current-read` admits only registered sender schemes, so a member it
+  // can never admit must not reserve a channelId.
+  if (
+    parseCanonicalClaimReference(buyer.primaryClaim)?.schemeStatus !== "registered" ||
+    parseCanonicalClaimReference(seller.primaryClaim)?.schemeStatus !== "registered"
+  ) {
+    throw new DacsError("RFQ members must use registered claim schemes (CH-7)");
+  }
   if (
     sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
     !sameCanonicalClaimIdentity(
@@ -676,6 +690,46 @@ export function resolveRfqMember(
     return state.seller.primaryClaim;
   }
   return null;
+}
+
+/**
+ * CORE §11.1.2(3) profile admission for an RFQ session. The participants the
+ * authority must bind are the session's own buyer and seller, so the caller
+ * supplies only the deployment profile and the verifier-owned authority.
+ */
+export type RfqProfileAdmission = Omit<
+  ChannelProfileAdmission,
+  "participantIdentities"
+>;
+
+/** Bind an RFQ profile admission to the session's members; throws when malformed. */
+export function rfqChannelProfileAdmission(
+  state: Readonly<Pick<RfqSessionState, "buyer" | "seller">>,
+  admission: unknown,
+): ChannelProfileAdmission | undefined {
+  if (admission === undefined) return undefined;
+  const owned = snapshotCanonicalJsonConfig(admission, "RFQ profile admission");
+  if (!isRecord(owned) || hasOwn(owned, "participantIdentities")) {
+    throw new DacsError("RFQ profile admission is malformed");
+  }
+  return {
+    ...(owned as unknown as RfqProfileAdmission),
+    participantIdentities: [state.buyer.primaryClaim, state.seller.primaryClaim],
+  };
+}
+
+/** The channel-layer profile gate for an RFQ session, before signing or admission. */
+export function rfqProfileAdmissionFailure(
+  state: Readonly<Pick<RfqSessionState, "channelId" | "buyer" | "seller">>,
+  admission: unknown,
+): ChannelMessageAdmissionFailure | null {
+  let bound: ChannelProfileAdmission | undefined;
+  try {
+    bound = rfqChannelProfileAdmission(state, admission);
+  } catch {
+    return failure("error", "RFQ profile admission is malformed");
+  }
+  return channelProfileAdmissionFailure(bound, state.channelId);
 }
 
 function otherMember(state: Readonly<RfqSessionState>, sender: string): string {
@@ -916,12 +970,15 @@ function validateStoredState(value: RfqSessionState): boolean {
 /**
  * Apply one authenticated RFQ turn. `receivedAt` is the trusted local receipt
  * clock used for RFQ-4; the sender-controlled `sentAt` never extends timeout.
+ * `profileAdmission` is the verifier-owned CORE §11.1.2(3) authority for this
+ * session; without it the turn is refused.
  */
 export async function advanceRfqSession<TSignature = unknown>(
   callerState: RfqSessionState,
   candidateMessage: unknown,
   receivedAt: number,
   verifySignature: ChannelMessageSignatureVerifier<RfqTurnBody, TSignature>,
+  profileAdmission: RfqProfileAdmission | undefined,
 ): Promise<AdvanceRfqSessionResult> {
   let state: RfqSessionState;
   try {
@@ -957,6 +1014,12 @@ export async function advanceRfqSession<TSignature = unknown>(
     };
   }
 
+  let channelProfileAdmission: ChannelProfileAdmission | undefined;
+  try {
+    channelProfileAdmission = rfqChannelProfileAdmission(state, profileAdmission);
+  } catch {
+    return failure("error", "RFQ profile admission is malformed");
+  }
   const admitted = await admitChannelMessage<RfqTurnBody, TSignature>(
     candidateMessage,
     {
@@ -965,6 +1028,9 @@ export async function advanceRfqSession<TSignature = unknown>(
       priorChannelIds: [],
     },
     verifySignature,
+    channelProfileAdmission === undefined
+      ? undefined
+      : { profileAdmission: channelProfileAdmission },
   );
   if (admitted.decision !== "pass") return admitted;
   const message = admitted.message as Readonly<
