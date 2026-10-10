@@ -956,3 +956,110 @@ describe("durable seller fixed-price agreement proposal responder", () => {
     })).toBe(false);
   });
 });
+
+describe("seller responder with fixed-price additionalTerms", () => {
+  const REQUEST_KEY = "dacs-chatgpt-plugin:public-service-request:v1";
+  const request = {
+    type: "public-data",
+    serviceId: "public-text-report",
+    version: "1",
+    input: "Solar panels make power.",
+  };
+  const terms = {
+    [REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },
+  };
+  const oneByteDifferent = {
+    [REQUEST_KEY]: {
+      request: { ...request, input: "Solar panels make power!" },
+      requestHash: terms[REQUEST_KEY].requestHash,
+    },
+  };
+  const variants = [
+    ["AgreementDocument", JOB_ID, false],
+    ["PayeeBoundAgreementDocument", PAYEE_JOB_ID, true],
+  ] as const;
+
+  const withTerms = (
+    context: FixedPriceAgreementInput,
+    additionalTerms: Record<string, unknown> | undefined,
+  ): FixedPriceAgreementInput =>
+    additionalTerms === undefined ? context : { ...context, additionalTerms };
+
+  async function respond(
+    jobId: string,
+    payeeBound: boolean,
+    buyerTerms: Record<string, unknown> | undefined,
+    sellerTerms: Record<string, unknown> | undefined,
+  ) {
+    const buyerDraft = deriveFixedPriceAgreement(
+      withTerms(agreementContext(jobId, payeeBound), buyerTerms),
+    );
+    const request = await requestForDraft(buyerDraft);
+    const h = await harness({
+      context: withTerms(agreementContext(jobId, payeeBound), sellerTerms),
+      request,
+    });
+    const result = await respondToFixedPriceAgreementProposalDurable(
+      h.request.input,
+      h.durability,
+    );
+    return { h, result };
+  }
+
+  describe.each(variants)("%s", (_name, jobId, payeeBound) => {
+    test("equal terms on both sides are co-signed into one exact Agreement", async () => {
+      const { h, result } = await respond(jobId, payeeBound, terms, terms);
+      expect(result.disposition).toBe("complete");
+      if (result.disposition !== "complete") return;
+      const agreement = await finalizeFixedPriceAgreementContributions(
+        h.request.plan,
+        [h.request.buyerContribution, result.result.sellerContribution],
+        h.durability.verifyContribution,
+      );
+      expect(agreement.terms.additionalTerms).toEqual(terms);
+      expect("payeeBoundAgreementVersion" in agreement).toBe(payeeBound);
+      expect(contentHash(agreement as unknown as Record<string, unknown>))
+        .toBe(h.request.plan.agreementHash);
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+    });
+
+    test.each([
+      ["buyer adds terms the seller context lacks", terms, undefined],
+      ["seller context has terms the buyer omitted", undefined, terms],
+      ["one byte differs", oneByteDifferent, terms],
+      ["buyer adds a second entry", { ...terms, "acme:note:v1": "x" }, terms],
+    ] as const)("%s: rejected before any signature", async (
+      _case,
+      buyerTerms,
+      sellerTerms,
+    ) => {
+      const { h, result } = await respond(
+        jobId,
+        payeeBound,
+        buyerTerms as Record<string, unknown> | undefined,
+        sellerTerms as Record<string, unknown> | undefined,
+      );
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(h.state.calls.context).toBe(1);
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+
+    test("a seller context whose own terms break the profile is rejected", async () => {
+      const { h, result } = await respond(jobId, payeeBound, terms, {
+        ...terms,
+        "acme:price:v1": { amount: "0", currency: "USDC" },
+      });
+      expect(result).toMatchObject({ disposition: "rejected", stage: "context" });
+      expect(result.disposition === "complete" ? "" : result.reason)
+        .toMatch(/seller-local agreement derivation rejected the proposal/);
+      expect(h.state.calls.signature).toBe(0);
+    });
+  });
+});

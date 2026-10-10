@@ -113,7 +113,7 @@ function listing(): Listing {
   };
 }
 
-function draft(jobId = JOB_ID) {
+function draft(jobId = JOB_ID, additionalTerms?: Record<string, unknown>) {
   const value = listing();
   return deriveFixedPriceAgreement({
     jobId,
@@ -129,6 +129,7 @@ function draft(jobId = JOB_ID) {
     buyer: { identityBundle: identity(BUYER), vetRecordRef: vetRef("buyer") },
     seller: { identityBundle: identity(SELLER), vetRecordRef: vetRef("seller") },
     selectedRail: rail,
+    ...(additionalTerms === undefined ? {} : { additionalTerms }),
     generatedAt: NOW,
   });
 }
@@ -182,8 +183,9 @@ async function harness(options: {
   binding?: boolean;
   jobId?: string;
   store?: ReturnType<typeof createInMemoryFencedSessionStore>;
+  additionalTerms?: Record<string, unknown>;
 } = {}) {
-  const agreementDraft = draft(options.jobId);
+  const agreementDraft = draft(options.jobId, options.additionalTerms);
   const plan = createFixedPriceAgreementSigningPlan(agreementDraft);
   const seller = await createFixedPriceAgreementSignatureContribution(
     plan,
@@ -395,6 +397,40 @@ describe("durable buyer-owned fixed-price agreement exchange", () => {
       expect(recovered).toEqual(
         first.disposition === "anchored" ? { ...first, recovered: true } : first,
       );
+      expect(h.state.calls).toEqual({ signature: 1, proposal: 1, anchor: 1, binding: 1 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("additionalTerms survive signing, exchange, anchoring, and cold restart", async () => {
+    const additionalTerms = {
+      "dacs-chatgpt-plugin:public-service-request:v1": {
+        request: { input: "Cats chase mice.", serviceId: "public-text-report" },
+        requestHash: "c".repeat(64),
+      },
+    };
+    const dir = await mkdtemp(join(tmpdir(), "dacs-durable-agreement-terms-"));
+    try {
+      const h = await harness({
+        binding: true,
+        additionalTerms,
+        store: await createFsFencedSessionStore({ dir }),
+      });
+      expect(h.plan.agreementHash).not.toBe(
+        createFixedPriceAgreementSigningPlan(draft()).agreementHash,
+      );
+      const first = await advanceFixedPriceAgreementDurable(h.input, h.durability);
+      expect(first.disposition).toBe("anchored");
+      if (first.disposition !== "anchored") return;
+      expect(first.result.agreementHash).toBe(h.plan.agreementHash);
+      expect(first.result.agreement.terms.additionalTerms).toEqual(additionalTerms);
+      expect(
+        (h.state.anchor?.artifact.terms as { additionalTerms?: unknown }).additionalTerms,
+      ).toEqual(additionalTerms);
+      h.durability.store = await createFsFencedSessionStore({ dir });
+      const recovered = await advanceFixedPriceAgreementDurable(h.input, h.durability);
+      expect(recovered).toEqual({ ...first, recovered: true });
       expect(h.state.calls).toEqual({ signature: 1, proposal: 1, anchor: 1, binding: 1 });
     } finally {
       await rm(dir, { recursive: true, force: true });
