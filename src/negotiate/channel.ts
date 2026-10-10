@@ -2,8 +2,15 @@ import { types as nodeTypes } from "node:util";
 
 import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
-import { snapshotCanonicalJson } from "../canonical/snapshot.js";
+import {
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
+} from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 
 /** DACS-3 §8.3.3 v0.x closed channel-message type set. */
 export type ChannelMessageType =
@@ -16,11 +23,44 @@ export type ChannelMessageType =
   | "abort";
 
 /**
- * Substrate-independent DACS-3 channel envelope. The signature stays generic
- * until DACS-Standard#349 resolves the normative signature container and byte
- * representation used by current Demos L2PS.
+ * DACS-3 v0.6 §8.3.3 reader operations (DACS-Standard PR #367). A reader
+ * selects the arm structurally before any cryptography and never falls back
+ * to the other arm for the same object.
+ */
+export type ChannelMessageOperation = "current-read" | "legacy-import";
+
+export const CANONICAL_CHANNEL_MESSAGE_VERSION = "1" as const;
+/** CH-8 signed-byte domain for the current message type. */
+export const CANONICAL_CHANNEL_MESSAGE_DOMAIN =
+  "dacs-canonical-channel-message:v1:" as const;
+/** Frozen historical Demos domain; `legacy-import` only. New producers MUST NOT emit it. */
+export const LEGACY_CHANNEL_MESSAGE_DOMAIN = "dacs-channelmsg:v1:" as const;
+
+export const CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS = Object.freeze([
+  "ed25519",
+  "ecdsa-secp256k1",
+  "sr1-aggregate",
+] as const);
+export type ChannelMessageSignatureAlgorithm =
+  typeof CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS[number];
+
+/** Version-1 signature envelope carried by a `CanonicalChannelMessage`. */
+export interface ChannelMessageSignatureV1 {
+  signatureVersion: "1";
+  signer: string;
+  algorithm: ChannelMessageSignatureAlgorithm;
+  /** CORE §B.7 SIG-6 unpadded Base64URL. */
+  value: string;
+}
+
+/**
+ * Substrate-independent DACS-3 channel envelope. `TSignature` is
+ * `ChannelMessageSignatureV1` on `current-read` and a bare lowercase-hex
+ * string on `legacy-import`; admission enforces the shape per operation.
  */
 export interface ChannelMessage<TBody = unknown, TSignature = unknown> {
+  /** Exclusive current-message discriminator; absent only on the frozen historical wire. */
+  canonicalChannelMessageVersion?: typeof CANONICAL_CHANNEL_MESSAGE_VERSION;
   channelId: string;
   sequence: number;
   sender: string;
@@ -45,7 +85,12 @@ export type UnsignedChannelMessage<TBody = unknown> = Omit<
 
 export interface ChannelMessageSigningInput<TBody = unknown> {
   unsignedEnvelope: Readonly<UnsignedChannelMessage<TBody>>;
+  /** Lowercase-hex SHA-256 of the JCS unsigned envelope (CH-8 `message_hash`). */
   envelopeHash: string;
+  /** Exact CH-8 bytes to sign. Producers emit the current wire only (CH-10). */
+  signedBytes: Uint8Array;
+  /** Always `current-read`: `legacy-import` is a reader operation (§8.3.3). */
+  operation: "current-read";
 }
 
 /**
@@ -53,15 +98,83 @@ export interface ChannelMessageSigningInput<TBody = unknown> {
  * No signed-byte framing is imposed here: #349 must resolve raw-digest versus
  * lowercase-hex digest framing before the SDK can expose one as normative.
  */
-export interface ChannelMessageSignatureVerificationInput<
-  TBody = unknown,
-  TSignature = unknown,
-> {
+interface ChannelMessageSignatureVerificationMaterial<TBody, TSignature> {
   message: Readonly<ChannelMessage<TBody, TSignature>>;
   unsignedEnvelope: Readonly<
     Omit<ChannelMessage<TBody, TSignature>, "signature">
   >;
   envelopeHash: string;
+  /** Exact bytes the sender signed under the selected operation's framing. */
+  signedBytes: Uint8Array;
+}
+
+/**
+ * Discriminated by `operation`. On `current-read` the SDK has already checked
+ * CH-7 membership and supplies the resolved `member`. On `legacy-import` there
+ * is no member set and no `member`: the verifier owns the membership check for
+ * the historical session, together with the key and key-type resolution.
+ */
+export type ChannelMessageSignatureVerificationInput<
+  TBody = unknown,
+  TSignature = unknown,
+> =
+  | (ChannelMessageSignatureVerificationMaterial<TBody, TSignature> & {
+      operation: "current-read";
+      /**
+       * The authenticated CH-1 member the sender resolved to by CF-3 identity
+       * (CH-7), spelled as in the verifier-owned member set. Resolve the key
+       * and key type for this member, never for the self-declared `sender` or
+       * `signature.signer`. The profile capability carries no keys.
+       */
+      member: string;
+    })
+  | (ChannelMessageSignatureVerificationMaterial<TBody, TSignature> & {
+      operation: "legacy-import";
+      member?: never;
+    });
+
+/** CORE §11.1.2(2) exact corrective profile: release pin plus the complete module tuple. */
+export interface ChannelCorrectiveProfile {
+  releasePin: string;
+  moduleVersions: Readonly<Record<string, string>>;
+}
+
+/**
+ * CORE §11.1.2(3) profile-admission evidence for one session, as resolved from
+ * verifier- or orchestrator-owned trusted context. It never comes from the
+ * message or the admission context.
+ */
+export interface ChannelProfileAuthority extends ChannelCorrectiveProfile {
+  /** Provenance label only; it carries no authority by itself. */
+  source?: string;
+  authenticated: boolean;
+  sessionId: string;
+  participantIdentities: readonly string[];
+}
+
+/**
+ * Verifier-owned profile-admission capability for one session. `current-read`
+ * refuses the session when it is absent (CORE §11.1.2(3)); `legacy-import` is
+ * the archival path of §11.1.2(4) and does not consult it.
+ */
+export interface ChannelProfileAdmission {
+  /** The exact profile this deployment is configured for. */
+  profile: ChannelCorrectiveProfile;
+  /** The authenticated fixed member set (CH-1) the authority must bind exactly. */
+  participantIdentities: readonly string[];
+  /** Authority for this session; absent when none was established. */
+  authority?: ChannelProfileAuthority;
+}
+
+export interface ChannelMessageAdmissionOptions {
+  /**
+   * Defaults to `current-read`. `legacy-import` must be selected explicitly.
+   * On `legacy-import` the SDK has no member set, so the verifier owns the
+   * DACS-3 §8.3.3 membership check for the historical session.
+   */
+  operation?: ChannelMessageOperation;
+  /** Required by `current-read`; see {@link ChannelProfileAdmission}. */
+  profileAdmission?: ChannelProfileAdmission;
 }
 
 export type ChannelMessageSignatureVerifier<
@@ -87,6 +200,12 @@ export type ChannelMessageAdmissionResult<
         Omit<ChannelMessage<TBody, TSignature>, "signature">
       >;
       envelopeHash: string;
+      /**
+       * The operation that admitted the message. §8.3.3 keeps historical
+       * audit state separate from live negotiation state; a caller can check
+       * that separation on the value instead of remembering the option.
+       */
+      operation: ChannelMessageOperation;
     }
   | ChannelMessageAdmissionFailure;
 
@@ -111,6 +230,292 @@ const DECISIONS: ReadonlySet<string> = new Set<VerificationDecision>([
 
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
+const SIGNATURE_ALGORITHMS: ReadonlySet<string> = new Set(
+  CHANNEL_MESSAGE_SIGNATURE_ALGORITHMS,
+);
+const LEGACY_HEX_SIGNATURE = /^[0-9a-f]{128}$/;
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+function isCanonicalBase64Url(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || !BASE64URL.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, "base64url").toString("base64url") === value;
+}
+
+/** CH-7: a registered DACS-1 claim scheme; the historical generic `cci:` is refused. */
+function isRegisteredClaim(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed !== null && parsed.schemeStatus === "registered";
+}
+
+const HISTORICAL_CCI_IDENTIFIER = /^[0-9a-f]{64}$/;
+const HISTORICAL_DID_IDENTIFIER = /^[a-z0-9]+:[A-Za-z0-9._-]+$/;
+
+/**
+ * CH-10 frozen historical ClaimReference grammar, closed to exactly the two
+ * spellings the archived `channel-message-replay-v0.1` corpus carries (the
+ * Standard reference reader's `parse_historical_claim_ref`): the generic
+ * `cci:<64 lowercase hex>` Ed25519 sender and a pre-profile `did:<method>:<id>`.
+ * The whole value must be lowercase and carry no `?` qualifier. Every other
+ * spelling, registered or not (for example `key:`, `lei:`, `cci-xm:` or the
+ * unregistered `demos:0x…` emitted by demosdk 4.0.11 to 4.0.18, DEMOS-MAPPING
+ * A.1), is outside the frozen registry and rejects. Never reachable from
+ * `current-read`, which uses the registered parser above.
+ */
+function isHistoricalClaim(value: unknown): value is string {
+  if (
+    !isNonEmptyString(value) ||
+    value !== value.toLowerCase() ||
+    value.includes("?")
+  ) {
+    return false;
+  }
+  const colon = value.indexOf(":");
+  if (colon <= 0 || colon === value.length - 1) return false;
+  const scheme = value.slice(0, colon);
+  const identifier = value.slice(colon + 1);
+  if (scheme === "cci") return HISTORICAL_CCI_IDENTIFIER.test(identifier);
+  if (scheme === "did") return HISTORICAL_DID_IDENTIFIER.test(identifier);
+  return false;
+}
+
+function sameParty(left: string, right: string): boolean {
+  return left === right || sameCanonicalClaimIdentity(left, right);
+}
+
+/**
+ * Version-1 signature envelope. `signer` must parse under the current
+ * registered ClaimReference grammar: a signer that does not parse is
+ * malformed input (`error`), and only a well-formed signer naming another
+ * party reaches the CH-7 comparison that yields an attributable `fail`.
+ */
+function validateSignatureEnvelopeV1(
+  value: unknown,
+): value is ChannelMessageSignatureV1 {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ["signatureVersion", "signer", "algorithm", "value"]) &&
+    value.signatureVersion === "1" &&
+    isRegisteredClaim(value.signer) &&
+    typeof value.algorithm === "string" &&
+    SIGNATURE_ALGORITHMS.has(value.algorithm) &&
+    isCanonicalBase64Url(value.value)
+  );
+}
+
+const ENVELOPE_HASH = /^[0-9a-f]{64}$/;
+
+function requireEnvelopeHash(envelopeHash: unknown): string {
+  if (typeof envelopeHash !== "string" || !ENVELOPE_HASH.test(envelopeHash)) {
+    throw new DacsError(
+      "channel message hash must be 64 lowercase hex characters",
+    );
+  }
+  return envelopeHash;
+}
+
+/**
+ * Concatenate into an unpooled allocation: the result owns its entire
+ * `ArrayBuffer`, so a signer that passes `.buffer` sees only these bytes.
+ */
+function framedBytes(domain: string, payload: Uint8Array): Uint8Array {
+  const prefix = Buffer.from(domain, "utf8");
+  const bytes = new Uint8Array(prefix.length + payload.length);
+  bytes.set(prefix, 0);
+  bytes.set(payload, prefix.length);
+  return bytes;
+}
+
+/** CH-8: `UTF8(domain) || ASCII(lowercase-hex sha256(JCS(unsigned_message)))`. */
+export function canonicalChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
+  return framedBytes(
+    CANONICAL_CHANNEL_MESSAGE_DOMAIN,
+    Buffer.from(requireEnvelopeHash(envelopeHash), "ascii"),
+  );
+}
+
+/** CH-10 frozen historical framing: `UTF8(domain) || raw 32-byte sha256 digest`. */
+export function legacyChannelMessageSignedBytes(envelopeHash: string): Uint8Array {
+  return framedBytes(
+    LEGACY_CHANNEL_MESSAGE_DOMAIN,
+    Buffer.from(requireEnvelopeHash(envelopeHash), "hex"),
+  );
+}
+
+function signedBytesFor(
+  operation: ChannelMessageOperation,
+  envelopeHash: string,
+): Uint8Array {
+  return operation === "current-read"
+    ? canonicalChannelMessageSignedBytes(envelopeHash)
+    : legacyChannelMessageSignedBytes(envelopeHash);
+}
+
+function selectOperation(options: unknown): {
+  operation: ChannelMessageOperation;
+  /** Always an own member, so reading it back never reaches the prototype. */
+  profileAdmission: unknown;
+} | null {
+  if (options === undefined) {
+    return { operation: "current-read", profileAdmission: undefined };
+  }
+  let owned: unknown;
+  try {
+    owned = snapshotCanonicalJsonConfig(options, "channel admission options");
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(owned) ||
+    !exactKeys(owned, [], ["operation", "profileAdmission"])
+  ) {
+    return null;
+  }
+  // Optional members are read only as own properties, never inherited.
+  const operation = ownMember(owned, "operation") ?? "current-read";
+  return operation === "current-read" || operation === "legacy-import"
+    ? { operation, profileAdmission: ownMember(owned, "profileAdmission") }
+    : null;
+}
+
+function ownMember(value: Readonly<DataRecord>, key: string): unknown {
+  return hasOwn(value, key) ? value[key] : undefined;
+}
+
+function claimIdentity(value: unknown): string | null {
+  const parsed = parseCanonicalClaimReference(value);
+  return parsed === null
+    ? null
+    : `${parsed.identity.scheme}:${parsed.identity.identifier}`;
+}
+
+/** CF-3 identities of a non-empty member list; null when malformed or duplicated. */
+function identitySet(values: unknown): Set<string> | null {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const identities = new Set<string>();
+  for (const value of values) {
+    const identity = claimIdentity(value);
+    if (identity === null || identities.has(identity)) return null;
+    identities.add(identity);
+  }
+  return identities;
+}
+
+function isModuleTuple(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length > 0 &&
+    Object.values(value).every(isNonEmptyString)
+  );
+}
+
+function isCorrectiveProfile(value: unknown): value is ChannelCorrectiveProfile {
+  return (
+    isRecord(value) &&
+    exactKeys(value, ["releasePin", "moduleVersions"]) &&
+    isNonEmptyString(value.releasePin) &&
+    isModuleTuple(value.moduleVersions)
+  );
+}
+
+/**
+ * CORE §11.1.2(3) corrective-profile admission for a `current-read` session.
+ * Returns `null` only when verifier-owned authority binds this exact session,
+ * the deployment's exact release pin and complete module tuple, and exactly
+ * the authenticated participants (compared by CF-3 identity). A missing
+ * capability or authority refuses the session as `indeterminate`; malformed,
+ * partial, duplicated or unauthenticated evidence is `error`; well-formed
+ * evidence for another session, profile or member set is `fail`.
+ */
+export function channelProfileAdmissionFailure(
+  admission: unknown,
+  sessionChannelId: string,
+): ChannelMessageAdmissionFailure | null {
+  if (admission === undefined) {
+    return failure(
+      "indeterminate",
+      "corrective-profile admission is unavailable; the session is refused (CORE §11.1.2(3))",
+    );
+  }
+  if (
+    !isRecord(admission) ||
+    !exactKeys(admission, ["profile", "participantIdentities"], ["authority"]) ||
+    !isCorrectiveProfile(admission.profile)
+  ) {
+    return failure("error", "corrective-profile admission is malformed");
+  }
+  const members = identitySet(admission.participantIdentities);
+  if (members === null) {
+    return failure("error", "corrective-profile admission members are malformed");
+  }
+  const authority = ownMember(admission, "authority");
+  if (authority === undefined) {
+    return failure(
+      "indeterminate",
+      "no corrective-profile authority exists for this session (CORE §11.1.2(3))",
+    );
+  }
+  if (
+    !isRecord(authority) ||
+    !exactKeys(
+      authority,
+      [
+        "authenticated",
+        "sessionId",
+        "participantIdentities",
+        "releasePin",
+        "moduleVersions",
+      ],
+      ["source"],
+    ) ||
+    typeof authority.authenticated !== "boolean" ||
+    !isNonEmptyString(authority.sessionId) ||
+    !isNonEmptyString(authority.releasePin) ||
+    (hasOwn(authority, "source") && typeof authority.source !== "string")
+  ) {
+    return failure("error", "corrective-profile authority is malformed");
+  }
+  if (authority.authenticated !== true) {
+    return failure("error", "corrective-profile authority is unauthenticated");
+  }
+  const expected = admission.profile.moduleVersions;
+  const observed = authority.moduleVersions;
+  if (
+    !isModuleTuple(observed) ||
+    Object.keys(observed).length !== Object.keys(expected).length ||
+    !Object.keys(expected).every((module) => hasOwn(observed, module))
+  ) {
+    return failure("error", "corrective-profile module tuple is partial or malformed");
+  }
+  const participants = identitySet(authority.participantIdentities);
+  if (participants === null) {
+    return failure(
+      "error",
+      "corrective-profile participants are duplicated or malformed",
+    );
+  }
+  if (authority.sessionId !== sessionChannelId) {
+    return failure("fail", "corrective-profile authority binds another session");
+  }
+  if (
+    authority.releasePin !== admission.profile.releasePin ||
+    Object.keys(expected).some((module) => observed[module] !== expected[module])
+  ) {
+    return failure("fail", "corrective-profile authority names another profile");
+  }
+  if (
+    participants.size !== members.size ||
+    ![...participants].every((participant) => members.has(participant))
+  ) {
+    return failure(
+      "fail",
+      "corrective-profile authority binds other participants",
+    );
+  }
+  return null;
+}
 
 function isRecord(value: unknown): value is DataRecord {
   return (
@@ -152,7 +557,11 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
     value === null ||
     typeof value !== "object" ||
     seen.has(value as object) ||
-    Object.isFrozen(value)
+    Object.isFrozen(value) ||
+    // Typed arrays with elements cannot be frozen; `signedBytes` is a fresh
+    // unpooled allocation per call, so leaving it unfrozen exposes no shared
+    // state.
+    ArrayBuffer.isView(value)
   ) {
     return value;
   }
@@ -188,11 +597,36 @@ function validateContext(value: unknown): value is ChannelAdmissionContext {
   return value.priorChannelIds.every(isNonEmptyString);
 }
 
+/**
+ * Structural selection per DACS-3 v0.6 §8.3.3. `current-read` requires the
+ * exclusive discriminator, a registered sender scheme, the version-1
+ * signature envelope whose signer identifies the sender (CF-3), and retains
+ * unknown top-level members in the signed scope (SIG-5). `legacy-import`
+ * requires the discriminator to be absent, the exact historical member set,
+ * and a bare 128-character lowercase-hex signature. Partial mixtures reject
+ * on both operations.
+ */
 function validateMessage(
   value: unknown,
+  operation: ChannelMessageOperation,
 ): value is ChannelMessage<unknown, unknown> {
-  if (
-    !isRecord(value) ||
+  if (!isRecord(value)) return false;
+  // Every wire member is read as an own property: a value inherited from a
+  // prototype is outside the signed scope and never selects or satisfies a rule.
+  const member = (key: string): unknown => ownMember(value, key);
+  if (operation === "current-read") {
+    if (
+      member("canonicalChannelMessageVersion") !== CANONICAL_CHANNEL_MESSAGE_VERSION ||
+      !["channelId", "sequence", "sender", "sentAt", "type", "body", "signature"]
+        .every((key) => hasOwn(value, key)) ||
+      Object.values(value).some((entry) => entry === undefined) ||
+      !isRegisteredClaim(member("sender")) ||
+      !validateSignatureEnvelopeV1(member("signature"))
+    ) {
+      return false;
+    }
+  } else if (
+    hasOwn(value, "canonicalChannelMessageVersion") ||
     !exactKeys(
       value,
       [
@@ -206,52 +640,69 @@ function validateMessage(
       ],
       ["refs"],
     ) ||
-    !isNonEmptyString(value.channelId) ||
-    !Number.isSafeInteger(value.sequence) ||
-    (value.sequence as number) < 1 ||
-    !isNonEmptyString(value.sender) ||
-    !isSafeTime(value.sentAt) ||
-    typeof value.type !== "string" ||
-    !MESSAGE_TYPES.has(value.type) ||
-    value.signature === null
+    typeof member("signature") !== "string" ||
+    !LEGACY_HEX_SIGNATURE.test(member("signature") as string) ||
+    !isHistoricalClaim(member("sender"))
   ) {
     return false;
   }
-  if (value.refs === undefined) return true;
-  if (!isRecord(value.refs) || !exactKeys(value.refs, [], ["repliesTo"])) {
+  const type = member("type");
+  const sequence = member("sequence");
+  if (
+    !isNonEmptyString(member("channelId")) ||
+    !Number.isSafeInteger(sequence) ||
+    (sequence as number) < 1 ||
+    !isNonEmptyString(member("sender")) ||
+    !isSafeTime(member("sentAt")) ||
+    typeof type !== "string" ||
+    !MESSAGE_TYPES.has(type) ||
+    member("signature") === null
+  ) {
     return false;
   }
-  if (value.refs.repliesTo === undefined) return true;
+  const refs = member("refs");
+  if (refs === undefined) return true;
+  if (!isRecord(refs) || !exactKeys(refs, [], ["repliesTo"])) {
+    return false;
+  }
+  const repliesTo = ownMember(refs, "repliesTo");
+  if (repliesTo === undefined) return true;
   return (
-    Number.isSafeInteger(value.refs.repliesTo) &&
-    (value.refs.repliesTo as number) >= 1 &&
-    (value.refs.repliesTo as number) < (value.sequence as number)
+    Number.isSafeInteger(repliesTo) &&
+    (repliesTo as number) >= 1 &&
+    (repliesTo as number) < (sequence as number)
   );
 }
 
 function unsignedEnvelope<TBody, TSignature>(
   message: Readonly<ChannelMessage<TBody, TSignature>>,
 ): Omit<ChannelMessage<TBody, TSignature>, "signature"> {
-  const { channelId, sequence, sender, sentAt, type, body, refs } = message;
-  return {
-    channelId,
-    sequence,
-    sender,
-    sentAt,
-    type,
-    body,
-    ...(refs === undefined ? {} : { refs }),
-  };
+  // CH-8 / SIG-5: the signed scope is the complete received message with only
+  // the top-level `signature` member omitted; unknown members are retained.
+  const unsigned: DataRecord = {};
+  for (const key of Object.keys(message)) {
+    if (key !== "signature") unsigned[key] = (message as DataRecord)[key];
+  }
+  return unsigned as Omit<ChannelMessage<TBody, TSignature>, "signature">;
 }
 
 /**
- * Validate and own a producer envelope, then expose the exact canonical digest
- * that a substrate-specific signer must frame after DACS-Standard#349 is
- * resolved. This function intentionally returns no guessed `signedBytes`.
+ * Validate and own a producer envelope and expose the exact CH-8 bytes a
+ * substrate-specific signer must sign. This is producer-side and therefore
+ * current-only: `legacy-import` is a reader operation (DACS-3 §8.3.3) and
+ * CH-10 forbids new producers from emitting the frozen historical wire, so
+ * no option can select it here.
+ *
+ * Profile admission is not checked here: this is also the CH-8 hash of a
+ * stored or received current envelope, which has no producer authority. A
+ * caller that signs the result MUST first admit the exact corrective profile
+ * for the session (CORE §11.1.2(3)). The durable RFQ client does so before
+ * it signs.
  */
 export function prepareChannelMessageSigningInput<TBody = unknown>(
   candidate: unknown,
 ): Readonly<ChannelMessageSigningInput<TBody>> {
+  const operation = "current-read" as const;
   const envelope = snapshotCanonicalJson(
     candidate,
     "unsigned channel message",
@@ -259,16 +710,29 @@ export function prepareChannelMessageSigningInput<TBody = unknown>(
   if (!isRecord(envelope) || hasOwn(envelope, "signature")) {
     throw new DacsError("unsigned channel message must omit signature");
   }
-  const probe = { ...envelope, signature: "validation-probe" };
-  if (!validateMessage(probe)) {
+  // Probe with a structurally valid current signature envelope so the
+  // remaining envelope rules are checked exactly as a reader would check them.
+  const probe = {
+    ...envelope,
+    signature: {
+      signatureVersion: "1",
+      signer: envelope.sender,
+      algorithm: "ed25519",
+      value: "AA",
+    },
+  };
+  if (!validateMessage(probe, operation)) {
     throw new DacsError("unsigned channel message envelope is malformed");
   }
   const owned = deepFreeze(
     envelope as unknown as UnsignedChannelMessage<TBody>,
   );
+  const envelopeHash = sha256Hex(canonicalize(owned));
   return deepFreeze({
     unsignedEnvelope: owned,
-    envelopeHash: sha256Hex(canonicalize(owned)),
+    envelopeHash,
+    signedBytes: canonicalChannelMessageSignedBytes(envelopeHash),
+    operation,
   });
 }
 
@@ -288,6 +752,7 @@ export async function admitChannelMessage<
   candidate: unknown,
   candidateContext: unknown,
   verifySignature: ChannelMessageSignatureVerifier<TBody, TSignature>,
+  options?: Readonly<ChannelMessageAdmissionOptions>,
 ): Promise<ChannelMessageAdmissionResult<TBody, TSignature>> {
   if (
     typeof verifySignature !== "function" ||
@@ -298,6 +763,11 @@ export async function admitChannelMessage<
       "channel signature verifier is unavailable or unsafe",
     );
   }
+  const selected = selectOperation(options);
+  if (selected === null) {
+    return failure("error", "channel message operation is malformed");
+  }
+  const { operation } = selected;
 
   let message: ChannelMessage<TBody, TSignature>;
   let context: ChannelAdmissionContext;
@@ -320,8 +790,41 @@ export async function admitChannelMessage<
   if (!validateContext(context)) {
     return failure("error", "channel admission context is malformed");
   }
-  if (!validateMessage(message)) {
+  if (operation === "current-read") {
+    // CORE §11.1.2(3): the exact corrective profile is admitted before any
+    // current channel processing; there is no default authority.
+    const refused = channelProfileAdmissionFailure(
+      selected.profileAdmission,
+      context.sessionChannelId,
+    );
+    if (refused !== null) return refused;
+  }
+  if (!validateMessage(message, operation)) {
     return failure("error", "channel message envelope is malformed");
+  }
+  if (
+    operation === "current-read" &&
+    !sameParty(
+      (message.signature as ChannelMessageSignatureV1).signer,
+      message.sender,
+    )
+  ) {
+    // CH-7: a well-formed envelope whose signer is another party is a
+    // binding failure attributable to the message, not malformed input.
+    return failure("fail", "signature signer does not identify the sender (CH-7)");
+  }
+  let member: string | undefined;
+  if (operation === "current-read") {
+    // CH-7: before any cryptography, the sender's CF-3 identity must occur in
+    // the verifier-owned CH-1 member set. The profile gate above has already
+    // refused a missing, malformed or duplicated set, so a match is unique.
+    const identity = claimIdentity(message.sender);
+    member = (
+      selected.profileAdmission as ChannelProfileAdmission
+    ).participantIdentities.find((entry) => claimIdentity(entry) === identity);
+    if (member === undefined) {
+      return failure("fail", "sender is not a member of the channel (CH-7)");
+    }
   }
   if (context.priorChannelIds.includes(context.sessionChannelId)) {
     return failure(
@@ -343,6 +846,11 @@ export async function admitChannelMessage<
     message: ownedMessage,
     unsignedEnvelope: unsigned,
     envelopeHash,
+    signedBytes: signedBytesFor(operation, envelopeHash),
+    // `member` is always set on `current-read`: a non-member returned above.
+    ...(operation === "current-read"
+      ? { operation, member: member as string }
+      : { operation }),
   });
 
   let decision: unknown;
@@ -369,5 +877,6 @@ export async function admitChannelMessage<
     message: ownedMessage,
     unsignedEnvelope: unsigned,
     envelopeHash,
+    operation,
   };
 }

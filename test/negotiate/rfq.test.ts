@@ -9,6 +9,7 @@ import {
   validateRfqProposal,
   type AttestationRef,
   type ChannelMessageSignatureVerifier,
+  type ChannelMessageSignatureV1,
   type FixedPricePartyInput,
   type IdentityBundle,
   type Listing,
@@ -18,10 +19,14 @@ import {
   type VerifiedListingInput,
 } from "../../src/index.js";
 
+import { rfqProfileAdmission } from "./correctiveProfile.js";
+
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-rfq";
 const SELLER = "did:demos:seller-rfq";
+/** Verifier-owned CORE §11.1.2(3) profile admission for the session. */
+const PROFILE = rfqProfileAdmission("private-channel-01", [BUYER, SELLER]);
 
 function identity(claim: string): IdentityBundle {
   return {
@@ -138,7 +143,7 @@ function openInput(value = listing()) {
 }
 
 const reserve: RfqChannelReservation = () => "pass";
-const verify: ChannelMessageSignatureVerifier<RfqTurnBody, string> = () =>
+const verify: ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1> = () =>
   "pass";
 
 function turn(
@@ -152,17 +157,24 @@ function turn(
     sentAt?: number;
   } = {},
 ) {
+  const sender = options.sender ?? state.expectedSender;
   return {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: state.channelId,
     sequence: options.sequence ?? state.lastSequence + 1,
-    sender: options.sender ?? state.expectedSender,
+    sender,
     sentAt: options.sentAt ?? NOW,
     type,
     body,
     ...(options.repliesTo === undefined
       ? {}
       : { refs: { repliesTo: options.repliesTo } }),
-    signature: "adapter-owned-signature",
+    signature: {
+      signatureVersion: "1" as const,
+      signer: sender,
+      algorithm: "ed25519" as const,
+      value: Buffer.alloc(64, 7).toString("base64url"),
+    },
   };
 }
 
@@ -175,7 +187,7 @@ const proposal = (amount: string) => ({
 });
 
 async function opened(value = listing()): Promise<RfqSessionState> {
-  const result = await openRfqSession(openInput(value), reserve);
+  const result = await openRfqSession(openInput(value), reserve, PROFILE);
   if (result.decision !== "pass") throw new Error(result.reason);
   return result.state as RfqSessionState;
 }
@@ -291,7 +303,7 @@ describe("RFQ session opening", () => {
       });
       return "pass";
     });
-    const result = await openRfqSession(openInput(), reservation);
+    const result = await openRfqSession(openInput(), reservation, PROFILE);
     expect(result.decision).toBe("pass");
     if (result.decision === "pass") {
       expect(result.state).toMatchObject({
@@ -312,7 +324,7 @@ describe("RFQ session opening", () => {
   test.each(["fail", "indeterminate", "error"] as const)(
     "preserves a %s durable reservation result",
     async (decision) => {
-      const result = await openRfqSession(openInput(), () => decision);
+      const result = await openRfqSession(openInput(), () => decision, PROFILE);
       expect(result.decision).toBe(decision);
     },
   );
@@ -322,7 +334,7 @@ describe("RFQ session opening", () => {
       initiator: "seller",
       channelSubnet: "private-channel-01",
     });
-    const result = await openRfqSession(openInput(value), reserve);
+    const result = await openRfqSession(openInput(value), reserve, PROFILE);
     expect(result.decision).toBe("pass");
     if (result.decision === "pass")
       expect(result.state.expectedSender).toBe(SELLER);
@@ -334,6 +346,7 @@ describe("RFQ session opening", () => {
           channelId: "caller-overrode-channel",
         },
         reserve,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "error" });
   });
@@ -342,14 +355,14 @@ describe("RFQ session opening", () => {
     const reservation = vi.fn<RfqChannelReservation>(() => "pass");
     const forged = openInput();
     forged.verifiedListing.pin.contentHash = "b".repeat(64);
-    await expect(openRfqSession(forged, reservation)).resolves.toMatchObject({
+    await expect(openRfqSession(forged, reservation, PROFILE)).resolves.toMatchObject({
       decision: "error",
     });
 
     const wrongPattern = listing();
     wrongPattern.pipeline[0] = { kind: "negotiate-fixed-price" };
     await expect(
-      openRfqSession(openInput(wrongPattern), reservation),
+      openRfqSession(openInput(wrongPattern), reservation, PROFILE),
     ).resolves.toMatchObject({ decision: "error" });
 
     await expect(
@@ -359,6 +372,7 @@ describe("RFQ session opening", () => {
           seller: { ...seller, identityBundle: identity("did:demos:impostor") },
         },
         reservation,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "error" });
 
@@ -372,13 +386,137 @@ describe("RFQ session opening", () => {
           },
         },
         reservation,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "error" });
     expect(reservation).not.toHaveBeenCalled();
   });
+
+  test("refuses members current-read can never admit before reserving the channel (CH-7)", async () => {
+    const reservation = vi.fn<RfqChannelReservation>(() => "pass");
+    const unregistered = `cci:${"ab".repeat(32)}`;
+    await expect(
+      openRfqSession(
+        { ...openInput(), buyer: { ...buyer, identityBundle: identity(unregistered) } },
+        reservation,
+        PROFILE,
+      ),
+    ).resolves.toMatchObject({ decision: "error" });
+    expect(reservation).not.toHaveBeenCalled();
+  });
+
+  test("refuses to reserve or issue state without verifier-owned profile admission (CORE §11.1.2(3))", async () => {
+    const reservation = vi.fn<RfqChannelReservation>(() => "pass");
+    await expect(openRfqSession(openInput(), reservation, undefined)).resolves.toMatchObject({
+      decision: "indeterminate",
+    });
+    await expect(
+      openRfqSession(openInput(), reservation, { profile: PROFILE.profile }),
+    ).resolves.toMatchObject({ decision: "indeterminate" });
+    await expect(
+      openRfqSession(openInput(), reservation, rfqProfileAdmission("another-channel", [BUYER, SELLER])),
+    ).resolves.toMatchObject({ decision: "fail" });
+    await expect(
+      openRfqSession(openInput(), reservation, "malformed" as never),
+    ).resolves.toMatchObject({ decision: "error" });
+    expect(reservation).not.toHaveBeenCalled();
+    await expect(openRfqSession(openInput(), reservation, PROFILE)).resolves.toMatchObject({
+      decision: "pass",
+    });
+    expect(reservation).toHaveBeenCalledOnce();
+  });
 });
 
 describe("bounded RFQ turn reducer", () => {
+  test("an expired turn without profile admission returns no new state", async () => {
+    const state0 = await opened(listing({ timeoutSec: 2 }));
+    const verifier = vi.fn<ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>>(() => "pass");
+    const offer = turn(state0, "offer", proposal("10"));
+    for (const [admission, decision] of [
+      [undefined, "indeterminate"],
+      [rfqProfileAdmission("another-channel", [BUYER, SELLER]), "fail"],
+      ["malformed", "error"],
+    ] as const) {
+      const result = await advanceRfqSession(state0, offer, NOW + 2_001, verifier, admission as never);
+      expect(result, String(decision)).toMatchObject({ decision });
+      expect(result).not.toHaveProperty("state");
+    }
+    expect(verifier).not.toHaveBeenCalled();
+    // With admission the same expired call times the session out.
+    await expect(advanceRfqSession(state0, offer, NOW + 2_001, verifier, PROFILE)).resolves.toMatchObject({
+      decision: "pass",
+      state: { status: "timed-out" },
+    });
+  });
+
+  test("refuses a non-member before the signature verifier runs (CH-7)", async () => {
+    const state0 = await opened();
+    const verifier = vi.fn<ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>>(() => "pass");
+    const outsider = `key:${"9".repeat(64)}`;
+    await expect(
+      advanceRfqSession(state0, turn(state0, "offer", proposal("10"), { sender: outsider }), NOW + 1, verifier, PROFILE),
+    ).resolves.toMatchObject({ decision: "fail", reason: "sender is not a member of the channel (CH-7)" });
+    expect(verifier).not.toHaveBeenCalled();
+  });
+
+  test("refuses a turn without verifier-owned profile admission for this session", async () => {
+    const state0 = await opened();
+    const verifier = vi.fn<ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>>(() => "pass");
+    const offer = turn(state0, "offer", proposal("10"));
+    await expect(
+      advanceRfqSession(state0, offer, NOW + 1, verifier, undefined),
+    ).resolves.toMatchObject({ decision: "indeterminate" });
+    await expect(
+      advanceRfqSession(state0, offer, NOW + 1, verifier, rfqProfileAdmission("another-channel", [BUYER, SELLER])),
+    ).resolves.toMatchObject({ decision: "fail" });
+    await expect(
+      advanceRfqSession(state0, offer, NOW + 1, verifier, rfqProfileAdmission("private-channel-01", [BUYER])),
+    ).resolves.toMatchObject({ decision: "fail" });
+    expect(verifier).not.toHaveBeenCalled();
+    await expect(
+      advanceRfqSession(state0, offer, NOW + 1, verifier, PROFILE),
+    ).resolves.toMatchObject({ decision: "pass" });
+  });
+
+  test("a parameter-qualified sender names the same member (CH-7) and is stored as the primary claim", async () => {
+    const state0 = await opened();
+    // Channel admission accepts the qualified spelling; the reducer must not
+    // treat it as a different member or persist it in place of the primary claim.
+    const first = await advanceRfqSession(
+      state0,
+      turn(state0, "offer", proposal("10"), { sender: `${BUYER}?role=buyer` }),
+      NOW + 1_000,
+      verify,
+      PROFILE,
+    );
+    expect(first.decision).toBe("pass");
+    if (first.decision !== "pass") return;
+    expect(first.state.standingProposal?.proposer).toBe(BUYER);
+    expect(first.state.expectedSender).toBe(SELLER);
+    // The persisted state validates on rehydrate and the qualified counterparty continues the session.
+    const rehydrated = JSON.parse(JSON.stringify(first.state)) as RfqSessionState;
+    const second = await advanceRfqSession(
+      rehydrated,
+      turn(rehydrated, "counter", proposal("9.5"), { sender: `${SELLER}?role=seller`, repliesTo: 1 }),
+      NOW + 2_000,
+      verify,
+      PROFILE,
+    );
+    expect(second.decision).toBe("pass");
+    if (second.decision !== "pass") return;
+    expect(second.state.standingProposal?.proposer).toBe(SELLER);
+    expect(second.state.expectedSender).toBe(BUYER);
+    // A qualified spelling of a non-member is refused before cryptography (CH-7).
+    const outsider = await advanceRfqSession(
+      second.state as RfqSessionState,
+      turn(second.state as RfqSessionState, "counter", proposal("9.7"), { sender: "did:demos:outsider?role=buyer", repliesTo: 2 }),
+      NOW + 3_000,
+      verify,
+      PROFILE,
+    );
+    expect(outsider).toMatchObject({ decision: "fail", reason: "sender is not a member of the channel (CH-7)" });
+  });
+
   test("runs offer → counter → exact acceptance and produces immutable recovery state", async () => {
     const state0 = await opened();
     const first = await advanceRfqSession(
@@ -386,6 +524,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(state0, "offer", proposal("10"), { sentAt: NOW + 999_999 }),
       NOW + 1_000,
       verify,
+      PROFILE,
     );
     expect(first.decision).toBe("pass");
     if (first.decision !== "pass") return;
@@ -406,6 +545,7 @@ describe("bounded RFQ turn reducer", () => {
       }),
       NOW + 2_000,
       verify,
+      PROFILE,
     );
     expect(second.decision).toBe("pass");
     if (second.decision !== "pass") return;
@@ -423,6 +563,7 @@ describe("bounded RFQ turn reducer", () => {
       ),
       NOW + 3_000,
       verify,
+      PROFILE,
     );
     expect(accepted.decision).toBe("pass");
     if (accepted.decision === "pass") {
@@ -456,6 +597,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(state0, "offer", proposal("10")),
       NOW + 1,
       verify,
+      PROFILE,
     );
     if (first.decision !== "pass") throw new Error(first.reason);
     const result = await advanceRfqSession(
@@ -463,6 +605,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(first.state as RfqSessionState, "counter", proposal("50")),
       NOW + 2,
       verify,
+      PROFILE,
     );
     expect(result).toMatchObject({ decision: "fail" });
     expect(first.state).toMatchObject({
@@ -479,6 +622,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(state0, "offer", proposal("10")),
       NOW + 1,
       verify,
+      PROFILE,
     );
     if (first.decision !== "pass") throw new Error(first.reason);
     const second = await advanceRfqSession(
@@ -486,13 +630,14 @@ describe("bounded RFQ turn reducer", () => {
       turn(first.state as RfqSessionState, "counter", proposal("9.5")),
       NOW + 2,
       verify,
+      PROFILE,
     );
     expect(second.decision).toBe("pass");
     if (second.decision !== "pass") return;
     expect(second.state).toMatchObject({ status: "max-turns", turnCount: 2 });
 
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     const replay = await advanceRfqSession(
       second.state as RfqSessionState,
@@ -502,6 +647,7 @@ describe("bounded RFQ turn reducer", () => {
       }),
       NOW + 3,
       verifier,
+      PROFILE,
     );
     expect(replay.decision).toBe("fail");
     expect(verifier).not.toHaveBeenCalled();
@@ -510,13 +656,14 @@ describe("bounded RFQ turn reducer", () => {
   test("uses trusted receipt time, not sender sentAt, and times out without verification", async () => {
     const state = await opened(listing({ timeoutSec: 2 }));
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     const result = await advanceRfqSession(
       state,
       turn(state, "offer", proposal("10"), { sentAt: NOW + 1_000_000 }),
       NOW + 2_001,
       verifier,
+      PROFILE,
     );
     expect(result).toMatchObject({
       decision: "pass",
@@ -557,6 +704,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(original, "offer", proposal("10")),
       NOW + 1,
       verify,
+      PROFILE,
     );
     if (admitted.decision !== "pass") throw new Error(admitted.reason);
     const missingAdmittedHash = structuredClone(
@@ -566,7 +714,7 @@ describe("bounded RFQ turn reducer", () => {
     cases.push(missingAdmittedHash);
 
     const verifier = vi.fn<
-      ChannelMessageSignatureVerifier<RfqTurnBody, string>
+      ChannelMessageSignatureVerifier<RfqTurnBody, ChannelMessageSignatureV1>
     >(() => "pass");
     for (const corrupted of cases) {
       await expect(
@@ -575,6 +723,7 @@ describe("bounded RFQ turn reducer", () => {
           turn(original, "offer", proposal("10")),
           NOW + 1,
           verifier,
+          PROFILE,
         ),
       ).resolves.toMatchObject({ decision: "error" });
       expect(() => rfqSessionCheckpointHash(corrupted)).toThrow(/malformed/);
@@ -590,6 +739,7 @@ describe("bounded RFQ turn reducer", () => {
         turn(state0, "offer", proposal("10"), { sender: SELLER }),
         NOW + 1,
         verify,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "fail" });
     await expect(
@@ -598,6 +748,7 @@ describe("bounded RFQ turn reducer", () => {
         turn(state0, "accept", { rfqBodyVersion: "1", acceptedSequence: 1 }),
         NOW + 1,
         verify,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "fail" });
 
@@ -606,6 +757,7 @@ describe("bounded RFQ turn reducer", () => {
       turn(state0, "offer", proposal("10")),
       NOW + 1,
       verify,
+      PROFILE,
     );
     if (first.decision !== "pass") throw new Error(first.reason);
     await expect(
@@ -617,6 +769,7 @@ describe("bounded RFQ turn reducer", () => {
         }),
         NOW + 2,
         verify,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "fail" });
     await expect(
@@ -628,6 +781,7 @@ describe("bounded RFQ turn reducer", () => {
         }),
         NOW + 2,
         verify,
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "fail" });
   });
@@ -641,6 +795,7 @@ describe("bounded RFQ turn reducer", () => {
         turn(state0, "offer", proposal("10")),
         NOW + 1,
         verify,
+        PROFILE,
       );
       if (first.decision !== "pass") throw new Error(first.reason);
       const result = await advanceRfqSession(
@@ -651,6 +806,7 @@ describe("bounded RFQ turn reducer", () => {
         }),
         NOW + 2,
         verify,
+        PROFILE,
       );
       expect(result).toMatchObject({
         decision: "pass",

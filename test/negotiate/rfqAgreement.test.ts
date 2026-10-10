@@ -28,6 +28,8 @@ import {
   type RfqSessionState,
 } from "../../src/index.js";
 
+import { rfqProfileAdmission } from "./correctiveProfile.js";
+
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER_SEED = Uint8Array.from(Buffer.alloc(32, 41));
@@ -37,6 +39,8 @@ const claim = (seed: Uint8Array) =>
   `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex")}`;
 const BUYER = claim(BUYER_SEED);
 const SELLER = claim(SELLER_SEED);
+/** Verifier-owned CORE §11.1.2(3) profile admission for the session. */
+const PROFILE = rfqProfileAdmission("l2ps-rfq-channel-01", [BUYER, SELLER]);
 const ORCHESTRATOR = claim(ORCHESTRATOR_SEED);
 const SUBSTITUTE = claim(Uint8Array.from(Buffer.alloc(32, 44)));
 const HASH = "a".repeat(64);
@@ -158,9 +162,11 @@ async function acceptedSession(
       startedAt: NOW,
     },
     () => "pass",
+    PROFILE,
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
   const offer = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 1,
     sender: parties.buyer.identityBundle.presentedBy,
@@ -180,18 +186,20 @@ async function acceptedSession(
         ...(meteredQuantity === undefined ? {} : { meteredQuantity }),
       },
     },
-    signature: "adapter-signature",
+    signature: { signatureVersion: "1" as const, signer: parties.buyer.identityBundle.presentedBy, algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
   };
   const offered = await advanceRfqSession(
     opened.state as RfqSessionState,
     offer,
     NOW + 1,
     () => "pass",
+    PROFILE,
   );
   if (offered.decision !== "pass") throw new Error(offered.reason);
   const accepted = await advanceRfqSession(
     offered.state as RfqSessionState,
     {
+      canonicalChannelMessageVersion: "1" as const,
       channelId: offered.state.channelId,
       sequence: 2,
       sender: parties.seller.identityBundle.presentedBy,
@@ -199,10 +207,11 @@ async function acceptedSession(
       type: "accept",
       body: { rfqBodyVersion: "1", acceptedSequence: 1 },
       refs: { repliesTo: 1 },
-      signature: "adapter-signature",
+      signature: { signatureVersion: "1" as const, signer: parties.seller.identityBundle.presentedBy, algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
     },
     NOW + 2,
     () => "pass",
+    PROFILE,
   );
   if (accepted.decision !== "pass") throw new Error(accepted.reason);
   return accepted.state as RfqSessionState;

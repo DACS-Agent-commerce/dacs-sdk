@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test, vi } from "vitest";
 
 import {
   advanceRfqSession,
+  type AgreementArtifact,
   contentHash,
   deriveRfqAgreement,
   openRfqSession,
@@ -10,6 +13,7 @@ import {
   signRfqAgreement,
   type AttestationRef,
   type ChannelMessage,
+  type ChannelMessageSignatureV1,
   type IdentityBundle,
   type Listing,
   type RfqSessionState,
@@ -17,10 +21,14 @@ import {
   type VerificationDecision,
 } from "../../src/index.js";
 
+import { rfqProfileAdmission } from "./correctiveProfile.js";
+
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-transcript";
 const SELLER = "did:demos:seller-transcript";
+/** Verifier-owned CORE §11.1.2(3) profile admission for the session. */
+const PROFILE = rfqProfileAdmission("rfq-private-channel-01", [BUYER, SELLER]);
 
 function identity(claim: string): IdentityBundle {
   return {
@@ -115,7 +123,13 @@ function verified(value: Listing) {
   };
 }
 
-async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) {
+async function fixture(
+  policy?: Listing["terms"]["transcriptDisclosurePolicy"],
+  options: { qualifiedSenders?: boolean } = {},
+) {
+  // CH-7: a parameter-qualified spelling names the same member.
+  const spell = (claim: string, role: string) =>
+    options.qualifiedSenders ? `${claim}?role=${role}` : claim;
   const value = listing(policy);
   const opened = await openRfqSession(
     {
@@ -127,12 +141,14 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
       startedAt: NOW,
     },
     () => "pass",
+    PROFILE,
   );
   if (opened.decision !== "pass") throw new Error(opened.reason);
-  const offer: ChannelMessage<RfqTurnBody, string> = {
+  const offer: ChannelMessage<RfqTurnBody, ChannelMessageSignatureV1> = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 1,
-    sender: BUYER,
+    sender: spell(BUYER, "buyer"),
     sentAt: NOW + 1,
     type: "offer",
     body: {
@@ -142,30 +158,33 @@ async function fixture(policy?: Listing["terms"]["transcriptDisclosurePolicy"]) 
         price: { amount: "9.5", currency: "USDC" },
       },
     },
-    signature: "buyer-channel-signature",
+    signature: { signatureVersion: "1" as const, signer: spell(BUYER, "buyer"), algorithm: "ed25519" as const, value: Buffer.alloc(64, 1).toString("base64url") },
   };
   const offered = await advanceRfqSession(
     opened.state as RfqSessionState,
     offer,
     NOW + 1,
     () => "pass",
+    PROFILE,
   );
   if (offered.decision !== "pass") throw new Error(offered.reason);
-  const accept: ChannelMessage<RfqTurnBody, string> = {
+  const accept: ChannelMessage<RfqTurnBody, ChannelMessageSignatureV1> = {
+    canonicalChannelMessageVersion: "1" as const,
     channelId: opened.state.channelId,
     sequence: 2,
-    sender: SELLER,
+    sender: spell(SELLER, "seller"),
     sentAt: NOW + 2,
     type: "accept",
     body: { rfqBodyVersion: "1", acceptedSequence: 1 },
     refs: { repliesTo: 1 },
-    signature: "seller-channel-signature",
+    signature: { signatureVersion: "1" as const, signer: spell(SELLER, "seller"), algorithm: "ed25519" as const, value: Buffer.alloc(64, 2).toString("base64url") },
   };
   const accepted = await advanceRfqSession(
     offered.state as RfqSessionState,
     accept,
     NOW + 2,
     () => "pass",
+    PROFILE,
   );
   if (accepted.decision !== "pass") throw new Error(accepted.reason);
   const session = accepted.state as RfqSessionState;
@@ -198,6 +217,7 @@ describe("RFQ private transcript verification", () => {
         generatedAt: NOW + 4,
       },
       () => "pass",
+      PROFILE,
     );
     expect(result.decision).toBe("pass");
     if (result.decision !== "pass") return;
@@ -209,6 +229,20 @@ describe("RFQ private transcript verification", () => {
     });
     expect(Object.isFrozen(result.transcript)).toBe(true);
     expect(Object.isFrozen(result.transcript.messages[0])).toBe(true);
+  });
+
+  test("re-verifies a transcript whose wire senders are parameter-qualified spellings of the members (CH-7)", async () => {
+    const value = await fixture(undefined, { qualifiedSenders: true });
+    expect(value.session.standingProposal?.proposer).toBe(BUYER);
+    const result = await prepareRfqTranscript(
+      { session: value.session, agreement: value.agreement, messages: value.messages, generatedAt: NOW + 4 },
+      () => "pass",
+      PROFILE,
+    );
+    expect(result.decision, result.decision === "pass" ? "" : result.reason).toBe("pass");
+    if (result.decision !== "pass") return;
+    expect(result.transcript.members).toEqual([BUYER, SELLER]);
+    expect(result.transcript.messages[0]?.sender).toBe(`${BUYER}?role=buyer`);
   });
 
   test("fails closed on omitted, reordered, tampered, or uncertain messages", async () => {
@@ -253,6 +287,7 @@ describe("RFQ private transcript verification", () => {
             generatedAt: NOW + 4,
           },
           () => "pass",
+          PROFILE,
         ),
       ).resolves.not.toMatchObject({ decision: "pass" });
     }
@@ -265,8 +300,36 @@ describe("RFQ private transcript verification", () => {
           generatedAt: NOW + 4,
         },
         () => "indeterminate",
+        PROFILE,
       ),
     ).resolves.toMatchObject({ decision: "indeterminate" });
+  });
+
+  test("refuses a transcript written before the v0.6 channel wire as archival input", async () => {
+    // Store-version-1 records written by SDK main before this change.
+    const { buyerFinalized } = JSON.parse(
+      readFileSync(new URL("../fixtures/durable-rfq-store-v1.json", import.meta.url), "utf8"),
+    ) as { buyerFinalized: { session: RfqSessionState; agreement: { finalized: AgreementArtifact }; transcript: ChannelMessage<RfqTurnBody>[] } };
+    const verifier = vi.fn(() => "pass" as const);
+    await expect(
+      prepareRfqTranscript(
+        {
+          session: buyerFinalized.session,
+          agreement: buyerFinalized.agreement.finalized,
+          messages: buyerFinalized.transcript,
+          generatedAt: buyerFinalized.agreement.finalized.generatedAt,
+        },
+        verifier,
+        rfqProfileAdmission(buyerFinalized.session.channelId, [
+          buyerFinalized.session.buyer.primaryClaim,
+          buyerFinalized.session.seller.primaryClaim,
+        ]),
+      ),
+    ).resolves.toEqual({
+      decision: "error",
+      reason: "RFQ transcript predates the DACS-3 v0.6 channel wire; it is archival only",
+    });
+    expect(verifier).not.toHaveBeenCalled();
   });
 });
 
@@ -283,6 +346,7 @@ describe("RFQ transcript disclosure policy", () => {
         generatedAt: NOW + 4,
       },
       () => "pass",
+      PROFILE,
     );
     if (prepared.decision !== "pass") throw new Error(prepared.reason);
     return { ...value, transcript: prepared.transcript };
@@ -308,6 +372,7 @@ describe("RFQ transcript disclosure policy", () => {
         {
           verifyMessageSignature: () => "pass",
           verifyConsent,
+          profileAdmission: PROFILE,
         },
       ),
     ).resolves.toMatchObject({
@@ -332,6 +397,7 @@ describe("RFQ transcript disclosure policy", () => {
         {
           verifyMessageSignature: () => "pass",
           verifyConsent: () => "pass",
+          profileAdmission: PROFILE,
         },
       ),
     ).resolves.toMatchObject({
@@ -350,6 +416,7 @@ describe("RFQ transcript disclosure policy", () => {
         {
           verifyMessageSignature: () => "pass",
           verifyConsent: () => "pass",
+          profileAdmission: PROFILE,
         },
       ),
     ).resolves.toMatchObject({
@@ -382,6 +449,7 @@ describe("RFQ transcript disclosure policy", () => {
           {
             verifyMessageSignature: () => "pass",
             verifyConsent: decision,
+            profileAdmission: PROFILE,
           },
         ),
       ).resolves.toMatchObject({ decision: expected });
@@ -403,6 +471,7 @@ describe("RFQ transcript disclosure policy", () => {
         {
           verifyMessageSignature: () => "pass",
           verifyConsent: verifier,
+          profileAdmission: PROFILE,
         },
       ),
     ).resolves.toMatchObject({ decision: "fail" });
@@ -423,8 +492,9 @@ describe("RFQ transcript disclosure policy", () => {
         },
         {
           verifyMessageSignature: ({ message }) =>
-            message.signature === "buyer-channel-signature" ? "pass" : "fail",
+            message.signature.signer === BUYER ? "pass" : "fail",
           verifyConsent,
+          profileAdmission: PROFILE,
         },
       ),
     ).resolves.toMatchObject({ decision: "fail" });
@@ -458,7 +528,7 @@ describe("RFQ transcript disclosure policy", () => {
             transcript: value.transcript,
             consents,
           },
-          { verifyMessageSignature, verifyConsent },
+          { verifyMessageSignature, verifyConsent, profileAdmission: PROFILE },
         ),
       ).resolves.toMatchObject({
         decision: "pass",
@@ -466,4 +536,29 @@ describe("RFQ transcript disclosure policy", () => {
       });
     },
   );
+
+  test("reads profileAdmission only as an own member of the verifiers", async () => {
+    const value = await disclosureFixture();
+    const input = {
+      verifiedListing: verified(value.value),
+      session: value.session,
+      agreement: value.agreement,
+      transcript: value.transcript,
+      consents,
+    };
+    const verifiers = { verifyMessageSignature: () => "pass" as const, verifyConsent: () => "pass" as const };
+    Object.defineProperty(Object.prototype, "profileAdmission", {
+      value: PROFILE,
+      configurable: true,
+      writable: true,
+      enumerable: false,
+    });
+    let result: unknown;
+    try {
+      result = await planRfqTranscriptDisclosure(input, verifiers as never);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).profileAdmission;
+    }
+    expect(result).toMatchObject({ decision: "indeterminate" });
+  });
 });

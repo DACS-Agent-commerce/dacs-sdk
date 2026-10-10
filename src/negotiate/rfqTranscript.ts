@@ -16,9 +16,12 @@ import {
   type ChannelMessageSignatureVerifier,
 } from "./channel.js";
 import {
+  resolveRfqMember,
+  rfqChannelProfileAdmission,
   rfqSessionCheckpointHash,
   validateRfqProposal,
   type RfqAcceptBody,
+  type RfqProfileAdmission,
   type RfqSessionState,
   type RfqTurnBody,
 } from "./rfq.js";
@@ -61,6 +64,8 @@ export interface RfqTranscriptDisclosureVerifiers<TSignature = unknown> {
     TSignature
   >;
   verifyConsent: RfqTranscriptConsentVerifier;
+  /** Verifier-owned CORE §11.1.2(3) authority for the transcript's session. */
+  profileAdmission: RfqProfileAdmission | undefined;
 }
 
 export type RfqTranscriptDisclosureAction =
@@ -213,6 +218,10 @@ function transcriptBindsSession<TSignature>(
  * Verify and own the complete private transcript behind an accepted RFQ.
  * This is deliberately a `VerifiedRfqTranscript`, not the underspecified
  * normative `ChannelTranscript` signature/encryption wire from #351.
+ *
+ * Every turn is read with `current-read` under `profileAdmission`. A
+ * transcript written before the DACS-3 v0.6 channel wire is `error`: it is
+ * archival input only (CORE §11.1.2(4)) and is never re-verified as current.
  */
 export async function prepareRfqTranscript<TSignature = unknown>(
   callerInput: PrepareRfqTranscriptInput<TSignature>,
@@ -220,6 +229,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
     RfqTurnBody,
     TSignature
   >,
+  profileAdmission: RfqProfileAdmission | undefined,
 ): Promise<
   | { decision: "pass"; transcript: Readonly<VerifiedRfqTranscript<TSignature>> }
   | ChannelMessageAdmissionFailure
@@ -254,6 +264,29 @@ export async function prepareRfqTranscript<TSignature = unknown>(
       reason: "RFQ transcript does not bind the accepted agreement/session",
     };
   }
+  if (
+    input.messages.some(
+      (message) =>
+        message === null ||
+        typeof message !== "object" ||
+        !Object.prototype.hasOwnProperty.call(
+          message,
+          "canonicalChannelMessageVersion",
+        ),
+    )
+  ) {
+    return {
+      decision: "error",
+      reason:
+        "RFQ transcript predates the DACS-3 v0.6 channel wire; it is archival only",
+    };
+  }
+  let channelProfileAdmission: ReturnType<typeof rfqChannelProfileAdmission>;
+  try {
+    channelProfileAdmission = rfqChannelProfileAdmission(session, profileAdmission);
+  } catch {
+    return { decision: "error", reason: "RFQ profile admission is malformed" };
+  }
 
   let priorSequence = 0;
   let expectedSender =
@@ -272,10 +305,16 @@ export async function prepareRfqTranscript<TSignature = unknown>(
         priorChannelIds: [],
       },
       verifySignature,
+      channelProfileAdmission === undefined
+        ? undefined
+        : { profileAdmission: channelProfileAdmission },
     );
     if (admitted.decision !== "pass") return admitted;
     const message = admitted.message;
-    if (message.sender !== expectedSender) {
+    // CH-7: resolve the admitted sender to the member's primary claim before
+    // any byte comparison; the reducer does the same.
+    const sender = resolveRfqMember(session, message.sender);
+    if (sender === null || sender !== expectedSender) {
       return {
         decision: "fail",
         reason: "RFQ transcript member turn order is invalid",
@@ -302,7 +341,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
         standingProposal = {
           ...proposal,
           sequence: message.sequence,
-          proposer: message.sender,
+          proposer: sender,
         };
       } else if (
         message.type !== "accept" ||
@@ -323,7 +362,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
     priorSequence = message.sequence;
     lastHash = admitted.envelopeHash;
     expectedSender =
-      message.sender === session.buyer.primaryClaim
+      sender === session.buyer.primaryClaim
         ? session.seller.primaryClaim
         : session.buyer.primaryClaim;
   }
@@ -368,9 +407,14 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   }
   let messageVerifier: RfqTranscriptDisclosureVerifiers<TSignature>["verifyMessageSignature"];
   let consentVerifier: RfqTranscriptConsentVerifier;
+  let profileAdmission: unknown;
   try {
     messageVerifier = verifiers.verifyMessageSignature;
     consentVerifier = verifiers.verifyConsent;
+    // An own member only: an inherited value is never an admission capability.
+    profileAdmission = Object.prototype.hasOwnProperty.call(verifiers, "profileAdmission")
+      ? verifiers.profileAdmission
+      : undefined;
   } catch {
     return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
   }
@@ -444,6 +488,7 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
       generatedAt: input.transcript.generatedAt,
     },
     verifyMessageSignature,
+    profileAdmission as RfqProfileAdmission | undefined,
   );
   if (prepared.decision !== "pass") return prepared;
   if (!exact(prepared.transcript, input.transcript)) {
