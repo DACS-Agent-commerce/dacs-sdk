@@ -33,6 +33,7 @@ import type {
 import {
   isAgreementArtifact,
   isAttestationRef,
+  isExactJsonRecord,
   isIdentityBundle,
   isListing,
 } from "../artifacts/validators.js";
@@ -72,6 +73,16 @@ export interface FixedPriceAgreementInput {
   payoutBindings?: PayoutBinding[];
   /** Required exactly when the pinned Listing uses metered pricing. */
   meteredQuantity?: MeteredQuantityInput;
+  /**
+   * DACS-3 §8.5 `terms.additionalTerms`, copied verbatim under both signatures
+   * and the agreement hash. Omit it (do not pass `{}` or `undefined`) for an
+   * Agreement byte-identical to one derived without it. Keys are
+   * `<namespace>:<name>:v<n>`; size and depth are capped (see
+   * docs/fixed-price-agreement.md). A seller re-derives from its own
+   * authenticated context, so it must resolve the same terms itself; a
+   * proposal carrying terms the seller did not resolve fails.
+   */
+  additionalTerms?: Record<string, unknown>;
   /** Provisional signing-time clock; #99 re-checks deadlines at finalized commit. */
   generatedAt: number;
 }
@@ -342,6 +353,123 @@ export function deriveMeteredPriceTerm(
 const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
   canonicalize(a) === canonicalize(b);
 
+/**
+ * Producer profile for caller-supplied `terms.additionalTerms`. DACS-3 §8.5
+ * types the member as an open `Record<string, unknown>`; signing it needs a
+ * narrower rule so both parties derive the same bytes and an entry cannot reuse
+ * an exact top-level §8.5 term member name.
+ *
+ * - Each top-level key is `<namespace>:<name>:v<n>` in lowercase ASCII
+ *   (`ADDITIONAL_TERMS_KEY`). Independent extensions cannot collide, a
+ *   reader can recognise a key it does not support, and a new version is a new
+ *   key rather than a silent change. CF-1 does not normalise member names, so
+ *   case or non-ASCII freedom would allow byte-different spellings of one key.
+ * - The `dacs` namespace is reserved for the Standard, and a `<name>` that
+ *   spells a top-level §8.5 term member (ignoring hyphens) is refused, so an
+ *   entry cannot reuse that exact member name. This is a name check only:
+ *   other names and nested members may still restate a price, rail, or
+ *   deadline, so consumers must never flatten `additionalTerms` or read
+ *   Standard meaning from it.
+ * - An empty record is refused: `{}` and omission would be two byte-different
+ *   Agreements with the same meaning.
+ * - Every number is a safe integer, as in the signing plan, durable exchange,
+ *   and seller responder; carry decimals as strings.
+ * - The canonical UTF-8 form is capped at 8 KiB. The terms ride inside the
+ *   anchored SR-2 Agreement (DACS-4 §9.6.1 soft limit 128 KB per Storage
+ *   Program; DACS-1 LR-2 holds a whole Listing to 16 KiB), which must still
+ *   fit parties, signatures, and the storage wrapper.
+ * - Nesting is capped at 8 container levels, counting the record itself,
+ *   so independent readers recurse a bounded amount.
+ * - `__proto__`, `constructor`, and `prototype` member names are refused at
+ *   any depth: inert as JSON, but they rebind prototypes in a consumer that
+ *   merges entries by assignment.
+ */
+const ADDITIONAL_TERMS_MAX_BYTES = 8_192;
+const ADDITIONAL_TERMS_MAX_DEPTH = 8;
+const ADDITIONAL_TERMS_KEY_MAX_LENGTH = 128;
+const ADDITIONAL_TERMS_KEY =
+  /^([a-z0-9]+(?:[.-][a-z0-9]+)*):([a-z0-9]+(?:-[a-z0-9]+)*):v[1-9][0-9]*$/;
+const RESERVED_ADDITIONAL_TERMS_NAMESPACE = "dacs";
+const AGREEMENT_TERM_MEMBERS: ReadonlySet<string> = new Set([
+  "deliverable",
+  "price",
+  "meteredquantity",
+  "rail",
+  "deadline",
+  "priceanchor",
+  "feeschedule",
+  "payoutbindings",
+  "priorpaymentdispositionref",
+  "additionalterms",
+]);
+const PROTOTYPE_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+
+function requireBoundedAdditionalTermsValue(value: unknown, depth: number): void {
+  // The signing plan, durable exchange, and seller responder carry numbers
+  // only as safe integers; anything else would sign locally but never exchange.
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
+    throw new DacsError(
+      "additionalTerms numbers must be safe integers; carry decimals as strings",
+    );
+  }
+  if (value === null || typeof value !== "object") return;
+  if (depth > ADDITIONAL_TERMS_MAX_DEPTH) {
+    throw new DacsError(
+      `additionalTerms must not nest deeper than ${ADDITIONAL_TERMS_MAX_DEPTH} levels`,
+    );
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) requireBoundedAdditionalTermsValue(entry, depth + 1);
+    return;
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (PROTOTYPE_MEMBER_NAMES.has(key)) {
+      throw new DacsError("additionalTerms must not use a prototype member name");
+    }
+    requireBoundedAdditionalTermsValue(entry, depth + 1);
+  }
+}
+
+/** Validate an owned canonical snapshot; the caller has already captured it. */
+function requireAdditionalTerms(value: unknown): Record<string, unknown> {
+  if (!isExactJsonRecord(value)) {
+    throw new DacsError("additionalTerms must be an exact JSON record");
+  }
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    throw new DacsError("additionalTerms must be omitted rather than empty");
+  }
+  for (const key of keys) {
+    const match = key.length <= ADDITIONAL_TERMS_KEY_MAX_LENGTH
+      ? ADDITIONAL_TERMS_KEY.exec(key)
+      : null;
+    if (!match) {
+      throw new DacsError(
+        "additionalTerms keys must be <namespace>:<name>:v<n> in lowercase ASCII",
+      );
+    }
+    if (
+      match[1] === RESERVED_ADDITIONAL_TERMS_NAMESPACE ||
+      AGREEMENT_TERM_MEMBERS.has(match[2]!.replace(/-/g, ""))
+    ) {
+      throw new DacsError(
+        "additionalTerms key shadows a DACS-3 §8.5 agreement term or the reserved dacs namespace",
+      );
+    }
+  }
+  requireBoundedAdditionalTermsValue(value, 1);
+  if (Buffer.byteLength(canonicalize(value), "utf8") > ADDITIONAL_TERMS_MAX_BYTES) {
+    throw new DacsError(
+      `additionalTerms canonical form exceeds ${ADDITIONAL_TERMS_MAX_BYTES} bytes`,
+    );
+  }
+  return structuredClone(value);
+}
+
 function agreementParty(
   role: "buyer" | "seller",
   input: FixedPricePartyInput,
@@ -467,6 +595,8 @@ function requirePayoutBindings(
  * DACS-3 §8.4.1/§8.5 pure derivation. No transport, anchor, payment, or private
  * repository dependency is involved. Caller-selected price/delivery never enter
  * this boundary: every signed term is derived from the exact pinned Listing.
+ * The one caller-supplied term, `additionalTerms`, is copied verbatim after the
+ * producer profile above and cannot alter any Listing-derived term.
  */
 export function deriveFixedPriceAgreement(
   callerInput: FixedPriceAgreementInput,
@@ -481,6 +611,9 @@ export function deriveFixedPriceAgreement(
   }
   if (!isListing(listing)) throw new DacsError("verified Listing has invalid wire shape");
   requireCanonicalJobId(input.jobId);
+  const additionalTerms = input.additionalTerms === undefined
+    ? undefined
+    : requireAdditionalTerms(input.additionalTerms);
   if (
     pin.listingId !== listing.listingId ||
     pin.version !== listing.listingVersion ||
@@ -569,6 +702,9 @@ export function deriveFixedPriceAgreement(
       : { meteredQuantity: { ...meteredQuantity } }),
     ...(rail === undefined ? {} : { rail }),
     deadline,
+    // Opaque to every check above: it is signed and hashed, never consulted
+    // for price, deliverable, rail, deadline, or payout.
+    ...(additionalTerms === undefined ? {} : { additionalTerms }),
   };
   const common = {
     jobId: input.jobId,

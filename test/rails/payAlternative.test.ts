@@ -37,6 +37,7 @@ import {
   validateAlternativePaymentRetry,
   verifyAlternativePaymentAudit,
   verifyPriorPaymentReplacement,
+  type AlternativeFixedPriceAgreementInput,
   type AlternativePaymentAgreementLike,
   type AlternativePaymentAuditBundleLike,
   type AlternativePaymentDecision,
@@ -703,9 +704,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
               availability: "live",
             },
     });
-    const result = await deriveAlternativeFixedPriceAgreement(
-      admission,
-      {
+    const producerInput: AlternativeFixedPriceAgreementInput = {
         jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
         verifiedListing: { disposition: "verified", listing, pin },
         buyer: {
@@ -727,7 +726,10 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
           { railId: dem.railId, phaseIndex: 2, payeeAddress: sellerClaim },
         ],
         generatedAt: now,
-      },
+      };
+    const result = await deriveAlternativeFixedPriceAgreement(
+      admission,
+      producerInput,
       { productionMode: true, pinSelectedDefinition },
     );
 
@@ -743,6 +745,29 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
     });
     expect(listing.pipeline[2]?.kind).toBe("pay-alternative");
     expect("signatures" in result.agreement).toBe(false);
+    expect("additionalTerms" in result.agreement.terms).toBe(false);
+
+    // The APR producer delegates to the fixed-price derivation, so
+    // additionalTerms is carried verbatim and refused under the same profile.
+    const additionalTerms = { "acme:service-request:v1": { input: "public text" } };
+    const extended = await deriveAlternativeFixedPriceAgreement(
+      admission,
+      { ...producerInput, additionalTerms },
+      { productionMode: true, pinSelectedDefinition },
+    );
+    expect(extended.verdict).toBe("pass");
+    if (extended.verdict !== "pass") throw new Error(extended.reason);
+    const { additionalTerms: carried, ...otherTerms } = extended.agreement.terms;
+    expect(carried).toEqual(additionalTerms);
+    expect(canonicalize(otherTerms)).toBe(canonicalize(result.agreement.terms));
+    expect(await deriveAlternativeFixedPriceAgreement(
+      admission,
+      { ...producerInput, additionalTerms: { "acme:rail:v1": dem } },
+      { productionMode: true, pinSelectedDefinition },
+    )).toMatchObject({
+      verdict: "fail",
+      reason: expect.stringMatching(/^agreement-derivation:additionalTerms key shadows/),
+    });
 
     const signed = await signFixedPriceAgreement(
       result.agreement as UnsignedAgreementArtifact,
