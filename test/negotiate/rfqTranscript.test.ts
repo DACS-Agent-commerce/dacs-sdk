@@ -536,4 +536,29 @@ describe("RFQ transcript disclosure policy", () => {
       });
     },
   );
+
+  test("reads profileAdmission only as an own member of the verifiers", async () => {
+    const value = await disclosureFixture();
+    const input = {
+      verifiedListing: verified(value.value),
+      session: value.session,
+      agreement: value.agreement,
+      transcript: value.transcript,
+      consents,
+    };
+    const verifiers = { verifyMessageSignature: () => "pass" as const, verifyConsent: () => "pass" as const };
+    Object.defineProperty(Object.prototype, "profileAdmission", {
+      value: PROFILE,
+      configurable: true,
+      writable: true,
+      enumerable: false,
+    });
+    let result: unknown;
+    try {
+      result = await planRfqTranscriptDisclosure(input, verifiers as never);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).profileAdmission;
+    }
+    expect(result).toMatchObject({ decision: "indeterminate" });
+  });
 });

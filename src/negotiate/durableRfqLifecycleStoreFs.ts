@@ -688,6 +688,9 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       } catch {
         return { status: "corrupt", reason: "RFQ create candidate is not canonical JSON" };
       }
+      if (!plainRecord(ownedCandidate)) {
+        return { status: "corrupt", reason: "RFQ create candidate must be an object" };
+      }
       if (ownedCandidate.role !== captured.role) {
         return { status: "corrupt", reason: "RFQ store role isolation was violated" };
       }
@@ -733,6 +736,9 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
         ) as DurableRfqLifecycleRecord<TSignature>;
       } catch {
         return { status: "corrupt", reason: "RFQ CAS candidate is not canonical JSON" };
+      }
+      if (!plainRecord(ownedCandidate)) {
+        return { status: "corrupt", reason: "RFQ CAS candidate must be an object" };
       }
       if (
         role !== captured.role ||

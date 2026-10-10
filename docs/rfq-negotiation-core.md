@@ -62,7 +62,9 @@ cryptography, and never falls back to the other for the same object:
   `{ signatureVersion: "1", signer, algorithm, value }` with a SIG-6 unpadded
   Base64URL `value`. Unknown top-level members are retained in the signed
   scope (SIG-5). A signer that does not identify the sender (CF-3) is a CH-7
-  `fail`.
+  `fail`. Every wire member, the discriminator and `refs` included, is read
+  as an own property: a value inherited from a prototype neither selects the
+  arm nor enters validation.
 - `legacy-import` must be selected explicitly (`{ operation: "legacy-import" }`)
   and admits only the frozen historical Demos wire: no discriminator, the
   exact seven-member envelope, a bare 128-character lowercase-hex signature,
@@ -93,6 +95,8 @@ is `indeterminate` and a duplicated or malformed one `error`, through the
 profile checks above. A parameter-only variant of a member is that member.
 
 `legacy-import` is the archival path of §11.1.2(4) and does not consult it.
+It has no member set either, so on that arm the verifier owns the membership
+check for the historical session.
 The SDK decides all 51 non-SR-1 vectors of `canonical-channel-message-v0.6`
 this way, including the seven `current-profile-*` vectors.
 
@@ -109,9 +113,10 @@ hash of stored and received envelopes: a caller that signs its result must
 admit the exact profile for the session first. The durable client does.
 
 The verifier receives an owned, deeply frozen message, the exact unsigned
-envelope, its hash, the same `signedBytes`, the selected operation and, on
-`current-read`, the CH-1 `member` the sender resolved to, spelled as in the
-member set. It verifies the signature over `signedBytes` (the CH-8 framing
+envelope, its hash, the same `signedBytes` and the selected operation. The
+input is a union discriminated by `operation`: on `current-read` it always
+carries the CH-1 `member` the sender resolved to, spelled as in the member
+set; on `legacy-import` it carries no `member`. It verifies the signature over `signedBytes` (the CH-8 framing
 for the selected operation), checks `operation`, and owns key resolution and
 algorithm dispatch (Ed25519, ECDSA secp256k1, SR-1 aggregate) for that
 member. The profile capability carries no keys or key types. It returns the
@@ -180,7 +185,9 @@ The injected store MUST authenticate persisted bytes and isolate role
 authority. The injected transport returns `acknowledged` only after the exact
 packet is durably accepted by the confidential member transport. If publish is
 ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
-redrive only an authenticated `absent` result. A permanent transport rejection
+redrive only an authenticated `absent` result. Republication is an action under
+the profile, so `resumeOutbox()` admits it first; without admission it returns
+the refusal and leaves every pending entry as stored. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
 ```ts
@@ -192,8 +199,10 @@ const buyerRfq = createDurableRfqLifecycleClient({
   signChannelMessage: buyerChannelSigner,
   verifyChannelMessage,
   // Resolves { profile, authority } for { role, jobId, channelId,
-  // participantIdentities }; no authority, or a throw, refuses open before
-  // the reservation and refuses a turn before anything is signed.
+  // participantIdentities } before every action: open, each turn sent or
+  // received, startAgreement, each agreement packet received, resumeOutbox.
+  // No authority, or a throw, refuses the action before anything is reserved,
+  // signed, published or stored.
   profileAdmission: resolveSessionProfileAdmission,
   agreementSigner: buyerAgreementSigner,
   verifyAgreementContribution,
@@ -220,7 +229,8 @@ await buyerRfq.resumeOutbox(jobId);
 ```
 
 The seller uses the same factory with `role: "seller"`, its own store and its
-own signers. Receiving the buyer's valid Agreement proposal re-derives the
+own signers. Every `receive()` admits the profile before it looks at the
+packet kind. Receiving the buyer's valid Agreement proposal re-derives the
 expected draft from the seller's accepted checkpoint, rejects substituted
 terms, creates only the seller contribution, verifies both signatures, and
 returns that detached contribution. Both roles end with the same finalized
@@ -267,9 +277,13 @@ finalized Agreement stays reachable. The pre-v0.6 session itself is abandoned
 `startAgreement` return a non-retryable `rejected` without signing,
 publishing, admitting or reconciling anything, and no store transition can
 write a version-1 record. `open` loads the job first, so a version-1 record
-is refused before the reservation or the profile resolver is called; only a
-job with no record reserves its channel. Start a new session, with a new
-`jobId` and `channelId`, under the current profile.
+is refused before the reservation or the profile resolver is called. After
+admission it loads the job once more, and only a job that is still missing
+reserves its channel. One window remains, because the store interface has no
+reservation primitive: a version-1 record that another process creates between
+that last load and `create()` is still refused, but only after one resolver
+call and one reservation. Start a new session, with a new `jobId` and
+`channelId`, under the current profile.
 
 
 ## Finalizing and committing an accepted agreement
@@ -287,6 +301,11 @@ signatures, rebinds the agreement to the accepted checkpoint and authenticated
 commitment session, and uses the common SR-2 finality commitment engine. It
 returns success only after an authenticated finalized receipt and the
 receipt-time deadline/Listing-validity checks.
+
+These three functions do not check profile admission. A caller MUST admit the
+exact corrective profile for the session first (CORE §11.1.2(3)). The durable
+client does so before it signs or finalizes an agreement; it does not publish
+commitments.
 
 ```ts
 const draft = deriveRfqAgreement({
@@ -329,7 +348,7 @@ before the v0.6 channel wire (any turn without the discriminator) returns
 `error` ("predates the DACS-3 v0.6 channel wire; it is archival only"): it is
 never re-verified as current and cannot feed disclosure.
 `planRfqTranscriptDisclosure()`, whose verifiers object carries the same
-`profileAdmission`, then applies the Listing policy and permits encrypted
+`profileAdmission` as an own member, then applies the Listing policy and permits encrypted
 publication only when
 every member's injected consent verifier returns `pass`. The default `none`
 policy never invokes the verifier and retains the transcript privately;
@@ -372,10 +391,22 @@ Unreleased: DACS-3 v0.6 channel wire (breaking pre-v1 correction, CORE
   refused by `prepareRfqTranscript()` with `error`.
 - **Breaking:** `openRfqSession()` takes an `RfqProfileAdmission` third
   argument and refuses, without reserving the channel, when the profile is not
-  admitted. The durable client's `open()` resolves it before reserving.
+  admitted. The durable client's `open()` resolves it before reserving, and
+  loads the job again just before the reservation. A version-1 record created
+  by another process after that load is still refused, but after one resolver
+  call and one reservation; closing that window needs a store-level
+  reservation primitive.
+- **Breaking:** the durable client admits the profile before `startAgreement()`,
+  before `receive()` handles any packet kind (including the agreement proposal
+  and contribution) and before `resumeOutbox()` reconciles or republishes. A
+  refusal signs, publishes and writes nothing; `resumeOutbox()` leaves pending
+  entries as stored.
 - **Breaking:** `current-read` refuses a sender outside the profile
   capability's CH-1 member set as `fail` before calling the verifier (CH-7).
-  The verifier input gains an optional `member`, set on `current-read`.
+  `ChannelMessageSignatureVerificationInput` is now a union discriminated by
+  `operation`: `current-read` carries a required `member`, `legacy-import` no
+  `member`. It is a type alias, no longer an interface, so an adapter type
+  that `extends` it must use an intersection instead.
 - **Breaking:** `advanceRfqSession()` admits the profile before any state
   transition: an expired call without admission is refused and returns no
   `timed-out` state.
@@ -389,12 +420,17 @@ Unreleased: DACS-3 v0.6 channel wire (breaking pre-v1 correction, CORE
   adapter that accepts only `DURABLE_RFQ_LIFECYCLE_STORE_VERSION` reports every
   existing record as unsupported; accept both versions to keep version-1
   records readable.
-- `prepareChannelMessageSigningInput()` does not check profile admission;
-  callers that sign its result must admit the profile first.
+- `prepareChannelMessageSigningInput()`, `deriveRfqAgreement()`,
+  `signRfqAgreement()` and `commitRfqAgreement()` do not check profile
+  admission; callers must admit the profile first (CORE §11.1.2(3)).
+- `current-read` reads every wire member as an own property: an envelope whose
+  discriminator is only inherited is refused, and an inherited `refs` is
+  ignored. `planRfqTranscriptDisclosure()` reads `profileAdmission` only as an
+  own member.
 - `durableRfqLifecycleRecordViolation()` returns a violation for any input
   instead of throwing, and checks every transcript turn against the record
   version. The filesystem store's `create()` and `compareAndSwap()` return
-  `corrupt` for such candidates.
+  `corrupt` for such candidates, including `null` and other non-objects.
 - `openRfqSession()` refuses members with unregistered claim schemes.
 - `canonicalChannelMessageSignedBytes()` and
   `legacyChannelMessageSignedBytes()` throw unless given 64 lowercase hex

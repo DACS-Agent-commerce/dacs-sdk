@@ -1114,7 +1114,9 @@ describe("durable RFQ corrective-profile admission", () => {
     access.granted = true;
     await expect(client.open(openInput())).resolves.toMatchObject({ status: "ready" });
     // Reopening an existing current record reserves nothing more, and is
-    // refused once the authority is gone.
+    // refused once the authority is gone. The reopen is `duplicate` only with
+    // the same `startedAt` (this clock is fixed); `startedAt` is part of the
+    // binding hash, so a later clock reading makes it `conflict`.
     await expect(client.open(openInput())).resolves.toMatchObject({ status: "duplicate" });
     expect(reserve).toHaveBeenCalledOnce();
     access.granted = false;
@@ -1188,6 +1190,143 @@ describe("durable RFQ corrective-profile admission", () => {
   });
 });
 
+describe("durable RFQ agreement and outbox admission", () => {
+  type Network = ReturnType<typeof createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>>;
+  const offer = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+  const refusals: Array<[string, RfqLifecycleProfileAdmission, "indeterminate" | "rejected"]> = [
+    ["no authority", () => undefined, "indeterminate"],
+    ["a throwing resolver", () => {
+      throw new Error("authority service offline");
+    }, "indeterminate"],
+    ["a rejecting resolver", () => Promise.reject(new Error("authority service offline")), "indeterminate"],
+    ["an authority for another session", ({ participantIdentities }) =>
+      rfqProfileAdmission("another-private-channel", participantIdentities), "rejected"],
+  ];
+
+  /**
+   * One party whose resolver grants while `access.granted` is set and otherwise
+   * behaves as `refuse`. Its agreement signer, publisher, reconciler and store
+   * CAS are counted.
+   */
+  function party(
+    role: "buyer" | "seller",
+    refuse: RfqLifecycleProfileAdmission,
+    network: Network,
+    reservation = durableReservation(),
+  ) {
+    const access = { granted: true };
+    const inner = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    const cas = vi.fn((...args: Parameters<typeof inner.compareAndSwap>) => inner.compareAndSwap(...args));
+    const publish = vi.fn((packet: Readonly<RfqLifecyclePacket<ChannelMessageSignatureV1>>) =>
+      network.transport.publish(packet));
+    const reconcile = vi.fn((packet: Readonly<RfqLifecyclePacket<ChannelMessageSignatureV1>>) =>
+      network.transport.reconcile(packet));
+    const claim = role === "buyer" ? BUYER : SELLER;
+    const keys = role === "buyer" ? buyerKeys : sellerKeys;
+    const agreementSign = vi.fn((bytes: Uint8Array) => ed25519Sign(null, bytes, keys.privateKey));
+    const client = createDurableRfqLifecycleClient({
+      role,
+      store: {
+        load: (...args) => inner.load(...args),
+        create: (candidate) => inner.create(candidate),
+        compareAndSwap: cas,
+      },
+      transport: { publish, reconcile },
+      reserveChannelId: reservation,
+      signChannelMessage: channelSigner(claim, keys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      profileAdmission: (request) => (access.granted ? grantProfile(request) : refuse(request)),
+      agreementSigner: { party: claim, algorithm: "ed25519", sign: agreementSign },
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => NOW,
+    });
+    return { access, cas, publish, reconcile, agreementSign, client };
+  }
+
+  /** Withdraws `side`'s authority for `run`, which must refuse with `status` and change nothing. */
+  async function refusedWithoutEffects(
+    side: ReturnType<typeof party>,
+    status: "indeterminate" | "rejected",
+    run: () => Promise<{ status: string }>,
+  ) {
+    const effects = () =>
+      [side.agreementSign, side.publish, side.reconcile, side.cas].map((spy) => spy.mock.calls.length);
+    const before = await side.client.getStatus(JOB_ID);
+    const counted = effects();
+    side.access.granted = false;
+    let result: { status: string };
+    try {
+      result = await run();
+    } finally {
+      side.access.granted = true;
+    }
+    expect(result.status).toBe(status);
+    expect(effects()).toEqual(counted);
+    await expect(side.client.getStatus(JOB_ID)).resolves.toEqual(before);
+  }
+
+  test.each(refusals)(
+    "refuses each agreement step with %s, and each proceeds once admitted",
+    async (_label, refuse, status) => {
+      const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+      const reservation = durableReservation();
+      const buyerSide = party("buyer", refuse, network, reservation);
+      const sellerSide = party("seller", refuse, network, reservation);
+      await buyerSide.client.open(openInput());
+      await sellerSide.client.open(openInput());
+      await buyerSide.client.sendOffer(JOB_ID, offer);
+      await deliver(network, SELLER, sellerSide.client);
+      await sellerSide.client.sendAccept(JOB_ID);
+      await deliver(network, BUYER, buyerSide.client);
+
+      await refusedWithoutEffects(buyerSide, status, () => buyerSide.client.startAgreement(JOB_ID));
+      expect(network.pending(SELLER)).toBe(0);
+      await expect(buyerSide.client.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+
+      const proposal = network.take(SELLER)!;
+      await refusedWithoutEffects(sellerSide, status, () => sellerSide.client.receive(proposal));
+      expect(network.pending(BUYER)).toBe(0);
+      await expect(sellerSide.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+
+      const contribution = network.take(BUYER)!;
+      await refusedWithoutEffects(buyerSide, status, () => buyerSide.client.receive(contribution));
+      await expect(buyerSide.client.receive(contribution)).resolves.toMatchObject({
+        status: "ready",
+        record: { agreement: { finalized: expect.anything() } },
+      });
+      expect(buyerSide.agreementSign).toHaveBeenCalledOnce();
+      expect(sellerSide.agreementSign).toHaveBeenCalledOnce();
+    },
+  );
+
+  test.each(refusals)(
+    "resumeOutbox with %s leaves the pending packet in place, and republishes once admitted",
+    async (_label, refuse, status) => {
+      const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+      const buyerSide = party("buyer", refuse, network);
+      buyerSide.publish.mockImplementationOnce(async () => ({
+        disposition: "indeterminate" as const,
+        reason: "lost response",
+      }));
+      await buyerSide.client.open(openInput());
+      await expect(buyerSide.client.sendOffer(JOB_ID, offer)).resolves.toMatchObject({ status: "indeterminate" });
+
+      await refusedWithoutEffects(buyerSide, status, () => buyerSide.client.resumeOutbox(JOB_ID));
+      await expect(buyerSide.client.getStatus(JOB_ID)).resolves.toMatchObject({
+        status: "ok",
+        record: { outbox: [{ state: "indeterminate", attempts: 1 }] },
+      });
+      expect(network.pending(SELLER)).toBe(0);
+
+      await expect(buyerSide.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "ready",
+        record: { outbox: [{ state: "acknowledged" }] },
+      });
+      expect(network.pending(SELLER)).toBe(1);
+    },
+  );
+});
+
 describe("durable RFQ record validation", () => {
   test("opening a job whose record is store version 1 reserves nothing", async () => {
     const record = STORE_V1.buyerMidNegotiation;
@@ -1216,6 +1355,93 @@ describe("durable RFQ record validation", () => {
     })).resolves.toMatchObject({ status: "rejected", reason: ARCHIVAL, record: { storeVersion: 1 } });
     expect(reserve).not.toHaveBeenCalled();
     expect(profileAdmission).not.toHaveBeenCalled();
+  });
+
+  function racingClient(store: DurableRfqLifecycleStore<ChannelMessageSignatureV1>, nowMs = () => NOW) {
+    const reserve = vi.fn(() => "pass" as const);
+    const profileAdmission = vi.fn(grantProfile);
+    const client = createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport: createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>().transport,
+      reserveChannelId: reserve,
+      signChannelMessage: channelSigner(BUYER, buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      profileAdmission,
+      agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs,
+    });
+    return { reserve, profileAdmission, client };
+  }
+
+  test("a version-1 record created after the first load of open() reserves nothing", async () => {
+    const record = STORE_V1.buyerMidNegotiation;
+    const inner = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    let imported = false;
+    const load = vi.fn(async (...args: Parameters<typeof inner.load>) => {
+      const loaded = await inner.load(...args);
+      if (!imported) {
+        // Another process imports the archival record right after this load.
+        imported = true;
+        await inner.create(structuredClone(record) as never);
+      }
+      return loaded;
+    });
+    const { reserve, profileAdmission, client } = racingClient({
+      load,
+      create: (candidate) => inner.create(candidate),
+      compareAndSwap: (...args) => inner.compareAndSwap(...args),
+    }, () => record.createdAt);
+    await expect(client.open({ ...openInput(), jobId: record.jobId, channelId: record.channelId }))
+      .resolves.toMatchObject({ status: "rejected", reason: ARCHIVAL, record: { storeVersion: 1 } });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(profileAdmission).toHaveBeenCalledOnce();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  test("a failed second load of open() reserves nothing", async () => {
+    const inner = createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>();
+    let loads = 0;
+    const create = vi.fn((candidate: DurableRfqLifecycleRecord<ChannelMessageSignatureV1>) => inner.create(candidate));
+    const { reserve, client } = racingClient({
+      load: async (...args) => {
+        loads += 1;
+        if (loads > 1) throw new Error("store offline");
+        return inner.load(...args);
+      },
+      create,
+      compareAndSwap: (...args) => inner.compareAndSwap(...args),
+    });
+    await expect(client.open(openInput())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "RFQ lifecycle store load failed",
+    });
+    expect(loads).toBe(2);
+    expect(reserve).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  test("a version-1 record created after the last load of open() is refused after one reservation (documented window)", async () => {
+    const load = vi.fn(async () => ({ status: "missing" as const }));
+    const create = vi.fn(async (candidate: DurableRfqLifecycleRecord<ChannelMessageSignatureV1>) => ({
+      status: "existing" as const,
+      record: { ...structuredClone(candidate), storeVersion: DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION },
+    }));
+    const { reserve, profileAdmission, client } = racingClient({
+      load,
+      create,
+      compareAndSwap: vi.fn(),
+    } as unknown as DurableRfqLifecycleStore<ChannelMessageSignatureV1>);
+    await expect(client.open(openInput())).resolves.toMatchObject({
+      status: "rejected",
+      reason: ARCHIVAL,
+      record: { storeVersion: 1 },
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(profileAdmission).toHaveBeenCalledOnce();
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledOnce();
   });
 
   test("the record validator returns a violation for primitive and null nested values", () => {

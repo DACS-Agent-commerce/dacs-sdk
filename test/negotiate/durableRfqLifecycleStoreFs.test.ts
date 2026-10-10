@@ -24,6 +24,7 @@ import {
   contentHash,
   createDurableRfqLifecycleClient,
   createFsDurableRfqLifecycleStore,
+  createInMemoryDurableRfqLifecycleStore,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
   type AttestationRef,
@@ -920,6 +921,27 @@ describe("filesystem RFQ store caller candidates", () => {
         fs.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, candidate as never),
         label,
       ).resolves.toMatchObject({ status: "corrupt" });
+    }
+  });
+
+  test("a null or non-object candidate is corrupt on both stores, never a rejected call", async () => {
+    const stores = [
+      ["memory", createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>()],
+      ["filesystem", await store()],
+    ] as const;
+    for (const [name, target] of stores) {
+      const seeded = structuredClone(STORE_V1.buyerFinalized);
+      await expect(Promise.resolve(target.create(seeded as never)), name)
+        .resolves.toMatchObject({ status: "created" });
+      for (const candidate of [null, 5, "record", true, []]) {
+        const label = `${name} ${JSON.stringify(candidate)}`;
+        await expect(Promise.resolve(target.create(candidate as never)), label)
+          .resolves.toMatchObject({ status: "corrupt" });
+        await expect(
+          Promise.resolve(target.compareAndSwap("buyer", STORE_V1.jobId, seeded.revision, candidate as never)),
+          label,
+        ).resolves.toMatchObject({ status: "corrupt" });
+      }
     }
   });
 

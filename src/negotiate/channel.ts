@@ -98,10 +98,7 @@ export interface ChannelMessageSigningInput<TBody = unknown> {
  * No signed-byte framing is imposed here: #349 must resolve raw-digest versus
  * lowercase-hex digest framing before the SDK can expose one as normative.
  */
-export interface ChannelMessageSignatureVerificationInput<
-  TBody = unknown,
-  TSignature = unknown,
-> {
+interface ChannelMessageSignatureVerificationMaterial<TBody, TSignature> {
   message: Readonly<ChannelMessage<TBody, TSignature>>;
   unsignedEnvelope: Readonly<
     Omit<ChannelMessage<TBody, TSignature>, "signature">
@@ -109,15 +106,32 @@ export interface ChannelMessageSignatureVerificationInput<
   envelopeHash: string;
   /** Exact bytes the sender signed under the selected operation's framing. */
   signedBytes: Uint8Array;
-  operation: ChannelMessageOperation;
-  /**
-   * `current-read` only: the authenticated CH-1 member the sender resolved to
-   * by CF-3 identity (CH-7), spelled as in the verifier-owned member set.
-   * Resolve the key and key type for this member, never for the self-declared
-   * `sender` or `signature.signer`. The profile capability carries no keys.
-   */
-  member?: string;
 }
+
+/**
+ * Discriminated by `operation`. On `current-read` the SDK has already checked
+ * CH-7 membership and supplies the resolved `member`. On `legacy-import` there
+ * is no member set and no `member`: the verifier owns the membership check for
+ * the historical session, together with the key and key-type resolution.
+ */
+export type ChannelMessageSignatureVerificationInput<
+  TBody = unknown,
+  TSignature = unknown,
+> =
+  | (ChannelMessageSignatureVerificationMaterial<TBody, TSignature> & {
+      operation: "current-read";
+      /**
+       * The authenticated CH-1 member the sender resolved to by CF-3 identity
+       * (CH-7), spelled as in the verifier-owned member set. Resolve the key
+       * and key type for this member, never for the self-declared `sender` or
+       * `signature.signer`. The profile capability carries no keys.
+       */
+      member: string;
+    })
+  | (ChannelMessageSignatureVerificationMaterial<TBody, TSignature> & {
+      operation: "legacy-import";
+      member?: never;
+    });
 
 /** CORE §11.1.2(2) exact corrective profile: release pin plus the complete module tuple. */
 export interface ChannelCorrectiveProfile {
@@ -153,7 +167,11 @@ export interface ChannelProfileAdmission {
 }
 
 export interface ChannelMessageAdmissionOptions {
-  /** Defaults to `current-read`. `legacy-import` must be selected explicitly. */
+  /**
+   * Defaults to `current-read`. `legacy-import` must be selected explicitly.
+   * On `legacy-import` the SDK has no member set, so the verifier owns the
+   * DACS-3 §8.3.3 membership check for the historical session.
+   */
   operation?: ChannelMessageOperation;
   /** Required by `current-read`; see {@link ChannelProfileAdmission}. */
   profileAdmission?: ChannelProfileAdmission;
@@ -593,14 +611,17 @@ function validateMessage(
   operation: ChannelMessageOperation,
 ): value is ChannelMessage<unknown, unknown> {
   if (!isRecord(value)) return false;
+  // Every wire member is read as an own property: a value inherited from a
+  // prototype is outside the signed scope and never selects or satisfies a rule.
+  const member = (key: string): unknown => ownMember(value, key);
   if (operation === "current-read") {
     if (
-      value.canonicalChannelMessageVersion !== CANONICAL_CHANNEL_MESSAGE_VERSION ||
+      member("canonicalChannelMessageVersion") !== CANONICAL_CHANNEL_MESSAGE_VERSION ||
       !["channelId", "sequence", "sender", "sentAt", "type", "body", "signature"]
         .every((key) => hasOwn(value, key)) ||
-      Object.values(value).some((member) => member === undefined) ||
-      !isRegisteredClaim(value.sender) ||
-      !validateSignatureEnvelopeV1(value.signature)
+      Object.values(value).some((entry) => entry === undefined) ||
+      !isRegisteredClaim(member("sender")) ||
+      !validateSignatureEnvelopeV1(member("signature"))
     ) {
       return false;
     }
@@ -619,33 +640,37 @@ function validateMessage(
       ],
       ["refs"],
     ) ||
-    typeof value.signature !== "string" ||
-    !LEGACY_HEX_SIGNATURE.test(value.signature) ||
-    !isHistoricalClaim(value.sender)
+    typeof member("signature") !== "string" ||
+    !LEGACY_HEX_SIGNATURE.test(member("signature") as string) ||
+    !isHistoricalClaim(member("sender"))
   ) {
     return false;
   }
+  const type = member("type");
+  const sequence = member("sequence");
   if (
-    !isNonEmptyString(value.channelId) ||
-    !Number.isSafeInteger(value.sequence) ||
-    (value.sequence as number) < 1 ||
-    !isNonEmptyString(value.sender) ||
-    !isSafeTime(value.sentAt) ||
-    typeof value.type !== "string" ||
-    !MESSAGE_TYPES.has(value.type) ||
-    value.signature === null
+    !isNonEmptyString(member("channelId")) ||
+    !Number.isSafeInteger(sequence) ||
+    (sequence as number) < 1 ||
+    !isNonEmptyString(member("sender")) ||
+    !isSafeTime(member("sentAt")) ||
+    typeof type !== "string" ||
+    !MESSAGE_TYPES.has(type) ||
+    member("signature") === null
   ) {
     return false;
   }
-  if (value.refs === undefined) return true;
-  if (!isRecord(value.refs) || !exactKeys(value.refs, [], ["repliesTo"])) {
+  const refs = member("refs");
+  if (refs === undefined) return true;
+  if (!isRecord(refs) || !exactKeys(refs, [], ["repliesTo"])) {
     return false;
   }
-  if (value.refs.repliesTo === undefined) return true;
+  const repliesTo = ownMember(refs, "repliesTo");
+  if (repliesTo === undefined) return true;
   return (
-    Number.isSafeInteger(value.refs.repliesTo) &&
-    (value.refs.repliesTo as number) >= 1 &&
-    (value.refs.repliesTo as number) < (value.sequence as number)
+    Number.isSafeInteger(repliesTo) &&
+    (repliesTo as number) >= 1 &&
+    (repliesTo as number) < (sequence as number)
   );
 }
 
@@ -822,8 +847,10 @@ export async function admitChannelMessage<
     unsignedEnvelope: unsigned,
     envelopeHash,
     signedBytes: signedBytesFor(operation, envelopeHash),
-    operation,
-    ...(member === undefined ? {} : { member }),
+    // `member` is always set on `current-read`: a non-member returned above.
+    ...(operation === "current-read"
+      ? { operation, member: member as string }
+      : { operation }),
   });
 
   let decision: unknown;

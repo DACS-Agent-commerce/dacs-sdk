@@ -411,7 +411,10 @@ export async function planRfqTranscriptDisclosure<TSignature = unknown>(
   try {
     messageVerifier = verifiers.verifyMessageSignature;
     consentVerifier = verifiers.verifyConsent;
-    profileAdmission = verifiers.profileAdmission;
+    // An own member only: an inherited value is never an admission capability.
+    profileAdmission = Object.prototype.hasOwnProperty.call(verifiers, "profileAdmission")
+      ? verifiers.profileAdmission
+      : undefined;
   } catch {
     return { decision: "error", reason: "RFQ disclosure verifiers are unsafe" };
   }

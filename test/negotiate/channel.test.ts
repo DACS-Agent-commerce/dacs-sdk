@@ -16,6 +16,7 @@ import {
   sha256Hex,
   CANONICAL_CHANNEL_MESSAGE_DOMAIN,
   type ChannelAdmissionContext,
+  type ChannelMessageSignatureVerificationInput,
   type ChannelMessageSignatureVerifier,
   type ChannelMessageSignatureV1,
   type ChannelProfileAdmission,
@@ -621,6 +622,108 @@ describe("CH-7 membership before cryptography", () => {
         profileAdmission: admittedProfile([MEMBER]),
       })).decision).toBe("pass");
     });
+  });
+});
+
+describe("own-property wire reads", () => {
+  const keys = generateKeyPairSync("ed25519");
+  const claim = `key:${(keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex")}`;
+  const CURRENT = { profileAdmission: admittedProfile([claim]) };
+  const verify: ChannelMessageSignatureVerifier = ({ message: m, signedBytes }) =>
+    ed25519Verify(signedBytes, Buffer.from((m.signature as ChannelMessageSignatureV1).value, "base64url"), keys.publicKey)
+      ? "pass" : "fail";
+  const unsigned = (extra: Record<string, unknown> = {}) => ({
+    canonicalChannelMessageVersion: "1",
+    channelId: CHANNEL,
+    sequence: 2,
+    sender: claim,
+    sentAt: 1_750_000_000_000,
+    type: "offer",
+    body: { price: "10" },
+    ...extra,
+  });
+  function signed(envelope: Record<string, unknown>): Record<string, unknown> {
+    const input = prepareChannelMessageSigningInput(envelope);
+    const value = nodeSign(null, Buffer.from(input.signedBytes), keys.privateKey).toString("base64url");
+    return {
+      ...structuredClone(input.unsignedEnvelope) as Record<string, unknown>,
+      signature: { signatureVersion: "1", signer: claim, algorithm: "ed25519", value },
+    };
+  }
+  /** Runs `run` with `key` defined on Object.prototype, and always removes it. */
+  async function inherited(key: string, value: unknown, run: () => unknown) {
+    Object.defineProperty(Object.prototype, key, { value, configurable: true, writable: true, enumerable: false });
+    try {
+      await run();
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)[key];
+    }
+  }
+
+  test("an inherited discriminator never selects the current arm", async () => {
+    const { canonicalChannelMessageVersion: _unsignedVersion, ...bare } = unsigned();
+    const { canonicalChannelMessageVersion: _signedVersion, ...undiscriminated } = signed(unsigned());
+    const verifier = vi.fn(verify);
+    let prepared: unknown = "not called";
+    let admitted: unknown;
+    await inherited("canonicalChannelMessageVersion", "1", async () => {
+      try {
+        prepared = prepareChannelMessageSigningInput(bare);
+      } catch (cause) {
+        prepared = (cause as Error).message;
+      }
+      admitted = await admitChannelMessage(undiscriminated, context(), verifier, CURRENT);
+    });
+    expect(prepared).toBe("unsigned channel message envelope is malformed");
+    expect(admitted).toEqual({ decision: "error", reason: "channel message envelope is malformed" });
+    expect(verifier).not.toHaveBeenCalled();
+  });
+
+  test("an inherited refs or repliesTo is ignored", async () => {
+    const plain = signed(unsigned());
+    const expectedHash = prepareChannelMessageSigningInput(unsigned()).envelopeHash;
+    const withEmptyRefs = signed(unsigned({ refs: {} }));
+    const results: Array<{ decision: string; envelopeHash?: string; keys?: string[] }> = [];
+    const summarize = (admitted: Awaited<ReturnType<typeof admitChannelMessage>>) =>
+      admitted.decision === "pass"
+        ? { decision: admitted.decision, envelopeHash: admitted.envelopeHash, keys: Object.keys(admitted.unsignedEnvelope).sort() }
+        : { decision: admitted.decision };
+    // Out of range for sequence 2: honoured, it would make the message malformed.
+    await inherited("refs", { repliesTo: 99 }, async () => {
+      results.push(summarize(await admitChannelMessage(plain, context(), verify, CURRENT)));
+    });
+    await inherited("repliesTo", 99, async () => {
+      results.push(summarize(await admitChannelMessage(withEmptyRefs, context(), verify, CURRENT)));
+    });
+    expect(results[0]).toEqual({
+      decision: "pass",
+      envelopeHash: expectedHash,
+      keys: ["body", "canonicalChannelMessageVersion", "channelId", "sender", "sentAt", "sequence", "type"],
+    });
+    expect(results[1]?.decision).toBe("pass");
+  });
+
+  test("the verifier input is discriminated by operation", async () => {
+    const inputs: Array<Readonly<ChannelMessageSignatureVerificationInput>> = [];
+    await admitChannelMessage(signed(unsigned()), context(), (input) => {
+      inputs.push(input);
+      return verify(input);
+    }, CURRENT);
+    await admitChannelMessage(message(), context(), (input) => {
+      inputs.push(input);
+      return verifyStandardVectorSignature(input);
+    }, LEGACY);
+    expect(inputs.map(({ operation }) => operation)).toEqual(["current-read", "legacy-import"]);
+    expect(inputs[0]!.member).toBe(claim);
+    expect("member" in inputs[1]!).toBe(false);
+    // Checked by tsc: `member` is required on `current-read` and absent on `legacy-import`.
+    const { message: owned, unsignedEnvelope, envelopeHash, signedBytes } = inputs[0]!;
+    const material = { message: owned, unsignedEnvelope, envelopeHash, signedBytes };
+    // @ts-expect-error `current-read` requires `member`.
+    const withoutMember: ChannelMessageSignatureVerificationInput = { ...material, operation: "current-read" };
+    // @ts-expect-error `legacy-import` carries no `member`.
+    const legacyMember: ChannelMessageSignatureVerificationInput = { ...material, operation: "legacy-import", member: claim };
+    expect([withoutMember.operation, legacyMember.operation]).toEqual(["current-read", "legacy-import"]);
   });
 });
 
