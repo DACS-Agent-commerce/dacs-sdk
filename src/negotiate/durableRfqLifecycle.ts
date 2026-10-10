@@ -285,9 +285,11 @@ export interface DurableRfqLifecycleClientOptions<TSignature = unknown> {
   >;
   /**
    * Verifier-owned CORE §11.1.2(3) profile admission for a session. It is
-   * resolved once for every client operation on a current record: opening,
+   * resolved each time a client operation loads a current record: opening,
    * signing or receiving a turn, a policy response, starting or answering the
-   * agreement, republishing the outbox, and reading status. Without an
+   * agreement, republishing the outbox, and reading status. `respond()`
+   * resolves it before the policy and again before signing the chosen turn,
+   * and `receive()` again on each retry after a stale write. Without an
    * authority that binds the session, its members and the exact profile, the
    * client refuses the operation before any signer, policy, publisher or store
    * write, and returns no record.
@@ -342,7 +344,8 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * Admits the session's profile before comparing the packet with the record
    * (a duplicate included) or handling any packet kind: a turn, the buyer's
    * agreement proposal (which the seller signs and answers) or the seller's
-   * contribution (which the buyer finalizes).
+   * contribution (which the buyer finalizes). A retry after a stale write
+   * admits the profile again before it acts.
    */
   receive(packet: unknown): Promise<DurableRfqLifecycleResult<TSignature>>;
   /**
@@ -1645,13 +1648,13 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
    * CORE §11.1.2(3): load the job and admit its session before anything in a
    * current record is compared, interpreted or returned. A store-version-1
    * record is refused as archival before any resolver call. The resolver is
-   * called once per operation: a `held` admission from earlier in the same
-   * operation is checked again against the newly loaded session instead. A
-   * refusal carries no record.
+   * called on every load, so an admission is never reused across a policy
+   * call or a retry; an `earlier` admission from the same operation must also
+   * still bind the newly loaded session. A refusal carries no record.
    */
   async function loadAdmitted(
     jobId: string,
-    held?: RfqProfileAdmission,
+    earlier?: RfqProfileAdmission,
   ): Promise<
     | {
         record: Readonly<DurableRfqLifecycleRecord<TSignature>>;
@@ -1663,7 +1666,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     if (loaded.status !== "ok") return { refused: loadFailure(loaded) };
     const archival = archivalRefusal(loaded.record);
     if (archival !== null) return { refused: archival };
-    const admitted = await admitSession(loaded.record.session, held);
+    const admitted = await admitSession(loaded.record.session, earlier);
     return "refused" in admitted
       ? admitted
       : { record: loaded.record, profile: admitted.profile };
@@ -1671,13 +1674,15 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
 
   async function admitSession(
     session: Readonly<RfqSessionState>,
-    held?: RfqProfileAdmission,
+    earlier?: RfqProfileAdmission,
   ): Promise<
     | { profile: RfqProfileAdmission }
     | { refused: DurableRfqAdmissionRefusal }
   > {
-    const profile = held ?? (await sessionProfileAdmission(session));
-    const refused = rfqProfileAdmissionFailure(session, profile);
+    const profile = await sessionProfileAdmission(session);
+    const refused =
+      rfqProfileAdmissionFailure(session, profile) ??
+      (earlier === undefined ? null : rfqProfileAdmissionFailure(session, earlier));
     return refused === null
       ? { profile: profile! }
       : { refused: admissionFailure(refused) };
@@ -1889,7 +1894,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     jobId: string,
     type: "offer" | "counter" | "accept" | "reject" | "abort",
     body: RfqTurnBody | typeof ACCEPT_STANDING_PROPOSAL,
-    held?: RfqProfileAdmission,
+    earlier?: RfqProfileAdmission,
   ): Promise<DurableRfqLifecycleResult<TSignature>> {
     let ownedBody: RfqTurnBody | undefined;
     if (body !== ACCEPT_STANDING_PROPOSAL) {
@@ -1900,7 +1905,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       }
     }
     // CORE §11.1.2(3): admit the exact profile before creating a signature.
-    const admitted = await loadAdmitted(jobId, held);
+    const admitted = await loadAdmitted(jobId, earlier);
     if ("refused" in admitted) return admitted.refused;
     const { record, profile } = admitted;
     if (ownedBody === undefined) {
@@ -2343,8 +2348,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       if (typeof policy !== "function" || nodeTypes.isProxy(policy)) {
         return { status: "rejected", reason: "RFQ response policy is unsafe" };
       }
-      // The policy sees the session only after admission; the turn it chooses
-      // is checked against the same admission when the job is loaded again.
+      // The policy sees the session only after admission. The policy may await
+      // for any length of time, so the turn it chooses is admitted afresh when
+      // the job is loaded again, and the admission it saw must still bind.
       const admitted = await loadAdmitted(jobId);
       if ("refused" in admitted) return admitted.refused;
       const { record, profile } = admitted;
@@ -2405,16 +2411,16 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
           reason: cause instanceof Error ? cause.message : "RFQ clock failed",
         };
       }
-      let held: RfqProfileAdmission | undefined;
+      let earlier: RfqProfileAdmission | undefined;
       for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
         // CORE §11.1.2(3): admit the exact profile before comparing the packet
         // with the record or acting on any packet kind; the agreement paths
-        // sign, publish or finalize. A retry after a stale write reuses the
-        // operation's admission against the reloaded session.
-        const admitted = await loadAdmitted(packet.jobId, held);
+        // sign, publish or finalize. A retry after a stale write admits again,
+        // and the earlier attempt's admission must still bind.
+        const admitted = await loadAdmitted(packet.jobId, earlier);
         if ("refused" in admitted) return admitted.refused;
         const { record, profile } = admitted;
-        held = profile;
+        earlier = profile;
         if (record.failure !== undefined) {
           return {
             status: "rejected",

@@ -191,8 +191,10 @@ the refusal and leaves every pending entry as stored. A permanent transport reje
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
 Every client operation on a current record, `getStatus()` included, admits the
-session's profile once, before it compares, interprets or returns anything in
-the record. A refusal is `rejected` or `indeterminate` and carries no record,
+session's profile before it compares, interprets or returns anything in the
+record, and again each time it loads the record: `respond()` admits before the
+policy runs and again before it signs the chosen turn, and `receive()` admits
+again on each retry after a stale write. A refusal is `rejected` or `indeterminate` and carries no record,
 so a session whose authority is withdrawn yields no signed turn or Agreement
 through the client. The store adapter itself is raw storage and admits nothing.
 
@@ -205,9 +207,10 @@ const buyerRfq = createDurableRfqLifecycleClient({
   signChannelMessage: buyerChannelSigner,
   verifyChannelMessage,
   // Resolves { profile, authority } for { role, jobId, channelId,
-  // participantIdentities } once per operation: open, each turn sent,
-  // respond (before its policy runs), each packet received, startAgreement,
-  // resumeOutbox and getStatus. No authority, or a throw, refuses the
+  // participantIdentities } each time an operation loads the job: open, each
+  // turn sent, respond (before its policy runs and again before signing),
+  // each packet received (again on a retry), startAgreement, resumeOutbox and
+  // getStatus. No authority, or a throw, refuses the
   // operation before anything is reserved, signed, published or stored, and
   // returns no record.
   profileAdmission: resolveSessionProfileAdmission,
@@ -404,11 +407,13 @@ Unreleased: DACS-3 v0.6 channel wire (breaking pre-v1 correction, CORE
   by another process after that load is still refused, but after one resolver
   call and one reservation; closing that window needs a store-level
   reservation primitive.
-- **Breaking:** the durable client resolves the profile once per operation on
-  a current record and admits it before it compares, interprets or returns
-  anything in the record: every `send*`, `respond()` (before the policy is
-  called), `receive()` (before the duplicate check and any packet kind,
-  including the agreement proposal and contribution), `startAgreement()`
+- **Breaking:** the durable client resolves the profile each time an
+  operation loads a current record and admits it before it compares,
+  interprets or returns anything in the record: every `send*`, `respond()`
+  (before the policy is called, and again before the chosen turn is signed),
+  `receive()` (before the duplicate check and any packet kind, including the
+  agreement proposal and contribution, and again on each retry after a stale
+  write), `startAgreement()`
   (before its duplicate check), `resumeOutbox()` (before it reads, reconciles
   or republishes the outbox) and `getStatus()`. Local refusals such as a
   terminal session or the counterparty's turn now come after admission. A

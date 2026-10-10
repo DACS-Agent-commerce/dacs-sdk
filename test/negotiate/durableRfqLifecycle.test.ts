@@ -1431,8 +1431,46 @@ describe("durable RFQ agreement and outbox admission", () => {
       reason: "corrective-profile authority binds another session",
     });
     expect(policy).toHaveBeenCalledOnce();
-    expect(profileAdmission).toHaveBeenCalledOnce();
+    expect(profileAdmission).toHaveBeenCalledTimes(2);
     expect(sign).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["counter", { action: "counter" as const, proposal: { rfqProposalVersion: "1" as const, price: { amount: "9.5", currency: "USDC" } } }],
+    ["accept", { action: "accept" as const }],
+    ["reject", { action: "reject" as const }],
+    ["abort", { action: "abort" as const }],
+  ])("authority withdrawn while the policy runs refuses its %s before signing", async (_label, decision) => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const reservation = durableReservation();
+    const buyerSide = party("buyer", () => undefined, network, reservation);
+    const sellerSide = party("seller", () => undefined, network, reservation);
+    await buyerSide.client.open(openInput());
+    await sellerSide.client.open(openInput());
+    await buyerSide.client.sendOffer(JOB_ID, offer);
+    await deliver(network, SELLER, sellerSide.client);
+    const before = await sellerSide.client.getStatus(JOB_ID);
+    const effects = () =>
+      [sellerSide.channelSign, sellerSide.publish, sellerSide.cas].map((spy) => spy.mock.calls.length);
+    const counted = effects();
+    sellerSide.profileAdmission.mockClear();
+    let result: { status: string };
+    try {
+      result = await sellerSide.client.respond(JOB_ID, async () => {
+        // The policy awaits a person or a model; the authority is withdrawn meanwhile.
+        sellerSide.access.granted = false;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return decision;
+      });
+    } finally {
+      sellerSide.access.granted = true;
+    }
+    expect(result.status).toBe("indeterminate");
+    expect(result).not.toHaveProperty("record");
+    expect(sellerSide.profileAdmission).toHaveBeenCalledTimes(2);
+    expect(effects()).toEqual(counted);
+    expect(network.pending(BUYER)).toBe(0);
+    await expect(sellerSide.client.getStatus(JOB_ID)).resolves.toEqual(before);
   });
 
   test("a status read for a job without a record consults no resolver", async () => {
@@ -1446,41 +1484,42 @@ describe("durable RFQ agreement and outbox admission", () => {
     ["sendAccept", (client: DurableRfqLifecycleClient<ChannelMessageSignatureV1>) => client.sendAccept(JOB_ID)],
     ["a policy accept", (client: DurableRfqLifecycleClient<ChannelMessageSignatureV1>) =>
       client.respond(JOB_ID, () => ({ action: "accept" }))],
-  ])("each operation resolves the profile once, accepting with %s", async (_label, accept) => {
+  ])("each operation resolves the profile once per load, accepting with %s", async (label, accept) => {
     const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const reservation = durableReservation();
     const buyerSide = party("buyer", () => undefined, network, reservation);
     const sellerSide = party("seller", () => undefined, network, reservation);
-    /** Grants the next resolver call only; any further call in the same operation is refused. */
-    const once = async (side: typeof buyerSide, run: () => Promise<{ status: string }>) => {
+    /** Grants the next `calls` resolver calls only; any further call in the same operation is refused. */
+    const admits = async (side: typeof buyerSide, calls: number, run: () => Promise<{ status: string }>) => {
       side.access.granted = false;
       side.profileAdmission.mockClear();
-      side.profileAdmission.mockImplementationOnce(grantProfile);
+      for (let call = 0; call < calls; call += 1) side.profileAdmission.mockImplementationOnce(grantProfile);
       try {
         await expect(run()).resolves.toMatchObject({ status: "ready" });
       } finally {
         side.access.granted = true;
       }
-      expect(side.profileAdmission).toHaveBeenCalledOnce();
+      expect(side.profileAdmission).toHaveBeenCalledTimes(calls);
     };
     await buyerSide.client.open(openInput());
     await sellerSide.client.open(openInput());
-    await once(buyerSide, () => buyerSide.client.sendOffer(JOB_ID, offer));
-    await once(sellerSide, () => sellerSide.client.receive(network.take(SELLER)));
-    await once(sellerSide, () => sellerSide.client.respond(JOB_ID, () => ({
+    await admits(buyerSide, 1, () => buyerSide.client.sendOffer(JOB_ID, offer));
+    await admits(sellerSide, 1, () => sellerSide.client.receive(network.take(SELLER)));
+    // A policy response loads the job before the policy and again before signing.
+    await admits(sellerSide, 2, () => sellerSide.client.respond(JOB_ID, () => ({
       action: "counter",
       proposal: { rfqProposalVersion: "1", price: { amount: "9.5", currency: "USDC" } },
     })));
-    await once(buyerSide, () => buyerSide.client.receive(network.take(BUYER)));
-    await once(buyerSide, () => accept(buyerSide.client));
-    await once(sellerSide, () => sellerSide.client.receive(network.take(SELLER)));
-    await once(buyerSide, () => buyerSide.client.startAgreement(JOB_ID));
-    await once(buyerSide, () => buyerSide.client.getStatus(JOB_ID).then((loaded) => ({
+    await admits(buyerSide, 1, () => buyerSide.client.receive(network.take(BUYER)));
+    await admits(buyerSide, label === "sendAccept" ? 1 : 2, () => accept(buyerSide.client));
+    await admits(sellerSide, 1, () => sellerSide.client.receive(network.take(SELLER)));
+    await admits(buyerSide, 1, () => buyerSide.client.startAgreement(JOB_ID));
+    await admits(buyerSide, 1, () => buyerSide.client.getStatus(JOB_ID).then((loaded) => ({
       status: loaded.status === "ok" ? "ready" : loaded.status,
     })));
   });
 
-  test("a receive retried after a stale write keeps the operation's single admission", async () => {
+  test("a receive retried after a stale write admits again before it acts", async () => {
     const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
     const reservation = durableReservation();
     const buyerSide = party("buyer", () => undefined, network, reservation);
@@ -1489,12 +1528,52 @@ describe("durable RFQ agreement and outbox admission", () => {
     await sellerSide.client.open(openInput());
     await buyerSide.client.sendOffer(JOB_ID, offer);
     sellerSide.cas.mockImplementationOnce(async () => ({ status: "stale" as const }));
-    sellerSide.access.granted = false;
     sellerSide.profileAdmission.mockClear();
-    sellerSide.profileAdmission.mockImplementationOnce(grantProfile);
     await expect(sellerSide.client.receive(network.take(SELLER))).resolves.toMatchObject({ status: "ready" });
     expect(sellerSide.cas).toHaveBeenCalledTimes(2);
-    expect(sellerSide.profileAdmission).toHaveBeenCalledOnce();
+    expect(sellerSide.profileAdmission).toHaveBeenCalledTimes(2);
+  });
+
+  test("an Agreement proposal retried after a stale write is refused once authority is withdrawn", async () => {
+    const network = createInMemoryRfqLifecycleNetwork<ChannelMessageSignatureV1>();
+    const reservation = durableReservation();
+    const buyerSide = party("buyer", () => undefined, network, reservation);
+    const sellerSide = party("seller", () => undefined, network, reservation);
+    await buyerSide.client.open(openInput());
+    await sellerSide.client.open(openInput());
+    await buyerSide.client.sendOffer(JOB_ID, offer);
+    await deliver(network, SELLER, sellerSide.client);
+    await sellerSide.client.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyerSide.client);
+    await buyerSide.client.startAgreement(JOB_ID);
+    const proposal = network.take(SELLER)!;
+    const before = await sellerSide.client.getStatus(JOB_ID);
+    for (const spy of [sellerSide.profileAdmission, sellerSide.agreementSign, sellerSide.publish, sellerSide.cas]) {
+      spy.mockClear();
+    }
+    // The first write is stale, and the authority is withdrawn during that attempt.
+    sellerSide.cas.mockImplementationOnce(async () => {
+      sellerSide.access.granted = false;
+      return { status: "stale" as const };
+    });
+    let result: { status: string };
+    try {
+      result = await sellerSide.client.receive(proposal);
+    } finally {
+      sellerSide.access.granted = true;
+    }
+    expect(result.status).toBe("indeterminate");
+    expect(result).not.toHaveProperty("record");
+    expect(sellerSide.profileAdmission).toHaveBeenCalledTimes(2);
+    expect(sellerSide.cas).toHaveBeenCalledOnce();
+    // Only the first attempt, made while admitted, signed; nothing was published.
+    expect(sellerSide.agreementSign).toHaveBeenCalledOnce();
+    expect(sellerSide.publish).not.toHaveBeenCalled();
+    expect(network.pending(BUYER)).toBe(0);
+    await expect(sellerSide.client.getStatus(JOB_ID)).resolves.toEqual(before);
+
+    await expect(sellerSide.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+    expect(network.pending(BUYER)).toBe(1);
   });
 });
 
