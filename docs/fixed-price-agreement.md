@@ -125,6 +125,13 @@ resolveAuthenticatedAgreementContext: async (query) => {
 If the buyer's entry carried an extra field or a different `requestHash`, the
 rebuilt entry differs and the exact plan comparison rejects the proposal.
 
+A metered context carries `meteredQuantity` the same way. The responder admits
+it into the context and hands it to `deriveFixedPriceAgreement`, which applies
+its usual rules (required exactly for metered Listings, canonical whole-unit
+quantity, unit equal to the Listing's). The resolver must decide the quantity
+from seller policy; any difference from the buyer's quantity rejects the
+proposal at the `context` stage before any signature.
+
 Readers keep the Standard's rule. `isAgreementArtifact` and
 `validateFixedPriceAgreementBinding` accept any exact JSON record in
 `terms.additionalTerms`, including one another conforming producer signed

@@ -1096,3 +1096,224 @@ describe("seller responder with fixed-price additionalTerms", () => {
     });
   });
 });
+
+describe("seller responder with metered fixed-price contexts", () => {
+  // The metered derivation fixture (fixedPriceFixtures `metered`, MTR vector
+  // `exact-whole-unit-product`) on the responder's plain and payee-bound Listings.
+  const METERED_PRICING = {
+    kind: "metered" as const,
+    unitPrice: { amount: "1.25", currency: "USDC" },
+    unit: "request",
+    minTotal: { amount: "2", currency: "USDC" },
+  };
+  const variants = [
+    ["AgreementDocument", JOB_ID, false],
+    ["PayeeBoundAgreementDocument", PAYEE_JOB_ID, true],
+  ] as const;
+  const quantity = (value: string) => ({ quantity: value, unit: "request" });
+
+  function meteredContext(
+    jobId: string,
+    payeeBound: boolean,
+    meteredQuantity?: unknown,
+  ): FixedPriceAgreementInput {
+    const context = agreementContext(jobId, payeeBound);
+    const exactListing: Listing = {
+      ...context.verifiedListing.listing,
+      pricing: structuredClone(METERED_PRICING),
+    };
+    return {
+      ...context,
+      verifiedListing: {
+        disposition: "verified",
+        listing: exactListing,
+        pin: {
+          listingId: exactListing.listingId,
+          version: exactListing.listingVersion,
+          contentHash: contentHash(exactListing as unknown as Record<string, unknown>),
+        },
+      },
+      ...(meteredQuantity === undefined ? {} : { meteredQuantity }),
+    } as FixedPriceAgreementInput;
+  }
+
+  async function respondTo(
+    buyerDraft: ReturnType<typeof deriveFixedPriceAgreement>,
+    sellerContext: FixedPriceAgreementInput,
+  ) {
+    const request = await requestForDraft(buyerDraft);
+    const h = await harness({ context: sellerContext, request });
+    const result = await respondToFixedPriceAgreementProposalDurable(
+      h.request.input,
+      h.durability,
+    );
+    return { h, result };
+  }
+
+  function expectRefusedBeforeEffects(
+    { h, result }: Awaited<ReturnType<typeof respondTo>>,
+    disposition: "rejected" | "indeterminate",
+    reason: RegExp,
+    label: string,
+  ): void {
+    expect(result, label).toMatchObject({ disposition, stage: "context" });
+    expect(result.disposition === "complete" ? "" : result.reason, label).toMatch(reason);
+    expect(h.state.calls.verifyBuyer, label).toBe(0);
+    expect(h.state.calls.signature, label).toBe(0);
+    expect(h.state.calls.publication, label).toBe(0);
+  }
+
+  const PLAN_DIFFERS = /^proposal plan differs from the independently derived seller agreement$/;
+  const DERIVATION = "seller-local agreement derivation rejected the proposal: DacsError: ";
+
+  describe.each(variants)("%s", (_name, jobId, payeeBound) => {
+    test("a valid metered context is co-signed into one exact Agreement", async () => {
+      const buyerDraft = deriveFixedPriceAgreement(
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      const { h, result } = await respondTo(
+        buyerDraft,
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      expect(result.disposition).toBe("complete");
+      if (result.disposition !== "complete") return;
+      expect(h.state.calls.verifyBuyer).toBe(1);
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+      const agreement = await finalizeFixedPriceAgreementContributions(
+        h.request.plan,
+        [h.request.buyerContribution, result.result.sellerContribution],
+        h.durability.verifyContribution,
+      );
+      expect(agreement.terms.meteredQuantity).toEqual(quantity("4"));
+      expect(agreement.terms.price).toEqual({ amount: "5", currency: "USDC" });
+      expect("payeeBoundAgreementVersion" in agreement).toBe(payeeBound);
+      expect(contentHash(agreement as unknown as Record<string, unknown>))
+        .toBe(h.request.plan.agreementHash);
+    });
+
+    test.each([
+      ["one unit above the buyer's", "4", "5"],
+      ["one unit below the buyer's", "4", "3"],
+      // Both totals are the 2 USDC minimum: only the quantity differs.
+      ["one unit below the buyer's at the same minimum-total price", "1", "0"],
+    ] as const)("seller quantity %s: rejected before any signature", async (
+      label,
+      buyerQuantity,
+      sellerQuantity,
+    ) => {
+      expectRefusedBeforeEffects(
+        await respondTo(
+          deriveFixedPriceAgreement(meteredContext(jobId, payeeBound, quantity(buyerQuantity))),
+          meteredContext(jobId, payeeBound, quantity(sellerQuantity)),
+        ),
+        "rejected",
+        PLAN_DIFFERS,
+        label,
+      );
+    });
+
+    test("seller context missing the quantity: rejected before any signature", async () => {
+      expectRefusedBeforeEffects(
+        await respondTo(
+          deriveFixedPriceAgreement(meteredContext(jobId, payeeBound, quantity("4"))),
+          meteredContext(jobId, payeeBound),
+        ),
+        "rejected",
+        new RegExp(`^${DERIVATION}missing-metered-quantity`),
+        "missing",
+      );
+    });
+
+    test("seller quantity present when the buyer's draft has none: rejected before any signature", async () => {
+      // A fixed-price Listing: the buyer's draft has no quantity.
+      expectRefusedBeforeEffects(
+        await respondTo(
+          deriveFixedPriceAgreement(agreementContext(jobId, payeeBound)),
+          { ...agreementContext(jobId, payeeBound), meteredQuantity: quantity("4") },
+        ),
+        "rejected",
+        new RegExp(`^${DERIVATION}unexpected-metered-quantity`),
+        "fixed Listing",
+      );
+      // A metered Listing whose buyer draft was stripped of its quantity.
+      const stripped = deriveFixedPriceAgreement(
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      delete (stripped.terms as { meteredQuantity?: unknown }).meteredQuantity;
+      expectRefusedBeforeEffects(
+        await respondTo(stripped, meteredContext(jobId, payeeBound, quantity("4"))),
+        "rejected",
+        PLAN_DIFFERS,
+        "stripped metered draft",
+      );
+    });
+
+    test("a malformed seller quantity is refused by the derivation before any signature", async () => {
+      const buyerDraft = deriveFixedPriceAgreement(
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      for (const [label, malformed, code] of [
+        ["leading zero", quantity("04"), "non-canonical-metered-quantity"],
+        ["signed", quantity("-4"), "non-canonical-metered-quantity"],
+        ["decimal", quantity("4.0"), "non-canonical-metered-quantity"],
+        ["empty", quantity(""), "non-canonical-metered-quantity"],
+        ["number", { quantity: 4, unit: "request" }, "non-canonical-metered-quantity"],
+        ["bare string", "4", "non-canonical-metered-quantity"],
+        ["null", null, "non-canonical-metered-quantity"],
+        ["missing unit", { quantity: "4" }, "metered-unit-mismatch"],
+        ["other unit", { quantity: "4", unit: "byte" }, "metered-unit-mismatch"],
+      ] as const) {
+        expectRefusedBeforeEffects(
+          await respondTo(buyerDraft, meteredContext(jobId, payeeBound, malformed)),
+          "rejected",
+          new RegExp(`^${DERIVATION}${code}`),
+          label,
+        );
+      }
+      // Not context data at all: refused while capturing, like every other
+      // optional context member set to undefined.
+      expectRefusedBeforeEffects(
+        await respondTo(buyerDraft, {
+          ...meteredContext(jobId, payeeBound),
+          meteredQuantity: undefined,
+        } as unknown as FixedPriceAgreementInput),
+        "indeterminate",
+        /^seller agreement context resolution failed: TypeError: .*meteredQuantity cannot be undefined$/,
+        "undefined",
+      );
+    });
+
+    test("a resolver copying the buyer's quantity still gets the derivation's unit rule", async () => {
+      // The buyer hand-crafts a draft whose quantity names another unit. The
+      // Agreement reader admits any non-empty unit, so the plan is well formed.
+      const crafted = deriveFixedPriceAgreement(
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      crafted.terms.meteredQuantity = { quantity: "4", unit: "byte" };
+      const request = await requestForDraft(crafted);
+      const h = await harness({ context: meteredContext(jobId, payeeBound), request });
+      h.durability.resolveAuthenticatedAgreementContext = (query) => {
+        h.state.calls.context += 1;
+        return {
+          disposition: "present" as const,
+          value: meteredContext(
+            jobId,
+            payeeBound,
+            structuredClone(query.candidateDraft.terms.meteredQuantity),
+          ),
+        };
+      };
+      const result = await respondToFixedPriceAgreementProposalDurable(
+        h.request.input,
+        h.durability,
+      );
+      expectRefusedBeforeEffects(
+        { h, result },
+        "rejected",
+        new RegExp(`^${DERIVATION}metered-unit-mismatch`),
+        "copied unit",
+      );
+    });
+  });
+});
