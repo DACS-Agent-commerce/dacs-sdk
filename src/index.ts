@@ -121,6 +121,8 @@ export {
   type DurableRfqLifecycleTransport,
   type RfqChannelMessageSigner,
   type DurableRfqLifecycleResult,
+  type DurableRfqAdmissionRefusal,
+  type DurableRfqLifecycleStatus,
   type RfqLifecyclePolicyDecision,
   type RfqLifecyclePolicy,
   type DurableRfqLifecycleClientOptions,

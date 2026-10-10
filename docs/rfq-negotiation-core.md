@@ -190,6 +190,12 @@ the profile, so `resumeOutbox()` admits it first; without admission it returns
 the refusal and leaves every pending entry as stored. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
+Every client operation on a current record, `getStatus()` included, admits the
+session's profile once, before it compares, interprets or returns anything in
+the record. A refusal is `rejected` or `indeterminate` and carries no record,
+so a session whose authority is withdrawn yields no signed turn or Agreement
+through the client. The store adapter itself is raw storage and admits nothing.
+
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({
   role: "buyer",
@@ -199,10 +205,11 @@ const buyerRfq = createDurableRfqLifecycleClient({
   signChannelMessage: buyerChannelSigner,
   verifyChannelMessage,
   // Resolves { profile, authority } for { role, jobId, channelId,
-  // participantIdentities } before every action: open, each turn sent or
-  // received, startAgreement, each agreement packet received, resumeOutbox.
-  // No authority, or a throw, refuses the action before anything is reserved,
-  // signed, published or stored.
+  // participantIdentities } once per operation: open, each turn sent,
+  // respond (before its policy runs), each packet received, startAgreement,
+  // resumeOutbox and getStatus. No authority, or a throw, refuses the
+  // operation before anything is reserved, signed, published or stored, and
+  // returns no record.
   profileAdmission: resolveSessionProfileAdmission,
   agreementSigner: buyerAgreementSigner,
   verifyAgreementContribution,
@@ -229,8 +236,9 @@ await buyerRfq.resumeOutbox(jobId);
 ```
 
 The seller uses the same factory with `role: "seller"`, its own store and its
-own signers. Every `receive()` admits the profile before it looks at the
-packet kind. Receiving the buyer's valid Agreement proposal re-derives the
+own signers. Every `receive()` admits the profile before it compares the
+packet with the record (a duplicate included) or looks at the packet kind.
+Receiving the buyer's valid Agreement proposal re-derives the
 expected draft from the seller's accepted checkpoint, rejects substituted
 terms, creates only the seller contribution, verifies both signatures, and
 returns that detached contribution. Both roles end with the same finalized
@@ -271,8 +279,8 @@ before it have `storeVersion: 1`
 (`DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION`) and hold the historical
 envelope. The record version, never the message shape, selects how a stored
 turn is hashed, and the version-1 reader checks the original bytes. Such a
-record still loads, validates and is returned by `getStatus()`, so a
-finalized Agreement stays reachable. The pre-v0.6 session itself is abandoned
+record still loads, validates and is returned by `getStatus()` without a
+resolver call (the archival read), so a finalized Agreement stays reachable. The pre-v0.6 session itself is abandoned
 (CORE §11.1.2(4)): `open`, `send*`, `respond`, `receive`, `resumeOutbox` and
 `startAgreement` return a non-retryable `rejected` without signing,
 publishing, admitting or reconciling anything, and no store transition can
@@ -396,11 +404,21 @@ Unreleased: DACS-3 v0.6 channel wire (breaking pre-v1 correction, CORE
   by another process after that load is still refused, but after one resolver
   call and one reservation; closing that window needs a store-level
   reservation primitive.
-- **Breaking:** the durable client admits the profile before `startAgreement()`,
-  before `receive()` handles any packet kind (including the agreement proposal
-  and contribution) and before `resumeOutbox()` reconciles or republishes. A
-  refusal signs, publishes and writes nothing; `resumeOutbox()` leaves pending
-  entries as stored.
+- **Breaking:** the durable client resolves the profile once per operation on
+  a current record and admits it before it compares, interprets or returns
+  anything in the record: every `send*`, `respond()` (before the policy is
+  called), `receive()` (before the duplicate check and any packet kind,
+  including the agreement proposal and contribution), `startAgreement()`
+  (before its duplicate check), `resumeOutbox()` (before it reads, reconciles
+  or republishes the outbox) and `getStatus()`. Local refusals such as a
+  terminal session or the counterparty's turn now come after admission. A
+  refusal signs, publishes and writes nothing and returns no record;
+  `resumeOutbox()` leaves pending entries as stored.
+- **Breaking:** `getStatus()` returns `DurableRfqLifecycleStatus`: the store's
+  load result, or a `DurableRfqAdmissionRefusal` (`rejected` or
+  `indeterminate`, no record) for a current record whose profile is not
+  admitted. A version-1 record is still returned as `ok` without a resolver
+  call.
 - **Breaking:** `current-read` refuses a sender outside the profile
   capability's CH-1 member set as `fail` before calling the verifier (CH-7).
   `ChannelMessageSignatureVerificationInput` is now a union discriminated by
