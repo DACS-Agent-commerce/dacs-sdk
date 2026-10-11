@@ -1051,6 +1051,11 @@ checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
 
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`, including partial evidence when a run fails. Use a directory
+under the ignored `registry-container-artifacts/` path, or a directory outside
+the repository; other in-repository paths will appear as untracked files.
+
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
 [the npm prerelease release runbook](./docs/npm-prerelease-release.md).

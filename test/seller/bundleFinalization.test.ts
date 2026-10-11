@@ -1,3 +1,4 @@
+import { IndeterminateSubstrateError } from "../../src/errors.js";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
@@ -2975,6 +2976,21 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       ).rejects.toThrow(/scope|anchor|readback|address|differs/i);
     },
   );
+
+  test.each([
+    ["authoritative absence", { disposition: "absent" }, false],
+    ["invalid resolver disposition", { disposition: "unknown" }, false],
+    ["invalid indeterminate shape", { disposition: "indeterminate", reason: "" }, false],
+    ["null resolver output", null, false],
+    ["unavailable read", { disposition: "indeterminate", reason: "rpc unavailable" }, true],
+  ])("classifies retained seller readback %s for retry", async (_label, lookup, retryable) => {
+    const retained = await finalizedForReadVerification("pure");
+    const provider = { ...retained.provider, resolveSellerBundle: vi.fn(async () => lookup) };
+    const error = await verifyFinalizedSellerBundleReadOnly(retained.input, retained.result, provider as never)
+      .then(() => undefined, (error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof IndeterminateSubstrateError).toBe(retryable);
+  });
 
   test.each(["mismatch", "absence", "indeterminate"] as const)(
     "rejects seller-bundle readback %s",

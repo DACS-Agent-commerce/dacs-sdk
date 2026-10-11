@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -142,5 +143,60 @@ describe("registry/container pull_request job", () => {
 
   it("passes when acceptance passes", () => {
     expect(runWorkflowStep(0).status).toBe(0);
+  });
+});
+
+
+describe("registry/container evidence", () => {
+  it("exports partial evidence and preserves the early failure status", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
+    scratch.push(directory);
+    for (const [name, body] of [["docker", "exit 0"], ["npm", "exit 17"]]) {
+      const stub = join(directory, name!);
+      writeFileSync(stub, `#!/bin/sh\n${body}\n`);
+      chmodSync(stub, 0o700);
+    }
+    const output = join(directory, "evidence");
+    const result = spawnSync("bash", ["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
+      cwd: repoRoot, encoding: "utf8",
+      env: { ...process.env, RUNNER_TEMP: directory, PATH: `${directory}:${process.env.PATH ?? ""}` },
+    });
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+  });
+
+  it("rejects a registry lock entry with different tarball bytes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
+    scratch.push(directory);
+    const version = "0.1.0-test";
+    const registry = "http://host.docker.internal:4873";
+    const packages: Record<string, unknown> = {};
+    for (const name of ["dacs", "dacs-node"]) {
+      const bytes = Buffer.from(name);
+      writeFileSync(join(directory, `kynesyslabs-${name}-${version}.tgz`), bytes);
+      packages[`node_modules/@kynesyslabs/${name}`] = {
+        resolved: `${registry}/${name}.tgz`,
+        integrity: "sha512-" + createHash("sha512").update(bytes).digest("base64"),
+      };
+    }
+    const project = join(directory, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "package.json"), JSON.stringify({ dependencies: Object.fromEntries([
+      "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
+      "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
+    ].map((name) => [name, version])) }));
+    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
+      .split('"$artifact_stage/dependency-policy.json"')[1]!.split("<<'NODE'\n")[1]!.split("\nNODE")[0]!;
+    const run = () => {
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
+      return spawnSync(process.execPath, ["-", project, registry, join(directory, "report.json"), directory, version], {
+        input: script, encoding: "utf8",
+      });
+    };
+    expect(run().status).toBe(0);
+    (packages["node_modules/@kynesyslabs/dacs-node"] as { integrity: string }).integrity = "sha512-wrong";
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("integrity does not match");
   });
 });
