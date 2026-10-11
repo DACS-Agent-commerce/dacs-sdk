@@ -58,6 +58,17 @@ network_started=0
 image_started=0
 
 cleanup() {
+  local status=$?
+  # Preserve only collected, secret-free evidence, including on early failure.
+  if [ -d "$artifact_stage" ]; then
+    printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code"
+    if mv "$artifact_stage" "$output_dir"; then
+      echo "partial acceptance evidence: $output_dir" >&2
+    else
+      echo "could not export evidence; retained at $acceptance_root" >&2
+      return "$status"
+    fi
+  fi
   if [ "$registry_started" -eq 1 ]; then
     docker rm --force "$registry_container" >/dev/null 2>&1 || true
   fi
@@ -69,7 +80,9 @@ cleanup() {
   fi
   rm -rf -- "$acceptance_root"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cat > "$registry_config" <<'YAML'
 storage: /verdaccio/storage
@@ -237,12 +250,15 @@ docker run --rm \
   ' | tee "$artifact_stage/generation.log"
 
 project="$consumer_root/one-click-agent"
-node - "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json" <<'NODE'
+node - "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json" "$release_set" "$version" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const root = process.argv[2];
 const registry = process.argv[3];
 const reportPath = process.argv[4];
+const { createHash } = require("node:crypto");
+const releaseSet = process.argv[5];
+const version = process.argv[6];
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const lockSource = fs.readFileSync(path.join(root, "package-lock.json"), "utf8");
 const lock = JSON.parse(lockSource);
@@ -285,9 +301,15 @@ for (const name of [
   "node_modules/@kynesyslabs/dacs",
   "node_modules/@kynesyslabs/dacs-node",
 ]) {
-  const resolved = lock.packages?.[name]?.resolved;
+  const entry = lock.packages?.[name];
+  const resolved = entry?.resolved;
   if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
     throw new Error("candidate package did not resolve through the isolated registry: " + name);
+  }
+  const archive = path.join(releaseSet, name.replace("node_modules/@", "").replace("/", "-") + "-" + version + ".tgz");
+  const integrity = "sha512-" + createHash("sha512").update(fs.readFileSync(archive)).digest("base64");
+  if (entry.integrity !== integrity) {
+    throw new Error("candidate package integrity does not match the packed tarball: " + name);
   }
 }
 fs.writeFileSync(reportPath, JSON.stringify({
