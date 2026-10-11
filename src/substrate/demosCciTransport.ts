@@ -1,4 +1,4 @@
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
@@ -69,7 +69,8 @@ export async function readDemosCciResponse(
   maxBytes: number,
 ): Promise<unknown> {
   const controller = new AbortController();
-  const timeoutError = new DacsError("Demos GCR identity read timed out");
+  // A timeout is transient in the SDK fault taxonomy (errors.ts): retry may succeed.
+  const timeoutError = new TransientError("Demos GCR identity read timed out");
   let rejectDeadline: ((reason: DacsError) => void) | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     rejectDeadline = reject;

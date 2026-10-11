@@ -3,7 +3,7 @@ import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
 
 import { sha256Hex } from "../../src/canonical/index.js";
-import { DacsError, SubstrateError } from "../../src/errors.js";
+import { DacsError, SubstrateError, TransientError, faultCategory } from "../../src/errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS, parseCciRecord } from "../../src/identity/cci.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
 
@@ -286,8 +286,10 @@ describe("Demos CCI raw response boundary", () => {
     await vi.advanceTimersByTimeAsync(2);
     const error = await result;
 
-    expect(error).toBeInstanceOf(DacsError);
-    expect(error).toMatchObject({ message: TIMEOUT, category: "permanent" });
+    // errors.ts: a timeout is transient, so retry policy may try again.
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(faultCategory(error)).toBe("transient");
     expect(error).not.toHaveProperty("cause");
     expect(signal?.aborted).toBe(true);
     expect(cancel).toHaveBeenCalledOnce();
@@ -310,8 +312,8 @@ describe("Demos CCI raw response boundary", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     const error = await result;
 
-    expect(error).toBeInstanceOf(DacsError);
-    expect(error).toMatchObject({ message: TIMEOUT, category: "permanent" });
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
     expect(error).not.toHaveProperty("cause");
     expect(signal?.aborted).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
@@ -331,7 +333,7 @@ describe("Demos CCI raw response boundary", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
 
-    expect(await result).toMatchObject({ message: TIMEOUT, category: "permanent" });
+    expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
     expect(cancel).toHaveBeenCalledOnce();
     expect(response.body?.locked).toBe(false);
     expect(vi.getTimerCount()).toBe(0);

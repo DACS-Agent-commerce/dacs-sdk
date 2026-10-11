@@ -55,7 +55,8 @@ Each raw identity request has one fixed 5,000 ms deadline, matching the x402
 outbound transport default. It covers connection establishment, response
 headers, and the complete body read; receiving headers or chunks does not reset
 it. On expiry the adapter aborts the request, cancels an active body reader,
-and throws a permanent `DacsError` with the stable message
+and throws a `TransientError` (category `transient`, so a retry may succeed)
+with the stable message
 `Demos GCR identity read timed out`, without retaining response text. The
 deadline also bounds an injected transport that ignores abort, or a body whose
 cancellation never settles; a response arriving after expiry is cancelled
