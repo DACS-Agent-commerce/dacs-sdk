@@ -529,6 +529,40 @@ describe("Demos L2PS durable RFQ transport", () => {
     }
   });
 
+  test.each(["live", "recovery"] as const)("round 4: stop() aborts an in-flight %s consumer and drops its outcome", async (path) => {
+    const fixture = await inboundReceiver();
+    fixture.transport.stop();
+    let signal: AbortSignal | undefined;
+    // A cooperative consumer: it gives up as soon as its signal is aborted.
+    const retired = vi.fn((_packet: unknown, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return new Promise<never>((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason));
+      });
+    });
+    fixture.transport.start(retired);
+    const recovering = path === "recovery" ? fixture.transport.resumeInbound(BUYER) : undefined;
+    if (path === "live") fixture.emit(fixture.payload);
+    await settle();
+    expect(retired).toHaveBeenCalledTimes(1);
+    fixture.transport.stop();
+    expect(signal?.aborted).toBe(true);
+    const current = vi.fn((packet: unknown) => fixture.client.receive(packet));
+    fixture.transport.start(current);
+    await settle();
+    if (recovering !== undefined) {
+      await expect(recovering).resolves.toEqual({
+        status: "indeterminate",
+        delivered: 0,
+        reason: "Demos L2PS inbound recovery generation retired",
+      });
+    }
+    expect(fixture.errors).toHaveLength(0);
+    expect(current).not.toHaveBeenCalled();
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    fixture.transport.stop();
+  });
+
   test("round 4: validates consumerTimeoutMs like operationTimeoutMs", () => {
     const hub = new FakeL2psHub();
     const base = {
