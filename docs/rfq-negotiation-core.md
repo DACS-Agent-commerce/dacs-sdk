@@ -233,6 +233,10 @@ event being processed. Each event is charged two bytes per string code unit
 plus 1 KiB for record and queue metadata. These limits are fixed. Excess live
 events are reported immediately through `onError` and dropped; recover them
 from history with `resumeInbound()`.
+`stop()` retires pending live and recovered deliveries; work still awaiting
+decryption cannot deliver to a consumer registered by a later `start()`.
+An already invoked consumer may finish, but recovery checks retirement again
+before delivering its next packet.
 
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame

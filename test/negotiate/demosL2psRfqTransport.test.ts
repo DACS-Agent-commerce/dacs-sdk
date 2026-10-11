@@ -24,6 +24,7 @@ import {
   createDemosL2psRfqTransport,
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
+  rfqLifecyclePacketId,
   type AttestationRef,
   type DemosL2psRfqEncryptedMessage,
   type DemosL2psRfqHistoryPage,
@@ -358,6 +359,66 @@ function gate() {
 }
 
 describe("Demos L2PS durable RFQ transport", () => {
+  test.each(["live", "recovery"] as const)("round 3: retires an in-flight %s decrypt across stop/start", async (path) => {
+    const blocked = gate();
+    const entered = gate();
+    const fixture = await inboundReceiver({ open: (base) => async (encrypted, context) => {
+      entered.release();
+      await blocked.promise;
+      return base.open(encrypted, context);
+    } });
+    const recovering = path === "recovery" ? fixture.transport.resumeInbound(BUYER) : undefined;
+    if (path === "live") fixture.emit(fixture.payload);
+    await entered.promise;
+    fixture.transport.stop();
+    const current = vi.fn((packet: unknown) => fixture.client.receive(packet));
+    fixture.transport.start(current);
+    blocked.release();
+    await fixture.transport.drain();
+    if (recovering !== undefined) {
+      await expect(recovering).resolves.toMatchObject({ status: "indeterminate", delivered: 0 });
+    }
+    expect(fixture.receive).not.toHaveBeenCalled();
+    expect(current).not.toHaveBeenCalled();
+    // The replacement generation can still recover the retired packet.
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    expect(current).toHaveBeenCalledTimes(1);
+    fixture.transport.stop();
+  });
+
+  test("round 3: retires recovery between asynchronous packet deliveries", async () => {
+    const fixture = await inboundReceiver();
+    const { packetId: _packetId, ...material } = fixture.packet;
+    const otherMaterial = { ...material, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" };
+    const otherPacket = { ...otherMaterial, packetId: rfqLifecyclePacketId(otherMaterial) };
+    fixture.hub.messages.push({
+      ...structuredClone(fixture.own), id: "other-packet", messageHash: otherPacket.packetId,
+      timestamp: fixture.own.timestamp + 1,
+      encrypted: await fixture.baseCodec.seal(new TextEncoder().encode(canonicalize(otherPacket as unknown as Record<string, unknown>)), {
+        messageHash: otherPacket.packetId, fromPeer: BUYER_PEER, toPeer: SELLER_PEER,
+      }),
+    });
+    fixture.transport.stop();
+    const blocked = gate();
+    const entered = gate();
+    const oldHandler = vi.fn(async (_packet: unknown) => {
+      entered.release();
+      await blocked.promise;
+      return fixture.client.receive(fixture.packet);
+    });
+    fixture.transport.start(oldHandler);
+    const recovering = fixture.transport.resumeInbound(BUYER);
+    await entered.promise;
+    fixture.transport.stop();
+    const current = vi.fn();
+    fixture.transport.start(current);
+    blocked.release();
+    await expect(recovering).resolves.toMatchObject({ status: "indeterminate", delivered: 1 });
+    expect(oldHandler).toHaveBeenCalledTimes(1);
+    expect(current).not.toHaveBeenCalled();
+    fixture.transport.stop();
+  });
+
   test("round 3: resumeInbound shares a 20 ms decryption budget across three hanging frames", async () => {
     let hang = true;
     let opens = 0;

@@ -1076,6 +1076,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
 
   async function ingest(payload: DemosL2psRfqIncomingPayload, active: number): Promise<void> {
     if (!started || active !== generation || onPacket === undefined) return;
+    const handler = onPacket;
     const senderClaim = canonicalString(
       captured.claimForPeer(payload.from),
       "resolved sender claim",
@@ -1100,7 +1101,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     ) {
       throw new DacsError("Demos L2PS RFQ plaintext does not bind its peer route");
     }
-    const result = await onPacket(packet);
+    if (!started || active !== generation) return;
+    const result = await handler(packet);
     if (result.status !== "ready" && result.status !== "duplicate") {
       throw new DacsError(
         `Demos L2PS RFQ lifecycle receive failed: ${"reason" in result ? result.reason : "unknown result"}`,
@@ -1130,6 +1132,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     if (!started || onPacket === undefined) {
       throw new DacsError("Demos L2PS RFQ transport must start before inbound recovery");
     }
+    const active = generation;
+    const handler = onPacket;
     let remoteClaim: string;
     let remotePeerKey: string;
     try {
@@ -1152,6 +1156,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     // As in reconcile, start one shared decryption deadline at the first open.
     let openDeadline: number | undefined;
     recoveryPages: for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
+      if (!started || active !== generation) {
+        uncertainReason = "Demos L2PS inbound recovery generation retired";
+        break;
+      }
       let page: DemosL2psRfqHistoryPage;
       try {
         page = captureHistoryPage(
@@ -1169,6 +1177,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         break;
       }
       for (const message of page.messages) {
+        if (!started || active !== generation) {
+          uncertainReason = "Demos L2PS inbound recovery generation retired";
+          break recoveryPages;
+        }
         if (message.from !== remotePeerKey || message.to !== captured.localPeerKey) {
           continue;
         }
@@ -1245,9 +1257,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       }
     }
     let delivered = 0;
+    // Check even when retirement happened during a final failed/empty page.
+    if (!started || active !== generation) {
+      uncertainReason = "Demos L2PS inbound recovery generation retired";
+    }
     for (const packet of [...packets.values()].sort(packetOrder)) {
+      if (!started || active !== generation) {
+        uncertainReason = "Demos L2PS inbound recovery generation retired";
+        break;
+      }
       try {
-        const result = await onPacket(packet);
+        const result = await handler(packet);
         if (result.status !== "ready" && result.status !== "duplicate") {
           uncertainReason =
             `Demos L2PS recovered packet was not accepted: ${"reason" in result ? result.reason : "unknown result"}`;
