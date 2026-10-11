@@ -627,8 +627,17 @@ function liquidityTankSettlementKeyFromCaptured(input: {
 export function createLiquidityTankIntent(
   authority: Readonly<LiquidityTankAuthority>,
 ): Readonly<LiquidityTankIntent> {
-  const captured = snapshotCanonicalJson(authority, "liquidity-tank authority");
-  authority = captured;
+  return intentFromCapturedAuthority(captureLiquidityTankAuthority(authority));
+}
+
+function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTankAuthority> {
+  return snapshotCanonicalJson(authority as LiquidityTankAuthority, "liquidity-tank authority");
+}
+
+/** Deterministic over the captured content: reads no clock, store or caller code. */
+function intentFromCapturedAuthority(
+  authority: Readonly<LiquidityTankAuthority>,
+): Readonly<LiquidityTankIntent> {
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "liquidity-tank") {
     throw new DacsError("pay-cross-chain-liquidity-tank: selected rail mechanism mismatch");
@@ -992,19 +1001,24 @@ function preservesRecoveryCheckpoint(
 export async function advanceLiquidityTankSettlement(
   input: Readonly<AdvanceLiquidityTankInput>,
 ): Promise<LiquidityTankProgress> {
-  let authority: unknown;
+  let authority: Readonly<LiquidityTankAuthority>;
   try {
-    authority = stableDataProperty(input, "authority", "authority");
+    authority = captureLiquidityTankAuthority(
+      stableDataProperty(input, "authority", "authority"),
+    );
   } catch (error) {
+    // The same authority data presented as a proxy, accessor or frozen object
+    // derives the same settlement key, so a lock may already be durable under
+    // it: refusing its representation is never a settlement failure.
     return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "liquidity-tank-authority-invalid",
+      status: "indeterminate",
+      reason: error instanceof Error ? error.message : "liquidity-tank-authority-unreadable",
     };
   }
   let intent: Readonly<LiquidityTankIntent>;
   try {
-    intent = createLiquidityTankIntent(authority as LiquidityTankAuthority);
+    // Refused content can never have produced a settlement key in this version.
+    intent = intentFromCapturedAuthority(authority);
   } catch (error) {
     return {
       status: "failed",

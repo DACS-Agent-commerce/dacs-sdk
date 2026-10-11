@@ -324,7 +324,7 @@ describe("createLiquidityTankIntent", () => {
   });
 
   test.each(["accessor", "proxy"] as const)(
-    "rejects %s authority without invoking caller code",
+    "refuses %s authority as indeterminate without invoking caller code",
     async (kind) => {
       const touched = vi.fn();
       let hostile: LiquidityTankAuthority;
@@ -342,13 +342,22 @@ describe("createLiquidityTankIntent", () => {
         hostile = unreadableProxy(authority(), touched);
       }
       const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
 
       expect(() => createLiquidityTankIntent(hostile)).toThrow();
+      // The representation, not the content, is refused: the same data could
+      // already hold a lock, so this is never a settlement failure.
       await expect(advanceLiquidityTankSettlement(runner({
         authority: hostile,
+        store,
         adapter: h.adapter,
-      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      }).shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank authority is not stable canonical JSON",
+      });
       expect(touched).not.toHaveBeenCalled();
+      expect(claim).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
     },
   );
@@ -2151,6 +2160,38 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(h.broadcastRetained).not.toHaveBeenCalled();
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "upgraded" }))
         .resolves.toEqual(settled);
+    });
+
+    test.each([
+      ["a frozen authority", (shared: AdvanceLiquidityTankInput) =>
+        ({ ...shared, authority: Object.freeze({ ...shared.authority }) }),
+        "liquidity-tank authority is not stable canonical JSON"],
+      ["a Proxy authority", (shared: AdvanceLiquidityTankInput) =>
+        ({ ...shared, authority: new Proxy({ ...shared.authority }, {}) }),
+        "liquidity-tank authority is not stable canonical JSON"],
+      ["a Proxy input", (shared: AdvanceLiquidityTankInput) => new Proxy({ ...shared }, {}),
+        "pay-cross-chain-liquidity-tank: authority must be stable data"],
+      ["an accessor authority", (shared: AdvanceLiquidityTankInput) => {
+        const { authority: value, ...rest } = shared;
+        return Object.defineProperty(rest, "authority", { enumerable: true, get: () => value });
+      }, "pay-cross-chain-liquidity-tank: authority must be stable data"],
+    ] as const)("a lock, then the same authority as %s, is indeterminate and still settles", async (_label, reshape, reason) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const claim = vi.spyOn(store, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      await expect(advanceLiquidityTankSettlement(reshape({ ...run.shared, owner: "reshaped" }) as never))
+        .resolves.toEqual({ status: "indeterminate", reason });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      run.setClock(D - 400);
+      h.setObservation(completed(h.operationHash, D - 450));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+        .resolves.toMatchObject({ status: "settled" });
     });
   });
 
