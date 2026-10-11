@@ -1,10 +1,24 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   advanceX402BuyerSettlement,
   assertX402BuyerSettlementIntent,
+  createX402BuyerEvmAuthorizationProvider,
+  createX402BuyerRetainedDisclosureRecovery,
+  type WalletSpendAuthorityDependenciesV1,
+  type WalletSpendAuthorityV1,
+  type WalletSpendPermitV1,
+  type WalletSpendRecoveryObservationV1,
+  type WalletSpendReservationV1,
+  type WalletSpendSettlementObservationV1,
   type FixedPriceX402TrackOperation,
   type FixedPriceX402TrackOperationInput,
   type X402BuyerAuthorizationProvider,
   type X402BuyerCapturedSettlement,
+  type X402BuyerEvmDisclosureRecovery,
+  type X402BuyerEvmReadClient,
+  type X402BuyerEvmSignatureVerifier,
+  type X402BuyerEvmUnusedConfirmer,
   type X402BuyerEffectFence,
   type X402BuyerPaidRequestTransport,
   type X402BuyerSettlementDisclosure,
@@ -22,6 +36,58 @@ import {
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
+
+function exactOwnData(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      nodeTypes.isProxy(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(value);
+    const allowed = new Set([...required, ...optional]);
+    if (keys.some((key) => typeof key !== "string" || !allowed.has(key)) ||
+        required.some((key) => !Object.hasOwn(descriptors, key))) return null;
+    const captured: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return null;
+      }
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return null;
+  }
+}
+
+function bindStableCapability<T>(source: unknown, name: string): T | null {
+  if (source === null || (typeof source !== "object" && typeof source !== "function") ||
+      nodeTypes.isProxy(source)) return null;
+  try {
+    let cursor: object | null = source as object;
+    while (cursor !== null) {
+      if (nodeTypes.isProxy(cursor)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+      if (descriptor) {
+        if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
+            nodeTypes.isProxy(descriptor.value)) return null;
+        const capability = descriptor.value as (...args: unknown[]) => unknown;
+        return Object.freeze((...args: unknown[]) =>
+          Reflect.apply(capability, source, args)) as T;
+      }
+      cursor = Object.getPrototypeOf(cursor) as object | null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 export interface DacsX402BuyerPaymentInputV1 {
   paymentInputVersion: "1";
@@ -41,6 +107,10 @@ export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> {
   settlementStore: X402BuyerSettlementStore;
   authorizationProvider: X402BuyerAuthorizationProvider<TObservation>;
   transport: X402BuyerPaidRequestTransport;
+  /** Mandatory wallet/chain-wide authority for this unattended buyer. */
+  walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
+  /** Authenticated rail finality depth bound into the wallet reservation. */
+  finalityBlocks: number;
   /**
    * Prepare and sign the exact x402 bearer. It runs only when no authenticated
    * SQLite effect intent exists; restart recovery reuses those exact bytes.
@@ -57,6 +127,23 @@ export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> {
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
   retryDelayMs?: number;
+}
+
+export interface DacsX402WalletSpendRecoveryAuthenticatorOptionsV1 {
+  /** Integrity-checked x402 store retaining the exact signed bearer. */
+  settlementStore: X402BuyerSettlementStore;
+  /** Process-specific owner used to fence recovery against paid-request workers. */
+  owner: string;
+  chainId: number;
+  minimumConfirmations: number;
+  authorizationSearchFromBlock: number;
+  client: X402BuyerEvmReadClient;
+  /** Defaults to the SDK's production viem EIP-712 verifier. */
+  verifySignature?: X402BuyerEvmSignatureVerifier;
+  /** Required to authenticate live-unused replay safety; never proves terminal absence. */
+  confirmUnused?: X402BuyerEvmUnusedConfirmer;
+  /** Defaults to the SDK's locked-down retained disclosure recovery. */
+  recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
 }
 
 export class DacsX402BuyerPaymentError extends Error {
@@ -121,9 +208,274 @@ function referenceFromSettlement(settlement: Readonly<X402BuyerCapturedSettlemen
     `${settlement.signedEvent.settlementTxHash}:${settlement.signedEvent.logIndex}`;
 }
 
+function walletReservation(
+  payment: Readonly<DacsX402BuyerPaymentInputV1>,
+  finalityBlocks: number,
+): Readonly<WalletSpendReservationV1> {
+  return walletReservationForIntent(payment.intent, finalityBlocks);
+}
+
+function walletReservationForIntent(
+  intent: Readonly<X402BuyerSettlementIntent>,
+  finalityBlocks: number,
+): Readonly<WalletSpendReservationV1> {
+  return Object.freeze({
+    reservationVersion: "1",
+    reservationId: `x402:${intent.settlementKey}`,
+    jobId: intent.jobId,
+    phaseIndex: intent.phaseIndex,
+    phase: "pay-x402",
+    agreementHash: intent.agreementHash,
+    settlementBindingHash: intent.bindingHash,
+    railId: intent.railId,
+    railDefinitionHash: intent.railDescriptorHash,
+    wallet: intent.payer.toLowerCase(),
+    chainId: intent.network,
+    payee: intent.payee.toLowerCase(),
+    finality: Object.freeze({ model: "confirmation-depth", finalityBlocks }),
+    debits: Object.freeze([Object.freeze({
+      asset: intent.asset.toLowerCase(),
+      purpose: "service" as const,
+      expectedAmount: intent.amount,
+      maximumAmount: intent.amount,
+    })]),
+  });
+}
+
+function walletSettlement(
+  payment: Readonly<DacsX402BuyerPaymentInputV1>,
+  settlement: Readonly<X402BuyerCapturedSettlement>,
+): Readonly<WalletSpendSettlementObservationV1> {
+  return walletSettlementForIntent(payment.intent, settlement);
+}
+
+function walletSettlementForIntent(
+  intent: Readonly<X402BuyerSettlementIntent>,
+  settlement: Readonly<X402BuyerCapturedSettlement>,
+): Readonly<WalletSpendSettlementObservationV1> {
+  return Object.freeze({
+    disposition: "settled",
+    evidenceHash: settlement.authenticationHash,
+    debits: Object.freeze([Object.freeze({
+      asset: intent.asset.toLowerCase(),
+      purpose: "service" as const,
+      amount: intent.amount,
+    })]),
+  });
+}
+
+/**
+ * Re-authenticate generated x402 wallet recovery from the retained exact intent
+ * through the SDK's EIP-3009 event, receipt, ancestry, and terminal-state checks.
+ * Local settlement records are candidates only; they never become proof alone.
+ */
+export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
+  options: Readonly<DacsX402WalletSpendRecoveryAuthenticatorOptionsV1>,
+): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
+  const captured = exactOwnData(options, [
+    "settlementStore", "owner", "chainId", "minimumConfirmations",
+    "authorizationSearchFromBlock", "client",
+  ], ["verifySignature", "confirmUnused", "recoverDisclosure"]);
+  const load = bindStableCapability<X402BuyerSettlementStore["load"]>(
+    captured?.settlementStore,
+    "load",
+  );
+  const claim = bindStableCapability<X402BuyerSettlementStore["claim"]>(
+    captured?.settlementStore,
+    "claim",
+  );
+  const isCurrent = bindStableCapability<X402BuyerSettlementStore["isCurrent"]>(
+    captured?.settlementStore,
+    "isCurrent",
+  );
+  const getFinalityHead = bindStableCapability<X402BuyerEvmReadClient["getFinalityHead"]>(
+    captured?.client,
+    "getFinalityHead",
+  );
+  const getLogs = bindStableCapability<X402BuyerEvmReadClient["getLogs"]>(
+    captured?.client,
+    "getLogs",
+  );
+  const getTransactionReceipt =
+    bindStableCapability<X402BuyerEvmReadClient["getTransactionReceipt"]>(
+      captured?.client,
+      "getTransactionReceipt",
+    );
+  const readAuthorizationState =
+    bindStableCapability<X402BuyerEvmReadClient["readAuthorizationState"]>(
+      captured?.client,
+      "readAuthorizationState",
+    );
+  const confirmBlockAncestor =
+    bindStableCapability<X402BuyerEvmReadClient["confirmBlockAncestor"]>(
+      captured?.client,
+      "confirmBlockAncestor",
+    );
+  const verifySignature = captured?.verifySignature === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmSignatureVerifier>(options, "verifySignature");
+  const confirmUnused = captured?.confirmUnused === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmUnusedConfirmer>(options, "confirmUnused");
+  const recoveredDisclosure = captured?.recoverDisclosure === undefined
+    ? undefined
+    : bindStableCapability<X402BuyerEvmDisclosureRecovery>(options, "recoverDisclosure");
+  if (!captured || !load || !claim || !isCurrent || !getFinalityHead ||
+      !getLogs || !getTransactionReceipt || !readAuthorizationState ||
+      !confirmBlockAncestor ||
+      typeof captured.owner !== "string" || captured.owner.length === 0 ||
+      !Number.isSafeInteger(captured.chainId) || (captured.chainId as number) <= 0 ||
+      !Number.isSafeInteger(captured.minimumConfirmations) ||
+      (captured.minimumConfirmations as number) <= 0 ||
+      !Number.isSafeInteger(captured.authorizationSearchFromBlock) ||
+      (captured.authorizationSearchFromBlock as number) < 0 ||
+      (captured.verifySignature !== undefined && !verifySignature) ||
+      (captured.confirmUnused !== undefined && !confirmUnused) ||
+      (captured.recoverDisclosure !== undefined && !recoveredDisclosure)) {
+    throw new TypeError("x402 wallet recovery authenticator options are invalid");
+  }
+  const settlementStore = Object.freeze({ load, claim, isCurrent });
+  const owner = captured.owner;
+  const chainId = captured.chainId as number;
+  const minimumConfirmations = captured.minimumConfirmations as number;
+  const authorizationSearchFromBlock =
+    captured.authorizationSearchFromBlock as number;
+  const client: X402BuyerEvmReadClient = Object.freeze({
+    getFinalityHead,
+    getLogs,
+    getTransactionReceipt,
+    readAuthorizationState,
+    confirmBlockAncestor,
+  });
+  const stableVerifySignature: X402BuyerEvmSignatureVerifier | undefined =
+    verifySignature ?? undefined;
+  const stableConfirmUnused: X402BuyerEvmUnusedConfirmer | undefined =
+    confirmUnused ?? undefined;
+  const recoverDisclosure = recoveredDisclosure ??
+    createX402BuyerRetainedDisclosureRecovery({});
+
+  return Object.freeze(async (
+    reservation: Readonly<WalletSpendReservationV1>,
+    observation: Readonly<WalletSpendRecoveryObservationV1>,
+  ): Promise<boolean> => {
+    try {
+      if (!reservation.reservationId.startsWith("x402:")) return false;
+      const settlementKey = reservation.reservationId.slice("x402:".length);
+      if (settlementKey.length === 0) return false;
+      let candidate: Readonly<X402BuyerSettlementDisclosure> | undefined;
+      const loaded = await settlementStore.load(settlementKey);
+      if (loaded.status === "absent" || loaded.status === "unsupported" ||
+          loaded.status === "corrupt") {
+        return false;
+      }
+      if (loaded.intent.settlementKey !== settlementKey ||
+          canonicalize(walletReservationForIntent(loaded.intent, minimumConfirmations)) !==
+            canonicalize(reservation)) {
+        return false;
+      }
+      const claimed = await settlementStore.claim({
+        intent: loaded.intent,
+        owner,
+        now: Date.now(),
+        leaseDurationMs: 30_000,
+      });
+      if ((claimed.status === "waiting" && claimed.lease.owner !== owner) ||
+          claimed.status === "conflict" ||
+          claimed.status === "unsupported" || claimed.status === "corrupt") {
+        return false;
+      }
+      const intent = claimed.intent;
+      if (intent.settlementKey !== settlementKey ||
+          canonicalize(walletReservationForIntent(intent, minimumConfirmations)) !==
+            canonicalize(reservation)) {
+        return false;
+      }
+      let fence: Readonly<X402BuyerEffectFence>;
+      if (claimed.status === "acquired" || claimed.status === "waiting") {
+        candidate = claimed.pendingDisclosure;
+        fence = Object.freeze({
+          owner: claimed.lease.owner,
+          generation: claimed.lease.generation,
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          idempotencyKey: intent.settlementKey,
+          async assertCurrent() {
+            if (await settlementStore.isCurrent({
+              settlementKey: intent.settlementKey,
+              bindingHash: intent.bindingHash,
+              lease: claimed.lease,
+              now: Date.now(),
+            }) !== true) {
+              throw new DacsX402BuyerPaymentError("x402-wallet-recovery-stale");
+            }
+          },
+        });
+      } else {
+        if (claimed.status === "captured") {
+          if (claimed.outcome.status !== "captured") return false;
+          candidate = disclosureFromSettlement(claimed.outcome.settlement);
+        } else if (claimed.outcome.status !== "failed") {
+          return false;
+        }
+        const terminalSnapshot = canonicalize(claimed);
+        fence = Object.freeze({
+          owner,
+          generation: 1,
+          settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash,
+          idempotencyKey: intent.settlementKey,
+          async assertCurrent() {
+            if (canonicalize(await settlementStore.load(intent.settlementKey)) !==
+                terminalSnapshot) {
+              throw new DacsX402BuyerPaymentError("x402-wallet-recovery-stale");
+            }
+          },
+        });
+      }
+
+      const provider = createX402BuyerEvmAuthorizationProvider({
+        chainId,
+        minimumConfirmations,
+        authorizationSearchFromBlock,
+        client,
+        authorizeIntent: async ({ intent: candidateIntent }) =>
+          canonicalize(candidateIntent) === canonicalize(intent)
+          ? { disposition: "authorized" as const, bindingHash: candidateIntent.bindingHash }
+          : { disposition: "rejected" as const, reason: "wallet-reservation-mismatch" },
+        ...(stableVerifySignature === undefined
+          ? {}
+          : { verifySignature: stableVerifySignature }),
+        ...(stableConfirmUnused === undefined
+          ? {}
+          : { confirmUnused: stableConfirmUnused }),
+        recoverDisclosure,
+      });
+      const lookup = await provider.lookup(intent, candidate, fence);
+      if (lookup.disposition !== "observed") return false;
+      const recovered = await provider.authenticate(
+        intent,
+        lookup,
+        candidate,
+        fence,
+      );
+      if (observation.disposition === "settled") {
+        return recovered.disposition === "settled-same" &&
+          canonicalize(walletSettlementForIntent(intent, recovered.settlement)) ===
+            canonicalize(observation);
+      }
+      return (recovered.disposition === "cancelled" ||
+          recovered.disposition === "expired-unused") &&
+        recovered.authenticationHash === observation.evidenceHash;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function combinedFence(
   inner: Readonly<X402BuyerEffectFence>,
   outer: Readonly<DacsLiveEffectFenceV1>,
+  wallet?: Readonly<WalletSpendPermitV1>,
 ): Readonly<X402BuyerEffectFence> {
   return Object.freeze({
     owner: inner.owner,
@@ -134,6 +486,7 @@ function combinedFence(
     async assertCurrent() {
       await outer.assertCurrent();
       await inner.assertCurrent();
+      await wallet?.assertCurrent();
     },
   });
 }
@@ -169,6 +522,10 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       typeof options.authorizationProvider.lookup !== "function" ||
       typeof options.authorizationProvider.authenticate !== "function" ||
       !options.transport || typeof options.transport.submitRetained !== "function" ||
+      !options.walletSpendAuthority ||
+      typeof options.walletSpendAuthority.reserve !== "function" ||
+      typeof options.walletSpendAuthority.reconcile !== "function" ||
+      !Number.isSafeInteger(options.finalityBlocks) || options.finalityBlocks <= 0 ||
       typeof options.prepareIntent !== "function" ||
       typeof options.authorizePreparedIntent !== "function") {
     throw new TypeError("x402 buyer payment track options are invalid");
@@ -182,6 +539,8 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
   const settlementStore = options.settlementStore;
   const provider = options.authorizationProvider;
   const transport = options.transport;
+  const walletSpendAuthority = options.walletSpendAuthority;
+  const finalityBlocks = options.finalityBlocks;
   const settlementLeaseDurationMs = options.settlementLeaseDurationMs ?? 30_000;
   if (!Number.isSafeInteger(settlementLeaseDurationMs) ||
       settlementLeaseDurationMs <= 0 || settlementLeaseDurationMs > 600_000) {
@@ -197,6 +556,24 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     } catch {
       return false;
     }
+  }
+
+  async function reconcileWalletTerminalAbsence(
+    paymentInput: Readonly<DacsX402BuyerPaymentInputV1>,
+    proof: Readonly<{
+      disposition: "cancelled" | "expired-unused";
+      authenticationHash: string;
+    }>,
+  ): Promise<boolean> {
+    if (!HASH_RE.test(proof.authenticationHash)) return false;
+    await walletSpendAuthority.reconcile(
+      walletReservation(paymentInput, finalityBlocks),
+      Object.freeze({
+        disposition: "terminal-absent",
+        evidenceHash: proof.authenticationHash,
+      }),
+    );
+    return true;
   }
 
   async function persistAuthenticatedSettlement(
@@ -344,24 +721,46 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       );
       await fence.assertCurrent();
       if (recovered.disposition === "settled-same") {
-        return persistAuthenticatedSettlement(
+        const persisted = await persistAuthenticatedSettlement(
           paymentInput,
           recovered.settlement,
           outerFence,
         );
+        if (persisted.status === "completed") {
+          await walletSpendAuthority.reconcile(
+            walletReservation(paymentInput, finalityBlocks),
+            walletSettlement(paymentInput, recovered.settlement),
+          );
+        }
+        return persisted;
       }
       if (recovered.disposition === "unused") {
-        if (!HASH_RE.test(recovered.authenticationHash)) {
+        // Live unused permits only an exact retained replay inside the x402
+        // state machine. An already-submitted request may still consume the
+        // authorization, and wallet core has no atomic release/regrant API.
+        // Keep the original reservation until terminal rail evidence arrives.
+        return {
+          status: "indeterminate",
+          reasonCode: "x402-live-unused-wallet-reservation-held",
+        };
+      }
+      if (recovered.disposition === "cancelled" ||
+          recovered.disposition === "expired-unused") {
+        if (!await reconcileWalletTerminalAbsence(paymentInput, {
+          disposition: recovered.disposition,
+          authenticationHash: recovered.authenticationHash,
+        })) {
           return { status: "indeterminate", reasonCode: "x402-absence-proof-invalid" };
         }
-        return { status: "absent", absenceProofHash: recovered.authenticationHash };
-      }
-      if (recovered.disposition === "used-different" ||
-          recovered.disposition === "cancelled" ||
-          recovered.disposition === "expired-unused") {
         return {
           status: "operator-action",
           reasonCode: `x402-terminal-${recovered.disposition}`,
+        };
+      }
+      if (recovered.disposition === "used-different") {
+        return {
+          status: "operator-action",
+          reasonCode: "x402-terminal-used-different",
         };
       }
       return {
@@ -386,8 +785,19 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           paymentInput.intent.jobId !== invocation.fence.jobId) {
         return control("operator-action", "x402-payment-binding-mismatch");
       }
+      const reservation = walletReservation(paymentInput, finalityBlocks);
+      const claim = await walletSpendAuthority.reserve(reservation);
+      if (claim.status !== "reserved") {
+        return control(
+          claim.status === "held" || claim.status === "settled"
+            ? "indeterminate" : "operator-action",
+          claim.status === "denied"
+            ? `wallet-spend-${claim.reason}`
+            : `wallet-spend-${claim.status}`,
+        );
+      }
       const wrap = (fence: Readonly<X402BuyerEffectFence>) =>
-        combinedFence(fence, invocation.fence);
+        combinedFence(fence, invocation.fence, claim.permit);
       const progress = await advanceX402BuyerSettlement({
         intent: paymentInput.intent,
         owner: `${workerId}-${invocation.fence.generation}`,
@@ -401,8 +811,10 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
             provider.authenticate(intent, lookup, candidate, wrap(fence)),
         },
         transport: {
-          submitRetained: (intent, fence) =>
-            transport.submitRetained(intent, wrap(fence)),
+          submitRetained: async (intent, fence) => {
+            await claim.permit.beginEffect();
+            return transport.submitRetained(intent, wrap(fence));
+          },
         },
         now: () => database.readTime(),
         leaseDurationMs: settlementLeaseDurationMs,
@@ -428,6 +840,14 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
         );
       }
       if (progress.status === "failed") {
+        if ((progress.outcome.failure === "cancelled" ||
+            progress.outcome.failure === "expired-unused") &&
+            !await reconcileWalletTerminalAbsence(paymentInput, {
+              disposition: progress.outcome.failure,
+              authenticationHash: progress.outcome.authenticationHash,
+            })) {
+          return control("indeterminate", "x402-absence-proof-invalid");
+        }
         return control("operator-action", `x402-terminal-${progress.outcome.failure}`);
       }
       return control(

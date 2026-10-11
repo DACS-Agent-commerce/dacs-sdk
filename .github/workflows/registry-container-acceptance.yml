@@ -8,6 +8,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/publish-exact-local-registry.mjs"
+      - "scripts/registry-container-disposition.mjs"
       - "scripts/verify-registry-container-consumer.sh"
       - "scripts/verify-release-set.mjs"
       - "src/**"
@@ -36,7 +37,18 @@ jobs:
         run: npm ci
 
       - name: Run registry-shaped Linux and Docker acceptance
-        run: npm run acceptance:registry-container -- --output-dir registry-container-artifacts
+        # Exit 4 means the functional rehearsal passed and the release security
+        # gate is blocked only by audit findings within the recorded #191
+        # baseline. That keeps production publication blocked without failing
+        # every pull request; any other failure, including exit 3, still fails.
+        run: |
+          status=0
+          npm run acceptance:registry-container -- --output-dir registry-container-artifacts || status=$?
+          if [ "$status" -eq 4 ]; then
+            echo "::warning title=#191 security gate blocked::Release security gate remains blocked by audit findings within the recorded #191 baseline; see acceptance-summary.json."
+            exit 0
+          fi
+          exit "$status"
 
       - name: Publish acceptance summary
         if: always()

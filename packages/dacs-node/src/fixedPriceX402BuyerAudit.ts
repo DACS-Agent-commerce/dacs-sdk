@@ -7,6 +7,7 @@ import {
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
+  SubstrateError,
   verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
@@ -67,6 +68,7 @@ import {
 } from "./bundleTransportRuntime.js";
 import {
   createDacsDemosBundlePublicationV1,
+  DacsDemosBundlePublicationError,
   type DacsDemosBundlePublicationV1,
 } from "./demosBundlePublication.js";
 import {
@@ -94,6 +96,12 @@ import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
+// Binding lookups that Demos could not answer, as opposed to a binding that
+// was read and failed authentication.
+const TRANSIENT_BINDING_RESOLUTION_REASONS = new Set([
+  "bundle-binding-resolution-indeterminate",
+  "bundle-binding-resolution-unavailable",
+]);
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
 type PayDemBuyerAuditOptions = Omit<
@@ -207,6 +215,16 @@ function timing(value: unknown): number {
     throw new TypeError("fixed-price buyer audit timing is invalid");
   }
   return Number(captured);
+}
+
+function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
+  const value = rail.parameters.finalityBlocks;
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new TypeError(
+      "fixed-price buyer audit requires a positive x402 finalityBlocks parameter",
+    );
+  }
+  return Number(value);
 }
 
 function publicKey(claim: string): Uint8Array | null {
@@ -424,6 +442,9 @@ export function createDacsFixedPriceBuyerAuditV1(
       ? "fixed-price buyer audit requires native DEM"
       : "fixed-price buyer audit requires x402 ERC-20");
   }
+  const authenticatedFinalityBlocks = payDem
+    ? undefined
+    : requiredFinalityBlocks(rail);
   const observer = options.paymentProfile === "x402"
     ? createDacsX402SellerEvmObserverV1({
         rail,
@@ -583,10 +604,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         (payDem
           ? paymentAnchor.artifact.settlementFinality?.model !== "bft-final"
           : paymentAnchor.artifact.settlementFinality?.model !== "block-depth" ||
-            !Number.isSafeInteger(
-              paymentAnchor.artifact.settlementFinality.finalityBlocks,
-            ) ||
-            Number(paymentAnchor.artifact.settlementFinality.finalityBlocks) <= 0) ||
+            paymentAnchor.artifact.settlementFinality.finalityBlocks === undefined ||
+            paymentAnchor.artifact.settlementFinality.finalityBlocks !==
+                authenticatedFinalityBlocks) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
           paymentAnchor.artifact, paymentAnchor.artifact.signature, order.seller) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -870,13 +890,12 @@ export function createDacsFixedPriceBuyerAuditV1(
       const evm = context.evm;
       if (asset.kind !== "erc20" || evm?.role !== "buyer" || observer === undefined ||
           capturedPaymentFinality.model !== "block-depth" ||
-          !Number.isSafeInteger(capturedPaymentFinality.finalityBlocks) ||
-          Number(capturedPaymentFinality.finalityBlocks) <= 0) {
+          authenticatedFinalityBlocks === undefined) {
         throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
       }
       const paymentFinality = {
         model: "block-depth" as const,
-        finalityBlocks: Number(capturedPaymentFinality.finalityBlocks),
+        finalityBlocks: authenticatedFinalityBlocks,
         finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
       };
       const event = settlementEvent(paymentEvidence);
@@ -1556,6 +1575,10 @@ export function createDacsFixedPriceBuyerAuditV1(
           buyerPublication.bundleContentHash !== result.bundleContentHash ||
           completion.sellerClosure.result.nativeAddress !==
             sellerPublication.nativeAddress) return false;
+      // A Demos read that could not be answered is not evidence against the
+      // session. Remember it so a rejection caused by it stays retryable
+      // instead of being reported as an authentication failure.
+      let unavailable = false;
       try {
         await verifyCompletedTwoSidedSession({
           jobId: operation.order.jobId,
@@ -1583,7 +1606,16 @@ export function createDacsFixedPriceBuyerAuditV1(
         }, {
           sellerFinalizationProvider: material.provider,
           async readBundleCopy(nativeAddress, role) {
-            const anchored = await publication.resolveRoleBundle(role);
+            let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
+            try {
+              anchored = await publication.resolveRoleBundle(role);
+            } catch (error) {
+              if (!(error instanceof DacsDemosBundlePublicationError) ||
+                  error.reasonCode === "bundle-resolution-indeterminate") {
+                unavailable = true;
+              }
+              throw error;
+            }
             return anchored !== null && anchored.nativeAddress === nativeAddress
               ? copy(anchored.bundle) as unknown as Record<string, unknown>
               : null;
@@ -1594,22 +1626,32 @@ export function createDacsFixedPriceBuyerAuditV1(
               nativeAddress: candidate.nativeAddress,
               anchorReceipt: candidate.anchorReceipt,
             });
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             return disposition === "valid"
               ? { disposition: "valid" as const, mapping: "write-input" as const }
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
           },
-          resolveBundleBinding: (logicalAddress, signer) =>
-            publication.resolveBundleBinding(logicalAddress, signer),
+          async resolveBundleBinding(logicalAddress, signer) {
+            const resolved = await publication.resolveBundleBinding(logicalAddress, signer);
+            if (resolved.disposition === "indeterminate" &&
+                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
+              unavailable = true;
+            }
+            return resolved;
+          },
           async verifyBundleBinding(binding) {
             const disposition = await publication.verifyBundleBinding(binding);
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             return disposition === "valid"
               ? { disposition: "valid" as const }
               : { disposition, reason: `demos-bundle-binding-${disposition}` };
           },
         });
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        // The strict seller verifier reports unresolved substrate reads as
+        // SubstrateError; every other rejection is a real authentication failure.
+        return unavailable || error instanceof SubstrateError ? "indeterminate" : false;
       }
     },
   };

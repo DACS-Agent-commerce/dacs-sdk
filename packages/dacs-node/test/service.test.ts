@@ -648,6 +648,132 @@ describe("authority-separated live role services", () => {
     expect(envelopes.count).toBe(2);
   });
 
+  function retainedTransportRows(databasePath: string): Readonly<{
+    intents: { key: string; nonce: string }[];
+    outbox: { envelope_id: string; state: string }[];
+  }> {
+    const raw = new BetterSqlite3(databasePath, { readonly: true });
+    try {
+      const intents = raw.prepare(`
+        SELECT json_extract(input_json, '$.idempotencyKey') AS key,
+          json_extract(input_json, '$.nonce') AS nonce
+        FROM dacs_effects
+        WHERE effect_kind = 'session' AND job_id = ?
+          AND json_extract(input_json, '$.intentVersion') = '1'
+        ORDER BY key
+      `).all(JOB_ID) as { key: string; nonce: string }[];
+      const outbox = raw.prepare(`
+        SELECT envelope_id, state FROM dacs_http_outbox WHERE job_id = ?
+        ORDER BY envelope_id
+      `).all(JOB_ID) as { envelope_id: string; state: string }[];
+      return { intents, outbox };
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("returns and dispatches the retained envelope when distinct keys collapse semantically", async () => {
+    const directory = root();
+    const buyerPath = join(directory, "buyer.sqlite");
+    const sellerDatabase = await open(directory, "seller");
+    const buyerDatabase = await open(directory, "buyer");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const seller = remember(createDacsSellerServiceV1(options("seller", sellerDatabase,
+      undefined, { handleMessage: handled })));
+    await seller.start();
+    const events: { code: string }[] = [];
+    const buyer = remember(createDacsBuyerServiceV1(options("buyer", buyerDatabase,
+      seller.endpoint, { events: { emit: (event) => void events.push(event) } })));
+    await buyer.start();
+    // Pin the buyer's durable transport clock ahead of the host clock (within
+    // the peer's future-skew bound) so every call signs the same validity window.
+    advanceStoreClock(buyerPath, Math.max(Date.now(), buyerDatabase.readTime()) + 30_000);
+    const message = {
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      payload: {
+        proposal: { jobId: JOB_ID, label: "semantic-collapse" },
+        transportIdentity: { sender: BUYER, audience: SELLER },
+      } as never,
+    } as const;
+
+    const first = await buyer.queueMessage({ ...message, idempotencyKey: "semantic-a" });
+    const second = await buyer.queueMessage({ ...message, idempotencyKey: "semantic-b" });
+    expect(second).toEqual(first);
+    const queued = retainedTransportRows(buyerPath);
+    // The second key durably retained its own intent with a fresh nonce, so the
+    // service signed a different envelope and had to substitute the retained one.
+    expect(queued.intents.map(({ key }) => key)).toEqual(["semantic-a", "semantic-b"]);
+    expect(queued.intents[0]?.nonce).toBe(first.nonce);
+    expect(queued.intents[1]?.nonce).not.toBe(first.nonce);
+    expect(queued.outbox).toEqual([{ envelope_id: first.envelopeId, state: "pending" }]);
+
+    const acknowledgement = await buyer.sendMessage({
+      ...message,
+      idempotencyKey: "semantic-c",
+    });
+    expect(acknowledgement.envelope.payload).toEqual({
+      acknowledgedEnvelopeId: first.envelopeId,
+      acknowledgedPayloadHash: first.payloadHash,
+      disposition: "accepted",
+    });
+    expect(handled).toHaveBeenCalledTimes(1);
+    const sent = retainedTransportRows(buyerPath);
+    expect(sent.intents.map(({ key }) => key))
+      .toEqual(["semantic-a", "semantic-b", "semantic-c"]);
+    expect(sent.outbox).toEqual([{ envelope_id: first.envelopeId, state: "acknowledged" }]);
+    expect(events.filter(({ code }) => code === "transport-message-queued")).toHaveLength(3);
+    expect(events.filter(({ code }) => code === "transport-message-acknowledged"))
+      .toHaveLength(1);
+  });
+
+  it("fails closed when the outbox cannot produce the retained envelope it reported", async () => {
+    const directory = root();
+    const buyerPath = join(directory, "buyer.sqlite");
+    const buyerDatabase = await open(directory, "buyer");
+    const loads: string[] = [];
+    const database = new Proxy(buyerDatabase, {
+      get(target, property) {
+        if (property === "createHttpOutboxStore") {
+          return (storeOptions?: Parameters<DacsNodeSqliteDatabase["createHttpOutboxStore"]>[0]) => {
+            const store = target.createHttpOutboxStore(storeOptions);
+            return {
+              ...store,
+              load: async (envelopeId: string) => {
+                loads.push(envelopeId);
+                return undefined;
+              },
+            };
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const events: { code: string }[] = [];
+    const buyer = remember(createDacsBuyerServiceV1(options("buyer", database, undefined,
+      { events: { emit: (event) => void events.push(event) } })));
+    await buyer.start();
+    advanceStoreClock(buyerPath, Math.max(Date.now(), buyerDatabase.readTime()) + 30_000);
+    const message = {
+      type: "agreement-proposal",
+      jobId: JOB_ID,
+      payload: {
+        proposal: { jobId: JOB_ID, label: "missing-retained-envelope" },
+        transportIdentity: { sender: BUYER, audience: SELLER },
+      } as never,
+    } as const;
+
+    const first = await buyer.queueMessage({ ...message, idempotencyKey: "retained-a" });
+    expect(loads).toEqual([]);
+    await expect(buyer.queueMessage({ ...message, idempotencyKey: "retained-b" }))
+      .rejects.toEqual(new DacsLiveRoleServiceError("service-message-intent-unavailable"));
+    expect(loads).toEqual([first.envelopeId]);
+    expect(retainedTransportRows(buyerPath).outbox)
+      .toEqual([{ envelope_id: first.envelopeId, state: "pending" }]);
+    expect(events.filter(({ code }) => code === "transport-message-queued")).toHaveLength(1);
+  });
+
   it("handles reserved transport diagnostics without invoking application work", async () => {
     const directory = root();
     const sellerDatabase = await open(directory, "seller");

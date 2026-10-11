@@ -131,10 +131,26 @@ describe("canonicalize (§7.1)", () => {
     expect(() => canonicalize(value)).toThrow(/plain JSON objects/);
   });
 
-  it("accepts 64 nesting levels and rejects deeper input", () => {
-    expect(() => canonicalize(nestedArrays(64))).not.toThrow();
-    expect(() => canonicalize(nestedArrays(65))).toThrow(DacsError);
-    expect(() => canonicalize(nestedArrays(200_000))).toThrow(/nesting depth exceeds 64/);
+  it("admits CORE CF-5 depth 128 and rejects depth 129", () => {
+    for (const depth of [0, 1, 64, 65, 127, 128]) {
+      expect(() => canonicalize(nestedArrays(depth))).not.toThrow();
+      let mixed: unknown = null;
+      for (let index = 0; index < depth; index += 1) {
+        mixed = index % 2 === 0 ? { value: mixed } : [mixed];
+      }
+      expect(() => canonicalize(mixed)).not.toThrow();
+    }
+    expect(canonicalize(nestedArrays(128))).toBe("[".repeat(128) + "null" + "]".repeat(128));
+    let mixedTooDeep: unknown = null;
+    for (let index = 0; index < 129; index += 1) {
+      mixedTooDeep = index % 2 === 0 ? [mixedTooDeep] : { value: mixedTooDeep };
+    }
+    expect(() => canonicalize(mixedTooDeep)).toThrow(DacsError);
+    expect(() => canonicalize(nestedArrays(129))).toThrow(DacsError);
+    expect(() => canonicalize(nestedArrays(200_000))).toThrow(/nesting depth exceeds 128/);
+    let objects: unknown = null;
+    for (let index = 0; index < 129; index += 1) objects = { value: objects };
+    expect(() => canonicalize(objects)).toThrow(/nesting depth exceeds 128/);
   });
 
   it("canon-without-signature: the signed scope excludes the signature field", () => {

@@ -2,10 +2,11 @@
 
 This audit uses the DACS Standard [`next` branch at commit
 `662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f)
-as the current normative source.
-The SDK conformance runner remains reproducibly pinned by
-`scripts/sync-vectors.mjs` to [Standard commit
-`662be1d4899a2cadf327fe2d5523e93a80334e5f`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/662be1d4899a2cadf327fe2d5523e93a80334e5f).
+as its historical normative source.
+The current SDK conformance runner is pinned by `scripts/sync-vectors.mjs` to
+merged Standard #362, `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. The historical
+audit below retains its original source and coverage; pin renewal does not
+recast it as a complete audit of the newer Standard.
 
 This document describes only public DACS behavior. The SDK core must not depend
 on a private service, deployment, transport, repository, or URL.

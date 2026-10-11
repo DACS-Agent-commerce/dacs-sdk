@@ -421,6 +421,22 @@ export async function createFsX402BuyerSettlementStore(
     return true;
   }
 
+  async function lockAvailability(
+    path: string,
+  ): Promise<"absent" | "occupied" | "reclaimable"> {
+    try {
+      const metadata = await stat(path);
+      if (Date.now() - metadata.mtimeMs <= lockStaleMs) return "occupied";
+      const owner = await readOwner(path);
+      return owner !== null && processAlive(owner.pid)
+        ? "occupied"
+        : "reclaimable";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+      throw error;
+    }
+  }
+
   async function maybeReclaimStale(path: string, deadline: number): Promise<boolean> {
     try {
       const metadata = await stat(path);
@@ -499,39 +515,52 @@ export async function createFsX402BuyerSettlementStore(
     const path = lockPath(settlementKey);
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
     const deadline = Date.now() + lockTimeoutMs;
-    while (true) {
-      // Prepare the owner record under an unpublished, unique directory, then
-      // publish the complete lock with one rename. Publishing an empty lock
-      // directory first leaves a stale-reclaim race: a paused creator can later
-      // resume inside a successor's path and delete/fence that successor.
-      const candidate = `${path}.${randomUUID()}.candidate`;
+    // Stage one complete owner for this acquisition. The candidate stays
+    // unpublished while a live holder owns the canonical path and is reused
+    // across polls; publication and stale recovery remain mutation-gated.
+    const candidate = `${path}.${randomUUID()}.candidate`;
+    try {
+      await mkdir(candidate, { mode: DIR_MODE });
+      const handle = await open(join(candidate, "owner.json"), "wx", FILE_MODE);
       try {
-        await mkdir(candidate, { mode: DIR_MODE });
-        const handle = await open(join(candidate, "owner.json"), "wx", FILE_MODE);
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await syncDirectory(candidate);
+
+      while (true) {
+        const availability = await lockAvailability(path);
+        if (availability === "occupied") {
+          if (Date.now() >= deadline) {
+            throw new DacsError("timed out acquiring x402 buyer settlement lock");
+          }
+          await wait(lockPollMs);
+          continue;
+        }
+        if (availability === "reclaimable") {
+          await maybeReclaimStale(path, deadline);
+        }
         try {
-          await handle.writeFile(JSON.stringify(owner), "utf8");
-          await handle.sync();
-        } finally {
-          await handle.close();
+          await withLockMutationGate(deadline, async () => {
+            await rename(candidate, path);
+            await syncDirectory(locksDir);
+          });
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EEXIST" && code !== "ENOTEMPTY") {
+            throw error;
+          }
         }
-        await syncDirectory(candidate);
-        await withLockMutationGate(deadline, async () => {
-          await rename(candidate, path);
-          await syncDirectory(locksDir);
-        });
-        break;
-      } catch (error) {
-        await rm(candidate, { recursive: true, force: true }).catch(() => {});
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST" && code !== "ENOTEMPTY") {
-          throw error;
-        }
-        await maybeReclaimStale(path, deadline);
         if (Date.now() >= deadline) {
           throw new DacsError("timed out acquiring x402 buyer settlement lock");
         }
         await wait(lockPollMs);
       }
+    } finally {
+      await rm(candidate, { recursive: true, force: true }).catch(() => {});
     }
     try {
       return await operation();
