@@ -200,6 +200,10 @@ restart; once their own bundle and BB-1 binding are finalized, the agreement
 track records the attributed DACS-5 failure using that exact publication.
 Remote `fail` bytes on the ordinary admission path never authorize local blame:
 the receiver waits for the independently authenticated terminal proposal.
+A Vet terminal is only admitted before agreement. Once a role's agreement track
+has succeeded, or its retained agreement facts record the evaluated party's Vet
+as passed, that role rejects the proposal (`vet-terminal-not-pre-agreement`),
+never signs it, and its agreement and audit tracks continue normally.
 
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
