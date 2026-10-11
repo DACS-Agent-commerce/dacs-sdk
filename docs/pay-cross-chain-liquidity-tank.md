@@ -1,9 +1,11 @@
 # Liquidity-tank settlement safety core
 
 The SDK exposes a dependency-injected
-`pay-cross-chain-liquidity-tank` producer core for DACS-4 §9.5.5. It binds the
-current DACS v0.1 route—ETH Sepolia to Polygon Amoy, USDC, unidirectional—and
-refuses silent substitution to HTLC or any other mechanism.
+`pay-cross-chain-liquidity-tank` producer core for the DACS-4 §9.5.5 rail. It
+binds the current DACS v0.1 route—ETH Sepolia to Polygon Amoy, USDC,
+unidirectional—and refuses silent substitution to HTLC or any other mechanism.
+It does not conform to §9.5.5 or ST-8 for a lock whose bridge reads contradict
+it: such a lock never expires (see [Contradicted locks](#contradicted-locks)).
 
 The core:
 
@@ -23,6 +25,7 @@ The core:
 - treats capacity exhaustion as transient on the same pinned tank rail; and
 - persists locked-unreleased state as ST-8 `tank-locked-unreleased`, resolving
   forward to success or reputation-neutral `failed-substrate` at the recovery
+  deadline, except for a contradicted lock, which stays locked past the
   deadline. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
   pending and completed adapter observations, durable checkpoints, settlement
   replay records, progress and transaction evidence;
@@ -90,31 +93,51 @@ wins; a failed completion write never triggers expiry in that call.
 
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
+
+## Contradicted locks
+
 Authenticated `empty` or `capacity-unavailable` after a durable lock contradict
 it. A different lock/deadline or a failure missing the exact checkpoint binding
 also cannot authorize expiry. Such contradictions may describe a lagging
 replica while locked funds can still move: automatically expiring them could
-allow the buyer to pay twice.
+record a release that actually landed as failed and allow the buyer to pay
+twice.
 
 Contradictions return `bridgeStatus: "conflicting"`. At or after the deadline
 they return the distinct reason `lock-contradicted`, with `pastDeadline: true`,
-and remain locked. Hosts must treat this as requiring intervention and as a
-failure of readiness/conformance for this rail, rather than ordinary waiting.
-The SDK has no runtime rail-readiness/conformance surface consuming these
-progress results; its conformance tests and settlement-evidence validators
-check artifact/evidence shapes separately. A timely completion can still
-settle. Hosts should alert on overdue ordinary locked progress beyond normal
-bridge lag, and send contradictions to an operator immediately. No
-reconciliation operation is provided here; authoritative resolution tied to the
-exact lock and deadline remains a follow-up with the DACS-4 §9.5.5 owner.
+and remain locked; a timely completion can still settle.
 
-Production stores must retain `recordObservation`'s optional `recoveryFailure`
-atomically, without replacing its pending `observation`. This write must CAS
-against the exact durable checkpoint and current authority/owner/generation/
+**This is a known deviation from DACS-4.** §9.5.5 bounds the
+`settle-asymmetric` state by `recoveryDeadline` and says the window expiring
+resolves to reputation-neutral `failed-substrate`; SR-5 (§9.8) requires both
+legs to succeed together or never take effect within a bounded time. For a
+contradicted lock this rail never expires, so it does not
+conform to §9.5.5 or ST-8 for that case and must not be presented as
+conforming. Hosts must treat `lock-contradicted` as a readiness failure for
+this rail that needs an operator, not as ordinary waiting. The SDK has no
+runtime rail-readiness surface consuming these progress results; its
+conformance tests and settlement-evidence validators check artifact/evidence
+shapes separately. Hosts should alert on overdue ordinary locked progress
+beyond normal bridge lag, and send contradictions to an operator immediately.
+No reconciliation operation is provided here; see the open list below.
+
+## Store contract
+
+Production stores must implement the required
+`recordRecoveryFailure({ settlementKey, bindingHash, owner, generation, now,
+recoveryFailure })`. It retains the failure atomically, without replacing the
+pending `observation`, and must CAS against `recoveryFailure.checkpoint` as
+the exact durable observation and the current authority/owner/generation/
 lease at the supplied `now`, rejecting any completion or expiry winner. Keep
 the first failure, accept exact replay as `existing`, and reject replacement.
-Return it in acquired and waiting claims across restart. A present malformed
-`recoveryFailure` fails closed as retained-state corruption.
+A success (`recorded` or `existing`) must return the failure now retained as
+`recoveryFailure`. The core counts the failure as retained only when that echo
+has exactly the canonical bytes it sent; anything else (`stale`, `conflict`,
+`corrupt`, a missing or different echo, or a throw) leaves the lock open with
+the retry-safe `liquidity-tank-failure-persistence-uncertain`, with no expiry
+and no broadcast. Return the retained failure in acquired and waiting claims
+across restart. A present malformed `recoveryFailure` in a claim fails closed
+as retained-state corruption.
 
 `recordRecoveryExpired` must CAS against the exact observation established by
 the acquired claim or confirmed write, with a current lease and host `now` at
@@ -129,14 +152,29 @@ Completion persistence and recovery expiry race atomically. Persisting a timely
 completion clears retained failure evidence and blocks expiry. Whichever
 eligible terminal transition commits first wins; the loser must report a
 non-successful write. Once expiry commits, every claim returns the same terminal
-state and no later completion may settle. Hosts must upgrade custom stores to
-this retention/CAS contract before using the new core.
+state and no later completion may settle. A replayed `failed-after-lock`
+expiry carries no time of its own, so a worker whose clock has not reached the
+deadline reports the retry-safe `liquidity-tank-recovery-expiry-not-due`
+instead.
+
+Upgrading from the previous contract: `recordObservation` no longer takes
+`recoveryFailure` or `now`; failure retention moved to the required
+`recordRecoveryFailure` above. The core binds every store method before any
+claim or adapter effect, so a store without `recordRecoveryFailure` is refused
+on every call with `failed`/`permanent` and reason
+`pay-cross-chain-liquidity-tank: store.recordRecoveryFailure must be a stable
+method`, leaving its durable state untouched. That refusal is a configuration
+error, not a settlement outcome: a host must not close a phase that may hold a
+durable lock on it. A store that adds the method but does not really retain
+the failure cannot echo it and is treated as not retained.
 
 A timely durable completed observation is also a settlement replay record. On worker
 takeover the coordinator deterministically reconstructs and records its
 settlement, including its exact `recoveryDeadline`, before any adapter
 observation, preparation or broadcast. Stores must accept an exact replay as
 `existing` and reject conflicting settlement writes.
+
+## Adapter trust boundary
 
 Production adapters must authenticate bridge status and its history. The core
 checks only the shape of `authenticationHash` and the presence of the lock and
@@ -152,14 +190,22 @@ stores must authenticate retained rows, enforce global bridge-ID uniqueness,
 preserve locked-unreleased checkpoints across process restart, and persist the
 completion-versus-expiry winner atomically.
 
-Open before any live adapter is wired:
+## Open before any live adapter is wired
 
 - verify bridge observations in the core or an injected verifier (a pinned
   bridge key or attestation over the canonical status, history, hashes and
   timestamps) instead of checking only the shape of `authenticationHash`;
 - decode `signedSubmissionBase64` and compare it with the intent before it is
   stored, through the `demosdk`-backed adapter or an injected decoder so that
-  `@kynesyslabs/dacs/rails` stays dependency-free; and
-- confirm with the DACS-4 §9.5.5 owner whether a `failed` status with history
-  `empty -> pending -> failed` and no stored checkpoint should be
-  reputation-neutral. Today it is `permanent`.
+  `@kynesyslabs/dacs/rails` stays dependency-free;
+- a contradiction after a durable lock (`empty`, `capacity-unavailable`, a
+  failure not bound to the lock, or a different lock/deadline) never expires
+  and reports `lock-contradicted` past the deadline D. §9.5.5 says the window
+  expiring resolves to `failed-substrate`. This needs an authoritative
+  reconciliation operation or a spec-defined indeterminate outcome; and
+- confirm with the DACS-4 §9.5.5 owner whether a `failed` after a committed
+  lock should settle via ST-8 (neutral `failed-substrate` at D, as now) or
+  immediately as `permanent` (the §9.5.5 failure-mode list), and whether a
+  failure bound to the lock with no stored checkpoint should do the same.
+  Today a `failed` with history `empty -> pending -> failed` and no stored
+  checkpoint is `permanent`, even when it carries the lock hash and deadline.
