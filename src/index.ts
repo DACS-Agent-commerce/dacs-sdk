@@ -1,3 +1,9 @@
+export {
+  admitRawJson,
+  RawJsonAdmissionError,
+  type RawJsonAdmissionOptions,
+  type RawJsonAdmissionStage,
+} from "./canonical/rawJson.js";
 /**
  * dacs-sdk — reusable runtime for building DACS (Demos Agent Commerce
  * Standards) agents across the Identify → Vet → Negotiate → Settle → Verify
@@ -1258,6 +1264,9 @@ export {
   WALLET_SPEND_STATE_VERSION,
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
+  resumeWalletSpendAuthorityOperationV1,
+  validateWalletSpendAuthorityOperationV1,
+  validateWalletSpendStateV1,
   executeWalletSpendEffectV1,
   combineWalletSpendEffectFenceV1,
   createFsWalletSpendStateStoreV1,
@@ -1283,6 +1292,8 @@ export {
   type WalletSpendAssetStatusV1,
   type WalletSpendStatusV1,
   type WalletSpendAuthorityV1,
+  type WalletSpendAuthorityReplayV1,
+  type WalletSpendAuthorityOperationV1,
   type WalletSpendExecutionResultV1,
   type WalletSpendExecutionInputV1,
   type FsWalletSpendStateStoreOptionsV1,
@@ -1367,6 +1378,7 @@ export {
   type Ap2MandateVerifier,
   type Ap2SettlementIntent,
   type Ap2ReceiptAttestation,
+  type Ap2ReceiptTransactionRef,
   type Ap2CapturedSettlement,
   type Ap2BindingLease,
   type Ap2BindingClaim,
@@ -1378,6 +1390,12 @@ export {
   type Ap2ProviderAdapter,
   type AdvanceAp2SettlementInput,
   type Ap2SettlementProgress,
+  createFsAp2BindingStore,
+  type FsAp2BindingStoreOptions,
+  createStripeAp2Integration,
+  assertStripeAp2CredentialsAreSplit,
+  stripeAp2ProviderStatusUrl,
+  type StripeAp2IntegrationOptions,
   ERC20_TRANSFER_EVENT_TOPIC,
   verifyEvmTransferFinality,
   type EvmCanonicalBlock,
