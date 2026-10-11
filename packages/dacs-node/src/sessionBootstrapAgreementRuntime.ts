@@ -44,6 +44,7 @@ import type {
   DacsBuyerSessionBootstrapTransportRuntimeV1,
   DacsSellerSessionBootstrapTransportRuntimeV1,
 } from "./sessionBootstrapTransportRuntime.js";
+import { dacsSessionAgreementFactsIdV1 } from "./sessionAgreementFactsId.js";
 import { dacsHttpPayloadHashV1 } from "./transport/envelope.js";
 import {
   DacsVetTerminalBundleTransportError,
@@ -51,7 +52,6 @@ import {
 } from "./terminalBundleTransportRuntime.js";
 
 const FACTS_VERSION = "1" as const;
-const FACTS_DOMAIN = "dacs-live-session-agreement-facts:v1:" as const;
 const VET_INVOCATION_VERSION = "1" as const;
 const VET_INVOCATION_DOMAIN = "dacs-live-session-vet-invocation:v1:" as const;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
@@ -344,8 +344,11 @@ export async function advanceDacsVetTerminalTrackV1(
   try {
     progress = await runtime.advanceRegisteredTerminal(jobId);
   } catch (error) {
+    // No terminal, or one that local agreement state contradicts: the
+    // ordinary track decides the job.
     if (error instanceof DacsVetTerminalBundleTransportError &&
-        error.reasonCode === "vet-terminal-material-unavailable") return undefined;
+        (error.reasonCode === "vet-terminal-material-unavailable" ||
+          error.reasonCode === "vet-terminal-not-pre-agreement")) return undefined;
     if (error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode === "vet-terminal-production-indeterminate") {
       return pending(
@@ -427,7 +430,7 @@ async function finalizeLocalVetFailure(
 }
 
 function factsId(role: "buyer" | "seller", jobId: string): string {
-  return sha256Hex(`${FACTS_DOMAIN}${canonicalize({ role, jobId })}`);
+  return dacsSessionAgreementFactsIdV1(role, jobId);
 }
 
 function productionFieldsValid(input: Readonly<{

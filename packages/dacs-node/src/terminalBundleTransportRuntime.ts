@@ -37,6 +37,7 @@ import type {
   DacsLiveRoleOperationContextV1,
 } from "./roleRuntime.js";
 import type { DacsLiveRoleSendInputV1 } from "./service.js";
+import { dacsSessionAgreementFactsIdV1 } from "./sessionAgreementFactsId.js";
 import type {
   DacsHttpAuthenticatedEnvelopeV1,
   DacsHttpPayloadValidationV1,
@@ -372,6 +373,7 @@ async function loadOrder(
     contentHash: string;
   }>;
   pipeline: Readonly<PrepareVetTerminalBundleInput["pipeline"]>;
+  agreementConcluded: boolean;
 }>> {
   const [x402, payDem] = await Promise.all([
     context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
@@ -452,7 +454,31 @@ async function loadOrder(
       contentHash: application.listingContentHash,
     }),
     pipeline: application.listing.pipeline,
+    agreementConcluded: record.tracks.agreement?.state === "final" &&
+      record.tracks.agreement.outcome === "success",
   });
+}
+
+// A Vet failure can only end a job before agreement. Once this role's agreement
+// track has succeeded, or it has retained agreement facts recording the
+// evaluated party's Vet as passed, a Vet terminal for the job is contradicted
+// by local state and must be neither retained nor signed. The buyer's facts
+// record both Vets; the seller's record only its own Vet of the buyer, so a
+// buyer-proposed failure of the seller stays admissible until agreement.
+function assertPreAgreementTerminal(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<{ jobId: string; agreementConcluded: boolean }>,
+  evaluatedRole: unknown,
+): void {
+  const factsRetained = context.database.loadEffectInput(
+    "session",
+    dacsSessionAgreementFactsIdV1(context.role, order.jobId),
+  ) !== undefined;
+  const passedVets: readonly unknown[] = !factsRetained ? []
+    : context.role === "buyer" ? ["buyer", "seller"] : ["buyer"];
+  if (order.agreementConcluded || passedVets.includes(evaluatedRole)) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-not-pre-agreement");
+  }
 }
 
 function transportId(
@@ -831,6 +857,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     requireRegistryAuthority: boolean,
   ): Promise<void> => {
     const order = await loadOrder(context, proposal.terminalInput.jobId);
+    assertPreAgreementTerminal(context, order, proposal.terminalInput.evaluatedRole);
     const paymentSteps = proposal.terminalInput.pipeline.filter((step) =>
       step.kind === "pay-x402" || step.kind === "pay-dem");
     if (paymentSteps.length !== 1 ||

@@ -56,6 +56,8 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
+import { advanceDacsVetTerminalTrackV1 } from
+  "../src/sessionBootstrapAgreementRuntime.js";
 import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportRuntimeV1,
@@ -1801,5 +1803,211 @@ describe("role-separated Vet terminal bundle transport", () => {
       status: "invalid",
       reasonCode: "vet-terminal-contribution-invalid",
     });
+  });
+});
+
+const SESSION_AGREEMENT_FACTS_DOMAIN = "dacs-live-session-agreement-facts:v1:" as const;
+
+// The terminal transport's durable dependencies, held in memory: the role's
+// x402 coordinator record, its retained order input, and session effects.
+function memoryRoleDatabase(
+  role: "buyer" | "seller",
+  orderApplication = application("pay-x402"),
+) {
+  const exactOrder = order(role);
+  const effects = new Map<string, unknown>();
+  const tracks: Record<string, unknown> = {};
+  let coordinatorStatus: "ok" | "missing" = "ok";
+  const coordinatorRecord = () => ({
+    ...exactOrder,
+    role,
+    bindingHash: fixedPriceX402OrderBindingHash(exactOrder),
+    localBindingHash: fixedPriceX402OrderLocalBindingHash(exactOrder),
+    tracks: structuredClone(tracks),
+  });
+  const database = {
+    metadata: {
+      mode: "live-demos",
+      role,
+      authority: role === "buyer" ? BUYER : SELLER,
+    },
+    readTime: () => STARTED_AT + 1_000,
+    loadEffectInput: (kind: string, effectId: string) =>
+      structuredClone(effects.get(`${kind}:${effectId}`)),
+    putEffectIntent: (input: Readonly<{ kind: string; effectId: string; input: unknown }>) => {
+      const key = `${input.kind}:${input.effectId}`;
+      const existing = effects.get(key);
+      if (existing !== undefined) {
+        return { status: canonicalize(existing) === canonicalize(input.input)
+          ? "existing" as const : "conflict" as const };
+      }
+      effects.set(key, structuredClone(input.input));
+      return { status: "created" as const };
+    },
+    createLiveCoordinatorStore: () => ({
+      load: async () => coordinatorStatus === "ok"
+        ? { status: "ok" as const, record: coordinatorRecord() }
+        : { status: "missing" as const },
+    }),
+    createPayDemCoordinatorStore: () => ({
+      load: async () => ({ status: "missing" as const }),
+    }),
+  };
+  expect(putDacsLiveOrderInputV1({
+    database: database as unknown as DacsNodeSqliteDatabase,
+    order: exactOrder,
+    application: orderApplication,
+  }).status).toBe("created");
+  const signComponent = vi.fn(async (bytes: Uint8Array) => ed25519Sign(
+    bytes,
+    privateKeyFromSeed(role === "buyer" ? BUYER_SEED : SELLER_SEED),
+  ));
+  const context = {
+    role,
+    authority: role === "buyer" ? BUYER : SELLER,
+    peerAuthority: role === "buyer" ? SELLER : BUYER,
+    database,
+    demos: { signComponent },
+    sessionStore: createInMemoryFencedSessionStore(),
+    sendMessage: vi.fn(async () => acknowledgement("accepted")),
+  } as unknown as DacsLiveRoleOperationContextV1;
+  const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+    context,
+    expectedRegistryVersions: REGISTRY_VERSIONS,
+    authenticateProduction: async () => ({ status: "valid" }),
+  });
+  return {
+    context,
+    effects,
+    runtime,
+    signComponent,
+    concludeAgreement() {
+      tracks.agreement = {
+        state: "final",
+        generation: 1,
+        attempts: 1,
+        updatedAt: STARTED_AT + 900,
+        outcome: "success",
+        reference: "agreement-reference",
+      };
+    },
+    retainAgreementFacts() {
+      effects.set(`session:${sha256Hex(`${SESSION_AGREEMENT_FACTS_DOMAIN}${canonicalize({
+        role,
+        jobId: JOB_ID,
+      })}`)}`, { factsVersion: "1", role, jobId: JOB_ID });
+    },
+    loseCoordinatorRecord() {
+      coordinatorStatus = "missing";
+    },
+    retainedProposal: () =>
+      effects.get(`session:${terminalTransportEffectId(role, "proposal")}`),
+  };
+}
+
+// Each role receives the peer's proposal that the receiver failed the peer's Vet.
+async function peerProposal(receiver: "buyer" | "seller") {
+  const proposer = receiver === "buyer" ? "seller" : "buyer";
+  const proposal = await terminalProposal(terminalInput("fail", "pay-x402", receiver));
+  return authenticated(
+    `terminal-bundle-proposal-${proposer}`,
+    proposal,
+    proposer === "buyer" ? BUYER : SELLER,
+    receiver === "buyer" ? BUYER : SELLER,
+  );
+}
+
+describe("Vet terminal pre-agreement boundary", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(["buyer", "seller"] as const)(
+    "the %s accepts a peer's authenticated Vet failure before agreement",
+    async (receiver) => {
+      const actor = memoryRoleDatabase(receiver);
+
+      await expect(actor.runtime.handleMessage(
+        await peerProposal(receiver),
+        { role: receiver } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({ disposition: "accepted" });
+      expect(actor.retainedProposal()).toBeDefined();
+    },
+  );
+
+  it.each(["buyer", "seller"] as const)(
+    "the %s rejects a peer's Vet failure once its agreement succeeded",
+    async (receiver) => {
+      const actor = memoryRoleDatabase(receiver);
+      actor.concludeAgreement();
+
+      await expect(actor.runtime.handleMessage(
+        await peerProposal(receiver),
+        { role: receiver } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({
+        disposition: "rejected",
+        reasonCode: "vet-terminal-not-pre-agreement",
+      });
+      expect(actor.retainedProposal()).toBeUndefined();
+    },
+  );
+
+  it("the buyer rejects a seller's Vet failure after retaining the seller's passed Vet", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    actor.retainAgreementFacts();
+
+    await expect(actor.runtime.handleMessage(
+      await peerProposal("buyer"),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reasonCode: "vet-terminal-not-pre-agreement",
+    });
+    expect(actor.retainedProposal()).toBeUndefined();
+  });
+
+  it("the seller still accepts the buyer's failure of its Vet after retaining its own pass", async () => {
+    const actor = memoryRoleDatabase("seller");
+    actor.retainAgreementFacts();
+
+    await expect(actor.runtime.handleMessage(
+      await peerProposal("seller"),
+      { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+  });
+
+  it.each(["buyer", "seller"] as const)(
+    "the %s does not sign a retained Vet failure once agreement succeeded",
+    async (receiver) => {
+      const actor = memoryRoleDatabase(receiver);
+      await expect(actor.runtime.handleMessage(
+        await peerProposal(receiver),
+        { role: receiver } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({ disposition: "accepted" });
+      actor.concludeAgreement();
+
+      await expect(actor.runtime.advanceRegisteredTerminal(JOB_ID))
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-not-pre-agreement" });
+      // The agreement and audit wrappers fall through to their ordinary track.
+      await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+        .resolves.toBeUndefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
+      expect(actor.context.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still fails closed when retained terminal state cannot be bound to its order", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await expect(actor.runtime.handleMessage(
+      await peerProposal("buyer"),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+    actor.loseCoordinatorRecord();
+
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "vet-terminal-finalization-unavailable",
+      });
   });
 });
