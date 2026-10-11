@@ -25,6 +25,8 @@ export interface DemosAdapterConfig {
   chainIdentity?: string;
   /** Raw identity response ceiling: default/max 2 MiB; positive safe integer only. */
   identityMaxResponseBytes?: number;
+  /** Per-attempt identity deadline: default 5,000 ms; positive safe integer at most 30,000. */
+  identityTimeoutMs?: number;
   /** Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding. */
   identityFetch?: typeof fetch;
 }

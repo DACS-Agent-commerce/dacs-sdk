@@ -28,6 +28,7 @@ import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
 import {
   DEMOS_CCI_MAX_RESPONSE_BYTES,
+  DEMOS_CCI_DEFAULT_TIMEOUT_MS,
   readDemosCciResponse,
 } from "./demosCciTransport.js";
 import {
@@ -1019,6 +1020,9 @@ export class DemosAdapter implements SubstrateAdapter {
     const configuredIdentityMaxResponseBytes = stableAdapterConfigValue(config, "identityMaxResponseBytes");
     const identityMaxResponseBytes = configuredIdentityMaxResponseBytes === undefined
       ? DEMOS_CCI_MAX_RESPONSE_BYTES : configuredIdentityMaxResponseBytes;
+    const configuredIdentityTimeoutMs = stableAdapterConfigValue(config, "identityTimeoutMs");
+    const identityTimeoutMs = configuredIdentityTimeoutMs === undefined
+      ? DEMOS_CCI_DEFAULT_TIMEOUT_MS : configuredIdentityTimeoutMs;
     const identityFetch = stableAdapterConfigValue(config, "identityFetch");
     if (typeof rpc !== "string" || rpc.length === 0) {
       throw new Error("DemosAdapter requires an rpc URL");
@@ -1042,12 +1046,19 @@ export class DemosAdapter implements SubstrateAdapter {
         "DemosAdapterConfig.identityMaxResponseBytes must be a positive safe integer at most 2097152",
       );
     }
+    if (typeof identityTimeoutMs !== "number" || !Number.isSafeInteger(identityTimeoutMs) ||
+        identityTimeoutMs <= 0 || identityTimeoutMs > 30_000) {
+      throw new DacsError(
+        "DemosAdapterConfig.identityTimeoutMs must be a positive safe integer at most 30000",
+      );
+    }
     if (identityFetch !== undefined && typeof identityFetch !== "function") {
       throw new DacsError("DemosAdapterConfig.identityFetch must be a function");
     }
     this.config = Object.freeze({
       rpc,
       identityMaxResponseBytes,
+      identityTimeoutMs,
       ...(identityFetch === undefined ? {} : { identityFetch: identityFetch as typeof fetch }),
       ...(writeJournal === undefined
         ? {}
@@ -4068,9 +4079,10 @@ export class DemosAdapter implements SubstrateAdapter {
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
    * The read uses a bounded raw transport, not demosdk's rpcCall, but sends
-   * rpcCall's timestamp-bound auth headers (demosdk ≥ 4.0.12; 4.0.6's older
-   * header format 401s against the public nodes on gcr_routine, issue #20). A
-   * test pins the headers to the installed demosdk's rpcCall output. Reverse
+   * fresh rpcCall timestamp-bound auth headers on every attempt, pinned by a
+   * test to demosdk 4.0.16. Transient failures get at most two retries with a
+   * configurable per-attempt deadline (default 5 s). The overall deadline is
+   * 3 × identityTimeoutMs + 2,750 ms, including signing, reads and waits. Reverse
    * claim-ref resolution is findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
@@ -4092,28 +4104,32 @@ export class DemosAdapter implements SubstrateAdapter {
     // its Axios transport to decode an unbounded body first. Hex encoding comes
     // from demosdk itself ("0x"-prefixed); the test pins these headers to the
     // real rpcCall output.
-    const headers = {
-      "Content-Type": "application/json",
-      identity: `${this.#demos.algorithm}:`,
-      signature: "",
-      timestamp: "",
+    const buildHeaders = async (): Promise<Record<string, string>> => {
+      const headers = {
+        "Content-Type": "application/json",
+        identity: `${this.#demos.algorithm}:`,
+        signature: "",
+        timestamp: "",
+      };
+      if (this.#demos.walletConnected) {
+        headers.identity += uint8ArrayToHex(this.#demos.keypair.publicKey);
+        headers.timestamp = Date.now().toString();
+        const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
+        const signed = await this.#demos.crypto.sign(
+          this.#demos.algorithm,
+          new TextEncoder().encode(authMessage),
+        );
+        headers.signature = uint8ArrayToHex(signed.signature);
+      }
+      return headers;
     };
-    if (this.#demos.walletConnected) {
-      headers.identity += uint8ArrayToHex(this.#demos.keypair.publicKey);
-      headers.timestamp = Date.now().toString();
-      const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
-      const signed = await this.#demos.crypto.sign(
-        this.#demos.algorithm,
-        new TextEncoder().encode(authMessage),
-      );
-      headers.signature = uint8ArrayToHex(signed.signature);
-    }
     const raw = await readDemosCciResponse(
       this.config.rpc,
       ref,
-      headers,
+      buildHeaders,
       this.config.identityFetch ?? fetch,
       this.config.identityMaxResponseBytes ?? DEMOS_CCI_MAX_RESPONSE_BYTES,
+      this.config.identityTimeoutMs ?? DEMOS_CCI_DEFAULT_TIMEOUT_MS,
     );
     // Keep the decoded structural guard before returning to higher-level
     // callers; Agent parsing repeats it before retaining a snapshot.

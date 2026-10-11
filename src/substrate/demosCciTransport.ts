@@ -3,8 +3,54 @@ import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
-// Match x402Outbound's default whole-request deadline.
-const DEFAULT_TIMEOUT_MS = 5_000;
+export const DEMOS_CCI_DEFAULT_TIMEOUT_MS = 5_000;
+// Match demosdk 4.0.16's connection/status lists, with a smaller retry budget.
+const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const MAX_RETRY_WAIT_MS = 2_000;
+const OVERALL_SLACK_MS = 2_750;
+
+// Only sanitized failures cross attempt boundaries: never retain a Response,
+// response text or a transport cause while waiting to retry.
+class RetryableFailure {
+  constructor(readonly error: TransientError, readonly waitMs: number) {}
+}
+
+function retryWait(retryAfter: string | null, backoffMs: number): number {
+  if (retryAfter === null) return backoffMs;
+  const value = retryAfter.trim();
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
+    return Math.min(Number(value) * 1_000, MAX_RETRY_WAIT_MS);
+  }
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? backoffMs
+    : Math.min(Math.max(0, date - Date.now()), MAX_RETRY_WAIT_MS);
+}
+
+function isConnectionError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && RETRYABLE_CODES.has(code)) return true;
+  const causeCode = (error as { cause?: { code?: unknown } }).cause?.code;
+  return error instanceof TypeError && typeof causeCode === "string" &&
+    RETRYABLE_CODES.has(causeCode);
+}
+
+function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
 
 function responseTooLarge(): DacsError {
   return new DacsError("Demos GCR identity response exceeds maxResponseBytes");
@@ -60,27 +106,35 @@ async function consumeBoundedBody(
   }
 }
 
-/** Equivalent to demosdk's Identities.getIdentities request, with raw admission. */
-export async function readDemosCciResponse(
+/** One fresh, bounded attempt, including time-bound header construction. */
+async function readAttempt(
   rpc: string,
   address: string,
-  headers: Record<string, string>,
+  buildHeaders: () => Promise<Record<string, string>>,
   transport: typeof fetch,
   maxBytes: number,
+  timeoutMs: number,
+  overallSignal: AbortSignal,
+  backoffMs: number,
 ): Promise<unknown> {
   const controller = new AbortController();
-  // A timeout is transient in the SDK fault taxonomy (errors.ts): retry may succeed.
   const timeoutError = new TransientError("Demos GCR identity read timed out");
-  let rejectDeadline: ((reason: DacsError) => void) | undefined;
+  let rejectDeadline: ((reason: unknown) => void) | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     rejectDeadline = reject;
   });
-  const timer = setTimeout(() => {
-    controller.abort(timeoutError);
-    rejectDeadline?.(timeoutError);
-  }, DEFAULT_TIMEOUT_MS);
+  const abort = (reason: unknown) => {
+    controller.abort(reason);
+    rejectDeadline?.(reason);
+  };
+  const overallAbort = () => abort(overallSignal.reason);
+  const timer = setTimeout(() => abort(timeoutError), timeoutMs);
+  if (overallSignal.aborted) overallAbort();
+  else overallSignal.addEventListener("abort", overallAbort, { once: true });
   try {
     const operation = async (): Promise<unknown> => {
+      const headers = await buildHeaders();
+      controller.signal.throwIfAborted();
       const response = await transport(rpc, {
         method: "POST",
         headers,
@@ -94,8 +148,8 @@ export async function readDemosCciResponse(
       if (controller.signal.aborted) {
         // An injected transport may resolve after ignoring abort. Dispose of
         // that late body without reading or decoding it.
-        void response.body?.cancel(timeoutError).catch(() => undefined);
-        throw timeoutError;
+        void response.body?.cancel().catch(() => undefined);
+        throw controller.signal.reason;
       }
       if (response.redirected || response.status >= 300 && response.status < 400) {
         void response.body?.cancel().catch(() => undefined);
@@ -103,6 +157,12 @@ export async function readDemosCciResponse(
       }
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
+        if (RETRYABLE_STATUSES.has(response.status)) {
+          throw new RetryableFailure(
+            new TransientError("Demos GCR identity read failed after transient transport errors"),
+            retryWait(response.headers.get("retry-after"), backoffMs),
+          );
+        }
         throw new SubstrateError(`Demos GCR identity read failed with HTTP ${response.status}`);
       }
       const bytes = await consumeBoundedBody(response, maxBytes, controller.signal);
@@ -110,16 +170,56 @@ export async function readDemosCciResponse(
       try {
         return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
       } catch {
-        // Do not attach a decoder error that may include response text.
         throw new DacsError("Demos GCR identity response is not valid UTF-8 JSON");
       }
     };
     return await Promise.race([operation(), deadline]);
   } catch (error) {
-    if (controller.signal.aborted) throw timeoutError;
+    if (overallSignal.aborted) throw overallSignal.reason;
+    if (controller.signal.aborted) throw new RetryableFailure(timeoutError, backoffMs);
+    if (isConnectionError(error)) {
+      controller.abort();
+      throw new RetryableFailure(
+        new TransientError("Demos GCR identity read failed after transient transport errors"),
+        backoffMs,
+      );
+    }
     throw error;
   } finally {
     clearTimeout(timer);
+    overallSignal.removeEventListener("abort", overallAbort);
     rejectDeadline = undefined;
+  }
+}
+
+/** Equivalent to demosdk's Identities.getIdentities request, with raw admission. */
+export async function readDemosCciResponse(
+  rpc: string,
+  address: string,
+  buildHeaders: () => Promise<Record<string, string>>,
+  transport: typeof fetch,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<unknown> {
+  const overall = new AbortController();
+  const timer = setTimeout(() => {
+    overall.abort(new TransientError("Demos GCR identity read timed out"));
+  }, 3 * timeoutMs + OVERALL_SLACK_MS);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      overall.signal.throwIfAborted();
+      try {
+        return await readAttempt(
+          rpc, address, buildHeaders, transport, maxBytes, timeoutMs,
+          overall.signal, 250 * 2 ** attempt,
+        );
+      } catch (error) {
+        if (!(error instanceof RetryableFailure)) throw error;
+        if (attempt === 2) throw error.error;
+        await waitForRetry(error.waitMs, overall.signal);
+      }
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }

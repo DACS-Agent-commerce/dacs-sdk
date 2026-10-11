@@ -51,16 +51,38 @@ payload, and throws a permanent `DacsError` with the stable message
 `Demos GCR identity response exceeds maxResponseBytes`. A body exactly at the
 ceiling is admitted, subject to the existing structural limits.
 
-Each raw identity request has one fixed 5,000 ms deadline, matching the x402
-outbound transport default. It covers connection establishment, response
-headers, and the complete body read; receiving headers or chunks does not reset
-it. On expiry the adapter aborts the request, cancels an active body reader,
-and throws a `TransientError` (category `transient`, so a retry may succeed)
-with the stable message
-`Demos GCR identity read timed out`, without retaining response text. The
-deadline also bounds an injected transport that ignores abort, or a body whose
-cancellation never settles; a response arriving after expiry is cancelled
-without decoding. There is no public timeout configuration.
+Each attempt has a 5,000 ms deadline by default. Set
+`DemosAdapterConfig.identityTimeoutMs` to a positive safe integer up to 30,000 ms
+(validated at construction) for slower nodes. The deadline covers fresh header
+signing, connection establishment, response headers, and the complete body read;
+receiving headers or chunks does not reset it. Every attempt uses a fresh
+`AbortController` and regenerates timestamp-bound authentication headers.
+
+The adapter retries transient failures at most twice (three attempts): attempt
+timeouts, connection errors `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`
+(including Fetch `TypeError` with one of those `cause.code` values), and HTTP
+502/503/504. Backoff is 250 ms then 500 ms. A numeric (seconds) or HTTP-date
+`Retry-After` overrides that wait, capped at 2,000 ms per wait. Size overflow,
+redirects, invalid UTF-8/JSON, all 4xx, and other 5xx are never retried. Failed
+bodies are cancelled without retaining response text.
+
+The overall deadline, including signing, reads, retries and waits, is exactly
+`3 × identityTimeoutMs + 2,750 ms`: 17,750 ms by default, at most 92,750 ms
+with the maximum setting. Without `Retry-After`, three full attempt timeouts
+finish at `3 × identityTimeoutMs + 750 ms` (15,750 ms by default). If two long
+`Retry-After` waits would exceed the overall deadline, that deadline cuts short
+a wait or the final attempt. These are timer budgets; an occupied JavaScript
+event loop can delay timer delivery.
+
+On expiry the adapter aborts the request and cancels an active body reader.
+Exhausted retries throw `TransientError` (category `transient`), with the stable
+message `Demos GCR identity read timed out` when the last attempt timed out
+(or the overall deadline expires), or
+`Demos GCR identity read failed after transient transport errors` for exhausted
+HTTP 502/503/504 or connection failures. These errors contain no response text
+or cause. Deadlines also bound an injected transport that ignores abort,
+stalled signing, or body cancellation that never settles; late responses are
+cancelled without decoding.
 
 Identity requests use Fetch's `redirect: "error"`. The adapter additionally
 rejects a response marked `redirected` or with any 3xx status, including one
@@ -76,7 +98,7 @@ raw response transport for CCI reads; it must return a streamed `Response`,
 without decoding or prebuffering the body. The adapter owns byte counting and
 decoding even with an injected transport. The default uses global `fetch` and
 preserves demosdk's `gcr_routine` request and wallet authentication headers.
-HTTP failures throw `SubstrateError`; invalid UTF-8/JSON fails closed without
+Other HTTP failures throw `SubstrateError`; invalid UTF-8/JSON fails closed without
 retaining response text in the error. Self-certifying primary Demos agent DIDs
 continue to resolve locally.
 
@@ -94,8 +116,9 @@ instead of being mapped onto a different lookup.
 Reverse lookups still use Demos SDK's own `Identities` routines and transport,
 so the raw response ceiling, deadline, and redirect refusal above do not apply
 to them: Demos SDK decodes the whole HTTP/RPC response before this SDK sees it.
-Until they move to the bounded transport, the underlying transport must cap
-HTTP/RPC bytes for reverse lookups before JSON decoding.
+The adapter currently exposes no raw-byte or decoded account-list limit for
+this path. Moving the reverse routines to a bounded transport is a known
+follow-up.
 
 ## Authenticate before reputation use
 

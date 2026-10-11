@@ -167,6 +167,8 @@ describe("Demos CCI raw response boundary", () => {
   it.each([false, true])(
     "sends the same request and headers as demosdk's real rpcCall (wallet connected: %s)",
     async (walletConnected) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_700_000_000_000);
       const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
       const demos = adapter.raw as unknown as Demos;
       // connect() hands config.rpc to demosdk unchanged; mirror that here.
@@ -174,7 +176,6 @@ describe("Demos CCI raw response boundary", () => {
       vi.spyOn(demos, "walletConnected", "get").mockReturnValue(walletConnected);
       const keypair = { publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64) };
       vi.spyOn(demos, "keypair", "get").mockReturnValue(keypair);
-      vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
       // The signature echoes part of the signed message, so it also pins the hash input.
       const sign = vi.spyOn(demos.crypto, "sign").mockImplementation((async (
         _algorithm: string,
@@ -185,20 +186,34 @@ describe("Demos CCI raw response boundary", () => {
         "_doPost",
       ).mockResolvedValue({ data: GCR });
 
-      // The pre-#283 path: demosdk builds the gcr_routine request and auth headers.
-      await expect(new Identities().getIdentities(demos, "getIdentities", "subject"))
-        .resolves.toEqual(GCR);
-      await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+      transport.mockImplementation(async (url, init) => {
+        // Compare each attempt at its current timestamp to real rpcCall output.
+        await expect(new Identities().getIdentities(demos, "getIdentities", "subject"))
+          .resolves.toEqual(GCR);
+        const [demosUrl, demosRequest, demosHeaders] = doPost.mock.calls.at(-1)!;
+        expect(url).toBe(demosUrl);
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBe(JSON.stringify(demosRequest));
+        expect(init?.headers).toEqual(demosHeaders);
+        return transport.mock.calls.length < 3
+          ? new Response("discarded", { status: 503 })
+          : new Response(JSON.stringify(GCR));
+      });
+      const result = adapter.resolveIdentity("subject").catch(error => error);
+      await vi.advanceTimersByTimeAsync(750);
+      await expect(result).resolves.toHaveProperty("raw", GCR);
 
-      expect(doPost).toHaveBeenCalledOnce();
-      const [demosUrl, demosRequest, demosHeaders] = doPost.mock.calls[0]!;
-      const [url, init] = transport.mock.calls[0]!;
-      expect(url).toBe(demosUrl);
-      expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify(demosRequest));
-      expect(init?.headers).toEqual(demosHeaders);
-      expect(sign).toHaveBeenCalledTimes(walletConnected ? 2 : 0);
-      if (walletConnected) expect(sign.mock.calls[1]).toEqual(sign.mock.calls[0]);
+      expect(transport).toHaveBeenCalledTimes(3);
+      expect(doPost).toHaveBeenCalledTimes(3);
+      expect(sign).toHaveBeenCalledTimes(walletConnected ? 6 : 0);
+      if (walletConnected) {
+        const timestamps = transport.mock.calls.map(([, init]) =>
+          (init?.headers as Record<string, string>).timestamp);
+        expect(timestamps).toEqual(["1700000000000", "1700000000250", "1700000000750"]);
+        for (let i = 0; i < 6; i += 2) {
+          expect(sign.mock.calls[i + 1]).toEqual(sign.mock.calls[i]);
+        }
+      }
     },
   );
 
@@ -231,18 +246,20 @@ describe("Demos CCI raw response boundary", () => {
   });
 
   it("fails closed on invalid JSON without retaining decoder text", async () => {
-    const { adapter } = adapterFor(new Response("invalid-json-sentinel"));
+    const { adapter, transport } = adapterFor(new Response("invalid-json-sentinel"));
     const error = await adapter.resolveIdentity("subject").catch((error: unknown) => error);
     expect(error).toBeInstanceOf(DacsError);
     expect(error).toMatchObject({ message: "Demos GCR identity response is not valid UTF-8 JSON" });
     expect(error).not.toHaveProperty("cause");
+    expect(transport).toHaveBeenCalledOnce();
   });
 
   it("cancels HTTP error bodies and returns a substrate failure", async () => {
     const stream = streamedResponse([new Uint8Array(1)], null);
-    const response = new Response(stream.response.body, { status: 503 });
-    const { adapter } = adapterFor(response);
+    const response = new Response(stream.response.body, { status: 500 });
+    const { adapter, transport } = adapterFor(response);
     await expect(adapter.resolveIdentity("subject")).rejects.toBeInstanceOf(SubstrateError);
+    expect(transport).toHaveBeenCalledOnce();
     expect(stream.reads()).toBe(0);
     expect(stream.cancel).toHaveBeenCalledOnce();
   });
@@ -253,7 +270,7 @@ describe("Demos CCI raw response boundary", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("bounds delayed headers and a trickling body with one five-second deadline", async () => {
+  it("bounds delayed headers and trickling bodies with five-second attempt deadlines", async () => {
     vi.useFakeTimers();
     const { adapter, transport } = adapterFor(new Response("unused"), 16);
     const cancel = vi.fn();
@@ -278,12 +295,13 @@ describe("Demos CCI raw response boundary", () => {
     }));
     const decoder = vi.spyOn(TextDecoder.prototype, "decode");
     const result = adapter.resolveIdentity("subject").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
     const signal = transport.mock.calls[0]?.[1]?.signal;
 
     await vi.advanceTimersByTimeAsync(4_999);
     expect(emittedBytes).toBe(2);
     expect(signal?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(2);
+    await vi.advanceTimersByTimeAsync(10_752);
     const error = await result;
 
     // errors.ts: a timeout is transient, so retry policy may try again.
@@ -292,7 +310,8 @@ describe("Demos CCI raw response boundary", () => {
     expect(faultCategory(error)).toBe("transient");
     expect(error).not.toHaveProperty("cause");
     expect(signal?.aborted).toBe(true);
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledTimes(3);
+    expect(transport).toHaveBeenCalledTimes(3);
     expect(decoder).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -301,15 +320,16 @@ describe("Demos CCI raw response boundary", () => {
     vi.useFakeTimers();
     const stream = streamedResponse([new TextEncoder().encode("invalid JSON")], null);
     const { adapter, transport } = adapterFor(stream.response);
-    let releaseHeaders: ((response: Response) => void) | undefined;
+    const releaseHeaders: Array<(response: Response) => void> = [];
     transport.mockImplementation(() => new Promise<Response>((resolve) => {
-      releaseHeaders = resolve;
+      releaseHeaders.push(resolve);
     }));
     const decoder = vi.spyOn(TextDecoder.prototype, "decode");
     const result = adapter.resolveIdentity("subject").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
     const signal = transport.mock.calls[0]?.[1]?.signal;
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(15_750);
     const error = await result;
 
     expect(error).toBeInstanceOf(TransientError);
@@ -317,7 +337,9 @@ describe("Demos CCI raw response boundary", () => {
     expect(error).not.toHaveProperty("cause");
     expect(signal?.aborted).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
-    releaseHeaders?.(stream.response);
+    expect(transport).toHaveBeenCalledTimes(3);
+    releaseHeaders[0]?.(stream.response);
+    for (const release of releaseHeaders.slice(1)) release(new Response("late"));
     await vi.advanceTimersByTimeAsync(0);
     expect(stream.reads()).toBe(0);
     expect(stream.cancel).toHaveBeenCalledOnce();
@@ -328,14 +350,20 @@ describe("Demos CCI raw response boundary", () => {
     vi.useFakeTimers();
     const cancel = vi.fn(() => new Promise<void>(() => {}));
     const response = new Response(new ReadableStream<Uint8Array>({ cancel }));
-    const { adapter } = adapterFor(response);
+    const { adapter, transport } = adapterFor(response);
+    transport.mockImplementation(() => Promise.resolve(new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+    )));
     const result = adapter.resolveIdentity("subject").catch((error: unknown) => error);
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(15_750);
 
     expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(response.body?.locked).toBe(false);
+    expect(cancel).toHaveBeenCalledTimes(3);
+    expect(transport).toHaveBeenCalledTimes(3);
+    for (const returned of transport.mock.results) {
+      expect((await returned.value).body?.locked).toBe(false);
+    }
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -353,6 +381,7 @@ describe("Demos CCI raw response boundary", () => {
     }));
     const { adapter, transport } = adapterFor(response);
     const result = adapter.resolveIdentity("subject");
+    await vi.advanceTimersByTimeAsync(0);
     const signal = transport.mock.calls[0]?.[1]?.signal;
 
     await vi.advanceTimersByTimeAsync(250);
@@ -385,6 +414,7 @@ describe("Demos CCI raw response boundary", () => {
       category: "permanent",
     });
     expect(error).not.toHaveProperty("cause");
+    expect(transport).toHaveBeenCalledOnce();
     expect(transport.mock.calls[0]?.[1]?.redirect).toBe("error");
     expect(stream.reads()).toBe(0);
     expect(stream.cancel).toHaveBeenCalledOnce();
