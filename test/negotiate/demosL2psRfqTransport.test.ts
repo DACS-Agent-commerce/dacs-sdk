@@ -1171,6 +1171,65 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(hub.sends).toBe(1);
   });
 
+  test("keeps an own history entry with a failed submission status indeterminate", async () => {
+    const { hub, transport, client, packet, own } = await buyerWithSentOffer();
+    own.status = "failed";
+
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "Demos L2PS history records a failed submission with unknown delivery",
+    });
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    expect(hub.sends).toBe(1);
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    expect(status.record.failure).toBeUndefined();
+    expect(status.record.outbox[0]).toMatchObject({ state: "indeterminate" });
+  });
+
+  test("ignores our own packet hash sent to a different recipient peer", async () => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { baseCodec, transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    const elsewhere = { messageHash: packet.packetId, fromPeer: BUYER_PEER, toPeer: THIRD_PEER };
+    page = {
+      messages: [{
+        ...structuredClone(own),
+        to: THIRD_PEER,
+        encrypted: await baseCodec.seal(
+          new TextEncoder().encode(canonicalize(packet as unknown as Record<string, unknown>)),
+          elsewhere,
+        ),
+      }],
+      hasMore: false,
+    };
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "absent",
+    });
+  });
+
+  test("ignores another sender's frame to our recipient that reuses the packet hash", async () => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { baseCodec, transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    const otherSender = { messageHash: packet.packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER };
+    page = {
+      messages: [{
+        ...structuredClone(own),
+        from: THIRD_PEER,
+        encrypted: await baseCodec.seal(new TextEncoder().encode("{}"), otherSender),
+      }],
+      hasMore: false,
+    };
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "absent",
+    });
+  });
+
   test("retires the old handler on stop when the peer cannot remove it", async () => {
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
