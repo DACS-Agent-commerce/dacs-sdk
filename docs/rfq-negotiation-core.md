@@ -204,7 +204,8 @@ const buyerRfq = createDurableRfqLifecycleClient({
 
 transport.start((packet) => buyerRfq.receive(packet));
 
-// On every process start, reconcile both directions before new policy work.
+// After every start(), at process start or after a stop(), recover each peer
+// and reconcile both directions before new policy work.
 await transport.resumeInbound(sellerClaim);
 await buyerRfq.resumeOutbox(jobId);
 ```
@@ -257,6 +258,10 @@ packet. Each
 retired generation cannot hold back the new consumer. The retired call keeps
 its share of the 100-event and 64 MiB budget until it settles or times out.
 `drain()` waits only for the current generation's lane.
+
+Run `resumeInbound()` for each peer after any `start()`, not only at process
+start. Live events that overflowed the lane, timed out in the consumer, or were
+retired by `stop()` stay in Demos history and come back only that way.
 
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame
