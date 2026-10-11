@@ -91,6 +91,12 @@ The current Demos SDK does not expose equivalent reverse routines for domain,
 UD, PQC, Nomis, Human Passport, Ethos, or TLSN claims. Those inputs fail closed
 instead of being mapped onto a different lookup.
 
+Reverse lookups still use Demos SDK's own `Identities` routines and transport,
+so the raw response ceiling, deadline, and redirect refusal above do not apply
+to them: Demos SDK decodes the whole HTTP/RPC response before this SDK sees it.
+Until they move to the bounded transport, the underlying transport must cap
+HTTP/RPC bytes for reverse lookups before JSON decoding.
+
 ## Authenticate before reputation use
 
 Parsing establishes shape, not source authority. GCR state authentication also
