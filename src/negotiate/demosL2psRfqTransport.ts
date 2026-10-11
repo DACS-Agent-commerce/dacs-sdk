@@ -157,7 +157,15 @@ export interface DemosL2psRfqWireCodec {
 }
 
 export interface DemosL2psRfqAesGcmCodecOptions {
-  /** Exact role-shared L2PS subnet key. It is copied and never persisted. */
+  /**
+   * Exact role-shared L2PS subnet key. It is copied and never persisted.
+   *
+   * Reconciliation treats our own history frame that fails AES-GCM
+   * authentication as a terminal conflict, and it cannot tell tampering from a
+   * key change. Restarting with a wrong or rotated key therefore permanently
+   * fails every job whose outbox still needs reconciliation; keep the old key
+   * until those jobs have settled.
+   */
   sharedKey: Uint8Array;
 }
 

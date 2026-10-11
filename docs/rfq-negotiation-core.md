@@ -220,18 +220,41 @@ operations are bounded (20 seconds by default); a send timeout is
 `indeterminate`, because the server may accept the packet after the local wait
 ends.
 
+Payloads from Demos are size-checked before they are copied or canonicalized:
+a frame over the 16 MiB plaintext limit, a history page of more than 100
+entries, or a page whose strings total more than 32 MiB is refused. A refused
+live payload goes to `onError`; a refused history page makes reconciliation or
+recovery `indeterminate`. If your frames are large enough to hit the page
+budget, lower `historyPageSize`.
+
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame
 of ours that decrypts to different bytes, or that the built-in AES-GCM codec
 proves unauthenticated, is a terminal transport failure. A codec timeout or
 error, or our frame recorded under a different subnet UID, stays
-`indeterminate`, so a later `resumeOutbox()` can still settle it.
+`indeterminate`, so a later `resumeOutbox()` can still settle it. All
+decryptions in one reconciliation share a single operation timeout, so
+duplicate history entries cannot multiply the wait; frames left unopened when
+it runs out keep the entry `indeterminate` and are retried on the next
+`resumeOutbox()`.
+
+The AES-GCM codec cannot tell a tampered frame from a frame sealed under a
+different key. If a process restarts with a wrong or rotated `sharedKey`, our
+own frames fail authentication and every job whose outbox still needs
+reconciliation fails permanently. Keep the previous key until those jobs have
+settled.
 
 A Demos `failed` submission status, in the send response or in history, is
 `indeterminate`: the message may still have reached the peer, so the adapter
-never resends it automatically. That outbox entry stays pending until an
-operator confirms delivery out of band, so alert on outbox entries that remain
-`indeterminate` across restarts.
+never resends it automatically. The SDK currently has no call that clears or
+resends such an entry: `resumeOutbox()` keeps returning `indeterminate`, and
+`sendAbort()` is refused while the counterparty owns the next turn. If
+the counterparty did receive the packet, its reply still arrives through
+`receive()` and the job continues, with the stale entry left `indeterminate`.
+Otherwise the only remedy is to abandon the job: stop driving that `jobId` and
+open a new job with a new `jobId` and `channelId`. Alert on outbox entries that
+remain `indeterminate` across restarts. An operator redrive or acknowledgement
+call is tracked as a follow-up.
 
 The live receive path reports decryption, mapping and lifecycle failures only
 through `onError`. The live Demos payload carries no subnet UID, so live frames
