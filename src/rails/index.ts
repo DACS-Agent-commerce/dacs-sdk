@@ -172,6 +172,7 @@ export {
   type HtlcStoreClaim,
   type HtlcStoreWrite,
   type CrossChainHtlcStore,
+  type HtlcRefundLegState,
   type CrossChainHtlcProgress,
   type AdvanceCrossChainHtlcInput,
 } from "./crossChainHtlc.js";

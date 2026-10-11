@@ -97,6 +97,19 @@ expiries have passed, then both legs are refunded with reason
 `destination-claim-unlanded`. `failed` is reserved for sessions the core has
 nothing left to drive.
 
+Every refund result carries `refunds`, the state of each locked leg's refund
+(`destination-refund` appears once the destination lock is final): `waiting`
+(its lock has not expired, or a retained reveal still blocks it), `uncertain`
+(due, but this call could not prepare, persist, broadcast or observe it; the
+next call reuses the retained bytes), or the adapter's authenticated
+`pending`, `final` or `failed`. A payer whose own refund is final can see it
+even while the payee's leg is still uncertain. The core never re-sends a
+refund the adapter reports `failed`, so such a session returns the distinct
+status `refund-stalled`, naming the failed leg in `refunds`; it still drives
+the other leg. A host must alert an operator on `refund-stalled`, for example
+when a refund broadcast against a clock running ahead of the chain reverted as
+not yet expired, and keep advancing the session.
+
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
 chain's asset id or mint), into the canonical intent. `sourceAsset` and
