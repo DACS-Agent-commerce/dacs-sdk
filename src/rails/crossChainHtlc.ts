@@ -36,6 +36,14 @@ export interface CrossChainHtlcAuthority {
   destinationChainId: number;
   sourceAsset: string;
   destinationAsset: string;
+  /**
+   * Chain-native identifier of the token the source HTLC locks: its token
+   * contract address or the chain's asset id, in the form the source adapter
+   * reports as `HtlcLockTerms.token`. `sourceAsset` is only the symbol.
+   */
+  sourceTokenId: string;
+  /** Destination-chain counterpart of `sourceTokenId`. */
+  destinationTokenId: string;
   sourceTokenDecimals: number;
   destinationTokenDecimals: number;
   amount: string;
@@ -78,6 +86,8 @@ export interface CrossChainHtlcIntent {
   destinationChainId: number;
   sourceAsset: string;
   destinationAsset: string;
+  sourceTokenId: string;
+  destinationTokenId: string;
   sourceTokenDecimals: number;
   destinationTokenDecimals: number;
   sourceAmountBaseUnits: string;
@@ -154,6 +164,12 @@ export interface HtlcPreparedAction {
  * different terms forbid that step; they never block observation or refunds.
  */
 export interface HtlcLockTerms {
+  /**
+   * Identifier of the token actually locked, read from the lock record (or,
+   * for a single-token contract, the contract's configured token), in the
+   * form of the intent's `sourceTokenId` / `destinationTokenId`.
+   */
+  token: string;
   /** Locked amount in the chain token's base units, canonical decimal. */
   amountBaseUnits: string;
   /** Chain-native hashlock, in the form produced by the hashlock deriver. */
@@ -627,6 +643,8 @@ export function createCrossChainHtlcIntent(
     destinationChainId,
     sourceAsset: requireString(authority.sourceAsset, "sourceAsset"),
     destinationAsset: requireString(authority.destinationAsset, "destinationAsset"),
+    sourceTokenId: requireString(authority.sourceTokenId, "sourceTokenId"),
+    destinationTokenId: requireString(authority.destinationTokenId, "destinationTokenId"),
     sourceTokenDecimals,
     destinationTokenDecimals,
     sourceAmountBaseUnits,
@@ -884,6 +902,7 @@ function validateLockTerms(value: unknown, action: HtlcAction): void {
     throw new DacsError(`pay-cross-chain-htlc: ${action} terms are invalid`);
   }
   const terms = value as Readonly<HtlcLockTerms>;
+  requireString(terms.token, `${action} token`);
   if (typeof terms.amountBaseUnits !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(terms.amountBaseUnits)) {
     throw new DacsError(`pay-cross-chain-htlc: ${action} amount is invalid`);
   }
@@ -899,7 +918,8 @@ function lockTermsVerdict(
 ): "missing" | "mismatch" | undefined {
   const terms = observed.lockTerms;
   if (terms === undefined) return "missing";
-  return terms.amountBaseUnits === expected.amountBaseUnits &&
+  return terms.token === expected.token &&
+    terms.amountBaseUnits === expected.amountBaseUnits &&
     terms.hashlock === expected.hashlock &&
     terms.sender === expected.sender &&
     terms.recipient === expected.recipient
@@ -907,9 +927,10 @@ function lockTermsVerdict(
     : "mismatch";
 }
 
-/** The source lock must pay the intent's amount to the payee under its hashlock. */
+/** The source lock must pay the intent's token amount to the payee under its hashlock. */
 function expectedSourceLockTerms(intent: Readonly<CrossChainHtlcIntent>): Readonly<HtlcLockTerms> {
   return {
+    token: intent.sourceTokenId,
     amountBaseUnits: intent.sourceAmountBaseUnits,
     hashlock: intent.sourceHashlock,
     sender: intent.payerSourceAddress,
@@ -917,11 +938,12 @@ function expectedSourceLockTerms(intent: Readonly<CrossChainHtlcIntent>): Readon
   };
 }
 
-/** The destination lock must pay the intent's amount to the payer under its hashlock. */
+/** The destination lock must pay the intent's token amount to the payer under its hashlock. */
 function expectedDestinationLockTerms(
   intent: Readonly<CrossChainHtlcIntent>,
 ): Readonly<HtlcLockTerms> {
   return {
+    token: intent.destinationTokenId,
     amountBaseUnits: intent.destinationAmountBaseUnits,
     hashlock: intent.destinationHashlock,
     sender: intent.payeeDestinationAddress,

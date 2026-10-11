@@ -52,6 +52,8 @@ function authority(overrides: Partial<CrossChainHtlcAuthority> = {}): CrossChain
     destinationChainId: 80002,
     sourceAsset: "USDC",
     destinationAsset: "USDC",
+    sourceTokenId: "source-usdc-token",
+    destinationTokenId: "destination-usdc-token",
     sourceTokenDecimals: 6,
     destinationTokenDecimals: 6,
     amount: "01.2500",
@@ -227,6 +229,7 @@ function harness(options: HarnessOptions = {}) {
       ...(prepared.action === "source-lock" && lastIntent && !options.omitSourceLockTerms
         ? {
           lockTerms: {
+            token: lastIntent.sourceTokenId,
             amountBaseUnits: lastIntent.sourceAmountBaseUnits,
             hashlock: lastIntent.sourceHashlock,
             sender: lastIntent.payerSourceAddress,
@@ -238,6 +241,7 @@ function harness(options: HarnessOptions = {}) {
       ...(prepared.action === "destination-lock" && lastIntent && !options.omitDestinationLockTerms
         ? {
           lockTerms: {
+            token: lastIntent.destinationTokenId,
             amountBaseUnits: lastIntent.destinationAmountBaseUnits,
             hashlock: lastIntent.destinationHashlock,
             sender: lastIntent.payeeDestinationAddress,
@@ -416,6 +420,8 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     ["destination finality", { destinationFinalitySec: 0 }],
     ["timelock margin", { sourceTimelockSec: 130 }],
     ["asset currency", { destinationAsset: "USDT" }],
+    ["source token id", { sourceTokenId: "" }],
+    ["destination token id", { destinationTokenId: undefined }],
     ["source precision", { amount: "1.0000001" }],
   ])("rejects invalid %s before effects", async (_name, override) => {
     const h = harness();
@@ -488,6 +494,21 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     expect(changed.destinationFinalitySec).toBe(16);
     expect(changed.bindingHash).not.toBe(baseline.bindingHash);
   });
+
+  test.each(["sourceTokenId", "destinationTokenId"] as const)(
+    "binds %s, not only the currency symbol, into the canonical intent",
+    (field) => {
+      const baseline = createCrossChainHtlcIntent(authority(), SALT, hashlocks).intent;
+      const changed = createCrossChainHtlcIntent(
+        authority({ [field]: "other-usdc-token" }),
+        SALT,
+        hashlocks,
+      ).intent;
+      expect(baseline[field]).toBe(authority()[field]);
+      expect(changed[field]).toBe("other-usdc-token");
+      expect(changed.bindingHash).not.toBe(baseline.bindingHash);
+    },
+  );
 
   test("snapshots authority and salt before invoking hashlock callbacks", () => {
     const mutableAuthority = authority();
@@ -1562,6 +1583,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test.each([
+    ["token", { token: "worthless-token" }],
     ["amount", { amountBaseUnits: "1249999" }],
     ["hashlock", { hashlock: `80002:${"0".repeat(64)}` }],
     ["sender", { sender: "someone-else" }],
@@ -1651,6 +1673,7 @@ describe("advanceCrossChainHtlc", () => {
   );
 
   test.each([
+    ["token", { token: "worthless-token" }],
     ["amount", { amountBaseUnits: "1249999" }],
     ["hashlock", { hashlock: `84532:${"0".repeat(64)}` }],
     ["sender", { sender: "someone-else" }],

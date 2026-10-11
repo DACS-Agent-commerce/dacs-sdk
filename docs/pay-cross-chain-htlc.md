@@ -85,20 +85,28 @@ the result is `refund-pending` with reason
 from that point on, and each leg is refunded at its own expiry. Callers keep
 advancing a `refund-pending` session until it is `refunded`.
 
+The authority binds each leg's token by its chain-native identifier,
+`sourceTokenId` and `destinationTokenId` (the token contract address, or the
+chain's asset id or mint), into the canonical intent. `sourceAsset` and
+`destinationAsset` are only the currency symbol, which cannot tell two tokens
+on a multi-token HTLC contract apart.
+
 Final `source-lock` and `destination-lock` observations carry `lockTerms`: the
-locked `amountBaseUnits` (canonical decimal), chain-native `hashlock`, `sender`
-and `recipient`, read from that contract's lock record and reported in the
-same form as the intent. The core consults them only at the two forward
-decisions that depend on them:
+locked `token`, `amountBaseUnits` (canonical decimal), chain-native
+`hashlock`, `sender` and `recipient`, read from that contract's lock record
+and reported in the same form as the intent. `token` must be the token
+actually locked, read from the lock record; for a single-token contract it is
+the contract's configured token, never a value copied from the intent. The
+core consults the terms only at the two forward decisions that depend on them:
 
 - before the destination lock is prepared or its retained bytes rebroadcast,
-  the source lock's terms must equal `sourceAmountBaseUnits`, `sourceHashlock`,
-  `payerSourceAddress` and `payeeSourceAddress`. Otherwise the destination is
-  never locked and the result is `refund-pending` with reason
-  `source-lock-terms-missing` or `source-lock-terms-mismatch`; the source leg
-  is refunded at its expiry;
+  the source lock's terms must equal `sourceTokenId`, `sourceAmountBaseUnits`,
+  `sourceHashlock`, `payerSourceAddress` and `payeeSourceAddress`. Otherwise
+  the destination is never locked and the result is `refund-pending` with
+  reason `source-lock-terms-missing` or `source-lock-terms-mismatch`; the
+  source leg is refunded at its expiry;
 - before the payer reveals, the destination lock's terms must equal
-  `destinationAmountBaseUnits`, `destinationHashlock`,
+  `destinationTokenId`, `destinationAmountBaseUnits`, `destinationHashlock`,
   `payeeDestinationAddress` and `payerDestinationAddress`. Otherwise the payer
   never reveals and the result is `refund-pending` with reason
   `destination-lock-terms-missing` or `destination-lock-terms-mismatch`; each
