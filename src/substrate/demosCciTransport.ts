@@ -16,6 +16,7 @@ const MAX_RETRY_WAIT_MS = 2_000;
 const OVERALL_SLACK_MS = 2_750;
 const TIMED_OUT = "Demos GCR identity read timed out";
 const TRANSPORT_FAILED = "Demos GCR identity read failed after transient transport errors";
+const READ_FAILED = "Demos GCR identity read failed";
 
 // Only sanitized failures cross attempt boundaries: never retain a Response,
 // response text or a transport cause while waiting to retry.
@@ -156,12 +157,15 @@ async function readAttempt(
   const timer = setTimeout(() => abort(timeoutError), timeoutMs);
   if (overallSignal.aborted) overallAbort();
   else overallSignal.addEventListener("abort", overallAbort, { once: true });
-  let responseStarted = false;
+  // Signing failures are local and pass through; "send" and "read" failures
+  // come from the node's connection and are never surfaced raw.
+  let phase: "sign" | "send" | "read" = "sign";
   try {
     const operation = async (): Promise<unknown> => {
       const headers = await buildHeaders();
       if (expired()) throw overallSignal.reason;
       controller.signal.throwIfAborted();
+      phase = "send";
       const response = await transport(rpc, {
         method: "POST",
         headers,
@@ -172,7 +176,7 @@ async function readAttempt(
           params: [{ method: "getIdentities", params: [address] }],
         }),
       });
-      responseStarted = true;
+      phase = "read";
       if (controller.signal.aborted) {
         // An injected transport may resolve after ignoring abort. Dispose of
         // that late body without reading or decoding it.
@@ -207,15 +211,18 @@ async function readAttempt(
   } catch (error) {
     if (expired()) throw overallSignal.reason;
     if (controller.signal.aborted) throw new RetryableFailure(timeoutError, backoffMs);
-    const connection = connectionFailure(error, responseStarted);
-    if (connection !== undefined) {
-      // Never surface the raw TypeError or its cause: they hold socket addresses.
-      controller.abort();
-      const sanitized = new TransientError(TRANSPORT_FAILED);
-      if (connection === "final") throw sanitized;
-      throw new RetryableFailure(sanitized, backoffMs);
+    // The SDK's own status and validation errors are already sanitized.
+    if (phase === "sign" || error instanceof RetryableFailure || error instanceof DacsError) {
+      throw error;
     }
-    throw error;
+    // Never surface a raw transport or body error: Fetch errors and their
+    // causes hold socket addresses and, for parser errors, the node's bytes.
+    controller.abort();
+    const connection = connectionFailure(error, phase === "read");
+    if (connection === undefined) throw new SubstrateError(READ_FAILED);
+    const sanitized = new TransientError(TRANSPORT_FAILED);
+    if (connection === "final") throw sanitized;
+    throw new RetryableFailure(sanitized, backoffMs);
   } finally {
     clearTimeout(timer);
     overallSignal.removeEventListener("abort", overallAbort);

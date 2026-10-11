@@ -10,6 +10,7 @@ import { DEMOS_CCI_MAX_RESPONSE_BYTES, readDemosCciResponse } from "../../src/su
 const GCR = { result: 200, response: { xm: {}, web2: {}, ud: [], pqc: {} } };
 const TIMEOUT = "Demos GCR identity read timed out";
 const FAILED = "Demos GCR identity read failed after transient transport errors";
+const READ_FAILED = "Demos GCR identity read failed";
 const success = () => new Response(JSON.stringify(GCR));
 
 function setup(timeoutMs = 5_000, totalTimeoutMs?: number) {
@@ -300,13 +301,64 @@ describe("Demos identity transient retries", () => {
     { kind: "plain Error with cause UND_ERR_SOCKET", error: new Error("x", { cause: { code: "UND_ERR_SOCKET" } }) },
     { kind: "direct UND_ERR_SOCKET code", error: Object.assign(new Error("x"), { code: "UND_ERR_SOCKET" }) },
     { kind: "TypeError with an unlisted cause code", error: new TypeError("x", { cause: { code: "EPROTO" } }) },
-  ])("does not retry a $kind", async ({ error }) => {
+  ])("neither retries nor surfaces a $kind", async ({ error }) => {
     const { adapter, transport } = setup();
     transport.mockRejectedValue(error);
     const result = adapter.resolveIdentity("subject").catch(caught => caught);
     await vi.advanceTimersByTimeAsync(12_000);
-    expect(await result).toBe(error);
+    const caught = await result;
+    expect(caught).toBeInstanceOf(SubstrateError);
+    expect(caught).toMatchObject({ message: READ_FAILED, category: "substrate" });
+    expect(caught).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
+  });
+
+  // Unrecognised Fetch failures: their causes carry socket addresses (and parser errors the node's bytes).
+  it.each([
+    "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN", "UND_ERR_HEADERS_TIMEOUT", "HPE_INVALID_CONSTANT",
+  ].flatMap(code => [{ code, phase: "transport" }, { code, phase: "body" }]))(
+    "replaces a $phase $code failure with a fresh, final SubstrateError", async ({ code, phase }) => {
+      const { adapter, transport } = setup();
+      const cause = Object.assign(new Error(`connect ${code} 10.0.0.7:45678 NODE-SECRET-TEXT`), {
+        code, address: "10.0.0.7", port: 45_678, data: "NODE-SECRET-TEXT",
+      });
+      const failure = new TypeError(phase === "body" ? "terminated" : "fetch failed", { cause });
+      if (phase === "body") {
+        transport.mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+          pull(controller) { controller.error(failure); },
+        })));
+      } else {
+        transport.mockRejectedValue(failure);
+      }
+      const result = adapter.resolveIdentity("subject").catch(error => error);
+      await vi.advanceTimersByTimeAsync(12_000);
+      const error = await result;
+      expect(error).toBeInstanceOf(SubstrateError);
+      expect(error).toMatchObject({ message: READ_FAILED, category: "substrate" });
+      expect(error).not.toHaveProperty("cause");
+      expect(inspect(error, { depth: 10 })).not.toMatch(
+        new RegExp(`10\\.0\\.0\\.7|45678|NODE-SECRET-TEXT|${code}|fetch failed|terminated`),
+      );
+      expect(transport).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { kind: "programmer error", error: new Error("signer bug") },
+    { kind: "TypeError with a connection cause", error: new TypeError("x", { cause: { code: "ECONNRESET" } }) },
+  ])("passes a signing $kind through unchanged, without a request or retry", async ({ error }) => {
+    const { adapter, transport } = setup();
+    const demos = adapter.raw as unknown as Demos;
+    vi.spyOn(demos, "walletConnected", "get").mockReturnValue(true);
+    vi.spyOn(demos, "keypair", "get").mockReturnValue({
+      publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64),
+    });
+    const sign = vi.spyOn(demos.crypto, "sign").mockRejectedValue(error);
+    const result = adapter.resolveIdentity("subject").catch(caught => caught);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await result).toBe(error);
+    expect(sign).toHaveBeenCalledOnce();
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -591,7 +643,7 @@ describe("Demos identity reads against a real local HTTP server", () => {
     const { port } = server.address() as AddressInfo;
     const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/` });
     Object.assign(adapter, { connected: true });
-    return { adapter, counts: () => ({ connections, requests }) };
+    return { adapter, port, counts: () => ({ connections, requests }) };
   }
 
   // Read the whole request first so the close is a clean FIN, not a reset.
@@ -645,6 +697,27 @@ describe("Demos identity reads against a real local HTTP server", () => {
     expect(error).toMatchObject({ message: FAILED, category: "transient" });
     expect(error).not.toHaveProperty("cause");
     expect(inspect(error)).not.toMatch(/127\.0\.0\.1|ECONNRESET|terminated/);
+    expect(counts()).toEqual({ connections: 1, requests: 1 });
+  });
+
+  // Fetch's parser errors keep the node's raw bytes in HTTPParserError.data.
+  it.each([
+    { kind: "an invalid status line", reply: "XYZZY NODE-SECRET-TEXT injected\r\n\r\n" },
+    {
+      kind: "a bad chunk size mid-body",
+      reply: 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n{"res\r\nzzNODE-SECRET-TEXT\r\n',
+    },
+  ])("replaces the Fetch parser error for $kind, without a retry", async ({ reply }) => {
+    const { adapter, port, counts } = await serve(request => {
+      request.resume().on("end", () => request.socket.end(reply));
+    });
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(SubstrateError);
+    expect(error).toMatchObject({ message: READ_FAILED, category: "substrate" });
+    expect(error).not.toHaveProperty("cause");
+    expect(inspect(error, { depth: 10 })).not.toMatch(
+      new RegExp(`NODE-SECRET-TEXT|XYZZY|HPE_|127\\.0\\.0\\.1|\\b${port}\\b|fetch failed|terminated`),
+    );
     expect(counts()).toEqual({ connections: 1, requests: 1 });
   });
 });

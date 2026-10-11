@@ -107,9 +107,15 @@ Exhausted retries throw `TransientError` (category `transient`), with the stable
 message `Demos GCR identity read timed out` when the last attempt timed out
 (or the overall deadline expires), or
 `Demos GCR identity read failed after transient transport errors` for exhausted
-HTTP 502/503/504 or connection failures, a connection closed or reset during the body,
-or when a wait no longer fits before the overall deadline after one of those.
-These errors contain no response text or cause. Deadlines also bound an injected
+HTTP 502/503/504 or connection failures, a connection closed or reset during
+the body, or when a wait no longer fits before the overall deadline after one
+of those.
+These errors contain no response text or cause. Any other failure of the request
+or of the body read, such as an unreachable host or a malformed HTTP response,
+is not retried and throws `SubstrateError` (category `substrate`) with the stable
+message `Demos GCR identity read failed`; it carries no cause, node bytes or
+socket address. Errors from signing the authentication headers are local and
+pass through unchanged. Deadlines also bound an injected
 transport that ignores abort, stalled signing, or body cancellation that never
 settles; no request is sent once signing outlasts its deadline, and late
 responses are cancelled without decoding.

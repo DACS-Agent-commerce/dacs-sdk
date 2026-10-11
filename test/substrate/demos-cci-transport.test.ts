@@ -422,13 +422,15 @@ describe("Demos CCI raw response boundary", () => {
     expect(decoder).not.toHaveBeenCalled();
   });
 
-  it("preserves an ordinary transport failure without retrying", async () => {
+  it("replaces an ordinary transport failure with a fresh SubstrateError, without retrying", async () => {
     vi.useFakeTimers();
     const { adapter, transport } = adapterFor(new Response("unused"));
-    const error = new Error("transport failure");
-    transport.mockRejectedValue(error);
+    transport.mockRejectedValue(new Error("transport failure"));
 
-    await expect(adapter.resolveIdentity("subject")).rejects.toBe(error);
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SubstrateError);
+    expect(error).toMatchObject({ message: "Demos GCR identity read failed", category: "substrate" });
+    expect(error).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
