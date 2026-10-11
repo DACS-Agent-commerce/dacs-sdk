@@ -80,8 +80,11 @@ attempt, and a backoff wait that would leave the next attempt no time is not
 started. A lookup therefore ends within
 `min(3 × identityTimeoutMs + 2,750 ms, identityTotalTimeoutMs)`: 12,000 ms with
 the defaults, which allows two full five-second attempts and a shortened third.
-These are timer budgets; an occupied JavaScript event loop can delay timer
-delivery.
+The deadline is also checked against a monotonic clock before each attempt,
+after header signing immediately before the request, and before a response is
+accepted. An occupied JavaScript event loop can delay when a lookup settles, but
+once the deadline has passed no further request is sent and no result is
+accepted; the lookup ends in the timeout error below.
 
 dacs-node resolves an inbound peer's sender identity inside that peer's HTTP
 request, and the peer aborts the request after 15 seconds

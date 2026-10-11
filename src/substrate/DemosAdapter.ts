@@ -4095,7 +4095,8 @@ export class DemosAdapter implements SubstrateAdapter {
    * test to demosdk 4.0.16. Transient failures get at most two retries with a
    * configurable per-attempt deadline (default 5 s). The overall deadline is
    * min(3 × identityTimeoutMs + 2,750 ms, identityTotalTimeoutMs), default 12 s,
-   * including signing, reads and waits. Reverse
+   * including signing, reads and waits; past it, no request is sent and no
+   * result is accepted, even if the event loop delays timers. Reverse
    * claim-ref resolution is findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {

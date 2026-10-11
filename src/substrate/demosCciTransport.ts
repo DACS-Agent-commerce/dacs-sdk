@@ -133,6 +133,7 @@ async function readAttempt(
   maxBytes: number,
   timeoutMs: number,
   overallSignal: AbortSignal,
+  expired: () => boolean,
   backoffMs: number,
 ): Promise<unknown> {
   const controller = new AbortController();
@@ -153,6 +154,7 @@ async function readAttempt(
   try {
     const operation = async (): Promise<unknown> => {
       const headers = await buildHeaders();
+      if (expired()) throw overallSignal.reason;
       controller.signal.throwIfAborted();
       const response = await transport(rpc, {
         method: "POST",
@@ -193,9 +195,11 @@ async function readAttempt(
         throw new DacsError("Demos GCR identity response is not valid UTF-8 JSON");
       }
     };
-    return await Promise.race([operation(), deadline]);
+    const result = await Promise.race([operation(), deadline]);
+    if (expired()) throw overallSignal.reason;
+    return result;
   } catch (error) {
-    if (overallSignal.aborted) throw overallSignal.reason;
+    if (expired()) throw overallSignal.reason;
     if (controller.signal.aborted) throw new RetryableFailure(timeoutError, backoffMs);
     const connection = connectionFailure(error, responseStarted);
     if (connection !== undefined) {
@@ -216,7 +220,9 @@ async function readAttempt(
 /**
  * Equivalent to demosdk's Identities.getIdentities request, with raw admission.
  * The lookup ends within min(3 × timeoutMs + 2,750 ms, totalTimeoutMs): the
- * overall deadline aborts an active attempt or wait.
+ * overall deadline aborts an active attempt or wait. A monotonic expiry is also
+ * checked before each attempt, before sending and before accepting a result, so
+ * a timer delivered late never lets a request or result pass the deadline.
  */
 export async function readDemosCciResponse(
   rpc: string,
@@ -226,26 +232,35 @@ export async function readDemosCciResponse(
   maxBytes: number,
   timeoutMs: number,
   totalTimeoutMs: number,
+  now: () => number = () => performance.now(),
 ): Promise<unknown> {
   const budgetMs = Math.min(3 * timeoutMs + OVERALL_SLACK_MS, totalTimeoutMs);
-  const deadline = Date.now() + budgetMs;
+  const expiresAt = now() + budgetMs;
   const overall = new AbortController();
+  // A busy event loop can run an older backoff or signing callback before the
+  // timer below, so expiry is also read from the clock.
+  const expired = () => {
+    if (!overall.signal.aborted && now() >= expiresAt) {
+      overall.abort(new TransientError(TIMED_OUT));
+    }
+    return overall.signal.aborted;
+  };
   const timer = setTimeout(() => {
     overall.abort(new TransientError(TIMED_OUT));
   }, budgetMs);
   try {
     for (let attempt = 0; ; attempt++) {
-      overall.signal.throwIfAborted();
+      if (expired()) throw overall.signal.reason;
       try {
         return await readAttempt(
           rpc, address, buildHeaders, transport, maxBytes, timeoutMs,
-          overall.signal, 250 * 2 ** attempt,
+          overall.signal, expired, 250 * 2 ** attempt,
         );
       } catch (error) {
         if (!(error instanceof RetryableFailure)) throw error;
         if (attempt === 2) throw error.error;
         // A wait that leaves the next attempt no time would only delay failure.
-        if (Date.now() + error.waitMs >= deadline) throw error.error;
+        if (now() + error.waitMs >= expiresAt) throw error.error;
         await waitForRetry(error.waitMs, overall.signal);
       }
     }

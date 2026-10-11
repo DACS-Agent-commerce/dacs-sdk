@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
 import { DacsError, SubstrateError, TransientError, faultCategory } from "../../src/errors.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
+import { DEMOS_CCI_MAX_RESPONSE_BYTES, readDemosCciResponse } from "../../src/substrate/demosCciTransport.js";
 
 const GCR = { result: 200, response: { xm: {}, web2: {}, ud: [], pqc: {} } };
 const TIMEOUT = "Demos GCR identity read timed out";
@@ -415,6 +416,133 @@ describe("Demos identity transient retries", () => {
     Object.defineProperty(accessor, "identityTotalTimeoutMs", { get: getter });
     expect(() => new DemosAdapter(accessor)).toThrow(/identityTotalTimeoutMs.*stable data/);
     expect(getter).not.toHaveBeenCalled();
+  });
+});
+
+// Real timers: occupying the event loop past the deadline lets an older timer
+// (backoff, signing, response) run before the overall abort timer.
+describe("Demos identity deadline under a delayed event loop", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const busyUntil = (ms: number) => {
+    while (performance.now() < ms) { /* occupy the event loop */ }
+  };
+
+  function realSetup() {
+    const transport = vi.fn<typeof fetch>();
+    const adapter = new DemosAdapter({
+      rpc: "https://node.example/rpc", identityFetch: transport, identityTotalTimeoutMs: 300,
+    });
+    Object.assign(adapter, { connected: true });
+    return { adapter, transport };
+  }
+
+  it("starts no second request when a 503 backoff callback runs after the deadline", async () => {
+    const { adapter, transport } = realSetup();
+    const start = performance.now();
+    transport.mockImplementationOnce(async () => {
+      setTimeout(() => busyUntil(start + 350), 1);
+      return new Response("discarded", { status: 503 });
+    }).mockImplementation(async () => success());
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(performance.now() - start).toBeGreaterThanOrEqual(350);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("sends no request when slow signing resolves after the deadline", async () => {
+    const { adapter, transport } = realSetup();
+    transport.mockImplementation(async () => success());
+    const demos = adapter.raw as unknown as Demos;
+    vi.spyOn(demos, "walletConnected", "get").mockReturnValue(true);
+    vi.spyOn(demos, "keypair", "get").mockReturnValue({
+      publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64),
+    });
+    const start = performance.now();
+    const sign = vi.spyOn(demos.crypto, "sign").mockImplementation((() => new Promise(resolve => {
+      setTimeout(() => resolve({ signature: Uint8Array.of(1) }), 250);
+      setTimeout(() => busyUntil(start + 350), 1);
+    })) as never);
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(sign).toHaveBeenCalledOnce();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a response delivered after the deadline", async () => {
+    const { adapter, transport } = realSetup();
+    const start = performance.now();
+    transport.mockImplementation(() => new Promise(resolve => {
+      setTimeout(() => resolve(success()), 250);
+      setTimeout(() => busyUntil(start + 350), 1);
+    }));
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+});
+
+// The clock is injected, so each expiry check is exercised without real delays.
+describe("Demos identity monotonic expiry checks", () => {
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  function read(transport: typeof fetch, buildHeaders: () => Promise<Record<string, string>>, now: () => number) {
+    return readDemosCciResponse(
+      "https://node.example/rpc", "subject", buildHeaders, transport,
+      DEMOS_CCI_MAX_RESPONSE_BYTES, 5_000, 300, now,
+    ).catch(error => error);
+  }
+
+  it("signs and sends nothing for the next attempt once the clock passes expiry during a wait", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const headers = vi.fn(async () => ({}));
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => {
+      setTimeout(() => { clock = 300; }, 100);
+      return new Response("discarded", { status: 503 });
+    });
+    const result = read(transport, headers, () => clock);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(headers).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sends nothing when the clock passes expiry during signing", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => success());
+    const error = await read(transport, async () => { clock = 300; return {}; }, () => clock);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { kind: "a successful response", response: success },
+    { kind: "a 503", response: () => new Response("discarded", { status: 503 }) },
+  ])("reports a timeout, not $kind, once the clock passes expiry during the read", async ({ response }) => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => { clock = 300; return response(); });
+    const error = await read(transport, async () => ({}), () => clock);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("accepts a response read just before expiry", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => { clock = 299; return success(); });
+    await expect(read(transport, async () => ({}), () => clock)).resolves.toEqual(GCR);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
