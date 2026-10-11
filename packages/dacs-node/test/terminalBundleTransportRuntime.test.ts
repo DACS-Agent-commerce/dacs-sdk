@@ -1996,6 +1996,22 @@ describe("Vet terminal pre-agreement boundary", () => {
     },
   );
 
+  it.each([
+    ["no coordinator store owns the order", (actor: ReturnType<typeof memoryRoleDatabase>) => {
+      actor.loseCoordinatorRecord();
+    }],
+    ["the retained listing does not match the order rail", () => undefined, "pay-dem"],
+  ] as const)(
+    "a job with no Vet failure is not blocked when %s",
+    async (_label, arrange, applicationRail = "pay-x402") => {
+      const actor = memoryRoleDatabase("buyer", application(applicationRail));
+      arrange(actor);
+
+      await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+        .resolves.toBeUndefined();
+    },
+  );
+
   it("still fails closed when retained terminal state cannot be bound to its order", async () => {
     const actor = memoryRoleDatabase("buyer");
     await expect(actor.runtime.handleMessage(

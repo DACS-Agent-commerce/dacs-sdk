@@ -1047,6 +1047,14 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   const loadRegistered = async (
     jobId: string,
   ): Promise<Extract<ProposalAssessment, { disposition: "authorized" }>> => {
+    // A job that never retained terminal state has no Vet failure to finalize.
+    // Answer that before the full order lookup so an order lookup failure on a
+    // healthy job cannot block its agreement and audit tracks.
+    if ((["material", "proposal", "conflict"] as const).every((kind) =>
+      context.database.loadEffectInput("session", transportId(role, kind, jobId)) ===
+        undefined)) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+    }
     await assertNoPlanConflict(context, jobId);
     const binding = await loadBinding(context, "material", jobId) ??
       await loadBinding(context, "proposal", jobId);
