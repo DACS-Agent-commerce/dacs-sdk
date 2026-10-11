@@ -121,3 +121,19 @@ export function downgradeCoordinatorSchemaToV6(database: BetterSqlite3.Database)
       );
   `);
 }
+
+/** Remove the immutable v7 HTTP lifecycle additions when constructing v6 fixtures. */
+export function downgradeHttpSchemaToV6(database: BetterSqlite3.Database): void {
+  database.exec(`
+    DROP INDEX dacs_http_inbox_semantic_idx;
+    DROP INDEX dacs_http_outbox_semantic_idx;
+    DROP INDEX dacs_http_inbox_retention_idx;
+    DROP INDEX dacs_http_outbox_retention_idx;
+    DROP INDEX dacs_http_outbox_active_scan_idx;
+    DROP TABLE dacs_http_lifecycle;
+    DROP TABLE dacs_http_usage;
+    DROP TABLE dacs_http_policy;
+    ALTER TABLE dacs_http_inbox DROP COLUMN semantic_key;
+    ALTER TABLE dacs_http_outbox DROP COLUMN semantic_key;
+  `);
+}

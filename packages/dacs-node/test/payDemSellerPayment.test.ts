@@ -324,6 +324,7 @@ function retainedNotice(input: Readonly<{
     finality: { model: "bft-final" },
     blockNumber: 88,
     txRefKind: "demos",
+    networkFeeOs: "50000000",
   });
   return {
     bindingVersion: "1",

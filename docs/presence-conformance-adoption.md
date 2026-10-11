@@ -16,24 +16,51 @@ acceptance test. Active-use verification retains its current-time and external
 authority gates. Pinning this corpus does not establish full implementation of
 every feature at the newer Standard revision.
 
-## Remaining runtime boundary
+## Live shared-result boundary
 
-The current durable party Vet producer rejects multiple attempts that derive
-the same result address. The standalone producer rejects ambiguous distinct
-same-family requirements, and the strict composite consumer binds each expected
-result to one requirement. Accordingly, this update does not claim end-to-end
-production of one authenticated result shared across distinct requirement
-predicates. No fallback to a first matching predicate is introduced.
+The durable party Vet producer and strict composite consumer now support one
+authenticated result shared across compatible verified predicates. The party
+plan still retains every exact requirement path and its generation-fenced recipe
+pin. Paths coalesce only when their canonical claim subject, result address,
+classification, method input, authenticated recipe bytes, session registry
+snapshot and authority URL-template substitutions agree. A duplicate result
+address with any different authority input fails before a method effect.
 
-Completing that capability requires a separate bounded runtime change:
+The producer journals, signs, anchors and independently reads back one result
+for such a group. It journals the method-specific parameter matcher outcome for
+each member and applies those outcomes and each `maxAge` independently at
+composite generation while retaining the result's governing validity window as
+an admission gate. The record commits the shared result reference once,
+preserving the Standard's ordered, unique result-reference projection. Crash
+recovery replays the same group and qualification outcomes without issuing a
+second authority request. It reconstructs the active aggregate before anchoring
+or returning a recovered composite, so an expired pass is never accepted.
 
-- derive all compatible members from the complete authenticated requirement;
-- authenticate a referenced result once and evaluate each member's parameters
-  and freshness independently;
-- coalesce compatible party-plan paths into one durable method attempt/result;
-- retain exact method-input, authority, nonce and recovery bindings; and
-- test real producer-to-consumer replay, mismatches, crash recovery and the
-  unchanged single-predicate path.
+The strict consumer authenticates each unique committed reference, recipe,
+signature and method-native attestation once. It derives every compatible
+verified member from the complete authenticated requirement and applies each
+member's parameters and `maxAge` independently. Cross-predicate projection is
+limited to consensus proxy evidence, whose fixed method-input hash, exact
+authenticated recipe method and authority URL-template substitutions can be
+reconstructed and compared. Methods whose input is absent from the composite
+wire satisfy only the explicitly committed member. The governing result
+validity window remains an evidence-admission gate; a tighter member `maxAge` or
+a parameter mismatch makes that member unsatisfied without changing the signed
+result. A missing parameter verifier remains unresolved. Distinct or ambiguous
+method families remain fail-closed.
+
+Single-predicate plans emit the same plan and artifact shape and retain their
+existing durable effect namespace. The standalone single-claim producer remains
+single-predicate and continues to reject ambiguous distinct same-family
+requirements. Cross-session non-pass reuse rules are unchanged: exact
+authenticated originating-parameter equality or a current-predicate execution
+is still required.
+
+Coverage is offline and deterministic: producer-to-consumer replay exercises
+shared predicates, independent parameter and freshness outcomes, incompatible
+group rejection, response-loss recovery, and the single-predicate path. This is
+not live-service evidence or a claim of complete implementation of every feature
+at the newer Standard revision.
 
 The signing registry follows the adopted 30-domain set. Registering the two
 identity-bound agreement domains does not implement their artifact consumers.

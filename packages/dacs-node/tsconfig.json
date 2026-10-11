@@ -15,5 +15,11 @@
       "@kynesyslabs/dacs/substrate": ["../../src/substrate/index.ts"]
     }
   },
-  "include": ["src", "test", "vitest.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "test-postgres",
+    "vitest.config.ts",
+    "vitest.postgres.config.ts"
+  ]
 }

@@ -6,6 +6,13 @@ import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
 import type { DemosWriteJournal } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const sdkPayDem = vi.hoisted(() => ({ createRail: vi.fn() }));
+
+vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
+  createPayDemRail: sdkPayDem.createRail,
+}));
+
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
@@ -14,6 +21,8 @@ import {
   type DacsDemosAdapterV1,
   type DacsDemosActorRuntimeV1,
 } from "../src/index.js";
+import { isDacsSdkPreparedPayDemRailV1 } from
+  "../src/payDemRailCapabilities.js";
 
 const PUBLIC_KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PEER_KEY = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
@@ -136,6 +145,7 @@ describe("role-owned Demos runtime", () => {
   }
 
   afterEach(() => {
+    sdkPayDem.createRail.mockReset();
     for (const directory of roots.splice(0)) {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -214,11 +224,36 @@ describe("role-owned Demos runtime", () => {
     expect(loaded.destroyed).toBe(true);
     expect(opened.payDem?.rail.address).toBe(wallet);
     expect(opened.payDem?.rail.settle).not.toBe(settle);
+    expect(isDacsSdkPreparedPayDemRailV1(opened.payDem!.rail)).toBe(false);
     expect(createPayDemRail).toHaveBeenCalledWith({
       rpc: "http://127.0.0.1:5350",
       secret: "test-only-secret",
       network: "demos",
     });
+  });
+
+  it("marks only the SDK-generated frozen native buyer rail", async () => {
+    const directory = root();
+    const loaded = await secret(directory);
+    const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
+    const settle = vi.fn();
+    sdkPayDem.createRail.mockResolvedValue(Object.freeze({ address: wallet, settle }));
+
+    const opened = await createDacsDemosActorRuntimeV1({
+      config: payDemConfig(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      demosIdentity: loaded,
+      createAdapter: async () => adapter({ getAddress: vi.fn(() => wallet) }),
+    });
+
+    expect(sdkPayDem.createRail).toHaveBeenCalledOnce();
+    expect(opened.payDem?.rail).not.toBeUndefined();
+    expect(Object.isFrozen(opened.payDem!.rail)).toBe(true);
+    expect(isDacsSdkPreparedPayDemRailV1(opened.payDem!.rail)).toBe(true);
+    expect(isDacsSdkPreparedPayDemRailV1(
+      Object.freeze({ address: wallet, settle, deferWalletReservationUntilPrepared: true }),
+    )).toBe(false);
   });
 
   it("reconciles the complete wallet journal before invoking native settlement", async () => {

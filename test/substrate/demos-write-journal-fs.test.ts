@@ -300,6 +300,52 @@ describe("filesystem Demos write journal", () => {
     await lease.release();
   });
 
+  it("reuses one prepared lock candidate across occupied retries and cleans it", async () => {
+    const dir = await temporaryDirectory();
+    const journal = await createFsDemosWriteJournal({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 200,
+    });
+    const key = { chainIdentity: "genesis-candidate", wallet: "0xcandidate" };
+    const locksDir = join(dir, "locks");
+    const lockName = `${walletLockDigest(key.chainIdentity, key.wallet)}.lock`;
+    const lockPath = join(locksDir, lockName);
+    const owner = {
+      token: "foreign-candidate-owner",
+      pid: 1,
+      hostname: "different-host",
+      createdAt: 1,
+    };
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(join(lockPath, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    await utimes(lockPath, new Date(0), new Date(0));
+
+    const pending = journal.acquire(key).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    const observed = new Set<string>();
+    while (!settled) {
+      for (const name of await readdir(locksDir)) {
+        if (name.startsWith(`${lockName}.`) && name.endsWith(".candidate")) {
+          observed.add(name);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    expect(String(await pending)).toMatch(/timed out acquiring/);
+    expect([...observed]).toHaveLength(1);
+    expect((await readdir(locksDir)).filter((name) =>
+      name.startsWith(`${lockName}.`) && name.endsWith(".candidate")
+    )).toEqual([]);
+    await expect(readFile(join(lockPath, "owner.json"), "utf8"))
+      .resolves.toBe(JSON.stringify(owner));
+  });
+
   it("serializes competing stale-lock reclaimers without displacing a successor", async () => {
     const key = { chainIdentity: "genesis-race", wallet: "0xrace" };
     for (let attempt = 0; attempt < 12; attempt += 1) {

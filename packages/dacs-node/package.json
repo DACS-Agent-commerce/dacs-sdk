@@ -54,6 +54,7 @@
     "prepack": "npm run clean && npm run build:with-core",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
+    "test:postgres": "vitest run --config vitest.postgres.config.ts",
     "vectors:generate": "npm run build:with-core && node scripts/generate-envelope-vectors.mjs",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build:with-core"
@@ -72,6 +73,8 @@
     "@kynesyslabs/dacs": "file:../..",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "^20",
+    "@types/pg": "^8.15.5",
+    "pg": "^8.16.3",
     "typescript": "^5",
     "vitest": "^4.0.18"
   }
