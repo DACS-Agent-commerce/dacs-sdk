@@ -803,6 +803,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     | undefined;
   let inbound = Promise.resolve();
   let peerHandler: DemosL2psRfqMessageHandler | undefined;
+  // A peer without removeMessageHandler keeps old handlers installed, so each
+  // start() binds its handler to a generation that stop() retires.
+  let generation = 0;
 
   async function bounded<T>(
     operation: () => Promise<T> | T,
@@ -1047,8 +1050,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     };
   }
 
-  async function ingest(payloadValue: unknown): Promise<void> {
-    if (!started || onPacket === undefined) return;
+  async function ingest(payloadValue: unknown, active: number): Promise<void> {
+    if (!started || active !== generation || onPacket === undefined) return;
     const payload = captureIncoming(payloadValue);
     const senderClaim = canonicalString(
       captured.claimForPeer(payload.from),
@@ -1286,10 +1289,12 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       }
       started = true;
       onPacket = handler;
+      generation += 1;
+      const active = generation;
       peerHandler = (payload) => {
-        if (!started) return;
+        if (!started || active !== generation) return;
         inbound = inbound
-          .then(() => ingest(payload))
+          .then(() => ingest(payload, active))
           .catch((cause) => {
             try {
               captured.onError(errorFrom(cause, "RFQ inbound failed"));
@@ -1309,6 +1314,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     },
     stop() {
       started = false;
+      generation += 1;
       onPacket = undefined;
       if (peerHandler !== undefined) {
         captured.removeMessageHandler?.(peerHandler);

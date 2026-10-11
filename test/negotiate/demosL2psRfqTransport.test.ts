@@ -1170,4 +1170,52 @@ describe("Demos L2PS durable RFQ transport", () => {
     await expect(transport.reconcile(packet)).resolves.toEqual(conflict);
     expect(hub.sends).toBe(1);
   });
+
+  test("retires the old handler on stop when the peer cannot remove it", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const sellerPeer: DemosL2psRfqPeerLike = { ...hub.peer(SELLER_PEER) };
+    delete sellerPeer.removeMessageHandler;
+    const options = (localClaim: string, localPeerKey: string, peer: DemosL2psRfqPeerLike) => ({
+      peer,
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      localClaim,
+      localPeerKey,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const buyerTransport = createDemosL2psRfqTransport<string>(
+      options(BUYER, BUYER_PEER, hub.peer(BUYER_PEER)),
+    );
+    const sellerTransport = createDemosL2psRfqTransport<string>(
+      options(SELLER, SELLER_PEER, sellerPeer),
+    );
+    const reservation = durableReservation();
+    const buyerClient = createDurableRfqLifecycleClient(
+      clientOptions("buyer", buyerTransport, reservation),
+    );
+    const sellerClient = createDurableRfqLifecycleClient(
+      clientOptions("seller", sellerTransport, reservation),
+    );
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+
+    const retired = vi.fn();
+    sellerTransport.start(retired);
+    sellerTransport.stop();
+    const current = vi.fn((packet: unknown) => sellerClient.receive(packet));
+    sellerTransport.start(current);
+    expect(hub.handlers.get(SELLER_PEER)?.size).toBe(2);
+
+    await expect(buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "ready" });
+    await sellerTransport.drain();
+    expect(retired).not.toHaveBeenCalled();
+    expect(current).toHaveBeenCalledTimes(1);
+    sellerTransport.stop();
+  });
 });
