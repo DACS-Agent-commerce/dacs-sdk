@@ -162,6 +162,50 @@ describe("Demos identity transient retries", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each([
+    // Date.parse accepts these leniently; most become past dates.
+    "-1", "5, 5", "foo 2", "1.2.3",
+    // Not delay-seconds or an exact IMF-fixdate.
+    "", "junk", "1.5", "+5",
+    // Future dates in the wrong format: they would cap at 2 s if accepted.
+    "Sat, 06 Nov 2099 08:49:37 GMT", "Fri, 6 Nov 2099 08:49:37 GMT", "Fri Nov  6 08:49:37 2099",
+    // Valid, but shorter than the backoff.
+    "0", "Sun, 06 Nov 1994 08:49:37 GMT",
+  ])("never waits less or more than the 250 ms backoff for Retry-After %j", async (retryAfter) => {
+    const { adapter, transport } = setup();
+    transport.mockResolvedValueOnce(new Response("discarded", {
+      status: 503, headers: { "Retry-After": retryAfter },
+    })).mockImplementationOnce(async () => success());
+    const result = adapter.resolveIdentity("subject").catch(error => error);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(transport).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toHaveProperty("raw", GCR);
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { retryAfter: ["1", "0"], calls: [1_000, 1_500] },
+    { retryAfter: ["Sun, 06 Nov 1994 08:49:38 GMT", "1"], calls: [1_000, 2_000] },
+  ])("waits max(backoff, Retry-After) for $retryAfter", async ({ retryAfter, calls }) => {
+    const { adapter, transport } = setup();
+    vi.setSystemTime(Date.UTC(1994, 10, 6, 8, 49, 37));
+    for (const value of retryAfter) {
+      transport.mockResolvedValueOnce(new Response("discarded", {
+        status: 503, headers: { "Retry-After": value },
+      }));
+    }
+    transport.mockImplementationOnce(async () => success());
+    const result = adapter.resolveIdentity("subject").catch(error => error);
+    for (const [index, at] of calls.entries()) {
+      await vi.advanceTimersByTimeAsync(at - 1 - (index === 0 ? 0 : calls[index - 1]!));
+      expect(transport).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(transport).toHaveBeenCalledTimes(index + 2);
+    }
+    await expect(result).resolves.toHaveProperty("raw", GCR);
+  });
+
   it.each([502, 503, 504, "ECONNRESET"])("sanitizes exhausted transient failure %s", async (failure) => {
     const { adapter, transport } = setup();
     const cancellations = [vi.fn(), vi.fn(), vi.fn()];

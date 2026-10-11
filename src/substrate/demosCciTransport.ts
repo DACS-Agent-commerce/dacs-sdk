@@ -21,15 +21,20 @@ class RetryableFailure {
   constructor(readonly error: TransientError, readonly waitMs: number) {}
 }
 
-function retryWait(retryAfter: string | null, backoffMs: number): number {
-  if (retryAfter === null) return backoffMs;
-  const value = retryAfter.trim();
-  if (/^\d+(?:\.\d+)?$/.test(value)) {
-    return Math.min(Number(value) * 1_000, MAX_RETRY_WAIT_MS);
-  }
+// Accept only delay-seconds or an exact IMF-fixdate. toUTCString() emits
+// IMF-fixdate, so the round trip rejects everything Date.parse merely tolerates.
+function retryAfterMs(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1_000;
   const date = Date.parse(value);
-  return Number.isNaN(date) ? backoffMs
-    : Math.min(Math.max(0, date - Date.now()), MAX_RETRY_WAIT_MS);
+  if (Number.isNaN(date) || new Date(date).toUTCString() !== value) return undefined;
+  return date - Date.now();
+}
+
+function retryWait(retryAfter: string | null, backoffMs: number): number {
+  const requested = retryAfterMs(retryAfter);
+  return requested === undefined ? backoffMs
+    : Math.max(backoffMs, Math.min(requested, MAX_RETRY_WAIT_MS));
 }
 
 function connectionFailure(

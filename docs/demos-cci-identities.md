@@ -65,10 +65,13 @@ timeouts, connection errors `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUN
 `UND_ERR_SOCKET` (the node closed the connection, for example while restarting)
 or `UND_ERR_CONNECT_TIMEOUT`, but only before any response has arrived; demosdk's
 Axios transport reported the first as `ECONNRESET`. A connection closed during
-the body is not retried. Backoff is 250 ms then 500 ms. A numeric (seconds) or HTTP-date
-`Retry-After` overrides that wait, capped at 2,000 ms per wait. Size overflow,
-redirects, invalid UTF-8/JSON, all 4xx, and other 5xx are never retried. Failed
-bodies are cancelled without retaining response text.
+the body is not retried. Backoff is 250 ms then 500 ms. `Retry-After` can
+lengthen that wait, up to 2,000 ms, but never shorten it: the wait is
+`max(backoff, min(Retry-After, 2,000 ms))`. Only whole seconds (`^\d+$`) or an
+exact IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) are accepted; any other
+value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx, and
+other 5xx are never retried. Failed bodies are cancelled without retaining
+response text.
 
 The overall deadline, including signing, reads, retries and waits, is exactly
 `3 × identityTimeoutMs + 2,750 ms`: 17,750 ms by default, at most 92,750 ms
