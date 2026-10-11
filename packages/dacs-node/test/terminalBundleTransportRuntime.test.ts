@@ -1996,14 +1996,16 @@ describe("Vet terminal pre-agreement boundary", () => {
     },
   );
 
-  it.each([
-    ["no coordinator store owns the order", (actor: ReturnType<typeof memoryRoleDatabase>) => {
-      actor.loseCoordinatorRecord();
-    }],
+  it.each<[
+    string,
+    (actor: ReturnType<typeof memoryRoleDatabase>) => void,
+    "pay-x402" | "pay-dem",
+  ]>([
+    ["no coordinator store owns the order", (actor) => actor.loseCoordinatorRecord(), "pay-x402"],
     ["the retained listing does not match the order rail", () => undefined, "pay-dem"],
-  ] as const)(
+  ])(
     "a job with no Vet failure is not blocked when %s",
-    async (_label, arrange, applicationRail = "pay-x402") => {
+    async (_label, arrange, applicationRail) => {
       const actor = memoryRoleDatabase("buyer", application(applicationRail));
       arrange(actor);
 
