@@ -275,15 +275,29 @@ export interface LiquidityTankStore {
     owner: string;
     generation: number;
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
-    /**
-     * Retain terminal evidence without replacing the locked pending observation.
-     * CAS against the exact checkpoint and current lease at `now`; no completion
-     * or expiry may have won. Return it in acquired/waiting claims until completion.
-     * Keep the first evidence; reject a conflicting replacement.
-     */
-    recoveryFailure?: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
-    now?: number;
   }): Promise<LiquidityTankStoreWrite>;
+  /**
+   * Retains terminal failure evidence without replacing the locked pending
+   * observation. CAS against `recoveryFailure.checkpoint` as the exact durable
+   * observation and the current lease at `now`; no completion or expiry may
+   * have won. Keep the first evidence and reject a conflicting replacement.
+   * Return it in acquired/waiting claims until completion. A success must echo
+   * the evidence now retained; the core treats any other echo as not retained.
+   */
+  recordRecoveryFailure(input: {
+    settlementKey: string;
+    bindingHash: string;
+    owner: string;
+    generation: number;
+    now: number;
+    recoveryFailure: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
+  }): Promise<
+    | {
+        status: "recorded" | "existing";
+        recoveryFailure: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
+      }
+    | { status: "stale" | "conflict" | "corrupt"; reason: string }
+  >;
   /**
    * Atomically records terminal recovery expiry only if `observation` is still
    * consistent with `expectedObservation`, the identified lease is current at
@@ -291,8 +305,9 @@ export interface LiquidityTankStore {
    * exact durable observation established by the claim or a confirmed write,
    * if one existed. `now` must reach `recoveryDeadline`. Pending snapshots also
    * need `observedAt >= recoveryDeadline`; completions need late finality.
-   * Terminal failure evidence must equal the retained `recoveryFailure` and
-   * bind its authenticated lock hash/deadline to the exact durable checkpoint.
+   * Terminal failure evidence must equal the one retained by
+   * `recordRecoveryFailure` and bind its authenticated lock hash/deadline to
+   * the exact durable checkpoint.
    */
   recordRecoveryExpired(input: {
     settlementKey: string;
@@ -440,6 +455,24 @@ function successfulStoreWrite(value: unknown): boolean {
   const status = Object.getOwnPropertyDescriptor(value, "status");
   return status !== undefined && "value" in status &&
     (status.value === "recorded" || status.value === "existing");
+}
+
+/**
+ * A retention write counts only if it succeeded and echoes exactly the
+ * evidence sent; a store that dropped or replaced it cannot echo it.
+ */
+function retainedRecoveryFailure(value: unknown, sent: LiquidityTankRecoveryEvidence): boolean {
+  if (!successfulStoreWrite(value)) return false;
+  const echo = Object.getOwnPropertyDescriptor(value as object, "recoveryFailure");
+  if (echo === undefined || !("value" in echo)) return false;
+  try {
+    return canonicalize(snapshotCanonicalJsonRead(
+      echo.value,
+      "liquidity-tank retained recovery failure",
+    )) === canonicalize(sent);
+  } catch {
+    return false;
+  }
 }
 
 function snapshotOptionalCanonicalReadWithPresence<T>(
@@ -983,6 +1016,7 @@ export async function advanceLiquidityTankSettlement(
   let isCurrentSettlement: LiquidityTankStore["isCurrent"];
   let recordSubmission: LiquidityTankStore["recordSubmission"];
   let recordObservation: LiquidityTankStore["recordObservation"];
+  let recordRecoveryFailure: LiquidityTankStore["recordRecoveryFailure"];
   let recordRecoveryExpired: LiquidityTankStore["recordRecoveryExpired"];
   let recordSettlement: LiquidityTankStore["recordSettlement"];
   let prepareSubmission: LiquidityTankAdapter["prepareSubmission"];
@@ -1029,7 +1063,12 @@ export async function advanceLiquidityTankSettlement(
       "recordObservation",
       "store.recordObservation",
     );
-    recordRecoveryExpired = stableBoundMethod<LiquidityTankStore["recordRecoveryExpired"]>(
+    recordRecoveryFailure = stableBoundMethod<LiquidityTankStore["recordRecoveryFailure"]>(
+      store,
+      "recordRecoveryFailure",
+      "store.recordRecoveryFailure",
+    );
+    recordRecoveryExpired =stableBoundMethod<LiquidityTankStore["recordRecoveryExpired"]>(
       store,
       "recordRecoveryExpired",
       "store.recordRecoveryExpired",
@@ -1426,11 +1465,11 @@ export async function advanceLiquidityTankSettlement(
           ) as Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
           try {
             await fence.assertCurrent();
-            const stored = successfulStoreWrite(await recordObservation({
+            const stored = retainedRecoveryFailure(await recordRecoveryFailure({
               settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
               owner: fence.owner, generation: fence.generation, now: readNow(),
-              observation: checkpoint, recoveryFailure: evidence,
-            }));
+              recoveryFailure: evidence,
+            }), evidence);
             await fence.assertCurrent();
             if (!stored) throw new DacsError("terminal failure persistence uncertain");
             durableFailure = evidence;
@@ -1644,28 +1683,6 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
         return { status: "conflict", reason: "liquidity-tank-completion-after-recovery-deadline" };
       }
       const prior = record.observation;
-      if (Object.hasOwn(input, "recoveryFailure")) {
-        let evidence: LiquidityTankRecoveryEvidence;
-        try {
-          evidence = validateRecoveryEvidence(input.recoveryFailure!, record.intent, record.submission);
-          const failureNow = requireUInt(input.now, "failure retention now");
-          if (record.lease.expiresAt <= failureNow) return { status: "stale", reason: "expired-lease" };
-        } catch {
-          return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
-        }
-        if (evidence.status !== "failed-after-lock" || !recoveryCheckpoint(prior) ||
-            canonicalize(prior) !== canonicalize(observation) ||
-            canonicalize(prior) !== canonicalize(evidence.checkpoint)) {
-          return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-        }
-        if (record.recoveryFailure) {
-          return canonicalize(record.recoveryFailure) === canonicalize(evidence)
-            ? { status: "existing" }
-            : { status: "conflict", reason: "liquidity-tank-recovery-failure-conflict" };
-        }
-        record.recoveryFailure = evidence;
-        return { status: "recorded" };
-      }
       if (record.recoveryFailure && observation.status !== "completed") {
         return { status: "conflict", reason: "liquidity-tank-terminal-failure-retained" };
       }
@@ -1685,6 +1702,35 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
       record.observation = observation;
       if (observation.status === "completed") delete record.recoveryFailure;
       return { status: "recorded" };
+    },
+    async recordRecoveryFailure(input) {
+      const record = records.get(input.settlementKey);
+      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (record.settlement || record.recoveryExpired) {
+        return { status: "conflict", reason: "liquidity-tank-observation-after-terminal" };
+      }
+      if (!record.submission) {
+        return { status: "conflict", reason: "liquidity-tank-observation-bridge-conflict" };
+      }
+      let evidence: LiquidityTankRecoveryEvidence;
+      try {
+        evidence = validateRecoveryEvidence(input.recoveryFailure, record.intent, record.submission);
+        const failureNow = requireUInt(input.now, "failure retention now");
+        if (record.lease.expiresAt <= failureNow) return { status: "stale", reason: "expired-lease" };
+      } catch {
+        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
+      }
+      if (evidence.status !== "failed-after-lock" || !recoveryCheckpoint(record.observation) ||
+          canonicalize(record.observation) !== canonicalize(evidence.checkpoint)) {
+        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
+      }
+      if (record.recoveryFailure) {
+        return canonicalize(record.recoveryFailure) === canonicalize(evidence)
+          ? { status: "existing", recoveryFailure: record.recoveryFailure }
+          : { status: "conflict", reason: "liquidity-tank-recovery-failure-conflict" };
+      }
+      record.recoveryFailure = evidence;
+      return { status: "recorded", recoveryFailure: evidence };
     },
     async recordRecoveryExpired(input) {
       const record = records.get(input.settlementKey);

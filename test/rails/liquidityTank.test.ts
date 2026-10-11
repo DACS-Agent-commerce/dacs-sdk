@@ -204,6 +204,17 @@ function runner(overrides: Partial<AdvanceLiquidityTankInput> = {}) {
   };
 }
 
+/** Broadcasts once and durably records the locked pending checkpoint. */
+async function lockDurably(store: LiquidityTankStore, h: ReturnType<typeof harness>) {
+  h.setAfterBroadcast(pending(h.operationHash, true));
+  const run = runner({ adapter: h.adapter, store, leaseDurationMs: 1 });
+  await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+    status: "settle-asymmetric", reason: "tank-locked-unreleased",
+  });
+  h.broadcastRetained.mockClear();
+  return run;
+}
+
 test("malformed persistence results resolve indeterminate without throwing or broadcasting", async () => {
   for (const method of ["recordSubmission", "recordObservation", "recordSettlement"] as const) {
     for (const result of [null, undefined, {}, { status: "unexpected" }, { get status() { throw new Error("unsafe accessor"); } }]) {
@@ -696,6 +707,9 @@ describe("advanceLiquidityTankSettlement", () => {
         recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
           async () => ({ status: "recorded" }),
         ),
+        recordRecoveryFailure: vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(
+          async (input) => ({ status: "recorded", recoveryFailure: input.recoveryFailure }),
+        ),
         recordRecoveryExpired: vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
           async () => ({ status: "recorded" }),
         ),
@@ -712,6 +726,7 @@ describe("advanceLiquidityTankSettlement", () => {
       vi.mocked(store.isCurrent).mockClear();
       vi.mocked(store.recordSubmission).mockClear();
       vi.mocked(store.recordObservation).mockClear();
+      vi.mocked(store.recordRecoveryFailure).mockClear();
       vi.mocked(store.recordRecoveryExpired).mockClear();
       vi.mocked(store.recordSettlement).mockClear();
       h.prepareSubmission.mockClear();
@@ -725,6 +740,7 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(store.isCurrent).not.toHaveBeenCalled();
       expect(store.recordSubmission).not.toHaveBeenCalled();
       expect(store.recordObservation).not.toHaveBeenCalled();
+      expect(store.recordRecoveryFailure).not.toHaveBeenCalled();
       expect(store.recordRecoveryExpired).not.toHaveBeenCalled();
       expect(store.recordSettlement).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
@@ -750,6 +766,9 @@ describe("advanceLiquidityTankSettlement", () => {
       ),
       recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
         async () => ({ status: "recorded" }),
+      ),
+      recordRecoveryFailure: vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(
+        async (input) => ({ status: "recorded", recoveryFailure: input.recoveryFailure }),
       ),
       recordRecoveryExpired: vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
         async () => ({ status: "recorded" }),
@@ -807,6 +826,9 @@ describe("advanceLiquidityTankSettlement", () => {
       }),
       recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
         async () => ({ status: "recorded" }),
+      ),
+      recordRecoveryFailure: vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(
+        async (input) => ({ status: "recorded", recoveryFailure: input.recoveryFailure }),
       ),
       recordRecoveryExpired: vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
         async () => ({ status: "recorded" }),
@@ -1495,6 +1517,7 @@ describe("advanceLiquidityTankSettlement", () => {
     h.setAfterBroadcast(pending(h.operationHash, true));
     const store = createInMemoryLiquidityTankStore();
     const recordObservation = vi.spyOn(store, "recordObservation");
+    const recordRecoveryFailure = vi.spyOn(store, "recordRecoveryFailure");
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const recordSettlement = vi.spyOn(store, "recordSettlement");
     const run = runner({ adapter: h.adapter, store });
@@ -1513,8 +1536,9 @@ describe("advanceLiquidityTankSettlement", () => {
         txRef: { lockTxHash: "source-lock-tx", recoveryDeadline: RECOVERY_DEADLINE_MS },
       });
     expect(recordRecoveryExpired).not.toHaveBeenCalled();
-    expect(recordObservation).toHaveBeenCalledTimes(1);
-    expect(recordObservation).toHaveBeenCalledWith(expect.objectContaining({
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(recordRecoveryFailure).toHaveBeenCalledTimes(1);
+    expect(recordRecoveryFailure).toHaveBeenCalledWith(expect.objectContaining({
       recoveryFailure: expect.objectContaining({ status: "failed-after-lock" }),
     }));
 
@@ -1536,10 +1560,8 @@ describe("advanceLiquidityTankSettlement", () => {
         failure: failedAfterLock(h.operationHash, RECOVERY_DEADLINE_MS - 200),
       },
     }));
-    expect(recordObservation).toHaveBeenCalledTimes(1);
-    expect(recordObservation).toHaveBeenCalledWith(expect.objectContaining({
-      recoveryFailure: expect.objectContaining({ status: "failed-after-lock" }),
-    }));
+    expect(recordObservation).not.toHaveBeenCalled();
+    expect(recordRecoveryFailure).toHaveBeenCalledTimes(1);
 
     // A timely completion reported later cannot change the committed expiry.
     recordRecoveryExpired.mockClear();
@@ -1721,7 +1743,7 @@ describe("advanceLiquidityTankSettlement", () => {
       Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
     const write = { settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
       owner: claim.lease.owner, generation: claim.lease.generation, now: RECOVERY_DEADLINE_MS - 200,
-      observation: checkpoint, recoveryFailure: evidence };
+      recoveryFailure: evidence };
     for (const failure of [
       { ...evidence.failure, lockTxHash: "another-lock" },
       { ...evidence.failure, recoveryDeadline: RECOVERY_DEADLINE_MS + 1 },
@@ -1730,23 +1752,26 @@ describe("advanceLiquidityTankSettlement", () => {
       { ...evidence.failure, authenticationHash: "invalid" },
       { ...evidence.failure, history: ["empty", "completed", "failed"] },
     ]) {
-      await expect(store.recordObservation({ ...write,
+      await expect(store.recordRecoveryFailure({ ...write,
         recoveryFailure: { ...evidence, failure } as typeof evidence,
       })).resolves.toMatchObject({ status: "conflict" });
     }
-    await expect(store.recordObservation({ ...write, owner: "stale" })).resolves.toMatchObject({ status: "stale" });
-    await expect(store.recordObservation({ ...write, generation: claim.lease.generation + 1 })).resolves.toMatchObject({ status: "stale" });
-    await expect(store.recordObservation({ ...write, now: claim.lease.expiresAt })).resolves.toMatchObject({ status: "stale" });
-    await expect(store.recordObservation({ ...write, observation: { ...checkpoint, observedAt: checkpoint.observedAt + 1 } }))
-      .resolves.toMatchObject({ status: "conflict" });
-    await expect(store.recordObservation({ ...write,
+    await expect(store.recordRecoveryFailure({ ...write, owner: "stale" })).resolves.toMatchObject({ status: "stale" });
+    await expect(store.recordRecoveryFailure({ ...write, generation: claim.lease.generation + 1 })).resolves.toMatchObject({ status: "stale" });
+    await expect(store.recordRecoveryFailure({ ...write, now: claim.lease.expiresAt })).resolves.toMatchObject({ status: "stale" });
+    await expect(store.recordRecoveryFailure({ ...write,
+      recoveryFailure: { ...evidence, checkpoint: pending(h.operationHash) } as typeof evidence,
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.recordRecoveryFailure({ ...write,
       recoveryFailure: { ...evidence, checkpoint: { ...checkpoint, observedAt: checkpoint.observedAt + 1 } },
     })).resolves.toMatchObject({ status: "conflict" });
-    await expect(store.recordObservation(write)).resolves.toEqual({ status: "recorded" });
-    await expect(store.recordObservation(write)).resolves.toEqual({ status: "existing" });
+    await expect(store.recordRecoveryFailure(write)).resolves.toEqual({ status: "recorded", recoveryFailure: evidence });
+    await expect(store.recordRecoveryFailure(write)).resolves.toEqual({ status: "existing", recoveryFailure: evidence });
     const changedEvidence = { ...evidence, failure: { ...evidence.failure, observedAt: RECOVERY_DEADLINE_MS } };
-    await expect(store.recordObservation({ ...write, recoveryFailure: changedEvidence })).resolves.toMatchObject({ status: "conflict" });
-    const expiry = { ...write, now: RECOVERY_DEADLINE_MS, expectedObservation: checkpoint, observation: evidence };
+    await expect(store.recordRecoveryFailure({ ...write, recoveryFailure: changedEvidence })).resolves.toMatchObject({ status: "conflict" });
+    const expiry = { settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: claim.lease.owner, generation: claim.lease.generation,
+      now: RECOVERY_DEADLINE_MS, expectedObservation: checkpoint, observation: evidence };
     await expect(store.recordRecoveryExpired({ ...expiry, observation: changedEvidence })).resolves.toMatchObject({ status: "conflict" });
     await expect(store.claim({ intent, owner: "inspector", now: RECOVERY_DEADLINE_MS - 100, leaseDurationMs: 100 }))
       .resolves.toMatchObject({ status: "waiting", observation: checkpoint, recoveryFailure: evidence });
@@ -1799,22 +1824,29 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
   });
 
-  test("round 3: a lost failure-retention write never expires or broadcasts", async () => {
+  test.each([
+    ["a thrown write", async () => { throw new Error("lost failure write"); }],
+    ["stale", async () => ({ status: "stale", reason: "simulated" })],
+    ["conflict", async () => ({ status: "conflict", reason: "simulated" })],
+    ["corrupt", async () => ({ status: "corrupt", reason: "simulated" })],
+  ] as const)("round 3: a failure-retention write that returns %s never expires or broadcasts", async (_label, reply) => {
     const h = harness();
     const store = createInMemoryLiquidityTankStore();
     const run = runner({ adapter: h.adapter, store });
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(run.shared);
-    const record = store.recordObservation.bind(store);
+    const retain = store.recordRecoveryFailure.bind(store);
     const expiry = vi.spyOn(store, "recordRecoveryExpired");
-    store.recordObservation = async () => { throw new Error("lost failure write"); };
+    const lost = vi.fn(reply);
+    store.recordRecoveryFailure = lost as unknown as LiquidityTankStore["recordRecoveryFailure"];
     h.setObservation(failedAfterLock(h.operationHash, RECOVERY_DEADLINE_MS - 200));
     run.setClock(RECOVERY_DEADLINE_MS);
     await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "restart" }))
       .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+    expect(lost).toHaveBeenCalledTimes(1);
     expect(expiry).not.toHaveBeenCalled();
     expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
-    store.recordObservation = record;
+    store.recordRecoveryFailure = retain;
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
   });
 
@@ -1852,6 +1884,81 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(run.nextOwner()))
       .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
     expect(h.observe).not.toHaveBeenCalled();
+  });
+
+  describe("round 4", () => {
+    const D = RECOVERY_DEADLINE_MS;
+    type RetentionInput = Parameters<LiquidityTankStore["recordRecoveryFailure"]>[0];
+
+    test("a store without recordRecoveryFailure is refused before any effect, even with a lock", async () => {
+      const h = harness();
+      const inner = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(inner, h);
+      const { recordRecoveryFailure: _missing, ...legacy } = inner;
+      const claim = vi.spyOn(legacy, "claim");
+      h.observe.mockClear();
+      h.prepareSubmission.mockClear();
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: "un-upgraded",
+        store: legacy as unknown as LiquidityTankStore,
+      })).resolves.toEqual({
+        status: "failed",
+        errorClass: "permanent",
+        reason: expect.stringContaining("store.recordRecoveryFailure must be a stable method"),
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      // The durable lock is untouched and an upgraded store still resolves it.
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "upgraded" }))
+        .resolves.toMatchObject({ status: "settle-asymmetric", bridgeStatus: "failed" });
+    });
+
+    test.each([
+      ["existing without an echo", (_input: RetentionInput) => ({ status: "existing" })],
+      ["existing echoing another failure", (input: RetentionInput) => ({
+        status: "existing",
+        recoveryFailure: { ...input.recoveryFailure,
+          failure: { ...input.recoveryFailure.failure, reason: "another failure" } },
+      })],
+      ["recorded echoing another checkpoint", (input: RetentionInput) => ({
+        status: "recorded",
+        recoveryFailure: { ...input.recoveryFailure,
+          checkpoint: { ...input.recoveryFailure.checkpoint, observedAt: 2_001 } },
+      })],
+      ["existing with an accessor echo", (input: RetentionInput) => Object.defineProperty(
+        { status: "existing" }, "recoveryFailure", { enumerable: true, get: () => input.recoveryFailure },
+      )],
+    ] as const)("a retention reply %s is not retained and never expires", async (_label, reply) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const dropped = vi.fn(async (input: RetentionInput) => reply(input));
+      store.recordRecoveryFailure = dropped as unknown as LiquidityTankStore["recordRecoveryFailure"];
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "f" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(dropped).toHaveBeenCalledTimes(1);
+      // Restart at D with the bridge unavailable: nothing was retained.
+      run.setClock(D);
+      h.setObservation({ status: "indeterminate", reason: "offline" });
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "restart" }))
+        .resolves.toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased", pastDeadline: true });
+      // The same failure read again is still not retained.
+      run.setClock(D + 1);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "restart-2" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(expire).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
@@ -1928,9 +2035,9 @@ describe("advanceLiquidityTankSettlement", () => {
       generation: winner.lease.generation,
       now: RECOVERY_DEADLINE_MS + 202,
     };
-    await expect(store.recordObservation({ ...winnerWrite, observation: checkpoint,
+    await expect(store.recordRecoveryFailure({ ...winnerWrite,
       recoveryFailure: evidence(timely) as Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>,
-    })).resolves.toEqual({ status: "recorded" });
+    })).resolves.toEqual({ status: "recorded", recoveryFailure: evidence(timely) });
     await expect(store.recordRecoveryExpired({ ...winnerWrite, observation: evidence(timely) }))
       .resolves.toEqual({ status: "recorded" });
     await expect(store.recordRecoveryExpired({ ...winnerWrite, observation: evidence(timely) }))
