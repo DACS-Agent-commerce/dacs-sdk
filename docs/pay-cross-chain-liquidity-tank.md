@@ -5,7 +5,8 @@ The SDK exposes a dependency-injected
 binds the current DACS v0.1 route—ETH Sepolia to Polygon Amoy, USDC,
 unidirectional—and refuses silent substitution to HTLC or any other mechanism.
 It does not conform to §9.5.5 or ST-8 for a lock whose bridge reads contradict
-it: such a lock never expires (see [Contradicted locks](#contradicted-locks)).
+it: such a lock does not expire while its bridge reads contradict it (see
+[Contradicted locks](#contradicted-locks)).
 
 The core:
 
@@ -26,7 +27,7 @@ The core:
 - persists locked-unreleased state as ST-8 `tank-locked-unreleased`, resolving
   forward to success or reputation-neutral `failed-substrate` at the recovery
   deadline, except for a contradicted lock, which stays locked past the
-  deadline. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
+  deadline while its bridge reads contradict it. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
   pending and completed adapter observations, durable checkpoints, settlement
   replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted. A
@@ -105,13 +106,16 @@ twice.
 
 Contradictions return `bridgeStatus: "conflicting"`. At or after the deadline
 they return the distinct reason `lock-contradicted`, with `pastDeadline: true`,
-and remain locked; a timely completion can still settle.
+and remain locked; a timely completion can still settle. A contradiction
+latches nothing: once a later read carries the expiry evidence listed above,
+such as the same lock's pending snapshot stamped at or after the deadline, the
+lock expires to `failed-substrate` as usual.
 
 **This is a known deviation from DACS-4.** §9.5.5 bounds the
 `settle-asymmetric` state by `recoveryDeadline` and says the window expiring
 resolves to reputation-neutral `failed-substrate`; SR-5 (§9.8) requires both
-legs to succeed together or never take effect within a bounded time. For a
-contradicted lock this rail never expires, so it does not
+legs to succeed together or never take effect within a bounded time. This rail
+does not expire a lock while its bridge reads contradict it, so it does not
 conform to §9.5.5 or ST-8 for that case and must not be presented as
 conforming. Hosts must treat `lock-contradicted` as a readiness failure for
 this rail that needs an operator, not as ordinary waiting. The SDK has no
@@ -151,28 +155,47 @@ its lock and deadline must match exactly.
 Completion persistence and recovery expiry race atomically. Persisting a timely
 completion clears retained failure evidence and blocks expiry. Whichever
 eligible terminal transition commits first wins; the loser must report a
-non-successful write. Once expiry commits, every claim returns the same terminal
-state and no later completion may settle. A replayed `failed-after-lock`
-expiry carries no time of its own, so a worker whose clock has not reached the
-deadline reports the retry-safe `liquidity-tank-recovery-expiry-not-due`
-instead.
-
-Upgrading from the previous contract: `recordObservation` no longer takes
-`recoveryFailure` or `now`; failure retention moved to the required
-`recordRecoveryFailure` above. The core binds every store method before any
-claim or adapter effect, so a store without `recordRecoveryFailure` is refused
-on every call with `failed`/`permanent` and reason
-`pay-cross-chain-liquidity-tank: store.recordRecoveryFailure must be a stable
-method`, leaving its durable state untouched. That refusal is a configuration
-error, not a settlement outcome: a host must not close a phase that may hold a
-durable lock on it. A store that adds the method but does not really retain
-the failure cannot echo it and is treated as not retained.
+non-successful write. Once expiry commits, every claim from a host whose clock
+is at or after the deadline returns the same terminal state and no later
+completion may settle. A replayed `failed-after-lock` expiry carries no time of
+its own, so a worker whose clock has not reached the deadline reports the
+retry-safe `liquidity-tank-recovery-expiry-not-due` instead. A terminal result
+is final: hosts must act on it and not re-poll, since a host clock that steps
+back across the deadline would briefly report that retry-safe result again.
 
 A timely durable completed observation is also a settlement replay record. On worker
 takeover the coordinator deterministically reconstructs and records its
 settlement, including its exact `recoveryDeadline`, before any adapter
 observation, preparation or broadcast. Stores must accept an exact replay as
 `existing` and reject conflicting settlement writes.
+
+## Refusals before any claim
+
+The core captures the authority and binds every store and adapter method
+before any claim, preparation, observation or broadcast. The class of a refusal
+there depends on what it says about the phase:
+
+- **Authority content** (mechanism, scope, route, hashes, decimals, amount,
+  job identity or tank pair) returns `failed`/`permanent`. Validation is
+  deterministic over the captured content, so within one SDK version no
+  settlement key can exist for refused content. A later SDK that tightens
+  content validation must instead treat a refused authority whose phase already
+  has stored state as `indeterminate`.
+- **Authority representation** (a frozen or otherwise read-only authority, a
+  `Proxy`, accessors, an exotic prototype, or an `input` that is a `Proxy` or
+  exposes `authority` through an accessor) returns the retry-safe
+  `indeterminate` with the refusal message as its reason. The same data in
+  another shape derives the same settlement key, so the refusal says nothing
+  about whether the phase started. Pass the authority as a plain, writable
+  data object.
+- **A store without a stable `recordRecoveryFailure`**—for example one not
+  upgraded with the SDK, or wrapped in a `Proxy`—is refused on every call with
+  the retry-safe `indeterminate` and reason
+  `liquidity-tank-store-recovery-capability-unavailable`, before any claim or
+  effect. Any other refused owner, lease, clock, store or adapter is refused
+  the same way, with the refusal message as its reason. It needs an operator:
+  the core has not read the store, so it cannot tell whether a lock is durable
+  or the phase already settled.
 
 ## Adapter trust boundary
 
@@ -198,11 +221,13 @@ completion-versus-expiry winner atomically.
 - decode `signedSubmissionBase64` and compare it with the intent before it is
   stored, through the `demosdk`-backed adapter or an injected decoder so that
   `@kynesyslabs/dacs/rails` stays dependency-free;
-- a contradiction after a durable lock (`empty`, `capacity-unavailable`, a
-  failure not bound to the lock, or a different lock/deadline) never expires
-  and reports `lock-contradicted` past the deadline D. §9.5.5 says the window
-  expiring resolves to `failed-substrate`. This needs an authoritative
-  reconciliation operation or a spec-defined indeterminate outcome; and
+- a lock whose bridge reads contradict it (`empty`, `capacity-unavailable`, a
+  failure not bound to the lock, or a different lock/deadline) does not expire
+  while they do, and reports `lock-contradicted` past the deadline D. §9.5.5
+  says the window expiring resolves to `failed-substrate`. This needs an
+  authoritative reconciliation operation or a spec-defined indeterminate
+  outcome; the question is open as
+  [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422); and
 - confirm with the DACS-4 §9.5.5 owner whether a `failed` after a committed
   lock should settle via ST-8 (neutral `failed-substrate` at D, as now) or
   immediately as `permanent` (the §9.5.5 failure-mode list), and whether a

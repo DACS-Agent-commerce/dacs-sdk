@@ -353,9 +353,10 @@ export type LiquidityTankProgress =
        * lock: `failed` is retained terminal evidence, expiring when the host
        * clock reaches `recoveryDeadline`; `conflicting` contradicts the checkpoint
        * and needs an operator. Past the deadline its reason is `lock-contradicted`
-       * and the lock never expires here. That does not conform to DACS-4 §9.5.5,
-       * which resolves an expired window to `failed-substrate`: expiring cannot
-       * tell whether the release landed, so it could let the buyer pay twice.
+       * and the lock does not expire while its bridge reads contradict it. That
+       * does not conform to DACS-4 §9.5.5, which resolves an expired window to
+       * `failed-substrate`: expiring cannot tell whether the release landed, so
+       * it could let the buyer pay twice.
        */
       bridgeStatus?: "failed" | "conflicting";
       txRef: Readonly<{
