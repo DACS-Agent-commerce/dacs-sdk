@@ -85,6 +85,18 @@ the result is `refund-pending` with reason
 from that point on, and each leg is refunded at its own expiry. Callers keep
 advancing a `refund-pending` session until it is `refunded`.
 
+The core never returns `failed` while a locked leg still needs a refund or
+claim that it will drive later. Before the destination lock exists, a failed
+destination lock is `refund-pending` with reason `destination-lock-failed`,
+and a destination lock that can no longer be placed with the absolute margin
+is `refund-pending` with reason `destination-lock-window-closed`; the source
+leg is refunded at its expiry (reason `destination-lock-missing` when no
+destination lock failed). A retained reveal that the adapter reports `failed`
+is `refund-pending` with reason `destination-claim-failed` until both
+expiries have passed, then both legs are refunded with reason
+`destination-claim-unlanded`. `failed` is reserved for sessions the core has
+nothing left to drive.
+
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
 chain's asset id or mint), into the canonical intent. `sourceAsset` and

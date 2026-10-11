@@ -428,11 +428,14 @@ export type CrossChainHtlcProgress =
       reason:
         | "destination-timeout"
         | "destination-lock-missing"
+        | "destination-lock-failed"
+        | "destination-lock-window-closed"
         | "destination-expiry-margin-insufficient"
         | "source-lock-terms-missing"
         | "source-lock-terms-mismatch"
         | "destination-lock-terms-missing"
         | "destination-lock-terms-mismatch"
+        | "destination-claim-failed"
         | "destination-claim-unlanded";
       txRefs: readonly Readonly<HtlcTxRef>[];
     }
@@ -1812,23 +1815,27 @@ export async function advanceCrossChainHtlc(
   }
 
   if (!destinationLock) {
+    const state = snapshot.actions["destination-lock"];
+    // The payer's source leg stays locked until its own refund is final, so
+    // nothing on this path is terminal: a failed or impossible destination
+    // lock is refund-pending until the source refund lands.
+    const refundReason = state?.state === "failed" ? "destination-lock-failed" : "destination-lock-missing";
     if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry")) {
       const refund = snapshot.actions["source-refund"];
       if (!refund || refund.state === "absent") {
         const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
         return advanced
-          ? { status: "refund-pending", reason: "destination-lock-missing", txRefs: collectRefs(advanced, prepared) }
+          ? { status: "refund-pending", reason: refundReason, txRefs: collectRefs(advanced, prepared) }
           : { status: "indeterminate", reason: "htlc-source-refund-effect-uncertain" };
       }
       return {
         status: refund.state === "final" ? "refunded" : "refund-pending",
-        reason: "destination-lock-missing",
+        reason: refundReason,
         txRefs: collectRefs(snapshot, prepared),
       };
     }
-    const state = snapshot.actions["destination-lock"];
     if (state?.state === "failed") {
-      return { status: "failed", errorClass: "counterparty", reason: state.reason ?? "htlc-destination-lock-failed" };
+      return { status: "refund-pending", reason: refundReason, txRefs: collectRefs(snapshot, prepared) };
     }
     // The payee locks the destination only against the source lock's
     // authenticated terms. Missing or different terms forbid the lock; the
@@ -1869,7 +1876,11 @@ export async function advanceCrossChainHtlc(
       sourceRecoveryBudgetSec,
       "absolute expiry margin",
     )) {
-      return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
+      return {
+        status: "refund-pending",
+        reason: "destination-lock-window-closed",
+        txRefs: collectRefs(snapshot, prepared),
+      };
     }
     if (!state || state.state === "absent") {
       if (sourceTermsForbidden) return sourceTermsForbidden;
@@ -1933,11 +1944,7 @@ export async function advanceCrossChainHtlc(
         pendingClaim.state === "failed";
       if (!unlanded || !sourceExpired || !destinationExpired) {
         if (pendingClaim?.state === "failed") {
-          return {
-            status: "failed",
-            errorClass: "counterparty",
-            reason: pendingClaim.reason ?? "htlc-destination-claim-failed",
-          };
+          return { status: "refund-pending", reason: "destination-claim-failed", txRefs: collectRefs(snapshot, prepared) };
         }
         return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
       }
@@ -1982,7 +1989,9 @@ export async function advanceCrossChainHtlc(
   }
   const claimState = snapshot.actions["destination-claim"];
   if (claimState?.state === "failed") {
-    return { status: "failed", errorClass: "counterparty", reason: claimState.reason ?? "htlc-destination-claim-failed" };
+    // A retained reveal is never replaced and may have exposed the preimage,
+    // so both legs are refunded once both expiries pass (see above).
+    return { status: "refund-pending", reason: "destination-claim-failed", txRefs: collectRefs(snapshot, prepared) };
   }
   if (!claimState || claimState.state === "absent") {
     const advanced = await execute("destination-claim", {
