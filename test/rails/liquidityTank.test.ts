@@ -1255,15 +1255,25 @@ describe("advanceLiquidityTankSettlement", () => {
         failure: failedAfterLock(intent.operationHash, RECOVERY_DEADLINE_MS),
       },
     ] as LiquidityTankRecoveryEvidence[]) {
-      await expect(advanceLiquidityTankSettlement(runner({
-        store: replay(observation),
-        adapter: h.adapter,
-      }).shared)).resolves.toMatchObject({
+      const run = runner({ store: replay(observation), adapter: h.adapter });
+      run.setClock(RECOVERY_DEADLINE_MS);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
         status: "failed",
         errorClass: "failed-substrate",
         reputationNeutral: true,
       });
     }
+    // Failure evidence carries no time of its own, so before D replay waits.
+    const early = runner({ store: replay({
+      status: "failed-after-lock",
+      checkpoint,
+      failure: failedAfterLock(intent.operationHash, RECOVERY_DEADLINE_MS),
+    } as LiquidityTankRecoveryEvidence), adapter: h.adapter });
+    early.setClock(RECOVERY_DEADLINE_MS - 1);
+    await expect(advanceLiquidityTankSettlement(early.shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "liquidity-tank-recovery-expiry-not-due",
+    });
   });
 
   test("a timely completion whose write fails after the deadline does not commit expiry", async () => {
@@ -1956,6 +1966,34 @@ describe("advanceLiquidityTankSettlement", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "restart-2" }))
         .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
       expect(expire).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("replaying a failure expiry waits until this host reaches the deadline (P8)", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const intent = createLiquidityTankIntent(authority());
+      const peek = await store.claim({ intent, owner: "peek", now: 5_000, leaseDurationMs: 100 });
+      if (peek.status !== "acquired" || !peek.submission) throw new Error("expected acquired");
+      const submission = peek.submission;
+      store.claim = async () => ({
+        status: "recovery-expired", intent, submission,
+        observation: { status: "failed-after-lock", checkpoint: pending(h.operationHash, true),
+          failure: failedAfterLock(h.operationHash, D - 10_000) },
+      }) as never;
+      h.observe.mockClear();
+      h.prepareSubmission.mockClear();
+      for (const at of [D - 9_000, D - 1]) {
+        run.setClock(at);
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: `replay-${at}` }))
+          .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" });
+      }
+      run.setClock(D);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay-at-deadline" }))
+        .resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate", reputationNeutral: true });
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
 

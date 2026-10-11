@@ -1161,9 +1161,10 @@ export async function advanceLiquidityTankSettlement(
       LiquidityTankStoreClaim,
       { status: "recovery-expired" }
     >;
+    let evidence: LiquidityTankRecoveryEvidence;
     try {
       const submission = validateRetainedSubmission(expiredClaim.submission, intent);
-      const evidence = validateRecoveryEvidence(
+      evidence = validateRecoveryEvidence(
         expiredClaim.observation,
         intent,
         submission,
@@ -1171,10 +1172,16 @@ export async function advanceLiquidityTankSettlement(
       if (!provesRecoveryExpiry(evidence)) {
         throw new DacsError("pay-cross-chain-liquidity-tank: recovery expiry evidence missing");
       }
-      return recoveryExpiredProgress();
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
+    // A terminal failure carries no time of its own: this host's clock must
+    // also have reached the deadline before the expiry is reported.
+    if (evidence.status === "failed-after-lock" &&
+        claimNow < recoveryEvidenceDeadline(evidence)) {
+      return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
+    }
+    return recoveryExpiredProgress();
   }
   if (claimStatus === "waiting") {
     const waitingClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "waiting" }>;
