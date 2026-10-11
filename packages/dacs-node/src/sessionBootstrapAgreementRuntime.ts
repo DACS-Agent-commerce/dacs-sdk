@@ -1,3 +1,4 @@
+import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
 import { randomBytes } from "node:crypto";
 
 import {
@@ -908,6 +909,15 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
   return async (operation) => {
     if (!operationBound(context, operation)) {
       return operator("seller-session-bootstrap-track-mismatch");
+    }
+    // Recover a durably signed response before advancing any competing terminal.
+    try {
+      if (loadDacsAgreementTerminalBoundaryForOrderV1(context, operation.order).sellerResponseRetained) {
+        await operation.fence.assertCurrent();
+        return await options.agreement(operation);
+      }
+    } catch {
+      return operator("seller-agreement-runtime-failed");
     }
     if (options.terminalBundle !== undefined) {
       const terminal = await advanceDacsVetTerminalTrackV1(

@@ -527,3 +527,8 @@ Upgrade note: `DacsBuyerAuditAuthorizationV1` callbacks may now return
 `"indeterminate"` as well as a boolean. Existing boolean callbacks still work;
 callers consuming the result must handle `"indeterminate"` as pending verification
 and must check `result === true` before treating it as authorization.
+
+
+Before upgrading the native Vet reference format, drain all in-flight testnet
+jobs on both peers. Retained Vet records and audit references from older builds
+must not be carried into an upgraded session; restart new jobs after the upgrade.

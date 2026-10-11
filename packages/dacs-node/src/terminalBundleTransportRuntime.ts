@@ -28,6 +28,7 @@ import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity } from
   "@kynesyslabs/dacs/identity";
 
+import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
 import { createDacsDemosBundlePublicationV1 } from "./demosBundlePublication.js";
 import { captureDacsFixedPriceX402ApplicationV1 } from
   "./fixedPriceX402Profile.js";
@@ -374,6 +375,8 @@ async function loadOrder(
   }>;
   pipeline: Readonly<PrepareVetTerminalBundleInput["pipeline"]>;
   agreementConcluded: boolean;
+  sellerPassRetained: boolean;
+  sellerResponseRetained: boolean;
 }>> {
   const [x402, payDem] = await Promise.all([
     context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
@@ -454,20 +457,19 @@ async function loadOrder(
       contentHash: application.listingContentHash,
     }),
     pipeline: application.listing.pipeline,
+    ...loadDacsAgreementTerminalBoundaryForOrderV1(context, record),
     agreementConcluded: record.tracks.agreement?.state === "final" &&
       record.tracks.agreement.outcome === "success",
   });
 }
 
-// A Vet failure can only end a job before agreement. Once this role's agreement
-// track has succeeded, or it has retained agreement facts recording the
-// evaluated party's Vet as passed, a Vet terminal for the job is contradicted
-// by local state and must be neither retained nor signed. The buyer's facts
-// record both Vets; the seller's record only its own Vet of the buyer, so a
-// buyer-proposed failure of the seller stays admissible until agreement.
+// Authenticated proposal/response bindings are durable commitments even before
+// the coordinator records agreement success. A seller-pass proposal contradicts
+// seller failure; a retained seller response excludes every pre-agreement terminal.
 function assertPreAgreementTerminal(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<{ jobId: string; agreementConcluded: boolean }>,
+  order: Readonly<{ jobId: string; agreementConcluded: boolean;
+    sellerPassRetained: boolean; sellerResponseRetained: boolean }>,
   evaluatedRole: unknown,
 ): void {
   const factsRetained = context.database.loadEffectInput(
@@ -476,7 +478,9 @@ function assertPreAgreementTerminal(
   ) !== undefined;
   const passedVets: readonly unknown[] = !factsRetained ? []
     : context.role === "buyer" ? ["buyer", "seller"] : ["buyer"];
-  if (order.agreementConcluded || passedVets.includes(evaluatedRole)) {
+  if (order.agreementConcluded || order.sellerResponseRetained ||
+      (order.sellerPassRetained && evaluatedRole === "seller") ||
+      passedVets.includes(evaluatedRole)) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-not-pre-agreement");
   }
 }

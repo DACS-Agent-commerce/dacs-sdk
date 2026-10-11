@@ -1557,7 +1557,14 @@ function auditSourceViolation(
       invocation.evaluatedParty !== binding.primaryClaim ||
       invocation.verifier !== expectedVerifier ||
       invocation.vetRecordRef.anchor.kind !== "storage-program" ||
-      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.anchorReceipt === undefined
+        ? invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress
+        : invocation.anchorReceipt.logicalAddress !== expectedCompositeAddress ||
+          invocation.vetRecordRef.anchor.locator !== invocation.anchorReceipt.nativeAddress ||
+          invocation.anchorReceipt.contentHash !== invocation.vetRecordRef.contentHash ||
+          invocation.anchorReceipt.writer !== expectedVerifier ||
+          invocation.anchorReceipt.state !== "finalized" ||
+          invocation.anchorReceipt.observationDisposition !== "established") ||
       (invocation.vetRecordRef.signer !== undefined &&
         invocation.vetRecordRef.signer !== invocation.verifier) ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement)) ||

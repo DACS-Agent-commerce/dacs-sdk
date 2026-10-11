@@ -259,10 +259,10 @@ function sellerVetProductionValid(
     record.overallDecision === "pass" &&
     sameCanonicalClaimIdentity(record.signature.signer, identity.buyer) &&
     ref.anchor.kind === "storage-program" &&
-    ref.anchor.locator === compositeVerificationAddress(identity.jobId, identity.seller) &&
+    ref.anchor.locator === receipt.nativeAddress &&
     ref.contentHash === contentHash(record as unknown as Record<string, unknown>) &&
     sameCanonicalClaimIdentity(ref.signer, identity.buyer) &&
-    receipt.logicalAddress === ref.anchor.locator &&
+    receipt.logicalAddress === compositeVerificationAddress(identity.jobId, identity.seller) &&
     receipt.contentHash === ref.contentHash &&
     sameCanonicalClaimIdentity(receipt.writer, identity.buyer);
 }
@@ -489,6 +489,31 @@ function loadResponseBinding(
     throw new DacsAgreementTransportRuntimeError("agreement-response-binding-corrupt");
   }
   return binding;
+}
+
+/** Read the authenticated agreement commitments before authorizing a Vet terminal. */
+export function loadDacsAgreementTerminalBoundaryForOrderV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<DacsLiveOrderRecordV1>,
+): Readonly<{ sellerPassRetained: boolean; sellerResponseRetained: boolean }> {
+  const proposal = loadProposalBinding(context, order);
+  const response = loadResponseBinding(context, order);
+  if (proposal !== undefined && context.role === "seller") {
+    const authentication = proposal.transportAuthentication;
+    if (authentication === undefined || authentication.sender !== order.buyer ||
+        authentication.audience !== order.seller) {
+      throw new DacsAgreementTransportRuntimeError("agreement-proposal-binding-corrupt");
+    }
+  }
+  if (response !== undefined && (proposal === undefined ||
+      canonicalize(response.payload.transportIdentity) !== canonicalize(proposal.payload.transportIdentity) ||
+      response.payload.sellerContribution.signature.party !== order.seller)) {
+    throw new DacsAgreementTransportRuntimeError("agreement-response-binding-corrupt");
+  }
+  return Object.freeze({
+    sellerPassRetained: proposal !== undefined,
+    sellerResponseRetained: response !== undefined,
+  });
 }
 
 async function sendProposal(
