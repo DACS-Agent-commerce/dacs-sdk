@@ -192,9 +192,22 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
   }
 >;
 
+/**
+ * Authenticated evidence that the release missed `recoveryDeadline`: the
+ * locked pending checkpoint observed at or after it, a completion finalized at
+ * or after it, or a bridge failure after the lock observed at or after it.
+ * `observedAt` is the bridge's authenticated time of the status snapshot.
+ */
 export type LiquidityTankRecoveryEvidence =
   | LiquidityTankRecoveryCheckpoint
-  | Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>;
+  | Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>
+  | Readonly<{
+      status: "failed-after-lock";
+      checkpoint: LiquidityTankRecoveryCheckpoint;
+      failure: Readonly<Extract<LiquidityTankObservation, { status: "failed" }>> & {
+        history: readonly ["empty", "pending", "failed"];
+      };
+    }>;
 
 export type LiquidityTankStoreClaim =
   | {
@@ -261,7 +274,9 @@ export interface LiquidityTankStore {
    * consistent with `expectedObservation`, the identified lease is current at
    * `now`, and no completion or settlement won. `expectedObservation` is the
    * exact durable observation established by the claim or a confirmed write,
-   * if one existed.
+   * if one existed. Both `now` and the evidence's own authenticated time
+   * (`observedAt`, or `finalityObservedAt` for a completion) must be at or
+   * after `recoveryDeadline`; there is no clock-skew allowance.
    */
   recordRecoveryExpired(input: {
     settlementKey: string;
@@ -296,6 +311,19 @@ export type LiquidityTankProgress =
       reason: "tank-locked-unreleased";
       /** Exact Unix-millisecond timestamp from the authenticated checkpoint. */
       recoveryDeadline: number;
+      /**
+       * The host clock read during this call was at or after `recoveryDeadline`
+       * but no expiry evidence was accepted. The lock is overdue: alert if this
+       * persists rather than polling silently.
+       */
+      pastDeadline: boolean;
+      /**
+       * Set when this call's authenticated bridge status could not move the
+       * lock: `failed` is a terminal failure after the lock and expires once the
+       * bridge reports it at or after `recoveryDeadline`; `conflicting`
+       * contradicts the checkpoint, never expires and needs an operator.
+       */
+      bridgeStatus?: "failed" | "conflicting";
       txRef: Readonly<{
         kind: "liquidity-tank";
         bridgeId: string;
@@ -760,6 +788,8 @@ function validateCapturedObservation(
 function progressFromDurableObservation(
   intent: Readonly<LiquidityTankIntent>,
   observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
+  now: number,
+  bridgeStatus?: "failed" | "conflicting",
 ): LiquidityTankProgress | null {
   if (!observation) return null;
   if (observation.status === "pending" && observation.lockTxHash && observation.recoveryDeadline) {
@@ -767,6 +797,8 @@ function progressFromDurableObservation(
       status: "settle-asymmetric",
       reason: "tank-locked-unreleased",
       recoveryDeadline: observation.recoveryDeadline,
+      pastDeadline: now >= observation.recoveryDeadline,
+      ...(bridgeStatus === undefined ? {} : { bridgeStatus }),
       txRef: Object.freeze({
         kind: "liquidity-tank",
         bridgeId: observation.bridgeId,
@@ -789,15 +821,65 @@ function recoveryCheckpoint(
     : undefined;
 }
 
-function recoveryExpiryEvidence(
-  observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
-): LiquidityTankRecoveryEvidence | undefined {
-  const checkpoint = recoveryCheckpoint(observation);
-  if (checkpoint) return checkpoint;
-  return observation?.status === "completed" &&
-      observation.finalityObservedAt >= observation.recoveryDeadline
-    ? observation
-    : undefined;
+function failedAfterLock(
+  observation: Readonly<LiquidityTankObservation>,
+): observation is Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>["failure"] {
+  return observation.status === "failed" && observation.history.length === 3;
+}
+
+function recoveryEvidenceDeadline(evidence: LiquidityTankRecoveryEvidence): number {
+  return evidence.status === "failed-after-lock"
+    ? evidence.checkpoint.recoveryDeadline
+    : evidence.recoveryDeadline;
+}
+
+/**
+ * Whether the evidence's own authenticated time is at or after the deadline.
+ * The time a status was requested or received proves nothing: a cached or
+ * lagging status read after the deadline may still describe the bridge before
+ * it.
+ */
+function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean {
+  if (evidence.status === "completed") {
+    return evidence.finalityObservedAt >= evidence.recoveryDeadline;
+  }
+  return evidence.status === "pending"
+    ? evidence.observedAt >= evidence.recoveryDeadline
+    : evidence.failure.observedAt >= evidence.checkpoint.recoveryDeadline;
+}
+
+/** Structural validation only; callers decide timeliness with `provesRecoveryExpiry`. */
+function validateRecoveryEvidence(
+  value: LiquidityTankRecoveryEvidence,
+  intent: Readonly<LiquidityTankIntent>,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+): LiquidityTankRecoveryEvidence {
+  const captured = snapshotCanonicalJsonRead(
+    value,
+    "liquidity-tank recovery evidence",
+  ) as LiquidityTankRecoveryEvidence;
+  if (captured.status === "failed-after-lock") {
+    const checkpoint = validateCapturedObservation(captured.checkpoint, intent, submission);
+    const failure = validateCapturedObservation(captured.failure, intent, submission);
+    if (checkpoint.status === "indeterminate" || !recoveryCheckpoint(checkpoint) ||
+        !failedAfterLock(failure)) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: recovery evidence is invalid");
+    }
+    return Object.freeze({
+      status: "failed-after-lock" as const,
+      checkpoint: checkpoint as LiquidityTankRecoveryCheckpoint,
+      failure,
+    });
+  }
+  const observation = validateCapturedObservation(captured, intent, submission);
+  if (observation.status === "completed") return observation;
+  const checkpoint = observation.status === "indeterminate"
+    ? undefined
+    : recoveryCheckpoint(observation);
+  if (!checkpoint) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: recovery evidence is invalid");
+  }
+  return checkpoint;
 }
 
 function recoveryExpiredProgress(): LiquidityTankProgress {
@@ -956,7 +1038,13 @@ export async function advanceLiquidityTankSettlement(
       reason: error instanceof Error ? error.message : "liquidity-tank-runtime-policy-invalid",
     };
   }
-  const readNow = (): number => requireUInt(now(), "clock");
+  // The latest valid host clock reading; locked progress reports `pastDeadline`
+  // against it.
+  let latestNow = 0;
+  const readNow = (): number => {
+    latestNow = requireUInt(now(), "clock");
+    return latestNow;
+  };
   let claimNow: number;
   let expectedLeaseExpiry: number;
   try {
@@ -1013,12 +1101,12 @@ export async function advanceLiquidityTankSettlement(
     >;
     try {
       const submission = validateRetainedSubmission(expiredClaim.submission, intent);
-      const observation = validateRetainedObservation(
+      const evidence = validateRecoveryEvidence(
         expiredClaim.observation,
         intent,
         submission,
       );
-      if (!recoveryExpiryEvidence(observation)) {
+      if (!provesRecoveryExpiry(evidence)) {
         throw new DacsError("pay-cross-chain-liquidity-tank: recovery expiry evidence missing");
       }
       return recoveryExpiredProgress();
@@ -1175,7 +1263,6 @@ export async function advanceLiquidityTankSettlement(
     expectedObservation: Readonly<
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
     > | undefined,
-    requestedAt?: number,
   ): Promise<LiquidityTankProgress | null> => {
     let recoveryNow: number;
     try {
@@ -1183,19 +1270,19 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-clock-invalid" };
     }
-    if (recoveryNow < observation.recoveryDeadline) {
+    // Expiry needs both the host clock and the evidence's own authenticated
+    // time at or after the deadline, with no clock-skew allowance either way.
+    if (recoveryNow < recoveryEvidenceDeadline(observation) ||
+        !provesRecoveryExpiry(observation)) {
+      if (observation.status === "completed") {
+        return {
+          status: "indeterminate",
+          reason: "liquidity-tank-completion-finality-invalid",
+        };
+      }
       return observation.status === "pending"
-        ? progressFromDurableObservation(intent, observation)
-        : {
-            status: "indeterminate",
-            reason: "liquidity-tank-completion-finality-invalid",
-          };
-    }
-    // A pending status proves the release missed the deadline only when it was
-    // requested at or after that deadline.
-    if (observation.status === "pending" &&
-        (requestedAt === undefined || requestedAt < observation.recoveryDeadline)) {
-      return progressFromDurableObservation(intent, observation);
+        ? progressFromDurableObservation(intent, observation, recoveryNow)
+        : progressFromDurableObservation(intent, observation.checkpoint, recoveryNow, "failed");
     }
     let stored: boolean;
     try {
@@ -1224,11 +1311,10 @@ export async function advanceLiquidityTankSettlement(
 
   const resolveRecoveryProgress = async (
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
-    requestedAt: number | undefined,
   ): Promise<LiquidityTankProgress | null> => {
     const checkpoint = recoveryCheckpoint(observation);
     return checkpoint
-      ? persistRecoveryExpired(checkpoint, observation, requestedAt)
+      ? persistRecoveryExpired(checkpoint, observation)
       : null;
   };
 
@@ -1243,27 +1329,23 @@ export async function advanceLiquidityTankSettlement(
 
   // Without a fresh authenticated status that shows the release missed the
   // deadline, a durable checkpoint stays locked-unreleased and never expires.
-  const resolveDurableProgress = async (): Promise<LiquidityTankProgress | null> =>
-    progressFromDurableObservation(intent, durableObservation);
+  const resolveDurableProgress = async (
+    bridgeStatus?: "conflicting",
+  ): Promise<LiquidityTankProgress | null> =>
+    progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
 
-  const observe = async (): Promise<Readonly<{
-    observation: Readonly<LiquidityTankObservation>;
-    requestedAt?: number;
-  }>> => {
+  const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
     try {
       await fence.assertCurrent();
-      const requestedAt = readNow();
       const observed = validateObservation(
         await observeSettlement(intent, submission, fence),
         intent,
         submission,
       );
       await fence.assertCurrent();
-      return { observation: observed, requestedAt };
+      return observed;
     } catch {
-      return {
-        observation: { status: "indeterminate", reason: "liquidity-tank-status-unavailable" },
-      };
+      return { status: "indeterminate", reason: "liquidity-tank-status-unavailable" };
     }
   };
   const persistObservation = async (
@@ -1284,10 +1366,9 @@ export async function advanceLiquidityTankSettlement(
       return false;
     }
   };
-  const finalize = async ({ observation, requestedAt }: Readonly<{
-    observation: Readonly<LiquidityTankObservation>;
-    requestedAt?: number;
-  }>): Promise<LiquidityTankProgress | null> => {
+  const finalize = async (
+    observation: Readonly<LiquidityTankObservation>,
+  ): Promise<LiquidityTankProgress | null> => {
     if (observation.status === "indeterminate") {
       return await resolveDurableProgress() ?? {
         status: "indeterminate",
@@ -1296,7 +1377,22 @@ export async function advanceLiquidityTankSettlement(
     }
     if (durableObservation &&
         !preservesRecoveryCheckpoint(durableObservation, observation)) {
-      return await resolveDurableProgress() ?? {
+      // A failure whose history includes the recorded pending means the
+      // release will never land. Any other status here (`empty`,
+      // `capacity-unavailable`, a failure that skips pending, or another lock
+      // or deadline) contradicts the checkpoint, as a lagging replica would, so
+      // it never expires.
+      const checkpoint = recoveryCheckpoint(durableObservation);
+      if (checkpoint && failedAfterLock(observation)) {
+        return await persistRecoveryExpired(
+          { status: "failed-after-lock", checkpoint, failure: observation },
+          durableObservation,
+        ) ?? {
+          status: "indeterminate",
+          reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
+        };
+      }
+      return await resolveDurableProgress("conflicting") ?? {
         status: "indeterminate",
         reason: "liquidity-tank-recovery-checkpoint-conflict",
       };
@@ -1321,7 +1417,7 @@ export async function advanceLiquidityTankSettlement(
       return { status: "failed", errorClass: "permanent", reason: observation.reason };
     }
     if (observation.status === "pending") {
-      const durablePending = await resolveRecoveryProgress(observation, requestedAt);
+      const durablePending = await resolveRecoveryProgress(observation);
       return durablePending ?? {
         status: "waiting",
         reason: "liquidity-tank-pending",
@@ -1333,8 +1429,8 @@ export async function advanceLiquidityTankSettlement(
     return null;
   };
 
-  let observed = await observe();
-  const terminal = await finalize(observed);
+  let observation = await observe();
+  const terminal = await finalize(observation);
   if (terminal) return terminal;
   try {
     await fence.assertCurrent();
@@ -1346,8 +1442,8 @@ export async function advanceLiquidityTankSettlement(
       reason: "liquidity-tank-broadcast-outcome-uncertain",
     };
   }
-  observed = await observe();
-  return await finalize(observed) ?? {
+  observation = await observe();
+  return await finalize(observation) ?? {
     status: "indeterminate",
     reason: "liquidity-tank-status-transition-unresolved",
   };
@@ -1524,45 +1620,43 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
           ? { status: "existing" }
           : { status: "conflict", reason: "liquidity-tank-recovery-expiry-conflict" };
       }
-      const recoveryDeadline = recoveryDeadlineUnixMs(input.observation.recoveryDeadline);
-      if (expiryNow < recoveryDeadline) {
+      if (!record.submission) {
+        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
+      }
+      let evidence: LiquidityTankRecoveryEvidence;
+      try {
+        evidence = validateRecoveryEvidence(input.observation, record.intent, record.submission);
+      } catch {
+        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
+      }
+      // The evidence carries its own authenticated time, so the CAS re-checks
+      // it as well as the store clock.
+      if (expiryNow < recoveryEvidenceDeadline(evidence) || !provesRecoveryExpiry(evidence)) {
         return { status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" };
       }
       const expectedObservationMatches = record.observation === undefined
         ? input.expectedObservation === undefined
         : input.expectedObservation !== undefined &&
           canonicalize(record.observation) === canonicalize(input.expectedObservation);
-      if (!record.submission || !expectedObservationMatches) {
+      if (!expectedObservationMatches) {
         return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
       }
-      let evidence: Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
-      try {
-        evidence = validateRetainedObservation(input.observation, record.intent, record.submission);
-      } catch {
-        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
-      }
+      const priorCheckpoint = recoveryCheckpoint(record.observation);
       if (evidence.status === "pending") {
-        if (!recoveryCheckpoint(evidence) ||
-            canonicalize(record.observation) !== canonicalize(evidence)) {
+        if (canonicalize(record.observation) !== canonicalize(evidence)) {
           return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
         }
       } else if (evidence.status === "completed") {
-        if (evidence.finalityObservedAt < evidence.recoveryDeadline) {
-          return { status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" };
-        }
-        const priorCheckpoint = recoveryCheckpoint(record.observation);
         if (priorCheckpoint &&
             (evidence.lockTxHash !== priorCheckpoint.lockTxHash ||
               evidence.recoveryDeadline !== priorCheckpoint.recoveryDeadline)) {
           return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
         }
-      } else {
-        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
+      } else if (!priorCheckpoint ||
+          canonicalize(priorCheckpoint) !== canonicalize(evidence.checkpoint)) {
+        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
       }
-      record.recoveryExpired = Object.freeze({
-        ...evidence,
-        history: Object.freeze([...evidence.history]),
-      }) as LiquidityTankRecoveryEvidence;
+      record.recoveryExpired = evidence;
       return { status: "recorded" };
     },
     async recordSettlement(input) {
