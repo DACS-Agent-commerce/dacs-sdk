@@ -275,7 +275,10 @@ seller closure it already authenticated (never a seller signer), and the host
 then runs `verifyCompletedTwoSidedSession()` against fresh buyer and seller
 Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
 ST-11 dependency graph. Its audit reference is the authenticated native bundle
-address. Native DEM and x402 use the same two-copy finish boundary.
+address. Native DEM and x402 use the same two-copy finish boundary. A Demos
+read that cannot be answered leaves the track `indeterminate`
+(`buyer-audit-completion-indeterminate`) and it is retried; only a completion
+that was read and failed authentication needs operator action.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange

@@ -7,6 +7,7 @@ import {
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
+  SubstrateError,
   verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
@@ -67,6 +68,7 @@ import {
 } from "./bundleTransportRuntime.js";
 import {
   createDacsDemosBundlePublicationV1,
+  DacsDemosBundlePublicationError,
   type DacsDemosBundlePublicationV1,
 } from "./demosBundlePublication.js";
 import {
@@ -94,6 +96,12 @@ import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
+// Binding lookups that Demos could not answer, as opposed to a binding that
+// was read and failed authentication.
+const TRANSIENT_BINDING_RESOLUTION_REASONS = new Set([
+  "bundle-binding-resolution-indeterminate",
+  "bundle-binding-resolution-unavailable",
+]);
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
 type PayDemBuyerAuditOptions = Omit<
@@ -1567,6 +1575,10 @@ export function createDacsFixedPriceBuyerAuditV1(
           buyerPublication.bundleContentHash !== result.bundleContentHash ||
           completion.sellerClosure.result.nativeAddress !==
             sellerPublication.nativeAddress) return false;
+      // A Demos read that could not be answered is not evidence against the
+      // session. Remember it so a rejection caused by it stays retryable
+      // instead of being reported as an authentication failure.
+      let unavailable = false;
       try {
         await verifyCompletedTwoSidedSession({
           jobId: operation.order.jobId,
@@ -1594,7 +1606,16 @@ export function createDacsFixedPriceBuyerAuditV1(
         }, {
           sellerFinalizationProvider: material.provider,
           async readBundleCopy(nativeAddress, role) {
-            const anchored = await publication.resolveRoleBundle(role);
+            let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
+            try {
+              anchored = await publication.resolveRoleBundle(role);
+            } catch (error) {
+              if (!(error instanceof DacsDemosBundlePublicationError) ||
+                  error.reasonCode === "bundle-resolution-indeterminate") {
+                unavailable = true;
+              }
+              throw error;
+            }
             return anchored !== null && anchored.nativeAddress === nativeAddress
               ? copy(anchored.bundle) as unknown as Record<string, unknown>
               : null;
@@ -1605,22 +1626,32 @@ export function createDacsFixedPriceBuyerAuditV1(
               nativeAddress: candidate.nativeAddress,
               anchorReceipt: candidate.anchorReceipt,
             });
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             return disposition === "valid"
               ? { disposition: "valid" as const, mapping: "write-input" as const }
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
           },
-          resolveBundleBinding: (logicalAddress, signer) =>
-            publication.resolveBundleBinding(logicalAddress, signer),
+          async resolveBundleBinding(logicalAddress, signer) {
+            const resolved = await publication.resolveBundleBinding(logicalAddress, signer);
+            if (resolved.disposition === "indeterminate" &&
+                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
+              unavailable = true;
+            }
+            return resolved;
+          },
           async verifyBundleBinding(binding) {
             const disposition = await publication.verifyBundleBinding(binding);
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             return disposition === "valid"
               ? { disposition: "valid" as const }
               : { disposition, reason: `demos-bundle-binding-${disposition}` };
           },
         });
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        // The strict seller verifier reports unresolved substrate reads as
+        // SubstrateError; every other rejection is a real authentication failure.
+        return unavailable || error instanceof SubstrateError ? "indeterminate" : false;
       }
     },
   };

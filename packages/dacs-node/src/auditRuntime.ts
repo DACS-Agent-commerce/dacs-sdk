@@ -93,6 +93,13 @@ export interface DacsSellerAuditRuntimeOptionsV1
   }>): Promise<boolean> | boolean;
 }
 
+/**
+ * Buyer completion authorization. `true` authorizes the final audit result and
+ * `false` is an authentication failure that needs an operator. `indeterminate`
+ * means a required read could not be answered; the track retries it.
+ */
+export type DacsBuyerAuditAuthorizationV1 = boolean | "indeterminate";
+
 export interface DacsBuyerAuditRuntimeOptionsV1
   extends DacsAuditRuntimeCommonOptionsV1 {
   bundleTransport: Readonly<BuyerBundleTransport>;
@@ -107,7 +114,7 @@ export interface DacsBuyerAuditRuntimeOptionsV1
     material: Readonly<DacsBuyerAuditMaterialV1>;
     completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<DacsBuyerAuditAuthorizationV1> | DacsBuyerAuditAuthorizationV1;
 }
 
 export interface DacsPayDemSellerAuditRuntimeOptionsV1
@@ -137,7 +144,7 @@ export interface DacsPayDemBuyerAuditRuntimeOptionsV1
     material: Readonly<DacsBuyerAuditMaterialV1>;
     completion: Readonly<DurableBuyerSessionCompletion>;
     result: Readonly<DurableFinalizedBuyerBundle>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<DacsBuyerAuditAuthorizationV1> | DacsBuyerAuditAuthorizationV1;
 }
 
 export class DacsAuditRuntimeError extends Error {
@@ -593,13 +600,21 @@ export function createDacsBuyerAuditTrackV1(
     }
     try {
       await operation.fence.assertCurrent();
-      if (await options.authorizeFinalized({
+      const authorization = await options.authorizeFinalized({
         operation,
         retained,
         material,
         completion: progress.completion,
         result: progress.result,
-      }) !== true) {
+      });
+      if (authorization === "indeterminate") {
+        return Object.freeze({
+          status: "indeterminate" as const,
+          reasonCode: "buyer-audit-completion-indeterminate",
+          retryAt: retryAt(context, delay),
+        });
+      }
+      if (authorization !== true) {
         throw new DacsAuditRuntimeError("buyer-audit-result-unauthorized");
       }
       await operation.fence.assertCurrent();
