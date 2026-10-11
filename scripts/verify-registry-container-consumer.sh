@@ -59,14 +59,29 @@ image_started=0
 
 cleanup() {
   local status=$?
+  local evidence_exported=1
   # Preserve only collected, secret-free evidence, including on early failure.
   if [ -d "$artifact_stage" ]; then
+    # These are the same secret-free diagnostics exported on a complete run.
+    for name in doctor.log npm-audit.json npm-audit.exit-code consumer-lock.cdx.json \
+      consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
+      consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
+      engine-strict.exit-code; do
+      if [ -f "$consumer_root/$name" ]; then
+        cp "$consumer_root/$name" "$artifact_stage/" || true
+      fi
+    done
+    for name in release-provenance.json SHA256SUMS; do
+      if [ -f "$release_set/$name" ]; then
+        cp "$release_set/$name" "$artifact_stage/" || true
+      fi
+    done
     printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code"
     if mv "$artifact_stage" "$output_dir"; then
       echo "partial acceptance evidence: $output_dir" >&2
     else
       echo "could not export evidence; retained at $acceptance_root" >&2
-      return "$status"
+      evidence_exported=0
     fi
   fi
   if [ "$registry_started" -eq 1 ]; then
@@ -78,7 +93,9 @@ cleanup() {
   if [ "$network_started" -eq 1 ]; then
     docker network rm "$registry_network" >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$acceptance_root"
+  if [ "$evidence_exported" -eq 1 ]; then
+    rm -rf -- "$acceptance_root"
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT

@@ -151,7 +151,7 @@ describe("registry/container evidence", () => {
   it("exports partial evidence and preserves the early failure status", () => {
     const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
     scratch.push(directory);
-    for (const [name, body] of [["docker", "exit 0"], ["npm", "exit 17"]]) {
+    for (const [name, body] of [["docker", "exit 0"], ["npm", 'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do printf "partial doctor diagnostic\\n" > "$directory/consumer/doctor.log"; done\nexit 17']]) {
       const stub = join(directory, name!);
       writeFileSync(stub, `#!/bin/sh\n${body}\n`);
       chmodSync(stub, 0o700);
@@ -163,6 +163,7 @@ describe("registry/container evidence", () => {
     });
     expect(result.status).toBe(17);
     expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
   });
 
   it("rejects a registry lock entry with different tarball bytes", () => {
