@@ -271,6 +271,33 @@ describe("Demos identity transient retries", () => {
   });
 
   it.each([
+    // 503 at 99 ms, 2 s wait, 503 at 2,198 ms: another 2 s wait would pass 3 × 100 + 2,750 ms,
+    // the binding term here, though it fits the 12 s total.
+    { timeoutMs: 100, replyMs: 99, endMs: 2_198 },
+    // 503 at 4 s, 2 s wait, 503 at 10 s: another 2 s wait would end exactly at the 12 s deadline.
+    { timeoutMs: 5_000, replyMs: 4_000, endMs: 10_000 },
+  ])("starts no wait that reaches the deadline (timeout $timeoutMs, 503 after $replyMs ms)", async ({
+    timeoutMs, replyMs, endMs,
+  }) => {
+    const { adapter, transport } = setup(timeoutMs);
+    transport.mockImplementation(() => new Promise(resolve => {
+      setTimeout(() => resolve(new Response("discarded", {
+        status: 503, headers: { "Retry-After": "2" },
+      })), replyMs);
+    }));
+    const start = Date.now();
+    let settledAt: number | undefined;
+    const result = adapter.resolveIdentity("subject").catch(error => { settledAt = Date.now(); return error; });
+    await vi.advanceTimersByTimeAsync(15_000);
+    const error = await result;
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: FAILED, category: "transient" });
+    expect(settledAt! - start).toBe(endMs);
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
     { timeoutMs: 100, totalTimeoutMs: undefined, signMs: 150, endMs: 1_050 },
     { timeoutMs: 5_000, totalTimeoutMs: 1_000, signMs: 1_500, endMs: 1_000 },
   ])("sends no request once signing outlasts its deadline (timeout $timeoutMs, total $totalTimeoutMs)", async ({
