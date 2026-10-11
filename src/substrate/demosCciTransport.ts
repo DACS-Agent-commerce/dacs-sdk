@@ -4,6 +4,8 @@ import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
 export const DEMOS_CCI_DEFAULT_TIMEOUT_MS = 5_000;
+// Below dacs-node's 15 s peer request timeout, which covers inbound identity reads.
+export const DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS = 12_000;
 // Match demosdk 4.0.16's connection/status lists, with a smaller retry budget.
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
 // Fetch reports a clean close before any response as UND_ERR_SOCKET, where
@@ -211,7 +213,11 @@ async function readAttempt(
   }
 }
 
-/** Equivalent to demosdk's Identities.getIdentities request, with raw admission. */
+/**
+ * Equivalent to demosdk's Identities.getIdentities request, with raw admission.
+ * The lookup ends within min(3 × timeoutMs + 2,750 ms, totalTimeoutMs): the
+ * overall deadline aborts an active attempt or wait.
+ */
 export async function readDemosCciResponse(
   rpc: string,
   address: string,
@@ -219,11 +225,14 @@ export async function readDemosCciResponse(
   transport: typeof fetch,
   maxBytes: number,
   timeoutMs: number,
+  totalTimeoutMs: number,
 ): Promise<unknown> {
+  const budgetMs = Math.min(3 * timeoutMs + OVERALL_SLACK_MS, totalTimeoutMs);
+  const deadline = Date.now() + budgetMs;
   const overall = new AbortController();
   const timer = setTimeout(() => {
     overall.abort(new TransientError(TIMED_OUT));
-  }, 3 * timeoutMs + OVERALL_SLACK_MS);
+  }, budgetMs);
   try {
     for (let attempt = 0; ; attempt++) {
       overall.signal.throwIfAborted();
@@ -235,6 +244,8 @@ export async function readDemosCciResponse(
       } catch (error) {
         if (!(error instanceof RetryableFailure)) throw error;
         if (attempt === 2) throw error.error;
+        // A wait that leaves the next attempt no time would only delay failure.
+        if (Date.now() + error.waitMs >= deadline) throw error.error;
         await waitForRetry(error.waitMs, overall.signal);
       }
     }

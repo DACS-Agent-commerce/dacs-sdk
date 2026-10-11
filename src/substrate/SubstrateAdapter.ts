@@ -27,6 +27,8 @@ export interface DemosAdapterConfig {
   identityMaxResponseBytes?: number;
   /** Per-attempt identity deadline: default 5,000 ms; positive safe integer at most 30,000. */
   identityTimeoutMs?: number;
+  /** Whole identity lookup deadline: default 12,000 ms; positive safe integer at most 90,000. */
+  identityTotalTimeoutMs?: number;
   /** Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding. */
   identityFetch?: typeof fetch;
 }

@@ -329,7 +329,8 @@ describe("Demos CCI raw response boundary", () => {
     await vi.advanceTimersByTimeAsync(0);
     const signal = transport.mock.calls[0]?.[1]?.signal;
 
-    await vi.advanceTimersByTimeAsync(15_750);
+    // Default overall deadline: 12 s, inside dacs-node's 15 s request timeout.
+    await vi.advanceTimersByTimeAsync(12_000);
     const error = await result;
 
     expect(error).toBeInstanceOf(TransientError);
@@ -356,7 +357,7 @@ describe("Demos CCI raw response boundary", () => {
     )));
     const result = adapter.resolveIdentity("subject").catch((error: unknown) => error);
 
-    await vi.advanceTimersByTimeAsync(15_750);
+    await vi.advanceTimersByTimeAsync(12_000);
 
     expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
     expect(cancel).toHaveBeenCalledTimes(3);

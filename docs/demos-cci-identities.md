@@ -73,23 +73,42 @@ value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx, and
 other 5xx are never retried. Failed bodies are cancelled without retaining
 response text.
 
-The overall deadline, including signing, reads, retries and waits, is exactly
-`3 × identityTimeoutMs + 2,750 ms`: 17,750 ms by default, at most 92,750 ms
-with the maximum setting. Without `Retry-After`, three full attempt timeouts
-finish at `3 × identityTimeoutMs + 750 ms` (15,750 ms by default). If two long
-`Retry-After` waits would exceed the overall deadline, that deadline cuts short
-a wait or the final attempt. These are timer budgets; an occupied JavaScript
-event loop can delay timer delivery.
+`DemosAdapterConfig.identityTotalTimeoutMs` bounds the whole lookup, including
+signing, reads, retries and waits: 12,000 ms by default, a positive safe integer
+up to 90,000 ms, validated at construction. Reaching it aborts the active
+attempt, and a backoff wait that would leave the next attempt no time is not
+started. A lookup therefore ends within
+`min(3 × identityTimeoutMs + 2,750 ms, identityTotalTimeoutMs)`: 12,000 ms with
+the defaults, which allows two full five-second attempts and a shortened third.
+These are timer budgets; an occupied JavaScript event loop can delay timer
+delivery.
+
+dacs-node resolves an inbound peer's sender identity inside that peer's HTTP
+request, and the peer aborts the request after 15 seconds
+(`DEFAULT_REQUEST_TIMEOUT_MS`). The 12-second default keeps a slow or restarting
+Demos node from making the sender give up and resend. Keep
+`identityTotalTimeoutMs` below the dacs-node request timeout if you raise it.
+
+| Demos node | Defaults (5 s per attempt, 12 s overall) | `identityTimeoutMs: 8000` (12 s overall) |
+| --- | --- | --- |
+| Healthy | First response, no wait | First response, no wait |
+| Slow (replies after 6 s) | Three attempts time out; fails at 12.0 s | Succeeds at 6 s on the first attempt |
+| Silent (never replies) | Fails at 12.0 s: 5 + 0.25 + 5 + 0.5 + 1.25 s | Fails at 12.0 s: 8 + 0.25 + 3.75 s |
+| Flapping (one 503 or reset) | Recovers after 0.25 s, or up to 2 s with `Retry-After` | Same |
+| Restarting (refuses or closes the connection) | Recovers on attempt 2 or 3 (after 0.25 s or 0.75 s of backoff) | Same |
+| Dead (refuses connections) | Fails after 0.75 s plus connect time | Same |
 
 On expiry the adapter aborts the request and cancels an active body reader.
 Exhausted retries throw `TransientError` (category `transient`), with the stable
 message `Demos GCR identity read timed out` when the last attempt timed out
 (or the overall deadline expires), or
 `Demos GCR identity read failed after transient transport errors` for exhausted
-HTTP 502/503/504 or connection failures, or a connection closed during the body.
-These errors contain no response text or cause. Deadlines also bound an injected transport that ignores abort,
-stalled signing, or body cancellation that never settles; late responses are
-cancelled without decoding.
+HTTP 502/503/504 or connection failures, a connection closed during the body,
+or when a wait no longer fits before the overall deadline after one of those.
+These errors contain no response text or cause. Deadlines also bound an injected
+transport that ignores abort, stalled signing, or body cancellation that never
+settles; no request is sent once signing outlasts its deadline, and late
+responses are cancelled without decoding.
 
 Identity requests use Fetch's `redirect: "error"`. The adapter additionally
 rejects a response marked `redirected` or with any 3xx status, including one

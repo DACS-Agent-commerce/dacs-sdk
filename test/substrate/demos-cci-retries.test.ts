@@ -10,11 +10,12 @@ const TIMEOUT = "Demos GCR identity read timed out";
 const FAILED = "Demos GCR identity read failed after transient transport errors";
 const success = () => new Response(JSON.stringify(GCR));
 
-function setup(timeoutMs = 5_000) {
+function setup(timeoutMs = 5_000, totalTimeoutMs?: number) {
   vi.useFakeTimers();
   const transport = vi.fn<typeof fetch>();
   const adapter = new DemosAdapter({
     rpc: "https://node.example/rpc", identityFetch: transport, identityTimeoutMs: timeoutMs,
+    ...(totalTimeoutMs === undefined ? {} : { identityTotalTimeoutMs: totalTimeoutMs }),
   });
   Object.assign(adapter, { connected: true });
   return { adapter, transport };
@@ -133,7 +134,8 @@ describe("Demos identity transient retries", () => {
   });
 
   it("enforces the overall deadline when two Retry-After waits consume the budget", async () => {
-    const { adapter, transport } = setup(5_000);
+    // A large total leaves 3 × timeout + 2,750 ms as the binding bound.
+    const { adapter, transport } = setup(5_000, 90_000);
     const bodies = Array.from({ length: 3 }, stalledBody);
     transport.mockImplementation((_url, init) => new Promise(resolve => {
       const index = transport.mock.calls.length - 1;
@@ -204,6 +206,65 @@ describe("Demos identity transient retries", () => {
       expect(transport).toHaveBeenCalledTimes(index + 2);
     }
     await expect(result).resolves.toHaveProperty("raw", GCR);
+  });
+
+  it.each([
+    { timeoutMs: 5_000, totalTimeoutMs: undefined, endMs: 12_000, attempts: 3 },
+    { timeoutMs: 8_000, totalTimeoutMs: undefined, endMs: 12_000, attempts: 2 },
+    { timeoutMs: 100, totalTimeoutMs: undefined, endMs: 1_050, attempts: 3 },
+    { timeoutMs: 5_000, totalTimeoutMs: 4_000, endMs: 4_000, attempts: 1 },
+    { timeoutMs: 5_000, totalTimeoutMs: 90_000, endMs: 15_750, attempts: 3 },
+    { timeoutMs: 30_000, totalTimeoutMs: 90_000, endMs: 90_000, attempts: 3 },
+  ])("ends a silent lookup at $endMs ms (timeout $timeoutMs, total $totalTimeoutMs)", async ({
+    timeoutMs, totalTimeoutMs, endMs, attempts,
+  }) => {
+    const { adapter, transport } = setup(timeoutMs, totalTimeoutMs);
+    transport.mockImplementation(() => new Promise<Response>(() => {}));
+    const start = Date.now();
+    let settled = false;
+    const result = adapter.resolveIdentity("subject").catch(error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(endMs - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    const error = await result;
+    expect(Date.now() - start).toBe(endMs);
+    // The documented bound: min(3 × identityTimeoutMs + 2.75 s, identityTotalTimeoutMs).
+    expect(endMs).toBeLessThanOrEqual(Math.min(3 * timeoutMs + 2_750, totalTimeoutMs ?? 12_000));
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(transport).toHaveBeenCalledTimes(attempts);
+    transport.mock.calls.forEach(([, init]) => expect(init?.signal?.aborted).toBe(true));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("starts no wait the overall deadline would cut short, ending inside dacs-node's 15 s", async () => {
+    const { adapter, transport } = setup();
+    const bodies = Array.from({ length: 2 }, stalledBody);
+    transport.mockImplementation(() => new Promise(resolve => {
+      const body = bodies[transport.mock.calls.length - 1]!;
+      setTimeout(() => resolve(new Response(body.response.body, {
+        status: 503, headers: { "Retry-After": "60" },
+      })), 4_999);
+    }));
+    const start = Date.now();
+    let settled = false;
+    const result = adapter.resolveIdentity("subject").catch(error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(11_997);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    const error = await result;
+    // 503 at 4,999 ms, 2 s wait, 503 at 11,998 ms: a second 2 s wait would pass 12 s.
+    expect(Date.now() - start).toBe(11_998);
+    expect(Date.now() - start).toBeLessThan(15_000);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: FAILED, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(transport).toHaveBeenCalledTimes(2);
+    bodies.forEach(({ cancel }) => expect(cancel).toHaveBeenCalledOnce());
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([502, 503, 504, "ECONNRESET"])("sanitizes exhausted transient failure %s", async (failure) => {
@@ -282,6 +343,35 @@ describe("Demos identity transient retries", () => {
     const accessor = { rpc: config.rpc };
     Object.defineProperty(accessor, "identityTimeoutMs", { get: getter });
     expect(() => new DemosAdapter(accessor)).toThrow(/identityTimeoutMs.*stable data/);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 1.5, 90_001, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "12000"])(
+    "rejects unsafe identityTotalTimeoutMs %s", value => {
+      expect(() => new DemosAdapter({ rpc: "https://node.example/rpc", identityTotalTimeoutMs: value } as DemosAdapterConfig))
+        .toThrow(/identityTotalTimeoutMs must be a positive safe integer at most 90000/);
+    },
+  );
+
+  it("accepts 90,000 ms and captures identityTotalTimeoutMs as stable data at construction", async () => {
+    expect(() => new DemosAdapter({ rpc: "https://node.example/rpc", identityTotalTimeoutMs: 90_000 })).not.toThrow();
+    vi.useFakeTimers();
+    const transport = vi.fn<typeof fetch>().mockImplementation(() => new Promise<Response>(() => {}));
+    const config = { rpc: "https://node.example/rpc", identityFetch: transport, identityTotalTimeoutMs: 1_000 };
+    const adapter = new DemosAdapter(config);
+    config.identityTotalTimeoutMs = 90_000;
+    Object.assign(adapter, { connected: true });
+    let settled = false;
+    const result = adapter.resolveIdentity("subject").catch(error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    const getter = vi.fn(() => 12_000);
+    const accessor = { rpc: config.rpc };
+    Object.defineProperty(accessor, "identityTotalTimeoutMs", { get: getter });
+    expect(() => new DemosAdapter(accessor)).toThrow(/identityTotalTimeoutMs.*stable data/);
     expect(getter).not.toHaveBeenCalled();
   });
 });
