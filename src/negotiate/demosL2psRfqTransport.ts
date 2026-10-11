@@ -22,8 +22,16 @@ const AES_KEY_BYTES = 32;
 const AES_NONCE_BYTES = 12;
 const AES_TAG_BYTES = 16;
 const MAX_RFQ_PLAINTEXT_BYTES = 16 * 1024 * 1024;
+const MAX_CIPHERTEXT_BYTES = MAX_RFQ_PLAINTEXT_BYTES + AES_TAG_BYTES;
+const MAX_NONCE_BYTES = 64;
 const MAX_CANONICAL_STRING_CHARS = 16_384;
 const MAX_EPHEMERAL_KEY_CHARS = 4_096;
+/**
+ * One history page may carry a maximum-size frame plus ordinary ones. A page
+ * over this budget is refused before the deep snapshot; a smaller
+ * historyPageSize splits large frames across pages.
+ */
+const MAX_HISTORY_PAGE_CHARS = 32 * 1024 * 1024;
 const WIRE_DOMAIN = "dacs-rfq-l2ps-wire:v1";
 const HASH = /^[0-9a-f]{64}$/;
 const DEFAULT_HISTORY_PAGE_SIZE = 100;
@@ -38,6 +46,17 @@ const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "l2ps_batched",
   "l2ps_confirmed",
 ]);
+const HISTORY_ENTRY_KEYS = [
+  "id",
+  "from",
+  "to",
+  "messageHash",
+  "encrypted",
+  "l2psUid",
+  "l2psTxHash",
+  "timestamp",
+  "status",
+] as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -241,6 +260,10 @@ function positiveInteger(
   return selected as number;
 }
 
+function base64Chars(bytes: number): number {
+  return Math.ceil(bytes / 3) * 4;
+}
+
 function canonicalBase64(
   value: unknown,
   label: string,
@@ -249,7 +272,7 @@ function canonicalBase64(
   if (
     typeof value !== "string" ||
     value.length === 0 ||
-    value.length > Math.ceil(maximumBytes / 3) * 4
+    value.length > base64Chars(maximumBytes)
   ) {
     throw new DacsError(`${label} must be canonical Base64`);
   }
@@ -264,7 +287,112 @@ function canonicalBase64(
   return value;
 }
 
+/**
+ * Peer-supplied values are bounded by shape before the deep canonical snapshot
+ * clones and serializes them. Only own data descriptors of plain records and
+ * arrays are read, so no accessor or proxy trap runs; the snapshot and the
+ * capture checks below still validate everything afterwards.
+ */
+function admittedFields(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): JsonRecord {
+  if (!isRecord(value)) throw new DacsError(`${label} is malformed`);
+  const fields: JsonRecord = Object.create(null) as JsonRecord;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor =
+      typeof key === "string" && keys.includes(key)
+        ? Object.getOwnPropertyDescriptor(value, key)
+        : undefined;
+    if (descriptor === undefined || !("value" in descriptor)) {
+      throw new DacsError(`${label} is malformed`);
+    }
+    fields[key as string] = descriptor.value;
+  }
+  return fields;
+}
+
+function admittedChars(value: unknown, maximum: number, label: string): number {
+  if (typeof value === "string") {
+    if (value.length > maximum) throw new DacsError(`${label} exceeds its size limit`);
+    return value.length;
+  }
+  if ((typeof value === "object" && value !== null) || typeof value === "function") {
+    throw new DacsError(`${label} is malformed`);
+  }
+  return 0;
+}
+
+function admitEncrypted(value: unknown): number {
+  const frame = admittedFields(
+    value,
+    ["ciphertext", "nonce", "ephemeralKey"],
+    "Demos L2PS encrypted RFQ frame",
+  );
+  return (
+    admittedChars(frame.ciphertext, base64Chars(MAX_CIPHERTEXT_BYTES), "ciphertext") +
+    admittedChars(frame.nonce, base64Chars(MAX_NONCE_BYTES), "nonce") +
+    admittedChars(frame.ephemeralKey, MAX_EPHEMERAL_KEY_CHARS, "ephemeralKey")
+  );
+}
+
+function admitIncoming(value: unknown): void {
+  const label = "Demos L2PS incoming RFQ payload";
+  const payload = admittedFields(
+    value,
+    ["from", "encrypted", "messageHash", "offline"],
+    label,
+  );
+  admittedChars(payload.from, MAX_CANONICAL_STRING_CHARS, label);
+  admittedChars(payload.messageHash, MAX_CANONICAL_STRING_CHARS, label);
+  admittedChars(payload.offline, MAX_CANONICAL_STRING_CHARS, label);
+  admitEncrypted(payload.encrypted);
+}
+
+function admitHistoryPage(value: unknown): void {
+  const label = "Demos L2PS RFQ history response";
+  const page = admittedFields(value, ["messages", "hasMore"], label);
+  const messages = page.messages;
+  if (
+    typeof messages !== "object" ||
+    messages === null ||
+    nodeTypes.isProxy(messages) ||
+    !Array.isArray(messages)
+  ) {
+    throw new DacsError(`${label} is malformed`);
+  }
+  const length = messages.length;
+  if (length > DEFAULT_HISTORY_PAGE_SIZE) {
+    throw new DacsError(`${label} exceeds ${DEFAULT_HISTORY_PAGE_SIZE} entries`);
+  }
+  if (Reflect.ownKeys(messages).length !== length + 1) {
+    throw new DacsError(`${label} is malformed`);
+  }
+  let chars = admittedChars(page.hasMore, MAX_CANONICAL_STRING_CHARS, label);
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(messages, String(index));
+    if (descriptor === undefined || !("value" in descriptor)) {
+      throw new DacsError(`${label} is malformed`);
+    }
+    const entry = admittedFields(
+      descriptor.value,
+      HISTORY_ENTRY_KEYS,
+      "Demos L2PS RFQ history entry",
+    );
+    for (const key of HISTORY_ENTRY_KEYS) {
+      chars += key === "encrypted"
+        ? admitEncrypted(entry[key])
+        : admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "Demos L2PS RFQ history entry");
+    }
+    if (chars > MAX_HISTORY_PAGE_CHARS) {
+      throw new DacsError(`${label} exceeds its aggregate size budget`);
+    }
+  }
+}
+
 function captureEncrypted(value: unknown): DemosL2psRfqEncryptedMessage {
+  admitEncrypted(value);
   value = ownedJson(value, "Demos L2PS encrypted RFQ frame");
   if (
     !isRecord(value) ||
@@ -273,12 +401,8 @@ function captureEncrypted(value: unknown): DemosL2psRfqEncryptedMessage {
     throw new DacsError("Demos L2PS encrypted RFQ frame is malformed");
   }
   const encrypted: DemosL2psRfqEncryptedMessage = {
-    ciphertext: canonicalBase64(
-      value.ciphertext,
-      "ciphertext",
-      MAX_RFQ_PLAINTEXT_BYTES + AES_TAG_BYTES,
-    ),
-    nonce: canonicalBase64(value.nonce, "nonce", 64),
+    ciphertext: canonicalBase64(value.ciphertext, "ciphertext", MAX_CIPHERTEXT_BYTES),
+    nonce: canonicalBase64(value.nonce, "nonce", MAX_NONCE_BYTES),
   };
   if (value.ephemeralKey !== undefined) {
     if (
@@ -439,6 +563,15 @@ function captureSendResult(
   value: unknown,
   messageHash: string,
 ): "acknowledged" | "indeterminate" {
+  try {
+    const label = "Demos L2PS RFQ send acknowledgement";
+    const fields = admittedFields(value, ["messageHash", "status", "l2psStatus"], label);
+    for (const field of Object.values(fields)) {
+      admittedChars(field, MAX_CANONICAL_STRING_CHARS, label);
+    }
+  } catch {
+    return "indeterminate";
+  }
   value = ownedJson(value, "Demos L2PS RFQ send acknowledgement");
   if (!isRecord(value) || value.messageHash !== messageHash) return "indeterminate";
   if (
@@ -457,6 +590,7 @@ function captureSendResult(
 }
 
 function captureIncoming(value: unknown): DemosL2psRfqIncomingPayload {
+  admitIncoming(value);
   value = ownedJson(value, "Demos L2PS incoming RFQ payload");
   if (
     !isRecord(value) ||
@@ -475,6 +609,7 @@ function captureIncoming(value: unknown): DemosL2psRfqIncomingPayload {
 }
 
 function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
+  admitHistoryPage(value);
   value = ownedJson(value, "Demos L2PS RFQ history response");
   if (
     !isRecord(value) ||
@@ -488,17 +623,7 @@ function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
   const messages = value.messages.map((candidate): DemosL2psRfqStoredMessage => {
     if (
       !isRecord(candidate) ||
-      !exactKeys(candidate, [
-        "id",
-        "from",
-        "to",
-        "messageHash",
-        "encrypted",
-        "l2psUid",
-        "l2psTxHash",
-        "timestamp",
-        "status",
-      ]) ||
+      !exactKeys(candidate, HISTORY_ENTRY_KEYS) ||
       !HASH.test(candidate.messageHash as string) ||
       !Number.isSafeInteger(candidate.timestamp) ||
       (candidate.timestamp as number) < 0 ||

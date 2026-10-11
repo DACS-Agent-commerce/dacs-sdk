@@ -2,6 +2,21 @@ import { randomBytes } from "node:crypto";
 
 import { describe, expect, test, vi } from "vitest";
 
+const snapshotLabels = vi.hoisted(() => [] as string[]);
+
+// Pass-through spy: admission tests prove a peer-supplied value was refused
+// before the deep canonical snapshot ever ran on it.
+vi.mock("../../src/canonical/snapshot.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/canonical/snapshot.js")>();
+  return {
+    ...actual,
+    snapshotCanonicalJsonRead<T>(value: T, label: string): T {
+      snapshotLabels.push(label);
+      return actual.snapshotCanonicalJsonRead(value, label);
+    },
+  };
+});
+
 import {
   canonicalize,
   contentHash,
@@ -33,6 +48,9 @@ const BUYER = "did:demos:buyer-l2ps-rfq";
 const SELLER = "did:demos:seller-l2ps-rfq";
 const BUYER_PEER = "a".repeat(64);
 const SELLER_PEER = "b".repeat(64);
+const THIRD_PEER = "c".repeat(64);
+// Base64 length of the largest frame the codec accepts (16 MiB + GCM tag).
+const MAX_CIPHERTEXT_CHARS = Math.ceil((16 * 1024 * 1024 + 16) / 3) * 4;
 
 function identity(claim: string): IdentityBundle {
   return {
@@ -257,6 +275,48 @@ function clientOptions(
     verifyAgreementContribution: () => "valid" as const,
     nowMs: () => NOW,
   };
+}
+
+/** A buyer whose first offer reached Demos but whose send response was lost. */
+async function buyerWithSentOffer(options: {
+  codec?: (base: DemosL2psRfqWireCodec) => DemosL2psRfqWireCodec;
+  history?: (base: DemosL2psRfqPeerLike["history"]) => DemosL2psRfqPeerLike["history"];
+  operationTimeoutMs?: number;
+} = {}) {
+  const hub = new FakeL2psHub();
+  const sharedKey = randomBytes(32);
+  const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey });
+  const basePeer = hub.peer(BUYER_PEER);
+  const transport = createDemosL2psRfqTransport<string>({
+    peer: options.history === undefined
+      ? basePeer
+      : { ...basePeer, history: options.history(basePeer.history) },
+    codec: options.codec?.(baseCodec) ?? baseCodec,
+    l2psUid: L2PS_UID,
+    localClaim: BUYER,
+    localPeerKey: BUYER_PEER,
+    peerForClaim,
+    claimForPeer,
+    onError: vi.fn(),
+    ...(options.operationTimeoutMs === undefined
+      ? {}
+      : { operationTimeoutMs: options.operationTimeoutMs }),
+  });
+  const client = createDurableRfqLifecycleClient(
+    clientOptions("buyer", transport, durableReservation()),
+  );
+  await client.open(openInput());
+  hub.loseNextResponse = true;
+  await expect(client.sendOffer(JOB_ID, {
+    rfqProposalVersion: "1",
+    price: { amount: "9", currency: "USDC" },
+  })).resolves.toMatchObject({ status: "indeterminate" });
+  const status = await client.getStatus(JOB_ID);
+  if (status.status !== "ok") throw new Error("record did not load");
+  const packet = status.record.outbox[0]?.packet;
+  const own = hub.messages[0];
+  if (packet === undefined || own === undefined) throw new Error("frame missing");
+  return { hub, sharedKey, baseCodec, transport, client, packet, own };
 }
 
 describe("Demos L2PS durable RFQ transport", () => {
@@ -866,5 +926,155 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(status.status).toBe("ok");
     if (status.status !== "ok") return;
     expect(status.record.outbox[0]).toMatchObject({ state: "indeterminate" });
+  });
+
+  test("refuses an oversized live payload before the canonical snapshot", async () => {
+    const hub = new FakeL2psHub();
+    const errors: Error[] = [];
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(SELLER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      localClaim: SELLER,
+      localPeerKey: SELLER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: (error) => errors.push(error),
+    });
+    const received = vi.fn();
+    transport.start(received);
+    const deliver = async (ciphertext: string) => {
+      const payload: DemosL2psRfqIncomingPayload = {
+        from: BUYER_PEER,
+        encrypted: { ciphertext, nonce: Buffer.alloc(12).toString("base64") },
+        messageHash: "d".repeat(64),
+      };
+      snapshotLabels.length = 0;
+      for (const handler of hub.handlers.get(SELLER_PEER) ?? []) handler(payload);
+      await transport.drain();
+    };
+
+    await deliver("A".repeat(MAX_CIPHERTEXT_CHARS + 4));
+    expect(errors.map((error) => error.message)).toEqual([
+      "ciphertext exceeds its size limit",
+    ]);
+    expect(snapshotLabels).not.toContain("Demos L2PS incoming RFQ payload");
+    expect(snapshotLabels).not.toContain("Demos L2PS encrypted RFQ frame");
+
+    // Control: an in-limit frame reaches the snapshot and fails later on.
+    await deliver("A".repeat(64));
+    expect(snapshotLabels).toContain("Demos L2PS incoming RFQ payload");
+    expect(errors).toHaveLength(2);
+    expect(received).not.toHaveBeenCalled();
+    transport.stop();
+  }, 60_000);
+
+  test("refuses an oversized history array before the canonical snapshot", async () => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    const duplicates = Array.from({ length: 101 }, (_, index) => ({
+      ...structuredClone(own),
+      id: `duplicate-${index}`,
+      timestamp: own.timestamp + index,
+    }));
+
+    page = { messages: duplicates, hasMore: false };
+    snapshotLabels.length = 0;
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "Demos L2PS RFQ history reconciliation failed",
+    });
+    expect(snapshotLabels).not.toContain("Demos L2PS RFQ history response");
+
+    // Control: the same entries within the page limit are snapshotted and match.
+    page = { messages: duplicates.slice(0, 100), hasMore: false };
+    snapshotLabels.length = 0;
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "acknowledged",
+    });
+    expect(snapshotLabels).toContain("Demos L2PS RFQ history response");
+  });
+
+  test("refuses a history page over the aggregate budget before the canonical snapshot", async () => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    // Each frame is within the per-frame limit; two together exceed the page budget.
+    const bulk = "A".repeat(17_000_000);
+    const counterparty = (
+      index: number,
+      ciphertext = bulk,
+    ): DemosL2psRfqStoredMessage => ({
+      id: `bulk-${index}`,
+      from: SELLER_PEER,
+      to: BUYER_PEER,
+      messageHash: "d".repeat(64),
+      encrypted: { ciphertext, nonce: own.encrypted.nonce },
+      l2psUid: L2PS_UID,
+      l2psTxHash: null,
+      timestamp: own.timestamp + 10 + index,
+      status: "delivered",
+    });
+
+    page = { messages: [counterparty(0), counterparty(1)], hasMore: false };
+    snapshotLabels.length = 0;
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "Demos L2PS RFQ history reconciliation failed",
+    });
+    expect(snapshotLabels).not.toContain("Demos L2PS RFQ history response");
+
+    // Control: an in-budget page is snapshotted; with our frame absent it is an
+    // exhaustive absence proof.
+    page = {
+      messages: [counterparty(0, "A".repeat(1_000_000)), counterparty(1, "A".repeat(1_000_000))],
+      hasMore: false,
+    };
+    snapshotLabels.length = 0;
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "absent",
+    });
+    expect(snapshotLabels).toContain("Demos L2PS RFQ history response");
+  }, 60_000);
+
+  test("refuses an oversized send acknowledgement before the canonical snapshot", async () => {
+    const { hub, packet } = await buyerWithSentOffer();
+    const send = hub.peer(BUYER_PEER).send;
+    let bloated = true;
+    const bloatedTransport = createDemosL2psRfqTransport<string>({
+      peer: {
+        ...hub.peer(BUYER_PEER),
+        async send(to, encrypted, messageHash) {
+          const result = await send(to, encrypted, messageHash);
+          return bloated
+            ? { ...result, l2psStatus: "s".repeat(1_000_000) as "submitted" }
+            : result;
+        },
+      },
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+
+    snapshotLabels.length = 0;
+    await expect(bloatedTransport.publish(packet)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "Demos L2PS RFQ send acknowledgement is missing or failed",
+    });
+    expect(snapshotLabels).not.toContain("Demos L2PS RFQ send acknowledgement");
+
+    bloated = false;
+    snapshotLabels.length = 0;
+    await expect(bloatedTransport.publish(packet)).resolves.toEqual({
+      disposition: "acknowledged",
+    });
+    expect(snapshotLabels).toContain("Demos L2PS RFQ send acknowledgement");
   });
 });
