@@ -3,6 +3,7 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize, contentHash, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 import type {
   AttestationRef,
+  BundleClaim,
   ComponentSignature,
   CompositeVerificationRecord,
   IdentityBundle,
@@ -17,6 +18,7 @@ import {
   isCompositeVerificationRecord,
   isExactJsonRecord,
   isIdentityBundle,
+  isSupplementarySignal,
   isVerifyResult,
 } from "../artifacts/validators.js";
 import {
@@ -28,9 +30,15 @@ import {
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from "../crypto/index.js";
 import { DacsError } from "../errors.js";
 import {
+  assertDemosCciResponseBounds,
   identityBundleHash,
+  isCanonicalClaimReference,
+  isCanonicalDomainHostname,
+  parseCanonicalClaimReference,
   sameCanonicalClaimIdentity,
+  type CciTlsnDisposition,
 } from "../identity/index.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   isAuthenticatedRecipeDescriptor,
   type AuthenticatedRecipeDescriptor,
@@ -52,8 +60,9 @@ import {
   type ParserEngine,
 } from "./parserSpec.js";
 import {
-  advancePartyVetPlan,
+  advanceQualifiedPartyVetPlan,
   createPartyVetPlan,
+  PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
   type PartyVetAttemptInput,
   type PartyVetAttemptOutcome,
   type PartyVetMethodInput,
@@ -62,7 +71,9 @@ import {
   type PartyVetRequirementPath,
 } from "./partyVetPlan.js";
 import {
+  isDurableSessionRecipeRegistrySnapshot,
   isDurableSessionRecipePin,
+  type DurableSessionRecipeRegistrySnapshot,
   type DurableSessionRecipePin,
 } from "./durableRecipePin.js";
 import {
@@ -876,6 +887,7 @@ export interface VetOperationStore {
     step:
       | "method"
       | "method-evidence"
+      | "requirement-qualification"
       | "verify-result"
       | "verify-result-anchor"
       | "composite"
@@ -1002,9 +1014,79 @@ export interface PartyVetRequest {
   identityBundle: IdentityBundle;
   requirement: CompositeBundleRequirement;
   attempts: PartyVetAttemptRequest[];
+  /** PCR-6/CRQ-1 job-wide registry authority, including pure presence runs. */
+  sessionRecipeRegistrySnapshot?: DurableSessionRecipeRegistrySnapshot;
   supplementary?: SupplementarySignal[];
   warnings?: VerificationWarning[];
 }
+
+/** Exact active-session coordinates for one native Demos CCI TLSN gate. */
+export interface PartyVetNativeCciTlsnInput {
+  proofHash: string;
+  /** Independently retained active-session nonce; it must equal the bundle nonce. */
+  sessionNonce: string;
+  expectedServer: string;
+  maxResolutionAgeSec: number;
+  maxProofAgeSec: number;
+  maxPresentationAgeSec: number;
+}
+
+/**
+ * Party Vet request with mandatory native CCI TLSN gates. The ordinary Vet
+ * request remains unchanged: native commitments never become external recipe
+ * attempts.
+ */
+export interface PartyVetWithNativeCciTlsnRequest {
+  vet: PartyVetRequest;
+  nativeCciTlsn: PartyVetNativeCciTlsnInput[];
+}
+
+export interface PartyVetNativeCciTlsnQualifierInput {
+  subject: string;
+  bundle: IdentityBundle;
+  proofHash: string;
+  context: {
+    jobId: string;
+    expectedPresenter: string;
+    sessionNonce: string;
+    expectedServer: string;
+    /** Trusted Party Vet clock sample; callers cannot supply this value. */
+    evaluatedAt: number;
+    maxResolutionAgeSec: number;
+    maxProofAgeSec: number;
+    maxPresentationAgeSec: number;
+  };
+}
+
+export type PartyVetNativeCciTlsnQualifier = (
+  input: Readonly<PartyVetNativeCciTlsnQualifierInput>,
+) => Promise<CciTlsnDisposition> | CciTlsnDisposition;
+
+/** Compact trust-bearing record retained inside the signed, durable CVR. */
+export interface PartyVetNativeCciTlsnEvidence {
+  evidenceVersion: "1";
+  subject: string;
+  claimRef: string;
+  jobId: string;
+  sessionNonce: string;
+  expectedServer: string;
+  bundleHash: string;
+  proofHash: string;
+  evaluatedAt: number;
+  bundlePresentedAt: number;
+  claimObservedAt: number;
+  resolutionObservedAt: number;
+  verifiedAt: number;
+  authority: string;
+  nativeEvidenceHash?: string;
+}
+
+export interface PartyVetWithNativeCciTlsnProduction extends VetProduction {
+  /** Same canonical evidence encoded in the record's native CCI signals. */
+  nativeCciTlsn: PartyVetNativeCciTlsnEvidence[];
+}
+
+export { PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE } from "./partyVetPlan.js";
 
 /** Additional trust capabilities required by the public party-scoped producer. */
 export interface PartyVetDeps<TKey> extends VetDeps {
@@ -1013,6 +1095,11 @@ export interface PartyVetDeps<TKey> extends VetDeps {
   verifyIdentityPresentation: (input: {
     bundle: Readonly<IdentityBundle>;
     signedBytes: Uint8Array;
+  }) => Promise<boolean> | boolean;
+  /** Optional scheme-specific DACS-1 step (6) proof for a non-key selector. */
+  isPresentedClaimControlled?: (input: {
+    bundle: Readonly<IdentityBundle>;
+    claim: Readonly<BundleClaim>;
   }) => Promise<boolean> | boolean;
   /** Role policy, key resolution and cryptographic verifier for signed components. */
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
@@ -1164,7 +1251,7 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       "requirement",
       "attempts",
     ],
-    ["supplementary", "warnings"],
+    ["sessionRecipeRegistrySnapshot", "supplementary", "warnings"],
     "party Vet request",
   );
   const attempts = denseOwnArrayValues(
@@ -1196,6 +1283,15 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       ),
     }) as PartyVetAttemptRequest;
   });
+  const sessionSnapshot = descriptors.sessionRecipeRegistrySnapshot?.value;
+  if (
+    sessionSnapshot !== undefined &&
+    !isDurableSessionRecipeRegistrySnapshot(sessionSnapshot)
+  ) {
+    throw new DacsError(
+      "party Vet requires a runtime-authenticated session registry snapshot",
+    );
+  }
   return deepFreezeSnapshot({
     jobId: descriptors.jobId!.value,
     evaluatedParty: descriptors.evaluatedParty!.value,
@@ -1208,6 +1304,9 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       "party Vet BundleRequirement",
     ),
     attempts,
+    ...(sessionSnapshot !== undefined
+      ? { sessionRecipeRegistrySnapshot: sessionSnapshot }
+      : {}),
     ...(descriptors.supplementary
       ? {
           supplementary: snapshot(
@@ -1227,10 +1326,240 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
   }) as unknown as PartyVetRequest;
 }
 
+function captureNativeCciTlsnInputs(
+  source: unknown,
+): PartyVetNativeCciTlsnInput[] {
+  const entries = denseOwnArrayValues(
+    source,
+    "party Vet native CCI TLSN inputs",
+  );
+  if (entries.length === 0 || entries.length > 64) {
+    throw new DacsError(
+      "party Vet native CCI TLSN inputs must contain between 1 and 64 entries",
+    );
+  }
+  const captured = entries.map((entry, index): PartyVetNativeCciTlsnInput => {
+    const descriptors = exactOwnDataDescriptors(
+      entry,
+      [
+        "proofHash",
+        "sessionNonce",
+        "expectedServer",
+        "maxResolutionAgeSec",
+        "maxProofAgeSec",
+        "maxPresentationAgeSec",
+      ],
+      [],
+      `party Vet native CCI TLSN input ${index}`,
+    );
+    const proofHash = descriptors.proofHash!.value;
+    const sessionNonce = descriptors.sessionNonce!.value;
+    const expectedServer = descriptors.expectedServer!.value;
+    const ages = [
+      descriptors.maxResolutionAgeSec!.value,
+      descriptors.maxProofAgeSec!.value,
+      descriptors.maxPresentationAgeSec!.value,
+    ];
+    if (
+      typeof proofHash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(proofHash) ||
+      typeof sessionNonce !== "string" ||
+      sessionNonce.length === 0 ||
+      sessionNonce.length > 256 ||
+      sessionNonce.trim() !== sessionNonce ||
+      sessionNonce.normalize("NFC") !== sessionNonce ||
+      /[\u0000-\u001f\u007f]/.test(sessionNonce) ||
+      !isCanonicalDomainHostname(expectedServer) ||
+      ages.some((age) =>
+        typeof age !== "number" ||
+        !Number.isSafeInteger(age) ||
+        age < 0 ||
+        !Number.isSafeInteger(age * 1_000))
+    ) {
+      throw new DacsError(`party Vet native CCI TLSN input ${index} is malformed`);
+    }
+    return {
+      proofHash,
+      sessionNonce,
+      expectedServer,
+      maxResolutionAgeSec: ages[0] as number,
+      maxProofAgeSec: ages[1] as number,
+      maxPresentationAgeSec: ages[2] as number,
+    };
+  }).sort((left, right) => left.proofHash.localeCompare(right.proofHash));
+  if (captured.some((entry, index) =>
+    index > 0 && captured[index - 1]!.proofHash === entry.proofHash)) {
+    throw new DacsError("party Vet native CCI TLSN inputs repeat a proof hash");
+  }
+  return deepFreezeSnapshot(captured);
+}
+
+function capturePartyVetWithNativeCciTlsnRequest(
+  source: PartyVetWithNativeCciTlsnRequest,
+): {
+  vet: PartyVetRequest;
+  nativeCciTlsn: PartyVetNativeCciTlsnInput[];
+} {
+  const descriptors = exactOwnDataDescriptors(
+    source,
+    ["vet", "nativeCciTlsn"],
+    [],
+    "party Vet native CCI request",
+  );
+  const vet = capturePartyVetRequest(
+    descriptors.vet!.value as PartyVetRequest,
+  );
+  requireCanonicalJobId(vet.jobId, "party Vet native CCI jobId");
+  if (!isIdentityBundle(vet.identityBundle)) {
+    throw new DacsError("party Vet native CCI requires a current IdentityBundle");
+  }
+  if (
+    !isCanonicalClaimReference(vet.evaluatedParty) ||
+    Buffer.byteLength(vet.evaluatedParty, "utf8") > 4_096 ||
+    vet.identityBundle.presentedBy !== vet.evaluatedParty
+  ) {
+    throw new DacsError(
+      "party Vet native CCI requires the exact bounded bundle presenter",
+    );
+  }
+  const nativeCciTlsn = captureNativeCciTlsnInputs(
+    descriptors.nativeCciTlsn!.value,
+  );
+  const claimRefs = vet.identityBundle.claims.map((claim) => claim.ref);
+  for (const input of nativeCciTlsn) {
+    if (vet.identityBundle.sessionNonce !== input.sessionNonce) {
+      throw new DacsError(
+        "party Vet native CCI session nonce does not match the IdentityBundle",
+      );
+    }
+    const ref = `cci-tlsn:${input.proofHash}`;
+    if (claimRefs.filter((candidate) => candidate === ref).length !== 1) {
+      throw new DacsError(
+        "party Vet native CCI proof must occur exactly once in the IdentityBundle",
+      );
+    }
+  }
+  if ((vet.supplementary ?? []).some((signal) =>
+    isRecord(signal) &&
+    signal.source === "cci-tlsn" &&
+    signal.signalType === PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE)) {
+    throw new DacsError(
+      "party Vet native CCI signals are SDK-owned and cannot be supplied by the caller",
+    );
+  }
+  return deepFreezeSnapshot({ vet, nativeCciTlsn });
+}
+
+function isSafeNativeTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Exact validator for the compact native evidence encoded in a CVR signal. */
+export function isPartyVetNativeCciTlsnEvidence(
+  value: unknown,
+): value is PartyVetNativeCciTlsnEvidence {
+  if (!isExactJsonRecord(value)) return false;
+  const optional = value.nativeEvidenceHash === undefined
+    ? []
+    : ["nativeEvidenceHash"];
+  if (!hasExactKeys(value, [
+    "evidenceVersion",
+    "subject",
+    "claimRef",
+    "jobId",
+    "sessionNonce",
+    "expectedServer",
+    "bundleHash",
+    "proofHash",
+    "evaluatedAt",
+    "bundlePresentedAt",
+    "claimObservedAt",
+    "resolutionObservedAt",
+    "verifiedAt",
+    "authority",
+    ...optional,
+  ])) return false;
+  if (typeof value.subject !== "string" || typeof value.jobId !== "string") {
+    return false;
+  }
+  if (
+    !isCanonicalClaimReference(value.subject) ||
+    Buffer.byteLength(value.subject, "utf8") > 4_096
+  ) return false;
+  try {
+    requireCanonicalJobId(value.jobId, "native CCI Vet evidence jobId");
+  } catch {
+    return false;
+  }
+  return (
+    value.evidenceVersion === "1" &&
+    typeof value.proofHash === "string" &&
+    /^[0-9a-f]{64}$/.test(value.proofHash) &&
+    value.claimRef === `cci-tlsn:${value.proofHash}` &&
+    typeof value.sessionNonce === "string" &&
+    value.sessionNonce.length > 0 &&
+    value.sessionNonce.length <= 256 &&
+    value.sessionNonce.trim() === value.sessionNonce &&
+    value.sessionNonce.normalize("NFC") === value.sessionNonce &&
+    !/[\u0000-\u001f\u007f]/.test(value.sessionNonce) &&
+    isCanonicalDomainHostname(value.expectedServer) &&
+    typeof value.bundleHash === "string" &&
+    /^[0-9a-f]{64}$/.test(value.bundleHash) &&
+    isSafeNativeTime(value.evaluatedAt) &&
+    isSafeNativeTime(value.bundlePresentedAt) &&
+    isSafeNativeTime(value.claimObservedAt) &&
+    isSafeNativeTime(value.resolutionObservedAt) &&
+    isSafeNativeTime(value.verifiedAt) &&
+    value.claimObservedAt <= value.bundlePresentedAt &&
+    value.claimObservedAt <= value.resolutionObservedAt &&
+    value.bundlePresentedAt <= value.verifiedAt &&
+    value.resolutionObservedAt <= value.verifiedAt &&
+    value.verifiedAt <= value.evaluatedAt &&
+    typeof value.authority === "string" &&
+    value.authority.length > 0 &&
+    Buffer.byteLength(value.authority, "utf8") <= 512 &&
+    value.authority.trim() === value.authority &&
+    value.authority.normalize("NFC") === value.authority &&
+    !/[\u0000-\u001f\u007f]/.test(value.authority) &&
+    (value.nativeEvidenceHash === undefined ||
+      (typeof value.nativeEvidenceHash === "string" &&
+        /^[0-9a-f]{64}$/.test(value.nativeEvidenceHash)))
+  );
+}
+
+/**
+ * Decode the exact SDK-owned signal shape. This does not authenticate the
+ * containing CVR; untrusted records must pass strict CVR verification first.
+ */
+export function readPartyVetNativeCciTlsnEvidence(
+  signal: unknown,
+): PartyVetNativeCciTlsnEvidence | null {
+  if (
+    !isSupplementarySignal(signal) ||
+    signal.source !== "cci-tlsn" ||
+    signal.signalType !== PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE ||
+    typeof signal.value !== "string" ||
+    Buffer.byteLength(signal.value, "utf8") > 16 * 1024 ||
+    signal.attestation !== undefined
+  ) return null;
+  try {
+    const parsed = JSON.parse(signal.value) as unknown;
+    if (
+      !isPartyVetNativeCciTlsnEvidence(parsed) ||
+      canonicalize(parsed) !== signal.value ||
+      parsed.verifiedAt !== signal.observedAt
+    ) return null;
+    return deepFreezeSnapshot(parsed);
+  } catch {
+    return null;
+  }
+}
+
 interface CapturedPartyVetDeps<TKey> {
   vet: VetDeps;
   runOnceAuthorized: PartyVetOperationStore["runOnceAuthorized"];
   verifyIdentityPresentation: PartyVetDeps<TKey>["verifyIdentityPresentation"];
+  isPresentedClaimControlled?: PartyVetDeps<TKey>["isPresentedClaimControlled"];
   componentVerifier: VerifyComponentSignatureDeps<TKey>;
   sessionEffectAuthority: {
     claimCheckpoint: FencedSessionStoreV2["claimCheckpoint"];
@@ -1264,7 +1593,7 @@ function capturePartyVetDeps<TKey>(
         "componentVerifier",
         "sessionEffectAuthority",
       ],
-      optionalBaseKeys,
+      [...optionalBaseKeys, "isPresentedClaimControlled"],
       "party Vet dependencies",
     );
     const baseSource = Object.create(null) as Record<string, unknown>;
@@ -1297,6 +1626,12 @@ function capturePartyVetDeps<TKey>(
       descriptors.verifyIdentityPresentation!.value,
       "party Vet identity presentation verifier",
     );
+    const rawIsPresentedClaimControlled = descriptors.isPresentedClaimControlled
+      ? exactCallback<NonNullable<PartyVetDeps<TKey>["isPresentedClaimControlled"]>>(
+          descriptors.isPresentedClaimControlled.value,
+          "party Vet presented-claim control verifier",
+        )
+      : undefined;
     const componentSource = descriptors.componentVerifier!.value;
     const componentDescriptors = exactOwnDataDescriptors(
       componentSource,
@@ -1379,6 +1714,18 @@ function capturePartyVetDeps<TKey>(
         INERT_VET_RECEIVER,
         [input],
       ),
+      ...(rawIsPresentedClaimControlled
+        ? {
+            isPresentedClaimControlled: (input: {
+              bundle: Readonly<IdentityBundle>;
+              claim: Readonly<BundleClaim>;
+            }) => Reflect.apply(
+              rawIsPresentedClaimControlled,
+              INERT_VET_RECEIVER,
+              [input],
+            ),
+          }
+        : {}),
       componentVerifier: Object.freeze({
         isSignerAuthorized: (
           artifact: Parameters<
@@ -1467,7 +1814,7 @@ function capturePartyEffectClaim(value: unknown): CheckpointClaimResult {
 
 async function claimPartyVetEffectAuthority<TKey>(
   deps: CapturedPartyVetDeps<TKey>,
-  plan: Readonly<PartyVetPlan>,
+  plan: Readonly<Pick<PartyVetPlan, "jobId" | "planHash">>,
   operationHash: string,
   step: PartyVetEffectStep,
   inputHash: string,
@@ -2334,6 +2681,7 @@ async function executeVetMethod(
   selectedRequirement: CompositeClaimRequirement,
   selectedMethod: VerificationMethod,
   context: VetCheckpointContext,
+  deferRequirementQualification = false,
 ): Promise<VetMethodOutcome> {
   const operationHash = context.operationHash;
   const methodStartedAt = readClock(deps.nowMs, "Vet method start");
@@ -2452,7 +2800,10 @@ async function executeVetMethod(
           "authority fetchedAt predates this verification attempt",
         );
       }
-      if (selectedRequirement.parameters !== undefined) {
+      if (
+        selectedRequirement.parameters !== undefined &&
+        !deferRequirementQualification
+      ) {
         try {
           const matched = await deps.matchRequirementParameters!(
             deepFreezeSnapshot({
@@ -2504,6 +2855,7 @@ async function produceDurableVetResult(
   selectedMethod: VerificationMethod,
   context: VetCheckpointContext,
   authenticateSignedArtifact?: VetSignedArtifactAuthenticator,
+  deferRequirementQualification = false,
 ): Promise<{
   checkpoint: FinalizedVetResultCheckpoint;
   authenticatedResultAnchor: FinalizedVetAnchor;
@@ -2536,6 +2888,7 @@ async function produceDurableVetResult(
       selectedRequirement,
       selectedMethod,
       context,
+      deferRequirementQualification,
     );
     const next: VetOperationCheckpoint = {
       ...intent,
@@ -3025,6 +3378,28 @@ function assertPartyResultTime(
   }
 }
 
+function assertSharedPartyResultFresh(
+  result: Readonly<VerifyResult>,
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  now: number,
+): void {
+  if (attempt.sharedResultGroup === undefined) return;
+  let expiresAt = result.validUntil;
+  if (expiresAt === undefined) {
+    const freshnessWindow = attempt.recipe.defaultMaxAgeSec * 1_000;
+    expiresAt = result.verifiedAt + freshnessWindow;
+    if (
+      !Number.isSafeInteger(freshnessWindow) ||
+      !Number.isSafeInteger(expiresAt)
+    ) {
+      throw new DacsError("party Vet shared VerifyResult freshness window overflows");
+    }
+  }
+  if (now > expiresAt) {
+    throw new DacsError("party Vet shared VerifyResult is stale");
+  }
+}
+
 async function authenticateCarriedResult<TKey>(
   bundle: Readonly<IdentityBundle>,
   claimSubject: string,
@@ -3130,7 +3505,7 @@ function partyAttemptRefs(
 ): { freshness: VerifyResultRef[]; dealSpecific: VerifyResultRef[] } {
   const freshness: VerifyResultRef[] = [];
   const dealSpecific: VerifyResultRef[] = [];
-  const addresses = new Set<string>();
+  const addresses = new Map<string, string>();
   const refs = new Set<string>();
   for (const finalized of attempts) {
     const attempt = plan.attempts.find(
@@ -3139,17 +3514,23 @@ function partyAttemptRefs(
     if (!attempt) {
       throw new DacsError("party Vet result has no requirement-path provenance");
     }
-    if (addresses.has(finalized.resultAddress)) {
-      throw new DacsError("party Vet repeats a finalized result address");
-    }
-    addresses.add(finalized.resultAddress);
     const ref = verifyResultRefFromAnchor(
       finalized.result,
       finalized.resultAnchor.ref,
     );
     const refIdentity = canonicalize(ref);
+    const addressRef = addresses.get(finalized.resultAddress);
+    if (addressRef !== undefined && addressRef !== refIdentity) {
+      throw new DacsError(
+        "party Vet result address resolves to conflicting finalized references",
+      );
+    }
+    addresses.set(finalized.resultAddress, refIdentity);
     if (refs.has(refIdentity)) {
-      throw new DacsError("party Vet repeats a VerifyResult reference");
+      if (attempt.sharedResultGroup === undefined) {
+        throw new DacsError("party Vet repeats an unshared VerifyResult reference");
+      }
+      continue;
     }
     refs.add(refIdentity);
     (attempt.classification === "freshness" ? freshness : dealSpecific).push(ref);
@@ -3160,12 +3541,30 @@ function partyAttemptRefs(
 function completePartyState(
   plan: PartyVetPlan,
   finalized: readonly PartyVetFinalizedAttempt[],
-): Extract<ReturnType<typeof advancePartyVetPlan>, { status: "complete" }> {
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  evaluatedAt?: number,
+): Extract<ReturnType<typeof advanceQualifiedPartyVetPlan>, { status: "complete" }> {
+  if (evaluatedAt !== undefined) {
+    for (const entry of finalized) {
+      const attempt = plan.attempts.find(
+        (candidate) => candidate.attemptId === entry.attemptId,
+      );
+      if (!attempt) {
+        throw new DacsError("party Vet result has no requirement-path provenance");
+      }
+      assertSharedPartyResultFresh(entry.result, attempt, evaluatedAt);
+    }
+  }
   const outcomes = finalized.map((attempt) => ({
     attemptId: attempt.attemptId,
     result: attempt.result,
   }));
-  const state = advancePartyVetPlan(plan, outcomes);
+  const state = advanceQualifiedPartyVetPlan(
+    plan,
+    outcomes,
+    qualifications,
+    evaluatedAt,
+  );
   if (state.status !== "complete") {
     throw new DacsError("party Vet composite checkpoint has an incomplete result set");
   }
@@ -3176,8 +3575,14 @@ function assertPartyRecordBindings(
   record: Readonly<CompositeVerificationRecord>,
   finalized: readonly PartyVetFinalizedAttempt[],
   plan: PartyVetPlan,
+  qualifications: ReadonlyMap<string, VerificationDecision>,
 ): void {
-  const state = completePartyState(plan, finalized);
+  const state = completePartyState(
+    plan,
+    finalized,
+    qualifications,
+    record.generatedAt,
+  );
   const refs = partyAttemptRefs(finalized, plan);
   const latestResultTime = finalized.reduce(
     (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
@@ -3204,6 +3609,24 @@ function assertPartyRecordBindings(
     !canonicalEqual(actualUnsigned, expectedUnsigned)
   ) {
     throw new DacsError("party Vet composite record is mismatched");
+  }
+}
+
+function assertPartyRecordCurrent(
+  record: Readonly<CompositeVerificationRecord>,
+  finalized: readonly PartyVetFinalizedAttempt[],
+  plan: PartyVetPlan,
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  acceptedAt: number,
+): void {
+  const current = completePartyState(
+    plan,
+    finalized,
+    qualifications,
+    acceptedAt,
+  );
+  if (current.overallDecision !== record.overallDecision) {
+    throw new DacsError("party Vet composite decision is no longer current");
   }
 }
 
@@ -3250,7 +3673,6 @@ function capturePartyFinalizedAttempts(
       snapshot(raw, `party Vet finalized attempt ${index}`),
     ) as unknown as PartyVetFinalizedAttempt;
   });
-  completePartyState(plan, captured);
   return captured;
 }
 
@@ -3296,7 +3718,6 @@ function capturePartyCheckpoint(
   ) {
     throw new DacsError("party Vet composite checkpoint is corrupt");
   }
-  assertPartyRecordBindings(checkpoint.record, executedAttempts, plan);
   const compositeKeys = [
     ...common,
     "executedAttempts",
@@ -3385,8 +3806,6 @@ async function authenticatePartyAttempt<TKey>(
     deps,
     deps.vet.componentSigner,
   );
-  const now = readClock(deps.vet.nowMs, "party Vet result acceptance");
-  assertPartyResultTime(finalized.result, now, "party Vet VerifyResult");
   const anchor = await authenticateFinalizedJson(
     attempt.resultAddress,
     finalized.result as unknown as Record<string, unknown>,
@@ -3394,7 +3813,90 @@ async function authenticatePartyAttempt<TKey>(
     deps.vet,
     isVerifyResult,
   );
+  const acceptedAt = readClock(deps.vet.nowMs, "party Vet result acceptance");
+  assertPartyResultTime(finalized.result, acceptedAt, "party Vet VerifyResult");
+  assertSharedPartyResultFresh(finalized.result, attempt, acceptedAt);
   return deepFreezeSnapshot({ ...finalized, resultAnchor: anchor });
+}
+
+async function qualifySharedPartyAttempt(
+  finalized: Readonly<PartyVetFinalizedAttempt>,
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  context: Readonly<VetCheckpointContext>,
+  deps: Readonly<VetDeps>,
+): Promise<VerificationDecision> {
+  if (
+    attempt.sharedResultGroup === undefined ||
+    attempt.requirement.parameters === undefined ||
+    finalized.result.decision !== "pass"
+  ) {
+    return finalized.result.decision;
+  }
+  const inputHash = exactArtifactHash({
+    qualificationVersion: "1",
+    attemptId: attempt.attemptId,
+    requirement: attempt.requirement,
+    claimSubject: attempt.claimSubject,
+    method: attempt.method,
+    methodInputHash: attempt.methodInputHash,
+    recipeArtifactHash: attempt.recipeArtifactHash,
+    resultArtifactHash: finalized.resultArtifactHash,
+  });
+  const rawDecision = await runVetStep(
+    deps.operationStore,
+    context,
+    "requirement-qualification",
+    inputHash,
+    async () => {
+      try {
+        const matcherInput = deepFreezeSnapshot({
+            requirement: snapshot(
+              attempt.requirement,
+              "shared parameter requirement",
+            ),
+            subject: attempt.claimSubject,
+            recipe: snapshot(attempt.recipe, "shared parameter recipe"),
+            method: snapshot(attempt.method, "shared parameter method"),
+            decision: finalized.result.decision,
+            attestation: snapshot(
+              finalized.result.attestation,
+              "shared parameter attestation",
+            ),
+            ...(finalized.result.data
+              ? {
+                  data: snapshot(
+                    finalized.result.data,
+                    "shared parameter extracted data",
+                  ),
+                }
+              : {}),
+          });
+        const matched = await deps.matchRequirementParameters!(
+          matcherInput as unknown as Parameters<
+            NonNullable<VetDeps["matchRequirementParameters"]>
+          >[0],
+        );
+        return {
+          qualificationVersion: "1",
+          decision: matched === true ? "pass" : "fail",
+        };
+      } catch {
+        return { qualificationVersion: "1", decision: "error" };
+      }
+    },
+  );
+  if (
+    !isRecord(rawDecision) ||
+    !hasExactKeys(rawDecision, ["qualificationVersion", "decision"]) ||
+    rawDecision.qualificationVersion !== "1" ||
+    (rawDecision.decision !== "pass" &&
+      rawDecision.decision !== "fail" &&
+      rawDecision.decision !== "indeterminate" &&
+      rawDecision.decision !== "error")
+  ) {
+    throw new DacsError("party Vet shared parameter qualification is corrupt");
+  }
+  return rawDecision.decision;
 }
 
 /**
@@ -3407,6 +3909,22 @@ export async function partyVetCore<TKey>(
 ): Promise<VetProduction> {
   const request = capturePartyVetRequest(requestSource);
   const deps = capturePartyVetDeps(dependencySource);
+  return partyVetCoreCaptured(request, deps);
+}
+
+async function partyVetCoreCaptured<TKey>(
+  request: PartyVetRequest,
+  deps: CapturedPartyVetDeps<TKey>,
+  allowSdkNativeCciTlsnSignals = false,
+): Promise<VetProduction> {
+  if (!allowSdkNativeCciTlsnSignals && (request.supplementary ?? []).some(
+    (signal) => isRecord(signal) && signal.source === "cci-tlsn" &&
+      signal.signalType === PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
+  )) {
+    throw new DacsError(
+      "party Vet native CCI signals can only be produced by the SDK qualification path",
+    );
+  }
   if (
     !isIdentityBundle(request.identityBundle) ||
     !isCompositeBundleRequirement(request.requirement)
@@ -3438,6 +3956,41 @@ export async function partyVetCore<TKey>(
   }
   if (!presentationValid) {
     throw new DacsError("party Vet IdentityBundle presentation is not authenticated");
+  }
+
+  let presentedClaimControlled: boolean | undefined;
+  if (request.requirement.primaryClaimSelector !== undefined) {
+    const presentedIdentity = parseCanonicalClaimReference(
+      request.identityBundle.presentedBy,
+    );
+    const presentedClaims = request.identityBundle.claims.filter((claim) =>
+      sameCanonicalClaimIdentity(claim.ref, request.identityBundle.presentedBy)
+    );
+    presentedClaimControlled = false;
+    if (
+      presentedClaims.length === 1 &&
+      presentedIdentity?.identity.scheme ===
+        request.requirement.primaryClaimSelector &&
+      presentedIdentity.identity.scheme !== "key" &&
+      deps.isPresentedClaimControlled
+    ) {
+      try {
+        presentedClaimControlled = (
+          await deps.isPresentedClaimControlled(deepFreezeSnapshot({
+            bundle: snapshot(
+              request.identityBundle,
+              "party Vet selector-control bundle",
+            ),
+            claim: snapshot(
+              presentedClaims[0]!,
+              "party Vet selector-control claim",
+            ),
+          }))
+        ) === true;
+      } catch {
+        presentedClaimControlled = false;
+      }
+    }
   }
 
   const classificationCache = new Map<
@@ -3474,6 +4027,15 @@ export async function partyVetCore<TKey>(
       signer: deps.vet.componentSigner.signer,
     },
     attempts: preparedAttempts,
+    ...(request.sessionRecipeRegistrySnapshot !== undefined
+      ? {
+          sessionRecipeRegistrySnapshot:
+            request.sessionRecipeRegistrySnapshot,
+        }
+      : {}),
+    ...(presentedClaimControlled !== undefined
+      ? { presentedClaimControlled }
+      : {}),
     ...(request.supplementary !== undefined
       ? { supplementary: request.supplementary }
       : {}),
@@ -3552,7 +4114,17 @@ export async function partyVetCore<TKey>(
   }
 
   const finalizedAttempts: PartyVetFinalizedAttempt[] = [];
-  let execution = advancePartyVetPlan(plan, []);
+  const sharedResults = new Map<string, {
+    checkpoint: FinalizedVetResultCheckpoint;
+    authenticatedResultAnchor: FinalizedVetAnchor;
+  }>();
+  const qualificationDecisions = new Map<string, VerificationDecision>();
+  let execution = advanceQualifiedPartyVetPlan(
+    plan,
+    [],
+    qualificationDecisions,
+    readClock(deps.vet.nowMs, "party Vet plan evaluation"),
+  );
   while (execution.status === "pending") {
     const attempt = execution.nextAttempt;
     const vetRequest = deepFreezeSnapshot({
@@ -3588,31 +4160,40 @@ export async function partyVetCore<TKey>(
       deps,
       plan,
     );
-    const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
-      ? null
-      : await loadVetCheckpoint(deps.vet.operationStore, context);
-    if (
-      partyCheckpoint.stage !== "planned" &&
-      (existingAttemptCheckpoint === null ||
-        existingAttemptCheckpoint.stage !== "result-finalized")
-    ) {
-      throw new DacsError(
-        "party Vet advanced checkpoint is missing an exact finalized attempt checkpoint",
+    let durable = attempt.sharedResultGroup === undefined
+      ? undefined
+      : sharedResults.get(attempt.sharedResultGroup);
+    if (durable === undefined) {
+      const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
+        ? null
+        : await loadVetCheckpoint(deps.vet.operationStore, context);
+      if (
+        partyCheckpoint.stage !== "planned" &&
+        (existingAttemptCheckpoint === null ||
+          existingAttemptCheckpoint.stage !== "result-finalized")
+      ) {
+        throw new DacsError(
+          "party Vet advanced checkpoint is missing an exact finalized attempt checkpoint",
+        );
+      }
+      durable = await produceDurableVetResult(
+        vetRequest,
+        attemptEffectDeps,
+        attempt.requirement,
+        attempt.method,
+        context,
+        (artifact, separator) => authenticatePartyComponent(
+          artifact,
+          separator,
+          deps,
+          plan.verifier,
+        ),
+        attempt.sharedResultGroup !== undefined,
       );
+      if (attempt.sharedResultGroup !== undefined) {
+        sharedResults.set(attempt.sharedResultGroup, durable);
+      }
     }
-    const durable = await produceDurableVetResult(
-      vetRequest,
-      attemptEffectDeps,
-      attempt.requirement,
-      attempt.method,
-      context,
-      (artifact, separator) => authenticatePartyComponent(
-        artifact,
-        separator,
-        deps,
-        plan.verifier,
-      ),
-    );
     if (durable.checkpoint.stage !== "result-finalized") {
       throw new DacsError(
         "party Vet attempt checkpoint contains an unexpected composite stage",
@@ -3628,13 +4209,24 @@ export async function partyVetCore<TKey>(
       attempt,
       deps,
     );
+    qualificationDecisions.set(
+      attempt.attemptId,
+      await qualifySharedPartyAttempt(
+        finalized,
+        attempt,
+        context,
+        attemptEffectDeps,
+      ),
+    );
     finalizedAttempts.push(finalized);
-    execution = advancePartyVetPlan(
+    execution = advanceQualifiedPartyVetPlan(
       plan,
       finalizedAttempts.map((entry) => ({
         attemptId: entry.attemptId,
         result: entry.result,
       })),
+      qualificationDecisions,
+      readClock(deps.vet.nowMs, "party Vet plan evaluation"),
     );
   }
 
@@ -3650,8 +4242,16 @@ export async function partyVetCore<TKey>(
     );
   }
 
+  if (partyCheckpoint.stage !== "planned") {
+    assertPartyRecordBindings(
+      partyCheckpoint.record,
+      finalizedAttempts,
+      plan,
+      qualificationDecisions,
+    );
+  }
+
   if (partyCheckpoint.stage === "planned") {
-    const state = completePartyState(plan, finalizedAttempts);
     const refs = partyAttemptRefs(finalizedAttempts, plan);
     const latestResultTime = finalizedAttempts.reduce(
       (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
@@ -3676,6 +4276,17 @@ export async function partyVetCore<TKey>(
         "composite",
         compositeInputHash,
         async () => {
+          const generatedAt = readClock(
+            deps.vet.nowMs,
+            "party Vet composite generatedAt",
+            latestResultTime,
+          );
+          const state = completePartyState(
+            plan,
+            finalizedAttempts,
+            qualificationDecisions,
+            generatedAt,
+          );
           const unsignedRecord: Omit<CompositeVerificationRecord, "signature"> = {
             recordVersion: "1",
             jobId: plan.jobId,
@@ -3687,11 +4298,7 @@ export async function partyVetCore<TKey>(
             dealSpecific: refs.dealSpecific,
             overallDecision: state.overallDecision,
             ...(plan.warnings !== undefined ? { warnings: plan.warnings } : {}),
-            generatedAt: readClock(
-            deps.vet.nowMs,
-              "party Vet composite generatedAt",
-              latestResultTime,
-            ),
+            generatedAt,
           };
           return signComponentArtifact(
             snapshot(unsignedRecord, "unsigned party Vet composite"),
@@ -3705,7 +4312,12 @@ export async function partyVetCore<TKey>(
     if (!isCompositeVerificationRecord(record)) {
       throw new DacsError("party Vet composite signer produced a malformed record");
     }
-    assertPartyRecordBindings(record, finalizedAttempts, plan);
+    assertPartyRecordBindings(
+      record,
+      finalizedAttempts,
+      plan,
+      qualificationDecisions,
+    );
     await authenticatePartyComponent(
       record as unknown as Record<string, unknown>,
       "dacs-composite:v1:",
@@ -3736,6 +4348,17 @@ export async function partyVetCore<TKey>(
       deps,
       plan.verifier,
     );
+    const anchorAcceptedAt = readClock(
+      deps.vet.nowMs,
+      "party Vet composite anchor acceptance",
+    );
+    assertPartyRecordCurrent(
+      submitting.record,
+      submitting.executedAttempts,
+      plan,
+      qualificationDecisions,
+      anchorAcceptedAt,
+    );
     const anchorValue = await runVetStep(
       compositeEffectDeps.operationStore,
       { operationKey: plan.recordAddress, operationHash: plan.planHash },
@@ -3744,12 +4367,25 @@ export async function partyVetCore<TKey>(
         logicalAddress: plan.recordAddress,
         artifactHash: submitting.recordArtifactHash,
       }),
-      () => reconcileOrPersistFinalizedJson(
-        plan.recordAddress,
-        submitting.record as unknown as Record<string, unknown>,
-        compositeEffectDeps,
-        isCompositeVerificationRecord,
-      ),
+      () => {
+        const anchorEffectAt = readClock(
+          deps.vet.nowMs,
+          "party Vet composite anchor effect",
+        );
+        assertPartyRecordCurrent(
+          submitting.record,
+          submitting.executedAttempts,
+          plan,
+          qualificationDecisions,
+          anchorEffectAt,
+        );
+        return reconcileOrPersistFinalizedJson(
+          plan.recordAddress,
+          submitting.record as unknown as Record<string, unknown>,
+          compositeEffectDeps,
+          isCompositeVerificationRecord,
+        );
+      },
     );
     if (!isFinalizedVetAnchor(anchorValue)) {
       throw new DacsError("party Vet composite anchor returned corrupt state");
@@ -3781,6 +4417,7 @@ export async function partyVetCore<TKey>(
     partyCheckpoint.record,
     partyCheckpoint.executedAttempts,
     plan,
+    qualificationDecisions,
   );
   await authenticatePartyComponent(
     partyCheckpoint.record as unknown as Record<string, unknown>,
@@ -3788,10 +4425,6 @@ export async function partyVetCore<TKey>(
     deps,
     plan.verifier,
   );
-  const acceptedAt = readClock(deps.vet.nowMs, "party Vet composite acceptance");
-  if (partyCheckpoint.record.generatedAt > acceptedAt) {
-    throw new DacsError("party Vet composite record is future-dated");
-  }
   const recordAnchor = await authenticateFinalizedJson(
     plan.recordAddress,
     partyCheckpoint.record as unknown as Record<string, unknown>,
@@ -3799,9 +4432,427 @@ export async function partyVetCore<TKey>(
     deps.vet,
     isCompositeVerificationRecord,
   );
+  const acceptedAt = readClock(deps.vet.nowMs, "party Vet composite acceptance");
+  if (partyCheckpoint.record.generatedAt > acceptedAt) {
+    throw new DacsError("party Vet composite record is future-dated");
+  }
+  assertPartyRecordCurrent(
+    partyCheckpoint.record,
+    partyCheckpoint.executedAttempts,
+    plan,
+    qualificationDecisions,
+    acceptedAt,
+  );
   return structuredClone({
     record: partyCheckpoint.record,
     recordRef: recordAnchor.ref,
     anchorReceipt: recordAnchor.receipt,
+  });
+}
+
+const MAX_NATIVE_CCI_TLSN_VERIFIER_EVIDENCE_BYTES = 256 * 1024;
+
+function nativeCciTlsnEvidenceFromDisposition(
+  raw: unknown,
+  request: Readonly<PartyVetRequest>,
+  input: Readonly<PartyVetNativeCciTlsnInput>,
+): PartyVetNativeCciTlsnEvidence {
+  try {
+    assertDemosCciResponseBounds(raw);
+  } catch {
+    throw new DacsError(
+      "party Vet native CCI TLSN qualification exceeded data limits",
+    );
+  }
+  const envelope = snapshot(raw, "party Vet native CCI TLSN qualification");
+  if (
+    !isRecord(envelope) ||
+    nodeTypes.isProxy(envelope) ||
+    !hasExactKeys(envelope, [
+      "qualificationVersion",
+      "evaluatedAt",
+      "disposition",
+    ]) ||
+    envelope.qualificationVersion !== "1" ||
+    !isSafeNativeTime(envelope.evaluatedAt)
+  ) {
+    throw new DacsError(
+      "party Vet native CCI TLSN qualification returned malformed evidence",
+    );
+  }
+  const retained = envelope.disposition;
+  if (!isRecord(retained) || nodeTypes.isProxy(retained)) {
+    throw new DacsError(
+      "party Vet native CCI TLSN qualification returned malformed evidence",
+    );
+  }
+  const disposition = retained as CciTlsnDisposition;
+  if (disposition.status !== "native-cci") {
+    const status = typeof disposition.status === "string"
+      ? disposition.status
+      : "malformed";
+    throw new DacsError(
+      `party Vet native CCI TLSN qualification did not pass (${status})`,
+    );
+  }
+  const expectedBundleHash = identityBundleHash(request.identityBundle);
+  const expectedRef = `cci-tlsn:${input.proofHash}`;
+  const verification = disposition.verification;
+  const binding = verification?.binding;
+  if (
+    !hasExactKeys(retained, [
+      "status",
+      "claim",
+      "jobId",
+      "sessionNonce",
+      "bundleHash",
+      "evaluatedAt",
+      "verification",
+    ]) ||
+    !isRecord(disposition.claim) ||
+    !hasExactKeys(disposition.claim, [
+      "kind",
+      "context",
+      "username",
+      "userId",
+      "proofHash",
+      "observedAt",
+      "ref",
+    ]) ||
+    disposition.claim.kind !== "tlsn" ||
+    (disposition.claim.context !== "github" &&
+      disposition.claim.context !== "discord" &&
+      disposition.claim.context !== "telegram") ||
+    typeof disposition.claim.username !== "string" ||
+    disposition.claim.username.length === 0 ||
+    typeof disposition.claim.userId !== "string" ||
+    disposition.claim.userId.length === 0 ||
+    disposition.claim.ref !== expectedRef ||
+    disposition.claim.proofHash !== input.proofHash ||
+    !isSafeNativeTime(disposition.claim.observedAt) ||
+    disposition.jobId !== request.jobId ||
+    disposition.sessionNonce !== input.sessionNonce ||
+    disposition.bundleHash !== expectedBundleHash ||
+    !isSafeNativeTime(disposition.evaluatedAt) ||
+    disposition.evaluatedAt !== envelope.evaluatedAt ||
+    !isRecord(verification) ||
+    !hasExactKeys(verification, [
+      "verifiedAt",
+      "authority",
+      "binding",
+      ...(verification.evidence === undefined ? [] : ["evidence"]),
+    ]) ||
+    !isSafeNativeTime(verification.verifiedAt) ||
+    typeof verification.authority !== "string" ||
+    verification.authority.length === 0 ||
+    Buffer.byteLength(verification.authority, "utf8") > 512 ||
+    verification.authority.trim() !== verification.authority ||
+    verification.authority.normalize("NFC") !== verification.authority ||
+    /[\u0000-\u001f\u007f]/.test(verification.authority) ||
+    !isRecord(binding) ||
+    !hasExactKeys(binding, [
+      "subject",
+      "jobId",
+      "sessionNonce",
+      "expectedServer",
+      "bundleHash",
+      "proofHash",
+      "resolutionObservedAt",
+    ]) ||
+    !sameCanonicalClaimIdentity(binding.subject, request.evaluatedParty) ||
+    binding.jobId !== request.jobId ||
+    binding.sessionNonce !== input.sessionNonce ||
+    binding.expectedServer !== input.expectedServer ||
+    binding.bundleHash !== expectedBundleHash ||
+    binding.proofHash !== input.proofHash ||
+    !isSafeNativeTime(binding.resolutionObservedAt) ||
+    disposition.claim.observedAt > disposition.evaluatedAt ||
+    binding.resolutionObservedAt > disposition.evaluatedAt ||
+    request.identityBundle.presentedAt > disposition.evaluatedAt ||
+    verification.verifiedAt > disposition.evaluatedAt ||
+    disposition.evaluatedAt - disposition.claim.observedAt >
+      input.maxProofAgeSec * 1_000 ||
+    disposition.evaluatedAt - binding.resolutionObservedAt >
+      input.maxResolutionAgeSec * 1_000 ||
+    disposition.evaluatedAt - request.identityBundle.presentedAt >
+      input.maxPresentationAgeSec * 1_000
+  ) {
+    throw new DacsError(
+      "party Vet native CCI TLSN qualification returned mismatched evidence",
+    );
+  }
+  let nativeEvidenceHash: string | undefined;
+  if (verification.evidence !== undefined) {
+    let encoded: string;
+    try {
+      encoded = canonicalize(verification.evidence);
+    } catch {
+      throw new DacsError(
+        "party Vet native CCI TLSN verifier evidence is not canonical JSON",
+      );
+    }
+    if (Buffer.byteLength(encoded, "utf8") >
+        MAX_NATIVE_CCI_TLSN_VERIFIER_EVIDENCE_BYTES) {
+      throw new DacsError(
+        "party Vet native CCI TLSN verifier evidence exceeds the size limit",
+      );
+    }
+    nativeEvidenceHash = sha256Hex(encoded);
+  }
+  const evidence: PartyVetNativeCciTlsnEvidence = {
+    evidenceVersion: "1",
+    subject: request.evaluatedParty,
+    claimRef: expectedRef,
+    jobId: request.jobId,
+    sessionNonce: input.sessionNonce,
+    expectedServer: input.expectedServer,
+    bundleHash: expectedBundleHash,
+    proofHash: input.proofHash,
+    evaluatedAt: disposition.evaluatedAt,
+    bundlePresentedAt: request.identityBundle.presentedAt,
+    claimObservedAt: disposition.claim.observedAt,
+    resolutionObservedAt: binding.resolutionObservedAt,
+    verifiedAt: verification.verifiedAt,
+    authority: verification.authority,
+    ...(nativeEvidenceHash === undefined ? {} : { nativeEvidenceHash }),
+  };
+  if (!isPartyVetNativeCciTlsnEvidence(evidence)) {
+    throw new DacsError(
+      "party Vet native CCI TLSN qualification returned invalid provenance",
+    );
+  }
+  return deepFreezeSnapshot(evidence);
+}
+
+function captureDurableNativeCciTlsnEvidence(
+  raw: unknown,
+  request: Readonly<PartyVetRequest>,
+  input: Readonly<PartyVetNativeCciTlsnInput>,
+): PartyVetNativeCciTlsnEvidence {
+  const evidence = snapshot(raw, "durable party Vet native CCI TLSN evidence");
+  const bundleHash = identityBundleHash(request.identityBundle);
+  if (
+    !isPartyVetNativeCciTlsnEvidence(evidence) ||
+    evidence.subject !== request.evaluatedParty ||
+    evidence.jobId !== request.jobId ||
+    evidence.sessionNonce !== input.sessionNonce ||
+    evidence.expectedServer !== input.expectedServer ||
+    evidence.bundleHash !== bundleHash ||
+    evidence.proofHash !== input.proofHash ||
+    evidence.claimRef !== `cci-tlsn:${input.proofHash}` ||
+    evidence.bundlePresentedAt !== request.identityBundle.presentedAt ||
+    evidence.evaluatedAt - evidence.claimObservedAt >
+      input.maxProofAgeSec * 1_000 ||
+    evidence.evaluatedAt - evidence.resolutionObservedAt >
+      input.maxResolutionAgeSec * 1_000 ||
+    evidence.evaluatedAt - evidence.bundlePresentedAt >
+      input.maxPresentationAgeSec * 1_000
+  ) {
+    throw new DacsError(
+      "party Vet native CCI TLSN journal returned conflicting evidence",
+    );
+  }
+  return deepFreezeSnapshot(evidence);
+}
+
+/**
+ * Qualify native CCI TLSN commitments before Party Vet and bind the compact
+ * provenance into the signed, durable CVR. These SDK-owned signals are a
+ * mandatory wrapper gate but remain supplementary under DACS-2: they never
+ * masquerade as external `tlsnotary` VerifyResults.
+ */
+export async function partyVetWithNativeCciTlsnCore<TKey>(
+  requestSource: PartyVetWithNativeCciTlsnRequest,
+  dependencySource: PartyVetDeps<TKey>,
+  qualifierSource: PartyVetNativeCciTlsnQualifier,
+): Promise<PartyVetWithNativeCciTlsnProduction> {
+  const request = capturePartyVetWithNativeCciTlsnRequest(requestSource);
+  const deps = capturePartyVetDeps(dependencySource);
+  const qualifier = exactCallback<PartyVetNativeCciTlsnQualifier>(
+    qualifierSource,
+    "party Vet native CCI TLSN qualifier",
+  );
+  const bundleHash = identityBundleHash(request.vet.identityBundle);
+  const nonce = request.nativeCciTlsn[0]!.sessionNonce;
+  const parsedPresenter = parseCanonicalClaimReference(
+    request.vet.evaluatedParty,
+  );
+  if (parsedPresenter === null) {
+    throw new DacsError(
+      "party Vet native CCI requires a canonical bundle presenter",
+    );
+  }
+  // Preserve the legacy key bytes for parameter-free presenters while making
+  // advisory CF-3 qualifiers share that presenter's durable nonce namespace.
+  const noncePresenter =
+    `${parsedPresenter.identity.scheme}:${parsedPresenter.identity.identifier}`;
+  const nonceKeyHash = exactArtifactHash({
+    bindingVersion: "1",
+    subject: noncePresenter,
+    sessionNonce: nonce,
+  });
+  const nonceBinding = deepFreezeSnapshot({
+    bindingVersion: "1",
+    jobId: request.vet.jobId,
+    subject: request.vet.evaluatedParty,
+    sessionNonce: nonce,
+    bundleHash,
+  });
+  const nonceBindingHash = exactArtifactHash(nonceBinding);
+  let nonceRaw: unknown;
+  try {
+    nonceRaw = await deps.runOnceAuthorized({
+      operationKey: `dacs2:party-vet-native-cci-nonce:${nonceKeyHash}`,
+      operationHash: nonceBindingHash,
+      step: "method",
+      inputHash: nonceBindingHash,
+      authorize: () => claimPartyVetEffectAuthority(
+        deps,
+        { jobId: request.vet.jobId, planHash: nonceBindingHash },
+        nonceBindingHash,
+        "method",
+        nonceBindingHash,
+      ),
+      execute: async () => nonceBinding,
+    });
+  } catch (error) {
+    throw new DacsError(
+      "party Vet native CCI session nonce was unavailable or already bound",
+      { cause: error },
+    );
+  }
+  const nonceResult = capturePartyAuthorizedRunResult(nonceRaw);
+  if (nonceResult.status === "authorization-rejected") {
+    throw new DacsError(
+      `party Vet native CCI session nonce authorization was ${nonceResult.reason}`,
+    );
+  }
+  if (!canonicalEqual(nonceResult.value, nonceBinding)) {
+    throw new DacsError(
+      "party Vet native CCI session nonce has conflicting durable state",
+    );
+  }
+  const nativeCciTlsn: PartyVetNativeCciTlsnEvidence[] = [];
+  const signals: SupplementarySignal[] = [];
+  for (const input of request.nativeCciTlsn) {
+    const qualificationIdentity = deepFreezeSnapshot({
+      qualificationVersion: "1",
+      jobId: request.vet.jobId,
+      subject: request.vet.evaluatedParty,
+      bundleHash,
+      proofHash: input.proofHash,
+      sessionNonce: input.sessionNonce,
+      expectedServer: input.expectedServer,
+      maxResolutionAgeSec: input.maxResolutionAgeSec,
+      maxProofAgeSec: input.maxProofAgeSec,
+      maxPresentationAgeSec: input.maxPresentationAgeSec,
+    });
+    const qualificationHash = exactArtifactHash(qualificationIdentity);
+    const qualificationKey = `dacs2:party-vet-native-cci:${qualificationHash}`;
+    let authorizedRaw: unknown;
+    try {
+      authorizedRaw = await deps.runOnceAuthorized({
+        operationKey: qualificationKey,
+        operationHash: qualificationHash,
+        step: "method-evidence",
+        inputHash: qualificationHash,
+        authorize: () => claimPartyVetEffectAuthority(
+          deps,
+          { jobId: request.vet.jobId, planHash: qualificationHash },
+          qualificationHash,
+          "method-evidence",
+          qualificationHash,
+        ),
+        execute: async () => {
+          const evaluatedAt = readClock(
+            deps.vet.nowMs,
+            "party Vet native CCI TLSN evaluation",
+          );
+          let disposition: unknown;
+          try {
+            disposition = await Reflect.apply(qualifier, INERT_VET_RECEIVER, [
+              deepFreezeSnapshot({
+                subject: request.vet.evaluatedParty,
+                bundle: snapshot(
+                  request.vet.identityBundle,
+                  "party Vet native CCI qualifier bundle",
+                ),
+                proofHash: input.proofHash,
+                context: {
+                  jobId: request.vet.jobId,
+                  expectedPresenter: request.vet.evaluatedParty,
+                  sessionNonce: input.sessionNonce,
+                  expectedServer: input.expectedServer,
+                  evaluatedAt,
+                  maxResolutionAgeSec: input.maxResolutionAgeSec,
+                  maxProofAgeSec: input.maxProofAgeSec,
+                  maxPresentationAgeSec: input.maxPresentationAgeSec,
+                },
+              }),
+            ]);
+          } catch {
+            disposition = {
+              status: "error",
+              reason: "native CCI TLSN qualifier was unavailable",
+            };
+          }
+          return nativeCciTlsnEvidenceFromDisposition({
+            qualificationVersion: "1",
+            evaluatedAt,
+            disposition,
+          }, request.vet, input);
+        },
+      });
+    } catch (error) {
+      if (error instanceof DacsError) throw error;
+      throw new DacsError(
+        "party Vet native CCI TLSN qualification journal was unavailable",
+        { cause: error },
+      );
+    }
+    const authorized = capturePartyAuthorizedRunResult(authorizedRaw);
+    if (authorized.status === "authorization-rejected") {
+      throw new DacsError(
+        `party Vet native CCI TLSN qualification authorization was ${authorized.reason}`,
+      );
+    }
+    const evidence = captureDurableNativeCciTlsnEvidence(
+      authorized.value,
+      request.vet,
+      input,
+    );
+    nativeCciTlsn.push(evidence);
+    signals.push(deepFreezeSnapshot({
+      source: "cci-tlsn",
+      signalType: PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
+      value: canonicalize(evidence),
+      observedAt: evidence.verifiedAt,
+    }));
+  }
+  const production = await partyVetCoreCaptured(
+    deepFreezeSnapshot({
+      ...request.vet,
+      supplementary: [
+        ...(request.vet.supplementary ?? []),
+        ...signals,
+      ],
+    }),
+    deps,
+    true,
+  );
+  const retainedSignals = production.record.supplementary
+    .map(readPartyVetNativeCciTlsnEvidence)
+    .filter((entry): entry is PartyVetNativeCciTlsnEvidence => entry !== null);
+  if (
+    retainedSignals.length !== nativeCciTlsn.length ||
+    canonicalize(retainedSignals) !== canonicalize(nativeCciTlsn)
+  ) {
+    throw new DacsError(
+      "party Vet durable record did not retain exact native CCI TLSN evidence",
+    );
+  }
+  return deepFreezeSnapshot({
+    ...production,
+    nativeCciTlsn,
   });
 }

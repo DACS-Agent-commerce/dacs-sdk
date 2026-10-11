@@ -15,6 +15,8 @@ export const ARTIFACT_SEPARATORS = {
   SettlementEvidence: "dacs-evidence:v1:",
   AttestationBundle: "dacs-bundle:v1:",
   FaultAttestationBundle: "dacs-fault-bundle:v1:",
+  EvidenceBoundFaultAttestationBundle:
+    "dacs-evidence-bound-fault-bundle:v1:",
 } as const satisfies Record<ArtifactKind, DomainSeparator>;
 
 /** Domain separator for a bundle rating record (DACS-5 §10.6). */
@@ -23,6 +25,12 @@ export const RATING_SEPARATOR: DomainSeparator = "dacs-rating:v1:";
 /** Domain separator for DACS-5 §10.4.2 BundleBinding. */
 export const BUNDLE_BINDING_SEPARATOR: DomainSeparator =
   "dacs-bundle-binding:v1:";
+
+/** DACS-5 §10.4.2 type-specific extended-pointer domains. */
+export const FAULT_BUNDLE_POINTER_SEPARATOR: DomainSeparator =
+  "dacs-fault-bundle-pointer:v1:";
+export const EVIDENCE_BOUND_FAULT_BUNDLE_POINTER_SEPARATOR: DomainSeparator =
+  "dacs-evidence-bound-fault-bundle-pointer:v1:";
 
 export function separatorFor(kind: ArtifactKind): DomainSeparator {
   return ARTIFACT_SEPARATORS[kind];

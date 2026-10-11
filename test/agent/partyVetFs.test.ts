@@ -23,6 +23,7 @@ import {
   ed25519Verify,
   identityBundleHash,
   partyVetCore,
+  partyVetWithNativeCciTlsnCore,
   partyVetPinScopeHash,
   pinSessionRecipeRegistrySnapshot,
   pinSessionRecipeSelection,
@@ -37,6 +38,7 @@ import {
   signedBytes,
   type AttestationRef,
   type CompositeBundleRequirement,
+  type CciTlsnDisposition,
   type DurableSessionRecipePin,
   type FinalizedVetAnchor,
   type FinalizedVetAnchorReceipt,
@@ -44,7 +46,9 @@ import {
   type IdentityBundle,
   type PartyVetDeps,
   type PartyVetOperationStore,
+  type PartyVetNativeCciTlsnQualifierInput,
   type PartyVetRequest,
+  type PartyVetWithNativeCciTlsnRequest,
   type RecipeDescriptor,
 } from "../../src/index.js";
 import type { SessionLeaseToken } from "../../src/agent/fencedSessionStore.js";
@@ -521,11 +525,16 @@ async function recipe(scheme: string) {
   });
 }
 
-async function bundle(presentedBy: string, refs: readonly string[]) {
+async function bundle(
+  presentedBy: string,
+  refs: readonly string[],
+  sessionNonce?: string,
+) {
   const identity: IdentityBundle = {
     bundleVersion: "1",
     presentedBy,
     presentedAt: T0 - 1_000,
+    ...(sessionNonce === undefined ? {} : { sessionNonce }),
     claims: refs.map((ref) => ({ ref })),
     presentation: {
       kind: "siwd",
@@ -906,6 +915,225 @@ describe("partyVetCore cold filesystem recovery", () => {
     expect(await thirdOperations.inspect()).toEqual({
       checkpoints: 3,
       terminalSteps: 8,
+    });
+  }, 30_000);
+
+  test("cold-restarts a committed native CCI qualification without invoking the verifier twice", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dacs-native-cci-vet-fs-"));
+    temporaryDirectories.push(root);
+    const sessionDirectory = join(root, "session");
+    const operationDirectory = join(root, "operations");
+    const effectDirectory = join(root, "effects");
+    const jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
+    const subject = "alpha:alice";
+    const proofHash = "ab".repeat(32);
+    const sessionNonce = "native-cci-fs-session-nonce";
+    const nativeRef = `cci-tlsn:${proofHash}`;
+    const identityBundle = await bundle(
+      subject,
+      [subject, nativeRef],
+      sessionNonce,
+    );
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{
+        scheme: "alpha",
+        verificationRequired: true,
+        recipeVersion: 1,
+      }],
+    };
+    const requirementPath = { kind: "required" as const, index: 0 };
+    const partyPlanHash = partyVetPinScopeHash({
+      jobId,
+      evaluatedParty: subject,
+      identityBundle,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [{
+        requirementPath,
+        claimSubject: subject,
+        classification: "dealSpecific",
+        methodInput: { kind: "consensus-backed-proxy" },
+      }],
+    });
+    const provider = createPartyVetPinRegistryProvider({
+      recipes: [await recipe("alpha")],
+      stewardSigner: STEWARD,
+      stewardPublicKey: STEWARD_KEY,
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      now: T0 + 1,
+    });
+    const requestWith = (
+      exactBundle: IdentityBundle,
+      pin: DurableSessionRecipePin,
+    ): PartyVetWithNativeCciTlsnRequest => ({
+      vet: {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: exactBundle,
+        requirement,
+        attempts: [{
+          requirementPath,
+          claimSubject: subject,
+          recipePin: pin,
+          methodInput: { kind: "consensus-backed-proxy" },
+        }],
+      },
+      nativeCciTlsn: [{
+        proofHash,
+        sessionNonce,
+        expectedServer: "github.com",
+        maxResolutionAgeSec: 60,
+        maxProofAgeSec: 60,
+        maxPresentationAgeSec: 60,
+      }],
+    });
+    const firstSession = await createFsFencedSessionStore({
+      dir: sessionDirectory,
+    });
+    await firstSession.create({ jobId, now: T0 });
+    const firstLease = await acquireLease(
+      firstSession,
+      jobId,
+      "native-cci-worker-g1",
+      T0,
+      100,
+    );
+    const firstSnapshot = await pinSessionRecipeRegistrySnapshot({
+      store: firstSession,
+      jobId,
+      sessionStartHash: partyPlanHash,
+      provider,
+      leaseToken: firstLease,
+      now: T0 + 1,
+    });
+    const firstPin = await pinSessionRecipeSelection({
+      store: firstSession,
+      sessionSnapshot: firstSnapshot,
+      jobId,
+      evaluatedParty: subject,
+      requirementPath,
+      bundleRequirement: requirement,
+      partyPlanHash,
+      requestedMethod: "consensus-backed-proxy",
+      leaseToken: firstLease,
+      now: T0 + 2,
+    });
+    const firstOperations = await createFsPartyVetOperationHarness(
+      operationDirectory,
+      { loseCommittedResponseAt: "method-evidence" },
+    );
+    const effects = await createFsEffects(effectDirectory, { now: T0 + 3 });
+    let qualifierCalls = 0;
+    const qualifier = (
+      input: Readonly<PartyVetNativeCciTlsnQualifierInput>,
+    ): CciTlsnDisposition => {
+      qualifierCalls += 1;
+      return {
+        status: "native-cci",
+        claim: {
+          kind: "tlsn",
+          context: "github",
+          username: "alice",
+          userId: "42",
+          proofHash,
+          observedAt: T0 - 1_000,
+          ref: nativeRef,
+        },
+        jobId,
+        sessionNonce,
+        bundleHash: identityBundleHash(input.bundle),
+        evaluatedAt: input.context.evaluatedAt,
+        verification: {
+          verifiedAt: input.context.evaluatedAt,
+          authority: "native-tlsn:testnet",
+          binding: {
+            subject,
+            jobId,
+            sessionNonce,
+            expectedServer: "github.com",
+            bundleHash: identityBundleHash(input.bundle),
+            proofHash,
+            resolutionObservedAt: T0 - 500,
+          },
+        },
+      };
+    };
+
+    await expect(partyVetWithNativeCciTlsnCore(
+      requestWith(identityBundle, firstPin),
+      makeDeps(
+        firstOperations.store,
+        effects,
+        firstSession,
+        firstLease,
+        T0 + 3,
+      ),
+      qualifier,
+    )).rejects.toThrow(/qualification journal was unavailable/);
+    expect(qualifierCalls).toBe(1);
+    expect((await effects.inspect()).counts).toEqual({
+      methods: 0,
+      signs: 0,
+      anchors: 0,
+    });
+
+    const restartedSession = await createFsFencedSessionStore({
+      dir: sessionDirectory,
+    });
+    const restartedLease = await acquireLease(
+      restartedSession,
+      jobId,
+      "native-cci-worker-g2",
+      T0 + 101,
+      1_000,
+    );
+    const restartedSnapshot = await recoverSessionRecipeRegistrySnapshot({
+      store: restartedSession,
+      jobId,
+      sessionStartHash: partyPlanHash,
+      leaseToken: restartedLease,
+      now: T0 + 102,
+    });
+    const restartedPin = await recoverSessionRecipePin({
+      store: restartedSession,
+      sessionSnapshot: restartedSnapshot,
+      jobId,
+      evaluatedParty: subject,
+      requirementPath,
+      bundleRequirement: requirement,
+      partyPlanHash,
+      requestedMethod: "consensus-backed-proxy",
+      leaseToken: restartedLease,
+      now: T0 + 103,
+    });
+    const restartedOperations = await createFsPartyVetOperationHarness(
+      operationDirectory,
+    );
+    const restartedEffects = await createFsEffects(effectDirectory, {
+      now: T0 + 103,
+    });
+    const production = await partyVetWithNativeCciTlsnCore(
+      requestWith(identityBundle, restartedPin),
+      makeDeps(
+        restartedOperations.store,
+        restartedEffects,
+        restartedSession,
+        restartedLease,
+        T0 + 103,
+      ),
+      () => {
+        throw new Error("cold replay must not invoke the native verifier");
+      },
+    );
+    expect(production.record.overallDecision).toBe("pass");
+    expect(production.nativeCciTlsn).toHaveLength(1);
+    expect(qualifierCalls).toBe(1);
+    expect((await restartedEffects.inspect()).counts).toEqual({
+      methods: 1,
+      signs: 2,
+      anchors: 2,
     });
   }, 30_000);
 });

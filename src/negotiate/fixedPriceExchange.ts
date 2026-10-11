@@ -362,6 +362,22 @@ function captureContribution(
   return contribution;
 }
 
+/**
+ * Fail-closed structural and hash validation for a detached agreement
+ * contribution crossing an untrusted transport boundary. Cryptographic
+ * signature verification remains the caller's separate responsibility.
+ */
+export function isFixedPriceAgreementSignatureContribution(
+  value: unknown,
+): value is Readonly<FixedPriceAgreementSignatureContribution> {
+  try {
+    captureContribution(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function captureSigner(value: AgreementSigner): AgreementSigner {
   if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) {
     throw new DacsError("agreement signer must be an owned object");

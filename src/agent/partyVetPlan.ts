@@ -24,18 +24,35 @@ import {
 import { DacsError } from "../errors.js";
 import {
   identityBundleHash,
+  parseCanonicalClaimReference,
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
 import {
+  isDurableSessionRecipeRegistrySnapshot,
   isDurableSessionRecipePin,
+  type DurableSessionRecipeRegistrySnapshot,
   type DurableSessionRecipePin,
 } from "./durableRecipePin.js";
 import type { VerificationMethod } from "../registry/types.js";
 import {
+  classifyPresenceClaimRequirement,
   isCompositeBundleRequirement,
+  presenceRequirementPreflight,
   type CompositeBundleRequirement,
   type CompositeClaimRequirement,
+  type PresenceClaimDecision,
 } from "./compositeVerification.js";
+
+/** Reserved supplementary type emitted only by the native CCI Vet wrapper. */
+export const PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE =
+  "qualified-native-cci-tlsn:v1" as const;
+
+function isNativeCciTlsnQualificationSignal(
+  signal: Readonly<SupplementarySignal>,
+): boolean {
+  return signal.source === "cci-tlsn" &&
+    signal.signalType === PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE;
+}
 
 /** Exact location of one ClaimRequirement inside a party-level requirement. */
 export type PartyVetRequirementPath =
@@ -102,6 +119,10 @@ export interface PartyVetPlanInput {
   requirement: CompositeBundleRequirement;
   verifier: Pick<ComponentSignature, "algorithm" | "signer">;
   attempts: PartyVetAttemptInput[];
+  /** Required for PCR-6 even when presence mode creates no recipe pins. */
+  sessionRecipeRegistrySnapshot?: DurableSessionRecipeRegistrySnapshot;
+  /** Independently authenticated control of the exact non-key presented claim. */
+  presentedClaimControlled?: boolean;
   supplementary?: SupplementarySignal[];
   warnings?: VerificationWarning[];
 }
@@ -109,8 +130,9 @@ export interface PartyVetPlanInput {
 export interface PartyVetPlannedRequirement {
   requirementPath: PartyVetRequirementPath;
   requirement: CompositeClaimRequirement;
-  disposition: "attempt" | "absent";
+  disposition: "attempt" | "presence" | "absent";
   attemptId?: string;
+  presenceDecision?: PresenceClaimDecision;
 }
 
 export interface PartyVetRequirementAttempt {
@@ -135,6 +157,12 @@ export interface PartyVetRequirementAttempt {
   recipeContentHash: string;
   recipeArtifactHash: string;
   registryProvenance: DurableSessionRecipePin["provenance"];
+  /**
+   * Present only when two or more requirement paths can consume one exact
+   * authority execution and VerifyResult. The group never replaces the
+   * path-specific recipe pins or requirements retained above.
+   */
+  sharedResultGroup?: string;
 }
 
 export interface PartyVetPlan {
@@ -144,6 +172,10 @@ export interface PartyVetPlan {
   pinScopeHash: string;
   /** Exact job-wide registry snapshot shared by every attempt pin. */
   sessionRecipeRegistrySnapshotHash?: string;
+  /** Durable PCR-2 clock fixed by the authenticated session snapshot. */
+  presenceEvaluatedAt?: number;
+  /** Captured DACS-1 step (6) result for a non-key primary selector. */
+  presentedClaimControlled?: boolean;
   jobId: string;
   evaluatedParty: string;
   identityBundle: IdentityBundle;
@@ -428,6 +460,46 @@ function resultAddress(
   );
 }
 
+function authorityTemplateBindings(
+  attempt: Readonly<PartyVetRequirementAttempt>,
+): Record<string, unknown> {
+  if (attempt.method.kind !== "consensus-backed-proxy") return {};
+  const bindings: Record<string, unknown> = {};
+  const placeholders = [...attempt.method.endpoint.urlTemplate.matchAll(
+    /\{([A-Za-z][A-Za-z0-9_]*)\}/g,
+  )].map((match) => match[1]!);
+  for (const key of [...new Set(placeholders)].sort()) {
+    if (key === "identifier") continue;
+    if (
+      attempt.requirement.parameters === undefined ||
+      !Object.prototype.hasOwnProperty.call(attempt.requirement.parameters, key)
+    ) {
+      // An unavailable template input will fail before the authority effect.
+      // Keeping it explicit prevents it being coalesced with a real binding.
+      bindings[key] = null;
+      continue;
+    }
+    bindings[key] = attempt.requirement.parameters[key];
+  }
+  return bindings;
+}
+
+function sharedResultCompatibilityKey(
+  attempt: Readonly<PartyVetRequirementAttempt>,
+): string {
+  return sha256Hex(canonicalize({
+    resultAddress: attempt.resultAddress,
+    claimSubject: attempt.claimSubject,
+    classification: attempt.classification,
+    method: attempt.method,
+    methodInputHash: attempt.methodInputHash,
+    recipeContentHash: attempt.recipeContentHash,
+    recipeArtifactHash: attempt.recipeArtifactHash,
+    sessionSnapshotHash: attempt.recipePin.sessionSnapshotHash,
+    authorityTemplateBindings: authorityTemplateBindings(attempt),
+  }));
+}
+
 /** DACS-2 §7.7.2 exact party-level composite address. */
 export function partyVetCompositeAddress(
   jobId: string,
@@ -454,38 +526,49 @@ function carriedClaimsByScheme(bundle: Readonly<IdentityBundle>): Map<string, st
 
 function expectedAttemptPaths(
   requirement: Readonly<CompositeBundleRequirement>,
-  claims: ReadonlyMap<string, readonly string[]>,
+  identityBundle: Readonly<IdentityBundle>,
+  presenceEvaluatedAt?: number,
 ): {
   paths: PartyVetRequirementPath[];
   requirementPaths: Array<{
     requirementPath: PartyVetRequirementPath;
     requirement: CompositeClaimRequirement;
-    disposition: "attempt" | "absent";
+    disposition: "attempt" | "presence" | "absent";
+    presenceDecision?: PresenceClaimDecision;
   }>;
 } {
+  const claims = carriedClaimsByScheme(identityBundle);
   const carriedFor = (scheme: string): boolean => {
     const count = claims.get(scheme)?.length ?? 0;
-    if (count > 1) {
-      throw new DacsError(
-        `party Vet has ambiguous same-scheme provenance for ${scheme}`,
-      );
-    }
-    return count === 1;
+    return count > 0;
   };
   const paths: PartyVetRequirementPath[] = [];
   const requirementPaths: Array<{
     requirementPath: PartyVetRequirementPath;
     requirement: CompositeClaimRequirement;
-    disposition: "attempt" | "absent";
+    disposition: "attempt" | "presence" | "absent";
+    presenceDecision?: PresenceClaimDecision;
   }> = [];
   for (let index = 0; index < requirement.required.length; index += 1) {
     const claim = requirement.required[index]!;
     const carried = carriedFor(claim.scheme);
     const requirementPath = { kind: "required" as const, index };
     if (!claim.verificationRequired) {
-      throw new DacsError(
-        "party Vet cannot emit a strict CVR for a presence-only required claim",
-      );
+      requirementPaths.push({
+        requirementPath,
+        requirement: claim,
+        disposition: "presence",
+        ...(presenceEvaluatedAt === undefined
+          ? {}
+          : {
+              presenceDecision: classifyPresenceClaimRequirement(
+                identityBundle,
+                claim,
+                presenceEvaluatedAt,
+              ),
+            }),
+      });
+      continue;
     }
     requirementPaths.push({
       requirementPath,
@@ -506,9 +589,21 @@ function expectedAttemptPaths(
         alternativeIndex,
       };
       if (!claim.verificationRequired) {
-        throw new DacsError(
-          "party Vet cannot emit a strict CVR for a presence-only oneOf claim",
-        );
+        requirementPaths.push({
+          requirementPath,
+          requirement: claim,
+          disposition: "presence",
+          ...(presenceEvaluatedAt === undefined
+            ? {}
+            : {
+                presenceDecision: classifyPresenceClaimRequirement(
+                  identityBundle,
+                  claim,
+                  presenceEvaluatedAt,
+                ),
+              }),
+        });
+        continue;
       }
       requirementPaths.push({
         requirementPath,
@@ -731,7 +826,7 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
     capturePinScopeAttempt(descriptors[key]!.value, index));
   const expected = expectedAttemptPaths(
     requirement,
-    carriedClaimsByScheme(identityBundle),
+    identityBundle,
   );
   const expectedKeys = expected.paths.map(pathKey);
   const actualKeys = attempts.map((attempt) => pathKey(attempt.requirementPath));
@@ -777,7 +872,12 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
       classification: attempt.classification,
       methodInputHash: sha256Hex(canonicalize(attempt.methodInput)),
     })),
-    supplementary,
+    // Native CCI evidence is only available after the session recipe pins have
+    // been issued. It remains bound by the final plan hash and signed CVR; only
+    // this SDK-reserved type is omitted from the earlier, circular pre-pin scope.
+    supplementary: supplementary.filter(
+      (signal) => !isNativeCciTlsnQualificationSignal(signal),
+    ),
     ...(warnings !== undefined ? { warnings } : {}),
   };
   return sha256Hex(canonicalize(payload));
@@ -785,8 +885,8 @@ export function partyVetPinScopeHash(source: PartyVetPinScopeInput): string {
 
 /**
  * Capture one immutable, party-scoped Vet plan before any method, signing or
- * anchoring effect. Every requirement path is explicit, so two same-scheme
- * requirements cannot silently share a result or lose their provenance.
+ * anchoring effect. Every requirement path is explicit; compatible same-result
+ * paths share only a derived execution group and retain their own provenance.
  */
 export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   if (
@@ -800,7 +900,12 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         "verifier",
         "attempts",
       ],
-      ["supplementary", "warnings"],
+      [
+        "sessionRecipeRegistrySnapshot",
+        "presentedClaimControlled",
+        "supplementary",
+        "warnings",
+      ],
     )
   ) {
     throw new DacsError("party Vet plan input must be an exact data record");
@@ -834,6 +939,39 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
   if (!isCompositeBundleRequirement(requirement)) {
     throw new DacsError("party Vet requires an exact current BundleRequirement");
   }
+  const presenceMembers = [
+    ...requirement.required,
+    ...(requirement.oneOf ?? []).flat(),
+  ].filter((member) => member.verificationRequired === false);
+  const preflightFailure = presenceRequirementPreflight(requirement);
+  if (presenceMembers.length > 0 && preflightFailure) {
+    throw new DacsError(`party Vet presence preflight failed: ${preflightFailure}`);
+  }
+  const presentedClaimControlled = source.presentedClaimControlled;
+  if (
+    presentedClaimControlled !== undefined &&
+    typeof presentedClaimControlled !== "boolean"
+  ) {
+    throw new DacsError("party Vet presented-claim control result must be boolean");
+  }
+  const sessionSnapshot = source.sessionRecipeRegistrySnapshot;
+  if (
+    sessionSnapshot !== undefined &&
+    (!isDurableSessionRecipeRegistrySnapshot(sessionSnapshot) ||
+      sessionSnapshot.jobId !== jobId)
+  ) {
+    throw new DacsError(
+      "party Vet registry snapshot must be runtime-authenticated and job-bound",
+    );
+  }
+  if (presenceMembers.length > 0 && sessionSnapshot === undefined) {
+    throw new DacsError(
+      "presence-only party Vet requires the authenticated session registry snapshot",
+    );
+  }
+  const presenceEvaluatedAt = presenceMembers.length > 0
+    ? sessionSnapshot!.pinnedAt
+    : undefined;
   const supplementary = snapshot(
     source.supplementary ?? [],
     "party Vet supplementary signals",
@@ -874,8 +1012,11 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     throw new DacsError("party Vet attempts must be a dense intrinsic array");
   }
 
-  const claims = carriedClaimsByScheme(identityBundle);
-  const expected = expectedAttemptPaths(requirement, claims);
+  const expected = expectedAttemptPaths(
+    requirement,
+    identityBundle,
+    presenceEvaluatedAt,
+  );
   const captured = attemptKeys.map((key, index) =>
     captureAttemptInput(attemptsDescriptor[key]!.value, index));
   const expectedPathKeys = expected.paths.map(pathKey);
@@ -907,9 +1048,9 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     supplementary,
     ...(warnings !== undefined ? { warnings } : {}),
   });
-  const plannedAttempts: PartyVetRequirementAttempt[] = [];
-  const resultAddresses = new Set<string>();
-  let sessionRecipeRegistrySnapshotHash: string | undefined;
+  let plannedAttempts: PartyVetRequirementAttempt[] = [];
+  let sessionRecipeRegistrySnapshotHash: string | undefined =
+    sessionSnapshot?.snapshotHash;
   for (let index = 0; index < captured.length; index += 1) {
     const attempt = captured[index]!;
     const claimRequirement = requirementAt(requirement, attempt.requirementPath);
@@ -1012,12 +1153,6 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
       attempt.claimSubject,
       recipe.recipeVersion,
     );
-    if (resultAddresses.has(address)) {
-      throw new DacsError(
-        `party Vet attempts derive duplicate result address ${address}`,
-      );
-    }
-    resultAddresses.add(address);
     const recipeContentHash = contentHash(
       recipe as unknown as Record<string, unknown>,
     );
@@ -1092,6 +1227,43 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     }));
   }
 
+  const attemptsByResultAddress = new Map<string, PartyVetRequirementAttempt[]>();
+  for (const attempt of plannedAttempts) {
+    const group = attemptsByResultAddress.get(attempt.resultAddress) ?? [];
+    group.push(attempt);
+    attemptsByResultAddress.set(attempt.resultAddress, group);
+  }
+  const sharedGroups = new Map<string, string>();
+  for (const [address, attempts] of attemptsByResultAddress) {
+    if (attempts.length < 2) continue;
+    const distinctRequirements = new Set(
+      attempts.map((attempt) => canonicalize(attempt.requirement)),
+    );
+    if (
+      distinctRequirements.size > 1 &&
+      attempts.some((attempt) => attempt.method.kind !== "consensus-backed-proxy")
+    ) {
+      throw new DacsError(
+        `party Vet attempts derive incompatible duplicate result address ${address}`,
+      );
+    }
+    const keys = new Set(attempts.map(sharedResultCompatibilityKey));
+    if (keys.size !== 1) {
+      throw new DacsError(
+        `party Vet attempts derive incompatible duplicate result address ${address}`,
+      );
+    }
+    sharedGroups.set(address, [...keys][0]!);
+  }
+  if (sharedGroups.size > 0) {
+    plannedAttempts = plannedAttempts.map((attempt) => {
+      const sharedResultGroup = sharedGroups.get(attempt.resultAddress);
+      return sharedResultGroup === undefined
+        ? attempt
+        : deepFreeze({ ...attempt, sharedResultGroup });
+    });
+  }
+
   const attemptsByPath = new Map(
     plannedAttempts.map((attempt) => [pathKey(attempt.requirementPath), attempt]),
   );
@@ -1112,6 +1284,9 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
         ),
         disposition: entry.disposition,
         ...(planned ? { attemptId: planned.attemptId } : {}),
+        ...(entry.presenceDecision !== undefined
+          ? { presenceDecision: entry.presenceDecision }
+          : {}),
       });
     });
 
@@ -1120,6 +1295,10 @@ export function createPartyVetPlan(source: PartyVetPlanInput): PartyVetPlan {
     pinScopeHash,
     ...(sessionRecipeRegistrySnapshotHash !== undefined
       ? { sessionRecipeRegistrySnapshotHash }
+      : {}),
+    ...(presenceEvaluatedAt !== undefined ? { presenceEvaluatedAt } : {}),
+    ...(presentedClaimControlled !== undefined
+      ? { presentedClaimControlled }
       : {}),
     jobId,
     evaluatedParty,
@@ -1181,21 +1360,53 @@ function validateOutcome(
   });
 }
 
+type PartyVetQualificationDecisions = ReadonlyMap<string, VerificationDecision>;
+
 function effectiveAttemptDecision(
   attempt: Readonly<PartyVetRequirementAttempt>,
   outcome: Readonly<PartyVetAttemptOutcome> | undefined,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): VerificationDecision | undefined {
   if (!outcome) return undefined;
-  return attempt.recipe.availability === "mocked" ||
+  if (attempt.recipe.availability === "mocked" ||
     attempt.recipe.availability === "failed" ||
-    attempt.recipe.availability === "disabled"
-    ? "error"
-    : outcome.result.decision;
+    attempt.recipe.availability === "disabled") {
+    return "error";
+  }
+  if (
+    attempt.sharedResultGroup !== undefined &&
+    evaluatedAt !== undefined &&
+    attempt.requirement.maxAge !== undefined
+  ) {
+    const freshnessWindow = attempt.requirement.maxAge * 1_000;
+    const expiresAt = outcome.result.verifiedAt + freshnessWindow;
+    if (
+      !Number.isSafeInteger(freshnessWindow) ||
+      !Number.isSafeInteger(expiresAt) ||
+      evaluatedAt > expiresAt
+    ) {
+      return "fail";
+    }
+  }
+  if (
+    attempt.sharedResultGroup !== undefined &&
+    outcome.result.decision === "pass" &&
+    attempt.requirement.parameters !== undefined
+  ) {
+    // Shared parameters require the method-specific runtime matcher. The pure
+    // planner has no authenticated method context, so it fails closed unless
+    // the durable producer supplies its internally derived qualification.
+    return qualifications?.get(attempt.attemptId) ?? "fail";
+  }
+  return outcome.result.decision;
 }
 
 function nextAttempt(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): PartyVetRequirementAttempt | null {
   for (let index = 0; index < plan.requirement.required.length; index += 1) {
     const attempt = plan.attempts.find(
@@ -1213,6 +1424,10 @@ function nextAttempt(
     );
     for (const entry of groupPaths) {
       if (entry.disposition === "absent") continue;
+      if (entry.disposition === "presence") {
+        if (entry.presenceDecision === "pass") break;
+        continue;
+      }
       const attempt = plan.attempts.find(
         (candidate) => candidate.attemptId === entry.attemptId,
       );
@@ -1221,7 +1436,14 @@ function nextAttempt(
       }
       const outcome = completed.get(attempt.attemptId);
       if (!outcome) return attempt;
-      if (effectiveAttemptDecision(attempt, outcome) === "pass") break;
+      if (
+        effectiveAttemptDecision(
+          attempt,
+          outcome,
+          evaluatedAt,
+          qualifications,
+        ) === "pass"
+      ) break;
     }
   }
   return null;
@@ -1230,6 +1452,8 @@ function nextAttempt(
 function skippedAttemptIds(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): string[] {
   const skipped: string[] = [];
   for (let groupIndex = 0; groupIndex < (plan.requirement.oneOf?.length ?? 0); groupIndex += 1) {
@@ -1240,6 +1464,14 @@ function skippedAttemptIds(
     );
     let satisfied = false;
     for (const entry of groupPaths) {
+      if (
+        !satisfied &&
+        entry.disposition === "presence" &&
+        entry.presenceDecision === "pass"
+      ) {
+        satisfied = true;
+        continue;
+      }
       if (satisfied && entry.attemptId !== undefined) {
         const attempt = plan.attempts.find(
           (candidate) => candidate.attemptId === entry.attemptId,
@@ -1258,6 +1490,8 @@ function skippedAttemptIds(
           effectiveAttemptDecision(
             attempt,
             completed.get(attempt.attemptId),
+            evaluatedAt,
+            qualifications,
           ) === "pass"
         ) {
           satisfied = true;
@@ -1268,9 +1502,114 @@ function skippedAttemptIds(
   return skipped;
 }
 
+function plannedEntryDecision(
+  plan: Readonly<PartyVetPlan>,
+  entry: Readonly<PartyVetPlannedRequirement>,
+  completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
+): VerificationDecision {
+  if (entry.disposition === "presence") {
+    return entry.presenceDecision ?? "error";
+  }
+  if (entry.attemptId === undefined) return "fail";
+  const attempt = plan.attempts.find(
+    (candidate) => candidate.attemptId === entry.attemptId,
+  );
+  return attempt
+    ? effectiveAttemptDecision(
+        attempt,
+        completed.get(attempt.attemptId),
+        evaluatedAt,
+        qualifications,
+      ) ?? "fail"
+    : "fail";
+}
+
+function planSelectorAuthorized(
+  plan: Readonly<PartyVetPlan>,
+  completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
+): boolean {
+  const selector = plan.requirement.primaryClaimSelector;
+  if (selector === undefined) return true;
+  const presented = parseCanonicalClaimReference(plan.identityBundle.presentedBy);
+  if (!presented || presented.identity.scheme !== selector) return false;
+  const exactClaims = plan.identityBundle.claims.filter((claim) =>
+    sameCanonicalClaimIdentity(claim.ref, plan.identityBundle.presentedBy)
+  );
+  if (exactClaims.length !== 1) return false;
+  // BP-4 was authenticated before plan creation. The current closed profile
+  // recognises its exact self-authenticating key as independent control.
+  const controlled = presented.identity.scheme === "key" ||
+    plan.presentedClaimControlled === true;
+  const verifiedSelector = plan.attempts.some((attempt) => {
+    const outcome = completed.get(attempt.attemptId);
+    return sameCanonicalClaimIdentity(
+      attempt.claimSubject,
+      plan.identityBundle.presentedBy,
+    ) && effectiveAttemptDecision(
+      attempt,
+      outcome,
+      evaluatedAt,
+      qualifications,
+    ) === "pass";
+  });
+  const presencePassesExact = (
+    entry: Readonly<PartyVetPlannedRequirement>,
+  ): boolean =>
+    entry.disposition === "presence" &&
+    entry.requirement.scheme === selector &&
+    plan.presenceEvaluatedAt !== undefined &&
+    classifyPresenceClaimRequirement(
+      plan.identityBundle,
+      entry.requirement,
+      plan.presenceEvaluatedAt,
+      exactClaims[0]!.ref,
+    ) === "pass";
+  let presenceSelector = plan.requirementPaths.some(presencePassesExact);
+  if (plan.requirement.required.some(
+    (member) => member.scheme === selector && member.verificationRequired === true,
+  )) {
+    presenceSelector = false;
+  }
+  for (let groupIndex = 0;
+    groupIndex < (plan.requirement.oneOf?.length ?? 0);
+    groupIndex += 1) {
+    const group = plan.requirement.oneOf![groupIndex]!;
+    if (!group.some(
+      (member) => member.scheme === selector && member.verificationRequired === true,
+    )) {
+      continue;
+    }
+    const entries = plan.requirementPaths.filter(
+      (entry) =>
+        entry.requirementPath.kind === "oneOf" &&
+        entry.requirementPath.groupIndex === groupIndex,
+    );
+    const exactPresenceInGroup = entries.some(presencePassesExact);
+    const passingOtherScheme = entries.some(
+      (entry) =>
+        entry.requirement.scheme !== selector &&
+        plannedEntryDecision(
+          plan,
+          entry,
+          completed,
+          evaluatedAt,
+          qualifications,
+        ) === "pass",
+    );
+    if (!exactPresenceInGroup && !passingOtherScheme) presenceSelector = false;
+  }
+  return controlled && (verifiedSelector || presenceSelector);
+}
+
 function aggregateComplete(
   plan: Readonly<PartyVetPlan>,
   completed: ReadonlyMap<string, Readonly<PartyVetAttemptOutcome>>,
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): VerificationDecision {
   const failures: string[] = [];
   const errors: string[] = [];
@@ -1281,9 +1620,16 @@ function aggregateComplete(
     const attempt = entry.attemptId === undefined
       ? undefined
       : plan.attempts.find((candidate) => candidate.attemptId === entry.attemptId);
-    const decision = attempt
-      ? effectiveAttemptDecision(attempt, completed.get(attempt.attemptId))
-      : "fail";
+    const decision = entry.disposition === "presence"
+      ? entry.presenceDecision
+      : attempt
+        ? effectiveAttemptDecision(
+            attempt,
+            completed.get(attempt.attemptId),
+            evaluatedAt,
+            qualifications,
+          )
+        : "fail";
     if (decision === "pass") continue;
     if (decision === "fail" || decision === undefined) {
       failures.push(pathKey(entry.requirementPath));
@@ -1302,6 +1648,9 @@ function aggregateComplete(
           entry.requirementPath.groupIndex === groupIndex,
       )
       .map((entry): VerificationDecision => {
+        if (entry.disposition === "presence") {
+          return entry.presenceDecision ?? "error";
+        }
         if (entry.attemptId === undefined) return "fail";
         const attempt = plan.attempts.find(
           (candidate) => candidate.attemptId === entry.attemptId,
@@ -1310,6 +1659,8 @@ function aggregateComplete(
           ? effectiveAttemptDecision(
               attempt,
               completed.get(attempt.attemptId),
+              evaluatedAt,
+              qualifications,
             ) ?? "fail"
           : "fail";
       })
@@ -1324,6 +1675,14 @@ function aggregateComplete(
     }
   }
 
+  if (!planSelectorAuthorized(
+    plan,
+    completed,
+    evaluatedAt,
+    qualifications,
+  )) {
+    failures.push("primaryClaimSelector");
+  }
   if (failures.length > 0) return "fail";
   if (errors.length > 0) return "error";
   if (indeterminates.length > 0) return "indeterminate";
@@ -1335,15 +1694,23 @@ function aggregateComplete(
  * alternatives stop after the first pass; required claims and separate groups
  * remain AND-composed. An out-of-order, duplicate or post-pass result is fatal.
  */
-export function advancePartyVetPlan(
+function advancePartyVetPlanInternal(
   plan: PartyVetPlan,
   outcomeSource: readonly PartyVetAttemptOutcome[],
+  evaluatedAt?: number,
+  qualifications?: PartyVetQualificationDecisions,
 ): PartyVetExecutionState {
   if (!isPartyVetPlan(plan)) {
     throw new DacsError("party Vet execution requires an authenticated immutable plan");
   }
   if (!Array.isArray(outcomeSource)) {
     throw new DacsError("party Vet outcomes must be an array");
+  }
+  if (
+    evaluatedAt !== undefined &&
+    (!Number.isSafeInteger(evaluatedAt) || evaluatedAt < 0)
+  ) {
+    throw new DacsError("party Vet evaluatedAt must be a non-negative safe integer");
   }
   let outcomeDescriptors: Record<string, PropertyDescriptor>;
   try {
@@ -1373,7 +1740,7 @@ export function advancePartyVetPlan(
   const completed = new Map<string, PartyVetAttemptOutcome>();
   const ordered: PartyVetAttemptOutcome[] = [];
   for (let index = 0; index < outcomeKeys.length; index += 1) {
-    const expected = nextAttempt(plan, completed);
+    const expected = nextAttempt(plan, completed, evaluatedAt, qualifications);
     if (!expected) {
       throw new DacsError("party Vet execution contains an outcome after completion");
     }
@@ -1389,8 +1756,13 @@ export function advancePartyVetPlan(
     completed.set(outcome.attemptId, outcome);
     ordered.push(outcome);
   }
-  const pending = nextAttempt(plan, completed);
-  const skipped = skippedAttemptIds(plan, completed);
+  const pending = nextAttempt(plan, completed, evaluatedAt, qualifications);
+  const skipped = skippedAttemptIds(
+    plan,
+    completed,
+    evaluatedAt,
+    qualifications,
+  );
   if (pending) {
     return deepFreeze({
       status: "pending" as const,
@@ -1410,10 +1782,38 @@ export function advancePartyVetPlan(
   }
   return deepFreeze({
     status: "complete" as const,
-    overallDecision: aggregateComplete(plan, completed),
+    overallDecision: aggregateComplete(
+      plan,
+      completed,
+      evaluatedAt,
+      qualifications,
+    ),
     completed: ordered,
     freshness,
     dealSpecific,
     skippedAttemptIds: skipped,
   });
+}
+
+export function advancePartyVetPlan(
+  plan: PartyVetPlan,
+  outcomeSource: readonly PartyVetAttemptOutcome[],
+  evaluatedAt?: number,
+): PartyVetExecutionState {
+  return advancePartyVetPlanInternal(plan, outcomeSource, evaluatedAt);
+}
+
+/** @internal Durable producer path after method-specific qualification. */
+export function advanceQualifiedPartyVetPlan(
+  plan: PartyVetPlan,
+  outcomeSource: readonly PartyVetAttemptOutcome[],
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  evaluatedAt?: number,
+): PartyVetExecutionState {
+  return advancePartyVetPlanInternal(
+    plan,
+    outcomeSource,
+    evaluatedAt,
+    qualifications,
+  );
 }

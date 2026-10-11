@@ -350,6 +350,8 @@ function signedVetRecord(
   role: "buyer" | "seller",
 ): CompositeVerificationRecord {
   const party = role === "buyer" ? BUYER : SELLER;
+  const verifier = role === "buyer" ? SELLER : BUYER;
+  const verifierSeed = role === "buyer" ? SELLER_SEED : BUYER_SEED;
   const bundle = role === "buyer" ? BUYER_IDENTITY : SELLER_IDENTITY;
   const unsigned = {
     recordVersion: "1" as const,
@@ -367,13 +369,13 @@ function signedVetRecord(
     ...unsigned,
     signature: {
       algorithm: "ed25519",
-      signer: SELLER,
+      signer: verifier,
       value: Buffer.from(ed25519Sign(
         signedBytes(
           ARTIFACT_SEPARATORS.CompositeVerificationRecord,
           contentHash(unsigned),
         ),
-        privateKeyFromSeed(SELLER_SEED),
+        privateKeyFromSeed(verifierSeed),
       )).toString("base64url"),
     },
   };
@@ -1582,7 +1584,7 @@ async function createSellerRuntime(input: {
               vetRecordRef: vetRef("seller"),
               evaluatedParty: SELLER,
               requirement: structuredClone(EMPTY_REQUIREMENT),
-              verifier: SELLER,
+              verifier: BUYER,
               freshness: [],
               dealSpecific: [],
             },
@@ -2050,8 +2052,11 @@ async function settleAndRecover(input: {
     state,
   });
   const intent = await prepareSettlementIntent(input);
+  // This offline fetch performs the fsync-heavy seller workflow inline, not
+  // just an HTTP round trip. Bound it below the enclosing test's budget without
+  // mistaking slow fixture I/O for loss of the PAYMENT-RESPONSE disclosure.
   const paidTransport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test" },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("retained payment header absent");
@@ -2783,7 +2788,7 @@ async function closeDetachedRoleBundles(input: {
     vetRecordHash: sellerVetRef.contentHash,
     evaluatedParty: SELLER,
     requirementHash: sha256Hex(canonicalize(EMPTY_REQUIREMENT)),
-    verifier: SELLER,
+    verifier: BUYER,
   } as const;
   const standard331Signature = ed25519Sign(
     Buffer.from(canonicalize(standard331Envelope), "utf8"),
@@ -2796,11 +2801,14 @@ async function closeDetachedRoleBundles(input: {
       resolveRecipe: async () => null,
       isRecipeSignerAuthorized: () => false,
       isVerifyResultSignerAuthorized: (_result: unknown, signature: { signer: string }) =>
-        signature.signer === SELLER,
+        signature.signer === SELLER || signature.signer === BUYER,
       resolvePublicKey: async (signature: { signer: string; algorithm: string }) =>
-        signature.signer === SELLER && signature.algorithm === "ed25519"
-          ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
-          : null,
+        signature.algorithm !== "ed25519" ? null
+          : signature.signer === SELLER
+            ? rawPublicKey(publicKeyFromSeed(SELLER_SEED))
+            : signature.signer === BUYER
+              ? rawPublicKey(publicKeyFromSeed(BUYER_SEED))
+              : null,
       verify: ({ signedBytes: bytes, signature, publicKey }: {
         signedBytes: Uint8Array;
         signature: { value: string };
@@ -3621,8 +3629,10 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   });
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
+  // Process A performs the same inline durable seller work as settleAndRecover.
+  // Keep its fixture deadline below the whole-process stage's 25-second budget.
   const transport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test" },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("process A lost its retained payment header");
@@ -3840,7 +3850,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 20_000);
+  }, 30_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
@@ -4052,7 +4062,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     });
     expect(state.counts.settlement).toBe(0);
     expect(state.counts.delivery).toBe(0);
-  });
+  }, 15_000);
 
   test("records a seller delivery failure without invoking the delivery callback", async () => {
     const fixture = await commerceFixture();

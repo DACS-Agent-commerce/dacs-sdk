@@ -207,10 +207,12 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
  * Own callback/configuration JSON while treating optional `undefined` object
  * members as absent. Arrays and protocol artifacts remain strict: only this
  * explicit configuration boundary opts into JavaScript's optional-property
- * convention.
+ * convention. Read-only data descriptors are accepted because freezing a
+ * verifier configuration does not change its JSON meaning; accessors, proxies,
+ * hidden properties, and exotic prototypes remain forbidden.
  */
 export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, true, false);
+  return snapshotCanonicalJsonInternal(value, label, true, true);
 }
 
 /**

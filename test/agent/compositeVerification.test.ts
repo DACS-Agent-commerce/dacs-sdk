@@ -6,6 +6,7 @@ import {
   contentHash,
   ed25519Sign,
   ed25519Verify,
+  identityBundleHash,
   isCompositeVerificationRecord,
   isCompositeBundleRequirement,
   isLegacyCompositeVerificationRecord,
@@ -28,6 +29,8 @@ import {
   type CompositeVerificationExpectations,
   type CompositeVerificationRecord,
   type ExpectedVerifyResult,
+  type IdentityBundle,
+  type RecipeDescriptor,
   type ResolvedVerificationContent,
   type VerifyCompositeVerificationDeps,
   type VerifyResult,
@@ -316,6 +319,69 @@ describe("strict DACS-2 composite verification closure", () => {
     await expect(
       verifyCompositeVerificationRecord(f.record, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "valid", record: f.record });
+  });
+
+  test("preserves fail-first selector precedence when another result is unavailable", async () => {
+    const f = await fixture();
+    const evaluatedParty = "lei:5493001KJTIIGC8Y1R12";
+    const presenceRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        { scheme: "lei", verificationRequired: false },
+        { scheme: "domain", verificationRequired: true, recipeVersion: 1 },
+      ],
+      primaryClaimSelector: "lei",
+    };
+    const bundle: IdentityBundle = {
+      bundleVersion: "1",
+      presentedBy: evaluatedParty,
+      presentedAt: NOW - 1,
+      claims: [
+        { ref: evaluatedParty },
+        { ref: PARTY, verifiedBy: f.ref },
+      ],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: VERIFIER, signature: "authenticated-in-test" }],
+      },
+    };
+    const bundleHash = identityBundleHash(bundle);
+    const record = await withRecord(f.record, {
+      evaluatedParty,
+      bundleHash,
+      requirementHash: sha256Hex(canonicalize(presenceRequirement)),
+      overallDecision: "fail",
+    });
+    const expected: CompositeVerificationExpectations = {
+      ...f.expected,
+      evaluatedParty,
+      bundleHash,
+      requirement: presenceRequirement,
+      dealSpecific: [{
+        ...f.expectedResult,
+        requirement: presenceRequirement.required[1]!,
+      }],
+      presence: {
+        bundle,
+        sessionRecipeRegistrySnapshotHash: "c".repeat(64),
+      },
+    };
+
+    await expect(verifyCompositeVerificationRecord(record, expected, {
+      ...f.deps,
+      resolve: async () => null,
+      isSessionRecipeRegistrySnapshotAuthenticated: () => true,
+      verifyIdentityPresentation: () => true,
+    })).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+      dealSpecific: [],
+      indeterminateEvidence: [{
+        collection: "dealSpecific",
+        index: 0,
+        ref: f.ref,
+      }],
+    });
   });
 
   test("snapshots the composite before any asynchronous verifier callback", async () => {
@@ -820,7 +886,7 @@ describe("strict DACS-2 composite verification closure", () => {
     });
   });
 
-  test("rejects method substitution across recipe families", async () => {
+  test("rejects method substitution during recipe-family preflight", async () => {
     const f = await fixture();
     await expect(
       verifyCompositeVerificationRecord(
@@ -833,7 +899,7 @@ describe("strict DACS-2 composite verification closure", () => {
         },
         f.deps,
       ),
-    ).resolves.toMatchObject({ status: "invalid", code: "verify-result-method" });
+    ).resolves.toMatchObject({ status: "invalid", code: "verify-result-recipe" });
   });
 
   test("authenticates the exact recipe and applies RAV-3 availability", async () => {
@@ -899,7 +965,7 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "recipe-signature" });
   });
 
-  test("does not reuse one result across distinct same-scheme requirements", async () => {
+  test("authenticates one result once and evaluates each same-scheme predicate", async () => {
     const f = await fixture();
     const first = {
       ...requirement.required[0]!,
@@ -916,8 +982,8 @@ describe("strict DACS-2 composite verification closure", () => {
     const record = await withRecord(f.record, {
       requirementHash: sha256Hex(canonicalize(dualRequirement)),
     });
-    await expect(
-      verifyCompositeVerificationRecord(
+    let resultResolutions = 0;
+    const verified = await verifyCompositeVerificationRecord(
         record,
         {
           ...f.expected,
@@ -926,7 +992,417 @@ describe("strict DACS-2 composite verification closure", () => {
             { ...f.expectedResult, requirement: first },
           ],
         },
-        { ...f.deps, verifyRequirementParameters: () => true },
+        {
+          ...f.deps,
+          resolve: async (ref) => {
+            if (ref.anchor.locator === RESULT_LOCATOR) resultResolutions += 1;
+            return f.deps.resolve(ref);
+          },
+          verifyRequirementParameters: () => true,
+        },
+      );
+    expect(verified).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(resultResolutions).toBe(1);
+
+    const failedRecord = await withRecord(record, { overallDecision: "fail" });
+    await expect(
+      verifyCompositeVerificationRecord(
+        failedRecord,
+        {
+          ...f.expected,
+          requirement: dualRequirement,
+          dealSpecific: [
+            { ...f.expectedResult, requirement: first },
+          ],
+        },
+        {
+          ...f.deps,
+          verifyRequirementParameters: ({ expected }) =>
+            expected.requirement.parameters?.jurisdiction === "GB",
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+  });
+
+  test("does not project across independently bound claim identities", async () => {
+    const f = await fixture();
+    const aliceRequirement = {
+      ...requirement.required[0]!,
+      parameters: { jurisdiction: "GB" },
+    };
+    const bobRequirement = {
+      ...requirement.required[0]!,
+      parameters: { status: "active" },
+    };
+    const dualRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [aliceRequirement, bobRequirement],
+    };
+    const bobResult = await withResult(f.result, {
+      identifier: "bob.example",
+      decision: "fail",
+      reason: "authority rejected claim",
+      data: { active: false },
+    });
+    const bobRef: VerifyResultRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: "stor:verify-result-2",
+      },
+      contentHash: contentHash(
+        bobResult as unknown as Record<string, unknown>,
+      ),
+      recipeVersion: 1,
+    };
+    f.resolved.set(bobRef.anchor.locator, {
+      encoding: "canonical-json",
+      value: bobResult as unknown as Record<string, unknown>,
+    });
+    const passRecord = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(dualRequirement)),
+      dealSpecific: [f.ref, bobRef],
+      overallDecision: "pass",
+    });
+    const expected: CompositeVerificationExpectations = {
+      ...f.expected,
+      requirement: dualRequirement,
+      dealSpecific: [
+        { ...f.expectedResult, requirement: aliceRequirement },
+        {
+          ...f.expectedResult,
+          ref: bobRef,
+          identifier: "bob.example",
+          requirement: bobRequirement,
+        },
+      ],
+    };
+    const deps = {
+      ...f.deps,
+      verifyRequirementParameters: ({ expected: member }: {
+        expected: Readonly<ExpectedVerifyResult>;
+      }) => member.identifier === "alice.example",
+    };
+
+    await expect(
+      verifyCompositeVerificationRecord(passRecord, expected, deps),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+
+    const failRecord = await withRecord(passRecord, {
+      overallDecision: "fail",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(failRecord, expected, deps),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+
+    const crossClassificationPass = await withRecord(passRecord, {
+      freshness: [f.ref],
+      dealSpecific: [bobRef],
+      overallDecision: "pass",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        crossClassificationPass,
+        {
+          ...expected,
+          freshness: [expected.dealSpecific[0]!],
+          dealSpecific: [expected.dealSpecific[1]!],
+        },
+        deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+  });
+
+  test("rejects ambiguous duplicate requirement expectation owners", async () => {
+    const f = await fixture();
+    const duplicateRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [
+        requirement.required[0]!,
+        structuredClone(requirement.required[0]!),
+      ],
+    };
+    const bobResult = await withResult(f.result, {
+      identifier: "bob.example",
+      decision: "fail",
+    });
+    const bobRef: VerifyResultRef = {
+      anchor: {
+        kind: "storage-program",
+        locator: "stor:verify-result-duplicate-owner",
+      },
+      contentHash: contentHash(
+        bobResult as unknown as Record<string, unknown>,
+      ),
+      recipeVersion: 1,
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(duplicateRequirement)),
+      dealSpecific: [f.ref, bobRef],
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: duplicateRequirement,
+          dealSpecific: [
+            {
+              ...f.expectedResult,
+              requirement: duplicateRequirement.required[0]!,
+            },
+            {
+              ...f.expectedResult,
+              ref: bobRef,
+              identifier: "bob.example",
+              requirement: duplicateRequirement.required[1]!,
+            },
+          ],
+        },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "expectation-shape",
+    });
+  });
+
+  test("does not project one result across different authority URL inputs", async () => {
+    const f = await fixture();
+    const first = {
+      ...requirement.required[0]!,
+      parameters: { region: "GB", jurisdiction: "GB" },
+    };
+    const second = {
+      ...requirement.required[0]!,
+      parameters: { region: "US", jurisdiction: "GB" },
+    };
+    const splitAuthorityRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [first, second],
+    };
+    const splitAuthorityRecipe = await signComponentArtifact(
+      {
+        ...(stripSignature(
+          f.recipe as unknown as Record<string, unknown>,
+        ) as Omit<RecipeDescriptor, "signature">),
+        defaultMethod: {
+          kind: "consensus-backed-proxy" as const,
+          endpoint: {
+            method: "GET" as const,
+            urlTemplate: "https://authority.example/{region}/{identifier}",
+          },
+        },
+      },
+      "dacs-recipe:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) => ed25519Sign(
+          bytes,
+          privateKeyFromSeed(VERIFIER_SEED),
+        ),
+      },
+    );
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(splitAuthorityRequirement)),
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: splitAuthorityRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: first }],
+        },
+        {
+          ...f.deps,
+          resolveRecipe: async () => splitAuthorityRecipe as never,
+          verifyRequirementParameters: () => true,
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+  });
+
+  test("does not project when distinct method-input hashes are absent from the wire", async () => {
+    const f = await fixture();
+    const first = {
+      ...requirement.required[0]!,
+      parameters: { assertionPolicy: "first" },
+    };
+    const second = {
+      ...requirement.required[0]!,
+      parameters: { assertionPolicy: "second" },
+    };
+    const selfSignedRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [first, second],
+    };
+    const selfSignedRecipe = await signComponentArtifact(
+      {
+        ...(stripSignature(
+          f.recipe as unknown as Record<string, unknown>,
+        ) as Omit<RecipeDescriptor, "signature">),
+        defaultMethod: { kind: "self-signed" as const },
+      },
+      "dacs-recipe:v1:",
+      {
+        algorithm: "ed25519",
+        signer: VERIFIER,
+        sign: (bytes) => ed25519Sign(
+          bytes,
+          privateKeyFromSeed(VERIFIER_SEED),
+        ),
+      },
+    );
+    const selfSignedResult = await withResult(f.result, {
+      method: "self-signed",
+    });
+    const selfSignedRef: VerifyResultRef = {
+      ...f.ref,
+      contentHash: contentHash(
+        selfSignedResult as unknown as Record<string, unknown>,
+      ),
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(selfSignedRequirement)),
+      dealSpecific: [selfSignedRef],
+    });
+    const resolved = new Map(f.resolved);
+    resolved.set(RESULT_LOCATOR, {
+      encoding: "canonical-json",
+      value: selfSignedResult as unknown as Record<string, unknown>,
+    });
+
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: selfSignedRequirement,
+          dealSpecific: [{
+            ...f.expectedResult,
+            ref: selfSignedRef,
+            method: "self-signed",
+            requirement: first,
+          }],
+        },
+        {
+          ...f.deps,
+          resolve: async (ref) => resolved.get(ref.anchor.locator) ?? null,
+          resolveRecipe: async () => selfSignedRecipe as never,
+          verifyRequirementParameters: () => true,
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "aggregation-mismatch",
+    });
+  });
+
+  test("applies shared-result maxAge per member and samples time after callbacks", async () => {
+    const f = await fixture();
+    const wide = { ...requirement.required[0]!, maxAge: 3_600 };
+    const expired = { ...requirement.required[0]!, maxAge: 0 };
+    const dualRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [wide, expired],
+    };
+    const record = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(dualRequirement)),
+      overallDecision: "fail",
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        {
+          ...f.expected,
+          requirement: dualRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: wide }],
+        },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({
+      status: "valid",
+      record: { overallDecision: "fail" },
+    });
+
+    let acceptanceNow = NOW;
+    await expect(
+      verifyCompositeVerificationRecord(
+        f.record,
+        f.expected,
+        {
+          ...f.deps,
+          nowMs: () => acceptanceNow,
+          resolve: async (ref) => {
+            const resolved = await f.deps.resolve(ref);
+            if (ref.anchor.locator === AUTHORITY_LOCATOR) {
+              acceptanceNow = NOW + 3_600_001;
+            }
+            return resolved;
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "invalid",
+      code: "verify-result-stale",
+    });
+
+    const delayedFirst = {
+      ...requirement.required[0]!,
+      maxAge: 1,
+      parameters: { jurisdiction: "GB" },
+    };
+    const delayedSecond = {
+      ...requirement.required[0]!,
+      maxAge: 1,
+      parameters: { status: "active" },
+    };
+    const delayedRequirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [delayedFirst, delayedSecond],
+    };
+    const delayedRecord = await withRecord(f.record, {
+      requirementHash: sha256Hex(canonicalize(delayedRequirement)),
+    });
+    acceptanceNow = NOW;
+    await expect(
+      verifyCompositeVerificationRecord(
+        delayedRecord,
+        {
+          ...f.expected,
+          requirement: delayedRequirement,
+          dealSpecific: [{ ...f.expectedResult, requirement: delayedFirst }],
+        },
+        {
+          ...f.deps,
+          nowMs: () => acceptanceNow,
+          verifyRequirementParameters: async () => {
+            await Promise.resolve();
+            acceptanceNow = NOW + 1_000;
+            return true;
+          },
+        },
       ),
     ).resolves.toMatchObject({
       status: "invalid",

@@ -551,7 +551,7 @@ function fixture(
           vetRecordRef: structuredClone(sellerVetRef),
           evaluatedParty: SELLER,
           requirement: { requirementVersion: "1", required: [] },
-          verifier: SELLER,
+          verifier: BUYER,
           freshness: [],
           dealSpecific: [],
         },
@@ -2638,9 +2638,6 @@ describe("runFulfilmentCore", () => {
     orchestrator.primaryClaim = ORCHESTRATOR;
     f.authorization.commitment.signer = ORCHESTRATOR;
     f.agreement.commitment.signer = ORCHESTRATOR;
-    for (const invocation of f.auditSource.artifacts.vetRequirements) {
-      invocation.verifier = ORCHESTRATOR;
-    }
     f.deps.evidenceSigner = {
       algorithm: "ed25519",
       signer: ORCHESTRATOR,
@@ -2671,9 +2668,6 @@ describe("runFulfilmentCore", () => {
     orchestrator.primaryClaim = ORCHESTRATOR;
     f.authorization.commitment.signer = ORCHESTRATOR;
     f.agreement.commitment.signer = ORCHESTRATOR;
-    for (const invocation of f.auditSource.artifacts.vetRequirements) {
-      invocation.verifier = ORCHESTRATOR;
-    }
     expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
       decision: "rejected",
       code: "evidence-signer-mismatch",

@@ -1,6 +1,13 @@
+import { liveProjectTemplates } from "./liveTemplates.js";
+
 export interface ProjectTemplateOptions {
   packageName: string;
   deployment: "local" | "docker";
+  mode?: "offline" | "live-demos";
+  role?: "demo-all" | "buyer" | "seller";
+  rails?: "x402" | "pay-dem" | "both";
+  runtimeUid?: number;
+  runtimeGid?: number;
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
@@ -309,6 +316,19 @@ will never commit them to source control.
 export function projectTemplates(
   options: ProjectTemplateOptions,
 ): Readonly<Record<string, string>> {
+  if (options.mode === "live-demos") {
+    if (options.role === "demo-all") {
+      throw new TypeError("live templates require an authority-separated role");
+    }
+    return liveProjectTemplates({
+      packageName: options.packageName,
+      deployment: options.deployment,
+      role: options.role ?? "buyer",
+      rails: options.rails ?? "both",
+      runtimeUid: options.runtimeUid ?? 10001,
+      runtimeGid: options.runtimeGid ?? 10001,
+    });
+  }
   return Object.freeze({
     "package.json": packageJson(options.packageName),
     "tsconfig.json": TSCONFIG,

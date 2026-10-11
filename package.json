@@ -81,14 +81,19 @@
     "dist",
     "README.md",
     "docs/parser-engine.md",
+    "docs/presence-conformance-adoption.md",
     "docs/alternative-payment-projection.md",
     "docs/demos-cci-identities.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
+    "docs/settlement-verified-reputation.md",
     "docs/rfq-negotiation-core.md",
+    "docs/pay-solana-spl.md",
     "docs/pay-ap2.md",
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
+    "docs/wallet-spend-authority.md",
+    "docs/raw-json-admission.md",
     "LICENSE"
   ],
   "scripts": {
@@ -100,6 +105,7 @@
     "generator:typecheck": "npm run typecheck --workspace create-dacs-agent",
     "test": "vitest run",
     "host:test": "npm test --workspace @kynesyslabs/dacs-node",
+    "host:test:postgres": "npm run test:postgres --workspace @kynesyslabs/dacs-node",
     "generator:test": "npm test --workspace create-dacs-agent",
     "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
@@ -109,11 +115,21 @@
     "clean": "rm -rf dist",
     "prepack": "npm run clean && npm run build",
     "package:verify": "node scripts/verify-package.mjs",
-    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs"
+    "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
+    "release:set:verify": "node scripts/verify-release-set.mjs",
+    "release:set:publish": "node scripts/publish-release-set.mjs"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "dacs": {
+    "releaseMetadataVersion": 1,
+    "standardRevision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+    "configSchemaVersion": 1,
+    "sqliteSchemaVersion": 8,
+    "supportedSqliteMigrationFrom": [1, 2, 3, 4, 5, 6, 7, 8],
+    "breakingConfigurationChanges": []
   },
   "dependencies": {
     "@swaggerexpert/jsonpath": "4.0.4",
@@ -128,7 +144,7 @@
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
-    "viem": "^2.52.2"
+    "viem": "^2.55.19"
   },
   "peerDependenciesMeta": {
     "@kynesyslabs/demosdk": { "optional": true },
@@ -145,7 +161,7 @@
     "@x402/fetch": "^2.15.0",
     "ganache": "7.9.2",
     "typescript": "^5",
-    "viem": "^2.52.2",
+    "viem": "^2.55.19",
     "vitest": "^4.0.18"
   }
 }

@@ -28,6 +28,7 @@ import type {
   PriorPaymentDisposition,
 } from "../../src/artifacts/types.js";
 import {
+  authenticatedAlternativePaymentEffectivePipeline,
   authorizeAlternativePayment,
   buildPriorPaymentDisposition,
   deriveAlternativeFixedPriceAgreement,
@@ -770,6 +771,15 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
     if (signedProjection.verdict !== "pass") {
       throw new Error(signedProjection.reason);
     }
+    expect(
+      authenticatedAlternativePaymentEffectivePipeline(signedProjection, pin),
+    ).toEqual(signedProjection.effectivePipeline);
+    expect(
+      authenticatedAlternativePaymentEffectivePipeline(
+        structuredClone(signedProjection),
+        pin,
+      ),
+    ).toBeNull();
     const replacement = await verifyPriorPaymentReplacement(signedProjection, {
       replacementClaimed: false,
       resolveDisposition: () => ({

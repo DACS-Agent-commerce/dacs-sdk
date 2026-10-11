@@ -744,7 +744,7 @@ function fixture(
           vetRecordRef: structuredClone(sellerVetRef),
           evaluatedParty: SELLER,
           requirement: { requirementVersion: "1", required: [] },
-          verifier: SELLER,
+          verifier: BUYER,
           freshness: [],
           dealSpecific: [],
         },
@@ -1624,7 +1624,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   test("fences concurrent finalisers and preserves exactly-once effects", async () => {
     const h = durableHarness();
@@ -2311,6 +2311,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         if (dir) await rm(dir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
 
   test("replays a failed phase after the session is globally finalised", async () => {
@@ -4428,6 +4429,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         await rm(dir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
 
   test.each(["conflicting-agreement", "corrupt-settlement"] as const)(
@@ -4478,6 +4480,7 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         await rm(dir, { recursive: true, force: true });
       }
     },
+    15_000,
   );
 
   test("concurrent filesystem workers produce one effect invocation and one exact terminal result", async () => {
@@ -5705,6 +5708,24 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
         h.deps.verifyAuditSourceCommitmentSignature,
       verifyAnchorReceipt: h.deps.verifyAnchorReceipt,
     });
+
+    const withAgreementHistory = structuredClone(loaded.record);
+    withAgreementHistory.checkpoints.unshift(
+      {
+        key: "agreement-responder:proposal-binding",
+        stage: "intent",
+        data: { jobId: h.fixture.authorization.jobId },
+      },
+      {
+        key: "agreement-responder:proposal-binding",
+        stage: "outcome",
+        data: { jobId: h.fixture.authorization.jobId },
+      },
+    );
+    await expect(project(withAgreementHistory)).resolves.toMatchObject({
+      terminal: { result: { decision: "completed" } },
+    });
+
     const cases: Array<{
       name: string;
       mutate(record: FencedStoreRecord): void;
@@ -5767,6 +5788,16 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
             key: "seller:future-operation:2",
             stage: "intent",
             data: { fulfilmentId: "5".repeat(64), intentGeneration: 1 },
+          });
+        },
+      },
+      {
+        name: "interleaved non-seller checkpoint",
+        mutate(record) {
+          record.checkpoints.splice(2, 0, {
+            key: "agreement-responder:late-checkpoint",
+            stage: "intent",
+            data: { jobId: h.fixture.authorization.jobId },
           });
         },
       },

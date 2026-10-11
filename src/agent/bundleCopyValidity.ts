@@ -9,7 +9,13 @@ import {
 } from "../identity/claimReference.js";
 import type { BundleRole } from "./bundleConsistency.js";
 import type { Verifier } from "./signedArtifact.js";
-import { faultedPartyIsPermitted, isFaultBundle } from "./bundleSemantics.js";
+import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
+import {
+  isAbsoluteFaultBundle,
+  faultedPartyIsPermitted,
+  isEvidenceBoundFaultBundle,
+  isFaultBundle,
+} from "./bundleSemantics.js";
 
 /**
  * §10.4.3(b) COPY VALIDITY — the dedicated validator `bundleConsistency` gates
@@ -43,6 +49,14 @@ export interface BundleCopyDeps {
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
+  /**
+   * Mandatory for an EBFAB copy. It must run the SDK SEB-1..SEB-6 verifier
+   * against the complete authenticated authority graph. A type/signature-only
+   * EBFAB is inert during reconciliation.
+   */
+  verifyEvidenceBound?: (
+    bundle: Readonly<Record<string, unknown>>,
+  ) => Promise<EvidenceBoundBundleVerification>;
 }
 
 export type BundleCopyRole = BundleRole | "orchestrator";
@@ -56,6 +70,8 @@ const isObj = (value: unknown): value is Record<string, unknown> =>
 
 /**
  * Validate ONE fetched bundle copy for the role-address it was read from.
+ * Malformed canonical JSON resolves to an invalid result. Dependency errors
+ * from key resolution or signature verification still reject the promise.
  * See the module doc for the exact contract.
  */
 export async function verifyBundleCopy(
@@ -63,8 +79,13 @@ export async function verifyBundleCopy(
   role: BundleCopyRole,
   deps: BundleCopyDeps,
 ): Promise<CopyValidity> {
-  const unsigned = stripSignature(bundle);
-  if (isFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
+  let unsigned: Partial<Record<string, unknown>>;
+  try {
+    unsigned = stripSignature(bundle);
+  } catch {
+    return { valid: false, reason: "bundle is not canonical JSON data" };
+  }
+  if (isAbsoluteFaultBundle(unsigned) && !faultedPartyIsPermitted(unsigned)) {
     return { valid: false, reason: "faultedParty is not permitted for outcome and anchoredByRole" };
   }
   const encodedEntries = Array.isArray(bundle["signatures"])
@@ -107,9 +128,11 @@ export async function verifyBundleCopy(
   const scope: Record<string, unknown> = { ...bundle };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
-  const separator = isFaultBundle(unsigned)
-    ? ARTIFACT_SEPARATORS.FaultAttestationBundle
-    : ARTIFACT_SEPARATORS.AttestationBundle;
+  const separator = isEvidenceBoundFaultBundle(unsigned)
+    ? ARTIFACT_SEPARATORS.EvidenceBoundFaultAttestationBundle
+    : isFaultBundle(unsigned)
+      ? ARTIFACT_SEPARATORS.FaultAttestationBundle
+      : ARTIFACT_SEPARATORS.AttestationBundle;
   const message = signedBytes(separator, contentHash(scope));
 
   const entries = Array.isArray(bundle["signatures"]) ? bundle["signatures"] : [];
@@ -219,6 +242,26 @@ export async function verifyBundleCopy(
         `copy is missing required signatures for outcome "${outcome}" ` +
         "(§10.4.1; §10.11 permits exactly one signer for abort outcomes only)",
     };
+  }
+  if (isEvidenceBoundFaultBundle(unsigned)) {
+    if (!deps.verifyEvidenceBound) {
+      return {
+        valid: false,
+        reason: "EBFAB copy requires SEB-1..SEB-6 authority verification before reconciliation",
+      };
+    }
+    let seb: EvidenceBoundBundleVerification;
+    try {
+      seb = await deps.verifyEvidenceBound(structuredClone(bundle));
+    } catch {
+      return { valid: false, reason: "EBFAB authority verifier failed" };
+    }
+    if (seb.decision !== "verified") {
+      return {
+        valid: false,
+        reason: `EBFAB exact-set verification ${seb.decision}: ${seb.reason}`,
+      };
+    }
   }
   return {
     valid: true,

@@ -286,6 +286,18 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     };
   }
 
+  function serializedEnvelope<T>(
+    role: DurableRfqLifecycleRole,
+    jobId: string,
+    record: Readonly<DurableRfqLifecycleRecord<T>>,
+  ): string {
+    const text = canonicalize(envelope(role, jobId, record));
+    if (Buffer.byteLength(text, "utf8") > MAX_RECORD_BYTES) {
+      throw new DacsError("RFQ filesystem record exceeds the size limit");
+    }
+    return text;
+  }
+
   async function safeReadText(path: string): Promise<"missing" | string> {
     try {
       const metadata = await lstat(path);
@@ -384,7 +396,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     try {
       await exclusiveWritePrivateFile(
         path,
-        canonicalize(envelope(role, jobId, record)),
+        serializedEnvelope(role, jobId, record),
         FILESYSTEM_LABEL,
       );
       return "created";
@@ -402,7 +414,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     const path = recordPath(role, jobId);
     await atomicWritePrivateFile(
       path,
-      canonicalize(envelope(role, jobId, record)),
+      serializedEnvelope(role, jobId, record),
       FILESYSTEM_LABEL,
     );
   }

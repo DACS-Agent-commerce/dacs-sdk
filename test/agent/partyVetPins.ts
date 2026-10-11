@@ -8,6 +8,7 @@ import {
   pinSessionRecipeRegistrySnapshot,
   pinSessionRecipeSelection,
   type DurableRecipeRequirementPath,
+  type DurableSessionRecipeRegistrySnapshot,
   type DurableSessionRecipePin,
 } from "../../src/agent/durableRecipePin.js";
 import {
@@ -132,6 +133,16 @@ export function createPartyVetPinRegistryProvider(
 export async function createPartyVetPins(
   input: PartyVetPinFixtureInput,
 ): Promise<DurableSessionRecipePin[]> {
+  return (await createPartyVetPinFixture(input)).pins;
+}
+
+/** Build the authenticated snapshot too, including a zero-recipe presence run. */
+export async function createPartyVetPinFixture(
+  input: PartyVetPinFixtureInput,
+): Promise<{
+  sessionSnapshot: DurableSessionRecipeRegistrySnapshot;
+  pins: DurableSessionRecipePin[];
+}> {
   const provider = createPartyVetPinRegistryProvider(input);
   const store = createInMemoryFencedSessionStore();
   await store.create({ jobId: input.jobId, now: 0 });
@@ -174,5 +185,5 @@ export async function createPartyVetPins(
       now: 2,
     }));
   }
-  return pins;
+  return { sessionSnapshot, pins };
 }

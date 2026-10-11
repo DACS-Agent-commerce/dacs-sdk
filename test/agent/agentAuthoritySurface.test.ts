@@ -6,12 +6,23 @@ import {
   buildUnsafeManualAgent,
   createAgent,
 } from "../../src/agent/Agent.js";
+import type { IdentityBundle } from "../../src/artifacts/types.js";
 import type { AuthenticateDemosCciInput } from "../../src/identity/demosCci.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 
 const SENTINEL = "wallet-secret-sentinel-never-expose";
 const PRIMARY =
   "did:demos:agent:1111111111111111111111111111111111111111111111111111111111111111";
+const BUYER_IDENTITY: IdentityBundle = {
+  bundleVersion: "1",
+  presentedBy: PRIMARY,
+  presentedAt: 1_780_000_000_000,
+  claims: [{ ref: PRIMARY }],
+  presentation: {
+    kind: "per-claim",
+    signatures: [{ ref: PRIMARY, signature: "c2lnbmF0dXJl" }],
+  },
+};
 const RAW_GCR = {
   result: 200,
   response: {
@@ -109,6 +120,25 @@ describe("Agent wallet-authority boundary", () => {
     expect(inspected.strings).not.toContain(config.wallet);
     expect(Reflect.get(agent, "adapter")).toBeUndefined();
     expect(Reflect.get(agent, "raw")).toBeUndefined();
+  });
+
+  it("snapshots nested identity authority before connected construction awaits", async () => {
+    vi.spyOn(Demos.prototype, "connect").mockResolvedValue(undefined as never);
+    const identity = {
+      agentId: PRIMARY,
+      bundle: structuredClone(BUYER_IDENTITY),
+      verifyPresentation: vi.fn(() => true),
+    };
+    const pending = createAgent({
+      demosRpc: "https://rpc.example",
+      identity,
+    });
+
+    identity.bundle.presentedBy =
+      "did:demos:agent:2222222222222222222222222222222222222222222222222222222222222222";
+    identity.verifyPresentation = vi.fn(() => false);
+
+    await expect(pending).resolves.toBeDefined();
   });
 
   it("does not reflectively expose the adapter, raw client, or wallet sentinel", () => {

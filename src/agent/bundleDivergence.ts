@@ -24,9 +24,10 @@
  */
 
 import type { FaultedParty } from "../artifacts/types.js";
+import { canonicalize } from "../canonical/jcs.js";
 import {
   bundleOutcomeClass,
-  isFaultBundle,
+  isAbsoluteFaultBundle,
   legacyImpliedFaultSet,
   perspectiveFlip,
 } from "./bundleSemantics.js";
@@ -35,11 +36,13 @@ import {
 export interface DivergenceBundle {
   bundleVersion?: unknown;
   faultBundleVersion?: unknown;
+  evidenceBoundFaultBundleVersion?: unknown;
   faultedParty?: unknown;
   anchoredByRole?: unknown;
   outcome?: unknown;
   parties?: unknown;
   phaseSummary?: unknown;
+  settlementEvidence?: unknown;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -66,8 +69,30 @@ export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolea
   const bClass = bundleOutcomeClass(b.outcome);
   if (!aClass || !bClass || aClass !== bClass) return true;
 
-  const aFault = isFaultBundle(a as Record<string, unknown>);
-  const bFault = isFaultBundle(b as Record<string, unknown>);
+  const aFault = isAbsoluteFaultBundle(a as Record<string, unknown>);
+  const bFault = isAbsoluteFaultBundle(b as Record<string, unknown>);
+  const bothEvidenceBound =
+    a.evidenceBoundFaultBundleVersion === "1" &&
+    b.evidenceBoundFaultBundleVersion === "1";
+  if (bothEvidenceBound) {
+    const canonicalRefs = (bundle: DivergenceBundle): Set<string> | null => {
+      const refs = bundle.settlementEvidence;
+      if (!Array.isArray(refs)) return null;
+      try {
+        return new Set(refs.map((ref) => canonicalize(ref)));
+      } catch {
+        return null;
+      }
+    };
+    const aRefs = canonicalRefs(a);
+    const bRefs = canonicalRefs(b);
+    if (
+      !aRefs ||
+      !bRefs ||
+      aRefs.size !== bRefs.size ||
+      [...aRefs].some((ref) => !bRefs.has(ref))
+    ) return true;
+  }
   if (aFault && bFault) {
     if (a.faultedParty !== b.faultedParty) return true;
   } else if (aFault || bFault) {

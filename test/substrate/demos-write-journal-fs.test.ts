@@ -49,6 +49,35 @@ function record(generation: number): DemosWriteJournalRecord {
   };
 }
 
+function nativeTransferRecord(generation: number): DemosWriteJournalRecord {
+  const payer = "ab".repeat(32);
+  const payee = "cd".repeat(32);
+  return {
+    writeId: `pay-dem-${"ef".repeat(32)}`,
+    generation,
+    kind: "native-transfer",
+    operation: "transfer",
+    stage: "broadcast-intent",
+    logicalName: "pay-dem:rail:job:0",
+    programName: "native-dem-transfer",
+    owner: payer,
+    nativeAddress: payee,
+    valueHash: "ef".repeat(32),
+    nonce: 8,
+    txRef: "12".repeat(32),
+    transfer: {
+      payer,
+      payee,
+      amountOs: "1000000000",
+      denomination: "os",
+      network: "demos",
+      maxTotalDebitOs: "2000000000",
+      settlementKey: "rail:job:0",
+    },
+    updatedAt: 2,
+  };
+}
+
 function walletLockDigest(chainIdentity: string, wallet: string): string {
   return createHash("sha256")
     .update(chainIdentity)
@@ -81,6 +110,89 @@ describe("filesystem Demos write journal", () => {
       record(first.generation),
     ]);
     await restarted.release();
+  });
+
+  it("retains closed aggregate fee reservations and rejects malformed ones", async () => {
+    const dir = await temporaryDirectory();
+    const key = { chainIdentity: "genesis-budget", wallet: "0xabc" };
+    const journal = await createFsDemosWriteJournal({ dir });
+    const first = await journal.acquire(key);
+    const budgeted = {
+      ...record(first.generation),
+      feeBudget: {
+        budgetId: "dacs-fixed-price-purchase:v1:test:buyer",
+        maximumPerWriteFeeOs: "120",
+        maximumTotalFeeOs: "120",
+        reservedFeeOs: "3",
+      },
+    };
+    await first.put(budgeted);
+    await first.release();
+
+    const restarted = await (await createFsDemosWriteJournal({ dir })).acquire(key);
+    expect(restarted.snapshot.records[0]?.feeBudget).toEqual(budgeted.feeBudget);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "invalid-budget",
+      feeBudget: { ...budgeted.feeBudget, reservedFeeOs: "121" },
+    })).rejects.toThrow(/invalid aggregate fee reservation/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "aggregate-overspend",
+      feeBudget: { ...budgeted.feeBudget, reservedFeeOs: "118" },
+    })).rejects.toThrow(/aggregate fee budget is exceeded/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "per-write-overspend",
+      feeBudget: {
+        ...budgeted.feeBudget,
+        maximumPerWriteFeeOs: "5",
+        reservedFeeOs: "6",
+      },
+    })).rejects.toThrow(/invalid aggregate fee reservation/);
+    await expect(restarted.put({
+      ...record(restarted.generation),
+      writeId: "per-write-conflict",
+      feeBudget: { ...budgeted.feeBudget, maximumPerWriteFeeOs: "4" },
+    })).rejects.toThrow(/per-write fee budget ceilings conflict/);
+    await restarted.release();
+  });
+
+  it("recovers an unresolved native transfer in a fresh journal instance", async () => {
+    const dir = await temporaryDirectory();
+    const key = { chainIdentity: "genesis-native", wallet: `0x${"ab".repeat(32)}` };
+    const firstJournal = await createFsDemosWriteJournal({ dir });
+    const first = await firstJournal.acquire(key);
+    await first.put(nativeTransferRecord(first.generation));
+    await first.release();
+
+    const restartedJournal = await createFsDemosWriteJournal({ dir });
+    const restarted = await restartedJournal.acquire(key);
+    expect(restarted.generation).toBe(2);
+    expect(restarted.snapshot.records).toEqual([
+      nativeTransferRecord(first.generation),
+    ]);
+    await restarted.release();
+  });
+
+  it("rejects malformed native transfer bindings before persisting them", async () => {
+    const dir = await temporaryDirectory();
+    const journal = await createFsDemosWriteJournal({ dir });
+    const lease = await journal.acquire({
+      chainIdentity: "genesis-native",
+      wallet: "ab".repeat(32),
+    });
+    const valid = nativeTransferRecord(lease.generation);
+    await expect(lease.put({
+      ...valid,
+      transfer: { ...valid.transfer!, denomination: "tokens" as "os" },
+    })).rejects.toThrow(/invalid native transfer binding/);
+    await expect(lease.put({
+      ...valid,
+      stage: "native-visible",
+    })).rejects.toThrow(/invalid native-transfer stage/);
+    expect(lease.snapshot.records).toHaveLength(0);
+    await lease.release();
   });
 
   it("keys authority by chain identity and wallet, not endpoint spelling", async () => {
@@ -186,6 +298,52 @@ describe("filesystem Demos write journal", () => {
 
     await expect(journal.acquire(key)).rejects.toThrow(/timed out acquiring/);
     await lease.release();
+  });
+
+  it("reuses one prepared lock candidate across occupied retries and cleans it", async () => {
+    const dir = await temporaryDirectory();
+    const journal = await createFsDemosWriteJournal({
+      dir,
+      lockStaleMs: 1,
+      lockTimeoutMs: 200,
+    });
+    const key = { chainIdentity: "genesis-candidate", wallet: "0xcandidate" };
+    const locksDir = join(dir, "locks");
+    const lockName = `${walletLockDigest(key.chainIdentity, key.wallet)}.lock`;
+    const lockPath = join(locksDir, lockName);
+    const owner = {
+      token: "foreign-candidate-owner",
+      pid: 1,
+      hostname: "different-host",
+      createdAt: 1,
+    };
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(join(lockPath, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    await utimes(lockPath, new Date(0), new Date(0));
+
+    const pending = journal.acquire(key).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; });
+    const observed = new Set<string>();
+    while (!settled) {
+      for (const name of await readdir(locksDir)) {
+        if (name.startsWith(`${lockName}.`) && name.endsWith(".candidate")) {
+          observed.add(name);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    expect(String(await pending)).toMatch(/timed out acquiring/);
+    expect([...observed]).toHaveLength(1);
+    expect((await readdir(locksDir)).filter((name) =>
+      name.startsWith(`${lockName}.`) && name.endsWith(".candidate")
+    )).toEqual([]);
+    await expect(readFile(join(lockPath, "owner.json"), "utf8"))
+      .resolves.toBe(JSON.stringify(owner));
   });
 
   it("serializes competing stale-lock reclaimers without displacing a successor", async () => {

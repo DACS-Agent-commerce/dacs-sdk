@@ -9,6 +9,12 @@ import {
   createInMemoryDemosWriteJournal,
   type DemosAdapterConfig,
 } from "../../src/substrate/index.js";
+import {
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  rawPublicKey,
+} from "../../src/crypto/index.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
@@ -29,6 +35,13 @@ describe("DemosAdapter", () => {
   it("requires an rpc url", () => {
     // @ts-expect-error — exercising the runtime guard
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
+  });
+
+  it("rejects an invalid confirmed-fee ceiling", () => {
+    expect(() => new DemosAdapter({
+      rpc: RPC,
+      maximumFeeOs: -1n,
+    })).toThrow(/maximumFeeOs/);
   });
 
   it("rejects proxy and accessor-backed secret carriers", () => {
@@ -172,6 +185,47 @@ describe("DemosAdapter", () => {
     expect(() => adapter.getAddress()).toThrow(/not connected/);
   });
 
+  it("signs arbitrary binary bytes without demosdk UTF-8 coercion", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const seed = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+    const publicKey = rawPublicKey(publicKeyFromSeed(seed));
+    const privateKey = Buffer.concat([Buffer.from(seed), Buffer.from(publicKey)]);
+    const crypto = (adapter.raw as unknown as {
+      crypto: {
+        getIdentity(algorithm: string): Promise<unknown>;
+        sign(algorithm: string, bytes: Uint8Array): Promise<unknown>;
+      };
+    }).crypto;
+    vi.spyOn(crypto, "getIdentity").mockResolvedValue({ privateKey, publicKey });
+    const sdkSign = vi.spyOn(crypto, "sign");
+    const bytes = Uint8Array.from([0xff, 0x00, 0x80, 0x61, 0xc3, 0x28]);
+
+    const signature = await adapter.sign(bytes);
+
+    expect(signature).toHaveLength(64);
+    expect(ed25519Verify(bytes, signature, privateKeyFromSeed(seed))).toBe(true);
+    expect(sdkSign).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the Demos private and public signing keys disagree", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const seed = new Uint8Array(32).fill(7);
+    const publicKey = rawPublicKey(publicKeyFromSeed(new Uint8Array(32).fill(8)));
+    const crypto = (adapter.raw as unknown as {
+      crypto: { getIdentity(algorithm: string): Promise<unknown> };
+    }).crypto;
+    vi.spyOn(crypto, "getIdentity").mockResolvedValue({
+      privateKey: Buffer.concat([Buffer.from(seed), Buffer.from(publicKey)]),
+      publicKey,
+    });
+
+    await expect(adapter.sign(new Uint8Array([1, 2, 3]))).rejects.toThrow(
+      /does not match its public key/,
+    );
+  });
+
   it("substrate ops require a connection", async () => {
     const adapter = makeAdapter();
     await expect(adapter.anchor("dacs:test", { a: 1 })).rejects.toThrow(
@@ -198,6 +252,125 @@ describe("DemosAdapter", () => {
     await expect(
       adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
     ).rejects.toThrow(/not connected/);
+  });
+
+  it("keeps Bearer credentials out of DAHR anchored request headers", async () => {
+    const statusCredential = ["rk", "test", "StatusCredential456"].join("_");
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    const status = vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "included",
+      blockNumber: 7,
+    } as never);
+    const transaction = vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      hash: "0xdahr",
+      status: "confirmed",
+      blockNumber: 7,
+    } as never);
+    const block = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
+      number: 7,
+      status: "confirmed",
+      content: { ordered_transactions: ["0xdahr"] },
+      validation_data: { signature: "bft" },
+    } as never);
+    const startProxy = vi.fn(async () => ({
+      data: "ok",
+      status: 200,
+      responseHash: "a".repeat(64),
+      txHash: "0xdahr",
+      timestamp: 1,
+    }));
+    const stopProxy = vi.fn(async () => undefined);
+    vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+      "createDahr").mockResolvedValue({ startProxy, stopProxy });
+
+    await adapter.proxyFetch({
+      url: "https://api.stripe.com/v1/payment_intents/pi_test",
+      headers: { Authorization: `Bearer ${statusCredential}`, Accept: "json" },
+    });
+
+    expect(startProxy).toHaveBeenCalledWith({
+      url: "https://api.stripe.com/v1/payment_intents/pi_test",
+      method: "GET",
+      options: {
+        headers: { Accept: "json" },
+        authorization: statusCredential,
+      },
+    });
+    expect(status).toHaveBeenCalledWith("getTransactionStatus", { hash: "0xdahr" });
+    expect(transaction).toHaveBeenCalledWith("0xdahr");
+    expect(block).toHaveBeenCalledWith(7);
+    expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a DAHR response whose anchor transaction failed", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+    vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
+      state: "failed",
+      blockNumber: 8,
+    } as never);
+    vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
+      hash: "0xdahr-failed",
+      status: "failed",
+      blockNumber: 8,
+    } as never);
+    const stopProxy = vi.fn(async () => undefined);
+    vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+      "createDahr").mockResolvedValue({
+        startProxy: async () => ({
+          data: "error",
+          status: 502,
+          responseHash: "b".repeat(64),
+          txHash: "0xdahr-failed",
+          timestamp: 2,
+        }),
+        stopProxy,
+      });
+
+    await expect(
+      adapter.proxyFetch({ url: "https://example.com/status" }),
+    ).rejects.toThrow(/DAHR anchor transaction 0xdahr-failed failed on chain/);
+    expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
+  it("resolves a primary Demos agent DID from its self-certifying key", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities");
+    const publicKey = "ab".repeat(32);
+    const ref = `did:demos:agent:${publicKey}`;
+
+    await expect(adapter.resolveIdentity(ref)).resolves.toEqual({
+      ref,
+      boundTo: ref,
+      raw: {
+        profile: "demos-primary-self-certifying:v1",
+        publicKey,
+      },
+    });
+    expect(registryLookup).not.toHaveBeenCalled();
+  });
+
+  it("retains GCR resolution for identities that are not self-certifying", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const raw = { result: 200, response: { web2: {} } };
+    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities")
+      .mockResolvedValue(raw as never);
+
+    await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
+      ref: "legacy-demos-address",
+      boundTo: "legacy-demos-address",
+      raw,
+    });
+    expect(registryLookup).toHaveBeenCalledWith(
+      adapter.raw,
+      "getIdentities",
+      "legacy-demos-address",
+    );
   });
 
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
@@ -527,7 +700,7 @@ describe("DemosAdapter", () => {
       makeAdapter(sharedJournal),
       makeAdapter(sharedJournal),
     ];
-    const owner = "0xWriter";
+    const owner = "ab".repeat(32);
     const name = "listing-v1";
     const address = StorageProgram.deriveStorageAddress(owner, name, 1, "");
     let winner: Record<string, unknown> | null = null;
