@@ -157,6 +157,7 @@ export {
   type HtlcHashlockDeriver,
   type HtlcTxRef,
   type HtlcPreparedAction,
+  type HtlcLockTerms,
   type HtlcSourceClaimReplacementContext,
   type HtlcObservedAction,
   type HtlcFailedObservation,

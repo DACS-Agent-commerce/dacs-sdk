@@ -79,10 +79,20 @@ refund is driven; after the source expiry the payer's source refund is driven
 in the same call, even if the destination refund cannot be prepared, broadcast
 or observed. When the final destination lock's expiry breaks the absolute
 margin (`sourceExpiry` must exceed `destinationExpiry + sourceFinalitySec +
-safetyWindowSec`), the payer never reveals: the result is `refund-pending` with
-reason `destination-expiry-margin-insufficient` from that point on, and each
-leg is refunded at its own expiry. Callers keep advancing a `refund-pending`
-session until it is `refunded`.
+safetyWindowSec`) or its terms do not match the intent, the payer never reveals:
+the result is `refund-pending` with reason
+`destination-expiry-margin-insufficient` or `destination-lock-terms-mismatch`
+from that point on, and each leg is refunded at its own expiry. Callers keep
+advancing a `refund-pending` session until it is `refunded`.
+
+A final `destination-lock` observation must carry `lockTerms`: the locked
+`amountBaseUnits` (canonical decimal), chain-native `hashlock`, `sender` and
+`recipient`, read from the destination contract's lock record and reported in
+the same form as the intent. The core reveals only when they equal
+`destinationAmountBaseUnits`, `destinationHashlock`, `payeeDestinationAddress`
+and `payerDestinationAddress`. Missing or malformed terms make the observation
+invalid (`htlc-ledger-observation-unavailable`). This is a public adapter
+contract addition.
 
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically

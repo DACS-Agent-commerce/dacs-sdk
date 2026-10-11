@@ -18,6 +18,7 @@ import {
   type CrossChainHtlcStore,
   type HtlcAction,
   type HtlcLedgerSnapshot,
+  type HtlcLockTerms,
   type HtlcObservedAction,
   type HtlcPreparedAction,
   type HtlcStoreClaim,
@@ -140,6 +141,8 @@ interface HarnessOptions {
   sourceClaimIncludedAt?: number;
   sourceClaimFinalityReachedAt?: number;
   sourceClaimFinalityObservedAt?: number;
+  destinationLockTerms?: Partial<HtlcLockTerms>;
+  omitDestinationLockTerms?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -148,8 +151,10 @@ function harness(options: HarnessOptions = {}) {
   const throwConsumed = new Set<HtlcAction>();
   const modes = { ...options.mode };
   let observedAt = 1_000_000;
+  let lastIntent: Readonly<CrossChainHtlcIntent> | undefined;
   const prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
     await fence.assertCurrent();
+    lastIntent = request.intent;
     preimages.set(
       request.action,
       request.preimage ? Buffer.from(request.preimage).toString("hex") : undefined,
@@ -217,6 +222,17 @@ function harness(options: HarnessOptions = {}) {
       revealedPreimageHex: prepared.action === "destination-claim"
         ? options.revealedPreimageHex ?? preimages.get(prepared.action)
         : undefined,
+      ...(prepared.action === "destination-lock" && lastIntent && !options.omitDestinationLockTerms
+        ? {
+          lockTerms: {
+            amountBaseUnits: lastIntent.destinationAmountBaseUnits,
+            hashlock: lastIntent.destinationHashlock,
+            sender: lastIntent.payeeDestinationAddress,
+            recipient: lastIntent.payerDestinationAddress,
+            ...options.destinationLockTerms,
+          },
+        }
+        : {}),
       authenticationHash: AUTH_HASH,
     };
     if (prepared.action === "source-claim") {
@@ -1530,6 +1546,48 @@ describe("advanceCrossChainHtlc", () => {
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-timeout" });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toContain("source-refund");
     expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+  });
+
+  test.each([
+    ["amount", { amountBaseUnits: "1249999" }],
+    ["hashlock", { hashlock: `80002:${"0".repeat(64)}` }],
+    ["sender", { sender: "someone-else" }],
+    ["recipient", { recipient: "payee-destination" }],
+  ] as const)("never reveals into a destination lock with a different %s and refunds instead", async (_name, terms) => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, destinationLockTerms: terms });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "refund-pending",
+      reason: "destination-lock-terms-mismatch",
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
+    });
+    run.setClock(1_200_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "terms-destination-refund" });
+    run.setClock(1_700_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "terms-source-refund" });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "terms-refunded", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refunded", reason: "destination-lock-terms-mismatch" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
+      "source-lock",
+      "destination-lock",
+      "destination-refund",
+      "source-refund",
+    ]);
+  });
+
+  test("fails closed without revealing when a final destination lock omits its terms", async () => {
+    const h = harness({ omitDestinationLockTerms: true });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock"]);
   });
 
   test("a live lease prevents a second worker from preparing an effect", async () => {
