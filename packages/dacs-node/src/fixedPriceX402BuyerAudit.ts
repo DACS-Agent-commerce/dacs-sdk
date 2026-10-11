@@ -208,6 +208,16 @@ function timing(value: unknown): number {
   return Number(captured);
 }
 
+function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
+  const value = rail.parameters.finalityBlocks;
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new TypeError(
+      "fixed-price buyer audit requires a positive x402 finalityBlocks parameter",
+    );
+  }
+  return Number(value);
+}
+
 function publicKey(claim: string): Uint8Array | null {
   const raw = canonicalDemosAgentPublicKey(claim);
   return raw === null ? null : Uint8Array.from(raw);
@@ -423,6 +433,9 @@ export function createDacsFixedPriceBuyerAuditV1(
       ? "fixed-price buyer audit requires native DEM"
       : "fixed-price buyer audit requires x402 ERC-20");
   }
+  const authenticatedFinalityBlocks = payDem
+    ? undefined
+    : requiredFinalityBlocks(rail);
   const observer = options.paymentProfile === "x402"
     ? createDacsX402SellerEvmObserverV1({
         rail,
@@ -582,10 +595,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         (payDem
           ? paymentAnchor.artifact.settlementFinality?.model !== "bft-final"
           : paymentAnchor.artifact.settlementFinality?.model !== "block-depth" ||
-            !Number.isSafeInteger(
-              paymentAnchor.artifact.settlementFinality.finalityBlocks,
-            ) ||
-            Number(paymentAnchor.artifact.settlementFinality.finalityBlocks) <= 0) ||
+            paymentAnchor.artifact.settlementFinality.finalityBlocks === undefined ||
+            paymentAnchor.artifact.settlementFinality.finalityBlocks !==
+                authenticatedFinalityBlocks) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
           paymentAnchor.artifact, paymentAnchor.artifact.signature, order.seller) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -869,13 +881,12 @@ export function createDacsFixedPriceBuyerAuditV1(
       const evm = context.evm;
       if (asset.kind !== "erc20" || evm?.role !== "buyer" || observer === undefined ||
           capturedPaymentFinality.model !== "block-depth" ||
-          !Number.isSafeInteger(capturedPaymentFinality.finalityBlocks) ||
-          Number(capturedPaymentFinality.finalityBlocks) <= 0) {
+          authenticatedFinalityBlocks === undefined) {
         throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
       }
       const paymentFinality = {
         model: "block-depth" as const,
-        finalityBlocks: Number(capturedPaymentFinality.finalityBlocks),
+        finalityBlocks: authenticatedFinalityBlocks,
         finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
       };
       const event = settlementEvent(paymentEvidence);

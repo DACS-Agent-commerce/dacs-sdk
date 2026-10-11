@@ -80,6 +80,16 @@ function paymentRailContext(rail: Readonly<AuthenticatedRailDefinition>) {
   });
 }
 
+function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
+  const value = rail.parameters.finalityBlocks;
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new TypeError(
+      "fixed-price buyer commerce requires a positive x402 finalityBlocks parameter",
+    );
+  }
+  return Number(value);
+}
+
 function agreementPrice(value: unknown): Readonly<{ amount: string; currency: string }> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const terms = (value as Record<string, unknown>).terms;
@@ -96,7 +106,14 @@ async function verifyPeerAnchor(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   logicalAddress: string,
   expectedHash: string | undefined,
-): Promise<Readonly<Record<string, unknown>> | null> {
+): Promise<Readonly<{
+  artifact: Readonly<Record<string, unknown>>;
+  attestationRef: Readonly<{
+    anchor: Readonly<{ kind: "storage-program"; locator: string }>;
+    contentHash: string;
+    signer: string;
+  }>;
+}> | null> {
   const resolved = await context.demos.adapter.resolveAnchorByName(
     logicalAddress,
     owner(context.peerAuthority),
@@ -118,7 +135,14 @@ async function verifyPeerAnchor(
       receipt.observationDisposition === "established" &&
       (receipt.state === "included" || receipt.state === "finalized") &&
       await context.demos.adapter.verifyDemosAnchorReceipt(receipt) === true
-    ? artifact : null;
+    ? Object.freeze({
+        artifact,
+        attestationRef: Object.freeze({
+          anchor: Object.freeze({ kind: "storage-program" as const, locator: logicalAddress }),
+          contentHash: hash,
+          signer: context.peerAuthority,
+        }),
+      }) : null;
 }
 
 /**
@@ -140,6 +164,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
     throw new TypeError("fixed-price buyer commerce options are invalid");
   }
   const railContext = paymentRailContext(options.rail);
+  const finalityBlocks = requiredFinalityBlocks(options.rail);
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
     throw new TypeError("fixed-price buyer commerce requires an ERC-20 rail");
@@ -171,6 +196,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             reason: "buyer settlement finality is unavailable" };
         }
         const event = request.evidence.paymentTxRefs?.[0];
+        const evidenceFinalityBlocks =
+          request.evidence.settlementFinality?.finalityBlocks;
         const captured = stored.outcome.settlement.signedEvent;
         const price = agreementPrice(agreement.artifact);
         if (request.evidence.phase !== "pay-x402" ||
@@ -182,6 +209,8 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             event.protocolVersion !== captured.protocolVersion ||
             price === null || request.evidence.paymentAmount.amount !== price.amount ||
             request.evidence.paymentAmount.currency !== price.currency ||
+            (evidenceFinalityBlocks !== undefined &&
+              evidenceFinalityBlocks !== finalityBlocks) ||
             baseUnits(
               request.evidence.paymentAmount.amount,
               asset.decimals,
@@ -199,10 +228,12 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           attestationRef: {
             anchor: { kind: "storage-program", locator: request.logicalAddress },
             contentHash: request.evidenceHash,
+            signer: context.peerAuthority,
           },
           paymentAddress: {
             railId: loaded.record.protocol.rail.railId,
             phaseIndex: 2,
+            resolved: false,
           },
           result: { ok: true, txRefs: [captured] },
         }, verifier());
@@ -250,12 +281,13 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           `dacs4:delivery-evidence:${operation.order.jobId}`;
         const deliverableLogicalAddress =
           `dacs4:deliverable:${operation.order.jobId}`;
-        const evidenceRaw = await verifyPeerAnchor(
+        const evidenceAnchor = await verifyPeerAnchor(
           context,
           evidenceLogicalAddress,
           undefined,
         );
-        if (evidenceRaw === null) return "indeterminate" as const;
+        if (evidenceAnchor === null) return "indeterminate" as const;
+        const evidenceRaw = evidenceAnchor.artifact;
         if (!isSettlementEvidence(evidenceRaw) ||
             evidenceRaw.jobId !== operation.order.jobId ||
             evidenceRaw.phase !== "deliver-storage-program" ||
@@ -267,10 +299,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
         const verification = await verifySettlementEvidence(evidenceRaw, {
           orchestrator: context.peerAuthority,
           agreement: price,
-          attestationRef: {
-            anchor: { kind: "storage-program", locator: evidenceLogicalAddress },
-            contentHash: contentHash(evidenceRaw),
-          },
+          attestationRef: evidenceAnchor.attestationRef,
           result: { ok: true },
           expectedAnchorLocator: deliverableLogicalAddress,
         }, verifier());
@@ -282,7 +311,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           evidenceRaw.deliverableContentHash,
         );
         return delivered === null ? "indeterminate" as const
-          : canonicalize(delivered) === canonicalize(payload);
+          : canonicalize(delivered.artifact) === canonicalize(payload);
       } catch {
         return "indeterminate" as const;
       }
