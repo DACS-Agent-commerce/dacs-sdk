@@ -386,7 +386,11 @@ export type CrossChainHtlcProgress =
     }
   | {
       status: "refund-pending" | "refunded";
-      reason: "destination-timeout" | "destination-lock-missing";
+      reason:
+        | "destination-timeout"
+        | "destination-lock-missing"
+        | "destination-expiry-margin-insufficient"
+        | "destination-claim-unlanded";
       txRefs: readonly Readonly<HtlcTxRef>[];
     }
   | { status: "settled"; settlement: Readonly<CrossChainHtlcSettlement> };
@@ -1773,46 +1777,74 @@ export async function advanceCrossChainHtlc(
     intent.safetyWindowSec,
     "source finality and safety budget",
   );
-  if (sourceLock.expiresAt <= safeAdd(
+  // A final destination lock's expiry is immutable. If it rules out a safe
+  // reveal, the payer never reveals and each leg is refunded at its own expiry
+  // instead of the session stopping with both legs locked.
+  const revealForbidden = sourceLock.expiresAt <= safeAdd(
     destinationLock.expiresAt,
     sourceRecoveryBudgetSec,
     "absolute expiry margin",
-  )) {
-    return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
-  }
+  )
+    ? "destination-expiry-margin-insufficient" as const
+    : undefined;
+  const sourceExpired =
+    readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
+  const destinationExpired =
+    readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry");
 
-  if (readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry")) {
-    const pendingClaim = snapshot.actions["destination-claim"];
+  if (revealForbidden !== undefined || destinationExpired) {
+    let refundReason: Extract<CrossChainHtlcProgress, { status: "refund-pending" | "refunded" }>["reason"] =
+      revealForbidden ?? "destination-timeout";
     if (prepared.has("destination-claim")) {
-      if (pendingClaim?.state === "failed") {
-        return {
-          status: "failed",
-          errorClass: "counterparty",
-          reason: pendingClaim.reason ?? "htlc-destination-claim-failed",
-        };
+      // A retained reveal may have exposed the preimage, so it blocks refunds
+      // until the payee's source-claim window has closed and the adapter
+      // authenticates that the claim did not land. A pending claim may still.
+      const pendingClaim = snapshot.actions["destination-claim"];
+      const unlanded = !pendingClaim || pendingClaim.state === "absent" ||
+        pendingClaim.state === "failed";
+      if (!unlanded || !sourceExpired || !destinationExpired) {
+        if (pendingClaim?.state === "failed") {
+          return {
+            status: "failed",
+            errorClass: "counterparty",
+            reason: pendingClaim.reason ?? "htlc-destination-claim-failed",
+          };
+        }
+        return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
       }
-      return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
+      refundReason = "destination-claim-unlanded";
     }
     const destinationRefund = snapshot.actions["destination-refund"];
     const sourceRefund = snapshot.actions["source-refund"];
-    if (!destinationRefund || destinationRefund.state === "absent") {
+    let latest = snapshot;
+    let executed = false;
+    let uncertain: string | undefined;
+    if (destinationExpired && (!destinationRefund || destinationRefund.state === "absent")) {
       const advanced = await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
-      return advanced
-        ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
-        : { status: "indeterminate", reason: "htlc-destination-refund-effect-uncertain" };
+      if (advanced) {
+        latest = advanced;
+        executed = true;
+      } else {
+        uncertain = "htlc-destination-refund-effect-uncertain";
+      }
     }
-    if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry") &&
-        (!sourceRefund || sourceRefund.state === "absent")) {
+    // The payer's source refund never waits on the payee's destination refund.
+    if (sourceExpired && (!sourceRefund || sourceRefund.state === "absent")) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
-      return advanced
-        ? { status: "refund-pending", reason: "destination-timeout", txRefs: collectRefs(advanced, prepared) }
-        : { status: "indeterminate", reason: "htlc-source-refund-effect-uncertain" };
+      if (advanced) {
+        latest = advanced;
+        executed = true;
+      } else {
+        uncertain ??= "htlc-source-refund-effect-uncertain";
+      }
     }
-    const bothFinal = destinationRefund.state === "final" && sourceRefund?.state === "final";
+    if (uncertain !== undefined) return { status: "indeterminate", reason: uncertain };
+    const bothFinal = !executed && destinationRefund?.state === "final" &&
+      sourceRefund?.state === "final";
     return {
       status: bothFinal ? "refunded" : "refund-pending",
-      reason: "destination-timeout",
-      txRefs: collectRefs(snapshot, prepared),
+      reason: refundReason,
+      txRefs: collectRefs(latest, prepared),
     };
   }
 

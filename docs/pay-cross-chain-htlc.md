@@ -66,10 +66,23 @@ Both deadlines are evaluated with overflow-safe millisecond arithmetic. The
 cutoff itself is exclusive: one millisecond before it can reveal, while at or
 after it the core returns `htlc-destination-claim-cutoff-reached` without
 preparing or broadcasting a new reveal. A retained destination-claim is treated
-as potentially exposed after restart; pending or ambiguous reveal attempts are
-never reclassified as a benign timeout refund. A destination claim that is
-already final is still authenticated, checkpointed, and recovered after the
-cutoff.
+as potentially exposed after restart; a pending reveal attempt never becomes a
+refund. Only once both the destination and the source expiry have passed, so
+the payee can no longer claim the source leg, and the adapter authenticates the
+retained claim as `absent` or `failed`, the core refunds both legs with reason
+`destination-claim-unlanded`. Adapters must therefore report `pending`, never
+`absent`, while a reveal can still land. A destination claim that is already
+final is still authenticated, checkpointed, and recovered after the cutoff.
+
+Refunds are per leg. After the destination expiry the payee's destination
+refund is driven; after the source expiry the payer's source refund is driven
+in the same call, even if the destination refund cannot be prepared, broadcast
+or observed. When the final destination lock's expiry breaks the absolute
+margin (`sourceExpiry` must exceed `destinationExpiry + sourceFinalitySec +
+safetyWindowSec`), the payer never reveals: the result is `refund-pending` with
+reason `destination-expiry-margin-insufficient` from that point on, and each
+leg is refunded at its own expiry. Callers keep advancing a `refund-pending`
+session until it is `refunded`.
 
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically
