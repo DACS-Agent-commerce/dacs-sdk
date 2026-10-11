@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Demos } from "@kynesyslabs/demosdk/websdk";
 import { DacsError, SubstrateError, TransientError, faultCategory } from "../../src/errors.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
 
@@ -267,6 +268,46 @@ describe("Demos identity transient retries", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each([
+    { timeoutMs: 100, totalTimeoutMs: undefined, signMs: 150, endMs: 1_050 },
+    { timeoutMs: 5_000, totalTimeoutMs: 1_000, signMs: 1_500, endMs: 1_000 },
+  ])("sends no request once signing outlasts its deadline (timeout $timeoutMs, total $totalTimeoutMs)", async ({
+    timeoutMs, totalTimeoutMs, signMs, endMs,
+  }) => {
+    const { adapter, transport } = setup(timeoutMs, totalTimeoutMs);
+    const demos = adapter.raw as unknown as Demos;
+    vi.spyOn(demos, "walletConnected", "get").mockReturnValue(true);
+    vi.spyOn(demos, "keypair", "get").mockReturnValue({
+      publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64),
+    });
+    const sign = vi.spyOn(demos.crypto, "sign").mockImplementation((() => new Promise(resolve => {
+      setTimeout(() => resolve({ signature: Uint8Array.of(1) }), signMs);
+    })) as never);
+    const start = Date.now();
+    let settledAt: number | undefined;
+    const result = adapter.resolveIdentity("subject").catch(error => { settledAt = Date.now(); return error; });
+    await vi.advanceTimersByTimeAsync(endMs + signMs);
+    expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(settledAt! - start).toBe(endMs);
+    expect(sign).toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { kind: "plain Error with cause ECONNRESET", error: new Error("x", { cause: { code: "ECONNRESET" } }) },
+    { kind: "plain Error with cause UND_ERR_SOCKET", error: new Error("x", { cause: { code: "UND_ERR_SOCKET" } }) },
+    { kind: "direct UND_ERR_SOCKET code", error: Object.assign(new Error("x"), { code: "UND_ERR_SOCKET" }) },
+    { kind: "TypeError with an unlisted cause code", error: new TypeError("x", { cause: { code: "EPROTO" } }) },
+  ])("does not retry a $kind", async ({ error }) => {
+    const { adapter, transport } = setup();
+    transport.mockRejectedValue(error);
+    const result = adapter.resolveIdentity("subject").catch(caught => caught);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await result).toBe(error);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it.each([502, 503, 504, "ECONNRESET"])("sanitizes exhausted transient failure %s", async (failure) => {
     const { adapter, transport } = setup();
     const cancellations = [vi.fn(), vi.fn(), vi.fn()];
@@ -294,6 +335,7 @@ describe("Demos identity transient retries", () => {
     { kind: "JSON", response: () => new Response("invalid-json-sentinel"), message: "not valid UTF-8 JSON", errorClass: DacsError },
     { kind: "UTF-8", response: () => new Response(Uint8Array.of(255)), message: "not valid UTF-8 JSON", errorClass: DacsError },
     { kind: "400", response: () => new Response("discarded", { status: 400 }), message: "HTTP 400", errorClass: SubstrateError },
+    { kind: "429", response: () => new Response("discarded", { status: 429, headers: { "Retry-After": "1" } }), message: "HTTP 429", errorClass: SubstrateError },
     { kind: "500", response: () => new Response("discarded", { status: 500 }), message: "HTTP 500", errorClass: SubstrateError },
   ])("retries 503 but never retries $kind", async ({ response, message, errorClass }) => {
     // Positive control makes each regression case fail on the no-retry PR.

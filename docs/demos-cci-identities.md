@@ -69,9 +69,9 @@ the body is not retried. Backoff is 250 ms then 500 ms. `Retry-After` can
 lengthen that wait, up to 2,000 ms, but never shorten it: the wait is
 `max(backoff, min(Retry-After, 2,000 ms))`. Only whole seconds (`^\d+$`) or an
 exact IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) are accepted; any other
-value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx, and
-other 5xx are never retried. Failed bodies are cancelled without retaining
-response text.
+value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx
+(including 429), and other 5xx are never retried. Failed bodies are cancelled
+without retaining response text.
 
 `DemosAdapterConfig.identityTotalTimeoutMs` bounds the whole lookup, including
 signing, reads, retries and waits: 12,000 ms by default, a positive safe integer
