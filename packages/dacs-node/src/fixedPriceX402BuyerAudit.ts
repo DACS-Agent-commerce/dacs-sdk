@@ -7,7 +7,7 @@ import {
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
-  SubstrateError,
+  IndeterminateSubstrateError,
   verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
@@ -1649,9 +1649,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         });
         return true;
       } catch (error) {
-        // The strict seller verifier reports unresolved substrate reads as
-        // SubstrateError; every other rejection is a real authentication failure.
-        return unavailable || error instanceof SubstrateError ? "indeterminate" : false;
+        // Retry only unanswered reads. Authoritative absence and malformed
+        // provider output need operator action, even when classified as substrate faults.
+        return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
       }
     },
   };

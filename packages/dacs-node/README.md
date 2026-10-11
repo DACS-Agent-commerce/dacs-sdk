@@ -482,3 +482,9 @@ identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
 may trust the HTTP body as identity or authorization evidence.
+
+
+Upgrade note: `DacsBuyerAuditAuthorizationV1` callbacks may now return
+`"indeterminate"` as well as a boolean. Existing boolean callbacks still work;
+callers consuming the result must handle `"indeterminate"` as pending verification
+and must check `result === true` before treating it as authorization.

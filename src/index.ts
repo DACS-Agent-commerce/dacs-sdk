@@ -207,6 +207,7 @@ export {
   TransientError,
   CounterpartyError,
   SubstrateError,
+  IndeterminateSubstrateError,
   UnsupportedCapabilityError,
   faultCategory,
   type FaultCategory,

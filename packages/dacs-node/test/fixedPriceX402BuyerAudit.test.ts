@@ -8,6 +8,7 @@ import {
   DacsError,
   FINALITY_COMMITMENT_SEPARATOR,
   SubstrateError,
+  IndeterminateSubstrateError,
   attestationBundleHash,
   finalityCommitmentAddress,
   fixedPriceAgreementLogicalAddress,
@@ -1412,7 +1413,7 @@ describe("buyer two-copy completion adapter", () => {
     }],
     ["the seller closure read is indeterminate", () => {
       mocks.verifyCompleted.mockRejectedValueOnce(
-        new SubstrateError("seller bundle lookup errored and is indeterminate"),
+        new IndeterminateSubstrateError("seller bundle lookup errored and is indeterminate"),
       );
     }],
   ])("stays retryable when %s", async (_label, arrange) => {
@@ -1421,6 +1422,30 @@ describe("buyer two-copy completion adapter", () => {
 
     await expect(harness.authorize()).resolves.toBe("indeterminate");
   });
+
+  it.each(["x402", "pay-dem"] as const)(
+    "requires operator action for permanent %s seller closure failures",
+    async (paymentProfile) => {
+      const harness = await completionHarness(paymentProfile);
+      for (const error of [
+        new SubstrateError("retained seller bundle is authoritatively absent"),
+        new SubstrateError("seller bundle lookup returned an invalid disposition"),
+        new SubstrateError("dependency resolution returned an invalid indeterminate disposition"),
+      ]) {
+        mocks.verifyCompleted.mockRejectedValueOnce(error);
+        await expect(harness.authorize()).resolves.toBe(false);
+      }
+    },
+  );
+
+  it.each(["x402", "pay-dem"] as const)(
+    "retries only typed indeterminate %s seller closure reads",
+    async (paymentProfile) => {
+      const harness = await completionHarness(paymentProfile);
+      mocks.verifyCompleted.mockRejectedValueOnce(new IndeterminateSubstrateError("read unavailable"));
+      await expect(harness.authorize()).resolves.toBe("indeterminate");
+    },
+  );
 
   it("stays retryable for the pay-DEM buyer audit when Demos cannot answer", async () => {
     const harness = await completionHarness("pay-dem");
