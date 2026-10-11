@@ -28,12 +28,7 @@ The core:
   replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted. A
   completion is timely only when `finalityObservedAt < recoveryDeadline`;
-  equality is expired. Expiry commits only on fresh authenticated evidence that
-  the release missed the deadline: a locked pending status matching the
-  checkpoint and requested at or after the deadline, or a completion with
-  `finalityObservedAt >= recoveryDeadline`. An unavailable or conflicting
-  status, or a failed observation write, keeps `tank-locked-unreleased` open so
-  a timely completion can still settle.
+  equality is expired. Expiry needs authenticated evidence; see below.
 
 ```ts
 import {
@@ -68,14 +63,56 @@ For acquired claims, optional retained fields are distinguished by own-property
 presence: a present malformed or falsey submission/observation is corruption,
 while only a genuinely absent submission authorizes fresh preparation.
 
+Recovery expiry commits only on authenticated evidence that the release missed
+the deadline, judged by the evidence's own bridge-authenticated time:
+
+- the locked pending status matching the checkpoint, with
+  `observedAt >= recoveryDeadline`;
+- a failed status with history `empty -> pending -> failed` after the
+  checkpoint, with `observedAt >= recoveryDeadline`, stored as
+  `failed-after-lock` evidence together with the checkpoint; or
+- a completion with `finalityObservedAt >= recoveryDeadline`.
+
+`observedAt` is the time the bridge's authenticated snapshot describes, not
+the time the adapter served it. When the host asked does not count: a cached or
+lagging adapter can answer a post-deadline request with a pre-deadline
+snapshot, and that is not evidence. The host clock must also be at or after the
+deadline when expiry is written. There is no clock-skew allowance in either
+direction, so when the bridge and host clocks disagree, expiry waits for both.
+
+Past the deadline the lock stays `tank-locked-unreleased`, and never expires on
+its own, while:
+
+- the status read is unavailable, or the observation write fails;
+- the bridge still serves a snapshot observed before the deadline; or
+- the bridge reports a status that contradicts the checkpoint: `empty`,
+  `capacity-unavailable`, a failure whose history skips `pending`, or a
+  different lock hash or deadline. These are history regressions, which is
+  what a lagging replica returns, so they do not show that the release will
+  never land.
+
+A timely completion can still settle from any of these. The
+`settle-asymmetric` result says why the lock is still open. `pastDeadline: true`
+means the host clock was at or after the deadline and no expiry evidence was
+accepted. `bridgeStatus: "failed"` means the bridge reported a failure after the
+lock; it expires once the bridge reports it at or after the deadline.
+`bridgeStatus: "conflicting"` means the bridge contradicted the checkpoint.
+Hosts should keep polling, alert when `pastDeadline` persists beyond the
+bridge's normal reporting lag, and send `conflicting` to an operator at once,
+because the bridge record has to be reconciled by hand.
+
 Production stores must implement `recordRecoveryExpired` as an atomic,
 authority/lease/generation-fenced compare-and-set against the exact observation
 established by the acquired claim or a confirmed write. A completed observation
 carries the authenticated source-lock `recoveryDeadline` even when no pending
 checkpoint was previously persisted; expiry can therefore compare-and-set
 directly from that exact prior state. When a durable locked-pending checkpoint
-exists, the completed lock hash and deadline must match it exactly. Completion
-persistence and recovery expiry race atomically: whichever eligible transition
+exists, the completed lock hash and deadline must match it exactly, and the
+checkpoint in pending or `failed-after-lock` evidence must equal it. The store
+must re-check the evidence time at the compare-and-set: its `now` and the
+evidence's `observedAt` (or `finalityObservedAt`) must both be at or after
+`recoveryDeadline`. Completion persistence and recovery expiry race
+atomically: whichever eligible transition
 commits first is terminal, and the loser must report a non-successful write. Once
 expiry commits, every claim returns the same recovery-expired terminal state and
 no later completion may settle.
@@ -99,3 +136,15 @@ The exported in-memory store is for tests and development only. Production
 stores must authenticate retained rows, enforce global bridge-ID uniqueness,
 preserve locked-unreleased checkpoints across process restart, and persist the
 completion-versus-expiry winner atomically.
+
+Open before any live adapter is wired:
+
+- verify bridge observations in the core or an injected verifier (a pinned
+  bridge key or attestation over the canonical status, history, hashes and
+  timestamps) instead of checking only the shape of `authenticationHash`;
+- decode `signedSubmissionBase64` and compare it with the intent before it is
+  stored, through the `demosdk`-backed adapter or an injected decoder so that
+  `@kynesyslabs/dacs/rails` stays dependency-free; and
+- confirm with the DACS-4 §9.5.5 owner whether a `failed` status with history
+  `empty -> pending -> failed` and no stored checkpoint should be
+  reputation-neutral. Today it is `permanent`.
