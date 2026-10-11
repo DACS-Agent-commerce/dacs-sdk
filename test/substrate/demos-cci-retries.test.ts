@@ -309,6 +309,28 @@ describe("Demos identity transient retries", () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT",
+  ].flatMap(code => [{ code, fetchCause: false }, { code, fetchCause: true }]))(
+    "does not retry $code raised after the response started (Fetch cause: $fetchCause)", async ({ code, fetchCause }) => {
+      const { adapter, transport } = setup();
+      const cause = Object.assign(new Error("connect 10.0.0.7:45678"), { code, address: "10.0.0.7", port: 45_678 });
+      const failure = fetchCause ? new TypeError("terminated", { cause }) : cause;
+      transport.mockImplementation(async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"res')); },
+        pull(controller) { controller.error(failure); },
+      })));
+      const result = adapter.resolveIdentity("subject").catch(error => error);
+      await vi.advanceTimersByTimeAsync(12_000);
+      const error = await result;
+      expect(error).toBeInstanceOf(TransientError);
+      expect(error).toMatchObject({ message: FAILED, category: "transient" });
+      expect(error).not.toHaveProperty("cause");
+      expect(inspect(error)).not.toMatch(/10\.0\.0\.7|45678|terminated/);
+      expect(transport).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([502, 503, 504, "ECONNRESET"])("sanitizes exhausted transient failure %s", async (failure) => {
     const { adapter, transport } = setup();
     const cancellations = [vi.fn(), vi.fn(), vi.fn()];
@@ -606,6 +628,23 @@ describe("Demos identity reads against a real local HTTP server", () => {
     expect(error).toMatchObject({ message: FAILED, category: "transient" });
     expect(error).not.toHaveProperty("cause");
     expect(inspect(error)).not.toMatch(/127\.0\.0\.1|UND_ERR_SOCKET|terminated/);
+    expect(counts()).toEqual({ connections: 1, requests: 1 });
+  });
+
+  it("does not retry a connection reset mid-body, and drops the Fetch error", async () => {
+    const { adapter, counts } = await serve((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json", "Content-Length": "4096" });
+      // Reset after the client has read the partial body, so Fetch reports ECONNRESET
+      // rather than UND_ERR_SOCKET ("other side closed").
+      response.write(JSON.stringify(GCR).slice(0, 10), () => {
+        setTimeout(() => response.socket?.resetAndDestroy(), 20);
+      });
+    });
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: FAILED, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(inspect(error)).not.toMatch(/127\.0\.0\.1|ECONNRESET|terminated/);
     expect(counts()).toEqual({ connections: 1, requests: 1 });
   });
 });

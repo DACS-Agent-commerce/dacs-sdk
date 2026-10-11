@@ -9,7 +9,7 @@ export const DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS = 12_000;
 // Match demosdk 4.0.16's connection/status lists, with a smaller retry budget.
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
 // Fetch reports a clean close before any response as UND_ERR_SOCKET, where
-// demosdk's Axios saw ECONNRESET. The same code mid-body is not retried.
+// demosdk's Axios saw ECONNRESET. No connection failure mid-body is retried.
 const FETCH_CONNECT_CODES = new Set(["UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 const MAX_RETRY_WAIT_MS = 2_000;
@@ -45,13 +45,19 @@ function connectionFailure(
 ): "retry" | "final" | undefined {
   if (error === null || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
+  const causeCode = error instanceof TypeError
+    ? (error as { cause?: { code?: unknown } }).cause?.code
+    : undefined;
+  // Once a response has started, retrying would download another body.
+  if (responseStarted) {
+    return isConnectionCode(code) || isConnectionCode(causeCode) ? "final" : undefined;
+  }
   if (typeof code === "string" && RETRYABLE_CODES.has(code)) return "retry";
-  if (!(error instanceof TypeError)) return undefined;
-  const causeCode = (error as { cause?: { code?: unknown } }).cause?.code;
-  if (typeof causeCode !== "string") return undefined;
-  if (RETRYABLE_CODES.has(causeCode)) return "retry";
-  if (FETCH_CONNECT_CODES.has(causeCode)) return responseStarted ? "final" : "retry";
-  return undefined;
+  return isConnectionCode(causeCode) ? "retry" : undefined;
+}
+
+function isConnectionCode(code: unknown): boolean {
+  return typeof code === "string" && (RETRYABLE_CODES.has(code) || FETCH_CONNECT_CODES.has(code));
 }
 
 function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {

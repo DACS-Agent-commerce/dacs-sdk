@@ -64,8 +64,9 @@ timeouts, connection errors `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUN
 502/503/504. It also retries a Fetch `TypeError` whose `cause.code` is
 `UND_ERR_SOCKET` (the node closed the connection, for example while restarting)
 or `UND_ERR_CONNECT_TIMEOUT`, but only before any response has arrived; demosdk's
-Axios transport reported the first as `ECONNRESET`. A connection closed during
-the body is not retried. Backoff is 250 ms then 500 ms. `Retry-After` can
+Axios transport reported the first as `ECONNRESET`. Once a response has
+started, no connection failure is retried: a connection closed or reset during
+the body, with any of the codes above, ends the lookup. Backoff is 250 ms then 500 ms. `Retry-After` can
 lengthen that wait, up to 2,000 ms, but never shorten it: the wait is
 `max(backoff, min(Retry-After, 2,000 ms))`. Only whole seconds (`^\d+$`) or an
 exact IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) are accepted; any other
@@ -106,7 +107,7 @@ Exhausted retries throw `TransientError` (category `transient`), with the stable
 message `Demos GCR identity read timed out` when the last attempt timed out
 (or the overall deadline expires), or
 `Demos GCR identity read failed after transient transport errors` for exhausted
-HTTP 502/503/504 or connection failures, a connection closed during the body,
+HTTP 502/503/504 or connection failures, a connection closed or reset during the body,
 or when a wait no longer fits before the overall deadline after one of those.
 These errors contain no response text or cause. Deadlines also bound an injected
 transport that ignores abort, stalled signing, or body cancellation that never
