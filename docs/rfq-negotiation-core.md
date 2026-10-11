@@ -231,8 +231,8 @@ Live admission and capture run synchronously when the peer emits an event.
 The serialized receive lane holds at most 100 events and 64 MiB, including the
 event being processed. Each event is charged two bytes per string code unit
 plus 1 KiB for record and queue metadata. These limits are fixed. Excess live
-events are reported immediately through `onError` and dropped; recover them
-from history with `resumeInbound()`.
+events are reported immediately through `onError` as a `TransientError` and
+dropped; recover them from history with `resumeInbound()`.
 `stop()` retires pending live and recovered deliveries; work still awaiting
 decryption cannot deliver to a consumer registered by a later `start()`.
 An already invoked consumer may finish, but recovery checks retirement again

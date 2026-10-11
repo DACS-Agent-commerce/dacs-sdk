@@ -25,6 +25,7 @@ import {
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
   rfqLifecyclePacketId,
+  TransientError,
   type AttestationRef,
   type DemosL2psRfqEncryptedMessage,
   type DemosL2psRfqHistoryPage,
@@ -358,6 +359,8 @@ function gate() {
   return { promise, release };
 }
 
+const OVERFLOW = "Demos L2PS RFQ live queue exceeds its count or byte budget; recover from history";
+
 describe("Demos L2PS durable RFQ transport", () => {
   test.each(["live", "recovery"] as const)("round 3: retires an in-flight %s decrypt across stop/start", async (path) => {
     const blocked = gate();
@@ -533,7 +536,8 @@ describe("Demos L2PS durable RFQ transport", () => {
       snapshotLabels.length = 0;
       fixture.emit(payload);
       expect(fixture.errors).toHaveLength(1);
-      expect(fixture.errors[0]?.message).toContain("live queue exceeds");
+      expect(fixture.errors[0]?.message).toBe(OVERFLOW);
+      expect(fixture.errors[0]).toBeInstanceOf(TransientError);
       expect(snapshotLabels).not.toContain("Demos L2PS incoming RFQ payload");
     } finally {
       blocked.release();

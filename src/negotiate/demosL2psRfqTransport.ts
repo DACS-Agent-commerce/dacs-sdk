@@ -8,7 +8,7 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import { DacsError } from "../errors.js";
+import { DacsError, TransientError } from "../errors.js";
 import {
   parseRfqLifecyclePacket,
   type DurableRfqLifecycleResult,
@@ -1353,7 +1353,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         try {
           bytes = admitIncoming(payload);
           if (liveEvents >= MAX_LIVE_EVENTS || liveBytes + bytes > MAX_LIVE_BYTES) {
-            throw new DacsError("Demos L2PS RFQ live queue exceeds its count or byte budget; recover from history");
+            throw new TransientError("Demos L2PS RFQ live queue exceeds its count or byte budget; recover from history");
           }
           owned = captureIncoming(payload);
         } catch (cause) {
