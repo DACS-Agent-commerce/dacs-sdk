@@ -36,16 +36,16 @@ function workflowStepScript(stepName: string): string {
   const lines = readFileSync(workflowPath, "utf8").split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
   expect(start).toBeGreaterThanOrEqual(0);
-  const stepIndent = lines[start].indexOf("-");
+  const stepIndent = (lines[start] ?? "").indexOf("-");
   let index = start + 1;
-  while (index < lines.length && !/^\s+run:/.test(lines[index])) index += 1;
-  const runLine = lines[index];
+  while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
+  const runLine = lines[index] ?? "";
   const inline = runLine.replace(/^\s+run:\s*/, "");
   if (inline !== "|") return inline;
   const body: string[] = [];
   const blockIndent = runLine.indexOf("run:") + 2;
   for (index += 1; index < lines.length; index += 1) {
-    const line = lines[index];
+    const line = lines[index] ?? "";
     if (line.trim() !== "" && line.search(/\S/) <= stepIndent) break;
     body.push(line.slice(blockIndent));
   }
