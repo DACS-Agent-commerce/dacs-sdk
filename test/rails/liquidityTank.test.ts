@@ -1997,6 +1997,85 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
 
+    test("P1: a pending snapshot stamped after D while the host is before D never writes expiry", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      run.setClock(D - 1);
+      h.setObservation(lockedPendingAt(h.operationHash, D + 5));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "skew" })).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased", pastDeadline: false,
+      });
+      expect(expire).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("P13: a retained failure then a lagging same-lock pending at D still expires", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await advanceLiquidityTankSettlement({ ...run.shared, owner: "f" });
+      run.setClock(D);
+      h.setObservation(lockedPendingAt(h.operationHash, D - 300));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "r" })).resolves.toMatchObject({
+        status: "failed", errorClass: "failed-substrate",
+      });
+    });
+
+    test("P14: a non-success retention write is not treated as retained", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      store.recordRecoveryFailure = async () => ({ status: "conflict", reason: "simulated" });
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "f" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      run.setClock(D);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "g" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(expire).not.toHaveBeenCalled();
+    });
+
+    test("P15: the reference store refuses to move the checkpoint once a failure is retained", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await advanceLiquidityTankSettlement({ ...run.shared, owner: "f" });
+      const intent = createLiquidityTankIntent(authority());
+      const c = await store.claim({ intent, owner: "s", now: D - 100, leaseDurationMs: 50 });
+      if (c.status !== "acquired") throw new Error("expected acquired");
+      await expect(store.recordObservation({ settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "s", generation: c.lease.generation, observation: lockedPendingAt(h.operationHash, D - 150),
+      })).resolves.toMatchObject({ status: "conflict" });
+    });
+
+    test("P16: a lease lost right after the retention write is not reported as retained", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const retain = store.recordRecoveryFailure.bind(store);
+      let lost = false;
+      store.recordRecoveryFailure = async (input) => {
+        const r = await retain(input);
+        lost = true;
+        return r;
+      };
+      const isCurrent = store.isCurrent.bind(store);
+      store.isCurrent = async (input) => lost ? false : isCurrent(input);
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      run.setClock(D + 5);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "f" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(expire).not.toHaveBeenCalled();
+    });
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
