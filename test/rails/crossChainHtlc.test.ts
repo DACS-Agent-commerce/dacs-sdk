@@ -141,6 +141,8 @@ interface HarnessOptions {
   sourceClaimIncludedAt?: number;
   sourceClaimFinalityReachedAt?: number;
   sourceClaimFinalityObservedAt?: number;
+  sourceLockTerms?: Partial<HtlcLockTerms>;
+  omitSourceLockTerms?: boolean;
   destinationLockTerms?: Partial<HtlcLockTerms>;
   omitDestinationLockTerms?: boolean;
 }
@@ -222,6 +224,17 @@ function harness(options: HarnessOptions = {}) {
       revealedPreimageHex: prepared.action === "destination-claim"
         ? options.revealedPreimageHex ?? preimages.get(prepared.action)
         : undefined,
+      ...(prepared.action === "source-lock" && lastIntent && !options.omitSourceLockTerms
+        ? {
+          lockTerms: {
+            amountBaseUnits: lastIntent.sourceAmountBaseUnits,
+            hashlock: lastIntent.sourceHashlock,
+            sender: lastIntent.payerSourceAddress,
+            recipient: lastIntent.payeeSourceAddress,
+            ...options.sourceLockTerms,
+          },
+        }
+        : {}),
       ...(prepared.action === "destination-lock" && lastIntent && !options.omitDestinationLockTerms
         ? {
           lockTerms: {
@@ -1577,15 +1590,124 @@ describe("advanceCrossChainHtlc", () => {
     ]);
   });
 
-  test("fails closed without revealing when a final destination lock omits its terms", async () => {
-    const h = harness({ omitDestinationLockTerms: true });
+  test("never reveals into a destination lock without terms and still refunds both legs", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, omitDestinationLockTerms: true });
     const run = runner({ adapter: h.adapter });
     await advanceCrossChainHtlc(run.shared);
     await advanceCrossChainHtlc(run.nextOwner());
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
-      status: "indeterminate",
-      reason: "htlc-ledger-observation-unavailable",
+      status: "refund-pending",
+      reason: "destination-lock-terms-missing",
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
     });
+    run.setClock(1_200_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "no-terms-destination-refund" }))
+      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-timeout" });
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "no-terms-source-refund" }))
+      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-timeout" });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "no-terms-refunded", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refunded", reason: "destination-timeout" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
+      "source-lock",
+      "destination-lock",
+      "destination-refund",
+      "source-refund",
+    ]);
+  });
+
+  test.each(["removed", "changed"] as const)(
+    "drives the payee's source claim after a final reveal when destination terms are %s",
+    async (change) => {
+      const h = harness({ mode: { "source-claim": "pending" } });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-claim-finality-pending",
+      });
+      // The contract may delete or rewrite its lock record once the reveal lands.
+      const destinationLock = h.actions["destination-lock"];
+      if (!destinationLock || destinationLock.state !== "final") throw new Error("expected final lock");
+      const { lockTerms: _terms, ...withoutTerms } = destinationLock;
+      h.actions["destination-lock"] = change === "removed"
+        ? withoutTerms
+        : { ...destinationLock, lockTerms: { ...destinationLock.lockTerms!, amountBaseUnits: "0" } };
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+        status: "settle-asymmetric",
+        reason: "dest-revealed-source-unclaimed",
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
+        "source-lock",
+        "destination-lock",
+        "destination-claim",
+        "source-claim",
+      ]);
+      h.setMode("source-claim", "final");
+      await h.markFinal("source-claim");
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+    },
+  );
+
+  test.each([
+    ["amount", { amountBaseUnits: "1249999" }],
+    ["hashlock", { hashlock: `84532:${"0".repeat(64)}` }],
+    ["sender", { sender: "someone-else" }],
+    ["recipient", { recipient: "payer-source" }],
+    ["missing", undefined],
+  ] as const)("never locks the destination against a source lock with %s terms", async (name, terms) => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      ...(terms === undefined ? { omitSourceLockTerms: true } : { sourceLockTerms: terms }),
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "refund-pending",
+      reason: name === "missing" ? "source-lock-terms-missing" : "source-lock-terms-mismatch",
+      txRefs: [refFor("source-lock")],
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-terms-refund" }))
+      .resolves.toMatchObject({ status: "refund-pending" });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-terms-refunded", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refunded" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "source-refund"]);
+  });
+
+  test("does not rebroadcast a retained destination lock while source terms are unavailable", async () => {
+    const h = harness({ mode: { "destination-lock": "throw-once" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-lock-effect-uncertain",
+    });
+    const sourceLock = h.actions["source-lock"];
+    if (!sourceLock || sourceLock.state !== "final") throw new Error("expected final source lock");
+    const { lockTerms: _terms, ...withoutTerms } = sourceLock;
+    h.actions["source-lock"] = withoutTerms;
+    h.setMode("destination-lock", "final");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "refund-pending",
+      reason: "source-lock-terms-missing",
+      txRefs: [refFor("source-lock")],
+    });
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock"]);
+    h.actions["source-lock"] = sourceLock;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    const destinationBroadcasts = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-lock");
+    expect(destinationBroadcasts).toHaveLength(2);
+    expect(destinationBroadcasts[1]).toEqual(destinationBroadcasts[0]);
     expect(h.prepareAction.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock"]);
   });

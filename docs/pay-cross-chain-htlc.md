@@ -85,14 +85,33 @@ the result is `refund-pending` with reason
 from that point on, and each leg is refunded at its own expiry. Callers keep
 advancing a `refund-pending` session until it is `refunded`.
 
-A final `destination-lock` observation must carry `lockTerms`: the locked
-`amountBaseUnits` (canonical decimal), chain-native `hashlock`, `sender` and
-`recipient`, read from the destination contract's lock record and reported in
-the same form as the intent. The core reveals only when they equal
-`destinationAmountBaseUnits`, `destinationHashlock`, `payeeDestinationAddress`
-and `payerDestinationAddress`. Missing or malformed terms make the observation
-invalid (`htlc-ledger-observation-unavailable`). This is a public adapter
-contract addition.
+Final `source-lock` and `destination-lock` observations carry `lockTerms`: the
+locked `amountBaseUnits` (canonical decimal), chain-native `hashlock`, `sender`
+and `recipient`, read from that contract's lock record and reported in the
+same form as the intent. The core consults them only at the two forward
+decisions that depend on them:
+
+- before the destination lock is prepared or its retained bytes rebroadcast,
+  the source lock's terms must equal `sourceAmountBaseUnits`, `sourceHashlock`,
+  `payerSourceAddress` and `payeeSourceAddress`. Otherwise the destination is
+  never locked and the result is `refund-pending` with reason
+  `source-lock-terms-missing` or `source-lock-terms-mismatch`; the source leg
+  is refunded at its expiry;
+- before the payer reveals, the destination lock's terms must equal
+  `destinationAmountBaseUnits`, `destinationHashlock`,
+  `payeeDestinationAddress` and `payerDestinationAddress`. Otherwise the payer
+  never reveals and the result is `refund-pending` with reason
+  `destination-lock-terms-missing` or `destination-lock-terms-mismatch`; each
+  leg is refunded at its own expiry.
+
+Missing terms never make an observation unavailable, so refunds and the
+payee's source claim never wait on them. Once a reveal checkpoint exists the
+core never consults terms again: a contract may delete or rewrite its lock
+record after the reveal. Terms that are present but malformed still make the
+observation invalid, like any other malformed field. The refund reason
+describes the current observation, so it can change while refunds proceed (for
+example to `destination-timeout` once a refunded lock's terms can no longer be
+read). This is a public adapter contract addition.
 
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically

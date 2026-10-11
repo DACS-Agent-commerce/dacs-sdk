@@ -148,8 +148,10 @@ export interface HtlcPreparedAction {
 
 /**
  * Authenticated on-chain terms of a lock, reported exactly as recorded by the
- * HTLC contract. Required on a final `destination-lock` observation: the core
- * compares them with the intent before the payer reveals the preimage.
+ * HTLC contract. The core compares a final source lock's terms with the intent
+ * before the destination lock is prepared or rebroadcast, and a final
+ * destination lock's terms before the payer reveals the preimage. Missing or
+ * different terms forbid that step; they never block observation or refunds.
  */
 export interface HtlcLockTerms {
   /** Locked amount in the chain token's base units, canonical decimal. */
@@ -193,7 +195,10 @@ export type HtlcObservedAction =
       includedAt?: number;
       /** Chain-contract expiry as Unix seconds for lock actions. */
       expiresAt?: number;
-      /** On-chain lock terms; required for a final destination lock. */
+      /**
+       * On-chain lock terms of a final lock. Needed before the forward step
+       * that depends on that lock; shape-checked whenever present.
+       */
       lockTerms?: Readonly<HtlcLockTerms>;
       revealedPreimageHex?: string;
       authenticationHash: string;
@@ -408,6 +413,9 @@ export type CrossChainHtlcProgress =
         | "destination-timeout"
         | "destination-lock-missing"
         | "destination-expiry-margin-insufficient"
+        | "source-lock-terms-missing"
+        | "source-lock-terms-mismatch"
+        | "destination-lock-terms-missing"
         | "destination-lock-terms-mismatch"
         | "destination-claim-unlanded";
       txRefs: readonly Readonly<HtlcTxRef>[];
@@ -871,30 +879,54 @@ function validateFinalityTiming(
   }
 }
 
-function validateLockTerms(value: unknown): void {
+function validateLockTerms(value: unknown, action: HtlcAction): void {
   if (value === null || typeof value !== "object") {
-    throw new DacsError("pay-cross-chain-htlc: final destination lock omits its terms");
+    throw new DacsError(`pay-cross-chain-htlc: ${action} terms are invalid`);
   }
   const terms = value as Readonly<HtlcLockTerms>;
   if (typeof terms.amountBaseUnits !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(terms.amountBaseUnits)) {
-    throw new DacsError("pay-cross-chain-htlc: destination lock amount is invalid");
+    throw new DacsError(`pay-cross-chain-htlc: ${action} amount is invalid`);
   }
-  requireString(terms.hashlock, "destination lock hashlock");
-  requireString(terms.sender, "destination lock sender");
-  requireString(terms.recipient, "destination lock recipient");
+  requireString(terms.hashlock, `${action} hashlock`);
+  requireString(terms.sender, `${action} sender`);
+  requireString(terms.recipient, `${action} recipient`);
+}
+
+/** Compares a final lock's authenticated terms with the terms the intent requires. */
+function lockTermsVerdict(
+  observed: Readonly<FinalHtlcObservation>,
+  expected: Readonly<HtlcLockTerms>,
+): "missing" | "mismatch" | undefined {
+  const terms = observed.lockTerms;
+  if (terms === undefined) return "missing";
+  return terms.amountBaseUnits === expected.amountBaseUnits &&
+    terms.hashlock === expected.hashlock &&
+    terms.sender === expected.sender &&
+    terms.recipient === expected.recipient
+    ? undefined
+    : "mismatch";
+}
+
+/** The source lock must pay the intent's amount to the payee under its hashlock. */
+function expectedSourceLockTerms(intent: Readonly<CrossChainHtlcIntent>): Readonly<HtlcLockTerms> {
+  return {
+    amountBaseUnits: intent.sourceAmountBaseUnits,
+    hashlock: intent.sourceHashlock,
+    sender: intent.payerSourceAddress,
+    recipient: intent.payeeSourceAddress,
+  };
 }
 
 /** The destination lock must pay the intent's amount to the payer under its hashlock. */
-function destinationLockTermsMatch(
-  observed: Readonly<FinalHtlcObservation>,
+function expectedDestinationLockTerms(
   intent: Readonly<CrossChainHtlcIntent>,
-): boolean {
-  const terms = observed.lockTerms;
-  return terms !== undefined &&
-    terms.amountBaseUnits === intent.destinationAmountBaseUnits &&
-    terms.hashlock === intent.destinationHashlock &&
-    terms.sender === intent.payeeDestinationAddress &&
-    terms.recipient === intent.payerDestinationAddress;
+): Readonly<HtlcLockTerms> {
+  return {
+    amountBaseUnits: intent.destinationAmountBaseUnits,
+    hashlock: intent.destinationHashlock,
+    sender: intent.payeeDestinationAddress,
+    recipient: intent.payerDestinationAddress,
+  };
 }
 
 function final(
@@ -1040,7 +1072,12 @@ function validateSnapshot(
       throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
     }
     validateFinalityTiming(observed, action);
-    if (action === "destination-lock") validateLockTerms(observed.lockTerms);
+    // Terms are only needed by the forward step that depends on them, so their
+    // absence never makes an observation, and with it a refund, unavailable.
+    if ((action === "source-lock" || action === "destination-lock") &&
+        observed.lockTerms !== undefined) {
+      validateLockTerms(observed.lockTerms, action);
+    }
     if (action === "destination-claim" &&
         typeof observed.revealedPreimageHex !== "string") {
       throw new DacsError("pay-cross-chain-htlc: final destination claim omits the preimage");
@@ -1771,8 +1808,20 @@ export async function advanceCrossChainHtlc(
     if (state?.state === "failed") {
       return { status: "failed", errorClass: "counterparty", reason: state.reason ?? "htlc-destination-lock-failed" };
     }
+    // The payee locks the destination only against the source lock's
+    // authenticated terms. Missing or different terms forbid the lock; the
+    // payer's source leg is then refunded at its expiry.
+    const sourceTermsVerdict = lockTermsVerdict(sourceLock, expectedSourceLockTerms(intent));
+    const sourceTermsForbidden: CrossChainHtlcProgress | undefined = sourceTermsVerdict === undefined
+      ? undefined
+      : {
+        status: "refund-pending",
+        reason: sourceTermsVerdict === "missing" ? "source-lock-terms-missing" : "source-lock-terms-mismatch",
+        txRefs: collectRefs(snapshot, prepared),
+      };
     if (prepared.has("destination-lock")) {
       if (!state || state.state === "absent") {
+        if (sourceTermsForbidden) return sourceTermsForbidden;
         const advanced = await execute("destination-lock", {
           sourceExpiry: sourceLock.expiresAt,
           sourceFinalityCheckpoint,
@@ -1801,6 +1850,7 @@ export async function advanceCrossChainHtlc(
       return { status: "failed", errorClass: "permanent", reason: "htlc-absolute-expiry-margin-insufficient" };
     }
     if (!state || state.state === "absent") {
+      if (sourceTermsForbidden) return sourceTermsForbidden;
       const advanced = await execute("destination-lock", {
         sourceExpiry: sourceLock.expiresAt,
         destinationExpiry,
@@ -1823,22 +1873,31 @@ export async function advanceCrossChainHtlc(
     intent.safetyWindowSec,
     "source finality and safety budget",
   );
+  const sourceExpired =
+    readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
+  const destinationExpired =
+    readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry");
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
-  // own expiry instead of the session stopping with both legs locked.
+  // own expiry instead of the session stopping with both legs locked. No reveal
+  // checkpoint exists here, so the terms still decide a reveal. Once the
+  // destination has expired no reveal is possible and terms the adapter can no
+  // longer read (for example after the destination refund) change nothing.
+  const destinationTermsVerdict = lockTermsVerdict(
+    destinationLock,
+    expectedDestinationLockTerms(intent),
+  );
   const revealForbidden = sourceLock.expiresAt <= safeAdd(
     destinationLock.expiresAt,
     sourceRecoveryBudgetSec,
     "absolute expiry margin",
   )
     ? "destination-expiry-margin-insufficient" as const
-    : !destinationLockTermsMatch(destinationLock, intent)
+    : destinationTermsVerdict === "mismatch"
       ? "destination-lock-terms-mismatch" as const
-      : undefined;
-  const sourceExpired =
-    readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
-  const destinationExpired =
-    readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry");
+      : destinationTermsVerdict === "missing" && !destinationExpired
+        ? "destination-lock-terms-missing" as const
+        : undefined;
 
   if (revealForbidden !== undefined || destinationExpired) {
     let refundReason: Extract<CrossChainHtlcProgress, { status: "refund-pending" | "refunded" }>["reason"] =
