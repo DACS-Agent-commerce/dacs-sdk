@@ -6,9 +6,14 @@ export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncoded
 export const DEMOS_CCI_DEFAULT_TIMEOUT_MS = 5_000;
 // Match demosdk 4.0.16's connection/status lists, with a smaller retry budget.
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
+// Fetch reports a clean close before any response as UND_ERR_SOCKET, where
+// demosdk's Axios saw ECONNRESET. The same code mid-body is not retried.
+const FETCH_CONNECT_CODES = new Set(["UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 const MAX_RETRY_WAIT_MS = 2_000;
 const OVERALL_SLACK_MS = 2_750;
+const TIMED_OUT = "Demos GCR identity read timed out";
+const TRANSPORT_FAILED = "Demos GCR identity read failed after transient transport errors";
 
 // Only sanitized failures cross attempt boundaries: never retain a Response,
 // response text or a transport cause while waiting to retry.
@@ -27,13 +32,19 @@ function retryWait(retryAfter: string | null, backoffMs: number): number {
     : Math.min(Math.max(0, date - Date.now()), MAX_RETRY_WAIT_MS);
 }
 
-function isConnectionError(error: unknown): boolean {
-  if (error === null || typeof error !== "object") return false;
+function connectionFailure(
+  error: unknown,
+  responseStarted: boolean,
+): "retry" | "final" | undefined {
+  if (error === null || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
-  if (typeof code === "string" && RETRYABLE_CODES.has(code)) return true;
+  if (typeof code === "string" && RETRYABLE_CODES.has(code)) return "retry";
+  if (!(error instanceof TypeError)) return undefined;
   const causeCode = (error as { cause?: { code?: unknown } }).cause?.code;
-  return error instanceof TypeError && typeof causeCode === "string" &&
-    RETRYABLE_CODES.has(causeCode);
+  if (typeof causeCode !== "string") return undefined;
+  if (RETRYABLE_CODES.has(causeCode)) return "retry";
+  if (FETCH_CONNECT_CODES.has(causeCode)) return responseStarted ? "final" : "retry";
+  return undefined;
 }
 
 function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
@@ -118,7 +129,7 @@ async function readAttempt(
   backoffMs: number,
 ): Promise<unknown> {
   const controller = new AbortController();
-  const timeoutError = new TransientError("Demos GCR identity read timed out");
+  const timeoutError = new TransientError(TIMED_OUT);
   let rejectDeadline: ((reason: unknown) => void) | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     rejectDeadline = reject;
@@ -131,6 +142,7 @@ async function readAttempt(
   const timer = setTimeout(() => abort(timeoutError), timeoutMs);
   if (overallSignal.aborted) overallAbort();
   else overallSignal.addEventListener("abort", overallAbort, { once: true });
+  let responseStarted = false;
   try {
     const operation = async (): Promise<unknown> => {
       const headers = await buildHeaders();
@@ -145,6 +157,7 @@ async function readAttempt(
           params: [{ method: "getIdentities", params: [address] }],
         }),
       });
+      responseStarted = true;
       if (controller.signal.aborted) {
         // An injected transport may resolve after ignoring abort. Dispose of
         // that late body without reading or decoding it.
@@ -159,7 +172,7 @@ async function readAttempt(
         void response.body?.cancel().catch(() => undefined);
         if (RETRYABLE_STATUSES.has(response.status)) {
           throw new RetryableFailure(
-            new TransientError("Demos GCR identity read failed after transient transport errors"),
+            new TransientError(TRANSPORT_FAILED),
             retryWait(response.headers.get("retry-after"), backoffMs),
           );
         }
@@ -177,12 +190,13 @@ async function readAttempt(
   } catch (error) {
     if (overallSignal.aborted) throw overallSignal.reason;
     if (controller.signal.aborted) throw new RetryableFailure(timeoutError, backoffMs);
-    if (isConnectionError(error)) {
+    const connection = connectionFailure(error, responseStarted);
+    if (connection !== undefined) {
+      // Never surface the raw TypeError or its cause: they hold socket addresses.
       controller.abort();
-      throw new RetryableFailure(
-        new TransientError("Demos GCR identity read failed after transient transport errors"),
-        backoffMs,
-      );
+      const sanitized = new TransientError(TRANSPORT_FAILED);
+      if (connection === "final") throw sanitized;
+      throw new RetryableFailure(sanitized, backoffMs);
     }
     throw error;
   } finally {
@@ -203,7 +217,7 @@ export async function readDemosCciResponse(
 ): Promise<unknown> {
   const overall = new AbortController();
   const timer = setTimeout(() => {
-    overall.abort(new TransientError("Demos GCR identity read timed out"));
+    overall.abort(new TransientError(TIMED_OUT));
   }, 3 * timeoutMs + OVERALL_SLACK_MS);
   try {
     for (let attempt = 0; ; attempt++) {

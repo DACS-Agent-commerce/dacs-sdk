@@ -1,3 +1,6 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DacsError, SubstrateError, TransientError, faultCategory } from "../../src/errors.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
@@ -73,9 +76,14 @@ describe("Demos identity transient retries", () => {
     expect(signals[0]).not.toBe(signals[1]);
   });
 
-  it.each(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"].flatMap(code => [
-    { code, fetchCause: false }, { code, fetchCause: true },
-  ]))("recovers from $code (Fetch cause: $fetchCause)", async ({ code, fetchCause }) => {
+  it.each([
+    ...["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"].flatMap(code => [
+      { code, fetchCause: false }, { code, fetchCause: true },
+    ]),
+    // Fetch-only codes: a socket closed before any response, and connect timeout.
+    { code: "UND_ERR_SOCKET", fetchCause: true },
+    { code: "UND_ERR_CONNECT_TIMEOUT", fetchCause: true },
+  ])("recovers from $code (Fetch cause: $fetchCause)", async ({ code, fetchCause }) => {
     const { adapter, transport } = setup();
     const cause = Object.assign(new Error("discarded transport details"), { code });
     transport.mockRejectedValueOnce(fetchCause ? new TypeError("fetch failed", { cause }) : cause)
@@ -231,5 +239,69 @@ describe("Demos identity transient retries", () => {
     Object.defineProperty(accessor, "identityTimeoutMs", { get: getter });
     expect(() => new DemosAdapter(accessor)).toThrow(/identityTimeoutMs.*stable data/);
     expect(getter).not.toHaveBeenCalled();
+  });
+});
+
+// Node's own fetch against a real socket: these are the errors a restarting node produces.
+describe("Demos identity reads against a real local HTTP server", () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    server?.closeAllConnections();
+    await new Promise(resolve => (server ? server.close(resolve) : resolve(undefined)));
+    server = undefined;
+  });
+
+  async function serve(handler: (request: IncomingMessage, response: ServerResponse, connection: number) => void) {
+    let connections = 0;
+    let requests = 0;
+    server = createServer((request, response) => {
+      requests++;
+      handler(request, response, connections);
+    });
+    server.on("connection", () => { connections++; });
+    await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/` });
+    Object.assign(adapter, { connected: true });
+    return { adapter, counts: () => ({ connections, requests }) };
+  }
+
+  // Read the whole request first so the close is a clean FIN, not a reset.
+  const closeCleanly = (request: IncomingMessage) => {
+    request.resume().on("end", () => request.socket.destroy());
+  };
+
+  it("retries a connection the node closes before responding", async () => {
+    const { adapter, counts } = await serve((request, response, connection) => {
+      if (connection === 1) return closeCleanly(request);
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(GCR));
+    });
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+    expect(counts()).toEqual({ connections: 2, requests: 2 });
+  });
+
+  it("ends repeated closes in the stable TransientError, without the Fetch error or its cause", async () => {
+    const { adapter, counts } = await serve(request => closeCleanly(request));
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: FAILED, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(inspect(error)).not.toMatch(/127\.0\.0\.1|UND_ERR_SOCKET|fetch failed/);
+    expect(counts()).toEqual({ connections: 3, requests: 3 });
+  });
+
+  it("does not retry a connection closed mid-body, and drops the Fetch error", async () => {
+    const { adapter, counts } = await serve((_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json", "Content-Length": "4096" });
+      response.write(JSON.stringify(GCR).slice(0, 10), () => response.socket?.destroy());
+    });
+    const error = await adapter.resolveIdentity("subject").catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: FAILED, category: "transient" });
+    expect(error).not.toHaveProperty("cause");
+    expect(inspect(error)).not.toMatch(/127\.0\.0\.1|UND_ERR_SOCKET|terminated/);
+    expect(counts()).toEqual({ connections: 1, requests: 1 });
   });
 });

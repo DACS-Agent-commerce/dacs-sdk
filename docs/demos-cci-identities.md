@@ -61,7 +61,11 @@ receiving headers or chunks does not reset it. Every attempt uses a fresh
 The adapter retries transient failures at most twice (three attempts): attempt
 timeouts, connection errors `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`
 (including Fetch `TypeError` with one of those `cause.code` values), and HTTP
-502/503/504. Backoff is 250 ms then 500 ms. A numeric (seconds) or HTTP-date
+502/503/504. It also retries a Fetch `TypeError` whose `cause.code` is
+`UND_ERR_SOCKET` (the node closed the connection, for example while restarting)
+or `UND_ERR_CONNECT_TIMEOUT`, but only before any response has arrived; demosdk's
+Axios transport reported the first as `ECONNRESET`. A connection closed during
+the body is not retried. Backoff is 250 ms then 500 ms. A numeric (seconds) or HTTP-date
 `Retry-After` overrides that wait, capped at 2,000 ms per wait. Size overflow,
 redirects, invalid UTF-8/JSON, all 4xx, and other 5xx are never retried. Failed
 bodies are cancelled without retaining response text.
@@ -79,8 +83,8 @@ Exhausted retries throw `TransientError` (category `transient`), with the stable
 message `Demos GCR identity read timed out` when the last attempt timed out
 (or the overall deadline expires), or
 `Demos GCR identity read failed after transient transport errors` for exhausted
-HTTP 502/503/504 or connection failures. These errors contain no response text
-or cause. Deadlines also bound an injected transport that ignores abort,
+HTTP 502/503/504 or connection failures, or a connection closed during the body.
+These errors contain no response text or cause. Deadlines also bound an injected transport that ignores abort,
 stalled signing, or body cancellation that never settles; late responses are
 cancelled without decoding.
 
