@@ -675,6 +675,159 @@ describe("Demos L2PS durable RFQ transport", () => {
     });
   });
 
+  test("keeps a slow or failing history decryption retryable instead of terminal", async () => {
+    const hub = new FakeL2psHub();
+    const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    const openFaults: Array<"hang" | "throw"> = ["hang", "throw"];
+    const codec: DemosL2psRfqWireCodec = {
+      codecId: baseCodec.codecId,
+      seal(plaintext, context) {
+        return baseCodec.seal(plaintext, context);
+      },
+      open(encrypted, context) {
+        const fault = openFaults.shift();
+        if (fault === "hang") return new Promise<Uint8Array>(() => {});
+        if (fault === "throw") throw new Error("transient KMS outage");
+        return baseCodec.open(encrypted, context);
+      },
+    };
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec,
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+      operationTimeoutMs: 50,
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+    hub.loseNextResponse = true;
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate",
+      });
+      const status = await client.getStatus(JOB_ID);
+      if (status.status !== "ok") throw new Error("record did not load");
+      expect(status.record.failure).toBeUndefined();
+    }
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(hub.sends).toBe(1);
+  });
+
+  test("ignores a counterparty-authored history entry that reuses the packet hash", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+    hub.loseNextResponse = true;
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    const own = hub.messages[0];
+    if (own === undefined) throw new Error("accepted frame is missing");
+    const counterparty: DemosL2psRfqStoredMessage = {
+      id: "counterparty-reuse",
+      from: SELLER_PEER,
+      to: BUYER_PEER,
+      messageHash: own.messageHash,
+      encrypted: await createDemosL2psRfqAesGcmCodec({ sharedKey }).seal(
+        new TextEncoder().encode("{}"),
+        { messageHash: own.messageHash, fromPeer: SELLER_PEER, toPeer: BUYER_PEER },
+      ),
+      l2psUid: L2PS_UID,
+      l2psTxHash: null,
+      timestamp: NOW + 100,
+      status: "delivered",
+    };
+    hub.messages.push(counterparty);
+
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(hub.sends).toBe(1);
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    expect(status.record.failure).toBeUndefined();
+    const packet = status.record.outbox[0]?.packet;
+    if (packet === undefined) throw new Error("outbox packet missing");
+
+    // Without our own entry the counterparty frame proves nothing either way.
+    hub.messages.splice(hub.messages.indexOf(own), 1);
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "absent",
+    });
+  });
+
+  test("separates a subnet mismatch from a definite packet-hash conflict", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(
+      clientOptions("buyer", transport, durableReservation()),
+    );
+    await client.open(openInput());
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "ready" });
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    const packet = status.record.outbox[0]?.packet;
+    const own = hub.messages[0];
+    if (packet === undefined || own === undefined) throw new Error("frame missing");
+
+    own.l2psUid = "l2ps:another-subnet";
+    await expect(transport.reconcile(packet)).resolves.toMatchObject({
+      disposition: "indeterminate",
+    });
+
+    own.l2psUid = L2PS_UID;
+    own.encrypted = await createDemosL2psRfqAesGcmCodec({ sharedKey }).seal(
+      new TextEncoder().encode(
+        canonicalize({ ...packet, packetId: "f".repeat(64) } as unknown as Record<string, unknown>),
+      ),
+      { messageHash: packet.packetId, fromPeer: BUYER_PEER, toPeer: SELLER_PEER },
+    );
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "rejected",
+      reason: "Demos L2PS history binds packetId to different bytes or route",
+    });
+  });
+
   test("bounds an unresponsive Demos send and retains an indeterminate outbox", async () => {
     const peer: DemosL2psRfqPeerLike = {
       async send() {

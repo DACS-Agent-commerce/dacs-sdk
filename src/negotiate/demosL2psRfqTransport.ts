@@ -42,6 +42,8 @@ const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
 type JsonRecord = Record<string, unknown>;
 
 class TransientTransportCapabilityError extends DacsError {}
+/** The built-in codec proved a stored frame cannot open for its route. */
+class WireFrameAuthenticationError extends DacsError {}
 
 export interface DemosL2psRfqEncryptedMessage {
   ciphertext: string;
@@ -357,12 +359,16 @@ export function createDemosL2psRfqAesGcmCodec(
     ) {
       const encrypted = captureEncrypted(candidate);
       if (encrypted.ephemeralKey !== undefined) {
-        throw new DacsError("AES-GCM RFQ frames cannot contain an ephemeralKey");
+        throw new WireFrameAuthenticationError(
+          "AES-GCM RFQ frames cannot contain an ephemeralKey",
+        );
       }
       const nonce = Buffer.from(encrypted.nonce, "base64");
       const combined = Buffer.from(encrypted.ciphertext, "base64");
       if (nonce.length !== AES_NONCE_BYTES || combined.length < AES_TAG_BYTES) {
-        throw new DacsError("Demos L2PS AES-GCM RFQ frame has invalid lengths");
+        throw new WireFrameAuthenticationError(
+          "Demos L2PS AES-GCM RFQ frame has invalid lengths",
+        );
       }
       const body = combined.subarray(0, combined.length - AES_TAG_BYTES);
       const tag = combined.subarray(combined.length - AES_TAG_BYTES);
@@ -376,7 +382,9 @@ export function createDemosL2psRfqAesGcmCodec(
           Buffer.concat([decipher.update(body), decipher.final()]),
         );
       } catch {
-        throw new DacsError("Demos L2PS AES-GCM RFQ authentication failed");
+        throw new WireFrameAuthenticationError(
+          "Demos L2PS AES-GCM RFQ authentication failed",
+        );
       }
     },
   };
@@ -752,21 +760,19 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     return { packet, recipientPeer, encrypted };
   }
 
+  /**
+   * Only a frame that opens to different bytes, or that the built-in codec
+   * proves unauthenticated, is a conflict. A timeout or other codec failure
+   * says nothing about the stored frame and stays retryable.
+   */
   async function openStored(
     message: DemosL2psRfqStoredMessage,
     packet: Readonly<RfqLifecyclePacket<TSignature>>,
     recipientPeer: string,
-  ): Promise<boolean> {
-    if (
-      message.from !== captured.localPeerKey ||
-      message.to !== recipientPeer ||
-      message.messageHash !== packet.packetId ||
-      message.l2psUid !== captured.l2psUid
-    ) {
-      return false;
-    }
+  ): Promise<"match" | "conflict" | "unavailable"> {
+    let plaintext: Uint8Array;
     try {
-      const plaintext = await bounded(
+      plaintext = await bounded(
         () =>
           captured.open(message.encrypted, {
             messageHash: packet.packetId,
@@ -775,11 +781,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           }),
         "Demos L2PS RFQ history decryption",
       );
+    } catch (cause) {
+      return cause instanceof WireFrameAuthenticationError ? "conflict" : "unavailable";
+    }
+    try {
       const decoded = decodePacket<TSignature>(plaintext);
       return canonicalize(decoded as unknown as JsonRecord) ===
-        canonicalize(packet as unknown as JsonRecord);
+        canonicalize(packet as unknown as JsonRecord)
+        ? "match"
+        : "conflict";
     } catch {
-      return false;
+      return "conflict";
     }
   }
 
@@ -820,22 +832,36 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           reason: "Demos L2PS RFQ history reconciliation failed",
         };
       }
+      // History for a peer holds both directions; an entry we did not author
+      // on this route is neither evidence of our submission nor a conflict.
       const matches = page.messages.filter(
-        (message) => message.messageHash === prepared.packet.packetId,
+        (message) =>
+          message.messageHash === prepared.packet.packetId &&
+          message.from === captured.localPeerKey &&
+          message.to === prepared.recipientPeer,
       );
+      let uncertainReason: string | undefined;
       for (const message of matches) {
-        if (!(await openStored(message, prepared.packet, prepared.recipientPeer))) {
+        if (message.l2psUid !== captured.l2psUid) {
+          uncertainReason = "Demos L2PS history records packetId on another subnet";
+          continue;
+        }
+        const opened = await openStored(message, prepared.packet, prepared.recipientPeer);
+        if (opened === "conflict") {
           return {
             disposition: "rejected",
             reason: "Demos L2PS history binds packetId to different bytes or route",
           };
         }
+        if (opened === "unavailable") {
+          uncertainReason = "Demos L2PS RFQ history decryption failed";
+        } else if (message.status === "failed") {
+          uncertainReason ??=
+            "Demos L2PS history records a failed submission with unknown delivery";
+        }
       }
-      if (matches.some((message) => message.status === "failed")) {
-        return {
-          disposition: "indeterminate",
-          reason: "Demos L2PS history records a failed submission with unknown delivery",
-        };
+      if (uncertainReason !== undefined) {
+        return { disposition: "indeterminate", reason: uncertainReason };
       }
       if (matches.length > 0) return { disposition: "acknowledged" };
       if (!page.hasMore) {
