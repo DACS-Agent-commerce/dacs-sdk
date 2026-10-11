@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import {
   ARTIFACT_SEPARATORS,
+  BUNDLE_BINDING_SEPARATOR,
+  DacsError,
   FINALITY_COMMITMENT_SEPARATOR,
+  SubstrateError,
+  attestationBundleHash,
   finalityCommitmentAddress,
   fixedPriceAgreementLogicalAddress,
   isSettlementEvidence,
@@ -1086,5 +1090,342 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       authenticated,
       request: exactRequest,
     })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+  });
+});
+
+type CompletionRole = "buyer" | "seller";
+type CompletionDeps = {
+  sellerFinalizationProvider: unknown;
+  readBundleCopy(nativeAddress: string, role: CompletionRole): Promise<unknown>;
+  verifyBundleAnchor(copy: Record<string, unknown>): Promise<Record<string, unknown>>;
+  resolveBundleBinding(logicalAddress: string, signer: string): Promise<Record<string, unknown>>;
+  verifyBundleBinding(binding: Record<string, unknown>): Promise<Record<string, unknown>>;
+};
+type CompletionCopy = Record<string, unknown> & {
+  nativeAddress: string;
+  bundle: Record<string, unknown>;
+  binding: Record<string, unknown> & { logicalAddress: string; signer: string };
+};
+type CompletionInput = { copies: Record<CompletionRole, CompletionCopy> };
+type CompletionHarness = Awaited<ReturnType<typeof completionHarness>>;
+
+function completedBundle(role: CompletionRole) {
+  return {
+    faultBundleVersion: "1",
+    jobId: JOB_ID,
+    outcome: "completed",
+    faultedParty: "none",
+    anchoredByRole: role,
+    listingRef: { listingId: "listing-completion", version: 1, contentHash: "e".repeat(64) },
+    parties: [
+      { role: "buyer", bundleHash: "1".repeat(64), primaryClaim: BUYER },
+      { role: "seller", bundleHash: "2".repeat(64), primaryClaim: SELLER },
+    ],
+    phaseSummary: [],
+    vetRecords: [],
+    settlementEvidence: [],
+    recipeRegistryVersion: 1,
+    railRegistryVersion: 1,
+    finalisedAt: NOW,
+    signatures: [{
+      party: role === "buyer" ? BUYER : SELLER,
+      algorithm: "ed25519",
+      value: Buffer.alloc(64, role === "buyer" ? 5 : 6).toString("base64url"),
+    }],
+  };
+}
+
+// Demos state for two published role copies, each with a signed BB-1 binding.
+// The strict two-copy verifier is mocked in this file, so each test drives the
+// adapter's own closures through it the way the verifier does.
+async function completionHarness(paymentProfile: "x402" | "pay-dem") {
+  const f = paymentProfile === "x402" ? await fixture() : await payDemFixture();
+  mocks.provenance.mockReturnValue({
+    registryVersion: 7,
+    indexContentHash: "a".repeat(64),
+    definitionContentHash: "b".repeat(64),
+  });
+  const names = new Map<string, string>();
+  const artifacts = new Map<string, Record<string, unknown>>();
+  const receipts = new Map<string, AnchorReceipt>();
+  const publications = {} as Record<CompletionRole, Record<string, unknown>>;
+  const copies = {} as Record<CompletionRole, CompletionCopy>;
+  for (const role of ["buyer", "seller"] as const) {
+    const writer = role === "buyer" ? BUYER : SELLER;
+    const bundle = completedBundle(role);
+    const logicalAddress = bundleAddress(JOB_ID, role);
+    const nativeAddress = `native:${role}-bundle`;
+    const bundleContentHash = attestationBundleHash(bundle as never);
+    const anchorReceipt = {
+      ...receipt(logicalAddress, nativeAddress, bundle, writer, NOW),
+      contentHash: bundleContentHash,
+    };
+    names.set(logicalAddress, nativeAddress);
+    artifacts.set(nativeAddress, bundle);
+    receipts.set(nativeAddress, anchorReceipt);
+    const binding = signComponent({
+      bindingVersion: "1",
+      jobId: JOB_ID,
+      role,
+      logicalAddress,
+      nativeAddress,
+      bundleContentHash,
+      signer: writer,
+    }, BUNDLE_BINDING_SEPARATOR, writer);
+    const bindingName = `dacs5:bundle-binding:${JOB_ID}:${role}`;
+    const bindingNative = `native:${role}-binding`;
+    names.set(bindingName, bindingNative);
+    artifacts.set(bindingNative, binding);
+    receipts.set(bindingNative, receipt(bindingName, bindingNative, binding, writer, NOW));
+    publications[role] = {
+      role, logicalAddress, nativeAddress, bundleContentHash, anchorReceipt, binding,
+    };
+    copies[role] = { role, nativeAddress, bundle, anchorReceipt, binding };
+  }
+  const adapter = {
+    resolveAnchorByName: vi.fn(async (logicalAddress: string) => {
+      const address = names.get(logicalAddress);
+      return address === undefined
+        ? { status: "absent" as const }
+        : { status: "present" as const, address };
+    }),
+    readAnchor: vi.fn(async (address: string) => structuredClone(artifacts.get(address) ?? null)),
+    resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
+      structuredClone(receipts.get(input.nativeAddress) ?? null)),
+    verifyDemosAnchorReceipt: vi.fn(async () => true),
+    anchorWriteOnce: vi.fn(),
+    sign: vi.fn(),
+  };
+  const context = {
+    role: "buyer",
+    authority: BUYER,
+    peerAuthority: SELLER,
+    database: { readTime: () => NOW },
+    demos: { publicKey: BUYER_KEY, adapter, signComponent: vi.fn() },
+    ...(paymentProfile === "x402" ? { evm: { role: "buyer", address: BUYER_EVM } } : {}),
+  } as unknown as DacsLiveRoleOperationContextV1;
+  const audit = paymentProfile === "x402"
+    ? createDacsFixedPriceX402BuyerAuditV1({
+        context,
+        rail: f.rail as never,
+        evmRpcUrl: "https://rpc.example",
+        authorizationSearchFromBlock: 1,
+        recipeRegistryVersion: 1,
+      })
+    : createDacsFixedPricePayDemBuyerAuditV1({
+        context,
+        rail: f.rail as never,
+        observeDemosTransfer: vi.fn(),
+        recipeRegistryVersion: 1,
+      });
+  const sellerProvider = { mapping: "write-input", bundleCopyVerifier: {} };
+  const sellerClosure = {
+    verificationInput: { agreement: { jobId: JOB_ID } },
+    result: {
+      nativeAddress: copies.seller.nativeAddress,
+      sellerBundle: copies.seller.bundle,
+    },
+  };
+  const authorize = (overrides: { sellerNativeAddress?: string } = {}) =>
+    audit.audit.authorizeFinalized({
+      operation: { order: { jobId: JOB_ID, buyer: BUYER, seller: SELLER } },
+      retained: { application: f.application },
+      material: { provider: sellerProvider },
+      completion: {
+        sellerClosure: overrides.sellerNativeAddress === undefined
+          ? sellerClosure
+          : {
+              ...sellerClosure,
+              result: { ...sellerClosure.result, nativeAddress: overrides.sellerNativeAddress },
+            },
+      },
+      result: {
+        logicalAddress: bundleAddress(JOB_ID, "buyer"),
+        nativeAddress: copies.buyer.nativeAddress,
+        bundleContentHash: publications.buyer.bundleContentHash,
+        buyerBundle: copies.buyer.bundle,
+        publications,
+      },
+    } as never);
+  return { adapter, authorize, copies, sellerProvider };
+}
+
+// The strict verifier's use of the adapter: exact readback at each native
+// address, receipt authentication, and BB-1 binding resolution/verification.
+async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps) {
+  for (const role of ["buyer", "seller"] as const) {
+    const copy = input.copies[role];
+    const readback = await deps.readBundleCopy(copy.nativeAddress, role);
+    if (readback === null || canonicalize(readback) !== canonicalize(copy.bundle)) {
+      throw new DacsError(`completed ${role} bundle is not independently readable`);
+    }
+    const anchor = await deps.verifyBundleAnchor(structuredClone(copy));
+    if (anchor.disposition !== "valid") {
+      throw new DacsError(`completed ${role} bundle anchor verification is ${anchor.disposition}`);
+    }
+    const lookup = await deps.resolveBundleBinding(copy.binding.logicalAddress, copy.binding.signer);
+    if (lookup.disposition !== "present") {
+      throw new DacsError(`completed ${role} BundleBinding is not resolvable`);
+    }
+    const verified = await deps.verifyBundleBinding(structuredClone(copy.binding));
+    if (verified.disposition !== "valid") {
+      throw new DacsError(`completed ${role} BundleBinding verification is ${verified.disposition}`);
+    }
+  }
+  return { state: "audit-complete" };
+}
+
+async function capturedCompletionDeps(harness: CompletionHarness): Promise<CompletionDeps> {
+  let deps: CompletionDeps | undefined;
+  mocks.verifyCompleted.mockImplementationOnce(
+    async (_input: unknown, captured: CompletionDeps) => {
+      deps = captured;
+      return { state: "audit-complete" };
+    },
+  );
+  await expect(harness.authorize()).resolves.toBe(true);
+  return deps!;
+}
+
+describe("buyer two-copy completion adapter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.verifyCompleted.mockImplementation(driveStrictVerifier);
+  });
+  afterEach(() => {
+    mocks.verifyCompleted.mockReset();
+  });
+
+  it.each(["x402", "pay-dem"] as const)(
+    "authorizes an authenticated %s completion through its own Demos closures",
+    async (paymentProfile) => {
+      const { adapter, authorize, copies, sellerProvider } =
+        await completionHarness(paymentProfile);
+
+      await expect(authorize()).resolves.toBe(true);
+      expect(mocks.verifyCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          copies: {
+            buyer: expect.objectContaining({ nativeAddress: copies.buyer.nativeAddress }),
+            seller: expect.objectContaining({ nativeAddress: copies.seller.nativeAddress }),
+          },
+        }),
+        expect.objectContaining({ sellerFinalizationProvider: sellerProvider }),
+      );
+      expect(adapter.resolveAnchorByName).toHaveBeenCalledWith(
+        bundleAddress(JOB_ID, "seller"),
+        SELLER.slice("did:demos:agent:".length),
+      );
+    },
+  );
+
+  it("reads a role copy only at its exact native address", async () => {
+    const harness = await completionHarness("x402");
+    const deps = await capturedCompletionDeps(harness);
+
+    await expect(deps.readBundleCopy(harness.copies.seller.nativeAddress, "seller"))
+      .resolves.toEqual(harness.copies.seller.bundle);
+    await expect(deps.readBundleCopy("native:other-seller-bundle", "seller"))
+      .resolves.toBeNull();
+  });
+
+  it("returns the strict verifier's exact anchor and binding disposition shapes", async () => {
+    const harness = await completionHarness("x402");
+    const { adapter, copies } = harness;
+    const deps = await capturedCompletionDeps(harness);
+
+    await expect(deps.verifyBundleAnchor(copies.seller))
+      .resolves.toStrictEqual({ disposition: "valid", mapping: "write-input" });
+    adapter.verifyDemosAnchorReceipt.mockResolvedValueOnce(false);
+    await expect(deps.verifyBundleAnchor(copies.seller)).resolves.toStrictEqual({
+      disposition: "invalid",
+      reason: "demos-seller-bundle-anchor-invalid",
+    });
+    adapter.verifyDemosAnchorReceipt.mockRejectedValueOnce(new Error("rpc unavailable"));
+    await expect(deps.verifyBundleAnchor(copies.buyer)).resolves.toStrictEqual({
+      disposition: "error",
+      reason: "demos-buyer-bundle-anchor-error",
+    });
+    await expect(deps.verifyBundleBinding(copies.seller.binding))
+      .resolves.toStrictEqual({ disposition: "valid" });
+    await expect(deps.verifyBundleBinding({ ...copies.seller.binding, nativeAddress: "native:x" }))
+      .resolves.toStrictEqual({ disposition: "invalid", reason: "demos-bundle-binding-invalid" });
+    await expect(deps.resolveBundleBinding(
+      copies.seller.binding.logicalAddress,
+      copies.seller.binding.signer,
+    )).resolves.toStrictEqual({ disposition: "present", binding: copies.seller.binding });
+  });
+
+  it("rejects a seller closure that names a different seller native address", async () => {
+    const { authorize } = await completionHarness("x402");
+
+    await expect(authorize({ sellerNativeAddress: "native:other-seller-bundle" }))
+      .resolves.toBe(false);
+    expect(mocks.verifyCompleted).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the strict verifier rejects the session", () => {
+      mocks.verifyCompleted.mockRejectedValueOnce(new DacsError("completed bundle pair is split"));
+    }],
+    ["a published copy is not a bundle", (h: CompletionHarness) => {
+      h.adapter.readAnchor.mockImplementation(async () => ({ not: "a bundle" }) as never);
+    }],
+    ["a bundle receipt does not authenticate", (h: CompletionHarness) => {
+      h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
+    }],
+    ["a role name resolves to the other role's copy", (h: CompletionHarness) => {
+      h.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) => ({
+        status: "present" as const,
+        address: logicalAddress === bundleAddress(JOB_ID, "seller")
+          ? h.copies.buyer.nativeAddress : h.copies.seller.nativeAddress,
+      }));
+    }],
+  ])("returns false when %s", async (_label, arrange) => {
+    const harness = await completionHarness("x402");
+    arrange(harness);
+
+    await expect(harness.authorize()).resolves.toBe(false);
+  });
+
+  it.each([
+    ["a bundle name lookup is indeterminate", (h: CompletionHarness) => {
+      h.adapter.resolveAnchorByName.mockResolvedValueOnce({ status: "indeterminate" } as never);
+    }],
+    ["a bundle name lookup throws", (h: CompletionHarness) => {
+      h.adapter.resolveAnchorByName.mockRejectedValueOnce(new Error("rpc unavailable"));
+    }],
+    ["receipt verification errors", (h: CompletionHarness) => {
+      h.adapter.verifyDemosAnchorReceipt
+        .mockResolvedValueOnce(true)
+        .mockRejectedValueOnce(new Error("rpc unavailable"));
+    }],
+    ["a binding lookup is unavailable", (h: CompletionHarness) => {
+      h.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) => {
+        if (logicalAddress.startsWith("dacs5:bundle-binding:")) throw new Error("rpc unavailable");
+        return {
+          status: "present" as const,
+          address: logicalAddress === bundleAddress(JOB_ID, "buyer")
+            ? h.copies.buyer.nativeAddress : h.copies.seller.nativeAddress,
+        };
+      });
+    }],
+    ["the seller closure read is indeterminate", () => {
+      mocks.verifyCompleted.mockRejectedValueOnce(
+        new SubstrateError("seller bundle lookup errored and is indeterminate"),
+      );
+    }],
+  ])("stays retryable when %s", async (_label, arrange) => {
+    const harness = await completionHarness("x402");
+    arrange(harness);
+
+    await expect(harness.authorize()).resolves.toBe("indeterminate");
+  });
+
+  it("stays retryable for the pay-DEM buyer audit when Demos cannot answer", async () => {
+    const harness = await completionHarness("pay-dem");
+    harness.adapter.resolveAnchorByName.mockRejectedValueOnce(new Error("rpc unavailable"));
+
+    await expect(harness.authorize()).resolves.toBe("indeterminate");
   });
 });
