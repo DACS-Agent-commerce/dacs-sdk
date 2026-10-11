@@ -227,6 +227,13 @@ live payload goes to `onError`; a refused history page makes reconciliation or
 recovery `indeterminate`. If your frames are large enough to hit the page
 budget, lower `historyPageSize`.
 
+Live admission and capture run synchronously when the peer emits an event.
+The serialized receive lane holds at most 100 events and 64 MiB, including the
+event being processed. Each event is charged two bytes per string code unit
+plus 1 KiB for record and queue metadata. These limits are fixed. Excess live
+events are reported immediately through `onError` and dropped; recover them
+from history with `resumeInbound()`.
+
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame
 of ours that decrypts to different bytes, or that the built-in AES-GCM codec

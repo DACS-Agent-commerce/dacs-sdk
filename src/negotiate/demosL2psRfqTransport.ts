@@ -32,6 +32,10 @@ const MAX_EPHEMERAL_KEY_CHARS = 4_096;
  * historyPageSize splits large frames across pages.
  */
 const MAX_HISTORY_PAGE_CHARS = 32 * 1024 * 1024;
+// Include the active ingest in both limits. Charge two bytes per string code
+// unit plus 1 KiB per event for the bounded record/queue metadata.
+const MAX_LIVE_EVENTS = 100;
+const MAX_LIVE_BYTES = 64 * 1024 * 1024;
 const WIRE_DOMAIN = "dacs-rfq-l2ps-wire:v1";
 const HASH = /^[0-9a-f]{64}$/;
 const DEFAULT_HISTORY_PAGE_SIZE = 100;
@@ -346,17 +350,19 @@ function admitEncrypted(value: unknown): number {
   );
 }
 
-function admitIncoming(value: unknown): void {
+function admitIncoming(value: unknown): number {
   const label = "Demos L2PS incoming RFQ payload";
   const payload = admittedFields(
     value,
     ["from", "encrypted", "messageHash", "offline"],
     label,
   );
-  admittedChars(payload.from, MAX_CANONICAL_STRING_CHARS, label);
-  admittedChars(payload.messageHash, MAX_CANONICAL_STRING_CHARS, label);
-  admittedChars(payload.offline, MAX_CANONICAL_STRING_CHARS, label);
-  admitEncrypted(payload.encrypted);
+  return 1024 + 2 * (
+    admittedChars(payload.from, MAX_CANONICAL_STRING_CHARS, label) +
+    admittedChars(payload.messageHash, MAX_CANONICAL_STRING_CHARS, label) +
+    admittedChars(payload.offline, MAX_CANONICAL_STRING_CHARS, label) +
+    admitEncrypted(payload.encrypted)
+  );
 }
 
 function admitHistoryPage(value: unknown): void {
@@ -810,6 +816,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         | DurableRfqLifecycleResult<TSignature>)
     | undefined;
   let inbound = Promise.resolve();
+  let liveEvents = 0;
+  let liveBytes = 0;
   let peerHandler: DemosL2psRfqMessageHandler | undefined;
   // A peer without removeMessageHandler keeps old handlers installed, so each
   // start() binds its handler to a generation that stop() retires.
@@ -1058,9 +1066,16 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     };
   }
 
-  async function ingest(payloadValue: unknown, active: number): Promise<void> {
+  function reportInboundError(cause: unknown): void {
+    try {
+      captured.onError(errorFrom(cause, "RFQ inbound failed"));
+    } catch {
+      // An operator callback cannot poison the serialized receive lane.
+    }
+  }
+
+  async function ingest(payload: DemosL2psRfqIncomingPayload, active: number): Promise<void> {
     if (!started || active !== generation || onPacket === undefined) return;
-    const payload = captureIncoming(payloadValue);
     const senderClaim = canonicalString(
       captured.claimForPeer(payload.from),
       "resolved sender claim",
@@ -1301,14 +1316,26 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       const active = generation;
       peerHandler = (payload) => {
         if (!started || active !== generation) return;
+        let bytes: number;
+        let owned: DemosL2psRfqIncomingPayload;
+        try {
+          bytes = admitIncoming(payload);
+          if (liveEvents >= MAX_LIVE_EVENTS || liveBytes + bytes > MAX_LIVE_BYTES) {
+            throw new DacsError("Demos L2PS RFQ live queue exceeds its count or byte budget; recover from history");
+          }
+          owned = captureIncoming(payload);
+        } catch (cause) {
+          reportInboundError(cause);
+          return;
+        }
+        liveEvents += 1;
+        liveBytes += bytes;
         inbound = inbound
-          .then(() => ingest(payload, active))
-          .catch((cause) => {
-            try {
-              captured.onError(errorFrom(cause, "RFQ inbound failed"));
-            } catch {
-              // An operator callback cannot poison the serialized receive lane.
-            }
+          .then(() => ingest(owned, active))
+          .catch(reportInboundError)
+          .finally(() => {
+            liveEvents -= 1;
+            liveBytes -= bytes;
           });
       };
       try {

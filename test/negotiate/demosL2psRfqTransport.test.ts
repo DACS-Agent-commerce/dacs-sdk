@@ -319,7 +319,118 @@ async function buyerWithSentOffer(options: {
   return { hub, sharedKey, baseCodec, transport, client, packet, own };
 }
 
+async function inboundReceiver(options: {
+  open?: (base: DemosL2psRfqWireCodec) => DemosL2psRfqWireCodec["open"];
+  operationTimeoutMs?: number;
+} = {}) {
+  const sent = await buyerWithSentOffer();
+  const errors: Error[] = [];
+  const transport = createDemosL2psRfqTransport<string>({
+    peer: sent.hub.peer(SELLER_PEER),
+    codec: {
+      codecId: sent.baseCodec.codecId,
+      seal: (plaintext, context) => sent.baseCodec.seal(plaintext, context),
+      open: options.open?.(sent.baseCodec) ?? ((encrypted, context) => sent.baseCodec.open(encrypted, context)),
+    },
+    l2psUid: L2PS_UID,
+    localClaim: SELLER,
+    localPeerKey: SELLER_PEER,
+    peerForClaim,
+    claimForPeer,
+    onError: (error) => errors.push(error),
+    ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
+  });
+  const client = createDurableRfqLifecycleClient(clientOptions("seller", transport, durableReservation()));
+  await client.open(openInput());
+  const receive = vi.fn((packet: unknown) => client.receive(packet));
+  transport.start(receive);
+  const emit = (payload: DemosL2psRfqIncomingPayload) => {
+    for (const handler of sent.hub.handlers.get(SELLER_PEER) ?? []) handler(payload);
+  };
+  const payload = { from: BUYER_PEER, encrypted: structuredClone(sent.own.encrypted), messageHash: sent.packet.packetId };
+  return { ...sent, transport, client, receive, errors, emit, payload };
+}
+
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
 describe("Demos L2PS durable RFQ transport", () => {
+  test("round 3: rejects an oversized live event immediately behind a blocked decrypt", async () => {
+    const blocked = gate();
+    const entered = gate();
+    const fixture = await inboundReceiver({ open: (base) => async (encrypted, context) => {
+      entered.release();
+      await blocked.promise;
+      return base.open(encrypted, context);
+    } });
+    try {
+      fixture.emit(fixture.payload);
+      await entered.promise;
+      snapshotLabels.length = 0;
+      fixture.emit({ ...fixture.payload, encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS + 4) } });
+      expect(fixture.errors.map((error) => error.message)).toEqual(["ciphertext exceeds its size limit"]);
+      expect(snapshotLabels).not.toContain("Demos L2PS incoming RFQ payload");
+    } finally {
+      blocked.release();
+      await fixture.transport.drain();
+      fixture.transport.stop();
+    }
+  });
+
+  test.each(["count", "bytes"] as const)("round 3: bounds live queue %s and releases capacity after drain", async (limit) => {
+    const blocked = gate();
+    const entered = gate();
+    let opens = 0;
+    const fixture = await inboundReceiver({ open: (base) => async (_encrypted, context) => {
+      opens += 1;
+      entered.release();
+      await blocked.promise;
+      // Synthetic large live frames still decode to the valid history packet.
+      return base.open(fixture.payload.encrypted, context);
+    } });
+    const payload = limit === "count" ? fixture.payload : {
+      ...fixture.payload,
+      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(12 * 1024 * 1024) },
+    };
+    // Two 24 MiB charges fit in 64 MiB; the third must be dropped.
+    const capacity = limit === "count" ? 100 : 2;
+    try {
+      fixture.emit(payload);
+      await entered.promise;
+      for (let index = 1; index < capacity; index += 1) fixture.emit(payload);
+      expect(fixture.errors).toHaveLength(0);
+      snapshotLabels.length = 0;
+      fixture.emit(payload);
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.errors[0]?.message).toContain("live queue exceeds");
+      expect(snapshotLabels).not.toContain("Demos L2PS incoming RFQ payload");
+    } finally {
+      blocked.release();
+      await fixture.transport.drain();
+    }
+    expect(opens).toBe(capacity);
+    fixture.emit(fixture.payload);
+    await fixture.transport.drain();
+    expect(opens).toBe(capacity + 1);
+    expect(fixture.errors).toHaveLength(1);
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    expect(fixture.hub.sends).toBe(1);
+    fixture.transport.stop();
+  }, 60_000);
+
+  test("round 3: owns queued live payloads before the peer can mutate them", async () => {
+    const fixture = await inboundReceiver();
+    fixture.emit(fixture.payload);
+    fixture.payload.encrypted.ciphertext = "AAAA";
+    fixture.payload.from = THIRD_PEER;
+    await fixture.transport.drain();
+    expect(fixture.receive).toHaveBeenCalledTimes(1);
+    expect(fixture.errors).toHaveLength(0);
+    fixture.transport.stop();
+  });
   test("uses fresh AES-GCM nonces and authenticates the exact peer route", async () => {
     const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
     const plaintext = new TextEncoder().encode("private quote");
