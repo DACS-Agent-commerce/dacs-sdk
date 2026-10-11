@@ -53,10 +53,14 @@ ceiling is admitted, subject to the existing structural limits.
 
 Each attempt has a 5,000 ms deadline by default. Set
 `DemosAdapterConfig.identityTimeoutMs` to a positive safe integer up to 30,000 ms
-(validated at construction) for slower nodes. The deadline covers fresh header
-signing, connection establishment, response headers, and the complete body read;
-receiving headers or chunks does not reset it. Every attempt uses a fresh
-`AbortController` and regenerates timestamp-bound authentication headers.
+(validated at construction) for slower nodes. The whole lookup is still capped
+by `identityTotalTimeoutMs` (12,000 ms by default, below), so an attempt deadline
+above it is cut short: `identityTimeoutMs: 20000` alone gives one attempt that
+is aborted at 12 s. For slower nodes, raise both together. The deadline covers
+fresh header signing, connection establishment, response headers, and the
+complete body read; receiving headers or chunks does not reset it. Every attempt
+uses a fresh `AbortController` and regenerates timestamp-bound authentication
+headers.
 
 The adapter retries transient failures at most twice (three attempts): attempt
 timeouts, connection errors `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`

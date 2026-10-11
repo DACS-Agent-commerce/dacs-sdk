@@ -25,7 +25,11 @@ export interface DemosAdapterConfig {
   chainIdentity?: string;
   /** Raw identity response ceiling: default/max 2 MiB; positive safe integer only. */
   identityMaxResponseBytes?: number;
-  /** Per-attempt identity deadline: default 5,000 ms; positive safe integer at most 30,000. */
+  /**
+   * Per-attempt identity deadline: default 5,000 ms; positive safe integer at most 30,000.
+   * identityTotalTimeoutMs (default 12,000 ms) still caps the whole lookup and cuts a
+   * longer attempt short; for slower nodes, raise both together.
+   */
   identityTimeoutMs?: number;
   /** Whole identity lookup deadline: default 12,000 ms; positive safe integer at most 90,000. */
   identityTotalTimeoutMs?: number;
