@@ -1365,6 +1365,50 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  test("a post-deadline checkpoint whose expiry write was lost still expires only on fresh evidence", async () => {
+    const h = harness();
+    h.setAfterBroadcast(pending(h.operationHash, true));
+    const store = createInMemoryLiquidityTankStore();
+    const baseRecordRecoveryExpired = store.recordRecoveryExpired.bind(store);
+    const baseRecordObservation = store.recordObservation.bind(store);
+    store.recordRecoveryExpired = vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
+      async () => ({ status: "conflict", reason: "simulated-cas-loss" }),
+    );
+    const run = runner({ adapter: h.adapter, store });
+    await advanceLiquidityTankSettlement(run.shared);
+    run.setClock(RECOVERY_DEADLINE_MS);
+    h.setObservation(lockedPendingAt(h.operationHash, RECOVERY_DEADLINE_MS));
+    await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "lost-expiry-worker" }))
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
+      });
+    store.recordRecoveryExpired = vi.fn(baseRecordRecoveryExpired);
+
+    // The durable checkpoint is now post-deadline evidence, but neither an
+    // unavailable status nor a failed write of a timely completion expires it.
+    h.setObservation({ status: "indeterminate", reason: "status API unavailable" });
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      pastDeadline: true,
+    });
+    store.recordObservation = vi.fn<LiquidityTankStore["recordObservation"]>(async () => {
+      throw new Error("simulated observation write failure");
+    });
+    h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS - 1));
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      pastDeadline: true,
+    });
+    expect(store.recordRecoveryExpired).not.toHaveBeenCalled();
+
+    store.recordObservation = baseRecordObservation;
+    await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+    });
+    expect(store.recordRecoveryExpired).not.toHaveBeenCalled();
+  });
+
   test("does not reinterpret a seconds-scale deadline as Unix milliseconds", async () => {
     const h = harness();
     const secondsScale = RECOVERY_DEADLINE_MS / 1_000;
