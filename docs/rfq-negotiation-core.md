@@ -220,6 +220,25 @@ operations are bounded (20 seconds by default); a send timeout is
 `indeterminate`, because the server may accept the packet after the local wait
 ends.
 
+Reconciliation only judges frames the local peer sent to the packet's
+recipient; a counterparty frame that reuses the packet hash is ignored. A frame
+of ours that decrypts to different bytes, or that the built-in AES-GCM codec
+proves unauthenticated, is a terminal transport failure. A codec timeout or
+error, or our frame recorded under a different subnet UID, stays
+`indeterminate`, so a later `resumeOutbox()` can still settle it.
+
+A Demos `failed` submission status, in the send response or in history, is
+`indeterminate`: the message may still have reached the peer, so the adapter
+never resends it automatically. That outbox entry stays pending until an
+operator confirms delivery out of band, so alert on outbox entries that remain
+`indeterminate` across restarts.
+
+The live receive path reports decryption, mapping and lifecycle failures only
+through `onError`. The live Demos payload carries no subnet UID, so live frames
+are bound to the subnet only by the codec key; history recovery also checks the
+UID. A frame that failed live is recovered only by the next `resumeInbound()`,
+so call it again after an `onError` report as well as on every start.
+
 Use a dedicated RFQ subnet/peer conversation. The Demos messaging envelope has
 no application content-type discriminator, so sharing the same encrypted
 conversation with unrelated codecs makes history recovery ambiguous.
