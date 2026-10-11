@@ -28,7 +28,12 @@ The core:
   replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted. A
   completion is timely only when `finalityObservedAt < recoveryDeadline`;
-  equality is expired.
+  equality is expired. Expiry commits only on fresh authenticated evidence that
+  the release missed the deadline: a locked pending status matching the
+  checkpoint and requested at or after the deadline, or a completion with
+  `finalityObservedAt >= recoveryDeadline`. An unavailable or conflicting
+  status, or a failed observation write, keeps `tank-locked-unreleased` open so
+  a timely completion can still settle.
 
 ```ts
 import {

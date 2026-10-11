@@ -1175,6 +1175,7 @@ export async function advanceLiquidityTankSettlement(
     expectedObservation: Readonly<
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
     > | undefined,
+    requestedAt?: number,
   ): Promise<LiquidityTankProgress | null> => {
     let recoveryNow: number;
     try {
@@ -1189,6 +1190,12 @@ export async function advanceLiquidityTankSettlement(
             status: "indeterminate",
             reason: "liquidity-tank-completion-finality-invalid",
           };
+    }
+    // A pending status proves the release missed the deadline only when it was
+    // requested at or after that deadline.
+    if (observation.status === "pending" &&
+        (requestedAt === undefined || requestedAt < observation.recoveryDeadline)) {
+      return progressFromDurableObservation(intent, observation);
     }
     let stored: boolean;
     try {
@@ -1217,10 +1224,11 @@ export async function advanceLiquidityTankSettlement(
 
   const resolveRecoveryProgress = async (
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
+    requestedAt: number | undefined,
   ): Promise<LiquidityTankProgress | null> => {
     const checkpoint = recoveryCheckpoint(observation);
     return checkpoint
-      ? persistRecoveryExpired(checkpoint, observation)
+      ? persistRecoveryExpired(checkpoint, observation, requestedAt)
       : null;
   };
 
@@ -1233,21 +1241,29 @@ export async function advanceLiquidityTankSettlement(
         };
   }
 
+  // Without a fresh authenticated status that shows the release missed the
+  // deadline, a durable checkpoint stays locked-unreleased and never expires.
   const resolveDurableProgress = async (): Promise<LiquidityTankProgress | null> =>
-    resolveRecoveryProgress(durableObservation);
+    progressFromDurableObservation(intent, durableObservation);
 
-  const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
+  const observe = async (): Promise<Readonly<{
+    observation: Readonly<LiquidityTankObservation>;
+    requestedAt?: number;
+  }>> => {
     try {
       await fence.assertCurrent();
+      const requestedAt = readNow();
       const observed = validateObservation(
         await observeSettlement(intent, submission, fence),
         intent,
         submission,
       );
       await fence.assertCurrent();
-      return observed;
+      return { observation: observed, requestedAt };
     } catch {
-      return { status: "indeterminate", reason: "liquidity-tank-status-unavailable" };
+      return {
+        observation: { status: "indeterminate", reason: "liquidity-tank-status-unavailable" },
+      };
     }
   };
   const persistObservation = async (
@@ -1268,9 +1284,10 @@ export async function advanceLiquidityTankSettlement(
       return false;
     }
   };
-  const finalize = async (
-    observation: Readonly<LiquidityTankObservation>,
-  ): Promise<LiquidityTankProgress | null> => {
+  const finalize = async ({ observation, requestedAt }: Readonly<{
+    observation: Readonly<LiquidityTankObservation>;
+    requestedAt?: number;
+  }>): Promise<LiquidityTankProgress | null> => {
     if (observation.status === "indeterminate") {
       return await resolveDurableProgress() ?? {
         status: "indeterminate",
@@ -1304,7 +1321,7 @@ export async function advanceLiquidityTankSettlement(
       return { status: "failed", errorClass: "permanent", reason: observation.reason };
     }
     if (observation.status === "pending") {
-      const durablePending = await resolveRecoveryProgress(observation);
+      const durablePending = await resolveRecoveryProgress(observation, requestedAt);
       return durablePending ?? {
         status: "waiting",
         reason: "liquidity-tank-pending",
@@ -1316,8 +1333,8 @@ export async function advanceLiquidityTankSettlement(
     return null;
   };
 
-  let observation = await observe();
-  const terminal = await finalize(observation);
+  let observed = await observe();
+  const terminal = await finalize(observed);
   if (terminal) return terminal;
   try {
     await fence.assertCurrent();
@@ -1329,8 +1346,8 @@ export async function advanceLiquidityTankSettlement(
       reason: "liquidity-tank-broadcast-outcome-uncertain",
     };
   }
-  observation = await observe();
-  return await finalize(observation) ?? {
+  observed = await observe();
+  return await finalize(observed) ?? {
     status: "indeterminate",
     reason: "liquidity-tank-status-transition-unresolved",
   };
