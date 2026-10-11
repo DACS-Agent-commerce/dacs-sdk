@@ -449,6 +449,21 @@ export async function createFsDemosWriteJournal(
     return metadata;
   }
 
+  async function lockAvailability(
+    path: string,
+  ): Promise<"absent" | "occupied" | "reclaimable"> {
+    try {
+      const metadata = await inspectLockDirectory(path);
+      const owner = await readLockOwner(path);
+      return ownerIsReclaimable(owner, Date.now() - metadata.mtimeMs)
+        ? "reclaimable"
+        : "occupied";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+      throw error;
+    }
+  }
+
   async function publishCompleteOwnerDirectory(
     path: string,
     owner: LockOwner,
@@ -466,7 +481,12 @@ export async function createFsDemosWriteJournal(
       await rename(candidate, path);
       await syncDirectory(locksDir);
     } finally {
-      await rm(candidate, { recursive: true, force: true });
+      await rm(candidate, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: LOCK_RETRY_MS,
+      });
     }
   }
 
@@ -717,34 +737,52 @@ export async function createFsDemosWriteJournal(
         }
       };
 
-      for (;;) {
-        const candidate = `${lockPath}.${randomUUID()}.candidate`;
-        try {
-          await mkdir(candidate, { mode: DIR_MODE });
-          await exclusiveWritePrivateFile(
-            join(candidate, "owner.json"),
-            JSON.stringify(owner),
-            "filesystem Demos write journal lock",
-          );
-          await syncDirectory(candidate);
-          await withMutationGate(digest, deadline, async () => {
-            if ((await activeQuarantines(
-              lockQuarantinePrefix(digest),
-              ".stale",
-            )).length > 0) {
+      // Stage one complete owner for this acquisition and keep it unpublished
+      // across occupied-lock polls. Recreating the private owner file on every
+      // retry repeats admission checks and durable fsyncs without changing the
+      // no-overwrite publication decision made under the mutation gate.
+      const candidate = `${lockPath}.${randomUUID()}.candidate`;
+      try {
+        await mkdir(candidate, { mode: DIR_MODE });
+        await exclusiveWritePrivateFile(
+          join(candidate, "owner.json"),
+          JSON.stringify(owner),
+          "filesystem Demos write journal lock",
+        );
+        await syncDirectory(candidate);
+
+        for (;;) {
+          const availability = await lockAvailability(lockPath);
+          if (availability === "occupied") {
+            if (Date.now() >= deadline) {
               throw new DacsError(
-                `Demos wallet journal ${digest} has an active quarantined owner`,
+                `timed out acquiring Demos wallet journal ${digest}`,
               );
             }
-            await rename(candidate, lockPath);
-            await syncDirectory(locksDir);
-          });
-          break;
-        } catch (error) {
-          await rm(candidate, { recursive: true, force: true }).catch(() => {});
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
-          await reclaimStaleLock();
+            await sleep(LOCK_RETRY_MS);
+            continue;
+          }
+          if (availability === "reclaimable") {
+            await reclaimStaleLock();
+          }
+          try {
+            await withMutationGate(digest, deadline, async () => {
+              if ((await activeQuarantines(
+                lockQuarantinePrefix(digest),
+                ".stale",
+              )).length > 0) {
+                throw new DacsError(
+                  `Demos wallet journal ${digest} has an active quarantined owner`,
+                );
+              }
+              await rename(candidate, lockPath);
+              await syncDirectory(locksDir);
+            });
+            break;
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+          }
           if (Date.now() >= deadline) {
             throw new DacsError(
               `timed out acquiring Demos wallet journal ${digest}`,
@@ -752,6 +790,13 @@ export async function createFsDemosWriteJournal(
           }
           await sleep(LOCK_RETRY_MS);
         }
+      } finally {
+        await rm(candidate, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+          retryDelay: LOCK_RETRY_MS,
+        });
       }
 
       let released = false;

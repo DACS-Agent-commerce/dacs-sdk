@@ -182,6 +182,9 @@ try {
   if (manifest.repository?.url !== "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git") {
     throw new Error("packed package has no exact official source repository");
   }
+  if (!files.includes("docs/raw-json-admission.md")) {
+    throw new Error("packed package is missing the raw JSON admission guide");
+  }
   await assertPureSubpaths(packageRoot);
 
   const consumer = join(scratch, "consumer");
@@ -203,13 +206,22 @@ try {
   await writeFile(
     join(consumer, "index.ts"),
     [
-      'import { canonicalize, contentHash } from "@kynesyslabs/dacs/canonical";',
+      'import { admitRawJson, canonicalize, contentHash, RawJsonAdmissionError, type RawJsonAdmissionOptions } from "@kynesyslabs/dacs/canonical";',
       'import { isAttestationRef } from "@kynesyslabs/dacs/artifacts";',
+      "const admissionOptions: RawJsonAdmissionOptions = { maxBytes: 7 };",
+      'const admitted = admitRawJson(new TextEncoder().encode(\'{"a":1}\'), admissionOptions);',
+      'if (JSON.stringify(admitted) !== \'{"a":1}\') throw new Error("raw admission import failed");',
+      "try {",
+      '  admitRawJson(new TextEncoder().encode("null"), { maxBytes: 3 });',
+      '  throw new Error("raw admission byte limit was not enforced");',
+      "} catch (error) {",
+      '  if (!(error instanceof RawJsonAdmissionError) || error.code !== "BYTE-LIMIT-EXCEEDED") throw error;',
+      "}",
       "const canonical = canonicalize({ z: 2, a: 1.5 });",
       'if (canonical !== \'{"a":1.5,"z":2}\') throw new Error(`unexpected canonical bytes: ${canonical}`);',
       'if (contentHash({ z: 2, a: 1.5 }) !== contentHash({ a: 1.5, z: 2 })) throw new Error("hash drift");',
       'if (!isAttestationRef({ anchor: { kind: "storage-program", locator: "demos:test" }, contentHash: "a".repeat(64) })) throw new Error("artifact import failed");',
-      'console.log(JSON.stringify({ canonical, artifactSubpath: "ok" }));',
+      'console.log(JSON.stringify({ canonical, artifactSubpath: "ok", rawAdmissionSubpath: "ok" }));',
       "",
     ].join("\n"),
   );

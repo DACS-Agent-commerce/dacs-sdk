@@ -60,7 +60,7 @@ import {
   type ParserEngine,
 } from "./parserSpec.js";
 import {
-  advancePartyVetPlan,
+  advanceQualifiedPartyVetPlan,
   createPartyVetPlan,
   PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
   type PartyVetAttemptInput,
@@ -887,6 +887,7 @@ export interface VetOperationStore {
     step:
       | "method"
       | "method-evidence"
+      | "requirement-qualification"
       | "verify-result"
       | "verify-result-anchor"
       | "composite"
@@ -2680,6 +2681,7 @@ async function executeVetMethod(
   selectedRequirement: CompositeClaimRequirement,
   selectedMethod: VerificationMethod,
   context: VetCheckpointContext,
+  deferRequirementQualification = false,
 ): Promise<VetMethodOutcome> {
   const operationHash = context.operationHash;
   const methodStartedAt = readClock(deps.nowMs, "Vet method start");
@@ -2798,7 +2800,10 @@ async function executeVetMethod(
           "authority fetchedAt predates this verification attempt",
         );
       }
-      if (selectedRequirement.parameters !== undefined) {
+      if (
+        selectedRequirement.parameters !== undefined &&
+        !deferRequirementQualification
+      ) {
         try {
           const matched = await deps.matchRequirementParameters!(
             deepFreezeSnapshot({
@@ -2850,6 +2855,7 @@ async function produceDurableVetResult(
   selectedMethod: VerificationMethod,
   context: VetCheckpointContext,
   authenticateSignedArtifact?: VetSignedArtifactAuthenticator,
+  deferRequirementQualification = false,
 ): Promise<{
   checkpoint: FinalizedVetResultCheckpoint;
   authenticatedResultAnchor: FinalizedVetAnchor;
@@ -2882,6 +2888,7 @@ async function produceDurableVetResult(
       selectedRequirement,
       selectedMethod,
       context,
+      deferRequirementQualification,
     );
     const next: VetOperationCheckpoint = {
       ...intent,
@@ -3371,6 +3378,28 @@ function assertPartyResultTime(
   }
 }
 
+function assertSharedPartyResultFresh(
+  result: Readonly<VerifyResult>,
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  now: number,
+): void {
+  if (attempt.sharedResultGroup === undefined) return;
+  let expiresAt = result.validUntil;
+  if (expiresAt === undefined) {
+    const freshnessWindow = attempt.recipe.defaultMaxAgeSec * 1_000;
+    expiresAt = result.verifiedAt + freshnessWindow;
+    if (
+      !Number.isSafeInteger(freshnessWindow) ||
+      !Number.isSafeInteger(expiresAt)
+    ) {
+      throw new DacsError("party Vet shared VerifyResult freshness window overflows");
+    }
+  }
+  if (now > expiresAt) {
+    throw new DacsError("party Vet shared VerifyResult is stale");
+  }
+}
+
 async function authenticateCarriedResult<TKey>(
   bundle: Readonly<IdentityBundle>,
   claimSubject: string,
@@ -3476,7 +3505,7 @@ function partyAttemptRefs(
 ): { freshness: VerifyResultRef[]; dealSpecific: VerifyResultRef[] } {
   const freshness: VerifyResultRef[] = [];
   const dealSpecific: VerifyResultRef[] = [];
-  const addresses = new Set<string>();
+  const addresses = new Map<string, string>();
   const refs = new Set<string>();
   for (const finalized of attempts) {
     const attempt = plan.attempts.find(
@@ -3485,17 +3514,23 @@ function partyAttemptRefs(
     if (!attempt) {
       throw new DacsError("party Vet result has no requirement-path provenance");
     }
-    if (addresses.has(finalized.resultAddress)) {
-      throw new DacsError("party Vet repeats a finalized result address");
-    }
-    addresses.add(finalized.resultAddress);
     const ref = verifyResultRefFromAnchor(
       finalized.result,
       finalized.resultAnchor.ref,
     );
     const refIdentity = canonicalize(ref);
+    const addressRef = addresses.get(finalized.resultAddress);
+    if (addressRef !== undefined && addressRef !== refIdentity) {
+      throw new DacsError(
+        "party Vet result address resolves to conflicting finalized references",
+      );
+    }
+    addresses.set(finalized.resultAddress, refIdentity);
     if (refs.has(refIdentity)) {
-      throw new DacsError("party Vet repeats a VerifyResult reference");
+      if (attempt.sharedResultGroup === undefined) {
+        throw new DacsError("party Vet repeats an unshared VerifyResult reference");
+      }
+      continue;
     }
     refs.add(refIdentity);
     (attempt.classification === "freshness" ? freshness : dealSpecific).push(ref);
@@ -3506,12 +3541,30 @@ function partyAttemptRefs(
 function completePartyState(
   plan: PartyVetPlan,
   finalized: readonly PartyVetFinalizedAttempt[],
-): Extract<ReturnType<typeof advancePartyVetPlan>, { status: "complete" }> {
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  evaluatedAt?: number,
+): Extract<ReturnType<typeof advanceQualifiedPartyVetPlan>, { status: "complete" }> {
+  if (evaluatedAt !== undefined) {
+    for (const entry of finalized) {
+      const attempt = plan.attempts.find(
+        (candidate) => candidate.attemptId === entry.attemptId,
+      );
+      if (!attempt) {
+        throw new DacsError("party Vet result has no requirement-path provenance");
+      }
+      assertSharedPartyResultFresh(entry.result, attempt, evaluatedAt);
+    }
+  }
   const outcomes = finalized.map((attempt) => ({
     attemptId: attempt.attemptId,
     result: attempt.result,
   }));
-  const state = advancePartyVetPlan(plan, outcomes);
+  const state = advanceQualifiedPartyVetPlan(
+    plan,
+    outcomes,
+    qualifications,
+    evaluatedAt,
+  );
   if (state.status !== "complete") {
     throw new DacsError("party Vet composite checkpoint has an incomplete result set");
   }
@@ -3522,8 +3575,14 @@ function assertPartyRecordBindings(
   record: Readonly<CompositeVerificationRecord>,
   finalized: readonly PartyVetFinalizedAttempt[],
   plan: PartyVetPlan,
+  qualifications: ReadonlyMap<string, VerificationDecision>,
 ): void {
-  const state = completePartyState(plan, finalized);
+  const state = completePartyState(
+    plan,
+    finalized,
+    qualifications,
+    record.generatedAt,
+  );
   const refs = partyAttemptRefs(finalized, plan);
   const latestResultTime = finalized.reduce(
     (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
@@ -3550,6 +3609,24 @@ function assertPartyRecordBindings(
     !canonicalEqual(actualUnsigned, expectedUnsigned)
   ) {
     throw new DacsError("party Vet composite record is mismatched");
+  }
+}
+
+function assertPartyRecordCurrent(
+  record: Readonly<CompositeVerificationRecord>,
+  finalized: readonly PartyVetFinalizedAttempt[],
+  plan: PartyVetPlan,
+  qualifications: ReadonlyMap<string, VerificationDecision>,
+  acceptedAt: number,
+): void {
+  const current = completePartyState(
+    plan,
+    finalized,
+    qualifications,
+    acceptedAt,
+  );
+  if (current.overallDecision !== record.overallDecision) {
+    throw new DacsError("party Vet composite decision is no longer current");
   }
 }
 
@@ -3596,7 +3673,6 @@ function capturePartyFinalizedAttempts(
       snapshot(raw, `party Vet finalized attempt ${index}`),
     ) as unknown as PartyVetFinalizedAttempt;
   });
-  completePartyState(plan, captured);
   return captured;
 }
 
@@ -3642,7 +3718,6 @@ function capturePartyCheckpoint(
   ) {
     throw new DacsError("party Vet composite checkpoint is corrupt");
   }
-  assertPartyRecordBindings(checkpoint.record, executedAttempts, plan);
   const compositeKeys = [
     ...common,
     "executedAttempts",
@@ -3731,8 +3806,6 @@ async function authenticatePartyAttempt<TKey>(
     deps,
     deps.vet.componentSigner,
   );
-  const now = readClock(deps.vet.nowMs, "party Vet result acceptance");
-  assertPartyResultTime(finalized.result, now, "party Vet VerifyResult");
   const anchor = await authenticateFinalizedJson(
     attempt.resultAddress,
     finalized.result as unknown as Record<string, unknown>,
@@ -3740,7 +3813,90 @@ async function authenticatePartyAttempt<TKey>(
     deps.vet,
     isVerifyResult,
   );
+  const acceptedAt = readClock(deps.vet.nowMs, "party Vet result acceptance");
+  assertPartyResultTime(finalized.result, acceptedAt, "party Vet VerifyResult");
+  assertSharedPartyResultFresh(finalized.result, attempt, acceptedAt);
   return deepFreezeSnapshot({ ...finalized, resultAnchor: anchor });
+}
+
+async function qualifySharedPartyAttempt(
+  finalized: Readonly<PartyVetFinalizedAttempt>,
+  attempt: Readonly<PartyVetRequirementAttempt>,
+  context: Readonly<VetCheckpointContext>,
+  deps: Readonly<VetDeps>,
+): Promise<VerificationDecision> {
+  if (
+    attempt.sharedResultGroup === undefined ||
+    attempt.requirement.parameters === undefined ||
+    finalized.result.decision !== "pass"
+  ) {
+    return finalized.result.decision;
+  }
+  const inputHash = exactArtifactHash({
+    qualificationVersion: "1",
+    attemptId: attempt.attemptId,
+    requirement: attempt.requirement,
+    claimSubject: attempt.claimSubject,
+    method: attempt.method,
+    methodInputHash: attempt.methodInputHash,
+    recipeArtifactHash: attempt.recipeArtifactHash,
+    resultArtifactHash: finalized.resultArtifactHash,
+  });
+  const rawDecision = await runVetStep(
+    deps.operationStore,
+    context,
+    "requirement-qualification",
+    inputHash,
+    async () => {
+      try {
+        const matcherInput = deepFreezeSnapshot({
+            requirement: snapshot(
+              attempt.requirement,
+              "shared parameter requirement",
+            ),
+            subject: attempt.claimSubject,
+            recipe: snapshot(attempt.recipe, "shared parameter recipe"),
+            method: snapshot(attempt.method, "shared parameter method"),
+            decision: finalized.result.decision,
+            attestation: snapshot(
+              finalized.result.attestation,
+              "shared parameter attestation",
+            ),
+            ...(finalized.result.data
+              ? {
+                  data: snapshot(
+                    finalized.result.data,
+                    "shared parameter extracted data",
+                  ),
+                }
+              : {}),
+          });
+        const matched = await deps.matchRequirementParameters!(
+          matcherInput as unknown as Parameters<
+            NonNullable<VetDeps["matchRequirementParameters"]>
+          >[0],
+        );
+        return {
+          qualificationVersion: "1",
+          decision: matched === true ? "pass" : "fail",
+        };
+      } catch {
+        return { qualificationVersion: "1", decision: "error" };
+      }
+    },
+  );
+  if (
+    !isRecord(rawDecision) ||
+    !hasExactKeys(rawDecision, ["qualificationVersion", "decision"]) ||
+    rawDecision.qualificationVersion !== "1" ||
+    (rawDecision.decision !== "pass" &&
+      rawDecision.decision !== "fail" &&
+      rawDecision.decision !== "indeterminate" &&
+      rawDecision.decision !== "error")
+  ) {
+    throw new DacsError("party Vet shared parameter qualification is corrupt");
+  }
+  return rawDecision.decision;
 }
 
 /**
@@ -3958,7 +4114,17 @@ async function partyVetCoreCaptured<TKey>(
   }
 
   const finalizedAttempts: PartyVetFinalizedAttempt[] = [];
-  let execution = advancePartyVetPlan(plan, []);
+  const sharedResults = new Map<string, {
+    checkpoint: FinalizedVetResultCheckpoint;
+    authenticatedResultAnchor: FinalizedVetAnchor;
+  }>();
+  const qualificationDecisions = new Map<string, VerificationDecision>();
+  let execution = advanceQualifiedPartyVetPlan(
+    plan,
+    [],
+    qualificationDecisions,
+    readClock(deps.vet.nowMs, "party Vet plan evaluation"),
+  );
   while (execution.status === "pending") {
     const attempt = execution.nextAttempt;
     const vetRequest = deepFreezeSnapshot({
@@ -3994,31 +4160,40 @@ async function partyVetCoreCaptured<TKey>(
       deps,
       plan,
     );
-    const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
-      ? null
-      : await loadVetCheckpoint(deps.vet.operationStore, context);
-    if (
-      partyCheckpoint.stage !== "planned" &&
-      (existingAttemptCheckpoint === null ||
-        existingAttemptCheckpoint.stage !== "result-finalized")
-    ) {
-      throw new DacsError(
-        "party Vet advanced checkpoint is missing an exact finalized attempt checkpoint",
+    let durable = attempt.sharedResultGroup === undefined
+      ? undefined
+      : sharedResults.get(attempt.sharedResultGroup);
+    if (durable === undefined) {
+      const existingAttemptCheckpoint = partyCheckpoint.stage === "planned"
+        ? null
+        : await loadVetCheckpoint(deps.vet.operationStore, context);
+      if (
+        partyCheckpoint.stage !== "planned" &&
+        (existingAttemptCheckpoint === null ||
+          existingAttemptCheckpoint.stage !== "result-finalized")
+      ) {
+        throw new DacsError(
+          "party Vet advanced checkpoint is missing an exact finalized attempt checkpoint",
+        );
+      }
+      durable = await produceDurableVetResult(
+        vetRequest,
+        attemptEffectDeps,
+        attempt.requirement,
+        attempt.method,
+        context,
+        (artifact, separator) => authenticatePartyComponent(
+          artifact,
+          separator,
+          deps,
+          plan.verifier,
+        ),
+        attempt.sharedResultGroup !== undefined,
       );
+      if (attempt.sharedResultGroup !== undefined) {
+        sharedResults.set(attempt.sharedResultGroup, durable);
+      }
     }
-    const durable = await produceDurableVetResult(
-      vetRequest,
-      attemptEffectDeps,
-      attempt.requirement,
-      attempt.method,
-      context,
-      (artifact, separator) => authenticatePartyComponent(
-        artifact,
-        separator,
-        deps,
-        plan.verifier,
-      ),
-    );
     if (durable.checkpoint.stage !== "result-finalized") {
       throw new DacsError(
         "party Vet attempt checkpoint contains an unexpected composite stage",
@@ -4034,13 +4209,24 @@ async function partyVetCoreCaptured<TKey>(
       attempt,
       deps,
     );
+    qualificationDecisions.set(
+      attempt.attemptId,
+      await qualifySharedPartyAttempt(
+        finalized,
+        attempt,
+        context,
+        attemptEffectDeps,
+      ),
+    );
     finalizedAttempts.push(finalized);
-    execution = advancePartyVetPlan(
+    execution = advanceQualifiedPartyVetPlan(
       plan,
       finalizedAttempts.map((entry) => ({
         attemptId: entry.attemptId,
         result: entry.result,
       })),
+      qualificationDecisions,
+      readClock(deps.vet.nowMs, "party Vet plan evaluation"),
     );
   }
 
@@ -4056,8 +4242,16 @@ async function partyVetCoreCaptured<TKey>(
     );
   }
 
+  if (partyCheckpoint.stage !== "planned") {
+    assertPartyRecordBindings(
+      partyCheckpoint.record,
+      finalizedAttempts,
+      plan,
+      qualificationDecisions,
+    );
+  }
+
   if (partyCheckpoint.stage === "planned") {
-    const state = completePartyState(plan, finalizedAttempts);
     const refs = partyAttemptRefs(finalizedAttempts, plan);
     const latestResultTime = finalizedAttempts.reduce(
       (latest, attempt) => Math.max(latest, attempt.result.verifiedAt),
@@ -4082,6 +4276,17 @@ async function partyVetCoreCaptured<TKey>(
         "composite",
         compositeInputHash,
         async () => {
+          const generatedAt = readClock(
+            deps.vet.nowMs,
+            "party Vet composite generatedAt",
+            latestResultTime,
+          );
+          const state = completePartyState(
+            plan,
+            finalizedAttempts,
+            qualificationDecisions,
+            generatedAt,
+          );
           const unsignedRecord: Omit<CompositeVerificationRecord, "signature"> = {
             recordVersion: "1",
             jobId: plan.jobId,
@@ -4093,11 +4298,7 @@ async function partyVetCoreCaptured<TKey>(
             dealSpecific: refs.dealSpecific,
             overallDecision: state.overallDecision,
             ...(plan.warnings !== undefined ? { warnings: plan.warnings } : {}),
-            generatedAt: readClock(
-            deps.vet.nowMs,
-              "party Vet composite generatedAt",
-              latestResultTime,
-            ),
+            generatedAt,
           };
           return signComponentArtifact(
             snapshot(unsignedRecord, "unsigned party Vet composite"),
@@ -4111,7 +4312,12 @@ async function partyVetCoreCaptured<TKey>(
     if (!isCompositeVerificationRecord(record)) {
       throw new DacsError("party Vet composite signer produced a malformed record");
     }
-    assertPartyRecordBindings(record, finalizedAttempts, plan);
+    assertPartyRecordBindings(
+      record,
+      finalizedAttempts,
+      plan,
+      qualificationDecisions,
+    );
     await authenticatePartyComponent(
       record as unknown as Record<string, unknown>,
       "dacs-composite:v1:",
@@ -4142,6 +4348,17 @@ async function partyVetCoreCaptured<TKey>(
       deps,
       plan.verifier,
     );
+    const anchorAcceptedAt = readClock(
+      deps.vet.nowMs,
+      "party Vet composite anchor acceptance",
+    );
+    assertPartyRecordCurrent(
+      submitting.record,
+      submitting.executedAttempts,
+      plan,
+      qualificationDecisions,
+      anchorAcceptedAt,
+    );
     const anchorValue = await runVetStep(
       compositeEffectDeps.operationStore,
       { operationKey: plan.recordAddress, operationHash: plan.planHash },
@@ -4150,12 +4367,25 @@ async function partyVetCoreCaptured<TKey>(
         logicalAddress: plan.recordAddress,
         artifactHash: submitting.recordArtifactHash,
       }),
-      () => reconcileOrPersistFinalizedJson(
-        plan.recordAddress,
-        submitting.record as unknown as Record<string, unknown>,
-        compositeEffectDeps,
-        isCompositeVerificationRecord,
-      ),
+      () => {
+        const anchorEffectAt = readClock(
+          deps.vet.nowMs,
+          "party Vet composite anchor effect",
+        );
+        assertPartyRecordCurrent(
+          submitting.record,
+          submitting.executedAttempts,
+          plan,
+          qualificationDecisions,
+          anchorEffectAt,
+        );
+        return reconcileOrPersistFinalizedJson(
+          plan.recordAddress,
+          submitting.record as unknown as Record<string, unknown>,
+          compositeEffectDeps,
+          isCompositeVerificationRecord,
+        );
+      },
     );
     if (!isFinalizedVetAnchor(anchorValue)) {
       throw new DacsError("party Vet composite anchor returned corrupt state");
@@ -4187,6 +4417,7 @@ async function partyVetCoreCaptured<TKey>(
     partyCheckpoint.record,
     partyCheckpoint.executedAttempts,
     plan,
+    qualificationDecisions,
   );
   await authenticatePartyComponent(
     partyCheckpoint.record as unknown as Record<string, unknown>,
@@ -4194,16 +4425,23 @@ async function partyVetCoreCaptured<TKey>(
     deps,
     plan.verifier,
   );
-  const acceptedAt = readClock(deps.vet.nowMs, "party Vet composite acceptance");
-  if (partyCheckpoint.record.generatedAt > acceptedAt) {
-    throw new DacsError("party Vet composite record is future-dated");
-  }
   const recordAnchor = await authenticateFinalizedJson(
     plan.recordAddress,
     partyCheckpoint.record as unknown as Record<string, unknown>,
     partyCheckpoint.recordAnchor,
     deps.vet,
     isCompositeVerificationRecord,
+  );
+  const acceptedAt = readClock(deps.vet.nowMs, "party Vet composite acceptance");
+  if (partyCheckpoint.record.generatedAt > acceptedAt) {
+    throw new DacsError("party Vet composite record is future-dated");
+  }
+  assertPartyRecordCurrent(
+    partyCheckpoint.record,
+    partyCheckpoint.executedAttempts,
+    plan,
+    qualificationDecisions,
+    acceptedAt,
   );
   return structuredClone({
     record: partyCheckpoint.record,

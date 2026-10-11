@@ -56,9 +56,9 @@ describe("signing (§B.7)", () => {
     expect(verifyArtifact("dacs-bundle:v1:", GOLDEN.doc, sig, pub)).toBe(false);
   });
 
-  it("sig-registry-closed-28: the registry is the full closed §B.7 set of 28", () => {
-    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(28);
-    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(28);
+  it("sig-registry-closed-30: the registry is the full closed §B.7 set of 30", () => {
+    expect(SIGNATURE_DOMAIN_SEPARATORS.length).toBe(30);
+    expect(new Set(SIGNATURE_DOMAIN_SEPARATORS).size).toBe(30);
     // Exact §B.7 membership added since the original 18-entry registry.
     for (const sep of [
       "dacs-finality-commitment:v1:",
@@ -92,6 +92,15 @@ describe("signing (§B.7)", () => {
       const sig = signArtifact(sep, GOLDEN.doc, seed);
       expect(verifyArtifact(sep, GOLDEN.doc, sig, pub)).toBe(true);
       expect(verifyArtifact("dacs-listing:v1:", GOLDEN.doc, sig, pub)).toBe(false);
+    }
+  });
+
+  it("adopted identity-bound domains sign and remain distinct from legacy agreements", () => {
+    for (const sep of ["dacs-identity-bound-agreement:v1:", "dacs-identity-bound-payee-agreement:v1:"] as const) {
+      const sig = signArtifact(sep, GOLDEN.doc, seed);
+      expect(verifyArtifact(sep, GOLDEN.doc, sig, pub)).toBe(true);
+      expect(verifyArtifact("dacs-agreement:v1:", GOLDEN.doc, sig, pub)).toBe(false);
+      expect(verifyArtifact("dacs-payee-bound-agreement:v1:", GOLDEN.doc, sig, pub)).toBe(false);
     }
   });
 

@@ -174,6 +174,7 @@ describe("native DEM one-factory live assembly", () => {
       rail,
       publishNotice: "buyer-notice-publisher",
     }));
+    expect(factories.buyerPayment.mock.calls[0]![0].rail).toBe(rail);
     expect(factories.buyerGraph.mock.calls[0]![0]).toMatchObject({
       payment: "buyer-payment",
       paymentEvidence: "buyer-payment-evidence",

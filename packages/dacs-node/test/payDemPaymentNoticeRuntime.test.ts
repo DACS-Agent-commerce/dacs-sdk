@@ -10,6 +10,7 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import type { DacsLiveEffectFenceV1 } from "../src/liveEffects.js";
 import {
   createDacsPayDemPaymentNoticeV1,
+  isDacsPayDemPaymentNoticeV1,
   type DacsPayDemBuyerPaymentInputV1,
 } from "../src/payDemPayment.js";
 import {
@@ -59,6 +60,7 @@ function notice(txHash = TX_HASH) {
     finality: { model: "bft-final" },
     blockNumber: 42,
     txRefKind: "demos",
+    networkFeeOs: "1000000000",
   });
 }
 
@@ -149,6 +151,48 @@ describe("native DEM payment notice runtime", () => {
       payload: expect.objectContaining({ paymentNoticeVersion: "1" }),
       idempotencyKey: expect.stringContaining(`pay-dem-payment-notice:${JOB_ID}:`),
     }));
+    expect(notice().settlement).not.toHaveProperty("networkFeeOs");
+  });
+
+  it("accepts the original v1 wire settlement and rejects fee extensions", () => {
+    const original = notice();
+    expect(original.settlement).toEqual({
+      ok: true,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYMENT.payer,
+      payee: PAYMENT.payee,
+      finality: { model: "bft-final" },
+      blockNumber: 42,
+      txRefKind: "demos",
+    });
+    expect(() => authenticated(original)).not.toThrow();
+    const extended = {
+      ...original,
+      settlement: { ...original.settlement, networkFeeOs: "1" },
+    };
+    const runtimePayloadHash = sha256Hex(canonicalize(extended));
+    expect(runtimePayloadHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(isDacsPayDemPaymentNoticeV1(original)).toBe(true);
+    expect(isDacsPayDemPaymentNoticeV1(extended)).toBe(false);
+    expect(createDacsPayDemPaymentNoticeV1(PAYMENT, original.settlement))
+      .toEqual(original);
+    expect(createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "1",
+    })).toEqual(original);
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "-1",
+    })).toThrow("pay-dem-settlement-invalid");
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: undefined,
+    })).toThrow("pay-dem-settlement-invalid");
+    expect(() => createDacsPayDemPaymentNoticeV1(PAYMENT, {
+      ...original.settlement,
+      networkFeeOs: "1000000001",
+    })).toThrow("pay-dem-settlement-invalid");
   });
 
   it("retains the first authenticated notice and accepts exact transport renewal", async () => {

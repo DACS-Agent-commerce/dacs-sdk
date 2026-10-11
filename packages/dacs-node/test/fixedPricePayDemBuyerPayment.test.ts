@@ -33,6 +33,7 @@ const prepared = Object.freeze({
   amountOs: payment.amountOs,
   network: "demos",
   maxTotalDebitOs: payment.maxTotalDebitOs,
+  confirmedTotalDebitOs: "2000000000",
   recovery: {
     railId: payment.railId,
     jobId: payment.jobId,
@@ -48,14 +49,15 @@ const prepared = Object.freeze({
 const fence = Object.freeze({ assertCurrent: vi.fn(async () => undefined) });
 
 describe("fixed-price pay-dem buyer reconciliation", () => {
-  it("proves no broadcast when no prepared checkpoint exists", async () => {
+  it("requires operator recovery when the prepared checkpoint is missing", async () => {
     const observe = vi.fn();
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(observe);
     const result = await reconcile({ payment, fence } as never);
 
-    expect(result).toMatchObject({ status: "absent" });
-    expect(result.status === "absent" && result.absenceProofHash)
-      .toMatch(/^[0-9a-f]{64}$/);
+    expect(result).toEqual({
+      status: "operator-action",
+      reasonCode: "pay-dem-prepared-transfer-checkpoint-missing",
+    });
     expect(observe).not.toHaveBeenCalled();
   });
 
@@ -83,6 +85,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
         blockNumber: 42,
         txRefKind: "demos",
         amountOs: payment.amountOs,
+        networkFeeOs: "1000000000",
       },
     });
   });

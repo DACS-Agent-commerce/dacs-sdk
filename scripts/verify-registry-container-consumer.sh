@@ -477,20 +477,8 @@ fs.writeFileSync(
 NODE
 
 mv "$artifact_stage" "$output_dir"
-read -r functional_passed security_passed < <(node - "$output_dir/acceptance-summary.json" <<'NODE'
-const fs = require("node:fs");
-const summary = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-process.stdout.write(
-  `${summary.functionalPassed === true} ${summary.securityGate?.passed === true}\n`,
-);
-NODE
-)
-if [ "$functional_passed" != "true" ]; then
-  echo "functional registry/container rehearsal failed: $output_dir" >&2
-  exit 1
-fi
-if [ "$security_passed" != "true" ]; then
-  echo "functional registry/container rehearsal passed, but the #191 security gate remains blocked: $output_dir" >&2
-  exit 3
-fi
-echo "registry/container acceptance passed: $output_dir"
+disposition_status=0
+node scripts/registry-container-disposition.mjs "$output_dir/acceptance-summary.json" \
+  || disposition_status=$?
+echo "acceptance evidence: $output_dir"
+exit "$disposition_status"
