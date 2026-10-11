@@ -54,7 +54,11 @@ const result = await advanceLiquidityTankSettlement({
 Demos programmatic API this corresponds to the manual confirmation path. The
 store commits those exact signed bytes first. `broadcastRetained` may then
 rebroadcast only that retained transaction, so an ambiguous response never
-authorizes a new nonce or bridge operation.
+authorizes a new nonce or bridge operation. The core binds the intent it passes
+to `prepareSubmission`; it checks the returned authority, operation hash and
+bridge ID but does not decode `signedSubmissionBase64` or recompute
+`substrateTxHash`. The adapter must sign exactly that intent's amount,
+destination and operation.
 
 The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
@@ -82,7 +86,10 @@ settlement, including its exact `recoveryDeadline`, before any adapter
 observation, preparation or broadcast. Stores must accept an exact replay as
 `existing` and reject conflicting settlement writes.
 
-Production adapters must authenticate bridge status and its history. Demos SDK
+Production adapters must authenticate bridge status and its history. The core
+checks only the shape of `authenticationHash` and the presence of the lock and
+release hashes, so it cannot detect an adapter that skips authentication; its
+success, failure and expiry decisions rely on the adapter here. Demos SDK
 4.0.16 exposes native-bridge submission but no public bridge-status lookup that
 can satisfy this boundary, so a bundled live Demos adapter and funded proof are
 explicitly blocked on that upstream capability. The pure protocol/recovery
