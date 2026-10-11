@@ -1025,6 +1025,7 @@ export async function advanceLiquidityTankSettlement(
   let prepareSubmission: LiquidityTankAdapter["prepareSubmission"];
   let broadcastRetained: LiquidityTankAdapter["broadcastRetained"];
   let observeSettlement: LiquidityTankAdapter["observe"];
+  let store: unknown;
   try {
     const ownerValue = stableDataProperty(input, "owner", "owner");
     const leaseDurationValue = stableDataProperty(
@@ -1033,7 +1034,7 @@ export async function advanceLiquidityTankSettlement(
       "leaseDurationMs",
     );
     const nowValue = stableDataProperty(input, "now", "now");
-    const store = stableDataProperty(input, "store", "store");
+    store = stableDataProperty(input, "store", "store");
     const adapter = stableDataProperty(input, "adapter", "adapter");
     owner = requireString(ownerValue, "owner");
     leaseDurationMs = requireUInt(
@@ -1066,12 +1067,7 @@ export async function advanceLiquidityTankSettlement(
       "recordObservation",
       "store.recordObservation",
     );
-    recordRecoveryFailure = stableBoundMethod<LiquidityTankStore["recordRecoveryFailure"]>(
-      store,
-      "recordRecoveryFailure",
-      "store.recordRecoveryFailure",
-    );
-    recordRecoveryExpired =stableBoundMethod<LiquidityTankStore["recordRecoveryExpired"]>(
+    recordRecoveryExpired = stableBoundMethod<LiquidityTankStore["recordRecoveryExpired"]>(
       store,
       "recordRecoveryExpired",
       "store.recordRecoveryExpired",
@@ -1097,10 +1093,25 @@ export async function advanceLiquidityTankSettlement(
       "adapter.observe",
     );
   } catch (error) {
+    // A misconfigured host says nothing about the bridge, and a lock may
+    // already be durable or settled: never report a settlement failure.
     return {
-      status: "failed",
-      errorClass: "permanent",
+      status: "indeterminate",
       reason: error instanceof Error ? error.message : "liquidity-tank-runtime-policy-invalid",
+    };
+  }
+  try {
+    recordRecoveryFailure = stableBoundMethod<LiquidityTankStore["recordRecoveryFailure"]>(
+      store,
+      "recordRecoveryFailure",
+      "store.recordRecoveryFailure",
+    );
+  } catch {
+    // A store not upgraded with the SDK, or wrapped so its method cannot be
+    // bound, may still hold a durable lock or a settlement the core cannot read.
+    return {
+      status: "indeterminate",
+      reason: "liquidity-tank-store-recovery-capability-unavailable",
     };
   }
   // The latest valid host clock reading; locked progress reports `pastDeadline`

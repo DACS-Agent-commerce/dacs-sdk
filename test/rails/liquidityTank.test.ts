@@ -1915,9 +1915,8 @@ describe("advanceLiquidityTankSettlement", () => {
         owner: "un-upgraded",
         store: legacy as unknown as LiquidityTankStore,
       })).resolves.toEqual({
-        status: "failed",
-        errorClass: "permanent",
-        reason: expect.stringContaining("store.recordRecoveryFailure must be a stable method"),
+        status: "indeterminate",
+        reason: "liquidity-tank-store-recovery-capability-unavailable",
       });
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
@@ -2075,6 +2074,83 @@ describe("advanceLiquidityTankSettlement", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "f" }))
         .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
       expect(expire).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("round 5", () => {
+    const D = RECOVERY_DEADLINE_MS;
+    const unavailable = {
+      status: "indeterminate",
+      reason: "liquidity-tank-store-recovery-capability-unavailable",
+    };
+
+    function withoutRetention(store: LiquidityTankStore): LiquidityTankStore {
+      const { recordRecoveryFailure: _missing, ...legacy } = store;
+      return legacy as unknown as LiquidityTankStore;
+    }
+
+    test("Q7: a lock, then an un-upgraded store, then the release lands: never a settlement failure", async () => {
+      const h = harness();
+      const inner = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(inner, h);
+      const legacy = withoutRetention(inner);
+      const claim = vi.spyOn(legacy, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "legacy", store: legacy }))
+        .resolves.toEqual(unavailable);
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      // The lock was live all along: the bridge releases to the seller.
+      run.setClock(D - 400);
+      h.setObservation(completed(h.operationHash, D - 450));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "upgraded" }))
+        .resolves.toMatchObject({ status: "settled" });
+    });
+
+    test("Q8: a Proxy-instrumented store holding a lock is refused as indeterminate", async () => {
+      const h = harness();
+      const inner = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(inner, h);
+      const claim = vi.spyOn(inner, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: "traced",
+        store: new Proxy(inner, {}),
+      })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "pay-cross-chain-liquidity-tank: store.claim must be stable data",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+        .resolves.toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+    });
+
+    test("an already settled phase seen through an un-upgraded store is not a settlement failure", async () => {
+      const h = harness();
+      const inner = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(inner, h);
+      run.setClock(D - 400);
+      h.setObservation(completed(h.operationHash, D - 450));
+      const settled = await advanceLiquidityTankSettlement({ ...run.shared, owner: "complete" });
+      expect(settled).toMatchObject({ status: "settled" });
+      const legacy = withoutRetention(inner);
+      const claim = vi.spyOn(legacy, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 300);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "legacy", store: legacy }))
+        .resolves.toEqual(unavailable);
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "upgraded" }))
+        .resolves.toEqual(settled);
     });
   });
 
@@ -2613,7 +2689,7 @@ describe("advanceLiquidityTankSettlement", () => {
       const claim = vi.spyOn(inner, "claim");
 
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter }).shared))
-        .resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+        .resolves.toMatchObject({ status: "indeterminate" });
       expect(touched).not.toHaveBeenCalled();
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
@@ -2645,7 +2721,7 @@ describe("advanceLiquidityTankSettlement", () => {
         store,
         adapter: h.adapter,
         leaseDurationMs,
-      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      }).shared)).resolves.toMatchObject({ status: "indeterminate" });
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
     },
