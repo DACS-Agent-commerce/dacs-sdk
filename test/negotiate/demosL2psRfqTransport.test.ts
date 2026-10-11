@@ -358,6 +358,73 @@ function gate() {
 }
 
 describe("Demos L2PS durable RFQ transport", () => {
+  test("round 3: resumeInbound shares a 20 ms decryption budget across three hanging frames", async () => {
+    let hang = true;
+    let opens = 0;
+    const fixture = await inboundReceiver({
+      operationTimeoutMs: 20,
+      open: (base) => (encrypted, context) => {
+        opens += 1;
+        return hang ? new Promise<Uint8Array>(() => {}) : base.open(encrypted, context);
+      },
+    });
+    for (let index = 1; index < 3; index += 1) {
+      fixture.hub.messages.push({ ...structuredClone(fixture.own), id: `inbound-${index}`, timestamp: fixture.own.timestamp + index });
+    }
+    const startedAt = performance.now();
+    const result = await fixture.transport.resumeInbound(BUYER);
+    const elapsed = performance.now() - startedAt;
+    expect(result).toMatchObject({ status: "indeterminate", delivered: 0 });
+    expect(opens).toBe(1);
+    expect(elapsed).toBeLessThan(60);
+    expect(fixture.receive).not.toHaveBeenCalled();
+    expect(fixture.hub.sends).toBe(1);
+    hang = false;
+    opens = 0;
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    expect(opens).toBe(3);
+    fixture.transport.stop();
+  });
+
+  test("round 3: recovery deadline persists across pages after a fast codec failure", async () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    try {
+      let opens = 0;
+      const fixture = await inboundReceiver({ operationTimeoutMs: 20, open: () => () => {
+        opens += 1;
+        // First failure is quick enough to leave budget for the next page.
+        vi.advanceTimersByTime(15);
+        throw new Error("temporary codec outage");
+      } });
+      // A page boundary, rather than duplicate entries in one page.
+      fixture.hub.messages.push({ ...structuredClone(fixture.own), id: "newer", timestamp: fixture.own.timestamp + 1 });
+      const history = fixture.hub.peer(SELLER_PEER).history;
+      // Simulate each page request costing 10 ms. The second request spends the
+      // remaining budget, so its frame must never reach the codec.
+      const transport = createDemosL2psRfqTransport<string>({
+        peer: { ...fixture.hub.peer(SELLER_PEER), history: async (peer, options) => {
+          vi.advanceTimersByTime(10);
+          return history(peer, options);
+        } },
+        codec: { codecId: "deadline-probe", seal: (bytes, context) => fixture.baseCodec.seal(bytes, context), open: () => {
+          opens += 1;
+          vi.advanceTimersByTime(15);
+          throw new Error("temporary codec outage");
+        } },
+        localClaim: SELLER, localPeerKey: SELLER_PEER, l2psUid: L2PS_UID,
+        peerForClaim, claimForPeer, onError: vi.fn(), operationTimeoutMs: 20, historyPageSize: 1,
+      });
+      transport.start(fixture.receive);
+      await expect(transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "indeterminate", delivered: 0 });
+      expect(opens).toBe(1);
+      expect(fixture.hub.sends).toBe(1);
+      transport.stop();
+      fixture.transport.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("round 3: rejects an oversized live event immediately behind a blocked decrypt", async () => {
     const blocked = gate();
     const entered = gate();

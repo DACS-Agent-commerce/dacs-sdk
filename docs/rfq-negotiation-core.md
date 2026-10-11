@@ -245,6 +245,12 @@ duplicate history entries cannot multiply the wait; frames left unopened when
 it runs out keep the entry `indeterminate` and are retried on the next
 `resumeOutbox()`.
 
+All frame decryptions in one `resumeInbound()` call also share one operation
+timeout, starting at the first open and spanning every history page. Once it
+is spent, recovery stops opening frames and returns `indeterminate`; valid
+packets already recovered may still be delivered. Retry recovery when the
+codec is available. Recovery never authorizes an outbox resend.
+
 The AES-GCM codec cannot tell a tampered frame from a frame sealed under a
 different key. If a process restarts with a wrong or rotated `sharedKey`, our
 own frames fail authentication and every job whose outbox still needs

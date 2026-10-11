@@ -1149,7 +1149,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     let paginated = false;
     let uncertainReason: string | undefined;
     const packets = new Map<string, Readonly<RfqLifecyclePacket<TSignature>>>();
-    for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
+    // As in reconcile, start one shared decryption deadline at the first open.
+    let openDeadline: number | undefined;
+    recoveryPages: for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
       let page: DemosL2psRfqHistoryPage;
       try {
         page = captureHistoryPage(
@@ -1174,6 +1176,12 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           uncertainReason = "Demos L2PS inbound history crossed subnet identity";
           continue;
         }
+        openDeadline ??= performance.now() + captured.operationTimeoutMs;
+        const remainingMs = openDeadline - performance.now();
+        if (remainingMs <= 0) {
+          uncertainReason = "Demos L2PS inbound history decryption budget exhausted";
+          break recoveryPages;
+        }
         try {
           const plaintext = await bounded(
             () =>
@@ -1183,6 +1191,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
                 toPeer: captured.localPeerKey,
               }),
             "Demos L2PS recovered frame decryption",
+            remainingMs,
           );
           const packet = decodePacket<TSignature>(plaintext);
           if (
@@ -1205,8 +1214,11 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
             uncertainReason =
               "Demos L2PS inbound history includes failed submission status";
           }
-        } catch {
+        } catch (cause) {
           uncertainReason = "Demos L2PS inbound history contains an unreadable RFQ frame";
+          // A timer can fire just before the deadline. Stop anyway, rather than
+          // opening another frame with a fresh timeout or an early timer remainder.
+          if (cause instanceof OperationTimeoutError) break recoveryPages;
         }
       }
       if (!page.hasMore) {
