@@ -8,6 +8,7 @@ import {
   type PayDemRail,
   type PayDemSettleParams,
   type ProtocolAnchorReceipt,
+  type SettlementEffectFence,
 } from "@kynesyslabs/dacs";
 import type { ComponentSigner } from "@kynesyslabs/dacs/artifacts";
 import {
@@ -33,6 +34,7 @@ import {
   type DacsLiveAgentConfig,
 } from "./config.js";
 import type { DacsLoadedSecretV1 } from "./secrets.js";
+import { markDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
 import type {
   DacsHttpEnvelopeSigner,
   DacsHttpIdentityResolverV1,
@@ -254,7 +256,10 @@ function walletCoordinatedPayDemRail(input: Readonly<{
   const journalWallet = input.wallet.toLowerCase();
   return Object.freeze({
     address: input.rail.address,
-    async settle(params: PayDemSettleParams) {
+    async settle(
+      params: PayDemSettleParams,
+      effectFence?: Readonly<SettlementEffectFence>,
+    ) {
       if (!plainObject(params)) {
         throw new DacsDemosRuntimeError("demos-pay-dem-settlement-input-invalid");
       }
@@ -327,7 +332,7 @@ function walletCoordinatedPayDemRail(input: Readonly<{
             };
             await lease.put(record);
           },
-        });
+        }, effectFence);
         if (result.ok) {
           if (record === undefined || result.txHash !== record.txRef) {
             throw new DacsDemosRuntimeError("demos-pay-dem-result-record-mismatch");
@@ -439,6 +444,9 @@ export async function createDacsDemosActorRuntimeV1(
           chainIdentity: () => adapter.getChainIdentity!(),
           wallet: adapter.getAddress(),
         });
+        if (rawOptions.createPayDemRail === undefined) {
+          payDemRail = markDacsSdkPreparedPayDemRailV1(payDemRail);
+        }
       }
     } catch {
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");

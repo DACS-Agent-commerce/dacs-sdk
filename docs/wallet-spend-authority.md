@@ -52,9 +52,11 @@ worst case. Lease expiry does not release it or authorize another effect.
 `authority.reconcile()` releases it only after the injected rail authenticator
 accepts an exact finalized settlement or authoritative absence proof.
 
-## Durable store
+## Durable stores
 
-`createFsWalletSpendStateStoreV1()` is the host-local reference store. It:
+`createFsWalletSpendStateStoreV1()` is a host-local reference/manual store. It
+is not the funded generated-agent authority and must not be treated as
+rollback-resistant across actor backup/restore. It:
 
 - serializes independent processes with crash-recoverable locks;
 - publishes state through fsync and atomic rename;
@@ -63,6 +65,13 @@ accepts an exact finalized settlement or authoritative absence proof.
   HMAC key; and
 - treats missing state after initialization as corruption, never a fresh
   budget.
+
+Filesystem and custom stores that do not explicitly implement a lineage
+selector keep the historical wallet/chain/policy-id scope, so an SDK upgrade
+continues to address their existing journal. The PostgreSQL store explicitly
+selects canonical wallet+chain lineage. Moving an existing journal to
+PostgreSQL requires the authenticated operator-only legacy import described in
+`wallet-budget-authority-design.md`; creating an empty lineage is not migration.
 
 Current writers publish a fully written `0600` file at the canonical lock path
 with an exclusive hard link. This is intentionally incompatible in a
@@ -78,6 +87,10 @@ The integrity key must be loaded from the host secret provider and must not be
 stored inside the state directory. Multi-host wallets need a transactional
 shared implementation of `WalletSpendStateStore`; host-local filesystem locks
 must not be placed on a network filesystem.
+If a custom store exposes the asynchronous authoritative `serverNow()` clock,
+its `transact()` callback must also receive a timestamp sampled after acquiring
+serialization. The authority fails closed when that timestamp is missing;
+sampling the clock before a transaction wait can authorize an expired permit.
 
 ## Minimal integration shape
 
@@ -105,7 +118,12 @@ const outcome = await executeWalletSpendEffectV1({
 });
 ```
 
-The one-click host must build reservations from authenticated agreement and rail
-definition hashes, use one state directory per wallet/chain policy, expose
-`authority.inspect()` through `dacs doctor`, and keep any ambiguous reservation
-operator-gated until reconciliation completes.
+Generated funded buyers instead use the remote authority client described in
+`wallet-budget-authority-design.md`. They hold only an endpoint and role-scoped
+token plus operator-controlled authority-id, epoch and witness-public-key pins.
+They speak only remote protocol V2 and do not fall back to V1 or this filesystem
+store. The service owns PostgreSQL access, stable wallet/chain lineage,
+provisioning, migration, authenticated balances/recovery and transitions; every
+authorization and status read is fenced by the independently rollback-resistant
+continuity witness. The included in-memory witness is deterministic test/reference
+code only and is not production topology, durability or failover evidence.
