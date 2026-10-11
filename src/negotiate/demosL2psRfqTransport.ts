@@ -61,6 +61,7 @@ const HISTORY_ENTRY_KEYS = [
 type JsonRecord = Record<string, unknown>;
 
 class TransientTransportCapabilityError extends DacsError {}
+class OperationTimeoutError extends DacsError {}
 /** The built-in codec proved a stored frame cannot open for its route. */
 class WireFrameAuthenticationError extends DacsError {}
 
@@ -806,6 +807,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   async function bounded<T>(
     operation: () => Promise<T> | T,
     label: string,
+    timeoutMs = captured.operationTimeoutMs,
   ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -813,8 +815,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         Promise.resolve().then(operation),
         new Promise<T>((_resolve, reject) => {
           timer = setTimeout(
-            () => reject(new DacsError(`${label} timed out`)),
-            captured.operationTimeoutMs,
+            () => reject(new OperationTimeoutError(`${label} timed out`)),
+            timeoutMs,
           );
           timer.unref?.();
         }),
@@ -888,13 +890,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   /**
    * Only a frame that opens to different bytes, or that the built-in codec
    * proves unauthenticated, is a conflict. A timeout or other codec failure
-   * says nothing about the stored frame and stays retryable.
+   * says nothing about the stored frame and stays retryable, as does an open
+   * that the shared reconcile deadline no longer leaves time for.
    */
   async function openStored(
     message: DemosL2psRfqStoredMessage,
     packet: Readonly<RfqLifecyclePacket<TSignature>>,
     recipientPeer: string,
+    budget: { deadline: number; spent: boolean },
   ): Promise<"match" | "conflict" | "unavailable"> {
+    const remainingMs = budget.deadline - performance.now();
+    if (budget.spent || remainingMs <= 0) return "unavailable";
     let plaintext: Uint8Array;
     try {
       plaintext = await bounded(
@@ -905,8 +911,11 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
             toPeer: recipientPeer,
           }),
         "Demos L2PS RFQ history decryption",
+        remainingMs,
       );
     } catch (cause) {
+      // Timers may fire slightly before the deadline; the budget is spent anyway.
+      if (cause instanceof OperationTimeoutError) budget.spent = true;
       return cause instanceof WireFrameAuthenticationError ? "conflict" : "unavailable";
     }
     try {
@@ -938,6 +947,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     let before: number | undefined;
     let paginated = false;
     const seenIds = new Set<string>();
+    // All own frames in one reconcile share a single decryption budget, so
+    // duplicate entries cannot multiply the wait on a slow or hanging codec.
+    let openBudget: { deadline: number; spent: boolean } | undefined;
     for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
       let page: DemosL2psRfqHistoryPage;
       try {
@@ -971,7 +983,16 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           uncertainReason = "Demos L2PS history records packetId on another subnet";
           continue;
         }
-        const opened = await openStored(message, prepared.packet, prepared.recipientPeer);
+        openBudget ??= {
+          deadline: performance.now() + captured.operationTimeoutMs,
+          spent: false,
+        };
+        const opened = await openStored(
+          message,
+          prepared.packet,
+          prepared.recipientPeer,
+          openBudget,
+        );
         if (opened === "conflict") {
           return {
             disposition: "rejected",

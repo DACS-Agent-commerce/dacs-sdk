@@ -1077,4 +1077,97 @@ describe("Demos L2PS durable RFQ transport", () => {
     });
     expect(snapshotLabels).toContain("Demos L2PS RFQ send acknowledgement");
   });
+
+  test("shares one decryption budget across duplicate own frames", async () => {
+    let opens = 0;
+    let hang = true;
+    const { hub, transport, packet, own } = await buyerWithSentOffer({
+      operationTimeoutMs: 100,
+      codec: (base) => ({
+        codecId: base.codecId,
+        seal: (plaintext, context) => base.seal(plaintext, context),
+        open(encrypted, context) {
+          opens += 1;
+          return hang ? new Promise<Uint8Array>(() => {}) : base.open(encrypted, context);
+        },
+      }),
+    });
+    for (let index = 1; index < 5; index += 1) {
+      hub.messages.push({
+        ...structuredClone(own),
+        id: `duplicate-${index}`,
+        timestamp: own.timestamp + index,
+      });
+    }
+
+    const startedAt = performance.now();
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "Demos L2PS RFQ history decryption failed",
+    });
+    // Five serial per-frame timeouts would take at least 500 ms.
+    expect(performance.now() - startedAt).toBeLessThan(400);
+    expect(opens).toBe(1);
+
+    hang = false;
+    opens = 0;
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "acknowledged",
+    });
+    expect(opens).toBe(5);
+  });
+
+  test("finds a definite conflict behind an unavailable own frame", async () => {
+    let fault: "throw" | "hang" | "none" = "none";
+    let faulty: string | undefined;
+    const { hub, sharedKey, transport, packet, own } = await buyerWithSentOffer({
+      operationTimeoutMs: 100,
+      codec: (base) => ({
+        codecId: base.codecId,
+        seal: (plaintext, context) => base.seal(plaintext, context),
+        open(encrypted, context) {
+          if (fault === "hang") return new Promise<Uint8Array>(() => {});
+          if (fault === "throw" && encrypted.ciphertext === faulty) {
+            throw new Error("transient KMS outage");
+          }
+          return base.open(encrypted, context);
+        },
+      }),
+    });
+    // History is newest first: the unavailable frame is opened before the conflict.
+    hub.messages.push({
+      ...structuredClone(own),
+      id: "conflict",
+      timestamp: own.timestamp + 10,
+      encrypted: await createDemosL2psRfqAesGcmCodec({ sharedKey }).seal(
+        new TextEncoder().encode(
+          canonicalize({ ...packet, packetId: "f".repeat(64) } as unknown as Record<string, unknown>),
+        ),
+        { messageHash: packet.packetId, fromPeer: BUYER_PEER, toPeer: SELLER_PEER },
+      ),
+    });
+    hub.messages.push({
+      ...structuredClone(own),
+      id: "unavailable",
+      timestamp: own.timestamp + 20,
+    });
+    faulty = own.encrypted.ciphertext;
+    const conflict = {
+      disposition: "rejected",
+      reason: "Demos L2PS history binds packetId to different bytes or route",
+    };
+
+    // A fast codec failure leaves budget to reach the conflict in the same call.
+    fault = "throw";
+    await expect(transport.reconcile(packet)).resolves.toEqual(conflict);
+
+    // A hanging codec spends the budget: retryable now, terminal once it answers.
+    fault = "hang";
+    await expect(transport.reconcile(packet)).resolves.toMatchObject({
+      disposition: "indeterminate",
+    });
+    fault = "none";
+    await expect(transport.reconcile(packet)).resolves.toEqual(conflict);
+    expect(hub.sends).toBe(1);
+  });
 });
