@@ -556,6 +556,76 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  test("round 4: releases live capacity when ingest fails, across three full rounds", async () => {
+    let fail = true;
+    const fixture = await inboundReceiver({ open: (base) => (encrypted, context) => {
+      if (fail) throw new Error("temporary codec outage");
+      return base.open(encrypted, context);
+    } });
+    for (let round = 1; round <= 3; round += 1) {
+      for (let index = 0; index < 100; index += 1) fixture.emit(fixture.payload);
+      await fixture.transport.drain();
+      expect(fixture.errors).toHaveLength(100 * round);
+      expect(new Set(fixture.errors.map((error) => error.message))).toEqual(new Set(["temporary codec outage"]));
+    }
+    fail = false;
+    fixture.emit(fixture.payload);
+    await fixture.transport.drain();
+    expect(fixture.receive).toHaveBeenCalledTimes(1);
+    expect(fixture.errors).toHaveLength(300);
+    fixture.transport.stop();
+  });
+
+  test("round 4: releases live bytes when ingest fails", async () => {
+    let opens = 0;
+    const fixture = await inboundReceiver({ open: () => () => {
+      opens += 1;
+      throw new Error("temporary codec outage");
+    } });
+    // Each event is charged about 24 MiB; a leak would overflow the third.
+    const large = {
+      ...fixture.payload,
+      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(12 * 1024 * 1024) },
+    };
+    for (let index = 0; index < 4; index += 1) {
+      fixture.emit(large);
+      await fixture.transport.drain();
+    }
+    expect(fixture.errors.map((error) => error.message)).toEqual(Array(4).fill("temporary codec outage"));
+    expect(opens).toBe(4);
+    fixture.transport.stop();
+  }, 120_000);
+
+  test("round 4: an early recovered-frame timer stops recovery while budget remains", async () => {
+    let opens = 0;
+    const fixture = await inboundReceiver({ operationTimeoutMs: 20, open: () => () => {
+      opens += 1;
+      return new Promise<Uint8Array>(() => {});
+    } });
+    for (let index = 1; index < 3; index += 1) {
+      fixture.hub.messages.push({ ...structuredClone(fixture.own), id: `inbound-${index}`, timestamp: fixture.own.timestamp + index });
+    }
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The shared deadline never passes on this clock, so only the open's own
+    // timeout can stop the scan.
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    try {
+      let result: unknown;
+      void fixture.transport.resumeInbound(BUYER).then((value) => { result = value; });
+      await settle();
+      expect(opens).toBe(1);
+      vi.advanceTimersByTime(20);
+      await settle();
+      expect(opens).toBe(1);
+      expect(result).toMatchObject({ status: "indeterminate", delivered: 0 });
+      expect(fixture.receive).not.toHaveBeenCalled();
+      fixture.transport.stop();
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   test.each(["live", "recovery"] as const)("round 3: retires an in-flight %s decrypt across stop/start", async (path) => {
     const blocked = gate();
     const entered = gate();
@@ -634,12 +704,9 @@ describe("Demos L2PS durable RFQ transport", () => {
     for (let index = 1; index < 3; index += 1) {
       fixture.hub.messages.push({ ...structuredClone(fixture.own), id: `inbound-${index}`, timestamp: fixture.own.timestamp + index });
     }
-    const startedAt = performance.now();
     const result = await fixture.transport.resumeInbound(BUYER);
-    const elapsed = performance.now() - startedAt;
     expect(result).toMatchObject({ status: "indeterminate", delivered: 0 });
     expect(opens).toBe(1);
-    expect(elapsed).toBeLessThan(60);
     expect(fixture.receive).not.toHaveBeenCalled();
     expect(fixture.hub.sends).toBe(1);
     hang = false;
