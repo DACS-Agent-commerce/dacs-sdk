@@ -1,5 +1,5 @@
 import { types as nodeTypes } from "node:util";
-import { Demos } from "@kynesyslabs/demosdk/websdk";
+import { Demos, uint8ArrayToHex } from "@kynesyslabs/demosdk/websdk";
 import {
   StorageProgram,
   type StorageProgramListItem,
@@ -4067,9 +4067,11 @@ export class DemosAdapter implements SubstrateAdapter {
    * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
-   * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
-   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
-   * findSubjectsByClaim below.
+   * The read uses a bounded raw transport, not demosdk's rpcCall, but sends
+   * rpcCall's timestamp-bound auth headers (demosdk ≥ 4.0.12; 4.0.6's older
+   * header format 401s against the public nodes on gcr_routine, issue #20). A
+   * test pins the headers to the installed demosdk's rpcCall output. Reverse
+   * claim-ref resolution is findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {
@@ -4087,7 +4089,9 @@ export class DemosAdapter implements SubstrateAdapter {
       };
     }
     // Match demosdk rpcCall's public/authenticated headers without allowing
-    // its Axios transport to decode an unbounded body first.
+    // its Axios transport to decode an unbounded body first. Hex encoding comes
+    // from demosdk itself ("0x"-prefixed); the test pins these headers to the
+    // real rpcCall output.
     const headers = {
       "Content-Type": "application/json",
       identity: `${this.#demos.algorithm}:`,
@@ -4095,14 +4099,14 @@ export class DemosAdapter implements SubstrateAdapter {
       timestamp: "",
     };
     if (this.#demos.walletConnected) {
-      headers.identity += Buffer.from(this.#demos.keypair.publicKey).toString("hex");
+      headers.identity += uint8ArrayToHex(this.#demos.keypair.publicKey);
       headers.timestamp = Date.now().toString();
       const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
       const signed = await this.#demos.crypto.sign(
         this.#demos.algorithm,
         new TextEncoder().encode(authMessage),
       );
-      headers.signature = Buffer.from(signed.signature).toString("hex");
+      headers.signature = uint8ArrayToHex(signed.signature);
     }
     const raw = await readDemosCciResponse(
       this.config.rpc,

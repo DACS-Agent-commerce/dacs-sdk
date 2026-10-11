@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
 
 import { sha256Hex } from "../../src/canonical/index.js";
@@ -151,17 +152,55 @@ describe("Demos CCI raw response boundary", () => {
 
     await adapter.resolveIdentity("subject");
 
-    const identity = `ed25519:${"ab".repeat(32)}`;
+    const identity = `ed25519:0x${"ab".repeat(32)}`;
     expect(sign).toHaveBeenCalledWith("ed25519", new TextEncoder().encode(
       sha256Hex(`${identity}:1700000000000`),
     ));
     expect(transport.mock.calls[0]?.[1]?.headers).toEqual({
       "Content-Type": "application/json",
       identity,
-      signature: "010203",
+      signature: "0x010203",
       timestamp: "1700000000000",
     });
   });
+
+  it.each([false, true])(
+    "sends the same request and headers as demosdk's real rpcCall (wallet connected: %s)",
+    async (walletConnected) => {
+      const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
+      const demos = adapter.raw as unknown as Demos;
+      // connect() hands config.rpc to demosdk unchanged; mirror that here.
+      Object.assign(demos, { rpc_url: RPC });
+      vi.spyOn(demos, "walletConnected", "get").mockReturnValue(walletConnected);
+      const keypair = { publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64) };
+      vi.spyOn(demos, "keypair", "get").mockReturnValue(keypair);
+      vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+      // The signature echoes part of the signed message, so it also pins the hash input.
+      const sign = vi.spyOn(demos.crypto, "sign").mockImplementation((async (
+        _algorithm: string,
+        message: Uint8Array,
+      ) => ({ signature: Uint8Array.from(message.subarray(0, 8)) })) as never);
+      const doPost = vi.spyOn(
+        demos as unknown as { _doPost: (...args: unknown[]) => Promise<unknown> },
+        "_doPost",
+      ).mockResolvedValue({ data: GCR });
+
+      // The pre-#283 path: demosdk builds the gcr_routine request and auth headers.
+      await expect(new Identities().getIdentities(demos, "getIdentities", "subject"))
+        .resolves.toEqual(GCR);
+      await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+
+      expect(doPost).toHaveBeenCalledOnce();
+      const [demosUrl, demosRequest, demosHeaders] = doPost.mock.calls[0]!;
+      const [url, init] = transport.mock.calls[0]!;
+      expect(url).toBe(demosUrl);
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(JSON.stringify(demosRequest));
+      expect(init?.headers).toEqual(demosHeaders);
+      expect(sign).toHaveBeenCalledTimes(walletConnected ? 2 : 0);
+      if (walletConnected) expect(sign.mock.calls[1]).toEqual(sign.mock.calls[0]);
+    },
+  );
 
   it.each([0, -1, 1.5, NaN, Infinity, 2_097_153, null, "16"])(
     "rejects an unsafe configured byte ceiling: %s", (value) => {
