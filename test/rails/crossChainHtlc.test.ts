@@ -1535,7 +1535,7 @@ describe("advanceCrossChainHtlc", () => {
     run.setClock(1_700_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "still-pending" })).resolves.toEqual({
       status: "waiting",
-      reason: "htlc-destination-claim-finality-pending",
+      reason: "htlc-destination-claim-unresolved-after-expiry",
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
     h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
@@ -1550,6 +1550,29 @@ describe("advanceCrossChainHtlc", () => {
       "destination-refund",
       "source-refund",
     ]);
+  });
+
+  test("never treats an unreported retained destination claim as unlanded", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-claim": "pending" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    delete h.actions["destination-claim"];
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-unreported" })).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-unresolved-after-expiry",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim"]);
+    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-absent", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
   });
 
   test("refunds both legs after source expiry when a retained destination claim failed", async () => {
@@ -1914,6 +1937,21 @@ describe("advanceCrossChainHtlc", () => {
       .resolves.toMatchObject({ status: "refunded" });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "source-refund"]);
+  });
+
+  test.each([
+    ["source", { sourceLockTerms: { amountBaseUnits: "01250000" } }, ["source-lock"]],
+    ["destination", { destinationLockTerms: { amountBaseUnits: "01250000" } }, ["source-lock", "destination-lock"]],
+  ] as const)("fails closed on non-canonical %s lock amount terms", async (_leg, options, effects) => {
+    const h = harness(options);
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(effects);
   });
 
   test("does not rebroadcast a retained destination lock while source terms are unavailable", async () => {

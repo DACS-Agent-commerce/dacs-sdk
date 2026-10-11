@@ -1978,10 +1978,10 @@ export async function advanceCrossChainHtlc(
     if (prepared.has("destination-claim")) {
       // A retained reveal may have exposed the preimage, so it blocks refunds
       // until the payee's source-claim window has closed and the adapter
-      // authenticates that the claim did not land. A pending claim may still.
+      // authenticates that the claim did not land. A pending claim may still,
+      // and a claim the adapter does not report at all is not authenticated.
       const pendingClaim = snapshot.actions["destination-claim"];
-      const unlanded = !pendingClaim || pendingClaim.state === "absent" ||
-        pendingClaim.state === "failed";
+      const unlanded = pendingClaim?.state === "absent" || pendingClaim?.state === "failed";
       if (!unlanded || !sourceExpired || !destinationExpired) {
         if (pendingClaim?.state === "failed") {
           return refundProgress("destination-claim-failed", snapshot, {
@@ -1989,7 +1989,14 @@ export async function advanceCrossChainHtlc(
             "source-refund": "none",
           });
         }
-        return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
+        // Still safe to wait, but past both expiries a reveal that never
+        // resolves needs an operator, so it gets a reason a host can alert on.
+        return {
+          status: "waiting",
+          reason: sourceExpired && destinationExpired
+            ? "htlc-destination-claim-unresolved-after-expiry"
+            : "htlc-destination-claim-finality-pending",
+        };
       }
       refundReason = "destination-claim-unlanded";
     }

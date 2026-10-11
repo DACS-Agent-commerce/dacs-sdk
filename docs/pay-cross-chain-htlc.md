@@ -70,9 +70,14 @@ as potentially exposed after restart; a pending reveal attempt never becomes a
 refund. Only once both the destination and the source expiry have passed, so
 the payee can no longer claim the source leg, and the adapter authenticates the
 retained claim as `absent` or `failed`, the core refunds both legs with reason
-`destination-claim-unlanded`. Adapters must therefore report `pending`, never
-`absent`, while a reveal can still land. A destination claim that is already
-final is still authenticated, checkpointed, and recovered after the cutoff.
+`destination-claim-unlanded`. A claim the adapter does not report at all is
+not authenticated and keeps blocking refunds. Adapters must therefore report
+`pending`, never `absent`, while a reveal can still land. A retained reveal
+that is still `pending` or unreported once both expiries have passed stays
+blocking but returns `waiting` with reason
+`htlc-destination-claim-unresolved-after-expiry`, which hosts should alert on.
+A destination claim that is already final is still authenticated,
+checkpointed, and recovered after the cutoff.
 
 Refunds are per leg. After the destination expiry the payee's destination
 refund is driven; after the source expiry the payer's source refund is driven
@@ -145,6 +150,21 @@ observation invalid, like any other malformed field. The refund reason
 describes the current observation, so it can change while refunds proceed (for
 example to `destination-timeout` once a refunded lock's terms can no longer be
 read). This is a public adapter contract addition.
+
+The core compares token ids, addresses and hashlocks as exact strings, so the
+authority, the hashlock deriver and the adapter must use one canonical form
+per chain family. A different spelling of the same value is a mismatch: it
+never moves funds forward, but it forbids the step and sends the session to
+refunds. Use:
+
+- EVM: `0x`-prefixed lowercase hexadecimal for addresses and token contracts
+  (no EIP-55 checksum casing), and for a `bytes32` hashlock `0x` plus 64
+  lowercase hex digits;
+- Solana: the base58 string of the public key or mint, unchanged (it is
+  case-sensitive);
+- any other chain: the form its hashlock deriver returns and one documented
+  address form. The adapter converts what the contract records into that form
+  before reporting `lockTerms`.
 
 The buyer salt is never passed to an adapter and must remain encrypted and
 durable until destination-claim finality. Production stores must atomically
