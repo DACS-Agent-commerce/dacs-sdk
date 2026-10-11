@@ -324,6 +324,7 @@ async function buyerWithSentOffer(options: {
 async function inboundReceiver(options: {
   open?: (base: DemosL2psRfqWireCodec) => DemosL2psRfqWireCodec["open"];
   operationTimeoutMs?: number;
+  consumerTimeoutMs?: number;
 } = {}) {
   const sent = await buyerWithSentOffer();
   const errors: Error[] = [];
@@ -341,6 +342,7 @@ async function inboundReceiver(options: {
     claimForPeer,
     onError: (error) => errors.push(error),
     ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
+    ...(options.consumerTimeoutMs === undefined ? {} : { consumerTimeoutMs: options.consumerTimeoutMs }),
   });
   const client = createDurableRfqLifecycleClient(clientOptions("seller", transport, durableReservation()));
   await client.open(openInput());
@@ -360,14 +362,208 @@ function gate() {
 }
 
 const OVERFLOW = "Demos L2PS RFQ live queue exceeds its count or byte budget; recover from history";
+const CONSUMER_TIMEOUT = "Demos L2PS RFQ consumer timed out";
+
+// Runs pending promise jobs on a macrotask that the fake timers below leave real.
+async function settle(rounds = 20): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/** Synchronous emits are all charged before any is ingested: exactly 100 fit. */
+async function expectFullLiveCapacity(fixture: Awaited<ReturnType<typeof inboundReceiver>>) {
+  const before = fixture.errors.length;
+  for (let index = 0; index < 100; index += 1) fixture.emit(fixture.payload);
+  expect(fixture.errors).toHaveLength(before);
+  fixture.emit(fixture.payload);
+  expect(fixture.errors.slice(before).map((error) => error.message)).toEqual([OVERFLOW]);
+  expect(fixture.errors[before]).toBeInstanceOf(TransientError);
+  await fixture.transport.drain();
+}
 
 describe("Demos L2PS durable RFQ transport", () => {
+  test("round 4: a stuck consumer from a retired generation does not hold back the next one", async () => {
+    const fixture = await inboundReceiver();
+    // Never advanced: neither the consumer nor any operation timeout can fire.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fixture.transport.stop();
+      let retiredSignal: AbortSignal | undefined;
+      const stuck = vi.fn((_packet: unknown, options: { signal: AbortSignal }) => {
+        retiredSignal = options.signal;
+        return new Promise<never>(() => {});
+      });
+      fixture.transport.start(stuck);
+      fixture.emit(fixture.payload);
+      await settle();
+      expect(stuck).toHaveBeenCalledTimes(1);
+      expect(retiredSignal?.aborted).toBe(false);
+
+      fixture.transport.stop();
+      expect(retiredSignal?.aborted).toBe(true);
+      const current = vi.fn((packet: unknown) => fixture.client.receive(packet));
+      fixture.transport.start(current);
+      fixture.emit(fixture.payload);
+      let drained = false;
+      void fixture.transport.drain().then(() => { drained = true; });
+      await settle();
+      expect(current).toHaveBeenCalledTimes(1);
+      await expect(current.mock.results[0]?.value).resolves.toMatchObject({ status: "ready" });
+      expect(drained).toBe(true);
+      expect(stuck).toHaveBeenCalledTimes(1);
+      expect(fixture.errors).toHaveLength(0);
+      fixture.transport.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("round 4: times out a never-settling live consumer and releases its charge", async () => {
+    const fixture = await inboundReceiver({ consumerTimeoutMs: 1_000 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fixture.transport.stop();
+      const signals: AbortSignal[] = [];
+      const consumer = vi.fn((packet: unknown, options: { signal: AbortSignal }) => {
+        signals.push(options.signal);
+        return signals.length === 1 ? new Promise<never>(() => {}) : fixture.client.receive(packet);
+      });
+      fixture.transport.start(consumer);
+      fixture.emit(fixture.payload);
+      await settle();
+      expect(consumer).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(999);
+      await settle();
+      expect(fixture.errors).toHaveLength(0);
+      expect(signals[0]?.aborted).toBe(false);
+
+      vi.advanceTimersByTime(1);
+      await settle();
+      expect(fixture.errors.map((error) => error.message)).toEqual([CONSUMER_TIMEOUT]);
+      expect(fixture.errors[0]).toBeInstanceOf(TransientError);
+      expect(signals[0]?.aborted).toBe(true);
+      expect(signals[0]?.reason).toBe(fixture.errors[0]);
+      await fixture.transport.drain();
+
+      // The next event is delivered, and the lane's accounting is back to zero.
+      fixture.emit(fixture.payload);
+      await fixture.transport.drain();
+      expect(consumer).toHaveBeenCalledTimes(2);
+      await expect(consumer.mock.results[1]?.value).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.errors).toHaveLength(1);
+      await expectFullLiveCapacity(fixture);
+      expect(fixture.errors).toHaveLength(2);
+      fixture.transport.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each(["resolves", "rejects"] as const)("round 4: a live consumer that %s after its timeout has no further effect", async (outcome) => {
+    const fixture = await inboundReceiver({ consumerTimeoutMs: 1_000 });
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fixture.transport.stop();
+      const late = gate();
+      let calls = 0;
+      const consumer = vi.fn(async (packet: unknown) => {
+        calls += 1;
+        if (calls > 1) return fixture.client.receive(packet);
+        await late.promise;
+        if (outcome === "rejects") throw new Error("late consumer failure");
+        return fixture.client.receive(packet);
+      });
+      fixture.transport.start(consumer);
+      fixture.emit(fixture.payload);
+      await settle();
+      vi.advanceTimersByTime(1_000);
+      await settle();
+      expect(fixture.errors.map((error) => error.message)).toEqual([CONSUMER_TIMEOUT]);
+
+      late.release();
+      await settle();
+      vi.advanceTimersByTime(60_000);
+      await settle();
+      await fixture.transport.drain();
+      expect(consumer).toHaveBeenCalledTimes(1);
+      expect(fixture.errors).toHaveLength(1);
+      expect(unhandled).not.toHaveBeenCalled();
+      // A second release of the timed-out charge would let a 101st event in.
+      await expectFullLiveCapacity(fixture);
+      expect(consumer).toHaveBeenCalledTimes(101);
+      fixture.transport.stop();
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  test("round 4: resumeInbound returns indeterminate when its consumer never settles", async () => {
+    const fixture = await inboundReceiver({ consumerTimeoutMs: 1_000 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fixture.transport.stop();
+      let signal: AbortSignal | undefined;
+      const stuck = vi.fn((_packet: unknown, options: { signal: AbortSignal }) => {
+        signal = options.signal;
+        return new Promise<never>(() => {});
+      });
+      fixture.transport.start(stuck);
+      let result: unknown;
+      void fixture.transport.resumeInbound(BUYER).then((value) => { result = value; });
+      await settle();
+      expect(stuck).toHaveBeenCalledTimes(1);
+      expect(result).toBeUndefined();
+      vi.advanceTimersByTime(1_000);
+      await settle();
+      expect(result).toEqual({ status: "indeterminate", delivered: 0, reason: CONSUMER_TIMEOUT });
+      expect(signal?.aborted).toBe(true);
+      expect(fixture.errors).toHaveLength(0);
+      expect(fixture.hub.sends).toBe(1);
+      fixture.transport.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("round 4: validates consumerTimeoutMs like operationTimeoutMs", () => {
+    const hub = new FakeL2psHub();
+    const base = {
+      peer: hub.peer(SELLER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      localClaim: SELLER,
+      localPeerKey: SELLER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    };
+    for (const consumerTimeoutMs of [1, 30_000, 600_000]) {
+      expect(() => createDemosL2psRfqTransport({ ...base, consumerTimeoutMs })).not.toThrow();
+    }
+    for (const consumerTimeoutMs of [0, -1, 1.5, 600_001, Number.NaN, "1000"]) {
+      expect(() => createDemosL2psRfqTransport({ ...base, consumerTimeoutMs: consumerTimeoutMs as number }))
+        .toThrow("consumerTimeoutMs must be a positive safe integer at most 600000");
+    }
+    const read = vi.fn(() => 1_000);
+    const getter = { ...base } as DemosL2psRfqTransportOptions;
+    Object.defineProperty(getter, "consumerTimeoutMs", { enumerable: true, get: read });
+    expect(() => createDemosL2psRfqTransport(getter))
+      .toThrow("Demos L2PS RFQ transport options must use enumerable data properties");
+    expect(read).not.toHaveBeenCalled();
+  });
+
   test.each(["live", "recovery"] as const)("round 3: retires an in-flight %s decrypt across stop/start", async (path) => {
     const blocked = gate();
     const entered = gate();
+    const opened = gate();
     const fixture = await inboundReceiver({ open: (base) => async (encrypted, context) => {
       entered.release();
       await blocked.promise;
+      opened.release();
       return base.open(encrypted, context);
     } });
     const recovering = path === "recovery" ? fixture.transport.resumeInbound(BUYER) : undefined;
@@ -377,6 +573,9 @@ describe("Demos L2PS durable RFQ transport", () => {
     const current = vi.fn((packet: unknown) => fixture.client.receive(packet));
     fixture.transport.start(current);
     blocked.release();
+    // drain() covers only the new generation, so let the retired work finish.
+    await opened.promise;
+    await settle();
     await fixture.transport.drain();
     if (recovering !== undefined) {
       await expect(recovering).resolves.toMatchObject({ status: "indeterminate", delivered: 0 });

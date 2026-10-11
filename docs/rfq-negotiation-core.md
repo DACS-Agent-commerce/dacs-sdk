@@ -194,6 +194,7 @@ const transport = createDemosL2psRfqTransport({
   claimForPeer,
   onError: recordChannelFailure,
   operationTimeoutMs: 20_000,
+  consumerTimeoutMs: 30_000,
 });
 
 const buyerRfq = createDurableRfqLifecycleClient({
@@ -233,10 +234,29 @@ event being processed. Each event is charged two bytes per string code unit
 plus 1 KiB for record and queue metadata. These limits are fixed. Excess live
 events are reported immediately through `onError` as a `TransientError` and
 dropped; recover them from history with `resumeInbound()`.
+
+Each consumer call, live or recovered, is limited to `consumerTimeoutMs`
+(30 seconds by default, at most 600 seconds). The consumer receives
+`{ signal }` as an optional second argument; the signal is aborted when the
+call times out or when `stop()` retires its generation. A live call that times
+out reports a `TransientError` ("Demos L2PS RFQ consumer timed out") through
+`onError`, releases its share of the lane budget, and lets the next event
+through. In `resumeInbound()`, a timeout stops recovery and returns
+`indeterminate` with that reason. The transport ignores whatever a consumer
+does after its timeout: no second delivery, no error report, no change to the
+lane budget. A store write that the consumer still completes is harmless,
+because the lifecycle records each received packet ID (which is also the Demos
+message hash) once and treats a repeat as a duplicate.
+
 `stop()` retires pending live and recovered deliveries; work still awaiting
 decryption cannot deliver to a consumer registered by a later `start()`.
-An already invoked consumer may finish, but recovery checks retirement again
-before delivering its next packet.
+An already invoked consumer may finish. The outcome of a retired live call is
+ignored, and recovery checks retirement again before delivering its next
+packet. Each
+`start()` gets a fresh receive lane, so a consumer call left over from a
+retired generation cannot hold back the new consumer. The retired call keeps
+its share of the 100-event and 64 MiB budget until it settles or times out.
+`drain()` waits only for the current generation's lane.
 
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame

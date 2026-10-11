@@ -41,6 +41,8 @@ const HASH = /^[0-9a-f]{64}$/;
 const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFAULT_HISTORY_MAX_PAGES = 100;
 const DEFAULT_OPERATION_TIMEOUT_MS = 20_000;
+const DEFAULT_CONSUMER_TIMEOUT_MS = 30_000;
+const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "delivered",
   "queued",
@@ -66,6 +68,7 @@ type JsonRecord = Record<string, unknown>;
 
 class TransientTransportCapabilityError extends DacsError {}
 class OperationTimeoutError extends DacsError {}
+class ConsumerTimeoutError extends TransientError {}
 /** The built-in codec proved a stored frame cannot open for its route. */
 class WireFrameAuthenticationError extends DacsError {}
 
@@ -185,14 +188,24 @@ export interface DemosL2psRfqTransportOptions {
   historyPageSize?: number;
   historyMaxPages?: number;
   operationTimeoutMs?: number;
+  /**
+   * Time limit for each inbound consumer call, live or recovered (default
+   * 30,000 ms, at most 600,000 ms). The call's signal is aborted when it runs
+   * out or stop() retires its generation; a later result is ignored.
+   */
+  consumerTimeoutMs?: number;
 }
 
 export interface DemosL2psRfqTransport<TSignature = unknown>
   extends DurableRfqLifecycleTransport<TSignature> {
-  /** Register one inbound consumer. Calling start twice is rejected. */
+  /**
+   * Register one inbound consumer. Calling start twice is rejected. Each call
+   * receives a signal that is aborted on consumerTimeoutMs or stop().
+   */
   start(
     onPacket: (
       packet: Readonly<RfqLifecyclePacket<TSignature>>,
+      options: { readonly signal: AbortSignal },
     ) =>
       | Promise<DurableRfqLifecycleResult<TSignature>>
       | DurableRfqLifecycleResult<TSignature>,
@@ -201,7 +214,10 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
   resumeInbound(remoteClaim: string): Promise<DemosL2psRfqInboundRecoveryResult>;
   /** Stop accepting inbound packets and detach when the peer supports it. */
   stop(): void;
-  /** Wait until every payload already delivered by the peer has been handled. */
+  /**
+   * Wait until every payload the peer delivered to the current generation has
+   * been handled. Work retired by stop() is not awaited.
+   */
   drain(): Promise<void>;
 }
 
@@ -680,7 +696,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "claimForPeer",
         "onError",
       ],
-      ["historyPageSize", "historyMaxPages", "operationTimeoutMs"],
+      ["historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs"],
     )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
@@ -791,6 +807,12 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
       "operationTimeoutMs",
       300_000,
     ),
+    consumerTimeoutMs: positiveInteger(
+      descriptors.consumerTimeoutMs?.value,
+      DEFAULT_CONSUMER_TIMEOUT_MS,
+      "consumerTimeoutMs",
+      600_000,
+    ),
   });
 }
 
@@ -807,15 +829,15 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqTransportOptions,
 ): DemosL2psRfqTransport<TSignature> {
   const captured = captureTransportOptions(options);
+  type Consumer = Parameters<DemosL2psRfqTransport<TSignature>["start"]>[0];
   let started = false;
-  let onPacket:
-    | ((
-        packet: Readonly<RfqLifecyclePacket<TSignature>>,
-      ) =>
-        | Promise<DurableRfqLifecycleResult<TSignature>>
-        | DurableRfqLifecycleResult<TSignature>)
-    | undefined;
-  let inbound = Promise.resolve();
+  let onPacket: Consumer | undefined;
+  // Each start() gets its own serialized lane, so a consumer call left over
+  // from a retired generation cannot hold back the next one. The lane also
+  // tracks its in-flight consumer calls so stop() can abort them.
+  let lane = { tail: Promise.resolve(), calls: new Set<AbortController>() };
+  // Accounting spans generations: a retired lane stays charged until its
+  // events settle, which consumerTimeoutMs bounds.
   let liveEvents = 0;
   let liveBytes = 0;
   let peerHandler: DemosL2psRfqMessageHandler | undefined;
@@ -1074,7 +1096,43 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
   }
 
-  async function ingest(payload: DemosL2psRfqIncomingPayload, active: number): Promise<void> {
+  /**
+   * Call the consumer under consumerTimeoutMs with its own abort signal, which
+   * fires on timeout or when stop() retires the lane. Once the wait ends, the
+   * call's eventual result or error is dropped: Promise.race already handles
+   * it, and the lifecycle dedupes a late write by packet ID.
+   */
+  async function consume(
+    handler: Consumer,
+    packet: Readonly<RfqLifecyclePacket<TSignature>>,
+    calls: Set<AbortController>,
+  ): Promise<DurableRfqLifecycleResult<TSignature>> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    calls.add(controller);
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => handler(packet, { signal: controller.signal })),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            const timeout = new ConsumerTimeoutError(CONSUMER_TIMEOUT_MESSAGE);
+            controller.abort(timeout);
+            reject(timeout);
+          }, captured.consumerTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      calls.delete(controller);
+    }
+  }
+
+  async function ingest(
+    payload: DemosL2psRfqIncomingPayload,
+    active: number,
+    calls: Set<AbortController>,
+  ): Promise<void> {
     if (!started || active !== generation || onPacket === undefined) return;
     const handler = onPacket;
     const senderClaim = canonicalString(
@@ -1102,7 +1160,15 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       throw new DacsError("Demos L2PS RFQ plaintext does not bind its peer route");
     }
     if (!started || active !== generation) return;
-    const result = await handler(packet);
+    let result: DurableRfqLifecycleResult<TSignature>;
+    try {
+      result = await consume(handler, packet, calls);
+    } catch (cause) {
+      // stop() aborted this call; the event stays in history for recovery.
+      if (!started || active !== generation) return;
+      throw cause;
+    }
+    if (!started || active !== generation) return;
     if (result.status !== "ready" && result.status !== "duplicate") {
       throw new DacsError(
         `Demos L2PS RFQ lifecycle receive failed: ${"reason" in result ? result.reason : "unknown result"}`,
@@ -1134,6 +1200,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
     const active = generation;
     const handler = onPacket;
+    const { calls } = lane;
     let remoteClaim: string;
     let remotePeerKey: string;
     try {
@@ -1267,15 +1334,19 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         break;
       }
       try {
-        const result = await handler(packet);
+        const result = await consume(handler, packet, calls);
         if (result.status !== "ready" && result.status !== "duplicate") {
           uncertainReason =
             `Demos L2PS recovered packet was not accepted: ${"reason" in result ? result.reason : "unknown result"}`;
           break;
         }
         delivered += 1;
-      } catch {
-        uncertainReason = "Demos L2PS recovered packet handler failed";
+      } catch (cause) {
+        uncertainReason = !started || active !== generation
+          ? "Demos L2PS inbound recovery generation retired"
+          : cause instanceof ConsumerTimeoutError
+            ? CONSUMER_TIMEOUT_MESSAGE
+            : "Demos L2PS recovered packet handler failed";
         break;
       }
     }
@@ -1346,6 +1417,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       onPacket = handler;
       generation += 1;
       const active = generation;
+      const current = { tail: Promise.resolve(), calls: new Set<AbortController>() };
+      lane = current;
       peerHandler = (payload) => {
         if (!started || active !== generation) return;
         let bytes: number;
@@ -1362,8 +1435,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         }
         liveEvents += 1;
         liveBytes += bytes;
-        inbound = inbound
-          .then(() => ingest(owned, active))
+        // The only release of this event's charge. ingest() settles once its
+        // consumer call settles or times out, whichever comes first.
+        current.tail = current.tail
+          .then(() => ingest(owned, active, current.calls))
           .catch(reportInboundError)
           .finally(() => {
             liveEvents -= 1;
@@ -1383,13 +1458,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       started = false;
       generation += 1;
       onPacket = undefined;
+      // Each aborted call keeps its charge until it settles or times out.
+      for (const call of lane.calls) {
+        call.abort(new TransientError("Demos L2PS RFQ consumer generation retired"));
+      }
       if (peerHandler !== undefined) {
         captured.removeMessageHandler?.(peerHandler);
         peerHandler = undefined;
       }
     },
     drain() {
-      return inbound;
+      return lane.tail;
     },
   };
 }
