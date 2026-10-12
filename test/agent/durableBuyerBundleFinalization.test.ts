@@ -1333,6 +1333,29 @@ describe("durable buyer bundle finalization", () => {
     ).rejects.toThrow("retained seller bundle is authoritatively absent");
   });
 
+  test("keeps a lease lost to another worker during an effect retryable", async () => {
+    const f = await fixture();
+    let now = NOW + 1;
+    const durability = { ...f.durability, leaseNowMs: () => now++ };
+    const submit = vi.mocked(f.provider.submitBuyerBundle).getMockImplementation()!;
+    vi.mocked(f.provider.submitBuyerBundle).mockImplementationOnce(async (...args) => {
+      // This worker's lease expires and another worker takes it over.
+      now += 120_000;
+      const stolen = await f.store.acquireLease({
+        jobId: JOB_ID, owner: "buyer-worker-b", ttlMs: 60_000, now,
+      });
+      expect(stolen.ok).toBe(true);
+      return submit(...args);
+    });
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, durability),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("lease is stale"),
+    });
+  });
+
   test.each([
     ["a thrown substrate read failure", () => {
       throw new SubstrateError("Demos receipt native read failed");
