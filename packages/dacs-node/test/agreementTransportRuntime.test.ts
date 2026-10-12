@@ -791,6 +791,17 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         expect(agreement).not.toHaveBeenCalled();
     });
 
+    it("keeps the terminal-boundary reader out of the package's public exports", async () => {
+        const root = await import("../src/index.js");
+        expect(Object.keys(root)).not.toContain("loadDacsAgreementTerminalBoundaryForOrderV1");
+        expect(Object.keys(root)).toEqual(expect.arrayContaining([
+            "createDacsBuyerAgreementTransportRuntimeV1",
+            "createDacsSellerAgreementTransportRuntimeV1",
+            "DacsAgreementTransportRuntimeError",
+            "loadDacsSellerAgreementVetProductionForOrderV1",
+        ]));
+    });
+
     it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         const runtime = h.terminalRuntime();

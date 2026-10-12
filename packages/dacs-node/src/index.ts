@@ -1,6 +1,18 @@
 export * from "./config.js";
 export * from "./agreementRuntime.js";
-export * from "./agreementTransportRuntime.js";
+// Listed explicitly so the terminal-boundary reader stays package-internal.
+export {
+  createDacsBuyerAgreementTransportRuntimeV1,
+  createDacsSellerAgreementTransportRuntimeV1,
+  DacsAgreementTransportRuntimeError,
+  loadDacsSellerAgreementVetProductionForOrderV1,
+  type DacsAgreementSellerVetProductionV1,
+  type DacsBuyerAgreementTransportRuntimeOptionsV1,
+  type DacsBuyerAgreementTransportRuntimeV1,
+  type DacsSellerAgreementAdmissionV1,
+  type DacsSellerAgreementTransportRuntimeOptionsV1,
+  type DacsSellerAgreementTransportRuntimeV1,
+} from "./agreementTransportRuntime.js";
 export * from "./auditRuntime.js";
 export * from "./buyerReceivedRuntime.js";
 export * from "./bundleTransportRuntime.js";
