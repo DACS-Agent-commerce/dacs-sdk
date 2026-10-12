@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the production disposition executable as plain Node ESM; a computed
@@ -309,6 +311,82 @@ function runEarlyFailure(extraStubCommands = "") {
   return { directory, output, result };
 }
 
+// A gzip'd ustar archive holding package/package.json, as npm pack writes it.
+function packTarball(manifest: Record<string, string>) {
+  const body = Buffer.from(JSON.stringify(manifest));
+  const header = Buffer.alloc(512);
+  header.write("package/package.json", 0, 100, "utf8");
+  header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
+  header.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
+  header.write("00000000000\0", 136); header.write("        ", 148); header.write("0", 156); header.write("ustar\0" + "00", 257);
+  let sum = 0; for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return gzipSync(Buffer.concat([header, body, Buffer.alloc((512 - (body.length % 512)) % 512), Buffer.alloc(1024)]));
+}
+
+// Runs the whole acceptance script up to its consumer container, where the
+// generated project's doctor fails (exit 1, not the expected 5). Docker, npm
+// and curl are stubs; node is this process's binary; the registry is a
+// loopback server that serves exactly the published candidates.
+async function runToConsumerStage() {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-"));
+  scratch.push(directory);
+  chmodSync(directory, 0o700);
+  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
+  const releaseSet = join(directory, "release-set");
+  mkdirSync(releaseSet);
+  const served: Record<string, string> = {};
+  const packages: Record<string, { integrity: string }> = {};
+  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"],
+    ["create-dacs-agent", "create-dacs-agent"]] as const) {
+    const bytes = packTarball({ name, version });
+    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes);
+    served["/" + name.replace("/", "%2f")] = sri(bytes);
+    packages[name] = { integrity: sri(bytes) };
+  }
+  writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
+  writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
+  const npmRoot = join(directory, "npm-root");
+  mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
+  writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
+  const server = createServer((request, response) => {
+    const integrity = served[request.url ?? ""];
+    response.writeHead(integrity ? 200 : 404, { "content-type": "application/json" });
+    response.end(JSON.stringify(integrity ? { versions: { [version]: { dist: { integrity } } } } : {}));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as { port: number }).port;
+  const PATH = stubBin(directory, {
+    curl: ['case "$*" in', "  *org.couchdb.user*) printf '{\"token\":\"local-acceptance-token\"}' ;;", "esac", "exit 0"].join("\n"),
+    npm: ['case "$1" in', "  --version) echo 11.19.0 ;;", `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
+      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, "esac", "exit 0"].join("\n"),
+    // `docker run` with a /work volume is the consumer container: it leaves
+    // what the generated project wrote before its doctor failed, then exits 1.
+    docker: ['if [ "$1" = inspect ]; then echo ' + port + "; exit 0; fi",
+      'if [ "$1" != run ]; then exit 0; fi', "work=; previous=",
+      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi',
+      '  previous=$argument', "done", '[ -n "$work" ] || exit 0', 'mkdir -p "$work/one-click-agent"',
+      `printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
+      `printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`,
+      `printf '0\\n' > "$work/generated-tests.exit-code"`,
+      `printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `printf '1\\n' > "$work/doctor.exit-code"`,
+      "echo 'npm run dacs:doctor exited 1'", "exit 1"].join("\n"),
+  });
+  const output = join(directory, "evidence");
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+    const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output],
+      { cwd: repoRoot, env: { HOME: directory, RUNNER_TEMP: directory, PATH } });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => done({ status, stdout, stderr }));
+  });
+  server.close();
+  return { directory, output, result };
+}
+
 const CANDIDATE_VERSION = "0.1.0-test";
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
@@ -393,6 +471,26 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
     // The runner's tool versions are evidence too; the stubs print nothing.
     expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
+  });
+
+  it("keeps the consumer's diagnostics when the generated doctor fails before any of them is exported", async () => {
+    const { output, result, directory } = await runToConsumerStage();
+    expect(result.status, result.stderr).toBe(1);
+    const evidence = (name: string) => readFileSync(join(output, name), "utf8");
+    expect(evidence("doctor.log")).toBe("doctor: release metadata is unreadable\n");
+    expect(evidence("doctor.exit-code")).toBe("1\n");
+    expect(evidence("generated-tests.exit-code")).toBe("0\n");
+    expect(evidence("generated-package.json")).toBe('{"name":"one-click-agent"}\n');
+    expect(evidence("generated-package-lock.json")).toBe('{"lockfileVersion":3,"packages":{}}\n');
+    expect(evidence("generation.log")).toContain("dacs:doctor exited 1");
+    for (const name of ["release-provenance.json", "SHA256SUMS", "registry.log", "runner-tools.txt"]) {
+      expect(existsSync(join(output, name)), name).toBe(true);
+    }
+    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "consumer",
+      exitCode: 1, failureClass: "functional" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage consumer");
+    // The temporary acceptance root, which held them, is gone.
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
   });
 
   it("finishes cleanup and keeps the original status when an evidence write fails", () => {
