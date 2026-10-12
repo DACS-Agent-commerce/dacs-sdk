@@ -246,6 +246,49 @@ function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
   };
 }
 
+/**
+ * The first handle is honest. A handle from `reopenStore` reads whether the
+ * phase has a row, yields a turn, and on a phase it read as free grants itself
+ * a lease it never wrote. Only a race that it enters first exposes it
+ * (Daybreak r11 P3-1).
+ */
+function reopenedHandlesClaimFromStaleReads(): LiquidityTankStoreConformanceOptions {
+  const honest = database();
+  const claimed = new Set<string>();
+  const bases = new WeakMap<LiquidityTankStore, LiquidityTankStore>();
+  const marking = (base: LiquidityTankStore): LiquidityTankStore => {
+    const handle: LiquidityTankStore = {
+      ...base,
+      claim: (input) => {
+        claimed.add(input.intent.settlementKey);
+        return base.claim(input);
+      },
+    };
+    bases.set(handle, base);
+    return handle;
+  };
+  return {
+    createStore: async () => marking(await honest.createStore()),
+    reopenStore: async (store) => {
+      const base = await honest.reopenStore(bases.get(store) ?? store);
+      const stale: LiquidityTankStore = {
+        ...marking(base),
+        claim: async (input) => {
+          const free = !claimed.has(input.intent.settlementKey);
+          claimed.add(input.intent.settlementKey);
+          await yieldTurn();
+          return free
+            ? { status: "acquired", intent: input.intent,
+                lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs } }
+            : base.claim(input);
+        },
+      };
+      bases.set(stale, base);
+      return stale;
+    },
+  };
+}
+
 const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConformanceOptions, RegExp])[] = [
   [CASE.exactLease, "stamps expiresAt one millisecond late", () => database((inner) => ({
     claim: async (input) => {
@@ -538,6 +581,9 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
         : claimed;
     },
   })), /2 of two workers starting one phase at once went past the claim/],
+  [CASE.coreRace, "grants a reopened handle a phase it read as free a turn earlier (Daybreak r11 P3-1)",
+    reopenedHandlesClaimFromStaleReads,
+    /2 of two workers starting one phase at once went past the claim \(reversed order\)/],
 ];
 
 describe("runLiquidityTankStoreConformance", () => {

@@ -919,7 +919,9 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
 
   ["through the core, two workers starting one phase at once broadcast at most once",
     async (store, tag, reopen) => {
-      await concurrentStart(store, tag, reopen);
+      for (let index = 0; index < ORDERS.length; index += 1) {
+        await concurrentStart(store, tag, reopen, ORDERS[index] as Order, index);
+      }
     }],
 ];
 
@@ -930,7 +932,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
  * invariant. The host checks it supplies authenticate only observations it
  * issued and verify that signed bytes carry exactly the intent.
  */
-function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: () => number) {
+function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: () => number, phaseIndex = 0) {
   const locked = new Map<string, bigint>();
   const broadcast = new Set<string>();
   const issued = new Set<string>();
@@ -941,11 +943,11 @@ function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: 
     issued.add(canonicalize(observation));
     return observation;
   };
-  const fixture = new Fixture(tag);
+  const fixture = new Fixture(tag, phaseIndex);
   const adapter: LiquidityTankAdapter = {
     async prepareSubmission(bound) {
       prepared += 1;
-      return signedSubmission(bound, bridgeIdFor(tag, prepared), prepared, clock());
+      return signedSubmission(bound, bridgeIdFor(tag, prepared + phaseIndex * 10), prepared, clock());
     },
     async broadcastRetained(submission) {
       const transfer = decodeTransfer(submission);
@@ -1100,15 +1102,21 @@ async function phaseSequence(
 
 /**
  * Two workers start one fresh phase through the core at once, each through
- * its own handle. A worker that acquires the phase waits at preparation until
- * the other has also prepared or has returned, so if both acquired they would
- * both sign before either writes. Exactly one may go past the claim, and at
- * most one signed submission may be broadcast.
+ * its own handle, in `order`. A worker that acquires the phase waits at
+ * preparation until the other has also prepared or has returned, so if both
+ * acquired they would both sign before either writes. Exactly one may go past
+ * the claim, and at most one signed submission may be broadcast.
  */
-async function concurrentStart(store: LiquidityTankStore, tag: string, reopen: Reopen): Promise<void> {
-  const intent = createLiquidityTankIntent(authorityFor(tag, 0));
+async function concurrentStart(
+  store: LiquidityTankStore,
+  tag: string,
+  reopen: Reopen,
+  order: Order,
+  phaseIndex: number,
+): Promise<void> {
+  const intent = createLiquidityTankIntent(authorityFor(tag, phaseIndex));
   const now = T0;
-  const bridge = modelBridge(intent, tag, () => now);
+  const bridge = modelBridge(intent, tag, () => now, phaseIndex);
   const amount = BigInt(intent.sourceAmountBaseUnits);
   const preparing = new Set<string>();
   let release: () => void = () => undefined;
@@ -1125,7 +1133,7 @@ async function concurrentStart(store: LiquidityTankStore, tag: string, reopen: R
     },
   };
   const start = (owner: string, handle: LiquidityTankStore) => advanceLiquidityTankSettlement({
-    authority: authorityFor(tag, 0),
+    authority: authorityFor(tag, phaseIndex),
     owner,
     store: handle,
     adapter,
@@ -1134,18 +1142,18 @@ async function concurrentStart(store: LiquidityTankStore, tag: string, reopen: R
     leaseDurationMs: LEASE_MS,
   }).finally(release);
   const other = await reopen(store);
-  const results = await Promise.all([start("worker-a", store), start("worker-b", other)]);
+  const results = await race(order, () => start("worker-a", store), () => start("worker-b", other));
   check(bridge.broadcast.size <= 1 && bridge.lockedTotal() <= amount,
     `two workers starting one phase at once broadcast ${bridge.broadcast.size} different signed ` +
-      `submissions, locking ${bridge.lockedTotal()} base units for an intent of ${amount}`);
+      `submissions, locking ${bridge.lockedTotal()} base units for an intent of ${amount} (${order})`);
   const past = results.filter((progress) => progress.status !== "waiting");
-  check(past.length === 1, `${past.length} of two workers starting one phase at once went past the claim`);
+  check(past.length === 1, `${past.length} of two workers starting one phase at once went past the claim (${order})`);
   check(past[0]?.status === "settle-asymmetric",
-    `the worker that acquired the phase returned ${past[0]?.status}, not settle-asymmetric`);
+    `the worker that acquired the phase returned ${past[0]?.status}, not settle-asymmetric (${order})`);
   const inspected = await claim(await reopen(store), intent, "inspector", now + LEASE_MS);
   check(inspected.status === "acquired" && inspected.submission !== undefined &&
     bridge.broadcast.size === 1 && bridge.broadcast.has(inspected.submission.submissionHash),
-    "a fresh handle does not hold the one submission that was broadcast");
+    `a fresh handle does not hold the one submission that was broadcast (${order})`);
 }
 
 /**
