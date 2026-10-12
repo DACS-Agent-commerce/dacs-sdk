@@ -654,6 +654,84 @@ function settlementFrom(
   });
 }
 
+/** A store claim after validation; every field was read exactly once. */
+type ClaimView =
+  | {
+      status: "acquired";
+      lease: Readonly<{ owner: unknown; generation: unknown; expiresAt: unknown }>;
+      attempts: readonly Readonly<SolanaSplSignedAttempt>[];
+      expiredSignatures: readonly string[];
+      expiryEvidence: readonly Readonly<SolanaSplExpiryEvidence>[] | undefined;
+    }
+  | { status: "settled"; settlement: Readonly<SolanaSplSettlementResult> };
+
+/**
+ * Parses a store claim as the complete discriminated union before anything
+ * acts on it. A partial, malformed or unreadable claim is never trusted: it
+ * could belong to another binding or hide a retained broadcast.
+ */
+function readClaim(
+  value: unknown,
+  intent: Readonly<SolanaSplSettlementIntent>,
+): ClaimView | SolanaSplProgress {
+  const invalid = {
+    status: "indeterminate",
+    reason: "solana-spl-settlement-store-claim-invalid",
+  } as const;
+  try {
+    if (typeof value !== "object" || value === null) return invalid;
+    const claim = value as Record<string, unknown>;
+    const status = claim.status;
+    // A conflicting binding for the same phase, or a corrupt record, may hold
+    // a broadcast this call cannot inspect, so neither proves the phase unpaid.
+    if (status === "conflict") {
+      return { status: "indeterminate", reason: "solana-spl-settlement-store-conflict" };
+    }
+    if (status === "corrupt") {
+      return { status: "indeterminate", reason: "solana-spl-settlement-store-corrupt" };
+    }
+    if (status !== "acquired" && status !== "waiting" && status !== "settled") return invalid;
+    const storedIntent = claim.intent;
+    if (typeof storedIntent !== "object" || storedIntent === null) return invalid;
+    try {
+      if (canonicalize(storedIntent) !== canonicalize(intent)) {
+        return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" };
+      }
+    } catch {
+      return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" };
+    }
+    if (status === "settled") {
+      const settlement = claim.settlement;
+      if (typeof settlement !== "object" || settlement === null) return invalid;
+      return { status, settlement: settlement as Readonly<SolanaSplSettlementResult> };
+    }
+    const lease = claim.lease;
+    const attempts = claim.attempts;
+    const expiredSignatures = claim.expiredSignatures;
+    const expiryEvidence = claim.expiryEvidence;
+    if (typeof lease !== "object" || lease === null || !Array.isArray(attempts) ||
+        !Array.isArray(expiredSignatures) ||
+        (expiryEvidence !== undefined && !Array.isArray(expiryEvidence))) {
+      return invalid;
+    }
+    if (status === "waiting") return { status, reason: "solana-spl-settlement-held" };
+    const leaseFields = lease as Record<string, unknown>;
+    return {
+      status,
+      lease: Object.freeze({
+        owner: leaseFields.owner,
+        generation: leaseFields.generation,
+        expiresAt: leaseFields.expiresAt,
+      }),
+      attempts,
+      expiredSignatures,
+      expiryEvidence,
+    };
+  } catch {
+    return invalid;
+  }
+}
+
 /** A reconciliation result after validation; nothing else leaves `reconcile`. */
 type ReconciledState =
   | { disposition: "settled-same"; settlement: Readonly<SolanaSplSettlementResult> | null }
@@ -785,62 +863,42 @@ export async function advanceSolanaSplSettlement(
     return { status: "indeterminate", reason: "solana-spl-dependencies-invalid" };
   }
   const readNow = (): number => clockValue(now());
-  let claimed: SolanaSplStoreClaim;
+  let stored: unknown;
   let claimNow: number;
   try {
     claimNow = readNow();
-    claimed = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
+    stored = await claimSettlement({ intent, owner, now: claimNow, leaseDurationMs });
   } catch {
     return { status: "indeterminate", reason: "solana-spl-settlement-store-unavailable" };
   }
-  if (typeof claimed !== "object" || claimed === null) {
-    return { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
-  }
-  if ("intent" in claimed) {
-    try {
-      if (canonicalize(claimed.intent) !== canonicalize(intent)) {
-        return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" };
-      }
-    } catch {
-      return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" };
-    }
-  }
-  if (claimed.status === "waiting") {
-    return { status: "waiting", reason: "solana-spl-settlement-held" };
-  }
+  const claimed = readClaim(stored, intent);
   if (claimed.status === "settled") {
     return storedSettlementMatchesIntent(claimed.settlement, intent)
       ? { status: "settled", settlement: claimed.settlement }
       : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
   }
-  // A conflicting binding for the same phase, or a corrupt record, may hold a
-  // broadcast this call cannot inspect, so neither proves the phase unpaid.
-  if (claimed.status === "conflict") {
-    return { status: "indeterminate", reason: "solana-spl-settlement-store-conflict" };
-  }
-  if (claimed.status === "corrupt") {
-    return { status: "indeterminate", reason: "solana-spl-settlement-store-corrupt" };
-  }
-  if (claimed.status !== "acquired") {
-    return { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
-  }
-  if (claimed.lease.owner !== owner ||
-      !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
-      !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
+  if (claimed.status !== "acquired") return claimed;
+  const lease = claimed.lease;
+  if (lease.owner !== owner ||
+      typeof lease.generation !== "number" || !Number.isSafeInteger(lease.generation) ||
+      lease.generation <= 0 ||
+      typeof lease.expiresAt !== "number" || !Number.isSafeInteger(lease.expiresAt) ||
+      lease.expiresAt <= claimNow) {
     return { status: "indeterminate", reason: "solana-spl-settlement-store-lease-invalid" };
   }
+  const generation = lease.generation;
   let attempts: readonly Readonly<SolanaSplSignedAttempt>[];
   let expiredSignatures: readonly string[];
   let expiryEvidence: ReadonlyMap<string, Readonly<SolanaSplExpiryEvidence>>;
   try {
     attempts = captureRetainedAttempts(claimed.attempts, intent);
-    if (!Array.isArray(claimed.expiredSignatures) ||
-        new Set(claimed.expiredSignatures).size !== claimed.expiredSignatures.length ||
-        claimed.expiredSignatures.some((signature) =>
+    const storedExpired = [...claimed.expiredSignatures];
+    if (new Set(storedExpired).size !== storedExpired.length ||
+        storedExpired.some((signature) =>
           !attempts.some((attempt) => attempt.signature === signature))) {
       throw new DacsError("pay-solana-spl: retained expiry set is invalid");
     }
-    expiredSignatures = Object.freeze([...claimed.expiredSignatures]);
+    expiredSignatures = Object.freeze(storedExpired);
     expiryEvidence = captureRetainedExpiryEvidence(
       claimed.expiryEvidence,
       attempts,
@@ -855,14 +913,14 @@ export async function advanceSolanaSplSettlement(
   const fence: SolanaSplEffectFence = Object.freeze({
     settlementKey: intent.settlementKey,
     bindingHash: intent.bindingHash,
-    owner: claimed.lease.owner,
-    generation: claimed.lease.generation,
+    owner,
+    generation,
     assertCurrent: async () => {
       if (!await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
-        owner: claimed.lease.owner,
-        generation: claimed.lease.generation,
+        owner,
+        generation,
         now: readNow(),
       })) throw new DacsError("pay-solana-spl: stale effect fence");
     },

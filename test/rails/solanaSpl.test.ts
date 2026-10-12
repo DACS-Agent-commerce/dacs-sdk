@@ -1114,6 +1114,115 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
   });
 });
 
+describe("advanceSolanaSplSettlement with a partial or malformed store claim", () => {
+  type ClaimState = "acquired" | "waiting" | "settled";
+  // Required fields of each claim status, per `SolanaSplStoreClaim`.
+  const required: Record<ClaimState, string[]> = {
+    acquired: ["status", "intent", "lease", "attempts", "expiredSignatures"],
+    waiting: ["status", "intent", "lease", "attempts", "expiredSignatures"],
+    settled: ["status", "intent", "settlement"],
+  };
+  const malformed: [ClaimState, string, unknown][] = [
+    ...(["acquired", "waiting"] as const).flatMap((state) => [
+      [state, "lease", null],
+      [state, "lease", "worker-a"],
+      [state, "attempts", {}],
+      [state, "expiredSignatures", "none"],
+      [state, "expiryEvidence", null],
+      [state, "expiryEvidence", "none"],
+    ] as [ClaimState, string, unknown][]),
+    ["settled", "settlement", null],
+    ["settled", "settlement", "settled"],
+    ["acquired", "intent", null],
+  ];
+
+  // A real store response for the given status, rewritten by `edit`.
+  async function claimWith(
+    state: ClaimState,
+    edit: (claim: Record<string, unknown>) => Record<string, unknown>,
+  ) {
+    const base = createInMemorySolanaSplSettlementStore();
+    if (state === "settled") {
+      await expect(advanceSolanaSplSettlement(input({ store: base })))
+        .resolves.toMatchObject({ status: "settled" });
+    }
+    if (state === "waiting") {
+      await base.claim({
+        intent: createSolanaSplSettlementIntent(authority()),
+        owner: "worker-x", now: 1_000, leaseDurationMs: 100,
+      });
+    }
+    const checkedPreflight = vi.fn(adapter().preflight);
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(adapter().reconcile);
+    const recordAttempt = vi.spyOn(base, "recordAttempt");
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        expect(claim.status).toBe(state);
+        return edit({ ...claim }) as never;
+      },
+    };
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile,
+      }),
+    }));
+    return {
+      result,
+      effects: [checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile, recordAttempt]
+        .map((spy) => spy.mock.calls.length),
+    };
+  }
+  const invalid = {
+    result: { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" },
+    effects: [0, 0, 0, 0, 0],
+  };
+
+  test.each(Object.entries(required).flatMap(([state, fields]) =>
+    fields.map((field) => [state as ClaimState, field] as const)))(
+    "a %s claim without %s is classified without any effect",
+    async (state, field) => {
+      await expect(claimWith(state, (claim) => {
+        delete claim[field];
+        return claim;
+      })).resolves.toEqual(invalid);
+    },
+  );
+
+  test.each(Object.entries(required).flatMap(([state, fields]) =>
+    [...fields, ...(state === "settled" ? [] : ["expiryEvidence"])]
+      .map((field) => [state as ClaimState, field] as const)))(
+    "a %s claim whose %s getter throws is classified without any effect",
+    async (state, field) => {
+      await expect(claimWith(state, (claim) => Object.defineProperty(claim, field, {
+        get() { throw new Error("store secret=abc"); },
+      }))).resolves.toEqual(invalid);
+    },
+  );
+
+  test.each(malformed)("a %s claim with %s = %j is classified without any effect",
+    async (state, field, value) => {
+      await expect(claimWith(state, (claim) => ({ ...claim, [field]: value })))
+        .resolves.toEqual(invalid);
+    });
+
+  test("a bare acquired claim is classified without any effect", async () => {
+    await expect(claimWith("acquired", () => ({ status: "acquired" }))).resolves.toEqual(invalid);
+  });
+
+  test.each([
+    ["acquired", { status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } }],
+    ["waiting", { status: "waiting", reason: "solana-spl-settlement-held" }],
+    ["settled", { status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } }],
+  ] as const)("a complete %s claim is still accepted", async (state, expected) => {
+    await expect(claimWith(state, (claim) => claim)).resolves.toMatchObject({ result: expected });
+  });
+});
+
 describe("advanceSolanaSplSettlement with an out-of-contract reconciliation", () => {
   // A version-skewed adapter, a JS adapter or a JSON proxy cast to the type.
   const invalid: [string, unknown][] = [
