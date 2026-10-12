@@ -1496,6 +1496,9 @@ const demosReadCases: Array<[string, "permanent" | "unavailable", (h: Completion
       return forged as never;
     });
   }],
+  ["an unanswered receipt verification", "unavailable", (h) => {
+    h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(new SubstrateError("Demos anchor receipt observation unavailable"));
+  }],
   ["Demos reads that cannot be answered", "unavailable", (h) => {
     h.adapter.resolveAnchorByName.mockRejectedValue(new Error("rpc unavailable"));
   }],

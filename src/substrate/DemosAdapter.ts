@@ -1204,6 +1204,12 @@ export class DemosAdapter implements SubstrateAdapter {
       this.#demos.getBlockByNumber(blockNumber),
       this.#demos.storagePrograms.read(receipt.nativeAddress),
     ]) as unknown[];
+    // demosdk.call catches transport failures and returns an RPC error envelope.
+    // An unanswered observation cannot establish that a receipt is invalid.
+    if (observations.some((value) => isRecord(value) &&
+        typeof value.result === "number" && value.result !== 200)) {
+      throw new SubstrateError("Demos anchor receipt observation unavailable");
+    }
     const transactionResult = observations[0];
     const blockResult = observations[1];
     const transaction = isRecord(transactionResult) &&
