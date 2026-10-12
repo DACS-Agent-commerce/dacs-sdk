@@ -540,7 +540,7 @@ const summary = {
     passed: dependencyPolicy.passed &&
       runtimeImagePolicy.productionDependencyPolicyPassed &&
       engineStrictExitCode === 0 &&
-    auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
+      auditExitCode === 0 && auditPolicy.observedAdvisories.length === 0 &&
       lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
     productionImageDependencyPolicyPassed:
