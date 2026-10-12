@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -24,13 +24,9 @@ const regExpExec = RegExp.prototype.exec;
 const stringNormalize = String.prototype.normalize;
 const stringCharCodeAt = String.prototype.charCodeAt;
 const stringSlice = String.prototype.slice;
-const createSha256 = createHash;
-const sha256Prototype = getPrototypeOf(createHash("sha256")) as {
-  update(data: string, encoding: "utf8"): unknown;
-  digest(encoding: "hex"): string;
-};
-const hashUpdate = sha256Prototype.update;
-const hashDigest = sha256Prototype.digest;
+// One-shot: no `Hash` object whose symbol-keyed handle slot a prototype
+// accessor could intercept.
+const oneShotHash = hash;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
@@ -482,9 +478,7 @@ function withoutBase64Padding(value: string): string {
 
 /** SHA-256 of the UTF-8 bytes of `value`, through the hash captured at load. */
 function ownedSha256Hex(value: string): string {
-  const hash = createSha256("sha256");
-  reflectApply(hashUpdate, hash, [value, "utf8"]);
-  return reflectApply(hashDigest, hash, ["hex"]) as string;
+  return reflectApply(oneShotHash, undefined, ["sha256", value, "hex"]) as string;
 }
 
 /**
@@ -524,6 +518,31 @@ function ownFields(
     }
   }
   return freeze(fields);
+}
+
+/**
+ * Reads the own fields before the shared gate runs, so a built-in the gate
+ * reaches cannot rewrite them first; a read refusal is raised after the gate,
+ * which keeps the gate's refusal messages.
+ */
+function ownFieldsBeforeGate(
+  source: unknown,
+  keys: readonly string[],
+  label: string,
+): () => Readonly<Record<string, unknown>> {
+  if (source === null || typeof source !== "object") {
+    return () => {
+      throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+    };
+  }
+  try {
+    const fields = ownFields(source, keys, label);
+    return () => fields;
+  } catch (error) {
+    return () => {
+      throw error;
+    };
+  }
 }
 
 function requireJobId(value: unknown): string {
@@ -789,17 +808,19 @@ export function liquidityTankSettlementKey(input: {
   phaseIndex: number;
 }): string {
   // The shared snapshot only decides whether the representation is stable
-  // canonical JSON; the key is derived from the input's own fields.
+  // canonical JSON; the key is derived from the input's own fields, read
+  // before it runs.
+  const fields = ownFieldsBeforeGate(input, SETTLEMENT_KEY_FIELDS, "settlement key authority");
   snapshotCanonicalJson(input, "liquidity-tank settlement key authority");
   if (input === null || typeof input !== "object") {
     throw new DacsError("pay-cross-chain-liquidity-tank: settlement key authority must be an object");
   }
-  return settlementKeyFromOwnFields(ownFields(input, SETTLEMENT_KEY_FIELDS, "settlement key authority"));
+  return settlementKeyFromOwnFields(fields());
 }
 
 /**
  * The key of an owned, NFC-normalized record, hashed through the captured
- * hash: no replaced built-in can rename the phase.
+ * one-shot hash.
  */
 function settlementKeyFromOwnFields(fields: Readonly<Record<string, unknown>>): string {
   const phaseIndex = requireUInt(fields["phaseIndex"], "phaseIndex");
@@ -818,20 +839,19 @@ export function createLiquidityTankIntent(
 /**
  * The authority's own fields. The shared snapshot only decides whether the
  * representation is stable canonical JSON, and its result is discarded: it
- * dispatches through live prototypes (`String.prototype.normalize`) that a
- * host could replace to rename the phase. The settlement key and every intent
- * field are derived from the authority's own data properties, read and
- * NFC-normalized through the intrinsics captured at load. A polluted
- * `Object.prototype` cannot supply a missing field: it reads as `undefined`
- * and is refused by its check.
+ * dispatches through live prototypes (`String.prototype.normalize`). The
+ * settlement key and every intent field are derived from the authority's own
+ * data properties, read and NFC-normalized through the intrinsics captured at
+ * load before the shared snapshot runs. A polluted `Object.prototype` cannot
+ * supply a missing field: it reads as `undefined` and is refused by its check.
  */
 function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTankAuthority> {
+  const fields = ownFieldsBeforeGate(authority, AUTHORITY_FIELDS, "authority");
   snapshotCanonicalJson(authority, "liquidity-tank authority");
   if (authority === null || typeof authority !== "object" || isArray(authority)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: authority must be a JSON object");
   }
-  return ownFields(authority, AUTHORITY_FIELDS, "authority") as unknown as
-    Readonly<LiquidityTankAuthority>;
+  return fields() as unknown as Readonly<LiquidityTankAuthority>;
 }
 
 /**
@@ -870,29 +890,37 @@ function intentFromCapturedAuthority(
     );
   }
   const { amount, baseUnits } = positiveUsdcAmount(authority.amount);
-  const operation = {
+  const originAddress = requireString(authority.originAddress, "originAddress");
+  const destinationAddress = requireString(authority.destinationAddress, "destinationAddress");
+  const sourceLiquidityTankId = requireString(
+    authority.sourceLiquidityTankId,
+    "sourceLiquidityTankId",
+  );
+  const destinationLiquidityTankId = requireString(
+    authority.destinationLiquidityTankId,
+    "destinationLiquidityTankId",
+  );
+  if (sourceLiquidityTankId === destinationLiquidityTankId) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: source and destination tank IDs must differ");
+  }
+  // The operation and binding hashes go through the shared JCS, which
+  // dispatches through live prototypes. Both inputs are frozen first, and the
+  // intent takes its fields from the locals above, never from an object the
+  // shared code was given.
+  const operation = freeze({
     originChainType: authority.sourceChainType,
     destinationChainType: authority.destinationChainType,
-    originAddress: requireString(authority.originAddress, "originAddress"),
-    destinationAddress: requireString(authority.destinationAddress, "destinationAddress"),
+    originAddress,
+    destinationAddress,
     originAmount: baseUnits,
     destinationAmount: baseUnits,
     originAsset: authority.sourceAsset,
     destinationAsset: authority.destinationAsset,
-    sourceLiquidityTankId: requireString(authority.sourceLiquidityTankId, "sourceLiquidityTankId"),
-    destinationLiquidityTankId: requireString(
-      authority.destinationLiquidityTankId,
-      "destinationLiquidityTankId",
-    ),
-  };
-  if (operation.sourceLiquidityTankId === operation.destinationLiquidityTankId) {
-    throw new DacsError("pay-cross-chain-liquidity-tank: source and destination tank IDs must differ");
-  }
-  // The operation and binding hashes go through the shared JCS, which
-  // dispatches through live prototypes. A lie there changes only a hash, never
-  // a field: for an existing phase that is a binding conflict (`indeterminate`).
+    sourceLiquidityTankId,
+    destinationLiquidityTankId,
+  });
   const operationHash = sha256Hex(canonicalize(operation));
-  const unsigned = {
+  const unsigned = freeze({
     intentVersion: "1" as const,
     settlementKey: settlementKeyFromOwnFields(authority as unknown as Readonly<Record<string, unknown>>),
     operationHash,
@@ -913,16 +941,16 @@ function intentFromCapturedAuthority(
     destinationAsset: authority.destinationAsset,
     sourceTokenDecimals,
     destinationTokenDecimals,
-    sourceAmountBaseUnits: operation.originAmount,
-    destinationAmountBaseUnits: operation.destinationAmount,
+    sourceAmountBaseUnits: baseUnits,
+    destinationAmountBaseUnits: baseUnits,
     amount,
     currency: authority.currency,
-    originAddress: operation.originAddress,
-    destinationAddress: operation.destinationAddress,
-    sourceLiquidityTankId: operation.sourceLiquidityTankId,
-    destinationLiquidityTankId: operation.destinationLiquidityTankId,
+    originAddress,
+    destinationAddress,
+    sourceLiquidityTankId,
+    destinationLiquidityTankId,
     supportedScope: authority.supportedScope,
-  };
+  });
   return freeze({ ...unsigned, bindingHash: sha256Hex(canonicalize(unsigned)) });
 }
 

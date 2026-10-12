@@ -2568,6 +2568,44 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  /** The lock was live all along: the bridge releases and a plain call settles. */
+  async function releasesLater(run: Awaited<ReturnType<typeof lockDurably>>, h: ReturnType<typeof harness>) {
+    run.setClock(RECOVERY_DEADLINE_MS - 400);
+    h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS - 450));
+    await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+      .resolves.toMatchObject({ status: "settled" });
+  }
+
+  /** An adapter with its own bridge ID, so only the settlement key can stop it. */
+  function secondAdapter() {
+    const bridgeId = "xyz123def456gh78";
+    const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound, fence) => {
+      await fence.assertCurrent();
+      return {
+        submissionVersion: "1",
+        authorityHash: bound.bindingHash,
+        operationHash: bound.operationHash,
+        bridgeId,
+        substrateTxHash: "second-native-bridge-tx",
+        signedSubmissionBase64: Buffer.from("second-signed", "utf8").toString("base64"),
+        preparedAt: 1_900,
+      };
+    });
+    const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async (_submission, fence) => {
+      await fence.assertCurrent();
+    });
+    const observe = vi.fn<LiquidityTankAdapter["observe"]>(async (bound, _submission, fence) => {
+      await fence.assertCurrent();
+      return { ...empty(bound.operationHash), bridgeId } as LiquidityTankObservation;
+    });
+    return {
+      adapter: { prepareSubmission, broadcastRetained, observe } satisfies LiquidityTankAdapter,
+      prepareSubmission,
+      broadcastRetained,
+      observe,
+    };
+  }
+
   describe("round 7", () => {
     const D = RECOVERY_DEADLINE_MS;
     const RAIL_ID = "demos-tank-sepolia-amoy-usdc";
@@ -2577,44 +2615,6 @@ describe("advanceLiquidityTankSettlement", () => {
     } as const;
     const PRECISION_REFUSED =
       "pay-cross-chain-liquidity-tank: amount has more precision than 6 decimals";
-
-    /** The lock was live all along: the bridge releases and a plain call settles. */
-    async function releasesLater(run: Awaited<ReturnType<typeof lockDurably>>, h: ReturnType<typeof harness>) {
-      run.setClock(D - 400);
-      h.setObservation(completed(h.operationHash, D - 450));
-      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
-        .resolves.toMatchObject({ status: "settled" });
-    }
-
-    /** An adapter with its own bridge ID, so only the settlement key can stop it. */
-    function secondAdapter() {
-      const bridgeId = "xyz123def456gh78";
-      const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound, fence) => {
-        await fence.assertCurrent();
-        return {
-          submissionVersion: "1",
-          authorityHash: bound.bindingHash,
-          operationHash: bound.operationHash,
-          bridgeId,
-          substrateTxHash: "second-native-bridge-tx",
-          signedSubmissionBase64: Buffer.from("second-signed", "utf8").toString("base64"),
-          preparedAt: 1_900,
-        };
-      });
-      const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async (_submission, fence) => {
-        await fence.assertCurrent();
-      });
-      const observe = vi.fn<LiquidityTankAdapter["observe"]>(async (bound, _submission, fence) => {
-        await fence.assertCurrent();
-        return { ...empty(bound.operationHash), bridgeId } as LiquidityTankObservation;
-      });
-      return {
-        adapter: { prepareSubmission, broadcastRetained, observe } satisfies LiquidityTankAdapter,
-        prepareSubmission,
-        broadcastRetained,
-        observe,
-      };
-    }
 
     function expectNoEffects(second: ReturnType<typeof secondAdapter>, h: ReturnType<typeof harness>) {
       expect(second.prepareSubmission).not.toHaveBeenCalled();
@@ -3010,6 +3010,249 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(h.observe).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
+  });
+
+  // Replaced built-ins are outside the rail's threat model (see the docs);
+  // each test here closes a route the round-8 reviews found on 19ff64c, where
+  // one changed the payee, the amount or the settlement key, or broadcast twice
+  // for a locked phase.
+  describe("round 8", () => {
+    const D = RECOVERY_DEADLINE_MS;
+    const RAIL_ID = "demos-tank-sepolia-amoy-usdc";
+    const LOCK_CONTINUES = { status: "settle-asymmetric", reason: "tank-locked-unreleased" } as const;
+
+    /** A plain object a well-behaved hook can still write to. */
+    function writable(value: unknown): value is Record<string, unknown> {
+      return typeof value === "object" && value !== null && !Object.isFrozen(value);
+    }
+
+    /** Runs `body` with `Set.prototype.has` calling `hook` first; restored in `finally`. */
+    async function withSetHasHook<T>(hook: (value: unknown) => void, body: () => Promise<T>): Promise<T> {
+      const originalHas = Set.prototype.has;
+      try {
+        Set.prototype.has = function (this: Set<unknown>, value: unknown) {
+          hook(value);
+          return Reflect.apply(originalHas, this, [value]) as boolean;
+        };
+        return await body();
+      } finally {
+        Set.prototype.has = originalHas;
+      }
+    }
+
+    function expectNothingNew(second: ReturnType<typeof secondAdapter>, h: ReturnType<typeof harness>) {
+      expect(second.prepareSubmission).not.toHaveBeenCalled();
+      expect(second.broadcastRetained).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    }
+
+    // Code review G1: the captured `update`/`digest` still read the native
+    // handle from the instance's `kHandle` slot, so an accessor for it on
+    // `Hash.prototype` forged the key.
+    test("a hijacked Hash handle slot cannot rename a locked phase", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const probe = createHash("sha256");
+      const hashPrototype = Object.getPrototypeOf(probe) as object;
+      const kHandle = Object.getOwnPropertySymbols(probe).find((symbol) => symbol.description === "kHandle");
+      expect(kHandle).toBeDefined();
+      type NativeHandle = { update(data: unknown, encoding?: string): unknown; digest(encoding?: string): unknown };
+      const handles = new WeakMap<object, NativeHandle>();
+      const seen = new WeakMap<object, string>();
+      const forged = "e".repeat(64);
+      let hijacked: unknown;
+      let key: unknown;
+      let result: unknown;
+      try {
+        Object.defineProperty(hashPrototype, kHandle as symbol, {
+          configurable: true,
+          set(this: object, handle: NativeHandle) {
+            handles.set(this, handle);
+          },
+          get(this: object) {
+            const self = this;
+            const handle = handles.get(self) as NativeHandle;
+            return {
+              update(data: unknown, encoding?: string) {
+                const text = typeof data === "string" ? data : Buffer.from(data as Uint8Array).toString("utf8");
+                seen.set(self, `${seen.get(self) ?? ""}${text}`);
+                return handle.update(data, encoding);
+              },
+              digest(encoding?: string) {
+                return (seen.get(self) ?? "").startsWith("dacs-liquidity-tank:v1:")
+                  ? forged
+                  : handle.digest(encoding);
+              },
+            };
+          },
+        });
+        hijacked = createHash("sha256").update(`dacs-liquidity-tank:v1:${JOB_ID}:${RAIL_ID}:2`).digest("hex");
+        key = liquidityTankSettlementKey({ jobId: JOB_ID, railId: RAIL_ID, phaseIndex: 2 });
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "hijacked", adapter: second.adapter });
+      } finally {
+        delete (hashPrototype as Record<symbol, unknown>)[kHandle as symbol];
+      }
+      expect(hijacked).toBe(forged);
+      expect(key).toBe(lockedKey);
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(claim.mock.calls[0]?.[0].intent.settlementKey).toBe(lockedKey);
+      expect(result).toMatchObject(LOCK_CONTINUES);
+      expectNothingNew(second, h);
+      await releasesLater(run, h);
+    });
+
+    // Code review G2 and Daybreak's second scenario: the shared gate ran
+    // before the owned read, so a built-in it calls with the authority could
+    // rename the phase first.
+    test.each([
+      ["Set.prototype.has", "has"],
+      ["Object.getOwnPropertyDescriptors", "descriptors"],
+    ] as const)("a %s that renames the railId during the gate cannot open a second phase", async (_label, route) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      // The host rebuilds the identical authority from its records on each call.
+      const presented = authority();
+      const keyInput = { jobId: JOB_ID, railId: RAIL_ID, phaseIndex: 2 };
+      const rename = (value: unknown) => {
+        if ((value === presented || value === keyInput) && writable(value)) value["railId"] = "other-tank-rail";
+      };
+      const originalDescriptors = Object.getOwnPropertyDescriptors;
+      let key: unknown;
+      let result: unknown;
+      const body = async () => {
+        key = liquidityTankSettlementKey(keyInput);
+        result = await advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "renamed",
+          authority: presented,
+          adapter: second.adapter,
+        });
+      };
+      if (route === "has") {
+        await withSetHasHook(rename, body);
+      } else {
+        try {
+          Object.getOwnPropertyDescriptors = ((value: object) => {
+            rename(value);
+            return originalDescriptors(value);
+          }) as typeof Object.getOwnPropertyDescriptors;
+          await body();
+        } finally {
+          Object.getOwnPropertyDescriptors = originalDescriptors;
+        }
+      }
+      expect(presented.railId).toBe("other-tank-rail");
+      expect(keyInput.railId).toBe("other-tank-rail");
+      expect(key).toBe(lockedKey);
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(claim.mock.calls[0]?.[0].intent.settlementKey).toBe(lockedKey);
+      expect(result).toMatchObject(LOCK_CONTINUES);
+      expectNothingNew(second, h);
+      await releasesLater(run, h);
+    });
+
+    // Code review G5: a crash after the lock, then a restart in a process
+    // where a dependency hooks the gate to shift `phaseIndex`.
+    test("a restart under a Set.prototype.has hook that shifts phaseIndex signs nothing new", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const presented = authority();
+      let result: unknown;
+      await withSetHasHook((value) => {
+        if (value === presented && writable(value)) value["phaseIndex"] = 3;
+      }, async () => {
+        result = await advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "restarted",
+          authority: presented,
+          adapter: second.adapter,
+        });
+      });
+      expect(presented.phaseIndex).toBe(3);
+      expect(claim.mock.calls[0]?.[0].intent).toMatchObject({ settlementKey: lockedKey, phaseIndex: 2 });
+      expect(result).toMatchObject(LOCK_CONTINUES);
+      expectNothingNew(second, h);
+      await releasesLater(run, h);
+    });
+
+    // Code review G3 and Daybreak's first scenario: the operation was hashed
+    // unfrozen, and the intent read the payee and base units back from it.
+    // The unsigned intent is hashed frozen too, so its binding hash holds.
+    test.each([
+      ["Set.prototype.has", "has"],
+      ["Object.entries", "entries"],
+    ] as const)("a %s that rewrites the hashed objects cannot change the payee, base units or binding", async (_label, route) => {
+      const clean = createLiquidityTankIntent(authority());
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      let seen = 0;
+      const rewrite = (value: unknown) => {
+        // The operation, or the unsigned intent (no binding hash yet).
+        if (typeof value !== "object" || value === null || !(Object.hasOwn(value, "originAmount") ||
+            (Object.hasOwn(value, "sourceAmountBaseUnits") && !Object.hasOwn(value, "bindingHash")))) {
+          return;
+        }
+        seen += 1;
+        // A hook that ignores the freeze throws in strict code; one that
+        // respects it leaves the operation alone.
+        if (route === "has" && !writable(value)) return;
+        const operation = value as Record<string, unknown>;
+        operation["destinationAddress"] = "attacker-address";
+        operation["originAmount"] = "999000000";
+        operation["destinationAmount"] = "999000000";
+      };
+      const input = runner({ store, adapter: h.adapter }).shared;
+      const originalEntries = Object.entries;
+      let result: unknown;
+      const body = async () => {
+        result = await advanceLiquidityTankSettlement(input);
+      };
+      if (route === "has") {
+        await withSetHasHook(rewrite, body);
+      } else {
+        try {
+          Object.entries = ((value: object) => {
+            rewrite(value);
+            return originalEntries(value);
+          }) as typeof Object.entries;
+          await body();
+        } finally {
+          Object.entries = originalEntries;
+        }
+      }
+      expect(seen).toBeGreaterThan(0);
+      if (route === "has") {
+        // The hook respected the freeze: the intent is the clean one.
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+        expect(h.prepareSubmission.mock.calls[0]?.[0]).toEqual(clean);
+        expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+        expect(h.broadcastRetained.mock.calls[0]?.[0].operationHash).toBe(clean.operationHash);
+      } else {
+        // The write to the frozen operation threw: refused before any claim.
+        expect(result).toMatchObject({ status: "indeterminate" });
+        expect(claim).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      }
+    });
+
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
