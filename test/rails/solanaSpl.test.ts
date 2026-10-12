@@ -1081,4 +1081,35 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
     await settlement.resume();
   });
 
+  test("a conflicting binding over a retained broadcast is not reported as failed", async () => {
+    const settlement = await retained("broadcast");
+    const before = settlement.effects();
+    await expect(advanceSolanaSplSettlement({
+      ...settlement.valid,
+      authority: authority({ amount: "2.5" }),
+    })).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settlement-store-conflict" });
+    expect(settlement.effects()).toEqual({ ...before, claim: before.claim + 1 });
+    await settlement.resume();
+  });
+
+  test.each([
+    ["corrupt", { status: "corrupt", reason: "store detail" }, "solana-spl-settlement-store-corrupt"],
+    ["conflict", { status: "conflict", reason: "store detail" }, "solana-spl-settlement-store-conflict"],
+    ["unknown", { status: "released", reason: "store detail" }, "solana-spl-settlement-store-claim-invalid"],
+    ["null", null, "solana-spl-settlement-store-claim-invalid"],
+    ["undefined", undefined, "solana-spl-settlement-store-claim-invalid"],
+    ["string", "acquired", "solana-spl-settlement-store-claim-invalid"],
+  ])("a %s claim is classified without any effect", async (_name, claimed, reason) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    await expect(advanceSolanaSplSettlement(input({
+      store: {
+        ...createInMemorySolanaSplSettlementStore(),
+        claim: async () => claimed as never,
+      },
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained }),
+    }))).resolves.toEqual({ status: "indeterminate", reason });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
 });

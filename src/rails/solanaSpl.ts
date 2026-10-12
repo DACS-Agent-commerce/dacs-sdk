@@ -696,6 +696,9 @@ export async function advanceSolanaSplSettlement(
   } catch {
     return { status: "indeterminate", reason: "solana-spl-settlement-store-unavailable" };
   }
+  if (typeof claimed !== "object" || claimed === null) {
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
+  }
   if ("intent" in claimed) {
     try {
       if (canonicalize(claimed.intent) !== canonicalize(intent)) {
@@ -713,8 +716,16 @@ export async function advanceSolanaSplSettlement(
       ? { status: "settled", settlement: claimed.settlement }
       : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
   }
+  // A conflicting binding for the same phase, or a corrupt record, may hold a
+  // broadcast this call cannot inspect, so neither proves the phase unpaid.
+  if (claimed.status === "conflict") {
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-conflict" };
+  }
+  if (claimed.status === "corrupt") {
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-corrupt" };
+  }
   if (claimed.status !== "acquired") {
-    return { status: "failed", errorClass: "permanent", reason: claimed.reason };
+    return { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
   }
   if (claimed.lease.owner !== owner ||
       !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
