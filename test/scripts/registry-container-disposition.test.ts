@@ -407,19 +407,52 @@ describe("registry/container evidence", () => {
 
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
-  it("reports an unlisted advisory without failing required acceptance, and fails the drift check", () => {
+  // An unlisted ID fails the required job: exit 3, and a claimed exit 4 is
+  // refused by the step's re-check.
+  const expectRequiredFailure = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
+    const result = registryContainerDisposition(summary);
+    expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "blocked" } });
+    expect(result.message).toContain(`advisory IDs not in the #191 baseline: ${unlisted.join(", ")}`);
+    expect(result.message).toContain("registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review");
+    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: unlisted });
+    expect(runWorkflowStep(3, summary).status).toBe(3);
+    const claimed = runWorkflowStep(4, summary);
+    expect(claimed.status).toBe(4);
+    expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
+    expect(claimed.stdout).toContain(unlisted[0]);
+    expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    expect(runDriftStep(summary, false).status).toBe(0);
+    expect(runDriftStep(summary, true).status).toBe(3);
+  };
+  it("fails required acceptance on an appended unlisted advisory, and fails the drift check", () => {
     const summary = baselineOnlySummary();
     const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [unknown] });
-    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: [unknown] });
+    expectRequiredFailure(summary, [unknown]);
+  });
+  it("fails required acceptance on a same-count substitution", () => {
+    const summary = baselineOnlySummary();
+    const unknown = "GHSA-2222-3333-4444";
+    summary.audit.observedAdvisories = [unknown];
+    summary.audit.unlistedAdvisories = [unknown];
+    expectRequiredFailure(summary, [unknown]);
+    const full = baselineOnlySummary();
+    full.audit.observedAdvisories = [...baseline.advisoryIds.slice(1), unknown];
+    full.audit.unlistedAdvisories = [unknown];
+    expect(full.audit.observedAdvisories).toHaveLength(baseline.advisoryIds.length);
+    expectRequiredFailure(full, [unknown]);
+  });
+  it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [],
+      checks: { audit: "baseline" } });
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain(`Unlisted advisory IDs: ${unknown}`);
-    expect(runWorkflowStep(4, summary, true).status).toBe(0);
-    expect(runDriftStep(summary, false).status).toBe(0);
-    expect(runDriftStep(summary, true).status).toBe(3);
+    expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(runDriftStep(summary, true).status).toBe(0);
   });
   it("reports drift even when a non-audit failure fails the acceptance step", () => {
     // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.

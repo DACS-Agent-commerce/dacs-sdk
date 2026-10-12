@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Required acceptance reports advisory drift without failing every PR together.
-// The scheduled/manual drift workflow fails on unlisted advisory IDs. Neither
-// classification permits production publication while #191 remains blocked.
+// Required acceptance fails (exit 3) on any advisory ID missing from the #191
+// baseline; observing only listed IDs, or a subset of them, is baseline-only
+// (exit 4). The scheduled/manual drift workflow reports unlisted IDs daily.
+// Neither classification permits production publication while #191 remains
+// blocked.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -284,8 +286,11 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   catch (error) { return { exitCode: 3, failureClass: "policy", message: String(error) }; }
   const gate = summary.securityGate;
   const checks = classifyPolicyChecks(summary, baseline);
+  // An advisory ID outside the baseline blocks, even one newly published
+  // against a dependency the tree already had.
   const audit = gate?.auditExitCode === 0 && policy.observedAdvisories.length === 0 ? "passed"
-    : policy.observedAdvisories.length > 0 && [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
+    : policy.observedAdvisories.length > 0 && policy.unlistedAdvisories.length === 0 &&
+      [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
   const states = { ...checks, audit };
   const named = state => Object.keys(states).filter(name => states[name] === state);
   if (named("passed").length === Object.keys(states).length && gate.passed === true) {
@@ -293,11 +298,13 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   }
   if (named("blocked").length === 0) {
     return { exitCode: 4, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed; " +
-      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})` +
-      (policy.unlistedAdvisories.length ? `; unlisted advisory IDs: ${policy.unlistedAdvisories.join(", ")}` : ""), ...policy };
+      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})`, ...policy };
   }
   return { exitCode: 3, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed, " +
-    `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})`, ...policy };
+    `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
+    (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
+      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : ""),
+    ...policy };
 }
 
 function annotate(result) {
@@ -349,7 +356,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
         disposition: { exitCode, failureClass, message, checks } }, null, 2) + "\n");
     }
-    if (result.unlistedAdvisories?.length) {
+    // Required acceptance names unlisted IDs in its error; drift warns.
+    if (drift && result.unlistedAdvisories?.length) {
       process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
     }
     if (!drift) annotate(result);

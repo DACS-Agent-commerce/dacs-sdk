@@ -1,13 +1,17 @@
 The required registry/container rehearsal classifies npm audit advisories by
 ID against `registry-container-audit-baseline.json`. Counts are diagnostics.
-Known advisories remain the #191 baseline. New IDs appear in
-`acceptance-summary.json` and a workflow warning, without failing every PR
-for an upstream advisory change. Production publication remains blocked by
-#191; acceptance is not publication approval.
+A run that observes only listed IDs, or a subset of them (an advisory resolved
+since), is baseline-only. Any ID that is not listed fails the required job
+(exit 3), and the error names it. That includes a GHSA newly published against
+a dependency the tree already had: the required job stays red until someone
+reviews the new IDs and adds them here and to the JSON baseline in a PR under
+CODEOWNERS review. This is intended for a security gate. Production
+publication remains blocked by #191; acceptance is not publication approval.
 
 `Registry consumer advisory-ID drift` runs daily and on manual dispatch. It
-uses the same registry consumer audit and fails on any unlisted ID. Its check
-runs whenever a summary exists, so a non-audit failure does not mask it. Audit
+uses the same registry consumer audit and fails on any unlisted ID, so a newly
+published advisory is reported without waiting for a PR. Its check runs
+whenever a summary exists, so a non-audit failure does not mask it. Audit
 errors, malformed baselines and non-audit policy failures fail closed.
 
 `policyFindings` records the non-audit security-gate failures that the
