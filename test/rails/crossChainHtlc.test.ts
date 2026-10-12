@@ -977,6 +977,111 @@ describe("advanceCrossChainHtlc", () => {
       .toEqual(["source-lock", "destination-lock", "source-refund"]);
   });
 
+  test.each(["pending", "retained but unreported"] as const)(
+    "never reports refunded while a %s destination lock may still land",
+    async (variant) => {
+      const h = harness({
+        sourceExpiry: 1_700,
+        destinationExpiry: 1_800,
+        mode: { "destination-lock": variant === "pending" ? "pending" : "throw-once" },
+      });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      expect(h.actions["destination-lock"]?.state)
+        .toBe(variant === "pending" ? "pending" : undefined);
+      run.setClock(1_700_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-refund-sent" })).resolves.toEqual({
+        status: "refund-pending",
+        reason: "destination-lock-unresolved",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "waiting", "source-refund": "final" },
+      });
+      for (const tick of [1, 2]) {
+        await expect(advanceCrossChainHtlc({
+          ...run.shared,
+          owner: `lock-unresolved-${tick}`,
+          now: () => 1_700_000 + tick * 101,
+        })).resolves.toEqual({
+          status: "refund-pending",
+          reason: "destination-lock-unresolved",
+          txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+          refunds: { "destination-refund": "waiting", "source-refund": "final" },
+        });
+      }
+      // The payee's destination lock lands late, after the source refund.
+      const { intent } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+      h.setObservedAt(1_700_400);
+      await h.markFinal("destination-lock", {
+        includedAt: 1_700_300,
+        expiresAt: 1_800,
+        lockTerms: {
+          token: intent.destinationTokenId,
+          amountBaseUnits: intent.destinationAmountBaseUnits,
+          hashlock: intent.destinationHashlock,
+          sender: intent.payeeDestinationAddress,
+          recipient: intent.payerDestinationAddress,
+        },
+      });
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "lock-landed", now: () => 1_700_500 }))
+        .resolves.toMatchObject({
+          status: "refund-pending",
+          refunds: { "destination-refund": "waiting", "source-refund": "final" },
+        });
+      await advanceCrossChainHtlc({ ...run.shared, owner: "destination-refund", now: () => 1_800_000 });
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "both-refunded", now: () => 1_800_101 }))
+        .resolves.toMatchObject({
+          status: "refunded",
+          refunds: { "destination-refund": "final", "source-refund": "final" },
+        });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund", "destination-refund"]);
+    },
+  );
+
+  test("keeps a pending destination lock owed past both expiries and refunds it once it lands", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-lock": "pending" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "source-refund-sent" });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "lock-still-pending", now: () => 1_700_101 }))
+      .resolves.toEqual({
+        status: "refund-pending",
+        reason: "destination-lock-unresolved",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "waiting", "source-refund": "final" },
+      });
+    const { intent } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    await h.markFinal("destination-lock", {
+      includedAt: 1_050_000,
+      expiresAt: 1_200,
+      finalityObservedAt: 1_100_000,
+      lockTerms: {
+        token: intent.destinationTokenId,
+        amountBaseUnits: intent.destinationAmountBaseUnits,
+        hashlock: intent.destinationHashlock,
+        sender: intent.payeeDestinationAddress,
+        recipient: intent.payerDestinationAddress,
+      },
+    });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "lock-landed", now: () => 1_700_202 }))
+      .resolves.toMatchObject({
+        status: "refund-pending",
+        reason: "destination-timeout",
+        refunds: { "destination-refund": "final", "source-refund": "final" },
+      });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "both-refunded", now: () => 1_700_303 }))
+      .resolves.toMatchObject({ status: "refunded", reason: "destination-timeout" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "source-refund", "destination-refund"]);
+  });
+
   test("fails closed before effects when a runtime store lacks the checkpoint contract", async () => {
     const base = createInMemoryCrossChainHtlcStore();
     const { recordSourceFinality: _unsupported, ...legacyStore } = base;
@@ -1795,7 +1900,7 @@ describe("advanceCrossChainHtlc", () => {
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "underfunded-source-refund" }))
       .resolves.toEqual({
         status: "refund-pending",
-        reason: "destination-lock-missing",
+        reason: "source-lock-terms-mismatch",
         txRefs: [refFor("source-lock"), refFor("source-refund")],
         refunds: { "source-refund": "pending" },
       });
@@ -1805,7 +1910,7 @@ describe("advanceCrossChainHtlc", () => {
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-stalled", now: () => 1_700_101 }))
       .resolves.toEqual({
         status: "refund-stalled",
-        reason: "destination-lock-missing",
+        reason: "source-lock-terms-mismatch",
         txRefs: [refFor("source-lock"), refFor("source-refund")],
         refunds: { "source-refund": "failed" },
       });
@@ -2006,11 +2111,12 @@ describe("advanceCrossChainHtlc", () => {
       refunds: { "source-refund": "waiting" },
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+    const reason = name === "missing" ? "source-lock-terms-missing" : "source-lock-terms-mismatch";
     run.setClock(1_700_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-terms-refund" }))
-      .resolves.toMatchObject({ status: "refund-pending" });
+      .resolves.toMatchObject({ status: "refund-pending", reason });
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-terms-refunded", now: () => 1_700_101 }))
-      .resolves.toMatchObject({ status: "refunded" });
+      .resolves.toMatchObject({ status: "refunded", reason });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "source-refund"]);
   });
@@ -2043,11 +2149,12 @@ describe("advanceCrossChainHtlc", () => {
     const { lockTerms: _terms, ...withoutTerms } = sourceLock;
     h.actions["source-lock"] = withoutTerms;
     h.setMode("destination-lock", "final");
+    // The unreported retained lock may still land, so it stays an owed leg.
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "refund-pending",
       reason: "source-lock-terms-missing",
-      txRefs: [refFor("source-lock")],
-      refunds: { "source-refund": "waiting" },
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
+      refunds: { "destination-refund": "waiting", "source-refund": "waiting" },
     });
     expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock"]);

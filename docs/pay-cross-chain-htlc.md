@@ -103,15 +103,31 @@ destination lock is `refund-pending` with reason `destination-lock-failed`,
 and a destination lock that can no longer be placed with the absolute margin
 is `refund-pending` with reason `destination-lock-window-closed`; the source
 leg is refunded at its expiry (reason `destination-lock-missing` when no
-destination lock failed). A retained reveal that the adapter reports `failed`
+destination lock was prepared or it is authenticated `absent`). When the
+source lock's terms ruled out the destination lock, its
+`source-lock-terms-missing` or `source-lock-terms-mismatch` reason is kept
+through the source refund.
+
+A retained destination lock that the adapter has not authenticated as
+`failed` or `absent` may still land, whether it is reported `pending` or not
+reported at all (anyone who saw its signed bytes can rebroadcast them). Such a
+session is never `refunded`: after the source refund it stays
+`refund-pending` with reason `destination-lock-unresolved`, its reference in
+`txRefs` and its `destination-refund` leg `waiting`. The core keeps observing;
+if the lock lands it becomes final and its refund is driven after the
+destination expiry like any other. Adapters must therefore report `pending`,
+never `absent`, while a destination lock can still land, exactly as for a
+reveal. A retained reveal that the adapter reports `failed`
 is `refund-pending` with reason `destination-claim-failed` until both
 expiries have passed, then both legs are refunded with reason
 `destination-claim-unlanded`. `failed` is reserved for sessions the core has
 nothing left to drive.
 
 Every refund result carries `refunds`, the state of each locked leg's refund
-(`destination-refund` appears once the destination lock is final): `waiting`
-(its lock has not expired, or a retained reveal still blocks it), `uncertain`
+(`destination-refund` appears once the destination lock is final, or while a
+retained destination lock may still land): `waiting` (its lock has not
+expired, a retained reveal still blocks it, or its lock is not final yet),
+`uncertain`
 (due, but this call could not prepare, persist, broadcast or observe it; the
 next call reuses the retained bytes), or the adapter's authenticated
 `pending`, `final` or `failed`. A payer whose own refund is final can see it

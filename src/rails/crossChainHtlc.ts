@@ -411,8 +411,9 @@ export interface CrossChainHtlcStore {
 
 /**
  * State of one refund leg in a refund result:
- * - `waiting`: not yet allowed, because its lock has not expired or a
- *   retained reveal still blocks it;
+ * - `waiting`: not yet allowed, because its lock has not expired, a retained
+ *   reveal still blocks it, or its retained lock is not final yet and may
+ *   still land;
  * - `uncertain`: due, but this call could not prepare, persist, broadcast or
  *   observe it; the next call retries with the retained bytes;
  * - `pending` / `final` / `failed`: the adapter's authenticated state of the
@@ -443,6 +444,7 @@ export type CrossChainHtlcProgress =
       reason:
         | "destination-timeout"
         | "destination-lock-missing"
+        | "destination-lock-unresolved"
         | "destination-lock-failed"
         | "destination-lock-window-closed"
         | "destination-expiry-margin-insufficient"
@@ -453,7 +455,10 @@ export type CrossChainHtlcProgress =
         | "destination-claim-failed"
         | "destination-claim-unlanded";
       txRefs: readonly Readonly<HtlcTxRef>[];
-      /** Each locked leg's refund; `destination-refund` once the destination lock is final. */
+      /**
+       * Each locked leg's refund; `destination-refund` once a destination lock
+       * is final or retained and not authenticated `failed` or `absent`.
+       */
       refunds: Readonly<Partial<Record<"source-refund" | "destination-refund", HtlcRefundLegState>>>;
     }
   | { status: "settled"; settlement: Readonly<CrossChainHtlcSettlement> };
@@ -998,9 +1003,15 @@ function finalSourceClaim(
   return observed as Readonly<FinalSourceClaimObservation>;
 }
 
+/**
+ * References of retained actions the adapter reports. `unreported` names
+ * retained actions whose reference is included even while the adapter does
+ * not report them, because they may still land.
+ */
 function collectRefs(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+  unreported: readonly HtlcAction[] = [],
 ): readonly Readonly<HtlcTxRef>[] {
   const refs: HtlcTxRef[] = [];
   for (const action of [
@@ -1015,6 +1026,8 @@ function collectRefs(
     const retained = prepared.get(action);
     if (item && item.state !== "absent" && retained && sameRef(item.txRef, retained.txRef)) {
       refs.push(Object.freeze({ ...item.txRef }));
+    } else if (!item && retained && unreported.includes(action)) {
+      refs.push(Object.freeze({ ...retained.txRef }));
     }
   }
   return Object.freeze(refs);
@@ -1358,6 +1371,8 @@ export async function advanceCrossChainHtlc(
   };
   // Reports each locked leg's refund from the latest observation. `sent` is a
   // refund broadcast in this call, reported as refunded only on a later call.
+  // A tracked destination leg keeps its retained lock's reference even while
+  // the adapter does not report that lock.
   const refundProgress = (
     reason: HtlcRefundReason,
     latest: Readonly<HtlcLedgerSnapshot>,
@@ -1382,7 +1397,11 @@ export async function advanceCrossChainHtlc(
           ? "refunded"
           : "refund-pending",
       reason,
-      txRefs: collectRefs(latest, prepared),
+      txRefs: collectRefs(
+        latest,
+        prepared,
+        attempts["destination-refund"] === undefined ? [] : ["destination-lock"],
+      ),
       refunds: Object.freeze(refunds),
     };
   };
@@ -1871,34 +1890,47 @@ export async function advanceCrossChainHtlc(
       return { status: "indeterminate", reason: "htlc-destination-lock-finality-regressed" };
     }
     const state = snapshot.actions["destination-lock"];
+    // The payee locks the destination only against the source lock's
+    // authenticated terms. Missing or different terms forbid the lock; the
+    // payer's source leg is then refunded at its expiry, and the terms stay
+    // the reason that the session refunds.
+    const sourceTermsVerdict = lockTermsVerdict(sourceLock, expectedSourceLockTerms(intent));
+    // A retained destination lock that is not authenticated `failed` or
+    // `absent` may still land, so it stays an owed leg: its reference and its
+    // refund are reported and the session is never `refunded` before it
+    // resolves. Once final it takes the final-lock path and is refunded there.
+    const destinationLockMayLand = prepared.has("destination-lock") &&
+      state?.state !== "failed" && state?.state !== "absent";
     // The payer's source leg stays locked until its own refund is final, so
     // nothing on this path is terminal: a failed or impossible destination
     // lock is refund-pending until the source refund lands.
-    const refundReason = state?.state === "failed" ? "destination-lock-failed" : "destination-lock-missing";
+    const refundReason: HtlcRefundReason = sourceTermsVerdict === "missing"
+      ? "source-lock-terms-missing"
+      : sourceTermsVerdict === "mismatch"
+        ? "source-lock-terms-mismatch"
+        : state?.state === "failed"
+          ? "destination-lock-failed"
+          : destinationLockMayLand ? "destination-lock-unresolved" : "destination-lock-missing";
+    const refundLegs = (
+      sourceRefund: "none" | "sent" | "uncertain",
+    ): Partial<Record<"source-refund" | "destination-refund", "none" | "sent" | "uncertain">> =>
+      destinationLockMayLand
+        ? { "destination-refund": "none", "source-refund": sourceRefund }
+        : { "source-refund": sourceRefund };
     if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry")) {
       const refund = snapshot.actions["source-refund"];
       if (!refund || refund.state === "absent") {
         const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
-        return refundProgress(refundReason, advanced ?? snapshot, {
-          "source-refund": advanced ? "sent" : "uncertain",
-        });
+        return refundProgress(refundReason, advanced ?? snapshot, refundLegs(advanced ? "sent" : "uncertain"));
       }
-      return refundProgress(refundReason, snapshot, { "source-refund": "none" });
+      return refundProgress(refundReason, snapshot, refundLegs("none"));
     }
     if (state?.state === "failed") {
-      return refundProgress(refundReason, snapshot, { "source-refund": "none" });
+      return refundProgress(refundReason, snapshot, refundLegs("none"));
     }
-    // The payee locks the destination only against the source lock's
-    // authenticated terms. Missing or different terms forbid the lock; the
-    // payer's source leg is then refunded at its expiry.
-    const sourceTermsVerdict = lockTermsVerdict(sourceLock, expectedSourceLockTerms(intent));
     const sourceTermsForbidden = sourceTermsVerdict === undefined
       ? undefined
-      : refundProgress(
-        sourceTermsVerdict === "missing" ? "source-lock-terms-missing" : "source-lock-terms-mismatch",
-        snapshot,
-        { "source-refund": "none" },
-      );
+      : refundProgress(refundReason, snapshot, refundLegs("none"));
     if (prepared.has("destination-lock")) {
       if (!state || state.state === "absent") {
         if (sourceTermsForbidden) return sourceTermsForbidden;
@@ -1922,6 +1954,7 @@ export async function advanceCrossChainHtlc(
       intent.safetyWindowSec,
       "source finality and safety budget",
     );
+    if (sourceTermsForbidden) return sourceTermsForbidden;
     if (sourceLock.expiresAt <= safeAdd(
       destinationExpiry,
       sourceRecoveryBudgetSec,
@@ -1930,7 +1963,6 @@ export async function advanceCrossChainHtlc(
       return refundProgress("destination-lock-window-closed", snapshot, { "source-refund": "none" });
     }
     if (!state || state.state === "absent") {
-      if (sourceTermsForbidden) return sourceTermsForbidden;
       const advanced = await execute("destination-lock", {
         sourceExpiry: sourceLock.expiresAt,
         destinationExpiry,
