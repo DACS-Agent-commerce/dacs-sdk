@@ -1964,3 +1964,88 @@ describe("advanceSolanaSplSettlement with an adapter result that changes between
       expect(reads).toBe(1);
     });
 });
+
+describe("advanceSolanaSplSettlement checks each value it relies on", () => {
+  test("a landed transfer whose authenticationHash only prints as a hash is never settled",
+    async () => {
+      const recordSettlement = vi.fn();
+      const authenticationHash = { note: "adapter secret=abc", toString: () => "c".repeat(64) };
+      const result = await advanceSolanaSplSettlement(input({
+        store: { ...createInMemorySolanaSplSettlementStore(), recordSettlement },
+        adapter: adapter({
+          async reconcile(_intent, attempt) {
+            return {
+              disposition: "settled-same",
+              transfer: observed({ signature: attempt.signature, authenticationHash } as never),
+            };
+          },
+        }),
+      }));
+      expect(result).toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settled-instruction-mismatch",
+      });
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(recordSettlement).not.toHaveBeenCalled();
+    });
+
+  test("a stored intent with the same bindingHash but another payer is never acted on",
+    async () => {
+      const memory = createInMemorySolanaSplSettlementStore();
+      const checkedPreflight = vi.fn(adapter().preflight);
+      await expect(advanceSolanaSplSettlement(input({
+        store: {
+          ...memory,
+          async claim(request) {
+            const claim = await memory.claim(request);
+            if (claim.status !== "acquired") return claim;
+            return { ...claim, intent: { ...claim.intent, payer: PAYEE } };
+          },
+        },
+        adapter: adapter({ preflight: checkedPreflight }),
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settlement-store-intent-mismatch",
+      });
+      expect(checkedPreflight).not.toHaveBeenCalled();
+    });
+
+  test.each(["stale", "conflict"] as const)(
+    "recordSettlement resolving %s after the transfer landed is uncertain",
+    async (status) => {
+      await expect(advanceSolanaSplSettlement(input({
+        store: {
+          ...createInMemorySolanaSplSettlementStore(),
+          recordSettlement: async () => ({ status, reason: "store secret=abc" }),
+        },
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settlement-persistence-uncertain",
+      });
+    },
+  );
+
+  test("a lease lost while reconciling is never recorded as this call's settlement", async () => {
+    let current = true;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const recordSettlement = vi.spyOn(memory, "recordSettlement");
+    await expect(advanceSolanaSplSettlement(input({
+      store: {
+        ...memory,
+        recordSettlement,
+        isCurrent: async (request) => current && memory.isCurrent(request),
+      },
+      adapter: adapter({
+        async reconcile(intent, attempt, fence) {
+          const result = await adapter().reconcile(intent, attempt, fence);
+          current = false;
+          return result;
+        },
+      }),
+    }))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-reconciliation-unavailable",
+    });
+    expect(recordSettlement).not.toHaveBeenCalled();
+  });
+});
