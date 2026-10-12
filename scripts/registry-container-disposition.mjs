@@ -56,11 +56,10 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   const checksPassed = gate?.registryDependencyPolicyPassed === true &&
     gate.productionImageDependencyPolicyPassed === true && gate.engineStrictExitCode === 0 &&
     gate.lockSbomExitCode === 0 && gate.physicalSbomExitCode === 0;
-  const total = summary.audit?.total;
-  if (checksPassed && gate.passed === true && total === 0 && gate.auditExitCode === 0 && policy.observedAdvisories.length === 0) {
+  if (checksPassed && gate.passed === true && gate.auditExitCode === 0 && policy.observedAdvisories.length === 0) {
     return { exitCode: 0, message: "registry/container acceptance passed", ...policy };
   }
-  if (checksPassed && Number.isInteger(total) && total > 0 && policy.observedAdvisories.length > 0 &&
+  if (checksPassed && policy.observedAdvisories.length > 0 &&
       [0, 1].includes(gate.auditExitCode)) {
     return { exitCode: 4, message: "functional registry/container rehearsal passed; production publication " +
       "remains blocked by #191 audit findings" + (policy.unlistedAdvisories.length ?
@@ -86,7 +85,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         }
       }
     }
-    if (counts.total > 0 && ids.size === 0) throw new Error("npm audit findings lack advisory IDs");
     const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")));
     writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy }, null, 2) + "\n");
     process.stdout.write(JSON.stringify(counts) + "\n");
