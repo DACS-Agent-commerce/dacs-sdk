@@ -4937,6 +4937,103 @@ describe("round 10", () => {
     });
   });
 
+  describe("finding 4: the core never settles a durable late completion", () => {
+    test("a store holding a completion finalized at the deadline gets expiry, not a settlement", async () => {
+      const inner = createInMemoryLiquidityTankStore();
+      const h = harness();
+      const run = await lockDurably(inner, h);
+      h.observe.mockClear();
+      const late = completed(h.operationHash, D, D);
+      const recordSettlement = vi.fn<LiquidityTankStore["recordSettlement"]>(async () => ({ status: "recorded" }));
+      const recordRecoveryExpired = vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
+        async () => ({ status: "recorded" }),
+      );
+      // A non-conforming store that kept a late completion as the durable observation.
+      const store: LiquidityTankStore = {
+        ...inner,
+        claim: async (input) => {
+          const claimed = await inner.claim(input);
+          return claimed.status === "acquired" ? { ...claimed, observation: late } : claimed;
+        },
+        recordSettlement,
+        recordRecoveryExpired,
+      };
+      run.setClock(D + 1_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late", store }))
+        .resolves.toEqual({
+          status: "failed",
+          errorClass: "failed-substrate",
+          reason: "tank-locked-unreleased-recovery-expired",
+          reputationNeutral: true,
+        });
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
+        observation: late, expectedObservation: late,
+      }));
+      expect(h.observe).not.toHaveBeenCalled();
+    });
+
+    test("the reference store names which terminal transition won", async () => {
+      const intent = createLiquidityTankIntent(authority());
+      const seed = async () => {
+        const store = createInMemoryLiquidityTankStore();
+        const claim = await store.claim({ intent, owner: "w", now: D - 10, leaseDurationMs: 1_000 });
+        if (claim.status !== "acquired") throw new Error("expected acquired");
+        const write = {
+          settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+          owner: "w", generation: claim.lease.generation, now: D - 10,
+        };
+        await store.recordSubmission({ ...write, submission: {
+          submissionVersion: "1", authorityHash: intent.bindingHash, operationHash: intent.operationHash,
+          bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx",
+          signedSubmissionBase64: Buffer.from("signed-native-bridge").toString("base64"),
+          preparedAt: 900, submissionHash: "e".repeat(64),
+        } });
+        const checkpoint = lockedPendingAt(intent.operationHash, D) as
+          Extract<LiquidityTankRecoveryEvidence, { status: "pending" }>;
+        await expect(store.recordObservation({ ...write, observation: checkpoint }))
+          .resolves.toEqual({ status: "recorded" });
+        return { store, write, checkpoint };
+      };
+      const timely = completed(intent.operationHash, D - 5);
+      const settlement = {
+        txRef: {
+          kind: "liquidity-tank" as const, bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+          lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx", recoveryDeadline: D,
+        },
+        paymentAmount: { amount: "1.25", currency: "USDC" as const },
+        settlementFinality: { model: "liquidity-tank" as const, finalityObservedAt: D - 5 },
+        authenticationHash: AUTH_HASH,
+      };
+
+      const settledFirst = await seed();
+      await settledFirst.store.recordObservation({ ...settledFirst.write, observation: timely });
+      await expect(settledFirst.store.recordSettlement({ ...settledFirst.write, settlement }))
+        .resolves.toEqual({ status: "recorded" });
+      await expect(settledFirst.store.recordRecoveryExpired({
+        ...settledFirst.write, now: D + 1, expectedObservation: timely,
+        observation: completed(intent.operationHash, D),
+      })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-lost-to-settlement" });
+
+      const completedFirst = await seed();
+      await completedFirst.store.recordObservation({ ...completedFirst.write, observation: timely });
+      await expect(completedFirst.store.recordRecoveryExpired({
+        ...completedFirst.write, now: D + 1, expectedObservation: timely,
+        observation: completed(intent.operationHash, D),
+      })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-lost-to-completion" });
+
+      const expiredFirst = await seed();
+      await expect(expiredFirst.store.recordRecoveryExpired({
+        ...expiredFirst.write, now: D, expectedObservation: expiredFirst.checkpoint,
+        observation: expiredFirst.checkpoint,
+      })).resolves.toEqual({ status: "recorded" });
+      await expect(expiredFirst.store.recordSettlement({ ...expiredFirst.write, settlement }))
+        .resolves.toEqual({
+          status: "conflict", reason: "liquidity-tank-settlement-lost-to-recovery-expiry",
+        });
+    });
+  });
+
   describe("finding 5: a recovery deadline before the submission was prepared is refused", () => {
     test("a seconds-scale deadline on a fresh lock never expires it (probe R2)", async () => {
       const h = signingHarness({}, PREPARED_AT_MS);

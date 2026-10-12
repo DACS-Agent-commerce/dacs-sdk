@@ -2216,6 +2216,11 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
       if (record.settlement) {
         return { status: "conflict", reason: "liquidity-tank-recovery-lost-to-settlement" };
       }
+      // A durable timely completion has won even before its settlement is
+      // written: no later evidence may expire it.
+      if (record.observation?.status === "completed") {
+        return { status: "conflict", reason: "liquidity-tank-recovery-lost-to-completion" };
+      }
       if (record.recoveryExpired) {
         return canonicalize(record.recoveryExpired) === canonicalize(input.observation)
           ? { status: "existing" }
