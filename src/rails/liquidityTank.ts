@@ -1018,12 +1018,13 @@ export async function advanceLiquidityTankSettlement(
   }
   let intent: Readonly<LiquidityTankIntent>;
   try {
-    // Refused content can never have produced a settlement key in this version.
     intent = intentFromCapturedAuthority(authority);
   } catch (error) {
+    // The settlement key binds only jobId, railId and phaseIndex, so refused
+    // content (a field shifted in type or case) may share the key of a phase
+    // that already holds a lock or settled: never report a settlement failure.
     return {
-      status: "failed",
-      errorClass: "permanent",
+      status: "indeterminate",
       reason: error instanceof Error ? error.message : "liquidity-tank-authority-invalid",
     };
   }
@@ -1229,15 +1230,16 @@ export async function advanceLiquidityTankSettlement(
     return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
   }
   if (claimStatus === "conflict") {
-    const failedClaim = claimed as Extract<
+    // A conflict means the phase already holds another binding, which may be
+    // a durable lock or a settlement this intent cannot read.
+    const conflictClaim = claimed as Extract<
       LiquidityTankStoreClaim,
       { status: "conflict" | "corrupt" }
     >;
     try {
       return {
-        status: "failed",
-        errorClass: "permanent",
-        reason: requireString(failedClaim.reason, "claim reason"),
+        status: "indeterminate",
+        reason: requireString(conflictClaim.reason, "claim reason"),
       };
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };

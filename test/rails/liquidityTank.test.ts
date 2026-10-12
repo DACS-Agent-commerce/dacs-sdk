@@ -281,11 +281,15 @@ describe("createLiquidityTankIntent", () => {
     const store = createInMemoryLiquidityTankStore();
     const claim = vi.spyOn(store, "claim");
     const h = harness();
+    // The phase may already hold a lock under the same settlement key.
     await expect(advanceLiquidityTankSettlement(runner({
       authority: authority(override),
       store,
       adapter: h.adapter,
-    }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+    }).shared)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "pay-cross-chain-liquidity-tank: fixed USDC route token decimals must both be exactly 6",
+    });
     expect(claim).not.toHaveBeenCalled();
     expect(h.prepareSubmission).not.toHaveBeenCalled();
     expect(h.observe).not.toHaveBeenCalled();
@@ -313,13 +317,13 @@ describe("createLiquidityTankIntent", () => {
     ["wrong scope", { supportedScope: "future-scope" }],
     ["same tank", { destinationLiquidityTankId: "tank-source" }],
     ["overprecision", { amount: "1.0000001" }],
-  ])("rejects %s before adapter access", async (_name, override) => {
+  ])("rejects %s as indeterminate before adapter access", async (_name, override) => {
     const h = harness();
     const result = await advanceLiquidityTankSettlement(runner({
       authority: authority(override as never),
       adapter: h.adapter,
     }).shared);
-    expect(result).toMatchObject({ status: "failed", errorClass: "permanent" });
+    expect(result).toEqual({ status: "indeterminate", reason: expect.any(String) });
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
 
@@ -2251,6 +2255,114 @@ describe("advanceLiquidityTankSettlement", () => {
       h.setObservation(failedAfterLock(h.operationHash, D + 300));
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "bound-failure" }))
         .resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate", reputationNeutral: true });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("round 6", () => {
+    const D = RECOVERY_DEADLINE_MS;
+
+    /** The lock was live all along: the bridge releases and a plain call settles. */
+    async function releasesLater(run: Awaited<ReturnType<typeof lockDurably>>, h: ReturnType<typeof harness>) {
+      run.setClock(D - 400);
+      h.setObservation(completed(h.operationHash, D - 450));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+        .resolves.toMatchObject({ status: "settled" });
+    }
+
+    // The settlement key binds only jobId, railId and phaseIndex, so each of
+    // these shares the key of the durable lock.
+    test.each([
+      ["phaseIndex as a string (a bigint column)", { phaseIndex: "2" },
+        "pay-cross-chain-liquidity-tank: phaseIndex must be a non-negative safe integer"],
+      ["sourceTokenDecimals as a string", { sourceTokenDecimals: "6" },
+        "pay-cross-chain-liquidity-tank: sourceTokenDecimals must be a non-negative safe integer"],
+      ["amount as a number", { amount: 1.25 },
+        "invalid decimal: 1.25"],
+      ["an upper-cased hash", { agreementHash: AGREEMENT_HASH.toUpperCase() },
+        "pay-cross-chain-liquidity-tank: authority hashes must be 32-byte lower-case hex"],
+    ] as const)("a lock, then the authority with %s, is indeterminate before claim and still settles", async (_label, shift, reason) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const claim = vi.spyOn(store, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: "reloaded",
+        authority: { ...run.shared.authority, ...shift } as never,
+      })).resolves.toEqual({ status: "indeterminate", reason });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    const differentBindings = [
+      ["a changed amount", { amount: "2.5" }],
+      ["a recased destinationAddress", { destinationAddress: "DESTINATION-ADDRESS" }],
+    ] as const;
+
+    test.each(differentBindings)(
+      "a lock, then a valid authority with %s for the same phase, is an indeterminate binding conflict",
+      async (_label, change) => {
+        const h = harness();
+        const store = createInMemoryLiquidityTankStore();
+        const run = await lockDurably(store, h);
+        h.observe.mockClear();
+        run.setClock(D - 500);
+        await expect(advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "rebound",
+          authority: authority(change),
+        })).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-settlement-binding-conflict",
+        });
+        expect(h.observe).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        await releasesLater(run, h);
+      },
+    );
+
+    test.each(differentBindings)(
+      "a settled phase, then a valid authority with %s, is an indeterminate binding conflict",
+      async (_label, change) => {
+        const h = harness();
+        const store = createInMemoryLiquidityTankStore();
+        const run = await lockDurably(store, h);
+        run.setClock(D - 400);
+        h.setObservation(completed(h.operationHash, D - 450));
+        const settled = await advanceLiquidityTankSettlement({ ...run.shared, owner: "complete" });
+        expect(settled).toMatchObject({ status: "settled" });
+        h.observe.mockClear();
+        run.setClock(D - 300);
+        await expect(advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "rebound",
+          authority: authority(change),
+        })).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-settlement-binding-conflict",
+        });
+        expect(h.observe).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+          .resolves.toEqual(settled);
+      },
+    );
+
+    test("a host store's claim conflict keeps its reason and is indeterminate", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      store.claim = vi.fn(async () => ({ status: "conflict" as const, reason: "host-binding-mismatch" }));
+      const h = harness();
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toEqual({ status: "indeterminate", reason: "host-binding-mismatch" });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
   });
