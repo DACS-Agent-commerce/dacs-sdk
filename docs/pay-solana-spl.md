@@ -118,6 +118,11 @@ at index n − 1, and the array has no other own keys. A hole, an inherited inde
 or a length that disagrees with the array's own keys could hide the live latest
 attempt, so it is `solana-spl-retained-state-corrupt` before anything is
 reconciled, signed or broadcast.
+A stored settlement must be plain data. Only its own data properties are read,
+each once, into a fresh frozen copy that is checked against the intent, and a
+`settled` result returns only that copy. Extra fields and `toJSON` hooks are
+dropped; an accessor, inherited or invalid field is
+`solana-spl-stored-settlement-mismatch`.
 The exported in-memory store is for tests and development only.
 
 The adapter must authenticate reconciliation from Solana ledger state. For

@@ -1764,3 +1764,122 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
     }, preflight({ payerTokenBalanceBaseUnits: "0" }))).resolves.toEqual(corrupt);
   });
 });
+
+describe("advanceSolanaSplSettlement with a stored settlement", () => {
+  type Fields = Record<string, unknown>;
+  const SECRET = "secret=abc";
+  // The settlement a store keeps for the default transfer.
+  const stored = (): Fields & { txRef: Fields; paymentAmount: Fields; settlementFinality: Fields } => ({
+    txRef: { kind: "solana-instruction", cluster: "devnet", signature: SIGNATURE_1, instructionIndex: 1 },
+    paymentAmount: { amount: "1.25", currency: "USDC" },
+    settlementFinality: {
+      model: "commitment-level",
+      finalityCommitmentLevel: "confirmed",
+      finalityObservedAt: 1_788_000_000_000,
+    },
+    authenticationHash: "c".repeat(64),
+  });
+  const deeplyFrozen = (value: unknown): boolean => typeof value !== "object" || value === null ||
+    (Object.isFrozen(value) && Object.values(value).every(deeplyFrozen));
+
+  // Resumes against a store that reports the phase settled with `settlement`.
+  async function settledWith(settlement: unknown) {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(adapter().reconcile);
+    const result = await advanceSolanaSplSettlement(input({
+      store: {
+        ...createInMemorySolanaSplSettlementStore(),
+        claim: async (request) => ({ status: "settled", intent: request.intent, settlement }) as never,
+      },
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+    }));
+    expect([prepareSignedTransfer, broadcastRetained, reconcile].map((spy) => spy.mock.calls.length))
+      .toEqual([0, 0, 0]);
+    return result;
+  }
+
+  test.each<[string, () => Fields]>([
+    ["no extra fields", stored],
+    ["its own toJSON", () => Object.assign(stored(), { toJSON: () => ({ source: SECRET }) })],
+    ["a nested toJSON", () => {
+      const value = stored();
+      value.txRef.toJSON = () => SECRET;
+      return value;
+    }],
+    ["an extra field", () => ({ ...stored(), note: `store ${SECRET}` })],
+    ["a nested proxy whose reads change after the first", () => {
+      const value = stored();
+      const reads = new Map<PropertyKey, number>();
+      value.txRef = new Proxy(value.txRef, {
+        get(target, key, receiver) {
+          reads.set(key, (reads.get(key) ?? 0) + 1);
+          return key === "signature" && reads.get(key)! > 1 ? SECRET : Reflect.get(target, key, receiver);
+        },
+      });
+      return value;
+    }],
+  ])("a stored settlement with %s is returned as a fresh frozen copy without store text",
+    async (_name, settlement) => {
+      const value = settlement();
+      const result = await settledWith(value);
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+      expect(result).toEqual({ status: "settled", settlement: stored() });
+      const copy = (result as { settlement?: unknown }).settlement;
+      expect(copy).not.toBe(value);
+      expect(deeplyFrozen(copy)).toBe(true);
+    });
+
+  test.each<[string, () => { value: unknown; reads: () => number }]>([
+    ["an authenticationHash getter that changes after validation", () => {
+      let reads = 0;
+      const value = Object.defineProperty(stored(), "authenticationHash", {
+        enumerable: true,
+        get: () => (reads++ === 0 ? "c".repeat(64) : SECRET),
+      });
+      return { value, reads: () => reads };
+    }],
+    ["a nested signature getter that throws after validation", () => {
+      let reads = 0;
+      const value = stored();
+      Object.defineProperty(value.txRef, "signature", {
+        enumerable: true,
+        get: () => {
+          if (reads++ === 0) return SIGNATURE_1;
+          throw new Error(`store ${SECRET}`);
+        },
+      });
+      return { value, reads: () => reads };
+    }],
+    ["an authenticationHash object that only prints as a hash", () => {
+      let reads = 0;
+      const authenticationHash = {
+        note: SECRET,
+        toString: () => {
+          reads += 1;
+          return "c".repeat(64);
+        },
+      };
+      return { value: { ...stored(), authenticationHash }, reads: () => reads };
+    }],
+    ["fields inherited from a prototype", () => {
+      let reads = 0;
+      const value: unknown = Object.create(new Proxy(stored(), {
+        get(target, key, receiver) {
+          reads += 1;
+          return Reflect.get(target, key, receiver);
+        },
+      }));
+      return { value, reads: () => reads };
+    }],
+  ])("a stored settlement with %s is never read and never returned", async (_name, settlement) => {
+    const { value, reads } = settlement();
+    const result = await settledWith(value);
+    expect(reads()).toBe(0);
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-stored-settlement-mismatch",
+    });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+});

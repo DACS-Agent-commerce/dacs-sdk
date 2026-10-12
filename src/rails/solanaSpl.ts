@@ -613,25 +613,74 @@ function captureRetainedExpiryEvidence(
   return captured;
 }
 
-function storedSettlementMatchesIntent(
-  settlement: Readonly<SolanaSplSettlementResult>,
+/** Reads an own data property once; a missing, inherited or accessor field throws. */
+function ownField(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) {
+    throw new DacsError("pay-solana-spl: stored settlement must be an object");
+  }
+  const field = Object.getOwnPropertyDescriptor(value, key);
+  if (field === undefined || !("value" in field)) {
+    throw new DacsError(`pay-solana-spl: stored settlement ${key} must be a data property`);
+  }
+  return field.value;
+}
+
+/**
+ * Copies a stored settlement into fresh frozen plain data, then checks the
+ * copy against the intent. Only own data properties are read, each once, so a
+ * store accessor, `toJSON` hook or extra field never reaches the caller.
+ * Returns null when a field is missing, inherited, an accessor or invalid.
+ */
+function captureStoredSettlement(
+  value: unknown,
   intent: Readonly<SolanaSplSettlementIntent>,
-): boolean {
+): Readonly<SolanaSplSettlementResult> | null {
   try {
-    return settlement.txRef.kind === "solana-instruction" &&
-      settlement.txRef.cluster === intent.cluster &&
-      requireBase58Bytes(settlement.txRef.signature, "stored signature", 64).length > 0 &&
-      Number.isSafeInteger(settlement.txRef.instructionIndex) &&
-      settlement.txRef.instructionIndex >= 0 &&
-      settlement.paymentAmount.amount === intent.amount &&
-      settlement.paymentAmount.currency === intent.assetSymbol &&
-      settlement.settlementFinality.model === "commitment-level" &&
-      settlement.settlementFinality.finalityCommitmentLevel === intent.commitmentLevel &&
-      Number.isSafeInteger(settlement.settlementFinality.finalityObservedAt) &&
-      settlement.settlementFinality.finalityObservedAt >= 0 &&
-      HASH_RE.test(settlement.authenticationHash);
+    const txRef = ownField(value, "txRef");
+    const paymentAmount = ownField(value, "paymentAmount");
+    const finality = ownField(value, "settlementFinality");
+    const stored = {
+      kind: ownField(txRef, "kind"),
+      cluster: ownField(txRef, "cluster"),
+      signature: ownField(txRef, "signature"),
+      instructionIndex: ownField(txRef, "instructionIndex"),
+      amount: ownField(paymentAmount, "amount"),
+      currency: ownField(paymentAmount, "currency"),
+      model: ownField(finality, "model"),
+      finalityCommitmentLevel: ownField(finality, "finalityCommitmentLevel"),
+      finalityObservedAt: ownField(finality, "finalityObservedAt"),
+      authenticationHash: ownField(value, "authenticationHash"),
+    };
+    const signature = requireBase58Bytes(stored.signature, "stored signature", 64);
+    const { instructionIndex, finalityObservedAt, authenticationHash } = stored;
+    if (stored.kind !== "solana-instruction" || stored.cluster !== intent.cluster ||
+        typeof instructionIndex !== "number" || !Number.isSafeInteger(instructionIndex) ||
+        instructionIndex < 0 ||
+        stored.amount !== intent.amount || stored.currency !== intent.assetSymbol ||
+        stored.model !== "commitment-level" ||
+        stored.finalityCommitmentLevel !== intent.commitmentLevel ||
+        typeof finalityObservedAt !== "number" || !Number.isSafeInteger(finalityObservedAt) ||
+        finalityObservedAt < 0 ||
+        typeof authenticationHash !== "string" || !HASH_RE.test(authenticationHash)) {
+      return null;
+    }
+    return Object.freeze({
+      txRef: Object.freeze({
+        kind: "solana-instruction" as const,
+        cluster: intent.cluster,
+        signature,
+        instructionIndex,
+      }),
+      paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.assetSymbol }),
+      settlementFinality: Object.freeze({
+        model: "commitment-level" as const,
+        finalityCommitmentLevel: intent.commitmentLevel,
+        finalityObservedAt,
+      }),
+      authenticationHash,
+    });
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -684,7 +733,10 @@ function settlementFrom(
   });
 }
 
-/** A store claim after validation; every field was read exactly once. */
+/**
+ * A store claim after validation; every field was read exactly once. A
+ * settlement is a frozen copy already checked against the intent.
+ */
 type ClaimView =
   | {
       status: "acquired";
@@ -733,7 +785,11 @@ function readClaim(
     if (status === "settled") {
       const settlement = claim.settlement;
       if (typeof settlement !== "object" || settlement === null) return invalid;
-      return { status, settlement: settlement as Readonly<SolanaSplSettlementResult> };
+      // The store's object never leaves: only a checked copy is returned.
+      const captured = captureStoredSettlement(settlement, intent);
+      return captured
+        ? { status, settlement: captured }
+        : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
     }
     const lease = claim.lease;
     const attempts = claim.attempts;
@@ -922,9 +978,7 @@ export async function advanceSolanaSplSettlement(
   }
   const claimed = readClaim(stored, intent);
   if (claimed.status === "settled") {
-    return storedSettlementMatchesIntent(claimed.settlement, intent)
-      ? { status: "settled", settlement: claimed.settlement }
-      : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
+    return { status: "settled", settlement: claimed.settlement };
   }
   if (claimed.status !== "acquired") return claimed;
   const lease = claimed.lease;
