@@ -1082,6 +1082,22 @@ describe("advanceCrossChainHtlc", () => {
       .toEqual(["source-lock", "destination-lock", "source-refund", "destination-refund"]);
   });
 
+  test("fails closed before effects when a runtime store lacks the reveal replacement contract", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const { replacePreparedDestinationClaim: _unsupported, ...legacyStore } = base;
+    const h = harness();
+    await expect(advanceCrossChainHtlc(runner({
+      adapter: h.adapter,
+      store: legacyStore as CrossChainHtlcStore,
+    }).shared)).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-destination-claim-replacement-store-unsupported",
+    });
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.prepareAction).not.toHaveBeenCalled();
+  });
+
   test("fails closed before effects when a runtime store lacks the checkpoint contract", async () => {
     const base = createInMemoryCrossChainHtlcStore();
     const { recordSourceFinality: _unsupported, ...legacyStore } = base;
@@ -1754,7 +1770,7 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
-  test("refunds both legs after source expiry when a retained destination claim failed", async () => {
+  test("alerts on a failed reveal once the claim window has closed and refunds both legs after both expiries", async () => {
     const h = harness({
       sourceExpiry: 1_700,
       destinationExpiry: 1_200,
@@ -1766,23 +1782,24 @@ describe("advanceCrossChainHtlc", () => {
     await advanceCrossChainHtlc(run.nextOwner());
     const pending = h.actions["destination-claim"];
     if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    // Reverted at the destination-claim cutoff: its calldata published the preimage.
     h.actions["destination-claim"] = {
       state: "failed",
       txRef: pending.txRef,
       reason: "reveal-reverted",
       authenticationHash: AUTH_HASH,
     };
-    await expect(advanceCrossChainHtlc(run.nextOwner()))
-      .resolves.toEqual({
-        status: "refund-pending",
-        reason: "destination-claim-failed",
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    for (const [owner, now] of [["at-cutoff", 1_185_000], ["destination-expired", 1_200_000]] as const) {
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner, now: () => now })).resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-destination-claim-failed-preimage-public",
         txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim")],
-        refunds: { "destination-refund": "waiting", "source-refund": "waiting" },
       });
-    run.setClock(1_200_000);
-    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "failed-before-source-expiry" }))
-      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-failed" });
-    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("destination-refund");
+    }
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
     run.setClock(1_700_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "failed-after-source-expiry" }))
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
@@ -1795,6 +1812,265 @@ describe("advanceCrossChainHtlc", () => {
       "destination-refund",
       "source-refund",
     ]);
+  });
+
+  test("reports refund-stalled when the source refund reverts after a public failed reveal", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-claim": "pending", "source-refund": "pending" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const pending = h.actions["destination-claim"];
+    if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "both-refunds-sent" }))
+      .resolves.toMatchObject({
+        status: "refund-pending",
+        reason: "destination-claim-unlanded",
+        refunds: { "destination-refund": "final", "source-refund": "pending" },
+      });
+    // The payee claimed the source with the published preimage first.
+    const sourceRefund = h.actions["source-refund"];
+    if (!sourceRefund || sourceRefund.state !== "pending") throw new Error("expected pending source refund");
+    h.actions["source-refund"] = { state: "failed", txRef: sourceRefund.txRef, authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-refund-reverted", now: () => 1_700_101 }))
+      .resolves.toMatchObject({
+        status: "refund-stalled",
+        reason: "destination-claim-unlanded",
+        refunds: { "destination-refund": "final", "source-refund": "failed" },
+      });
+  });
+
+  test("replaces a failed reveal while the claim window is open and broadcasts the new bytes", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const first = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .find((prepared) => prepared.action === "destination-claim");
+    if (!first) throw new Error("expected a reveal");
+    h.actions["destination-claim"] = {
+      state: "failed",
+      txRef: first.txRef,
+      reason: "out-of-gas",
+      authenticationHash: AUTH_HASH,
+    };
+    for (let call = 0; call < 3; call += 1) {
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-claim-finality-pending",
+      });
+    }
+    const revealRequests = h.prepareAction.mock.calls
+      .map((call) => call[0])
+      .filter((request) => request.action === "destination-claim");
+    expect(revealRequests).toHaveLength(2);
+    expect(revealRequests[1]!.replacement).toEqual({
+      attempt: 2,
+      priorEffectHash: first.effectHash,
+      priorTxRef: first.txRef,
+      failureAuthenticationHash: AUTH_HASH,
+    });
+    expect(Buffer.from(revealRequests[1]!.preimage!).toString("hex")).toBe(PREIMAGE_HEX);
+    const reveals = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-claim");
+    expect(reveals).toHaveLength(2);
+    expect(reveals[1]!.effectHash).not.toBe(first.effectHash);
+    expect(reveals[1]!.txRef).toEqual(refFor("destination-claim", "-attempt-2"));
+    // The replacement lands and the payee's source claim settles the session.
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: reveals[1]!.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      finalityObservedAt: 1_000_000,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRefs: [
+        refFor("source-lock"),
+        refFor("destination-lock"),
+        refFor("destination-claim", "-attempt-2"),
+        refFor("source-claim"),
+      ] },
+    });
+  });
+
+  test("replaces repeated reveal failures up to the cap, then raises an operator alert", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const failActiveReveal = () => {
+      const active = h.broadcastRetained.mock.calls
+        .map((call) => call[0])
+        .filter((prepared) => prepared.action === "destination-claim")
+        .at(-1);
+      if (!active) throw new Error("expected a reveal");
+      h.actions["destination-claim"] = { state: "failed", txRef: active.txRef, authenticationHash: AUTH_HASH };
+    };
+    for (let replacement = 1; replacement <= 3; replacement += 1) {
+      failActiveReveal();
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-claim-finality-pending",
+      });
+    }
+    failActiveReveal();
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    for (let call = 0; call < 2; call += 1) {
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-destination-claim-failed-preimage-public",
+        txRefs: [
+          refFor("source-lock"),
+          refFor("destination-lock"),
+          refFor("destination-claim", "-attempt-4"),
+        ],
+      });
+    }
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    expect(h.prepareAction.mock.calls
+      .filter((call) => call[0].action === "destination-claim")
+      .map((call) => call[0].replacement?.attempt)).toEqual([undefined, 2, 3, 4]);
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
+  });
+
+  test("raises an operator alert when the adapter refuses to prepare a reveal replacement", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const original = h.adapter.prepareAction;
+    let refuse = false;
+    h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
+      if (refuse && request.replacement) throw new Error("payer role service refused");
+      return original(request, fence);
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const pending = h.actions["destination-claim"];
+    if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
+    refuse = true;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "operator-alert",
+      reason: "htlc-destination-claim-failed-preimage-public",
+    });
+    expect(h.broadcastRetained.mock.calls.filter((call) => call[0].action === "destination-claim"))
+      .toHaveLength(1);
+    // Resumable: once the adapter prepares it, the next call replaces the reveal.
+    refuse = false;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    expect(h.broadcastRetained.mock.calls.filter((call) => call[0].action === "destination-claim"))
+      .toHaveLength(2);
+  });
+
+  test("still replaces a failed reveal after the payer withdraws authorization", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const pending = h.actions["destination-claim"];
+    if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), authorizeDestinationClaim: false }))
+      .resolves.toEqual({ status: "waiting", reason: "htlc-destination-claim-finality-pending" });
+    expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "destination-claim"))
+      .toHaveLength(2);
+  });
+
+  test("broadcasts nothing when the stored reveal changed under the replacement compare-and-swap", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    const { intent } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const rival = preparedFor(intent, "destination-claim", "-rival");
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async replacePreparedDestinationClaim(input) {
+        // Another writer swaps the stored reveal first.
+        await base.replacePreparedDestinationClaim({ ...input, replacement: rival });
+        return base.replacePreparedDestinationClaim(input);
+      },
+    };
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const pending = h.actions["destination-claim"];
+    if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-claim-effect-uncertain",
+    });
+    expect(h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-claim")
+      .map((prepared) => prepared.txRef)).toEqual([refFor("destination-claim")]);
+  });
+
+  test("rebroadcasts a persisted reveal replacement after a restart, never preparing a third reveal", async () => {
+    const base = createInMemoryCrossChainHtlcStore();
+    let crashAfterCommit = true;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async replacePreparedDestinationClaim(input) {
+        const result = await base.replacePreparedDestinationClaim(input);
+        if (crashAfterCommit) {
+          crashAfterCommit = false;
+          throw new Error("worker lost after the replacement committed");
+        }
+        return result;
+      },
+    };
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter, store });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const pending = h.actions["destination-claim"];
+    if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-claim-effect-uncertain",
+    });
+    const reveals = () => h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-claim");
+    expect(reveals()).toHaveLength(1);
+    // The adapter still reports the replaced reveal failed; the persisted
+    // replacement is rebroadcast from the store, byte for byte.
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    const preparedReplacement = await h.prepareAction.mock.results[3]!.value;
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim", "destination-claim"]);
+    expect(reveals()).toHaveLength(2);
+    const { effectHash, ...rebroadcast } = reveals()[1]!;
+    expect(rebroadcast).toEqual(preparedReplacement);
+    expect(effectHash).toBe(sha256Hex(canonicalize(rebroadcast)));
   });
 
   test("drives the payer's source refund when the payee's destination refund cannot be prepared", async () => {
@@ -2608,6 +2884,160 @@ describe("source-claim finality settlement store contract", () => {
       .resolves.toEqual({ status: "recorded" });
     await expect(fixture.store.recordSettlement({ ...fence, settlement: valid }))
       .resolves.toEqual({ status: "existing" });
+  });
+});
+
+async function destinationClaimStoreFixture(options: {
+  leaseDurationMs?: number;
+  sourceExpiry?: number;
+} = {}) {
+  const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+  const store = createInMemoryCrossChainHtlcStore();
+  const claimed = await store.claim({
+    intent,
+    secrets,
+    owner: "direct-owner",
+    now: 1_000,
+    leaseDurationMs: options.leaseDurationMs ?? 100,
+  });
+  if (claimed.status !== "acquired") throw new Error("fixture lease not acquired");
+  const fence = {
+    settlementKey: intent.settlementKey,
+    bindingHash: intent.bindingHash,
+    owner: claimed.lease.owner,
+    generation: claimed.lease.generation,
+  };
+  const sourceLock = preparedFor(intent, "source-lock");
+  await store.recordPrepared({ ...fence, prepared: sourceLock });
+  await store.recordSourceFinality({
+    ...fence,
+    checkpoint: {
+      sourceLockEffectHash: sourceLock.effectHash,
+      sourceLockTxRef: sourceLock.txRef as Extract<HtlcTxRef, { kind: "htlc-lock" }>,
+      includedAt: 1_000,
+      sourceExpiry: options.sourceExpiry ?? 5_000,
+      finalityObservedAt: 1_000,
+      authenticationHash: AUTH_HASH,
+    },
+  });
+  const prior = preparedFor(intent, "destination-claim");
+  const recorded = await store.recordPrepared({ ...fence, prepared: prior });
+  if (recorded.status !== "recorded") throw new Error("fixture reveal not recorded");
+  const failed = (prepared: Readonly<HtlcPreparedAction>) => ({
+    state: "failed" as const,
+    txRef: prepared.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+    authenticationHash: AUTH_HASH,
+  });
+  const replace = (
+    from: Readonly<HtlcPreparedAction>,
+    to: Readonly<HtlcPreparedAction>,
+    now = 1_050,
+  ) => store.replacePreparedDestinationClaim({
+    ...fence,
+    now,
+    priorEffectHash: from.effectHash,
+    priorTxRef: from.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+    failedObservation: failed(from),
+    replacement: to,
+  });
+  return { store, intent, secrets, fence, prior, failed, replace };
+}
+
+describe("destination-claim replacement store contract", () => {
+  test("swaps only the stored failed reveal, up to the cap, and keeps the history on takeover", async () => {
+    const fixture = await destinationClaimStoreFixture();
+    const attempt = (n: number) => preparedFor(fixture.intent, "destination-claim", `-attempt-${n}`);
+    await expect(fixture.store.replacePreparedDestinationClaim({
+      ...fixture.fence,
+      generation: fixture.fence.generation + 1,
+      now: 1_050,
+      priorEffectHash: fixture.prior.effectHash,
+      priorTxRef: fixture.prior.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      failedObservation: fixture.failed(fixture.prior),
+      replacement: attempt(2),
+    })).resolves.toEqual({ status: "stale", reason: "stale-lease" });
+    await expect(fixture.replace(attempt(9), attempt(2))).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-claim-replacement-prior-mismatch",
+    });
+    await expect(fixture.replace(fixture.prior, preparedFor(fixture.intent, "source-claim", "-x")))
+      .resolves.toEqual({ status: "corrupt", reason: "htlc-destination-claim-replacement-invalid" });
+    const { effectHash: _effect, ...attemptUnsigned } = attempt(2);
+    const sameRefUnsigned = { ...attemptUnsigned, txRef: fixture.prior.txRef };
+    await expect(fixture.replace(fixture.prior, {
+      ...sameRefUnsigned,
+      effectHash: sha256Hex(canonicalize(sameRefUnsigned)),
+    })).resolves.toEqual({ status: "conflict", reason: "htlc-destination-claim-replacement-not-fresh" });
+
+    await expect(fixture.replace(fixture.prior, attempt(2))).resolves.toEqual({ status: "recorded" });
+    // The stored reveal is now attempt 2: a second swap of the original is stale.
+    await expect(fixture.replace(fixture.prior, attempt(3))).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-claim-replacement-prior-mismatch",
+    });
+    await expect(fixture.replace(attempt(2), fixture.prior)).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-claim-replacement-reuses-history",
+    });
+    await expect(fixture.replace(attempt(2), attempt(3))).resolves.toEqual({ status: "recorded" });
+    await expect(fixture.replace(attempt(3), attempt(4))).resolves.toEqual({ status: "recorded" });
+    await expect(fixture.replace(attempt(4), attempt(5))).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-claim-replacement-limit",
+    });
+    const takeover = await fixture.store.claim({
+      intent: fixture.intent,
+      secrets: fixture.secrets,
+      owner: "takeover-owner",
+      now: 1_101,
+      leaseDurationMs: 100,
+    });
+    expect(takeover).toMatchObject({
+      status: "acquired",
+      prepared: [{ action: "source-lock" }, { effectHash: attempt(4).effectHash }],
+      destinationClaimAttemptHistory: [
+        { attempt: 1, prepared: { effectHash: fixture.prior.effectHash }, replacementEffectHash: attempt(2).effectHash },
+        { attempt: 2, prepared: { effectHash: attempt(2).effectHash }, replacementEffectHash: attempt(3).effectHash },
+        { attempt: 3, prepared: { effectHash: attempt(3).effectHash }, replacementEffectHash: attempt(4).effectHash },
+      ],
+    });
+  });
+
+  test("rejects a replacement after the source-recovery cutoff, a final reveal or a refund", async () => {
+    // Source expiry 40 s, so the source-recovery cutoff (40 s - 20 s - 10 s) is 10_000 ms.
+    const expired = await destinationClaimStoreFixture({ leaseDurationMs: 20_000, sourceExpiry: 40 });
+    const late = preparedFor(expired.intent, "destination-claim", "-attempt-2");
+    await expect(expired.replace(expired.prior, late, 9_999)).resolves.toEqual({ status: "recorded" });
+    const second = preparedFor(expired.intent, "destination-claim", "-attempt-3");
+    await expect(expired.replace(late, second, 10_000)).resolves.toEqual({
+      status: "conflict",
+      reason: "htlc-destination-claim-replacement-expired",
+    });
+
+    const revealed = await destinationClaimStoreFixture();
+    await revealed.store.recordRevealFinal({
+      ...revealed.fence,
+      checkpoint: {
+        revealTxRef: revealed.prior.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+        sourceExpiry: 5_000,
+        finalityObservedAt: 1_000,
+        authenticationHash: AUTH_HASH,
+      },
+    });
+    await expect(revealed.replace(
+      revealed.prior,
+      preparedFor(revealed.intent, "destination-claim", "-attempt-2"),
+    )).resolves.toEqual({ status: "conflict", reason: "htlc-destination-claim-replacement-after-reveal" });
+
+    const refunded = await destinationClaimStoreFixture();
+    await refunded.store.recordPrepared({
+      ...refunded.fence,
+      prepared: preparedFor(refunded.intent, "source-refund"),
+    });
+    await expect(refunded.replace(
+      refunded.prior,
+      preparedFor(refunded.intent, "destination-claim", "-attempt-2"),
+    )).resolves.toEqual({ status: "conflict", reason: "htlc-destination-claim-replacement-after-refund" });
   });
 });
 

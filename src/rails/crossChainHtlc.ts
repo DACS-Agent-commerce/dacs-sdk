@@ -12,6 +12,8 @@ import { requireCanonicalJobId } from "../negotiate/jobId.js";
 const HASH_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_SAFETY_WINDOW_SEC = 600;
+/** Replacements of a failed destination claim allowed per session. */
+const MAX_DESTINATION_CLAIM_REPLACEMENTS = 3;
 
 export type HtlcAction =
   | "source-lock"
@@ -187,6 +189,18 @@ export interface HtlcSourceClaimReplacementContext {
   failureAuthenticationHash: string;
 }
 
+/**
+ * Replacement of a destination claim (reveal) the adapter authenticated as
+ * `failed`. The failed reveal already published the preimage, so the adapter
+ * signs a new reveal of the same preimage into the same destination lock.
+ */
+export interface HtlcDestinationClaimReplacementContext {
+  attempt: number;
+  priorEffectHash: string;
+  priorTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-reveal" }>>;
+  failureAuthenticationHash: string;
+}
+
 export type HtlcObservedAction =
   | {
       state: "absent";
@@ -245,6 +259,9 @@ export interface HtlcSourceClaimAttemptHistoryEntry {
   replacementEffectHash: string;
 }
 
+/** A replaced failed destination claim; same shape as a source-claim entry. */
+export type HtlcDestinationClaimAttemptHistoryEntry = HtlcSourceClaimAttemptHistoryEntry;
+
 export interface HtlcLedgerSnapshot {
   observedAt: number;
   authenticationHash: string;
@@ -277,7 +294,8 @@ export interface CrossChainHtlcAdapter {
       sourceExpiry?: number;
       destinationExpiry?: number;
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
-      replacement?: Readonly<HtlcSourceClaimReplacementContext>;
+      /** Set only when replacing a failed `source-claim` or `destination-claim`. */
+      replacement?: Readonly<HtlcSourceClaimReplacementContext | HtlcDestinationClaimReplacementContext>;
     }>,
     fence: Readonly<HtlcEffectFence>,
   ): Promise<Readonly<Omit<HtlcPreparedAction, "effectHash">>>;
@@ -329,6 +347,7 @@ export type HtlcStoreClaim =
       lease: Readonly<HtlcLease>;
       prepared: readonly Readonly<HtlcPreparedAction>[];
       sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+      destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[];
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
       revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
     }
@@ -338,6 +357,7 @@ export type HtlcStoreClaim =
       lease: Readonly<HtlcLease>;
       prepared: readonly Readonly<HtlcPreparedAction>[];
       sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+      destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[];
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
       revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
     }
@@ -390,6 +410,21 @@ export interface CrossChainHtlcStore {
     now: number;
     priorEffectHash: string;
     priorTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+    failedObservation: Readonly<HtlcFailedObservation>;
+    replacement: Readonly<HtlcPreparedAction>;
+  }): Promise<HtlcStoreWrite>;
+  /**
+   * Compare-and-swap of the active `destination-claim` for a fresh reveal,
+   * only while it is still the failed one named by `priorEffectHash`.
+   */
+  replacePreparedDestinationClaim(input: {
+    settlementKey: string;
+    bindingHash: string;
+    owner: string;
+    generation: number;
+    now: number;
+    priorEffectHash: string;
+    priorTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-reveal" }>>;
     failedObservation: Readonly<HtlcFailedObservation>;
     replacement: Readonly<HtlcPreparedAction>;
   }): Promise<HtlcStoreWrite>;
@@ -452,7 +487,6 @@ export type CrossChainHtlcProgress =
         | "source-lock-terms-mismatch"
         | "destination-lock-terms-missing"
         | "destination-lock-terms-mismatch"
-        | "destination-claim-failed"
         | "destination-claim-unlanded";
       txRefs: readonly Readonly<HtlcTxRef>[];
       /**
@@ -468,7 +502,7 @@ export type CrossChainHtlcProgress =
        * returns to normal progress if it has changed.
        */
       status: "operator-alert";
-      reason: "htlc-source-claim-missed-after-reveal";
+      reason: "htlc-source-claim-missed-after-reveal" | "htlc-destination-claim-failed-preimage-public";
       txRefs: readonly Readonly<HtlcTxRef>[];
     }
   | { status: "settled"; settlement: Readonly<CrossChainHtlcSettlement> };
@@ -835,7 +869,7 @@ function captureFailedObservation(
   if (value.state !== "failed" || !sameRef(value.txRef, prepared.txRef) ||
       !HASH_RE.test(value.authenticationHash) ||
       (value.reason !== undefined && typeof value.reason !== "string")) {
-    throw new DacsError("pay-cross-chain-htlc: source-claim failure observation is invalid");
+    throw new DacsError(`pay-cross-chain-htlc: ${prepared.action} failure observation is invalid`);
   }
   return Object.freeze({
     state: "failed",
@@ -845,33 +879,35 @@ function captureFailedObservation(
   });
 }
 
-function captureSourceClaimAttemptHistory(
+/** Validates the immutable replacement history of one claim action. */
+function captureClaimAttemptHistory(
   value: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[],
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
   intent: Readonly<CrossChainHtlcIntent>,
+  action: "source-claim" | "destination-claim",
 ): readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[] {
   if (!Array.isArray(value)) {
-    throw new DacsError("pay-cross-chain-htlc: retained source-claim history is invalid");
+    throw new DacsError(`pay-cross-chain-htlc: retained ${action} history is invalid`);
   }
-  const active = prepared.get("source-claim");
+  const active = prepared.get(action);
   if (value.length > 0 && !active) {
-    throw new DacsError("pay-cross-chain-htlc: retained source-claim history omits the active attempt");
+    throw new DacsError(`pay-cross-chain-htlc: retained ${action} history omits the active attempt`);
   }
   const effectHashes = new Set<string>();
   const transactionRefs = new Set<string>();
   const captured = value.map((entry, index) => {
     if (entry === null || typeof entry !== "object" || entry.attempt !== index + 1) {
-      throw new DacsError("pay-cross-chain-htlc: retained source-claim history sequence is invalid");
+      throw new DacsError(`pay-cross-chain-htlc: retained ${action} history sequence is invalid`);
     }
     const { effectHash, ...unsigned } = entry.prepared;
-    const prior = validatePrepared(unsigned, intent, "source-claim");
+    const prior = validatePrepared(unsigned, intent, action);
     if (prior.effectHash !== effectHash || !HASH_RE.test(entry.replacementEffectHash) ||
         entry.replacementEffectHash === prior.effectHash) {
-      throw new DacsError("pay-cross-chain-htlc: retained source-claim history integrity mismatch");
+      throw new DacsError(`pay-cross-chain-htlc: retained ${action} history integrity mismatch`);
     }
     const transactionKey = canonicalize(prior.txRef);
     if (effectHashes.has(prior.effectHash) || transactionRefs.has(transactionKey)) {
-      throw new DacsError("pay-cross-chain-htlc: retained source-claim history reuses an attempt");
+      throw new DacsError(`pay-cross-chain-htlc: retained ${action} history reuses an attempt`);
     }
     effectHashes.add(prior.effectHash);
     transactionRefs.add(transactionKey);
@@ -886,13 +922,13 @@ function captureSourceClaimAttemptHistory(
   for (let index = 0; index < captured.length; index += 1) {
     const successor = captured[index + 1]?.prepared ?? active;
     if (!successor || captured[index]!.replacementEffectHash !== successor.effectHash) {
-      throw new DacsError("pay-cross-chain-htlc: retained source-claim history chain is invalid");
+      throw new DacsError(`pay-cross-chain-htlc: retained ${action} history chain is invalid`);
     }
   }
   if (active) {
     const activeTransactionKey = canonicalize(active.txRef);
     if (effectHashes.has(active.effectHash) || transactionRefs.has(activeTransactionKey)) {
-      throw new DacsError("pay-cross-chain-htlc: active source-claim reuses a retained attempt");
+      throw new DacsError(`pay-cross-chain-htlc: active ${action} reuses a retained attempt`);
     }
   }
   return Object.freeze(captured);
@@ -1099,6 +1135,7 @@ function validateSnapshot(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
   sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[],
+  destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[],
 ): void {
   requireUInt(snapshot.observedAt, "snapshot observedAt");
   if (!HASH_RE.test(snapshot.authenticationHash)) {
@@ -1124,9 +1161,11 @@ function validateSnapshot(
     const action = key as HtlcAction;
     if (observed.state === "absent") continue;
     const retained = prepared.get(action);
-    const retainedHistoricalFailure = action === "source-claim" &&
-      observed.state === "failed" &&
-      sourceClaimAttemptHistory.some((entry) => sameRef(observed.txRef, entry.prepared.txRef));
+    const history = action === "source-claim"
+      ? sourceClaimAttemptHistory
+      : action === "destination-claim" ? destinationClaimAttemptHistory : [];
+    const retainedHistoricalFailure = observed.state === "failed" &&
+      history.some((entry) => sameRef(observed.txRef, entry.prepared.txRef));
     if ((!retained || !sameRef(observed.txRef, retained.txRef)) && !retainedHistoricalFailure) {
       throw new DacsError(`pay-cross-chain-htlc: ${action} observation is not retained`);
     }
@@ -1204,6 +1243,9 @@ export async function advanceCrossChainHtlc(
     ? store.recordSourceFinality.bind(store)
     : undefined;
   const replacePreparedSourceClaim = store.replacePreparedSourceClaim.bind(store);
+  const replacePreparedDestinationClaim = typeof store.replacePreparedDestinationClaim === "function"
+    ? store.replacePreparedDestinationClaim.bind(store)
+    : undefined;
   const recordRevealFinal = store.recordRevealFinal.bind(store);
   const recordSettlement = store.recordSettlement.bind(store);
   const observeLedger = adapter.observe.bind(adapter);
@@ -1280,6 +1322,13 @@ export async function advanceCrossChainHtlc(
       reason: "htlc-source-finality-store-unsupported",
     };
   }
+  if (!replacePreparedDestinationClaim) {
+    return {
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-destination-claim-replacement-store-unsupported",
+    };
+  }
   if (claimed.lease.owner !== owner ||
       !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
       !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
@@ -1344,17 +1393,25 @@ export async function advanceCrossChainHtlc(
     return { status: "failed", errorClass: "permanent", reason: "htlc-retained-action-duplicate" };
   }
   let sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+  let destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[];
   try {
-    sourceClaimAttemptHistory = captureSourceClaimAttemptHistory(
+    sourceClaimAttemptHistory = captureClaimAttemptHistory(
       claimed.sourceClaimAttemptHistory,
       prepared,
       intent,
+      "source-claim",
+    );
+    destinationClaimAttemptHistory = captureClaimAttemptHistory(
+      claimed.destinationClaimAttemptHistory,
+      prepared,
+      intent,
+      "destination-claim",
     );
   } catch (error) {
     return {
       status: "failed",
       errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "htlc-source-claim-history-corrupt",
+      reason: error instanceof Error ? error.message : "htlc-claim-history-corrupt",
     };
   }
   let retainedCheckpoint: Readonly<HtlcRevealCheckpoint> | undefined;
@@ -1374,7 +1431,7 @@ export async function advanceCrossChainHtlc(
       await fence.assertCurrent();
       const snapshot = await observeLedger(intent, fence);
       await fence.assertCurrent();
-      validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory);
+      validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory, destinationClaimAttemptHistory);
       return snapshot;
     } catch {
       return null;
@@ -1425,6 +1482,7 @@ export async function advanceCrossChainHtlc(
     txRefs: collectRefs(latest, prepared),
   });
   let destinationClaimCutoffReached = false;
+  let destinationClaimReplacementBlocked = false;
   let sourceClaimExpiryReached = false;
   const destinationClaimWindowIsOpen = (expiries: {
     sourceExpiry?: number;
@@ -1608,6 +1666,105 @@ export async function advanceCrossChainHtlc(
         sourceClaimExpiryReached = true;
         return null;
       }
+      await broadcastRetained(replacement, fence);
+      await fence.assertCurrent();
+    } catch {
+      return null;
+    }
+    return observe();
+  };
+  // Replaces a reveal the adapter authenticated as `failed`. Its calldata has
+  // already published the preimage, so a fresh reveal costs the payer nothing
+  // and is the payer's only way to the destination funds. It is bounded like
+  // the first reveal, by the destination-claim cutoff, and capped per session.
+  // When no replacement is allowed it sets `destinationClaimReplacementBlocked`
+  // so that the caller raises an operator alert; other failures are uncertain.
+  const replaceFailedDestinationClaim = async (
+    failedObservation: Readonly<HtlcFailedObservation>,
+    expiries: { sourceExpiry: number; destinationExpiry: number },
+  ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
+    const prior = prepared.get("destination-claim");
+    if (!prior || failedObservation.state !== "failed") {
+      return null;
+    }
+    const blocked = (): null => {
+      destinationClaimReplacementBlocked = true;
+      return null;
+    };
+    if (!replacePreparedDestinationClaim ||
+        destinationClaimAttemptHistory.length >= MAX_DESTINATION_CLAIM_REPLACEMENTS) {
+      return blocked();
+    }
+    let replacement: Readonly<HtlcPreparedAction>;
+    try {
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
+      await fence.assertCurrent();
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
+    } catch {
+      return null;
+    }
+    try {
+      const replacementContext: Readonly<HtlcDestinationClaimReplacementContext> = Object.freeze({
+        attempt: destinationClaimAttemptHistory.length + 2,
+        priorEffectHash: prior.effectHash,
+        priorTxRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+        failureAuthenticationHash: failedObservation.authenticationHash,
+      });
+      replacement = validatePrepared(await prepareAction({
+        intent,
+        action: "destination-claim",
+        actor: actorFor("destination-claim"),
+        preimage: secretCopy(secrets.preimage),
+        ...expiries,
+        replacement: replacementContext,
+      }, fence), intent, "destination-claim");
+      if (replacement.effectHash === prior.effectHash || sameRef(replacement.txRef, prior.txRef)) {
+        throw new DacsError("pay-cross-chain-htlc: destination-claim replacement is not fresh");
+      }
+    } catch {
+      // The adapter refused or returned no usable replacement. A lost lease is
+      // not a refusal: the next owner retries.
+      try {
+        await fence.assertCurrent();
+      } catch {
+        return null;
+      }
+      return blocked();
+    }
+    let recorded: HtlcStoreWrite;
+    try {
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
+      await fence.assertCurrent();
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
+      recorded = await replacePreparedDestinationClaim({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        now: readNow(),
+        priorEffectHash: prior.effectHash,
+        priorTxRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+        failedObservation,
+        replacement,
+      });
+    } catch {
+      return null;
+    }
+    if (recorded.status !== "recorded" && recorded.status !== "existing") return null;
+    destinationClaimAttemptHistory = Object.freeze([
+      ...destinationClaimAttemptHistory,
+      Object.freeze({
+        attempt: destinationClaimAttemptHistory.length + 1,
+        prepared: prior,
+        failedObservation: captureFailedObservation(failedObservation, prior),
+        replacementEffectHash: replacement.effectHash,
+      }),
+    ]);
+    prepared.set("destination-claim", replacement);
+    try {
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
+      await fence.assertCurrent();
+      if (!destinationClaimWindowIsOpen(expiries)) return blocked();
       await broadcastRetained(replacement, fence);
       await fence.assertCurrent();
     } catch {
@@ -2035,14 +2192,21 @@ export async function advanceCrossChainHtlc(
       // until the payee's source-claim window has closed and the adapter
       // authenticates that the claim did not land. A pending claim may still,
       // and a claim the adapter does not report at all is not authenticated.
+      // A failed observation of a replaced reveal says nothing about the
+      // active one, so only the active reveal can be authenticated unlanded.
+      const activeClaim = prepared.get("destination-claim")!;
       const pendingClaim = snapshot.actions["destination-claim"];
-      const unlanded = pendingClaim?.state === "absent" || pendingClaim?.state === "failed";
+      const failedActive = pendingClaim?.state === "failed" &&
+        sameRef(pendingClaim.txRef, activeClaim.txRef);
+      const unlanded = pendingClaim?.state === "absent" || failedActive;
       if (!unlanded || !sourceExpired || !destinationExpired) {
-        if (pendingClaim?.state === "failed") {
-          return refundProgress("destination-claim-failed", snapshot, {
-            "destination-refund": "none",
-            "source-refund": "none",
-          });
+        // A reveal that failed on chain published the preimage in its
+        // calldata. Here the claim window has closed or the margin is gone, so
+        // no replacement is allowed: the payee can still claim the source
+        // while the payer cannot claim the destination, and a person must act.
+        if (pendingClaim?.state !== "pending" &&
+            (failedActive || destinationClaimAttemptHistory.length > 0)) {
+          return operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot);
         }
         // Still safe to wait, but past both expiries a reveal that never
         // resolves needs an operator, so it gets a reason a host can alert on.
@@ -2076,27 +2240,39 @@ export async function advanceCrossChainHtlc(
     return refundProgress(refundReason, latest, attempts);
   }
 
-  if (!authorizeDestinationClaim) {
+  const claimState = snapshot.actions["destination-claim"];
+  const activeClaim = prepared.get("destination-claim");
+  const expiries = {
+    sourceExpiry: sourceLock.expiresAt,
+    destinationExpiry: destinationLock.expiresAt,
+  };
+  // The payer's decision gates only the first reveal. Once a reveal is
+  // retained the preimage may be public, and holding back its rebroadcast or
+  // replacement could only cost the payer the destination leg.
+  if (claimState?.state === "failed" && activeClaim && sameRef(claimState.txRef, activeClaim.txRef)) {
+    const advanced = await replaceFailedDestinationClaim(
+      claimState as Readonly<HtlcFailedObservation>,
+      expiries,
+    );
+    return advanced
+      ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
+      : destinationClaimReplacementBlocked
+        ? operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot)
+        : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
+  }
+  if (!activeClaim && !authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
   }
-  const claimState = snapshot.actions["destination-claim"];
-  if (claimState?.state === "failed") {
-    // A retained reveal is never replaced and may have exposed the preimage,
-    // so both legs are refunded once both expiries pass (see above).
-    return refundProgress("destination-claim-failed", snapshot, {
-      "destination-refund": "none",
-      "source-refund": "none",
-    });
-  }
-  if (!claimState || claimState.state === "absent") {
-    const advanced = await execute("destination-claim", {
-      sourceExpiry: sourceLock.expiresAt,
-      destinationExpiry: destinationLock.expiresAt,
-    });
+  // Unreported, absent, or only a replaced reveal is reported failed: send the
+  // active reveal, rebroadcasting its exact retained bytes when it exists.
+  if (!claimState || claimState.state === "absent" || claimState.state === "failed") {
+    const advanced = await execute("destination-claim", expiries);
     return advanced
       ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
       : destinationClaimCutoffReached
-        ? { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" }
+        ? destinationClaimAttemptHistory.length > 0
+          ? operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot)
+          : { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" }
         : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
   }
   return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
@@ -2108,6 +2284,7 @@ interface MemoryHtlcRecord {
   lease: HtlcLease;
   prepared: Map<HtlcAction, Readonly<HtlcPreparedAction>>;
   sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+  destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[];
   sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
   revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
   settlement?: Readonly<CrossChainHtlcSettlement>;
@@ -2144,6 +2321,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
             lease: { ...existing.lease },
             prepared: [...existing.prepared.values()],
             sourceClaimAttemptHistory: existing.sourceClaimAttemptHistory,
+            destinationClaimAttemptHistory: existing.destinationClaimAttemptHistory,
             sourceFinalityCheckpoint: existing.sourceFinalityCheckpoint,
             revealCheckpoint: existing.revealCheckpoint,
           };
@@ -2159,6 +2337,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
           lease: { ...existing.lease },
           prepared: [...existing.prepared.values()],
           sourceClaimAttemptHistory: existing.sourceClaimAttemptHistory,
+          destinationClaimAttemptHistory: existing.destinationClaimAttemptHistory,
           sourceFinalityCheckpoint: existing.sourceFinalityCheckpoint,
           revealCheckpoint: existing.revealCheckpoint,
         };
@@ -2177,6 +2356,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
         lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs },
         prepared: new Map(),
         sourceClaimAttemptHistory: Object.freeze([]),
+        destinationClaimAttemptHistory: Object.freeze([]),
       };
       records.set(input.intent.settlementKey, record);
       saltOwners.set(input.secrets.buyerSaltHash, input.intent.settlementKey);
@@ -2186,6 +2366,7 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
         lease: { ...record.lease },
         prepared: [],
         sourceClaimAttemptHistory: Object.freeze([]),
+        destinationClaimAttemptHistory: Object.freeze([]),
       };
     },
     async isCurrent(input) {
@@ -2274,10 +2455,11 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
       let failedObservation: Readonly<HtlcFailedObservation>;
       let replacement: Readonly<HtlcPreparedAction>;
       try {
-        captureSourceClaimAttemptHistory(
+        captureClaimAttemptHistory(
           record.sourceClaimAttemptHistory,
           record.prepared,
           record.intent,
+          "source-claim",
         );
         failedObservation = captureFailedObservation(input.failedObservation, prior);
         const { effectHash, ...unsigned } = input.replacement;
@@ -2320,6 +2502,101 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
         historyEntry,
       ]);
       record.prepared.set("source-claim", replacement);
+      effects.set(replacement.effectHash, input.settlementKey);
+      transactionOwners.set(transactionKey, input.settlementKey);
+      return { status: "recorded" };
+    },
+    async replacePreparedDestinationClaim(input) {
+      const record = records.get(input.settlementKey);
+      if (!current(record, input) || !Number.isSafeInteger(input.now) ||
+          input.now < 0 || record.lease.expiresAt <= input.now) {
+        return { status: "stale", reason: "stale-lease" };
+      }
+      if (record.revealCheckpoint) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-after-reveal" };
+      }
+      if (record.prepared.has("source-refund") || record.prepared.has("destination-refund")) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-after-refund" };
+      }
+      if (!record.sourceFinalityCheckpoint) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-without-source-finality" };
+      }
+      // The core also enforces the destination-claim cutoff; the store bounds
+      // a replacement by the source-recovery cutoff it can compute itself.
+      let sourceCutoffMillis: number;
+      try {
+        sourceCutoffMillis = finalityCutoffMillis(
+          record.sourceFinalityCheckpoint.sourceExpiry,
+          safeAdd(
+            record.intent.sourceFinalitySec,
+            record.intent.safetyWindowSec,
+            "source finality and safety budget",
+          ),
+          "destination claim replacement",
+        );
+      } catch {
+        return { status: "corrupt", reason: "htlc-destination-claim-replacement-expiry-corrupt" };
+      }
+      if (input.now >= sourceCutoffMillis) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-expired" };
+      }
+      const prior = record.prepared.get("destination-claim");
+      if (!prior || prior.effectHash !== input.priorEffectHash ||
+          !sameRef(prior.txRef, input.priorTxRef)) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-prior-mismatch" };
+      }
+      if (record.destinationClaimAttemptHistory.length >= MAX_DESTINATION_CLAIM_REPLACEMENTS) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-limit" };
+      }
+      let failedObservation: Readonly<HtlcFailedObservation>;
+      let replacement: Readonly<HtlcPreparedAction>;
+      try {
+        captureClaimAttemptHistory(
+          record.destinationClaimAttemptHistory,
+          record.prepared,
+          record.intent,
+          "destination-claim",
+        );
+        failedObservation = captureFailedObservation(input.failedObservation, prior);
+        const { effectHash, ...unsigned } = input.replacement;
+        replacement = validatePrepared(unsigned, record.intent, "destination-claim");
+        if (replacement.effectHash !== effectHash) {
+          return { status: "corrupt", reason: "htlc-destination-claim-replacement-integrity-mismatch" };
+        }
+      } catch {
+        return { status: "corrupt", reason: "htlc-destination-claim-replacement-invalid" };
+      }
+      if (replacement.effectHash === prior.effectHash || sameRef(replacement.txRef, prior.txRef)) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-not-fresh" };
+      }
+      const allPriorAttempts = record.destinationClaimAttemptHistory.map((entry) => entry.prepared);
+      if (allPriorAttempts.some((attempt) => attempt.effectHash === replacement.effectHash ||
+          sameRef(attempt.txRef, replacement.txRef))) {
+        return { status: "conflict", reason: "htlc-destination-claim-replacement-reuses-history" };
+      }
+      const effectOwner = effects.get(replacement.effectHash);
+      if (effectOwner) {
+        return { status: "conflict", reason: effectOwner === input.settlementKey
+          ? "htlc-destination-claim-replacement-reuses-effect"
+          : "htlc-effect-cross-settlement-reuse" };
+      }
+      const transactionKey = canonicalize(replacement.txRef);
+      const transactionOwner = transactionOwners.get(transactionKey);
+      if (transactionOwner) {
+        return { status: "conflict", reason: transactionOwner === input.settlementKey
+          ? "htlc-destination-claim-replacement-reuses-transaction"
+          : "htlc-transaction-cross-settlement-reuse" };
+      }
+      record.destinationClaimAttemptHistory = Object.freeze([
+        ...record.destinationClaimAttemptHistory,
+        Object.freeze({
+          attempt: record.destinationClaimAttemptHistory.length + 1,
+          prepared: prior,
+          failedObservation,
+          replacementEffectHash: replacement.effectHash,
+        }),
+      ]);
+      record.prepared.set("destination-claim", replacement);
       effects.set(replacement.effectHash, input.settlementKey);
       transactionOwners.set(transactionKey, input.settlementKey);
       return { status: "recorded" };

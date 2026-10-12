@@ -119,11 +119,30 @@ session is never `refunded`: after the source refund it stays
 if the lock lands it becomes final and its refund is driven after the
 destination expiry like any other. Adapters must therefore report `pending`,
 never `absent`, while a destination lock can still land, exactly as for a
-reveal. A retained reveal that the adapter reports `failed`
-is `refund-pending` with reason `destination-claim-failed` until both
-expiries have passed, then both legs are refunded with reason
-`destination-claim-unlanded`. `failed` is reserved for sessions the core has
-nothing left to drive.
+reveal.
+
+A reveal that reverts on chain (out of gas, a fee spike, a token hook) still
+publishes the preimage: on EVM and Solana the failed transaction's calldata is
+on chain. From then on the payee can claim the source leg, so the payer must
+claim the destination before its expiry or lose the source amount. When the
+adapter authenticates the active reveal as `failed`, the core therefore
+replaces it while the destination-claim window is still open (the same cutoff
+as a first reveal) and the absolute margin holds: it asks the adapter for a
+fresh signed reveal of the same preimage into the same destination lock,
+persists it with the store's `replacePreparedDestinationClaim`
+compare-and-swap, and only then broadcasts it. A replacement costs the payer
+nothing, because the preimage is already public, so the payer's
+`authorizeDestinationClaim` decision gates only the first reveal. Each session
+allows at most three replacements. A failed reveal is never reported as a
+routine `refund-pending`. When no replacement is allowed (the claim window
+has closed, the margin is gone, the cap is reached, or the adapter refuses to
+prepare one) the result is `operator-alert` with reason
+`htlc-destination-claim-failed-preimage-public`, and a host must page an
+operator at once (see Operator alerts). Once both expiries have passed and
+the adapter authenticates the active reveal as `failed` or `absent`, both legs
+are refunded per leg with reason `destination-claim-unlanded`; if the payee
+already claimed the source with the published preimage, the source refund
+reverts and the session is `refund-stalled`.
 
 Every refund result carries `refunds`, the state of each locked leg's refund
 (`destination-refund` appears once the destination lock is final, or while a
@@ -155,6 +174,17 @@ returns to normal progress if the chain has changed. The reasons are:
   it reaches finality before the expiry the next call settles), and otherwise
   arranges the payee's payment outside the core, for example by having the
   payer refund the source and pay the payee under the agreement.
+- `htlc-destination-claim-failed-preimage-public`: a reveal failed on chain,
+  so the preimage is public, and the core cannot send another one: the
+  destination-claim window has closed, the absolute margin is gone, three
+  replacements have already failed, or the adapter would not prepare a
+  replacement. The payee can claim the source leg with the public preimage
+  until the source expiry. Page at once: while the destination lock has not
+  expired, the operator tries to land a reveal by hand (or fixes the adapter
+  so that the next call replaces it); otherwise the operator reconciles the
+  legs with the parties. Both legs are refunded automatically once both
+  expiries pass, and `refund-stalled` then shows a source refund that reverted
+  because the payee had claimed the source.
 
 `failed` is returned only when the core has nothing it can drive: the inputs
 or authority are invalid, the store is corrupt, conflicting or lacks a
@@ -251,13 +281,27 @@ effect hash and transaction reference, authenticated failed observation, and a
 fresh replacement. It requires a reveal checkpoint and an unexpired source
 claim window, appends the failed attempt to `sourceClaimAttemptHistory`, keeps
 all old effect/transaction reservations, and exposes only the replacement as
-the active `prepared` source claim. `recordPrepared` remains immutable for every
+the active `prepared` source claim.
+
+`replacePreparedDestinationClaim` is the same compare-and-swap for a failed
+reveal. It swaps only while the stored `destination-claim` is still the failed
+one named by `priorEffectHash` and `priorTxRef`, and it rejects a replacement
+after a reveal checkpoint or any prepared refund, after the source-recovery
+cutoff of the retained source-finality checkpoint, or once three replacements
+are recorded. It appends the failed attempt to
+`destinationClaimAttemptHistory`, which `claim` must return, keeps all old
+reservations, and exposes only the replacement as the active `prepared`
+reveal. The core fails closed with
+`htlc-destination-claim-replacement-store-unsupported` before any effect when
+a runtime store lacks the method. `recordPrepared` remains immutable for every
 ordinary action. The exported in-memory store is for tests and development
 only.
 
-When preparing a replacement, the adapter receives `replacement` context with
-the new attempt number, prior effect hash/reference, and failure authentication
-hash. It must use that context to create a different signed transaction. The
+When preparing a replacement of either claim, the adapter receives
+`replacement` context with the new attempt number, prior effect
+hash/reference, and failure authentication hash (`priorTxRef` is an
+`htlc-claim` reference for a source claim and an `htlc-reveal` reference for a
+reveal). It must use that context to create a different signed transaction. The
 core rejects an unchanged effect or transaction reference, persists the new
 attempt before broadcast, and reuses those exact retained bytes after an
 ambiguous restart. Store implementations must return the complete immutable
