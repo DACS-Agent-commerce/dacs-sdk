@@ -917,13 +917,14 @@ export async function advanceSolanaSplSettlement(
     owner,
     generation,
     assertCurrent: async () => {
-      if (!await isCurrentSettlement({
+      // Only a literal `true` keeps the fence; anything else is stale.
+      if (await isCurrentSettlement({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner,
         generation,
         now: readNow(),
-      })) throw new DacsError("pay-solana-spl: stale effect fence");
+      }) !== true) throw new DacsError("pay-solana-spl: stale effect fence");
     },
   });
 
@@ -952,9 +953,9 @@ export async function advanceSolanaSplSettlement(
       if (!settlement) {
         return { status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" };
       }
-      let write: SolanaSplStoreWrite;
+      // The transfer landed; an unreadable acknowledgement is still uncertain.
       try {
-        write = await recordSettlement({
+        const write = await recordSettlement({
           settlementKey: intent.settlementKey,
           bindingHash: intent.bindingHash,
           owner: fence.owner,
@@ -962,12 +963,14 @@ export async function advanceSolanaSplSettlement(
           signature: attempt.signature,
           settlement,
         });
+        const status = write.status;
+        if (status === "recorded" || status === "existing") {
+          return { status: "settled", settlement };
+        }
       } catch {
-        return { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
+        // Falls through to the uncertain result.
       }
-      return write.status === "recorded" || write.status === "existing"
-        ? { status: "settled", settlement }
-        : { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
+      return { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
     }
     if (result.disposition === "settled-different") {
       return { status: "indeterminate", reason: "solana-spl-settled-different" };
@@ -984,26 +987,24 @@ export async function advanceSolanaSplSettlement(
     attempt: Readonly<SolanaSplSignedAttempt>,
     evidence: Readonly<SolanaSplExpiryEvidence>,
   ): Promise<SolanaSplProgress | null> => {
-    let marked: SolanaSplStoreWrite;
     try {
-      marked = await markAttemptExpired({
+      const marked = await markAttemptExpired({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
         ...evidence,
       });
-    } catch {
-      return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
-    }
-    if (marked.status === "recorded" || marked.status === "existing") {
-      try {
-        if (marked.expiryEvidence &&
-            canonicalize(captureExpiryEvidence(marked.expiryEvidence, attempt)) ===
+      const status = marked.status;
+      if (status === "recorded" || status === "existing") {
+        const acknowledged = marked.expiryEvidence;
+        if (acknowledged &&
+            canonicalize(captureExpiryEvidence(acknowledged, attempt)) ===
               canonicalize(evidence)) return null;
-      } catch {
-        // An invalid acknowledgement cannot authorize a replacement.
       }
+    } catch {
+      // An unavailable, unreadable or invalid acknowledgement cannot
+      // authorize a replacement.
     }
     return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
   };
@@ -1070,19 +1071,19 @@ export async function advanceSolanaSplSettlement(
       reason: error instanceof Error ? error.message : "solana-spl-preparation-unavailable",
     };
   }
-  let retained: SolanaSplStoreWrite;
+  let retained: unknown;
   try {
-    retained = await recordAttempt({
+    retained = (await recordAttempt({
       settlementKey: intent.settlementKey,
       bindingHash: intent.bindingHash,
       owner: fence.owner,
       generation: fence.generation,
       attempt,
-    });
+    })).status;
   } catch {
     return { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" };
   }
-  if (retained.status !== "recorded" && retained.status !== "existing") {
+  if (retained !== "recorded" && retained !== "existing") {
     return { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" };
   }
   try {

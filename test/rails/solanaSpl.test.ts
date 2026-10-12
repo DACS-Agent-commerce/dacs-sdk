@@ -1278,6 +1278,106 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
   });
 });
 
+describe("advanceSolanaSplSettlement with a malformed store write", () => {
+  const throwingStatus = () => Object.defineProperty({}, "status", {
+    get() { throw new Error("store secret=abc"); },
+  });
+  const writes: [string, () => unknown][] = [
+    ["undefined", () => undefined],
+    ["null", () => null],
+    ["a string", () => "recorded"],
+    ["an object without status", () => ({})],
+    ["a throwing status getter", throwingStatus],
+  ];
+
+  test.each(writes)("recordSettlement resolving %s after the transfer landed is uncertain",
+    async (_name, write) => {
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      await expect(advanceSolanaSplSettlement(input({
+        store: {
+          ...createInMemorySolanaSplSettlementStore(),
+          recordSettlement: async () => write() as never,
+        },
+        adapter: adapter({ prepareSignedTransfer, broadcastRetained }),
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settlement-persistence-uncertain",
+      });
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+  test.each(writes)("recordAttempt resolving %s never broadcasts", async (_name, write) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    await expect(advanceSolanaSplSettlement(input({
+      store: {
+        ...createInMemorySolanaSplSettlementStore(),
+        recordAttempt: async () => write() as never,
+      },
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained }),
+    }))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-retained-attempt-persistence-uncertain",
+    });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ...writes,
+    ["a throwing evidence getter", () => Object.defineProperty({ status: "recorded" },
+      "expiryEvidence", { get() { throw new Error("store secret=abc"); } })],
+  ] as [string, () => unknown][])(
+    "markAttemptExpired resolving %s never reaches a replacement",
+    async (_name, write) => {
+      let clock = 1_000;
+      let reconciliations = 0;
+      const memory = createInMemorySolanaSplSettlementStore();
+      const checkedPreflight = vi.fn(adapter().preflight);
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      const shared = input({
+        store: { ...memory, markAttemptExpired: async () => write() as never },
+        now: () => clock,
+        adapter: adapter({
+          preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained,
+          async reconcile(_intent, attempt) {
+            return ++reconciliations === 1
+              ? { disposition: "indeterminate", reason: "lost" }
+              : expired(attempt);
+          },
+        }),
+      });
+      await advanceSolanaSplSettlement(shared);
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" });
+      expect(checkedPreflight).toHaveBeenCalledTimes(1);
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([["a string", "yes"], ["a number", 1], ["an object", {}]])(
+    "isCurrent resolving %s is a stale fence",
+    async (_name, current) => {
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      await expect(advanceSolanaSplSettlement(input({
+        store: {
+          ...createInMemorySolanaSplSettlementStore(),
+          isCurrent: async () => current as never,
+        },
+        adapter: adapter({ prepareSignedTransfer, broadcastRetained }),
+      }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("advanceSolanaSplSettlement with an out-of-contract reconciliation", () => {
   // A version-skewed adapter, a JS adapter or a JSON proxy cast to the type.
   const invalid: [string, unknown][] = [
