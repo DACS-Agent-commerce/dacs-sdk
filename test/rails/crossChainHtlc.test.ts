@@ -1770,6 +1770,27 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
+  test("keeps a final reveal whose destination-lock observation regressed resumable", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+    });
+    const lock = h.actions["destination-lock"];
+    delete h.actions["destination-lock"];
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-lock-finality-regressed",
+    });
+    h.actions["destination-lock"] = lock;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+    });
+  });
+
   test("alerts on a failed reveal once the claim window has closed and refunds both legs after both expiries", async () => {
     const h = harness({
       sourceExpiry: 1_700,
@@ -2444,7 +2465,7 @@ describe("advanceCrossChainHtlc", () => {
     await advanceCrossChainHtlc(run.nextOwner());
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "indeterminate",
-      reason: "htlc-ledger-observation-unavailable",
+      reason: "htlc-adapter-lock-observation-invalid",
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(effects);
   });
@@ -2519,6 +2540,91 @@ describe("advanceCrossChainHtlc", () => {
       }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ["source-lock", "expiresAt"],
+    ["source-lock", "includedAt"],
+    ["destination-lock", "expiresAt"],
+    ["destination-lock", "includedAt"],
+  ] as const)("keeps a final %s observation without %s resumable with an explicit reason", async (action, field) => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const valid = h.actions[action];
+    if (!valid || valid.state !== "final") throw new Error("expected final lock");
+    const { [field]: _dropped, ...malformed } = valid;
+    h.actions[action] = malformed as HtlcObservedAction;
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "malformed-lock" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-adapter-lock-observation-invalid",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock"]);
+    // A corrected observation resumes the refunds.
+    h.actions[action] = valid;
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "corrected-lock", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-timeout" });
+  });
+
+  test.each(["deleted", "pending", "absent"] as const)(
+    "keeps a checkpointed source lock that is now %s resumable, never failed",
+    async (variant) => {
+      const h = harness({ sourceExpiry: 1_700 });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      const sourceLock = h.actions["source-lock"];
+      if (!sourceLock || sourceLock.state !== "final") throw new Error("expected final source lock");
+      if (variant === "deleted") delete h.actions["source-lock"];
+      else if (variant === "pending") {
+        h.actions["source-lock"] = { state: "pending", txRef: sourceLock.txRef, authenticationHash: AUTH_HASH };
+      } else h.actions["source-lock"] = { state: "absent", authenticationHash: AUTH_HASH };
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-source-finality-checkpoint-without-final-lock",
+      });
+      run.setClock(1_700_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "regressed-at-expiry" })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-source-finality-checkpoint-without-final-lock",
+      });
+      // Only the payee's expired destination leg moves; the source leg never does.
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "destination-refund"]);
+      h.actions["source-lock"] = sourceLock;
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-lock-back", now: () => 1_700_101 }))
+        .resolves.toMatchObject({ status: "refund-pending", reason: "destination-timeout" });
+    },
+  );
+
+  test.each([
+    ["no reveal", false, ["source-lock", "destination-lock", "destination-refund"]],
+    ["a retained reveal", true, ["source-lock", "destination-lock", "destination-claim"]],
+  ] as const)(
+    "with a regressed source lock and %s, drives only a safe destination refund",
+    async (_name, reveal, effects) => {
+      const h = harness({
+        sourceExpiry: 1_700,
+        destinationExpiry: 1_200,
+        mode: { "destination-claim": "pending" },
+      });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: reveal });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      if (reveal) h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+      delete h.actions["source-lock"];
+      run.setClock(1_200_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "regressed-source" })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-source-finality-checkpoint-without-final-lock",
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(effects);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
     },
   );
 

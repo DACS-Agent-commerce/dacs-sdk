@@ -937,6 +937,9 @@ function captureClaimAttemptHistory(
 type FinalHtlcObservation = Extract<HtlcObservedAction, { state: "final" }>;
 type FinalSourceClaimObservation = FinalHtlcObservation & { finalityReachedAt: number };
 
+/** A malformed final lock observation: an adapter fault, not a chain state. */
+class InvalidLockObservation extends DacsError {}
+
 function validateFinalityTiming(
   observed: Readonly<FinalHtlcObservation>,
   action: HtlcAction,
@@ -1178,12 +1181,20 @@ function validateSnapshot(
     if (observed.state !== "final") {
       throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
     }
-    validateFinalityTiming(observed, action);
-    // Terms are only needed by the forward step that depends on them, so their
-    // absence never makes an observation, and with it a refund, unavailable.
-    if ((action === "source-lock" || action === "destination-lock") &&
-        observed.lockTerms !== undefined) {
-      validateLockTerms(observed.lockTerms, action);
+    if (action === "source-lock" || action === "destination-lock") {
+      try {
+        validateFinalityTiming(observed, action);
+        // Terms are only needed by the forward step that depends on them, so
+        // their absence never makes an observation, and with it a refund,
+        // unavailable.
+        if (observed.lockTerms !== undefined) validateLockTerms(observed.lockTerms, action);
+      } catch (error) {
+        throw new InvalidLockObservation(
+          error instanceof Error ? error.message : `pay-cross-chain-htlc: ${action} observation is invalid`,
+        );
+      }
+    } else {
+      validateFinalityTiming(observed, action);
     }
     if (action === "destination-claim" &&
         typeof observed.revealedPreimageHex !== "string") {
@@ -1426,6 +1437,7 @@ export async function advanceCrossChainHtlc(
       reason: error instanceof Error ? error.message : "htlc-reveal-checkpoint-corrupt",
     };
   }
+  let lockObservationInvalid = false;
   const observe = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     try {
       await fence.assertCurrent();
@@ -1433,7 +1445,8 @@ export async function advanceCrossChainHtlc(
       await fence.assertCurrent();
       validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory, destinationClaimAttemptHistory);
       return snapshot;
-    } catch {
+    } catch (error) {
+      lockObservationInvalid = error instanceof InvalidLockObservation;
       return null;
     }
   };
@@ -1774,7 +1787,14 @@ export async function advanceCrossChainHtlc(
   };
 
   let snapshot = await observe();
-  if (!snapshot) return { status: "indeterminate", reason: "htlc-ledger-observation-unavailable" };
+  if (!snapshot) {
+    return {
+      status: "indeterminate",
+      reason: lockObservationInvalid
+        ? "htlc-adapter-lock-observation-invalid"
+        : "htlc-ledger-observation-unavailable",
+    };
+  }
   let sourceLock: Extract<HtlcObservedAction, { state: "final" }> | undefined;
   let destinationLock: Extract<HtlcObservedAction, { state: "final" }> | undefined;
   let destinationClaim: Extract<HtlcObservedAction, { state: "final" }> | undefined;
@@ -1789,15 +1809,24 @@ export async function advanceCrossChainHtlc(
   }
 
   if (!sourceLock && sourceFinalityCheckpoint) {
-    return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: "htlc-source-finality-checkpoint-without-final-lock",
-    };
+    // The source lock was final and checkpointed, so this observation regressed
+    // (an adapter fault, or a contract that deleted its record). Nothing moves
+    // the source leg on it, but the session stays resumable. Without a retained
+    // reveal the preimage is private, so the payee cannot claim the source and
+    // the payee's own destination refund after its expiry is still safe.
+    if (destinationLock?.expiresAt !== undefined && !prepared.has("destination-claim") &&
+        readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry")) {
+      const refund = snapshot.actions["destination-refund"];
+      if (!refund || refund.state === "absent") {
+        await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
+      }
+    }
+    return { status: "indeterminate", reason: "htlc-source-finality-checkpoint-without-final-lock" };
   }
   if (sourceLock) {
+    // Unreachable for a validated snapshot; kept resumable for type safety.
     if (sourceLock.includedAt === undefined || sourceLock.expiresAt === undefined) {
-      return { status: "failed", errorClass: "permanent", reason: "htlc-source-lock-finality-incomplete" };
+      return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
     }
     const observedCheckpoint: Readonly<HtlcSourceFinalityCheckpoint> = Object.freeze({
       sourceLockEffectHash: prepared.get("source-lock")!.effectHash,
@@ -1918,9 +1947,13 @@ export async function advanceCrossChainHtlc(
 
   let checkpoint = retainedCheckpoint;
   if (destinationClaim) {
-    if (!sourceLock || !destinationLock || sourceLock.expiresAt === undefined ||
-        destinationLock.expiresAt === undefined) {
-      return { status: "failed", errorClass: "permanent", reason: "htlc-reveal-without-final-lock-chain" };
+    // The reveal is final, so a lock observation that is no longer final
+    // regressed; it stays resumable rather than ending the session.
+    if (!sourceLock || !destinationLock) {
+      return { status: "indeterminate", reason: "htlc-destination-lock-finality-regressed" };
+    }
+    if (sourceLock.expiresAt === undefined || destinationLock.expiresAt === undefined) {
+      return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
     }
     try {
       if (!revealedPreimageMatches(destinationClaim.revealedPreimageHex, secrets.preimage)) {
@@ -2049,7 +2082,7 @@ export async function advanceCrossChainHtlc(
     return { status: "waiting", reason: "htlc-source-lock-finality-pending" };
   }
   if (sourceLock.expiresAt === undefined) {
-    return { status: "failed", errorClass: "permanent", reason: "htlc-source-lock-expiry-missing" };
+    return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
   }
   if (!sourceFinalityCheckpoint) {
     return { status: "indeterminate", reason: "htlc-source-finality-persistence-uncertain" };
@@ -2147,11 +2180,9 @@ export async function advanceCrossChainHtlc(
     }
     return { status: "waiting", reason: "htlc-destination-lock-finality-pending" };
   }
-  if (destinationLock.expiresAt === undefined) {
-    return { status: "failed", errorClass: "permanent", reason: "htlc-destination-lock-expiry-missing" };
-  }
-  if (destinationLock.includedAt === undefined) {
-    return { status: "failed", errorClass: "permanent", reason: "htlc-destination-lock-inclusion-missing" };
+  // Unreachable for a validated snapshot; kept resumable for type safety.
+  if (destinationLock.expiresAt === undefined || destinationLock.includedAt === undefined) {
+    return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
   }
   const sourceRecoveryBudgetSec = safeAdd(
     intent.sourceFinalitySec,

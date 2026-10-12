@@ -149,8 +149,8 @@ Every refund result carries `refunds`, the state of each locked leg's refund
 retained destination lock may still land): `waiting` (its lock has not
 expired, a retained reveal still blocks it, or its lock is not final yet),
 `uncertain` (due, but this call could not prepare, persist, broadcast or
-observe it; the next call reuses the retained bytes), or the adapter's authenticated
-`pending`, `final` or `failed`. A payer whose own refund is final can see it
+observe it; the next call reuses the retained bytes), or the adapter's
+authenticated `pending`, `final` or `failed`. A payer whose own refund is final can see it
 even while the payee's leg is still uncertain. The core never re-sends a
 refund the adapter reports `failed`, so such a session returns the distinct
 status `refund-stalled`, naming the failed leg in `refunds`; it still drives
@@ -187,12 +187,16 @@ returns to normal progress if the chain has changed. The reasons are:
   because the payee had claimed the source.
 
 `failed` is returned only when the core has nothing it can drive: the inputs
-or authority are invalid, the store is corrupt, conflicting or lacks a
-required method, retained evidence and a new observation contradict each
-other (a changed source-lock checkpoint fact, a final reveal of another
-preimage), the source lock itself failed so nothing was locked, or the source
-claim is final but reached finality after the source expiry. These need an
-operator to reconcile the record, not a retry.
+or authority are invalid; the store is corrupt, conflicting or lacks a
+required method; retained evidence and a new observation contradict each
+other (a changed source-lock checkpoint fact, a reveal checkpoint for another
+transaction, a final reveal of another or a malformed preimage, a final source
+claim without a final lock and reveal); the source lock itself failed, so
+nothing was locked; or the source claim is final but reached finality after
+the source expiry (`settlement-atomicity`). These need an operator to
+reconcile the record, not a retry. Every other non-final state is
+`waiting`, `indeterminate`, `settle-asymmetric`, a refund status or
+`operator-alert`, and a host keeps advancing the session.
 
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
@@ -319,7 +323,26 @@ after the expiry.
 an independently corroborated core observation. Each chain adapter owns the
 confirmation-depth and irreversibility policy selected by the intent, including
 reorg detection. It must return `pending` while reversal remains possible and
-must never report `final` for a state it could later reverse. A reorg-capable
+must never report `final` for a state it could later reverse.
+
+Once a lock is final, and in particular once the core has checkpointed the
+source lock, the adapter must keep reporting it `final`, with its inclusion
+and expiry, for the rest of the session: also after the lock is claimed or
+refunded and even if the contract deletes its record. The claim or refund is
+its terminal disposition and is reported on its own action; only `lockTerms`
+may then be omitted. A checkpointed source lock that is no longer reported
+final returns `indeterminate` with reason
+`htlc-source-finality-checkpoint-without-final-lock`, and a destination lock
+that regresses after a reveal returns `indeterminate` with reason
+`htlc-destination-lock-finality-regressed`. Both are resumable: nothing moves
+the regressed leg, and the next call resumes once the adapter reports the lock
+final again. While the source lock has regressed and no reveal was ever
+prepared, the preimage is still private, so the payee cannot claim the source
+and the core still drives the payee's destination refund after its expiry. A
+final lock observation that is malformed (missing or invalid inclusion or
+expiry, or malformed terms) returns `indeterminate` with reason
+`htlc-adapter-lock-observation-invalid` until the adapter reports it
+correctly. A reorg-capable
 adapter therefore needs to keep observing through its required finality horizon
 before allowing the core to checkpoint a reveal or report settlement.
 
