@@ -171,31 +171,45 @@ observation, preparation or broadcast. Stores must accept an exact replay as
 
 ## Refusals before any claim
 
-The core captures the authority and binds every store and adapter method
-before any claim, preparation, observation or broadcast. The class of a refusal
-there depends on what it says about the phase:
+The core captures and validates the authority and binds every store and
+adapter method before any claim, preparation, observation or broadcast. A
+refusal there, like a claim conflict, is never a settlement failure: it returns
+the retry-safe `indeterminate`.
 
-- **Authority content** (mechanism, scope, route, hashes, decimals, amount,
-  job identity or tank pair) returns `failed`/`permanent`. Validation is
-  deterministic over the captured content, so within one SDK version no
-  settlement key can exist for refused content. A later SDK that tightens
-  content validation must instead treat a refused authority whose phase already
-  has stored state as `indeterminate`.
-- **Authority representation** (a frozen or otherwise read-only authority, a
-  `Proxy`, accessors, an exotic prototype, or an `input` that is a `Proxy` or
-  exposes `authority` through an accessor) returns the retry-safe
-  `indeterminate` with the refusal message as its reason. The same data in
-  another shape derives the same settlement key, so the refusal says nothing
-  about whether the phase started. Pass the authority as a plain, writable
-  data object.
+The settlement key binds only `jobId`, `railId` and `phaseIndex`, so the core
+cannot tell from the authority alone whether its phase already holds a lock or
+has settled. A `phaseIndex` read back as the string `"2"`, a decimals field as
+`"6"`, an amount as a number or an upper-cased hash all share the key of the
+phase they came from. So:
+
+- **A presented authority refused for its content** (mechanism, scope, route,
+  hashes, decimals, amount, job identity or tank pair) **or its
+  representation** (a frozen or otherwise read-only authority, a `Proxy`,
+  accessors, an exotic prototype, or an `input` that is a `Proxy` or exposes
+  `authority` through an accessor) returns `indeterminate` with the refusal
+  message as its reason. Content validation accepts only primitive values and
+  own fields, and decides through built-ins captured when the SDK loads.
+- **A claim conflict**, where the store already holds a different binding for
+  the phase, returns `indeterminate` with the store's reason (the reference
+  store's `liquidity-tank-settlement-binding-conflict`, or the host store's
+  own). That binding may be a durable lock or a settlement.
+
+A host must present the identical authority, as a plain, writable data object,
+for a phase it has started. If it cannot, an operator resolves the phase.
+
+Host configuration is refused the same way, before any claim or effect:
+
 - **A store without a stable `recordRecoveryFailure`**—for example one not
-  upgraded with the SDK, or wrapped in a `Proxy`—is refused on every call with
-  the retry-safe `indeterminate` and reason
-  `liquidity-tank-store-recovery-capability-unavailable`, before any claim or
-  effect. Any other refused owner, lease, clock, store or adapter is refused
-  the same way, with the refusal message as its reason. It needs an operator:
-  the core has not read the store, so it cannot tell whether a lock is durable
-  or the phase already settled.
+  upgraded with the SDK, or whose `recordRecoveryFailure` is missing,
+  accessor-backed or a `Proxy`—returns reason
+  `liquidity-tank-store-recovery-capability-unavailable` on every call.
+- **Any other refused owner, lease, clock, store or adapter**, including a
+  whole store wrapped in a `Proxy`, returns its refusal message as the reason,
+  for example `pay-cross-chain-liquidity-tank: store.claim must be stable
+  data`.
+
+Both need an operator: the core has not read the store, so it cannot tell
+whether a lock is durable or the phase already settled.
 
 ## Adapter trust boundary
 
