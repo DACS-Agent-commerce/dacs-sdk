@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import {
   assertPositiveAmount,
   baseUnits,
@@ -526,28 +528,57 @@ function createAttempt(
   });
 }
 
-function captureRetainedAttempts(
-  values: readonly Readonly<SolanaSplSignedAttempt>[],
-  intent: Readonly<SolanaSplSettlementIntent>,
-): readonly Readonly<SolanaSplSignedAttempt>[] {
-  if (!Array.isArray(values)) {
-    throw new DacsError("pay-solana-spl: retained attempts must be an array");
+/**
+ * True for a non-null object that is not a proxy, checked without running any
+ * trap. A proxy answers each read (`length`, own keys, each index) from its
+ * own code, so its answers need not agree and nothing it reports proves what
+ * the store holds. Every caller is inside a handled step, so a runtime without
+ * `util.types.isProxy` fails closed.
+ */
+function isDataObject(value: unknown): value is object {
+  return typeof value === "object" && value !== null && !nodeTypes.isProxy(value);
+}
+
+/**
+ * Reads a store array once into a fresh array. Element n must be an own data
+ * property at index n, and the array has no other own keys. A proxy is refused
+ * before any of its traps runs. A hole, an inherited index, an accessor or a
+ * length that disagrees with the own keys could hide a retained attempt or its
+ * expiry record, so each throws.
+ */
+function ownElements(values: unknown, label: string): unknown[] {
+  if (!isDataObject(values) || !Array.isArray(values)) {
+    throw new DacsError(`pay-solana-spl: ${label} must be a plain array`);
   }
-  // Attempt n must be an own data property at index n - 1. A hole, an
-  // inherited index or a length that disagrees with the array's own keys
-  // could hide the live latest attempt, so the length and each slot are read
-  // once, into a fresh array, and anything else is corrupt state.
   const length = values.length;
   if (!Number.isSafeInteger(length) || length < 0 ||
       Reflect.ownKeys(values).length !== length + 1) {
-    throw new DacsError("pay-solana-spl: retained attempts must be a dense array");
+    throw new DacsError(`pay-solana-spl: ${label} must be a dense array`);
   }
+  const elements: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const element = Object.getOwnPropertyDescriptor(values, String(index));
+    if (element === undefined || !("value" in element)) {
+      throw new DacsError(`pay-solana-spl: ${label} must be a dense array`);
+    }
+    elements.push(element.value);
+  }
+  return elements;
+}
+
+function captureRetainedAttempts(
+  values: unknown,
+  intent: Readonly<SolanaSplSettlementIntent>,
+): readonly Readonly<SolanaSplSignedAttempt>[] {
+  // Attempt n is the element at index n - 1, so the latest retained attempt
+  // is always the last element and can never be hidden.
+  const elements = ownElements(values, "retained attempts");
   const signatures = new Set<string>();
   const retained: Readonly<SolanaSplSignedAttempt>[] = [];
-  for (let index = 0; index < length; index += 1) {
-    const value: unknown = Object.getOwnPropertyDescriptor(values, String(index))?.value;
-    if (typeof value !== "object" || value === null) {
-      throw new DacsError("pay-solana-spl: retained attempt is missing");
+  for (let index = 0; index < elements.length; index += 1) {
+    const value = elements[index];
+    if (!isDataObject(value)) {
+      throw new DacsError("pay-solana-spl: retained attempt must be plain data");
     }
     const { attemptHash, ...unsigned } = value as Readonly<SolanaSplSignedAttempt>;
     const captured = createAttempt(unsigned, index + 1, intent);
@@ -597,20 +628,17 @@ function captureExpiryEvidence(
 }
 
 function captureRetainedExpiryEvidence(
-  values: readonly Readonly<SolanaSplExpiryEvidence>[] | undefined,
+  values: unknown,
   attempts: readonly Readonly<SolanaSplSignedAttempt>[],
   expiredSignatures: readonly string[],
 ): ReadonlyMap<string, Readonly<SolanaSplExpiryEvidence>> {
   if (values === undefined) return new Map();
-  if (!Array.isArray(values)) {
-    throw new DacsError("pay-solana-spl: retained expiry evidence must be an array");
-  }
   const captured = new Map<string, Readonly<SolanaSplExpiryEvidence>>();
-  for (const value of values) {
-    if (typeof value !== "object" || value === null) {
+  for (const value of ownElements(values, "retained expiry evidence")) {
+    if (!isDataObject(value)) {
       throw new DacsError("pay-solana-spl: retained expiry evidence is invalid");
     }
-    const candidate = value as unknown as Record<string, unknown>;
+    const candidate = value as Record<string, unknown>;
     const attempt = attempts.find((retained) => retained.signature === candidate.signature);
     if (!attempt || !expiredSignatures.includes(attempt.signature) ||
         captured.has(attempt.signature)) {
@@ -1008,13 +1036,14 @@ export async function advanceSolanaSplSettlement(
   let expiryEvidence: ReadonlyMap<string, Readonly<SolanaSplExpiryEvidence>>;
   try {
     attempts = captureRetainedAttempts(claimed.attempts, intent);
-    const storedExpired = [...claimed.expiredSignatures];
+    const storedExpired = ownElements(claimed.expiredSignatures, "retained expiry set");
     if (new Set(storedExpired).size !== storedExpired.length ||
         storedExpired.some((signature) =>
           !attempts.some((attempt) => attempt.signature === signature))) {
       throw new DacsError("pay-solana-spl: retained expiry set is invalid");
     }
-    expiredSignatures = Object.freeze(storedExpired);
+    // Each entry equals a retained attempt's signature, so each is a string.
+    expiredSignatures = Object.freeze(storedExpired as string[]);
     expiryEvidence = captureRetainedExpiryEvidence(
       claimed.expiryEvidence,
       attempts,

@@ -119,6 +119,20 @@ function legacyExpiryView(store: SolanaSplSettlementStore): SolanaSplSettlementS
   };
 }
 
+// Builds proxies that record every trap the core runs on them. The handler is
+// itself a proxy, so the lookup of any trap, defined or not, is recorded.
+type WatchedProxy = <T extends object>(target: T, handler?: ProxyHandler<T>) => T;
+function trapLog(): { traps: PropertyKey[]; proxy: WatchedProxy } {
+  const traps: PropertyKey[] = [];
+  const proxy: WatchedProxy = (target, handler = {}) => new Proxy(target, new Proxy(handler, {
+    get(inner, trap, receiver) {
+      traps.push(trap);
+      return Reflect.get(inner, trap, receiver);
+    },
+  }));
+  return { traps, proxy };
+}
+
 function adapter(overrides: Partial<SolanaSplAdapter> = {}): SolanaSplAdapter {
   return {
     async preflight(_intent, fence) {
@@ -1762,6 +1776,74 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
       delete attempts[attempts.length - 1];
       return { ...claim, attempts };
     }, preflight({ payerTokenBalanceBaseUnits: "0" }))).resolves.toEqual(corrupt);
+  });
+
+  // A proxy answers `length`, its own keys and each index from separate code.
+  // These two answers agree on a shorter dense array without the latest
+  // attempt, which may still land.
+  const hidingLatest = (proxy: WatchedProxy) => (claim: Acquired) => {
+    const attempts = [...claim.attempts];
+    const hidden = String(attempts.length - 1);
+    return {
+      ...claim,
+      attempts: proxy(attempts, {
+        get: (target, key, receiver) =>
+          key === "length" ? target.length - 1 : Reflect.get(target, key, receiver),
+        ownKeys: (target) => Reflect.ownKeys(target).filter((key) => key !== hidden),
+      }),
+    };
+  };
+
+  test.each([
+    ["a passing preflight", preflight()],
+    ["a refusing preflight", preflight({ payerTokenBalanceBaseUnits: "0" })],
+  ])("a proxy whose length and own keys hide the latest attempt, with %s, is refused before any trap runs",
+    async (_name, resumedPreflight) => {
+      const { traps, proxy } = trapLog();
+      await expect(resumeWith(2, hidingLatest(proxy), resumedPreflight)).resolves.toEqual(corrupt);
+      expect(traps).toEqual([]);
+    });
+
+  test.each<[string, (claim: Acquired, proxy: WatchedProxy) => unknown]>([
+    ["the latest attempt", (claim, proxy) => ({
+      ...claim,
+      attempts: [...claim.attempts.slice(0, -1), proxy({ ...claim.attempts.at(-1)! })],
+    })],
+    ["the expired signatures", (claim, proxy) => ({
+      ...claim, expiredSignatures: proxy([...claim.expiredSignatures]),
+    })],
+    ["the expiry evidence", (claim, proxy) => ({
+      ...claim, expiryEvidence: proxy([...claim.expiryEvidence!]),
+    })],
+    ["a predecessor's expiry evidence", (claim, proxy) => ({
+      ...claim, expiryEvidence: claim.expiryEvidence!.map((evidence) => proxy({ ...evidence })),
+    })],
+  ])("a transparent proxy as %s is refused before any trap runs", async (_name, view) => {
+    const { traps, proxy } = trapLog();
+    await expect(resumeWith(2, (claim) => view(claim, proxy))).resolves.toEqual(corrupt);
+    expect(traps).toEqual([]);
+  });
+
+  // Controls: the honest claim reconciles the latest attempt before anything
+  // else, and these arrays are read exactly like it.
+  test.each<[string, (attempts: unknown[]) => unknown]>([
+    ["frozen", (attempts) => Object.freeze(attempts)],
+    ["sealed", (attempts) => Object.seal(attempts)],
+    ["structured-clone", (attempts) => structuredClone(attempts)],
+    ["Array subclass", (attempts) => Object.assign(new (class Rows extends Array {})(), attempts)],
+  ])("a %s attempts array is read like a plain one", async (_name, transform) => {
+    const plain = await resumeWith(2, (claim) => claim);
+    expect(plain.reconciled[0]).toBe(2);
+    await expect(resumeWith(2, (claim) => ({ ...claim, attempts: transform([...claim.attempts]) })))
+      .resolves.toEqual(plain);
+  });
+
+  test("a typed array in place of attempts still fails closed", async () => {
+    await expect(resumeWith(2, (claim) => ({ ...claim, attempts: new Uint8Array(2) })))
+      .resolves.toEqual({
+        ...corrupt,
+        result: { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" },
+      });
   });
 });
 

@@ -113,11 +113,16 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
-A claim's `attempts` must be a dense array: attempt n is an own data property
-at index n − 1, and the array has no other own keys. A hole, an inherited index
-or a length that disagrees with the array's own keys could hide the live latest
-attempt, so it is `solana-spl-retained-state-corrupt` before anything is
-reconciled, signed or broadcast.
+A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be plain,
+dense arrays: element n is an own data property at index n, so attempt n is at
+index n − 1, and the array has no other own keys. A proxy is refused before any
+of its traps runs, because its answers to separate reads (`length`, its own
+keys, each index) need not agree. A proxy array or element, a hole, an
+inherited index, an accessor or a length that disagrees with the array's own
+keys could hide the live latest attempt or its expiry record, so each is
+`solana-spl-retained-state-corrupt` before anything is reconciled, signed or
+broadcast. The core cannot detect plain data that leaves out a retained
+attempt, so the store must return every attempt it retained.
 A stored settlement must be plain data. Only its own data properties are read,
 each once, into a fresh frozen copy that is checked against the intent, and a
 `settled` result returns only that copy. Extra fields and `toJSON` hooks are
