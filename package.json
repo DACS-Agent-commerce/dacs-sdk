@@ -93,6 +93,7 @@
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
     "docs/wallet-spend-authority.md",
+    "docs/raw-json-admission.md",
     "LICENSE"
   ],
   "scripts": {
