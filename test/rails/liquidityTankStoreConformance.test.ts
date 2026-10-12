@@ -247,45 +247,37 @@ function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
 }
 
 /**
- * The first handle is honest. A handle from `reopenStore` reads whether the
- * phase has a row, yields a turn, and on a phase it read as free grants itself
- * a lease it never wrote. Only a race that it enters first exposes it
- * (Daybreak r11 P3-1).
+ * One kind of handle is honest. The other (the one `createStore` returns, or
+ * every one from `reopenStore`) reads whether the phase has a row, yields a
+ * turn, and on a phase it read as free grants itself a lease it never wrote.
+ * Only a race that the stale handle enters first exposes it (Daybreak r11
+ * P3-1).
  */
-function reopenedHandlesClaimFromStaleReads(): LiquidityTankStoreConformanceOptions {
+function handlesClaimingFromStaleReads(stale: "created" | "reopened"): LiquidityTankStoreConformanceOptions {
   const honest = database();
   const claimed = new Set<string>();
   const bases = new WeakMap<LiquidityTankStore, LiquidityTankStore>();
-  const marking = (base: LiquidityTankStore): LiquidityTankStore => {
+  const open = (base: LiquidityTankStore, staleReads: boolean): LiquidityTankStore => {
     const handle: LiquidityTankStore = {
       ...base,
-      claim: (input) => {
+      claim: async (input) => {
+        const free = !claimed.has(input.intent.settlementKey);
         claimed.add(input.intent.settlementKey);
-        return base.claim(input);
+        if (!staleReads) return base.claim(input);
+        await yieldTurn();
+        return free
+          ? { status: "acquired", intent: input.intent,
+              lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs } }
+          : base.claim(input);
       },
     };
     bases.set(handle, base);
     return handle;
   };
   return {
-    createStore: async () => marking(await honest.createStore()),
-    reopenStore: async (store) => {
-      const base = await honest.reopenStore(bases.get(store) ?? store);
-      const stale: LiquidityTankStore = {
-        ...marking(base),
-        claim: async (input) => {
-          const free = !claimed.has(input.intent.settlementKey);
-          claimed.add(input.intent.settlementKey);
-          await yieldTurn();
-          return free
-            ? { status: "acquired", intent: input.intent,
-                lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs } }
-            : base.claim(input);
-        },
-      };
-      bases.set(stale, base);
-      return stale;
-    },
+    createStore: async () => open(await honest.createStore(), stale === "created"),
+    reopenStore: async (store) =>
+      open(await honest.reopenStore(bases.get(store) ?? store), stale === "reopened"),
   };
 }
 
@@ -582,8 +574,11 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
     },
   })), /2 of two workers starting one phase at once went past the claim/],
   [CASE.coreRace, "grants a reopened handle a phase it read as free a turn earlier (Daybreak r11 P3-1)",
-    reopenedHandlesClaimFromStaleReads,
+    () => handlesClaimingFromStaleReads("reopened"),
     /2 of two workers starting one phase at once went past the claim \(reversed order\)/],
+  [CASE.coreRace, "grants its first handle a phase it read as free a turn earlier",
+    () => handlesClaimingFromStaleReads("created"),
+    /2 of two workers starting one phase at once went past the claim \(given order\)/],
 ];
 
 describe("runLiquidityTankStoreConformance", () => {
