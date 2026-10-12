@@ -2000,6 +2000,46 @@ describe("advanceCrossChainHtlc", () => {
       .toHaveLength(2);
   });
 
+  test("never refunds on a failed observation of a replaced reveal while the replacement may land", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-claim": "pending" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const original = h.actions["destination-claim"];
+    if (!original || original.state !== "pending") throw new Error("expected pending reveal");
+    const failedOriginal = {
+      state: "failed" as const,
+      txRef: original.txRef,
+      authenticationHash: AUTH_HASH,
+    };
+    h.actions["destination-claim"] = failedOriginal;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    expect(h.actions["destination-claim"]).toMatchObject({
+      state: "pending",
+      txRef: refFor("destination-claim", "-attempt-2"),
+    });
+    // Past both expiries the adapter reports only the replaced reveal, failed.
+    // The replacement may still land, so neither leg is refunded.
+    h.actions["destination-claim"] = failedOriginal;
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "stale-failure" })).resolves.toEqual({
+      status: "operator-alert",
+      reason: "htlc-destination-claim-failed-preimage-public",
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
+    });
+    const effects = h.prepareAction.mock.calls.map((call) => call[0].action);
+    expect(effects).not.toContain("source-refund");
+    expect(effects).not.toContain("destination-refund");
+  });
+
   test("still replaces a failed reveal after the payer withdraws authorization", async () => {
     const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
