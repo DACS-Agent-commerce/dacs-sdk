@@ -1505,7 +1505,8 @@ describe("buyer two-copy completion adapter", () => {
     }
 
     it(`reports a ${paymentProfile} anchor answer that arrives after an authentic readback`, async () => {
-      // The answered copy's readback authenticates; only its anchor check gets `false`.
+      // The answered copy's readback authenticates; only its anchor check gets
+      // `false`, 25 ms after the other copy's read went unanswered.
       const harness = await completionHarness(paymentProfile);
       mocks.verifyCompleted.mockImplementationOnce(driveCopiesFailFast);
       let answeredCalls = 0;
@@ -1514,6 +1515,7 @@ describe("buyer two-copy completion adapter", () => {
           throw new SubstrateError("Demos anchor receipt observation unavailable");
         }
         answeredCalls += 1;
+        if (answeredCalls === 2) await pause(25);
         return answeredCalls === 1;
       });
       await expect(harness.authorize()).resolves.toBe(false);
