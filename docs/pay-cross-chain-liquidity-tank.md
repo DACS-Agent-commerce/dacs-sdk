@@ -279,19 +279,47 @@ observation, preparation or broadcast. Stores must accept an exact replay as
 contract against any `LiquidityTankStore` and returns one result per case.
 **A production store must pass every case before the core relies on it.**
 `createStore` returns a store with no liquidity-tank rows and is called once
-per case. `reopenStore(store)` must return a new handle on the same durable
-state, opened as a restarted process would open it, sharing no in-process
-state.
+per case, plus once before the cases to check `reopenStore`.
+`reopenStore(store)` must return a new handle on the same durable state,
+opened as a restarted process or a second worker would open it (for example a
+new connection to the same database), sharing no in-process state. The
+restart cases use the new handle in place of the old one; the race cases keep
+both open and write through them at once. A `reopenStore` that returns the
+handle it was given fails every case, since a restart or a race through it
+would test nothing.
 
-The cases cover exact leases, generation fencing, lease expiry on every write,
-first-submission retention, bridge-ID uniqueness, observation ordering, late
-completions, the completion-versus-expiry election in both orders, failure
-retention, settlement replay, and state that survives `reopenStore`. Two more
-drive the core through one phase with a worker that stops before its
-submission write commits, a lost broadcast response and restarts between
-every step. After every step they check that at most one signed submission was
-ever broadcast, the funds locked never exceed the intent, and the phase is
-never reported both settled and expired; each must end in exactly one.
+**Sequential cases** check one write at a time: exact leases, generation
+fencing (including a re-claim by the same owner, whose earlier generation must
+stay fenced), lease expiry on every write, first-submission retention,
+bridge-ID uniqueness, observation ordering, late completions, the
+completion-versus-expiry election in both orders, failure retention,
+settlement replay, and state that survives `reopenStore`, including the
+bridge-ID index. Two more drive the core through one phase with a worker that
+stops before its submission write commits, a lost broadcast response and
+restarts between every step. After every step they check that no second
+signed submission was broadcast, that the funds this one operation locked
+never exceed its intent, and that the phase is never reported both settled
+and expired; each must end in exactly one. That is a check on one operation,
+not on a tank's balance.
+
+**Race cases** start two operations through two handles before either
+settles, in both start orders: two claims on a fresh phase and two takeovers
+of an expired lease; two submissions for one phase; two phases submitting on
+one bridge operation; a timely completion against recovery expiry; a
+settlement against expiry after a durable timely completion; a takeover
+against each ordinary write; and two workers starting one phase through the
+core, held at preparation until both have reached it or one has returned.
+After each race a fresh handle must show exactly one winner, the one the store
+reported.
+
+**What passing shows, and what it doesn't.** A store that passes keeps the
+contract in these sequences and in these races, as this process could
+interleave them. That is evidence, not proof, that it commits each write
+atomically: a store that loses a race only under other timing, other
+interleavings, several processes or production load can still pass. Build
+each method on the backend's own atomic primitive (a single conditional write,
+or one serializable transaction that reads and writes the row) and review that
+code; the suite does not replace the review.
 
 ```ts
 import { runLiquidityTankStoreConformance } from "@kynesyslabs/dacs/rails";
@@ -304,9 +332,13 @@ const failed = results.filter((result) => !result.passed);
 if (failed.length > 0) throw new Error(JSON.stringify(failed));
 ```
 
-The in-memory reference store passes when `reopenStore` returns the same
-instance, and fails the three restart cases when a restart really drops its
-memory. That failure is the reason it requires `acknowledgeVolatile`.
+The in-memory reference store cannot pass: a second instance starts empty, so
+it fails the restart and race cases. That failure is the reason it requires
+`acknowledgeVolatile`. Handing it back as its own reopened handle
+(`reopenStore: (store) => store`) is refused, as above. The SDK's own tests
+run the reference store's rules behind new handle objects on one shared
+instance, which stands in for a database; that shows the cases accept a store
+that keeps the contract, not that the reference store is durable.
 
 ## Refusals before any claim
 

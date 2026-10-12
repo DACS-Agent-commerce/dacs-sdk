@@ -344,8 +344,10 @@ export type LiquidityTankStoreWrite =
 
 /**
  * Durable settlement state. Restart safety holds only for a store that keeps
- * every row across process restarts and commits each write atomically; run
- * `runLiquidityTankStoreConformance` against it before production use.
+ * every row across process restarts and commits each write atomically. Run
+ * `runLiquidityTankStoreConformance` against it before production use:
+ * passing is required, but it checks the contract in its own sequences and
+ * races, not that every interleaving commits atomically.
  * Every write must refuse a lease that is not current at its `now`
  * (`expiresAt <= now`), as well as a stale owner or generation.
  */

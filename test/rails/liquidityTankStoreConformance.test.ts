@@ -2,60 +2,477 @@ import { describe, expect, test } from "vitest";
 
 import {
   createInMemoryLiquidityTankStore,
+  type LiquidityTankLease,
   type LiquidityTankStore,
 } from "../../src/rails/liquidityTank.js";
-import { runLiquidityTankStoreConformance } from "../../src/rails/liquidityTankStoreConformance.js";
+import {
+  runLiquidityTankStoreConformance,
+  type LiquidityTankStoreConformanceOptions,
+  type LiquidityTankStoreConformanceResult,
+} from "../../src/rails/liquidityTankStoreConformance.js";
 import * as rails from "../../src/rails/index.js";
 import * as root from "../../src/index.js";
 
 const VOLATILE = { acknowledgeVolatile: true } as const;
+const IDENTITY_REOPEN =
+  "reopenStore returned the handle it was given; it must open a new handle on the same durable state";
+
+const CASE = {
+  exactLease: "claim acquires an exact lease and echoes the intent",
+  liveLease: "claim waits on a live lease held by another owner",
+  binding: "claim refuses a different binding for the same phase",
+  takeover: "lease takeover raises the generation and fences the old owner",
+  writeExpiry: "every ordinary write refuses a lease that has expired at its now",
+  firstSubmission: "the first submission is kept and a replacement is refused",
+  bridge: "a bridge operation serves one settlement only",
+  ordering: "observations need the retained submission and never regress",
+  lateCompletion: "a completion at or after the deadline is never recorded as an observation",
+  settlementNeedsCompletion: "a settlement needs a durable timely completion",
+  settlementExact: "a settlement is exact, replayable and terminal",
+  settlementBlocksExpiry: "a settlement blocks recovery expiry",
+  completionBlocksExpiry: "a durable timely completion blocks recovery expiry before its settlement is written",
+  expiryCas: "recovery expiry is a compare-and-swap on the exact durable checkpoint",
+  expiryBlocks: "recovery expiry blocks a later completion and settlement",
+  failureRetention: "terminal failure evidence is retained once, echoed and expires the lock",
+  failureCleared: "a timely completion clears retained failure evidence and wins",
+  restart: "retained state survives a restart",
+  settles: "through the core, crashes and restarts never double-send, over-lock or settle an expired phase",
+  expires: "through the core, an expired phase stays expired across restarts and a late release",
+  claimRace: "concurrent claims elect exactly one owner, on a fresh phase or a takeover",
+  submissionRace: "concurrent submissions for one phase keep exactly one",
+  bridgeRace: "concurrent submissions on one bridge operation serve one settlement",
+  completionExpiryRace: "a timely completion racing recovery expiry: exactly one wins",
+  settlementExpiryRace: "a settlement racing recovery expiry after a durable timely completion: only the settlement wins",
+  takeoverRace: "a takeover racing each ordinary write: the write lands before the takeover or not at all",
+  coreRace: "through the core, two workers starting one phase at once broadcast at most once",
+} as const;
+
+const RESTART_CASES = [CASE.restart, CASE.settles, CASE.expires];
+const RACE_CASES = [
+  CASE.claimRace, CASE.submissionRace, CASE.bridgeRace, CASE.completionExpiryRace,
+  CASE.settlementExpiryRace, CASE.takeoverRace, CASE.coreRace,
+];
+
+const failedNames = (results: readonly LiquidityTankStoreConformanceResult[]) =>
+  results.filter((result) => !result.passed).map((result) => result.name);
+const failureOf = (results: readonly LiquidityTankStoreConformanceResult[], name: string) =>
+  results.find((result) => result.name === name)?.failure;
+
+/** A macrotask turn: two operations started together interleave here. */
+const yieldTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+type WriteInput = { settlementKey: string; bindingHash: string; owner: string; generation: number; now: number };
+
+/**
+ * The reference store standing in for a database: every handle, including one
+ * from `reopenStore`, is a new object reaching the same rows, as connections
+ * to one database would. `patch` replaces methods of that database, once per
+ * database, to break one rule.
+ */
+function database(
+  patch: (inner: LiquidityTankStore) => Partial<LiquidityTankStore> = () => ({}),
+): LiquidityTankStoreConformanceOptions {
+  const databases = new WeakMap<LiquidityTankStore, LiquidityTankStore>();
+  const open = (db: LiquidityTankStore): LiquidityTankStore => {
+    const handle: LiquidityTankStore = {
+      claim: (input) => db.claim(input),
+      isCurrent: (input) => db.isCurrent(input),
+      recordSubmission: (input) => db.recordSubmission(input),
+      recordObservation: (input) => db.recordObservation(input),
+      recordRecoveryFailure: (input) => db.recordRecoveryFailure(input),
+      recordRecoveryExpired: (input) => db.recordRecoveryExpired(input),
+      recordSettlement: (input) => db.recordSettlement(input),
+    };
+    databases.set(handle, db);
+    return handle;
+  };
+  return {
+    createStore: () => {
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      return open({ ...inner, ...patch(inner) });
+    },
+    reopenStore: (store) => open(databases.get(store) as LiquidityTankStore),
+  };
+}
+
+/** A database whose reopened handle starts empty, as the reference store does after a restart. */
+function forgetful(): LiquidityTankStoreConformanceOptions {
+  return {
+    createStore: () => createInMemoryLiquidityTankStore(VOLATILE),
+    reopenStore: () => createInMemoryLiquidityTankStore(VOLATILE),
+  };
+}
+
+/** Durable rows, one reference store per settlement key, plus a cross-key bridge-ID index. */
+interface Disk { rows: Map<string, LiquidityTankStore>; bridgeOwners: Map<string, string> }
+
+/**
+ * The code review's B2 store: rows are durable, but the bridge-ID index is
+ * either per handle ("process", lost on every reopen) or read and written
+ * around the row write ("racey", so two writes started together both pass).
+ */
+function rowsWithBridgeIndex(index: "process" | "racey"): LiquidityTankStoreConformanceOptions {
+  const disks = new WeakMap<LiquidityTankStore, Disk>();
+  const open = (disk: Disk): LiquidityTankStore => {
+    const owners = index === "racey" ? disk.bridgeOwners : new Map<string, string>();
+    const row = (key: string): LiquidityTankStore => {
+      let store = disk.rows.get(key);
+      if (!store) {
+        store = createInMemoryLiquidityTankStore(VOLATILE);
+        disk.rows.set(key, store);
+      }
+      return store;
+    };
+    const handle: LiquidityTankStore = {
+      claim: (input) => row(input.intent.settlementKey).claim(input),
+      isCurrent: (input) => row(input.settlementKey).isCurrent(input),
+      recordSubmission: async (input) => {
+        const owner = owners.get(input.submission.bridgeId);
+        if (owner !== undefined && owner !== input.settlementKey) {
+          return { status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" };
+        }
+        const result = await row(input.settlementKey).recordSubmission(input);
+        if (result.status === "recorded") owners.set(input.submission.bridgeId, input.settlementKey);
+        return result;
+      },
+      recordObservation: (input) => row(input.settlementKey).recordObservation(input),
+      recordRecoveryFailure: (input) => row(input.settlementKey).recordRecoveryFailure(input),
+      recordRecoveryExpired: (input) => row(input.settlementKey).recordRecoveryExpired(input),
+      recordSettlement: (input) => row(input.settlementKey).recordSettlement(input),
+    };
+    disks.set(handle, disk);
+    return handle;
+  };
+  return {
+    createStore: () => open({ rows: new Map(), bridgeOwners: new Map() }),
+    reopenStore: (store) => open(disks.get(store) as Disk),
+  };
+}
+
+/** Answers success where the reference store refuses `method` with `reason`. */
+function accepting(
+  method: "recordSubmission" | "recordObservation" | "recordRecoveryExpired" | "recordSettlement",
+  reason: string,
+  answer: "recorded" | "existing" = "recorded",
+) {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => ({
+    [method]: async (input: never) => {
+      const result = await (inner[method] as (value: never) => Promise<{ status: string; reason?: string }>)(input);
+      return result.status === "conflict" && result.reason === reason ? { status: answer } : result;
+    },
+  });
+}
+
+/** Remembers the lease of the latest acquired claim for each settlement key. */
+function trackingLeases(inner: LiquidityTankStore) {
+  const leases = new Map<string, LiquidityTankLease>();
+  const claim: LiquidityTankStore["claim"] = async (input) => {
+    const claimed = await inner.claim(input);
+    if (claimed.status === "acquired") leases.set(input.intent.settlementKey, claimed.lease);
+    return claimed;
+  };
+  return { claim, lease: (key: string) => leases.get(key) };
+}
+
+/** Every write and `isCurrent` goes through `rewrite` first. */
+function rewritingWrites(
+  inner: LiquidityTankStore,
+  rewrite: <T extends WriteInput>(input: T) => T,
+): Partial<LiquidityTankStore> {
+  return {
+    isCurrent: (input) => inner.isCurrent(rewrite(input)),
+    recordSubmission: (input) => inner.recordSubmission(rewrite(input)),
+    recordObservation: (input) => inner.recordObservation(rewrite(input)),
+    recordRecoveryFailure: (input) => inner.recordRecoveryFailure(rewrite(input)),
+    recordRecoveryExpired: (input) => inner.recordRecoveryExpired(rewrite(input)),
+    recordSettlement: (input) => inner.recordSettlement(rewrite(input)),
+  };
+}
+
+/** Claims that overlap both read a free phase: the one that resumes first is granted a lease the store never wrote. */
+function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
+  let inFlight = 0;
+  return {
+    claim: async (input) => {
+      inFlight += 1;
+      await yieldTurn();
+      const overlapped = inFlight > 1;
+      inFlight -= 1;
+      if (!overlapped) return inner.claim(input);
+      return {
+        status: "acquired",
+        intent: input.intent,
+        lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs },
+      };
+    },
+  };
+}
+
+const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConformanceOptions, RegExp])[] = [
+  [CASE.exactLease, "stamps expiresAt one millisecond late", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      return claimed.status === "acquired"
+        ? { ...claimed, lease: { ...claimed.lease, expiresAt: claimed.lease.expiresAt + 1 } }
+        : claimed;
+    },
+  })), /lease expiresAt is not exactly now \+ leaseDurationMs/],
+  [CASE.liveLease, "takes over a live lease", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      return claimed.status === "waiting" ? inner.claim({ ...input, now: claimed.lease.expiresAt }) : claimed;
+    },
+  })), /claim under a live lease returned acquired/],
+  [CASE.binding, "reports a binding conflict as corruption", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      return claimed.status === "conflict" ? { status: "corrupt", reason: claimed.reason } : claimed;
+    },
+  })), /claim with another binding returned corrupt/],
+  [CASE.takeover, "fences by owner and ignores the generation", () => database((inner) => {
+    const tracked = trackingLeases(inner);
+    return {
+      claim: tracked.claim,
+      ...rewritingWrites(inner, (input) => {
+        const lease = tracked.lease(input.settlementKey);
+        return lease && lease.owner === input.owner ? { ...input, generation: lease.generation } : input;
+      }),
+    };
+  }), /the same owner's stale generation is still current/],
+  [CASE.writeExpiry, "ignores lease expiry on ordinary writes (the 996815e reference store)", () => database((inner) => {
+    const tracked = trackingLeases(inner);
+    const beforeExpiry = <T extends WriteInput>(input: T): T => {
+      const lease = tracked.lease(input.settlementKey);
+      return lease && lease.owner === input.owner && lease.generation === input.generation &&
+        input.now >= lease.expiresAt ? { ...input, now: lease.expiresAt - 1 } : input;
+    };
+    return {
+      claim: tracked.claim,
+      recordSubmission: (input) => inner.recordSubmission(beforeExpiry(input)),
+      recordObservation: (input) => inner.recordObservation(beforeExpiry(input)),
+      recordSettlement: (input) => inner.recordSettlement(beforeExpiry(input)),
+    };
+  }), /submission after lease expiry: store answered recorded/],
+  [CASE.firstSubmission, "accepts a replacement submission",
+    () => database(accepting("recordSubmission", "liquidity-tank-submission-replacement-forbidden", "existing")),
+    /re-signed replacement: store answered existing/],
+  [CASE.bridge, "lets a second settlement reuse a bridge ID",
+    () => database(accepting("recordSubmission", "liquidity-tank-bridge-cross-settlement-reuse")),
+    /second settlement reusing the bridge ID: store answered recorded/],
+  [CASE.ordering, "accepts a status regression",
+    () => database(accepting("recordObservation", "liquidity-tank-status-regression")),
+    /regression to empty: store answered recorded/],
+  [CASE.lateCompletion, "records a late completion as an observation",
+    () => database(accepting("recordObservation", "liquidity-tank-completion-after-recovery-deadline")),
+    /completion finalized at the deadline: store answered recorded/],
+  [CASE.settlementNeedsCompletion, "settles with only the lock durable",
+    () => database(accepting("recordSettlement", "liquidity-tank-settlement-before-completion")),
+    /settlement while only the lock is durable: store answered recorded/],
+  [CASE.settlementExact, "accepts a settlement other than the completion's",
+    () => database(accepting("recordSettlement", "liquidity-tank-settlement-evidence-conflict")),
+    /settlement other than the completion's: store answered recorded/],
+  [CASE.settlementBlocksExpiry, "expires a settled phase",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-lost-to-settlement")),
+    /expiry after the settlement: store answered recorded/],
+  [CASE.completionBlocksExpiry, "expires past a durable timely completion",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-lost-to-completion")),
+    /expiry from a late completion: store answered recorded/],
+  [CASE.expiryCas, "expires against another expected observation",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-checkpoint-cas-failed")),
+    /expiry against another expected observation: store answered recorded/],
+  [CASE.expiryCas, "ignores lease expiry on recovery expiry", () => database((inner) => {
+    const tracked = trackingLeases(inner);
+    return {
+      claim: tracked.claim,
+      recordRecoveryExpired: (input) => {
+        const lease = tracked.lease(input.settlementKey);
+        return inner.recordRecoveryExpired(lease && lease.generation === input.generation &&
+          input.now >= lease.expiresAt ? { ...input, now: lease.expiresAt - 1 } : input);
+      },
+    };
+  }), /expiry after the lease expired: store answered recorded/],
+  [CASE.expiryBlocks, "records an observation after expiry",
+    () => database(accepting("recordObservation", "liquidity-tank-observation-after-terminal")),
+    /completion after expiry: store answered recorded/],
+  [CASE.failureRetention, "lets a second failure replace the first", () => database((inner) => ({
+    recordRecoveryFailure: async (input) => {
+      const result = await inner.recordRecoveryFailure(input);
+      return result.status === "conflict" && result.reason === "liquidity-tank-recovery-failure-conflict"
+        ? { status: "existing", recoveryFailure: input.recoveryFailure }
+        : result;
+    },
+  })), /a second failure replaced the first/],
+  [CASE.failureCleared, "expires past a completion that cleared a retained failure",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-lost-to-completion")),
+    /expiry from the cleared failure: store answered recorded/],
+  [CASE.restart, "starts empty after a restart", forgetful,
+    /the reopened store lost the submission or the checkpoint/],
+  [CASE.restart, "keeps its bridge-ID index in process memory (code review B2)",
+    () => rowsWithBridgeIndex("process"),
+    /after a restart, another phase reusing a settled bridge operation: store answered recorded/],
+  [CASE.settles, "starts empty after a restart", forgetful,
+    /step 3 \(worker-3\): 2 different signed submissions were broadcast, locking 2500000 base units for an intent of 1250000/],
+  [CASE.settles, "hands back retained observations the bridge never issued", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      return (claimed.status === "acquired" || claimed.status === "waiting") && claimed.observation
+        ? { ...claimed, observation: { ...claimed.observation, authenticationHash: "f".repeat(64) } }
+        : claimed;
+    },
+  })), /locked bridge read returned indeterminate/],
+  [CASE.expires, "starts empty after a restart", forgetful,
+    /step 2 \(worker-2\): 2 different signed submissions were broadcast/],
+  [CASE.expires, "reports an expired phase settled", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      if (claimed.status !== "recovery-expired") return claimed;
+      return {
+        status: "settled",
+        intent: claimed.intent,
+        settlement: {
+          txRef: {
+            kind: "liquidity-tank",
+            bridgeId: claimed.submission.bridgeId,
+            sourceChainId: claimed.intent.sourceChainId,
+            destChainId: claimed.intent.destinationChainId,
+            lockTxHash: "forged-lock",
+            releaseTxHash: "forged-release",
+            recoveryDeadline: 1_700_086_400_000,
+          },
+          paymentAmount: { amount: claimed.intent.amount, currency: "USDC" },
+          settlementFinality: { model: "liquidity-tank", finalityObservedAt: 1_700_086_399_999 },
+          authenticationHash: "f".repeat(64),
+        },
+      };
+    },
+  })), /step 4 \(worker-4\): the phase was reported both settled and expired/],
+  [CASE.claimRace, "grants two overlapping claims", () => database(raceyClaims),
+    /2 of two concurrent claims on a fresh phase acquired the phase/],
+  [CASE.submissionRace, "records two overlapping submissions", () => database((inner) => {
+    let inFlight = 0;
+    return {
+      recordSubmission: async (input) => {
+        inFlight += 1;
+        await yieldTurn();
+        const overlapped = inFlight > 1;
+        inFlight -= 1;
+        return overlapped ? { status: "recorded" } : inner.recordSubmission(input);
+      },
+    };
+  }), /2 of two concurrent submissions for one phase were recorded/],
+  [CASE.bridgeRace, "reads and writes its bridge-ID index around the row write (code review B2-control)",
+    () => rowsWithBridgeIndex("racey"),
+    /2 of two concurrent submissions on one bridge operation were recorded/],
+  [CASE.completionExpiryRace, "records an overlapping completion and expiry", () => database((inner) => {
+    let completions = 0;
+    let expiries = 0;
+    return {
+      recordObservation: async (input) => {
+        if (input.observation.status !== "completed") return inner.recordObservation(input);
+        completions += 1;
+        await yieldTurn();
+        const raced = expiries > 0;
+        completions -= 1;
+        return raced ? { status: "recorded" } : inner.recordObservation(input);
+      },
+      recordRecoveryExpired: async (input) => {
+        expiries += 1;
+        await yieldTurn();
+        const raced = completions > 0;
+        expiries -= 1;
+        return raced ? { status: "recorded" } : inner.recordRecoveryExpired(input);
+      },
+    };
+  }), /2 of a concurrent timely completion and recovery expiry were recorded/],
+  [CASE.settlementExpiryRace, "records an overlapping settlement and expiry (Daybreak's racey store)",
+    () => database((inner) => {
+      let settlementsInFlight = 0;
+      let expiriesInFlight = 0;
+      let terminalRace = false;
+      return {
+        async recordSettlement(input) {
+          settlementsInFlight += 1;
+          await yieldTurn();
+          terminalRace ||= expiriesInFlight > 0;
+          settlementsInFlight -= 1;
+          return terminalRace ? { status: "recorded" } : inner.recordSettlement(input);
+        },
+        async recordRecoveryExpired(input) {
+          expiriesInFlight += 1;
+          await yieldTurn();
+          terminalRace ||= settlementsInFlight > 0;
+          expiriesInFlight -= 1;
+          return terminalRace ? { status: "recorded" } : inner.recordRecoveryExpired(input);
+        },
+      };
+    }), /both the settlement and the expiry were recorded/],
+  [CASE.takeoverRace, "checks the lease, then writes a turn later without checking again", () => database((inner) => {
+    const tracked = trackingLeases(inner);
+    const checkThenWrite = <T extends WriteInput, R>(write: (input: T) => Promise<R>) => async (input: T) => {
+      if (!await inner.isCurrent(input)) return { status: "stale", reason: "stale-lease" } as R;
+      await yieldTurn();
+      // Writes on the lease it checked, whoever holds the phase by now.
+      const lease = tracked.lease(input.settlementKey);
+      return write(lease ? { ...input, owner: lease.owner, generation: lease.generation } : input);
+    };
+    return {
+      claim: tracked.claim,
+      recordSubmission: checkThenWrite((input) => inner.recordSubmission(input)),
+      recordObservation: checkThenWrite((input) => inner.recordObservation(input)),
+      recordRecoveryFailure: checkThenWrite((input) => inner.recordRecoveryFailure(input)),
+      recordRecoveryExpired: checkThenWrite((input) => inner.recordRecoveryExpired(input)),
+      recordSettlement: checkThenWrite((input) => inner.recordSettlement(input)),
+    };
+  }), /recordSubmission by the old owner landed after another owner took its lease over/],
+  [CASE.coreRace, "grants two overlapping claims", () => database(raceyClaims),
+    /2 of two workers starting one phase at once went past the claim/],
+];
 
 describe("runLiquidityTankStoreConformance", () => {
-  test("the reference store passes every case within one process", async () => {
-    const results = await runLiquidityTankStoreConformance({
-      createStore: () => createInMemoryLiquidityTankStore(VOLATILE),
-      // The reference store cannot survive a restart; within one process the
-      // same instance stands in for the reopened handle.
-      reopenStore: (store) => store,
-    });
+  test("the reference store passes every case behind handles that stand in for a database", async () => {
+    const results = await runLiquidityTankStoreConformance(database());
     expect(results.filter((result) => !result.passed)).toEqual([]);
-    expect(results.length).toBeGreaterThanOrEqual(20);
-    expect(new Set(results.map((result) => result.name)).size).toBe(results.length);
+    expect(results.map((result) => result.name)).toEqual(Object.values(CASE));
   });
 
-  test("the reference store fails the restart cases when a restart really drops its memory", async () => {
+  test("the reference store fails the restart and race cases when a restart really drops its memory", async () => {
+    const results = await runLiquidityTankStoreConformance(forgetful());
+    expect(failedNames(results)).toEqual([...RESTART_CASES, ...RACE_CASES]);
+    // After the restart the core signs and broadcasts a second bridge operation.
+    expect(failureOf(results, CASE.settles)).toMatch(/2 different signed submissions were broadcast/);
+  });
+
+  test("refuses to run when reopenStore returns the handle it was given (code review B3)", async () => {
     const results = await runLiquidityTankStoreConformance({
       createStore: () => createInMemoryLiquidityTankStore(VOLATILE),
-      reopenStore: () => createInMemoryLiquidityTankStore(VOLATILE),
-    });
-    const failed = results.filter((result) => !result.passed);
-    expect(failed.map((result) => result.name)).toEqual([
-      "retained state survives a restart",
-      "through the core, crashes and restarts never double-send, over-lock or settle an expired phase",
-      "through the core, an expired phase stays expired across restarts and a late release",
-    ]);
-    // After the restart the core signs and broadcasts a second bridge operation.
-    expect(failed[1]?.failure).toMatch(/2 different signed submissions were broadcast/);
-  });
-
-  test("a store that accepts a submission replacement fails its case", async () => {
-    const results = await runLiquidityTankStoreConformance({
-      createStore: () => {
-        const inner = createInMemoryLiquidityTankStore(VOLATILE);
-        const store: LiquidityTankStore = {
-          ...inner,
-          recordSubmission: async (input) => {
-            const result = await inner.recordSubmission(input);
-            return result.status === "conflict" ? { status: "existing" } : result;
-          },
-        };
-        return store;
-      },
       reopenStore: (store) => store,
     });
-    expect(results.filter((result) => !result.passed).map((result) => result.name)).toEqual([
-      "the first submission is kept and a replacement is refused",
-      "a bridge operation serves one settlement only",
+    expect(results).toHaveLength(Object.values(CASE).length);
+    expect(results.every((result) => !result.passed && result.failure === IDENTITY_REOPEN)).toBe(true);
+  });
+
+  test("a reopenStore that returns the same handle later fails the cases that reach it", async () => {
+    let calls = 0;
+    const honest = database();
+    const results = await runLiquidityTankStoreConformance({
+      createStore: honest.createStore,
+      // The first call, the run's own check, gets a new handle.
+      reopenStore: (store) => (calls++ === 0 ? honest.reopenStore(store) : store),
+    });
+    expect(failedNames(results)).toEqual([...RESTART_CASES, ...RACE_CASES]);
+    expect(results.filter((result) => !result.passed).every((result) => result.failure === IDENTITY_REOPEN))
+      .toBe(true);
+  });
+
+  test("a store that accepts a submission replacement fails its cases", async () => {
+    const results = await runLiquidityTankStoreConformance(database((inner) => ({
+      recordSubmission: async (input) => {
+        const result = await inner.recordSubmission(input);
+        return result.status === "conflict" ? { status: "existing" } : result;
+      },
+    })));
+    expect(failedNames(results)).toEqual([
+      CASE.firstSubmission, CASE.bridge, CASE.restart, CASE.submissionRace, CASE.bridgeRace,
     ]);
   });
 
@@ -68,6 +485,15 @@ describe("runLiquidityTankStoreConformance", () => {
     });
     expect(results.every((result) => !result.passed && result.failure === "database unavailable"))
       .toBe(true);
+  });
+
+  test("every case has a broken store that fails it on its own check", () => {
+    expect(new Set(BROKEN.map(([name]) => name))).toEqual(new Set(Object.values(CASE)));
+  });
+
+  test.each(BROKEN)("%s: refused for a store that %s", async (name, _store, options, failure) => {
+    const results = await runLiquidityTankStoreConformance(options());
+    expect(failureOf(results, name)).toMatch(failure);
   });
 
   test("is exported from the rails and root barrels", () => {

@@ -25,8 +25,11 @@ export interface LiquidityTankStoreConformanceOptions {
   createStore(): LiquidityTankStore | Promise<LiquidityTankStore>;
   /**
    * A new handle on the same durable state as `store`, opened the way a
-   * restarted process would open it (for example a new connection to the same
-   * database). It must not share in-process state with `store`.
+   * restarted process or a second worker would open it (for example a new
+   * connection to the same database). It must not share in-process state with
+   * `store`. The restart cases use it in place of `store`; the race cases keep
+   * both handles and write through them at once. A run whose `reopenStore`
+   * returns the handle it was given fails every case.
    */
   reopenStore(store: LiquidityTankStore): LiquidityTankStore | Promise<LiquidityTankStore>;
 }
@@ -40,6 +43,7 @@ export interface LiquidityTankStoreConformanceResult {
 
 type ObservationValue = Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 type FailedAfterLock = Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
+type AcquiredClaim = Extract<LiquidityTankStoreClaim, { status: "acquired" }>;
 type WriteAuthority = {
   settlementKey: string;
   bindingHash: string;
@@ -53,6 +57,8 @@ const DEADLINE = T0 + 86_400_000;
 const LEASE_MS = 1_000;
 // The store is not the authenticator, so a well-formed hash is enough here.
 const AUTHENTICATION_HASH = "a".repeat(64);
+const IDENTITY_REOPEN =
+  "reopenStore returned the handle it was given; it must open a new handle on the same durable state";
 
 class ConformanceFailure extends Error {}
 
@@ -64,8 +70,18 @@ function succeeded(write: LiquidityTankStoreWrite | { status: string }): boolean
   return write.status === "recorded" || write.status === "existing";
 }
 
+/** How many of the writes the store reported as successful. */
+function successes(...writes: readonly { status: string }[]): number {
+  return writes.filter(succeeded).length;
+}
+
+/** Canonical equality; a missing or non-JSON value is never the expected one. */
 function same(left: unknown, right: unknown): boolean {
-  return canonicalize(left) === canonicalize(right);
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
 }
 
 function bridgeIdFor(tag: string, n: number): string {
@@ -117,12 +133,12 @@ function signedSubmission(
   intent: Readonly<LiquidityTankIntent>,
   bridgeId: string,
   nonce: number,
-  amountBaseUnits = intent.sourceAmountBaseUnits,
+  preparedAt = T0,
 ): Omit<LiquidityTankPreparedSubmission, "submissionHash"> {
   const transfer: ModelSignedTransfer = {
     bridgeId,
     nonce,
-    amountBaseUnits,
+    amountBaseUnits: intent.sourceAmountBaseUnits,
     originAddress: intent.originAddress,
     destinationAddress: intent.destinationAddress,
     asset: intent.sourceAsset,
@@ -137,7 +153,7 @@ function signedSubmission(
     bridgeId,
     substrateTxHash: sha256Hex(bytes),
     signedSubmissionBase64: bytes.toString("base64"),
-    preparedAt: T0,
+    preparedAt,
   };
 }
 
@@ -296,11 +312,98 @@ async function lockWith(
   return { write, checkpoint };
 }
 
-type ConformanceCase = (
-  store: LiquidityTankStore,
-  tag: string,
-  options: LiquidityTankStoreConformanceOptions,
-) => Promise<void>;
+/** `reopenStore`, refusing the handle it was given: a restart or race through it tests nothing. */
+type Reopen = (store: LiquidityTankStore) => Promise<LiquidityTankStore>;
+
+function reopener(options: LiquidityTankStoreConformanceOptions): Reopen {
+  return async (store) => {
+    const reopened = await options.reopenStore(store);
+    check(reopened !== store, IDENTITY_REOPEN);
+    return reopened;
+  };
+}
+
+/** Both start orders, so a store that loses only one interleaving is still raced. */
+const ORDERS = ["given order", "reversed order"] as const;
+type Order = (typeof ORDERS)[number];
+
+/**
+ * Starts both operations before either settles, in `order`, and returns their
+ * results in argument order. Over an async store the two can interleave
+ * between a read and the write that depends on it.
+ */
+async function race<A, B>(order: Order, first: () => Promise<A>, second: () => Promise<B>): Promise<[A, B]> {
+  if (order === "given order") return Promise.all([first(), second()]);
+  const [secondResult, firstResult] = await Promise.all([second(), first()]);
+  return [firstResult, secondResult];
+}
+
+/** One ordinary write by an owner whose lease is still current at its `now`, raced by a takeover. */
+interface TakeoverRace {
+  write(handle: LiquidityTankStore): Promise<{ status: string }>;
+  /** When another owner claims the lease the write's owner holds. */
+  takeoverAt: number;
+  /** Whether a claim result shows the write. */
+  shows(claimed: LiquidityTankStoreClaim): boolean;
+}
+
+const TAKEOVER_RACES: readonly (readonly [string, (store: LiquidityTankStore, fixture: Fixture) => Promise<TakeoverRace>])[] = [
+  ["recordSubmission", async (store, fixture) => {
+    const write = await acquire(store, fixture.intent, "owner-a", T0);
+    return {
+      write: (handle) => handle.recordSubmission({ ...write, now: T0 + LEASE_MS - 1, submission: fixture.submission }),
+      takeoverAt: T0 + LEASE_MS,
+      shows: (claimed) => claimed.status === "acquired" && same(claimed.submission, fixture.submission),
+    };
+  }],
+  ["recordObservation", async (store, fixture) => {
+    const write = await acquire(store, fixture.intent, "owner-a", T0);
+    await record("submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
+    const checkpoint = fixture.lockedPending(T0 + 1);
+    return {
+      write: (handle) => handle.recordObservation({ ...write, now: T0 + LEASE_MS - 1, observation: checkpoint }),
+      takeoverAt: T0 + LEASE_MS,
+      shows: (claimed) => claimed.status === "acquired" && same(claimed.observation, checkpoint),
+    };
+  }],
+  ["recordRecoveryFailure", async (store, fixture) => {
+    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", T0);
+    const evidence: FailedAfterLock = {
+      status: "failed-after-lock",
+      checkpoint,
+      failure: fixture.failedAfterLock(T0 + 1),
+    };
+    return {
+      write: (handle) => handle.recordRecoveryFailure({ ...write, now: T0 + LEASE_MS - 1, recoveryFailure: evidence }),
+      takeoverAt: T0 + LEASE_MS,
+      shows: (claimed) => claimed.status === "acquired" && same(claimed.recoveryFailure, evidence),
+    };
+  }],
+  ["recordRecoveryExpired", async (store, fixture) => {
+    // The lease runs out one millisecond after the deadline, when expiry is due.
+    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE + 1 - LEASE_MS, LEASE_MS, DEADLINE);
+    return {
+      write: (handle) => handle.recordRecoveryExpired({
+        ...write, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint,
+      }),
+      takeoverAt: DEADLINE + 1,
+      shows: (claimed) => claimed.status === "recovery-expired" && same(claimed.observation, checkpoint),
+    };
+  }],
+  ["recordSettlement", async (store, fixture) => {
+    const { write } = await lockWith(store, fixture, "owner-a", T0);
+    const completion = fixture.completed(T0 + 1);
+    await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
+    const settlement = fixture.settlement(completion);
+    return {
+      write: (handle) => handle.recordSettlement({ ...write, now: T0 + LEASE_MS - 1, settlement }),
+      takeoverAt: T0 + LEASE_MS,
+      shows: (claimed) => claimed.status === "settled" && same(claimed.settlement, settlement),
+    };
+  }],
+];
+
+type ConformanceCase = (store: LiquidityTankStore, tag: string, reopen: Reopen) => Promise<void>;
 
 const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["claim acquires an exact lease and echoes the intent", async (store, tag) => {
@@ -355,6 +458,20 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const later = await claim(store, fixture.intent, "owner-c", takeover.lease.expiresAt);
     check(later.status === "acquired" && later.observation === undefined,
       "the fenced owner's observation was retained");
+
+    // Hosts often reuse an owner ID across restarts: the generation, not the
+    // owner, fences the earlier lease.
+    const again = new Fixture(tag, 1);
+    const stale = await acquire(store, again.intent, "owner-a", T0);
+    const renewed = await acquire(store, again.intent, "owner-a", T0 + LEASE_MS);
+    check(renewed.generation > stale.generation, "a re-claim by the same owner did not raise the generation");
+    check(!await store.isCurrent({ ...stale, now: T0 + LEASE_MS }),
+      "the same owner's stale generation is still current after its re-claim");
+    await record("write with the same owner's stale generation",
+      store.recordSubmission({ ...stale, now: T0 + LEASE_MS, submission: again.submission }), false);
+    const inspected = await claim(store, again.intent, "owner-c", T0 + LEASE_MS * 2);
+    check(inspected.status === "acquired" && inspected.submission === undefined,
+      "a write with the same owner's stale generation was retained");
   }],
 
   ["every ordinary write refuses a lease that has expired at its now", async (store, tag) => {
@@ -581,10 +698,10 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     }), true);
   }],
 
-  ["retained state survives a restart", async (store, tag, options) => {
+  ["retained state survives a restart", async (store, tag, reopen) => {
     const locked = new Fixture(tag, 0);
     const { write, checkpoint } = await lockWith(store, locked, "owner-a", T0);
-    let reopened = await options.reopenStore(store);
+    let reopened = await reopen(store);
     const resumed = await claim(reopened, locked.intent, "owner-b", T0 + LEASE_MS);
     check(resumed.status === "acquired" && same(resumed.submission, locked.submission) &&
       same(resumed.observation, checkpoint), "the reopened store lost the submission or the checkpoint");
@@ -601,30 +718,193 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await record("expiry", reopened.recordRecoveryExpired({
       ...expiry.write, now: DEADLINE, expectedObservation: expiry.checkpoint, observation: expiry.checkpoint,
     }), true);
-    reopened = await options.reopenStore(reopened);
+    reopened = await reopen(reopened);
     const settled = await claim(reopened, locked.intent, "owner-d", DEADLINE + LEASE_MS);
     check(settled.status === "settled" && same(settled.settlement, locked.settlement(completion)),
       "the settlement did not survive a restart");
     const expired = await claim(reopened, expiring.intent, "owner-d", DEADLINE + LEASE_MS);
     check(expired.status === "recovery-expired", "the recovery expiry did not survive a restart");
+    // The bridge-ID index survives too: no other phase may take the settled
+    // phase's bridge operation, while its own is still free.
+    const third = new Fixture(tag, 2);
+    const thirdWrite = await acquire(reopened, third.intent, "owner-e", DEADLINE + LEASE_MS);
+    await record("after a restart, another phase reusing a settled bridge operation", reopened.recordSubmission({
+      ...thirdWrite, submission: retained(signedSubmission(third.intent, locked.bridgeId, 1)),
+    }), false);
+    await record("after a restart, another phase on its own bridge operation", reopened.recordSubmission({
+      ...thirdWrite, submission: third.submission,
+    }), true);
   }],
 
   ["through the core, crashes and restarts never double-send, over-lock or settle an expired phase",
-    async (store, tag, options) => {
-      await phaseSequence(store, tag, options, "settles");
+    async (store, tag, reopen) => {
+      await phaseSequence(store, tag, reopen, "settles");
     }],
 
   ["through the core, an expired phase stays expired across restarts and a late release",
-    async (store, tag, options) => {
-      await phaseSequence(store, tag, options, "expires");
+    async (store, tag, reopen) => {
+      await phaseSequence(store, tag, reopen, "expires");
+    }],
+
+  ["concurrent claims elect exactly one owner, on a fresh phase or a takeover", async (store, tag, reopen) => {
+    for (let index = 0; index < ORDERS.length; index += 1) {
+      const order = ORDERS[index] as Order;
+      for (const takeover of [false, true]) {
+        const fixture = new Fixture(tag, index * 2 + (takeover ? 1 : 0));
+        const kind = takeover ? "takeovers of an expired lease" : "claims on a fresh phase";
+        const at = takeover ? T0 + LEASE_MS : T0;
+        if (takeover) await acquire(store, fixture.intent, "owner-0", T0);
+        const other = await reopen(store);
+        const claims = await race(order,
+          () => claim(store, fixture.intent, "owner-a", at),
+          () => claim(other, fixture.intent, "owner-b", at));
+        const acquired = claims.filter((claimed): claimed is AcquiredClaim => claimed.status === "acquired");
+        check(acquired.length === 1, `${acquired.length} of two concurrent ${kind} acquired the phase (${order})`);
+        const winner = (acquired[0] as AcquiredClaim).lease;
+        const loser = claims.find((claimed) => claimed.status !== "acquired") as LiquidityTankStoreClaim;
+        check(loser.status === "waiting" && loser.lease.owner === winner.owner &&
+          loser.lease.generation === winner.generation,
+          `the other of two concurrent ${kind} does not wait on the winner's lease (${order})`);
+        const inspected = await claim(await reopen(store), fixture.intent, "inspector", at);
+        check(inspected.status === "waiting" && inspected.lease.owner === winner.owner &&
+          inspected.lease.generation === winner.generation && inspected.lease.expiresAt === at + LEASE_MS,
+          `a fresh handle does not see the winner's lease after two concurrent ${kind} (${order})`);
+      }
+    }
+  }],
+
+  ["concurrent submissions for one phase keep exactly one", async (store, tag, reopen) => {
+    for (let index = 0; index < ORDERS.length; index += 1) {
+      const order = ORDERS[index] as Order;
+      const fixture = new Fixture(tag, index);
+      const write = await acquire(store, fixture.intent, "owner-a", T0);
+      const other = await reopen(store);
+      const resigned = retained(signedSubmission(fixture.intent, fixture.otherBridgeId, 2));
+      const writes = await race(order,
+        () => store.recordSubmission({ ...write, submission: fixture.submission }),
+        () => other.recordSubmission({ ...write, submission: resigned }));
+      check(successes(...writes) === 1,
+        `${successes(...writes)} of two concurrent submissions for one phase were recorded (${order})`);
+      const kept = succeeded(writes[0]) ? fixture.submission : resigned;
+      const inspected = await claim(await reopen(store), fixture.intent, "inspector", T0 + LEASE_MS);
+      check(inspected.status === "acquired" && same(inspected.submission, kept),
+        `a fresh handle does not hold the one submission the store recorded (${order})`);
+    }
+  }],
+
+  ["concurrent submissions on one bridge operation serve one settlement", async (store, tag, reopen) => {
+    for (let index = 0; index < ORDERS.length; index += 1) {
+      const order = ORDERS[index] as Order;
+      const first = new Fixture(tag, index * 2);
+      const second = new Fixture(tag, index * 2 + 1);
+      const other = await reopen(store);
+      const firstWrite = await acquire(store, first.intent, "owner-a", T0);
+      const secondWrite = await acquire(other, second.intent, "owner-b", T0);
+      const writes = await race(order,
+        () => store.recordSubmission({ ...firstWrite, submission: first.submission }),
+        () => other.recordSubmission({
+          ...secondWrite, submission: retained(signedSubmission(second.intent, first.bridgeId, 1)),
+        }));
+      check(successes(...writes) === 1,
+        `${successes(...writes)} of two concurrent submissions on one bridge operation were recorded (${order})`);
+      const inspector = await reopen(store);
+      const held = [
+        await claim(inspector, first.intent, "inspector", T0 + LEASE_MS),
+        await claim(inspector, second.intent, "inspector", T0 + LEASE_MS),
+      ];
+      check(held.every((claimed, at) => claimed.status === "acquired" &&
+        (claimed.submission !== undefined) === succeeded(writes[at] as LiquidityTankStoreWrite)),
+        `a fresh handle does not show the bridge operation held by the one phase the store recorded (${order})`);
+    }
+  }],
+
+  ["a timely completion racing recovery expiry: exactly one wins", async (store, tag, reopen) => {
+    for (let index = 0; index < ORDERS.length; index += 1) {
+      const order = ORDERS[index] as Order;
+      const fixture = new Fixture(tag, index);
+      // Observed at the deadline, the checkpoint makes expiry due while the completion is still timely.
+      const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE);
+      const other = await reopen(store);
+      const completion = fixture.completed(DEADLINE - 1);
+      const atDeadline = { ...write, now: DEADLINE };
+      const writes = await race(order,
+        () => store.recordObservation({ ...atDeadline, observation: completion }),
+        () => other.recordRecoveryExpired({ ...atDeadline, expectedObservation: checkpoint, observation: checkpoint }));
+      check(successes(...writes) === 1,
+        `${successes(...writes)} of a concurrent timely completion and recovery expiry were recorded (${order})`);
+      const completionWon = succeeded(writes[0]);
+      const inspected = await claim(await reopen(store), fixture.intent, "inspector", DEADLINE + LEASE_MS);
+      check(completionWon
+        ? inspected.status === "acquired" && same(inspected.observation, completion)
+        : inspected.status === "recovery-expired" && same(inspected.observation, checkpoint),
+        `a fresh handle does not show the ${completionWon ? "completion" : "expiry"} the store recorded (${order})`);
+    }
+  }],
+
+  ["a settlement racing recovery expiry after a durable timely completion: only the settlement wins",
+    async (store, tag, reopen) => {
+      for (let index = 0; index < ORDERS.length; index += 1) {
+        const order = ORDERS[index] as Order;
+        const fixture = new Fixture(tag, index);
+        const { write } = await lockWith(store, fixture, "owner-a", DEADLINE - 10);
+        const completion = fixture.completed(DEADLINE - 5);
+        await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
+        const other = await reopen(store);
+        const afterDeadline = { ...write, now: DEADLINE + 1 };
+        const settlement = fixture.settlement(completion);
+        const [settled, expired] = await race(order,
+          () => store.recordSettlement({ ...afterDeadline, settlement }),
+          () => other.recordRecoveryExpired({
+            ...afterDeadline, expectedObservation: completion, observation: fixture.completed(DEADLINE),
+          }));
+        const outcome = succeeded(expired)
+          ? (succeeded(settled) ? "both the settlement and the expiry were recorded" : "the expiry won")
+          : (succeeded(settled) ? undefined : "neither was recorded");
+        check(outcome === undefined,
+          `a settlement racing recovery expiry after a durable timely completion: ${outcome} (${order})`);
+        const inspected = await claim(await reopen(store), fixture.intent, "inspector", DEADLINE + LEASE_MS);
+        check(inspected.status === "settled" && same(inspected.settlement, settlement),
+          `a fresh handle does not show the settlement that won the race with expiry (${order})`);
+      }
+    }],
+
+  ["a takeover racing each ordinary write: the write lands before the takeover or not at all",
+    async (store, tag, reopen) => {
+      for (let index = 0; index < ORDERS.length; index += 1) {
+        const order = ORDERS[index] as Order;
+        for (let kind = 0; kind < TAKEOVER_RACES.length; kind += 1) {
+          const [method, setUp] = TAKEOVER_RACES[kind] as (typeof TAKEOVER_RACES)[number];
+          const fixture = new Fixture(tag, index * TAKEOVER_RACES.length + kind);
+          const racing = await setUp(store, fixture);
+          const other = await reopen(store);
+          const [written, takeover] = await race(order,
+            () => racing.write(store),
+            () => claim(other, fixture.intent, "owner-b", racing.takeoverAt));
+          const landed = succeeded(written);
+          check(racing.shows(takeover) === landed, landed
+            ? `${method} by the old owner landed after another owner took its lease over (${order})`
+            : `a takeover saw a ${method} the store refused (${order})`);
+          check(landed || takeover.status === "acquired",
+            `a takeover racing a refused ${method} returned ${takeover.status} (${order})`);
+          const inspected = await claim(await reopen(store), fixture.intent, "inspector", racing.takeoverAt + LEASE_MS);
+          check(racing.shows(inspected) === landed,
+            `a fresh handle ${landed ? "lacks" : "shows"} the ${method} the store ${landed ? "recorded" : "refused"} (${order})`);
+        }
+      }
+    }],
+
+  ["through the core, two workers starting one phase at once broadcast at most once",
+    async (store, tag, reopen) => {
+      await concurrentStart(store, tag, reopen);
     }],
 ];
 
 /**
- * A model native bridge: it locks the amount its decoded signed bytes carry
- * when they are broadcast, and reports every operation it has seen. The host
- * checks it supplies authenticate only observations it issued and verify
- * that signed bytes carry exactly the intent.
+ * A model native bridge for one operation: it locks the amount its decoded
+ * signed bytes carry when they are broadcast, and reports every operation it
+ * has seen. It keeps no tank balance; pool accounting is the bridge's own
+ * invariant. The host checks it supplies authenticate only observations it
+ * issued and verify that signed bytes carry exactly the intent.
  */
 function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: () => number) {
   const locked = new Map<string, bigint>();
@@ -641,7 +921,7 @@ function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: 
   const adapter: LiquidityTankAdapter = {
     async prepareSubmission(bound) {
       prepared += 1;
-      return signedSubmission(bound, bridgeIdFor(tag, prepared), prepared);
+      return signedSubmission(bound, bridgeIdFor(tag, prepared), prepared, clock());
     },
     async broadcastRetained(submission) {
       const transfer = decodeTransfer(submission);
@@ -702,15 +982,16 @@ function crashingBeforeSubmissionCommit(store: LiquidityTankStore): LiquidityTan
 
 /**
  * Drives the core over one phase through worker crashes, a lost broadcast
- * response and restarts, checking after every step that at most one signed
- * submission was ever broadcast, the funds locked never exceed the intent,
- * and settled and expired are never both reported. The phase must end in
+ * response and restarts. After every step it checks that no second signed
+ * submission was broadcast and the funds this one operation locked never
+ * exceed its intent (in this model a second bridge operation fails both), and
+ * that settled and expired are never both reported. The phase must end in
  * exactly one of them, and the store must agree.
  */
 async function phaseSequence(
   initial: LiquidityTankStore,
   tag: string,
-  options: LiquidityTankStoreConformanceOptions,
+  reopen: Reopen,
   ending: "settles" | "expires",
 ): Promise<void> {
   const intent = createLiquidityTankIntent(authorityFor(tag, 0));
@@ -734,15 +1015,14 @@ async function phaseSequence(
     });
     if (progress.status === "settled") settled = true;
     if (progress.status === "failed" && progress.errorClass === "failed-substrate") expired = true;
-    check(bridge.broadcast.size <= 1,
-      `step ${step} (${owner}): ${bridge.broadcast.size} different signed submissions were broadcast`);
-    check(bridge.lockedTotal() <= amount,
-      `step ${step} (${owner}): ${bridge.lockedTotal()} base units locked for an intent of ${amount}`);
+    check(bridge.broadcast.size <= 1 && bridge.lockedTotal() <= amount,
+      `step ${step} (${owner}): ${bridge.broadcast.size} different signed submissions were broadcast, ` +
+        `locking ${bridge.lockedTotal()} base units for an intent of ${amount}`);
     check(!(settled && expired), `step ${step} (${owner}): the phase was reported both settled and expired`);
     return progress;
   };
   const restart = async () => {
-    store = await options.reopenStore(store);
+    store = await reopen(store);
     now += LEASE_MS;
   };
 
@@ -789,28 +1069,95 @@ async function phaseSequence(
   }
   check(bridge.broadcast.size === 1 && bridge.lockedTotal() === amount,
     "the phase did not broadcast and lock exactly one submission");
-  const final = await claim(await options.reopenStore(store), intent, "inspector", DEADLINE + LEASE_MS * 10);
+  const final = await claim(await reopen(store), intent, "inspector", DEADLINE + LEASE_MS * 10);
   check(final.status === (ending === "settles" ? "settled" : "recovery-expired"),
     `the store reports ${final.status} after the phase ${ending === "settles" ? "settled" : "expired"}`);
 }
 
 /**
- * Runs the liquidity-tank store contract against a store implementation:
- * exact leases and fencing, lease expiry on every write, first-submission
- * retention, bridge-ID uniqueness, observation ordering, the
+ * Two workers start one fresh phase through the core at once, each through
+ * its own handle. A worker that acquires the phase waits at preparation until
+ * the other has also prepared or has returned, so if both acquired they would
+ * both sign before either writes. Exactly one may go past the claim, and at
+ * most one signed submission may be broadcast.
+ */
+async function concurrentStart(store: LiquidityTankStore, tag: string, reopen: Reopen): Promise<void> {
+  const intent = createLiquidityTankIntent(authorityFor(tag, 0));
+  const now = T0;
+  const bridge = modelBridge(intent, tag, () => now);
+  const amount = BigInt(intent.sourceAmountBaseUnits);
+  const preparing = new Set<string>();
+  let release: () => void = () => undefined;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const adapter: LiquidityTankAdapter = {
+    ...bridge.adapter,
+    async prepareSubmission(bound, fence) {
+      preparing.add(fence.owner);
+      if (preparing.size > 1) release();
+      await barrier;
+      return bridge.adapter.prepareSubmission(bound, fence);
+    },
+  };
+  const start = (owner: string, handle: LiquidityTankStore) => advanceLiquidityTankSettlement({
+    authority: authorityFor(tag, 0),
+    owner,
+    store: handle,
+    adapter,
+    verifier: bridge.verifier,
+    now: () => now,
+    leaseDurationMs: LEASE_MS,
+  }).finally(release);
+  const other = await reopen(store);
+  const results = await Promise.all([start("worker-a", store), start("worker-b", other)]);
+  check(bridge.broadcast.size <= 1 && bridge.lockedTotal() <= amount,
+    `two workers starting one phase at once broadcast ${bridge.broadcast.size} different signed ` +
+      `submissions, locking ${bridge.lockedTotal()} base units for an intent of ${amount}`);
+  const past = results.filter((progress) => progress.status !== "waiting");
+  check(past.length === 1, `${past.length} of two workers starting one phase at once went past the claim`);
+  check(past[0]?.status === "settle-asymmetric",
+    `the worker that acquired the phase returned ${past[0]?.status}, not settle-asymmetric`);
+  const inspected = await claim(await reopen(store), intent, "inspector", now + LEASE_MS);
+  check(inspected.status === "acquired" && inspected.submission !== undefined &&
+    bridge.broadcast.size === 1 && bridge.broadcast.has(inspected.submission.submissionHash),
+    "a fresh handle does not hold the one submission that was broadcast");
+}
+
+/**
+ * Runs the liquidity-tank store contract against a store implementation and
+ * returns one result per case. The sequential cases check one write at a
+ * time: exact leases and generation fencing, lease expiry on every write,
+ * first-submission retention, bridge-ID uniqueness, observation ordering, the
  * completion-versus-expiry election, failure retention, settlement replay,
- * state that survives `reopenStore`, and two phase sequences through the core
- * that check no double broadcast, no over-lock and exactly one terminal
- * state. Every result must pass before a store is used in production.
+ * state that survives `reopenStore`, and two phase sequences through the core.
+ * The race cases start two operations through two handles before either
+ * settles and require one winner, seen from a fresh handle. Passing shows the
+ * store keeps the contract in these sequences and races; it does not prove
+ * that the store commits atomically under every interleaving. Every result
+ * must pass before a store is used in production.
  */
 export async function runLiquidityTankStoreConformance(
   options: LiquidityTankStoreConformanceOptions,
 ): Promise<readonly LiquidityTankStoreConformanceResult[]> {
+  // A handle reopened as itself would make every restart and race case test
+  // nothing, so such a run is refused outright.
+  let identity = false;
+  try {
+    const store = await options.createStore();
+    identity = await options.reopenStore(store) === store;
+  } catch {
+    // A store that cannot be opened fails each case below on its own.
+  }
+  if (identity) {
+    return Object.freeze(CASES.map(([name]) => Object.freeze({ name, passed: false, failure: IDENTITY_REOPEN })));
+  }
+  const reopen = reopener(options);
   const results: LiquidityTankStoreConformanceResult[] = [];
   for (let index = 0; index < CASES.length; index += 1) {
     const [name, run] = CASES[index] as readonly [string, ConformanceCase];
     try {
-      await run(await options.createStore(), String(index).padStart(5, "0"), options);
+      await run(await options.createStore(), String(index).padStart(5, "0"), reopen);
       results.push(Object.freeze({ name, passed: true }));
     } catch (error) {
       results.push(Object.freeze({
