@@ -37,6 +37,7 @@ import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from
 import { produceDacsEmptyRequirementSessionVetV1 } from "../src/sessionIdentityVetRuntime.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from "../src/purchaseDemosBudget.js";
 import { createDacsVetTerminalBundleTransportRuntimeV1 } from "../src/terminalBundleTransportRuntime.js";
+import { claimDacsPreAgreementPhaseV1 } from "../src/preAgreementPhase.js";
 import { advanceDacsVetTerminalTrackV1, createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "../src/agreementTransportRuntime.js";
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
@@ -815,6 +816,47 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
             "DacsAgreementTransportRuntimeError",
             "loadDacsSellerAgreementVetProductionForOrderV1",
         ]));
+    });
+
+    it("does not hand a terminal-committed seller job to the agreement even when the host says the proposal is ready", async () => {
+        const donor = await memoryAgreementHarness("x402");
+        await expect(donor.publish()).resolves.toEqual({ disposition: "submitted" });
+        const h = await memoryAgreementHarness("x402");
+        for (const [key, value] of donor.seller.effects) {
+            if (typeof value === "object" && value !== null && "payload" in value &&
+                typeof (value as { payload: unknown }).payload === "object" &&
+                "proposal" in ((value as { payload: object }).payload)) h.seller.effects.set(key, structuredClone(value));
+        }
+        // The terminal path won, but its material was never written (a crash in between).
+        claimDacsPreAgreementPhaseV1(h.seller.context, h.seller.record, "vet-terminal");
+        const agreement = vi.fn();
+        const track = createDacsSellerSessionBootstrapAgreementTrackV1({
+            context: h.seller.context, sessionBootstrap: { resolveInit: vi.fn() },
+            resolveBuyerRequirement: async () => ({ requirementVersion: "1", required: [] }),
+            agreementProposalReady: async () => true, agreement,
+        } as never);
+        // Mark the response retained so the bootstrap takes its response-first hand-off.
+        const contribution = await createFixedPriceAgreementSignatureContribution(h.request.plan, "seller", { party: SELLER, algorithm: "ed25519", sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) });
+        await donor.sellerRuntime.transport.publishSellerContribution(contribution, donor.request.transportIdentity, { owner: "seller", generation: 1, idempotencyKey: "memory-response" });
+        for (const [key, value] of donor.seller.effects) {
+            if (typeof value === "object" && value !== null && "payload" in value &&
+                typeof (value as { payload: unknown }).payload === "object" &&
+                "sellerContribution" in ((value as { payload: object }).payload)) h.seller.effects.set(key, structuredClone(value));
+        }
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerResponseRetained).toBe(true);
+        expect(await track(h.seller.operation as never)).toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect(agreement).not.toHaveBeenCalled();
+    });
+
+    it.each(["x402", "pay-dem"] as const)("keeps a %s buyer that retained a Vet-failure terminal from proposing an agreement", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        const buyerTerminal = createDacsVetTerminalBundleTransportRuntimeV1({ context: h.buyer.context, expectedRegistryVersions: { recipeRegistryVersion: 1, railRegistryVersion: 1 }, authenticateProduction: async () => ({ status: "valid" }) });
+        // The seller proposes that the buyer failed the seller's Vet.
+        const fromBuyer = await h.failure("buyer");
+        const fromSeller = { ...fromBuyer, envelope: { ...fromBuyer.envelope, type: "terminal-bundle-proposal-seller", sender: SELLER, audience: BUYER, keyId: SELLER } } as unknown as DacsHttpAuthenticatedEnvelopeV1;
+        await expect(buyerTerminal.handleMessage(fromSeller, { role: "buyer" } as DacsLiveRoleInboundOperationContextV1)).resolves.toEqual({ disposition: "accepted" });
+        expect(await h.publish()).toEqual({ disposition: "rejected", reason: "agreement-vet-terminal-phase-conflict" });
+        expect(h.buyer.context.sendMessage).not.toHaveBeenCalled();
     });
 
     it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {
