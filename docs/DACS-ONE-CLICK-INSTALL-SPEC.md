@@ -227,6 +227,8 @@ blocked doctor is a successful bootstrap but MUST prevent readiness and writes.
 The generated application then exposes:
 
 ```bash
+docker build -t my-agent:local .
+npm run dacs:image:smoke
 npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
@@ -245,6 +247,23 @@ npm run dacs:smoke:offline
 processes are running, readiness MUST remain false until the post-start doctor
 has tested service endpoints and authenticated loopback messaging. Starting
 services MUST NOT publish a Listing or purchase a service.
+
+`dacs:image:smoke` MUST resolve the locally built `DACS_IMAGE` to one immutable
+image ID, check that image's configured user, working directory, entrypoint and
+command, and run its containers from that ID as the compose runtime user, with
+no network, secrets or serving role. Only a pass may record the image ID and
+runtime user, and a new attempt MUST withdraw the previous record first. In a
+Docker deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
+
+- refuse to start unless `DACS_IMAGE` still resolves to the recorded image ID and
+  the runtime user is unchanged;
+- start compose with the recorded image ID rather than the tag, the generated
+  `compose.yaml` as its only file, the project's own directory and name, no
+  build or pull, and exactly the `buyer` and `seller` services;
+- ignore `COMPOSE_*` environment variables and compose override files, as the
+  generated `dacs:down` and maintenance stops also MUST; and
+- stop both roles and fail unless compose created each from the recorded image
+  ID.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without
@@ -276,6 +295,8 @@ my-agent/
     config.ts
   test/
     offline-lifecycle.test.ts
+  scripts/
+    docker-runtime-smoke.mjs
   data/
     .gitkeep
   secrets/
