@@ -542,6 +542,24 @@ type HtlcOperatorAlertReason = Extract<
   { status: "operator-alert"; reason: string; refunds?: never }
 >["reason"];
 
+/**
+ * Whether a host must page an operator for this progress. Each case is listed
+ * in the host recovery checklist of `docs/pay-cross-chain-htlc.md`. A host
+ * keeps advancing the session either way, except after `failed`.
+ */
+export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): boolean {
+  switch (progress.status) {
+    case "operator-alert":
+    case "refund-stalled":
+    case "failed":
+      return true;
+    case "waiting":
+      return progress.reason === "htlc-destination-claim-unresolved-after-expiry";
+    default:
+      return false;
+  }
+}
+
 export interface AdvanceCrossChainHtlcInput {
   authority: Readonly<CrossChainHtlcAuthority>;
   buyerSalt: Uint8Array;

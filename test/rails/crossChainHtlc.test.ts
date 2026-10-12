@@ -10,10 +10,12 @@ import {
   createInMemoryCrossChainHtlcStore,
   deriveHtlcPreimage,
   generateHtlcBuyerSalt,
+  htlcNeedsOperator,
   type AdvanceCrossChainHtlcInput,
   type CrossChainHtlcAdapter,
   type CrossChainHtlcAuthority,
   type CrossChainHtlcIntent,
+  type CrossChainHtlcProgress,
   type CrossChainHtlcSettlement,
   type CrossChainHtlcStore,
   type HtlcAction,
@@ -3714,6 +3716,37 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
         .toThrow(/loses all state on restart, which would double-send/);
     }
     expect(createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true }).claim).toBeTypeOf("function");
+  });
+
+  const refs = [refFor("source-lock")];
+  test.each([
+    { status: "operator-alert", reason: "htlc-source-claim-missed-after-reveal", txRefs: refs },
+    { status: "operator-alert", reason: "htlc-source-claim-replacement-limit-reached", txRefs: refs },
+    { status: "operator-alert", reason: "htlc-destination-claim-failed-preimage-public", txRefs: refs },
+    { status: "operator-alert", reason: "htlc-destination-claim-absent-preimage-broadcast", txRefs: refs },
+    { status: "operator-alert", reason: "htlc-refund-absent", txRefs: refs, refunds: { "source-refund": "absent" } },
+    { status: "refund-stalled", reason: "destination-timeout", txRefs: refs, refunds: { "source-refund": "failed" } },
+    { status: "waiting", reason: "htlc-destination-claim-unresolved-after-expiry" },
+    { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-incomplete" },
+  ] satisfies CrossChainHtlcProgress[])("pages an operator on $status $reason", (progress) => {
+    expect(htlcNeedsOperator(progress)).toBe(true);
+  });
+
+  test.each([
+    { status: "waiting", reason: "htlc-destination-claim-finality-pending" },
+    { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" },
+    { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" },
+    { status: "refund-pending", reason: "destination-lock-expiry-invalid", txRefs: refs, refunds: { "source-refund": "pending" } },
+    { status: "refunded", reason: "destination-timeout", txRefs: refs, refunds: { "source-refund": "final" } },
+    {
+      status: "settle-asymmetric",
+      reason: "dest-revealed-source-unclaimed",
+      recoveryDeadline: 5_000,
+      txRefs: refs,
+      finalityObservedAt: 1_000,
+    },
+  ] satisfies CrossChainHtlcProgress[])("does not page on $status $reason", (progress) => {
+    expect(htlcNeedsOperator(progress)).toBe(false);
   });
 });
 

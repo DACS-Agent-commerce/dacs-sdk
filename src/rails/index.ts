@@ -149,6 +149,7 @@ export {
   createCrossChainHtlcIntent,
   advanceCrossChainHtlc,
   createInMemoryCrossChainHtlcStore,
+  htlcNeedsOperator,
   type HtlcAction,
   type HtlcActor,
   type CrossChainHtlcAuthority,

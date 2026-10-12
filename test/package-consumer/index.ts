@@ -27,6 +27,7 @@ import {
   type RatingPhaseReadyHandoff,
   type FencedSessionStoreV2,
   type HtlcRefundLegState as RootHtlcRefundLegState,
+  htlcNeedsOperator as rootHtlcNeedsOperator,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
@@ -49,6 +50,7 @@ import {
   advanceCrossChainHtlc,
   createInMemoryCrossChainHtlcStore,
   deriveHtlcPreimage,
+  htlcNeedsOperator,
   type CrossChainHtlcAdapter,
   type CrossChainHtlcAuthority,
   type CrossChainHtlcProgress,
@@ -105,14 +107,28 @@ const htlcTokenIds: Pick<CrossChainHtlcAuthority, "sourceTokenId" | "destination
   destinationTokenId: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582",
 };
 declare const htlcRevealReplacement: HtlcDestinationClaimReplacementContext;
-/** A host pages an operator on these statuses and keeps advancing the session. */
-function htlcNeedsOperator(progress: CrossChainHtlcProgress): boolean {
+/**
+ * A host pages an operator on every result the SDK's `htlcNeedsOperator`
+ * accepts (the docs' host recovery checklist) and keeps advancing the session.
+ */
+function htlcPage(progress: CrossChainHtlcProgress): string | undefined {
+  if (!htlcNeedsOperator(progress)) return undefined;
   switch (progress.status) {
-    case "refund-stalled":
-      return Object.values(progress.refunds).includes("failed");
     case "operator-alert":
-      return progress.reason === "htlc-source-claim-missed-after-reveal" ||
-        progress.reason === "htlc-destination-claim-failed-preimage-public";
+      switch (progress.reason) {
+        case "htlc-refund-absent":
+          return `${progress.reason}: ${Object.entries(progress.refunds).join(" ")}`;
+        case "htlc-source-claim-missed-after-reveal":
+        case "htlc-source-claim-replacement-limit-reached":
+        case "htlc-destination-claim-failed-preimage-public":
+        case "htlc-destination-claim-absent-preimage-broadcast":
+          return progress.reason;
+        default: {
+          const unhandled: never = progress;
+          return unhandled;
+        }
+      }
+    case "refund-stalled":
     case "waiting":
     case "indeterminate":
     case "failed":
@@ -120,13 +136,15 @@ function htlcNeedsOperator(progress: CrossChainHtlcProgress): boolean {
     case "refund-pending":
     case "refunded":
     case "settled":
-      return false;
+      return progress.status;
     default: {
       const unhandled: never = progress;
       return unhandled;
     }
   }
 }
+const rootHtlcPage: typeof htlcNeedsOperator = rootHtlcNeedsOperator;
+const htlcAbsentLeg: HtlcRefundLegState = "absent";
 /** The volatile store is a test double and must be acknowledged as one. */
 function volatileHtlcStoreForTests(): CrossChainHtlcStore {
   // @ts-expect-error the in-memory store requires { acknowledgeVolatile: true }
@@ -243,7 +261,9 @@ void rootHtlcLegState;
 void htlcLockTerms;
 void htlcTokenIds;
 void htlcRevealReplacement;
-void htlcNeedsOperator;
+void htlcPage;
+void rootHtlcPage;
+void htlcAbsentLeg;
 void volatileHtlcStoreForTests;
 void htlcAdapter;
 void htlcStore;
