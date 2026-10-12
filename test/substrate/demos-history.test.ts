@@ -256,6 +256,24 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     });
   });
 
+  test.each([
+    ["no prefix", ""],
+    ["another version's prefix", "dacs-demos-history-v2.eyJ2IjoyfQ"],
+    ["an undecodable encoding", "dacs-demos-history-v1.!!!"],
+    ["an incomplete payload", `dacs-demos-history-v1.${Buffer.from(JSON.stringify({ v: 1 })).toString("base64url")}`],
+    ["another owner's cursor", `dacs-demos-history-v1.${Buffer.from(JSON.stringify({
+      v: 1, owner: OTHER_OWNER, offset: 1, boundaryTxHash: "tx-boundary",
+    })).toString("base64url")}`],
+  ])("a cursor with %s requires a restart from null without a node call", async (_name, cursor) => {
+    const client = clientWith(async () => []);
+    const fetchPage = createDemosHistoryPageFetcher(client, OWNER);
+    await expect(fetchPage(cursor, 1)).rejects.toBeInstanceOf(AnchorHistoryRestartRequiredError);
+    await expect(scanAnchorPage(fetchPage, cursor, { limit: 1 })).resolves.toMatchObject({
+      status: "indeterminate", code: "history-restart-required", cursor,
+    });
+    expect(client.getTransactionHistory).not.toHaveBeenCalled();
+  });
+
   test("normal newest-first prepends do not invalidate a continuation", async () => {
     const original = [
       row({ hash: "tx-a", logicalAddress: "dacs1:s:a:v1" }),

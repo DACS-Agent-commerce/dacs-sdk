@@ -53,9 +53,10 @@ function encodeCursor(cursor: HistoryCursor): string {
   return `${CURSOR_PREFIX}${Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")}`;
 }
 
+/** A cursor that cannot be decoded for this owner never resumes; restart from null. */
 function decodeCursor(value: string, owner: string): HistoryCursor {
   if (!value.startsWith(CURSOR_PREFIX)) {
-    throw new Error("invalid Demos history cursor prefix");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor prefix");
   }
 
   let decoded: unknown;
@@ -66,7 +67,7 @@ function decodeCursor(value: string, owner: string): HistoryCursor {
       ),
     ) as unknown;
   } catch {
-    throw new Error("invalid Demos history cursor encoding");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor encoding");
   }
   if (
     !isRecord(decoded) ||
@@ -77,10 +78,10 @@ function decodeCursor(value: string, owner: string): HistoryCursor {
     typeof decoded.boundaryTxHash !== "string" ||
     decoded.boundaryTxHash.trim().length === 0
   ) {
-    throw new Error("invalid Demos history cursor payload");
+    throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor payload");
   }
   if (decoded.owner !== normalizedOwner(owner)) {
-    throw new Error("Demos history cursor belongs to a different owner");
+    throw new AnchorHistoryRestartRequiredError("Demos history cursor belongs to a different owner");
   }
   return decoded as unknown as HistoryCursor;
 }
@@ -210,9 +211,10 @@ async function fetchRows(
  *
  * The cursor is owner-bound and locates the previous raw transaction in a
  * bounded overlap window before advancing. This tolerates normal prepends to
- * Demos' newest-first, confirmed history. A missing/duplicated boundary fails
- * closed with {@link AnchorHistoryRestartRequiredError}; the caller must restart
- * from a null cursor against a fresh snapshot.
+ * Demos' newest-first, confirmed history. A missing/duplicated boundary, or a
+ * cursor that cannot be decoded for this owner, fails closed with
+ * {@link AnchorHistoryRestartRequiredError}; the caller must restart from a null
+ * cursor against a fresh snapshot.
  *
  * Only confirmed CREATE_STORAGE_PROGRAM transactions carrying explicit logical
  * metadata are candidates. Program names are deliberately ignored: DACS makes

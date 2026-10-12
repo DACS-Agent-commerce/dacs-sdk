@@ -766,7 +766,8 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   - `cursor-cycle`, `page-bound` (10,000 consumed pages) and
     `history-restart-required` (the fetcher threw
     `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
-    boundary is missing or duplicated) come from a valid state. The returned
+    boundary is missing or duplicated or its cursor cannot be decoded for this
+    owner) come from a valid state. The returned
     state keeps `seen`, `metadata`, `deferred` and `pendingRow`, so rows already
     reported are not reported again, but the pages are fetched again: a history
     longer than 10,000 pages reaches `page-bound` again, and a fetcher whose

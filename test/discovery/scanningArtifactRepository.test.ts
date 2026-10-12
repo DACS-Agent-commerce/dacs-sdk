@@ -1152,6 +1152,20 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(new Set(reported).size).toBe(153);
   });
 
+  test("R5: a persisted Demos cursor that cannot be decoded restarts instead of retrying forever", async () => {
+    const ownerHex = "ab".repeat(32);
+    const client = { getTransactionHistory: vi.fn(async () => []) };
+    const fixture = setup([], { expectedOwner: ownerHex, fetchPage: createDemosHistoryPageFetcher(client, ownerHex) });
+    const handled = new Map([["stor-x", logical("x")]]);
+    for (const cursor of ["", "dacs-demos-history-v2.eyJ2IjoyfQ", "dacs-demos-history-v1.!!!"]) {
+      const input = { ...state(cursor), owner: ownerHex, seen: handled, metadata: handled, pagesConsumed: 1 };
+      const result = await fixture.repo.scanPage(input);
+      expect(result).toMatchObject({ status: "restart-required", code: "history-restart-required" });
+      expect(result.state).toEqual({ ...state(null), owner: ownerHex, seen: handled, metadata: handled });
+    }
+    expect(client.getTransactionHistory).not.toHaveBeenCalled();
+  });
+
   test("the README example returns unverifiable, then an empty exhausted page", async () => {
     const expectedOwner = "offline-seller";
     const logicalAddress = "dacs1:offline-seller:example:v1";
