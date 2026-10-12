@@ -1910,6 +1910,45 @@ describe("advanceCrossChainHtlc", () => {
   );
 
   test.each([
+    ["missing", undefined],
+    ["a different token", { token: "worthless-token" }],
+    ["a different amount", { amountBaseUnits: "1" }],
+  ] as const)(
+    "rebroadcasts a retained reveal byte-for-byte when destination terms read %s on restart",
+    async (_name, terms) => {
+      const h = harness({ mode: { "destination-claim": "throw-once" } });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-destination-claim-effect-uncertain",
+      });
+      // The ambiguous broadcast may have exposed the preimage; the terms the
+      // reveal was prepared against no longer read the same.
+      const destinationLock = h.actions["destination-lock"];
+      if (!destinationLock || destinationLock.state !== "final") throw new Error("expected final lock");
+      const { lockTerms, ...withoutTerms } = destinationLock;
+      h.actions["destination-lock"] = terms === undefined
+        ? withoutTerms
+        : { ...destinationLock, lockTerms: { ...lockTerms!, ...terms } };
+      h.setMode("destination-claim", "final");
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-claim-finality-pending",
+      });
+      const reveals = h.broadcastRetained.mock.calls
+        .map((call) => call[0])
+        .filter((prepared) => prepared.action === "destination-claim");
+      expect(reveals).toHaveLength(2);
+      expect(reveals[1]).toEqual(reveals[0]);
+      expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "destination-claim"))
+        .toHaveLength(1);
+      expect(h.actions["destination-claim"]).toMatchObject({ state: "final" });
+    },
+  );
+
+  test.each([
     ["token", { token: "worthless-token" }],
     ["amount", { amountBaseUnits: "1249999" }],
     ["hashlock", { hashlock: `84532:${"0".repeat(64)}` }],

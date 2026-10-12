@@ -143,9 +143,14 @@ core consults the terms only at the two forward decisions that depend on them:
   leg is refunded at its own expiry.
 
 Missing terms never make an observation unavailable, so refunds and the
-payee's source claim never wait on them. Once a reveal checkpoint exists the
-core never consults terms again: a contract may delete or rewrite its lock
-record after the reveal. Terms that are present but malformed still make the
+payee's source claim never wait on them. Once a reveal is retained the core
+never consults the destination lock's terms again: the reveal was prepared
+against matching terms and may already have exposed the preimage, so after an
+ambiguous broadcast or a restart its exact retained bytes are rebroadcast even
+if the terms now read as missing or different. Only the absolute expiry margin
+and the destination-claim cutoff still gate that rebroadcast. Once a reveal
+checkpoint exists the core never consults terms at all: a contract may delete
+or rewrite its lock record after the reveal. Terms that are present but malformed still make the
 observation invalid, like any other malformed field. The refund reason
 describes the current observation, so it can change while refunds proceed (for
 example to `destination-timeout` once a refunded lock's terms can no longer be

@@ -1954,13 +1954,14 @@ export async function advanceCrossChainHtlc(
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
   // own expiry instead of the session stopping with both legs locked. No reveal
-  // checkpoint exists here, so the terms still decide a reveal. Once the
+  // checkpoint exists here, so the terms still decide a first reveal. Once the
   // destination has expired no reveal is possible and terms the adapter can no
   // longer read (for example after the destination refund) change nothing.
-  const destinationTermsVerdict = lockTermsVerdict(
-    destinationLock,
-    expectedDestinationLockTerms(intent),
-  );
+  // A retained reveal was prepared against matching terms and may already have
+  // exposed the preimage, so terms read later never hold back its rebroadcast.
+  const destinationTermsVerdict = prepared.has("destination-claim")
+    ? undefined
+    : lockTermsVerdict(destinationLock, expectedDestinationLockTerms(intent));
   const revealForbidden = sourceLock.expiresAt <= safeAdd(
     destinationLock.expiresAt,
     sourceRecoveryBudgetSec,
