@@ -92,8 +92,9 @@ no longer matters, because a contract may delete the lock's record when the
 reveal claims it. The core records the reveal checkpoint with the source
 expiry of the retained source-finality checkpoint and drives the payee's
 source claim exactly as when the lock still reads final, under the same
-source-expiry cutoff; a settlement names the retained destination-lock
-reference. Neither leg is ever refunded on this path, and a source claim that
+source-expiry cutoff; settlements, `settle-asymmetric` progress and
+checkpoint-path operator alerts name the retained destination-lock reference.
+Neither leg is ever refunded on this path, and a source claim that
 misses the source expiry is the usual `operator-alert`
 `htlc-source-claim-missed-after-reveal`.
 
@@ -263,8 +264,16 @@ refunds. Use:
   address form. The adapter converts what the contract records into that form
   before reporting `lockTerms`.
 
-The buyer salt is never passed to an adapter and must remain encrypted and
-durable until destination-claim finality. Production stores must atomically
+The buyer salt is never passed to an adapter. The host must keep the original
+buyer salt encrypted and durable until the session is terminal: settlement is
+recorded, both legs are refunded, or the final `operator-alert` is returned.
+Destination-claim finality is too early to discard it: every call to
+`advanceCrossChainHtlc` rebuilds the intent from `buyerSalt`, and the binding
+hash covers `buyerSaltHash`. Post-reveal source claims and replacements still
+need the derived preimage. A missing or different salt fails closed before
+any preparation or broadcast and prevents recovery. Because `operator-alert`
+is resumable, an alert being retried is not final; retain the salt while the
+host keeps advancing that session. Production stores must atomically
 enforce cross-session salt uniqueness, authenticate retained signed payloads,
 and persist both finality checkpoints. After the source lock becomes final, the
 core calls `recordSourceFinality` with the exact source-lock transaction
@@ -424,6 +433,18 @@ binding; stores must not backfill a checkpoint after destination-lock
 preparation, and operators must reconcile such legacy sessions explicitly. The
 preimage parser remains compatible with canonical lowercase producers while
 also accepting byte-equivalent uppercase and prefixed values.
+
+## Host recovery checklist
+
+- Keep the original buyer salt encrypted and durable until the session is
+  terminal: settlement is recorded, both legs are refunded, or the final
+  `operator-alert` is returned. Keep it across destination-claim finality and
+  every source-claim retry or replacement; retain it while retrying an alert.
+- Supply that same salt on every `advanceCrossChainHtlc` call, including after
+  a restart. The current store API does not return secrets on takeover.
+- Page immediately on `operator-alert` with reason
+  `htlc-destination-claim-failed-preimage-public`: even a failed on-chain reveal
+  publishes the preimage, so the payee can claim the source before its expiry.
 
 ## Adapter audit checklist
 
