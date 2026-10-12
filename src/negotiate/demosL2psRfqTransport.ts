@@ -275,8 +275,10 @@ export interface DemosL2psRfqTransportOptions {
    * missing load returns undefined. Every save is a compare-and-swap: commit
    * the entry only if the stored generation (0 when there is no entry) equals
    * expectedGeneration, then resolve true; otherwise change nothing and
-   * resolve false. Any other result, including undefined from an older
-   * save(): void store, counts as not committed. entry.generation is always
+   * resolve false. Expected generation 0 matches only an absent entry; a
+   * present entry with a missing or invalid generation never matches. Any
+   * other result, including undefined from an older save(): void store,
+   * counts as not committed. entry.generation is always
    * expectedGeneration + 1. Compare at commit time, atomically with the
    * write, so a save that commits after the transport stopped waiting can
    * never replace a newer generation. The host must serialize drivers of the

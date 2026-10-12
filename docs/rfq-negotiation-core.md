@@ -289,7 +289,8 @@ companion to the lifecycle's signed-packet store, keyed by packet ID. Its
 `save(packetId, entry, expectedGeneration)` is a compare-and-swap: commit the
 entry only if the stored entry's `generation` (0 when there is no entry)
 equals `expectedGeneration`, and resolve `true`; otherwise change nothing and
-resolve `false`. `entry.generation` is always `expectedGeneration + 1`, so the
+resolve `false`. An expected generation of 0 matches only when no entry
+exists; a present entry with a missing or invalid generation never matches. `entry.generation` is always `expectedGeneration + 1`, so the
 first entry for a packet has generation 1. The compare must run atomically
 with the write at commit time (for example a conditional `UPDATE ... WHERE
 generation = ?` or an `INSERT` that fails on an existing key), not when the
@@ -413,12 +414,22 @@ A `duplicate` result can mean zero deliveries:
   (`L2PSMessagingService.ts:57-64`). If that submission fails, the row is
   marked `failed` (`L2PSMessagingService.ts:66-67,155`) and the server
   returns an error before routing anything (`L2PSMessagingServer.ts:267-270`).
-  Every later send is then refused as a duplicate, although the recipient got
-  nothing.
+  Every later send is then refused as a duplicate. Nothing was routed live,
+  but the `failed` row stays in history, which the node returns whatever its
+  status (`L2PSMessagingService.ts:337-377`). A recipient on the same node
+  that runs `resumeInbound()` recovers and delivers the packet from that row.
 
-The SDK has no call that clears a `duplicate` entry. Handle it like a failed
-history entry (below): the host may need to abandon the job and open a new one
-with a new `jobId` and `channelId`.
+The transport reports such an entry as `indeterminate` with the fixed reason
+"Demos L2PS refused the packet hash as a duplicate that history does not
+show"; hosts can match on that text until the reason is exported as a
+constant or status code (a follow-up). `publish` never resends it.
+`reconcile`, which `resumeOutbox()` calls, keeps reading history, so the entry
+can still become `acknowledged` when our exact frame appears, or `rejected` on
+a conflicting frame. The SDK has no call that clears a `duplicate` entry. Handle it like a
+failed history entry (below): if the counterparty did receive the packet, its
+reply still arrives through `receive()` and the job continues. Only otherwise
+may the host need to abandon the job and open a new one with a new `jobId` and
+`channelId`.
 
 The limits of this evidence:
 
