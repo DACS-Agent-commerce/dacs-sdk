@@ -10,3 +10,11 @@ description = "Mnemonic or seed phrase assigned in source"
 regex = '''(?i)(?:mnemonic|seed[_ -]?phrase)\s*(?:=|:)\s*["'\x60]([a-z]+(?:\s+[a-z]+){11,23})["'\x60]'''
 secretGroup = 1
 keywords = ["mnemonic", "seed_phrase", "seed phrase"]
+
+# A public EVM address (0x followed by 40 hex digits) is not a secret.
+# generic-api-key flags test fixtures such as `token: "0x…"` because the
+# key name contains "token". Private keys are 64 hex digits and still match.
+[[allowlists]]
+description = "Public EVM addresses"
+regexTarget = "secret"
+regexes = ['''^0x[0-9a-fA-F]{40}$''']
