@@ -641,15 +641,13 @@ function settlementFrom(
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
 ): Promise<SolanaSplProgress> {
+  // Until the store has been read, a retained broadcast or a settled phase
+  // cannot be ruled out, so a refusal here is never reported as a failure.
   let intent: Readonly<SolanaSplSettlementIntent>;
   try {
     intent = createSolanaSplSettlementIntent({ ...input.authority });
-  } catch (error) {
-    return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "solana-spl-authority-invalid",
-    };
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-authority-invalid" };
   }
   const store = input.store;
   const adapter = input.adapter;
@@ -662,12 +660,8 @@ export async function advanceSolanaSplSettlement(
       input.leaseDurationMs ?? DEFAULT_LEASE_MS,
       "leaseDurationMs",
     );
-  } catch (error) {
-    return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "solana-spl-runtime-policy-invalid",
-    };
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-runtime-policy-invalid" };
   }
   const claimSettlement = store.claim.bind(store);
   const isCurrentSettlement = store.isCurrent.bind(store);

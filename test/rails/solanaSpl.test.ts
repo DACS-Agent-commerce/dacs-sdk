@@ -844,7 +844,10 @@ describe("advanceSolanaSplSettlement", () => {
         leaseDurationMs,
         store: { ...base, claim },
         adapter: adapter({ prepareSignedTransfer }),
-      }))).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-runtime-policy-invalid",
+      });
       expect(claim).not.toHaveBeenCalled();
       expect(prepareSignedTransfer).not.toHaveBeenCalled();
     },
@@ -956,4 +959,74 @@ describe("advanceSolanaSplSettlement", () => {
     });
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("advanceSolanaSplSettlement without proof from the store", () => {
+  // Leaves either a broadcast whose outcome is unknown or a settled phase in
+  // the store, so a caller told "failed" could pay the same phase twice.
+  async function retained(state: "broadcast" | "settled") {
+    const store = createInMemorySolanaSplSettlementStore();
+    const claim = vi.spyOn(store, "claim");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const settledSame: SolanaSplReconciliation = {
+      disposition: "settled-same",
+      transfer: observed(),
+    };
+    let observation: SolanaSplReconciliation = state === "settled"
+      ? settledSame
+      : { disposition: "indeterminate", reason: "rpc-unavailable" };
+    const reconcile = vi.fn(async () => observation);
+    const first = input({
+      store,
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+    });
+    await expect(advanceSolanaSplSettlement(first)).resolves.toMatchObject({
+      status: state === "settled" ? "settled" : "indeterminate",
+    });
+    // The first lease has expired by then.
+    const valid = { ...first, now: () => 2_000 };
+    return {
+      store,
+      valid,
+      effects: () => ({
+        claim: claim.mock.calls.length,
+        prepare: prepareSignedTransfer.mock.calls.length,
+        broadcast: broadcastRetained.mock.calls.length,
+        reconcile: reconcile.mock.calls.length,
+      }),
+      // Resumes with valid input and proves the retained signature still wins.
+      async resume() {
+        observation = settledSame;
+        await expect(advanceSolanaSplSettlement({ ...valid, owner: "worker-b" }))
+          .resolves.toMatchObject({
+            status: "settled",
+            settlement: { txRef: { signature: SIGNATURE_1 } },
+          });
+        expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      },
+    };
+  }
+
+  const refusals = [
+    ["an empty owner", { owner: "" }, "solana-spl-runtime-policy-invalid"],
+    ["a non-string owner", { owner: 7 as never }, "solana-spl-runtime-policy-invalid"],
+    ["a zero lease duration", { leaseDurationMs: 0 }, "solana-spl-runtime-policy-invalid"],
+    ["a fractional lease duration", { leaseDurationMs: 1.5 }, "solana-spl-runtime-policy-invalid"],
+    ["an invalid amount", { authority: authority({ amount: "0" }) }, "solana-spl-authority-invalid"],
+    ["an invalid payer", { authority: authority({ payer: "not_base58_0" }) }, "solana-spl-authority-invalid"],
+  ] as const;
+
+  test.each((["broadcast", "settled"] as const).flatMap((state) =>
+    refusals.map(([name, override, reason]) => [state, name, override, reason] as const)))(
+    "a retained %s is not reported as failed for %s",
+    async (state, _name, override, reason) => {
+      const settlement = await retained(state);
+      const before = settlement.effects();
+      await expect(advanceSolanaSplSettlement({ ...settlement.valid, ...override }))
+        .resolves.toEqual({ status: "indeterminate", reason });
+      expect(settlement.effects()).toEqual(before);
+      await settlement.resume();
+    },
+  );
 });
