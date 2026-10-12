@@ -3652,7 +3652,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
   });
 
-  test("alerts on retained refunds authenticated absent, showing those legs absent and re-sending nothing", async () => {
+  test("alerts on retained refunds reported absent by reference, showing those legs absent and re-sending nothing", async () => {
     const h = harness({
       sourceExpiry: 1_700,
       destinationExpiry: 1_200,
@@ -3666,8 +3666,8 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       status: "refund-pending",
       refunds: { "destination-refund": "pending", "source-refund": "pending" },
     });
-    h.actions["destination-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
-    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-refund"] = { state: "absent", txRef: refFor("destination-refund"), authenticationHash: AUTH_HASH };
+    h.actions["source-refund"] = { state: "absent", txRef: refFor("source-refund"), authenticationHash: AUTH_HASH };
     const preparations = h.prepareAction.mock.calls.length;
     const broadcasts = h.broadcastRetained.mock.calls.length;
     for (const tick of [1, 2]) {
@@ -3691,6 +3691,42 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
   });
 
+  test("rebroadcasts retained refunds reported absent without a reference instead of alerting", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "refunds-sent" });
+    // Both were dropped before landing; the adapter reports nothing on chain for either leg.
+    h.actions["destination-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    const preparations = h.prepareAction.mock.calls.length;
+    const progress = await advanceCrossChainHtlc({ ...run.shared, owner: "refunds-rebroadcast", now: () => 1_700_101 });
+    expect(progress).toEqual({
+      status: "refund-pending",
+      reason: "destination-timeout",
+      txRefs: [
+        refFor("source-lock"),
+        refFor("destination-lock"),
+        refFor("source-refund"),
+        refFor("destination-refund"),
+      ],
+      refunds: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    expect(htlcNeedsOperator(progress)).toBe(false);
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    for (const leg of ["source-refund", "destination-refund"] as const) {
+      const sent = broadcastsOf(h, leg);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]).toEqual(sent[0]);
+    }
+  });
+
   test("still drives the payer's source refund while the payee's retained refund is absent", async () => {
     const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, mode: { "destination-refund": "pending" } });
     const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
@@ -3699,7 +3735,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     run.setClock(1_200_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "destination-refund-sent" }))
       .resolves.toMatchObject({ status: "refund-pending", refunds: { "destination-refund": "pending" } });
-    h.actions["destination-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-refund"] = { state: "absent", txRef: refFor("destination-refund"), authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-refund-due", now: () => 1_700_000 }))
       .resolves.toMatchObject({
         status: "operator-alert",
@@ -3720,7 +3756,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       reason: "source-lock-terms-mismatch",
       refunds: { "source-refund": "pending" },
     });
-    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["source-refund"] = { state: "absent", txRef: refFor("source-refund"), authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-refund-absent", now: () => 5_000_101 }))
       .resolves.toEqual({
         status: "operator-alert",
@@ -3729,6 +3765,53 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
         refunds: { "source-refund": "absent" },
       });
     expect(broadcastsOf(h, "source-refund")).toHaveLength(1);
+  });
+
+  test("resends a retained source refund whose broadcast failed while it reads absent without a reference", async () => {
+    const h = harness({ sourceExpiry: 1_700, sourceLockTerms: { amountBaseUnits: "1" } });
+    let rpcDown = true;
+    const broadcast = h.adapter.broadcastRetained;
+    const sends = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+      if (prepared.action === "source-refund" && rpcDown) throw new Error("RPC 503 on send");
+      await broadcast(prepared, fence);
+    });
+    h.adapter.broadcastRetained = sends;
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    // Before and after the refund is prepared, the adapter reports nothing on chain for the leg.
+    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    const progress: CrossChainHtlcProgress[] = [];
+    for (const [owner, now] of [["refund-503", 1_700_000], ["rpc-still-down", 1_700_101]] as const) {
+      progress.push(await advanceCrossChainHtlc({ ...run.shared, owner, now: () => now }));
+    }
+    rpcDown = false;
+    for (const [owner, now] of [["rpc-recovered", 1_700_202], ["refunded", 1_700_303]] as const) {
+      progress.push(await advanceCrossChainHtlc({ ...run.shared, owner, now: () => now }));
+    }
+    const reason = "source-lock-terms-mismatch";
+    expect(progress).toEqual([
+      { status: "refund-pending", reason, txRefs: [refFor("source-lock")], refunds: { "source-refund": "uncertain" } },
+      { status: "refund-pending", reason, txRefs: [refFor("source-lock")], refunds: { "source-refund": "uncertain" } },
+      {
+        status: "refund-pending",
+        reason,
+        txRefs: [refFor("source-lock"), refFor("source-refund")],
+        refunds: { "source-refund": "final" },
+      },
+      {
+        status: "refunded",
+        reason,
+        txRefs: [refFor("source-lock"), refFor("source-refund")],
+        refunds: { "source-refund": "final" },
+      },
+    ]);
+    expect(progress.map((item) => htlcNeedsOperator(item))).toEqual([false, false, false, false]);
+    // One refund, prepared once and sent three times with the same retained bytes.
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "source-refund"]);
+    const refundSends = sends.mock.calls.map((call) => call[0]).filter((sent) => sent.action === "source-refund");
+    expect(refundSends).toHaveLength(3);
+    expect(new Set(refundSends.map((sent) => sent.effectHash)).size).toBe(1);
+    expect(new Set(refundSends.map((sent) => sent.signedPayloadBase64)).size).toBe(1);
   });
 
   test.each([
@@ -3816,7 +3899,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       const [refund] = broadcastsOf(h, "destination-refund");
       if (!refund) throw new Error("expected a destination refund");
       h.actions["destination-refund"] = refundState === "absent"
-        ? { state: "absent", authenticationHash: AUTH_HASH }
+        ? { state: "absent", txRef: refund.txRef, authenticationHash: AUTH_HASH }
         : { state: "failed", txRef: refund.txRef, authenticationHash: AUTH_HASH };
       // The checkpointed source lock is no longer reported final.
       delete h.actions["source-lock"];
@@ -3839,6 +3922,28 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     },
   );
 
+  test("with a regressed source lock, resends a destination refund reported absent without a reference", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, mode: { "destination-refund": "pending" } });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_200_000);
+    await advanceCrossChainHtlc({ ...run.shared, owner: "destination-refund-sent" });
+    h.actions["destination-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    delete h.actions["source-lock"];
+    const progress = await advanceCrossChainHtlc({ ...run.shared, owner: "source-regressed", now: () => 1_200_101 });
+    expect(progress).toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-finality-checkpoint-without-final-lock",
+    });
+    expect(htlcNeedsOperator(progress)).toBe(false);
+    const sent = broadcastsOf(h, "destination-refund");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-refund"]);
+  });
+
   test("reads a refund observed absent in the call that first sends it as pending, then alerts", async () => {
     const h = harness({
       sourceExpiry: 1_700,
@@ -3850,7 +3955,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
       await broadcast(prepared, fence);
       if (prepared.action === "source-refund") {
-        h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+        h.actions["source-refund"] = { state: "absent", txRef: prepared.txRef, authenticationHash: AUTH_HASH };
       }
     });
     const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });

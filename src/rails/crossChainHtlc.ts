@@ -210,7 +210,10 @@ export type HtlcObservedAction =
       /**
        * The retained attempt this `absent` is about. A retained reveal or
        * source claim is replaced only when this names its active attempt; an
-       * `absent` that names an earlier attempt, or none, is refused.
+       * `absent` that names an earlier attempt, or none, is refused. A retained
+       * refund counts as unable to land only when this names it; an `absent`
+       * without it means nothing is on chain yet, and the retained refund is
+       * rebroadcast byte for byte.
        */
       txRef?: Readonly<HtlcTxRef>;
       authenticationHash: string;
@@ -467,9 +470,11 @@ export interface CrossChainHtlcStore {
  *   observe it; the next call retries with the retained bytes;
  * - `pending` / `final` / `failed`: the adapter's authenticated state of the
  *   retained refund. The core never re-sends a `failed` refund;
- * - `absent`: the adapter authenticated that the retained refund never reached
- *   the chain and can no longer. The core neither re-sends nor replaces it and
- *   returns `operator-alert` `htlc-refund-absent`.
+ * - `absent`: the adapter reported the retained refund `absent` naming it in
+ *   `txRef`: it never reached the chain and can no longer. The core neither
+ *   re-sends nor replaces it and returns `operator-alert` `htlc-refund-absent`.
+ *   An `absent` naming no transaction is not this state: the retained refund
+ *   is rebroadcast, and its leg reads `pending` or `uncertain`.
  */
 export type HtlcRefundLegState = "waiting" | "uncertain" | "pending" | "final" | "failed" | "absent";
 
@@ -530,7 +535,7 @@ export type CrossChainHtlcProgress =
       txRefs: readonly Readonly<HtlcTxRef>[];
     }
   | {
-      /** A retained refund is authenticated `absent`; the core will not re-send it. */
+      /** A retained refund is reported `absent` naming it; the core will not re-send it. */
       status: "operator-alert";
       reason: "htlc-refund-absent";
       txRefs: readonly Readonly<HtlcTxRef>[];
@@ -1576,13 +1581,21 @@ export async function advanceCrossChainHtlc(
       return null;
     }
   };
-  // A retained refund the adapter authenticates `absent` can never land, so
-  // its bytes are not re-sent; only replacing it could help, and that needs a
-  // person until refund replacement exists.
+  // A retained refund can never land once the adapter reports it `absent`
+  // naming it, so its bytes are not re-sent; only replacing it could help, and
+  // that needs a person until refund replacement exists. An `absent` that
+  // names no transaction says only that nothing is on chain for the leg: it
+  // makes the core prepare a first refund, and a retained one may still land,
+  // so its exact bytes are rebroadcast as when it is unreported.
   const refundAbsent = (
     leg: "source-refund" | "destination-refund",
     latest: Readonly<HtlcLedgerSnapshot>,
-  ): boolean => prepared.has(leg) && latest.actions[leg]?.state === "absent";
+  ): boolean => {
+    const retained = prepared.get(leg);
+    const observed = latest.actions[leg];
+    return retained !== undefined && observed?.state === "absent" &&
+      observed.txRef !== undefined && sameRef(observed.txRef, retained.txRef);
+  };
   // Reports each locked leg's refund from the latest observation. `sent` is a
   // refund broadcast in this call, reported as refunded only on a later call;
   // until the adapter reports it, or while it still reads `absent` in this
@@ -2050,9 +2063,9 @@ export async function advanceCrossChainHtlc(
     // reveal the preimage is private, so the payee cannot claim the source and
     // the payee's own destination refund after its expiry is still safe. It is
     // sent as on the refund path: prepared only when none is retained, and a
-    // retained refund authenticated `absent` or `failed` is never re-sent.
-    // Such a refund needs a person here too, so the result is the refund
-    // path's `htlc-refund-absent` or `refund-stalled`.
+    // retained refund reported `failed`, or `absent` naming it, is never
+    // re-sent. Such a refund needs a person here too, so the result is the
+    // refund path's `htlc-refund-absent` or `refund-stalled`.
     const destinationLockState = snapshot.actions["destination-lock"];
     const destinationLockMayLand = prepared.has("destination-lock") &&
       destinationLockState?.state !== "failed" && destinationLockState?.state !== "absent";

@@ -222,14 +222,23 @@ the other leg. A host must alert an operator on `refund-stalled`, for example
 when a refund broadcast against a clock running ahead of the chain reverted as
 not yet expired, and keep advancing the session.
 
-A retained refund the adapter authenticates as `absent` never reached the
-chain and can no longer, so its bytes are not re-sent either, and the core
-does not yet replace refunds. That leg is reported as `absent` in `refunds`,
-and the result is `operator-alert` with reason `htlc-refund-absent`, which
-carries the same `refunds` map. The other leg is still driven in the same
-call. The same holds while a checkpointed source lock has regressed (see
-below): a retained refund authenticated `absent` or `failed` is never re-sent
-there either, and the result is `htlc-refund-absent` or `refund-stalled`.
+A refund's `absent` counts only when it names the retained refund, as a
+claim's does. A retained refund the adapter reports `absent` with its exact
+`txRef` never reached the chain and can no longer, so its bytes are not
+re-sent either, and the core does not yet replace refunds. That leg is
+reported as `absent` in `refunds`, and the result is `operator-alert` with
+reason `htlc-refund-absent`, which carries the same `refunds` map. The other
+leg is still driven in the same call. An `absent` that names no transaction
+says only that nothing is on chain for that leg yet, for example after a
+broadcast that failed with an RPC error: before any refund exists the core
+prepares one, and once one is retained it rebroadcasts the retained bytes byte
+for byte, once per call while the refund is due, exactly as for a retained
+refund the adapter does not report. That leg reads `pending`, or `uncertain`
+while the broadcast keeps failing, and the result stays a refund status that
+does not page. The same holds while a checkpointed source lock has regressed
+(see below): a retained refund reported `failed`, or `absent` naming it, is
+never re-sent there either, and the result is `htlc-refund-absent` or
+`refund-stalled`.
 
 ## Operator alerts
 
@@ -269,10 +278,10 @@ if the chain has changed. The reasons are:
   operator finds out why the claim cannot land (a paused contract, or a lock
   already claimed outside the core) before the source expiry; past it the
   reason becomes `htlc-source-claim-missed-after-reveal`.
-- `htlc-refund-absent`: a retained refund is authenticated `absent` and the
-  core will not re-send it; `refunds` shows that leg as `absent`. The operator
-  lands a refund for that leg by hand. Refund replacement is not implemented
-  yet.
+- `htlc-refund-absent`: a retained refund is reported `absent` naming it, so
+  it can never land, and the core will not re-send it; `refunds` shows that
+  leg as `absent`. The operator lands a refund for that leg by hand. Refund
+  replacement is not implemented yet.
 
 `failed` is returned only when the core has nothing it can drive: the inputs
 or authority are invalid; the store is corrupt, conflicting or lacks a
@@ -482,10 +491,12 @@ destination-lock reference, as described above, and nothing is refunded.
 While the source lock has regressed and no reveal was ever
 prepared, the preimage is still private, so the payee cannot claim the source
 and the core still drives the payee's destination refund after its expiry,
-exactly as on the refund path: it prepares one only when none is retained, and
-it never re-sends a retained refund authenticated `absent` or `failed`. Such a
-refund returns `operator-alert` `htlc-refund-absent` or `refund-stalled` on
-this path too, instead of the regression's `indeterminate`. A
+exactly as on the refund path: it prepares one only when none is retained,
+rebroadcasts a retained one byte for byte while it is unreported or `absent`
+without a reference, and never re-sends a retained refund reported `failed`,
+or `absent` naming it. Such a refund returns `operator-alert`
+`htlc-refund-absent` or `refund-stalled` on this path too, instead of the
+regression's `indeterminate`. A
 final lock observation that is malformed (missing or invalid inclusion or
 expiry, or malformed terms) returns `indeterminate` with reason
 `htlc-adapter-lock-observation-invalid` until the adapter reports it
@@ -607,10 +618,12 @@ the core cannot check them itself.
   the replacement's revert as an unlanded reveal, alerts, and once both
   expiries pass refunds the payer's source as well, so the payer ends with
   both legs and the payee with neither, unless the payee claimed the source
-  outside the core first. A retained refund reported `absent` raises
-  `htlc-refund-absent`.
-- A claim's `absent` names the attempt it is about in `txRef`; one that
-  names an earlier attempt, or none, is refused.
+  outside the core first. A retained refund reported `absent` naming it
+  raises `htlc-refund-absent`.
+- A claim's or refund's `absent` names the attempt it is about in `txRef`
+  once that attempt can no longer land. For a claim, one that names an
+  earlier attempt, or none, is refused; for a refund, one that names none
+  reads as nothing on chain yet, and the retained refund is rebroadcast.
 - `failed` only once the failure itself is final.
 - `observe` reports each action only for the core's own retained
   transaction, never a counterparty's, such as a payee's own source claim.
