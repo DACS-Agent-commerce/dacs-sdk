@@ -65,11 +65,16 @@ after the lease has lapsed is discarded unrecorded and prepared again by the
 next owner, and one whose broadcast returns after it is reported uncertain;
 the next owner reuses its retained bytes. While the lease is held, other
 callers get `waiting` with reason `htlc-settlement-held`, so it is also the
-longest a crashed worker holds the session up. The core sets no timeouts on
-adapter calls. Choose a lease above the slowest adapter call, and have the
-adapter time out each call well within it: an adapter call that never returns
-keeps that `advanceCrossChainHtlc` call from returning, although its late
-effects are fenced off once another owner has taken the session over.
+longest a crashed worker holds the session up. The core abandons an adapter
+call (an observation, a preparation or a broadcast) that is still running when
+the lease lapses, with the outcome the fence would give it anyway: the
+observation is unavailable, the preparation is discarded unrecorded, the
+broadcast is uncertain. So an adapter call that never returns cannot keep an
+`advanceCrossChainHtlc` call from returning for longer than its lease, and a
+host that awaits each call before the next still reaches the next one. Store
+calls are not bounded this way. Choose a lease above the slowest adapter call,
+and still have the adapter time out each call well within it, so that it can
+release what an abandoned call holds.
 
 `authorizeDestinationClaim` preserves HTLC-10's payer free option: the core
 does not reveal merely because both locks exist. Once the destination claim is
@@ -129,12 +134,36 @@ misses the source expiry is the usual `operator-alert`
 `htlc-source-claim-missed-after-reveal`.
 
 Refunds are per leg. After the source expiry the payer's source refund is
-driven, and after the destination expiry the payee's destination refund. When
-both are due in one call, the payer's source refund is prepared, persisted and
-broadcast first, before the payee's role service is asked for anything. A
-destination refund that fails, answers only after the lease has lapsed, or
-never answers therefore cannot delay or skip the payer's refund: only the
-destination leg reads `uncertain`, and the next call retries it. When the
+driven, and after the destination expiry the payee's destination refund. The
+payer's source refund is decided on the source leg alone and driven before the
+core calls `observe` or asks the payee's role service for anything. It applies
+once the source-finality checkpoint is recorded, the source expiry has passed,
+and no reveal or source claim is retained (so the preimage never left the
+core). The core then reads the source chain through the adapter's
+`observeSourceLeg`, which must not depend on the destination chain or the
+payee's side, and applies the refund rules below to what it reports: a refund
+is prepared or its retained bytes rebroadcast when none is reported (or an
+`absent` names none), and a refund reported `pending`, `final`, `failed` or
+`absent` naming it is not sent again. If that observation is unavailable (it
+throws or outlasts the lease), the core prepares and broadcasts only a first
+refund, on the strength of the checkpoint; a retained refund is never
+rebroadcast without a source-leg observation showing it is not dead. If the
+observation is invalid, or does not report the source lock final as
+checkpointed, the whole-session path below decides instead.
+
+Only after that does the core call `observe` for the whole session. If that
+fails, outlasts the lease or is invalid, the result is still a refund result:
+the payer's leg as the source leg reported it, and, when a destination lock is
+retained, reason `destination-lock-unresolved` with the `destination-refund`
+leg `uncertain`; a dead source refund still pages (`refund-stalled` or
+`htlc-refund-absent`). So a payee-side observation, preparation or broadcast
+that fails, is slow or never answers can leave only the destination leg
+uncertain; it cannot delay, skip or reorder the payer's refund, and the next
+call retries the destination leg. A source refund is driven at most once per
+call. The payer's leg can still wait on the source chain itself, on the store,
+or on a source-leg observation that fails; and a session with a retained
+reveal is never refunded on the source leg alone, because only the
+destination chain shows whether that reveal landed. When the
 final destination lock's expiry breaks the absolute margin (`sourceExpiry`
 must exceed `destinationExpiry + sourceFinalitySec + safetyWindowSec`) or its
 terms do not match the intent, the payer never reveals:
@@ -176,7 +205,9 @@ session is never `refunded`: after the source refund it stays
 `refund-pending` with reason `destination-lock-unresolved`, its reference in
 `txRefs` and its `destination-refund` leg `waiting`. The core keeps observing;
 if the lock lands it becomes final and its refund is driven after the
-destination expiry like any other. Adapters must therefore report `pending`,
+destination expiry like any other. The same reason, with that leg `uncertain`,
+means the whole session could not be observed in this call after the payer's
+source refund was driven (see above). Adapters must therefore report `pending`,
 never `absent`, while a destination lock can still land, exactly as for a
 reveal.
 
@@ -534,9 +565,11 @@ regression's `indeterminate`. A
 final lock observation that is malformed (missing or invalid inclusion or
 expiry, or malformed terms) returns `indeterminate` with reason
 `htlc-adapter-lock-observation-invalid` until the adapter reports it
-correctly. The exception is a destination lock with an integer expiry that is
-out of range or not after its inclusion: that is the payee's on-chain choice,
-not an adapter fault, so the session takes the refund path with reason
+correctly; once the payer's source refund has been driven on the source leg in
+that call, a malformed destination lock gives the refund result with that leg
+`uncertain` instead. The exception is a destination lock with an integer
+expiry that is out of range or not after its inclusion: that is the payee's
+on-chain choice, not an adapter fault, so the session takes the refund path with reason
 `destination-lock-expiry-invalid` (see above). A reorg-capable
 adapter therefore needs to keep observing through its required finality horizon
 before allowing the core to checkpoint a reveal or report settlement.
@@ -590,6 +623,13 @@ preparation, and operators must reconcile such legacy sessions explicitly. The
 preimage parser remains compatible with canonical lowercase producers while
 also accepting byte-equivalent uppercase and prefixed values.
 
+`CrossChainHtlcAdapter.observeSourceLeg` is a required adapter method, so
+adapters written against earlier heads of this module must add it. An
+adapter object without it at runtime is not refused: the core then has no
+source-leg observation, sends only a first source refund from the checkpoint
+when the source refund is due, and otherwise falls back to `observe`, so the
+payer's refund is not isolated from the payee's side for such an adapter.
+
 ## Host recovery checklist
 
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
@@ -606,8 +646,8 @@ also accepting byte-equivalent uppercase and prefixed values.
 - Supply that same salt on every `advanceCrossChainHtlc` call, including after
   a restart. The current store API does not return secrets on takeover.
 - Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call.
-  The core sets no adapter timeouts, so the adapter must time out each call
-  within the lease.
+  The core abandons an adapter call still running when the lease lapses, but
+  the adapter should still time out each call within the lease.
 - Page an operator on each of these results, and keep advancing the session
   (except after `failed`). `htlcNeedsOperator(progress)` returns `true` for
   exactly this list:
@@ -669,6 +709,11 @@ the core cannot check them itself.
 - `failed` only once the failure itself is final.
 - `observe` reports each action only for the core's own retained
   transaction, never a counterparty's, such as a payee's own source claim.
+- `observeSourceLeg` reports exactly what `observe` reports for
+  `source-lock`, `source-claim` and `source-refund`, and nothing else, and
+  depends on neither the destination chain nor the payee's role service or
+  any other payee-side service. The payer's source refund is decided on it
+  alone.
 - With replacement history, `observe` reports the active attempt, and
   `absent` once that attempt never reached the chain and can no longer; but
   an earlier attempt that landed after all is reported `final` instead.
@@ -679,7 +724,8 @@ the core cannot check them itself.
 - A replacement preparation returns a different signed transaction, and a
   retained action is broadcast byte for byte.
 - Every adapter call returns or throws within a timeout shorter than the
-  host's lease, also when a role service never answers.
+  host's lease, also when a role service never answers. The core abandons a
+  call still running at the lease, but cannot release what it holds.
 
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require

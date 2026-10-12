@@ -274,13 +274,22 @@ function harness(options: HarnessOptions = {}) {
       actions: { ...actions },
     } satisfies HtlcLedgerSnapshot;
   });
+  const observeSourceLeg = vi.fn<CrossChainHtlcAdapter["observeSourceLeg"]>(async (_intent, fence) => {
+    await fence.assertCurrent();
+    return {
+      observedAt,
+      authenticationHash: AUTH_HASH,
+      actions: Object.fromEntries(Object.entries(actions).filter(([action]) => action.startsWith("source-"))),
+    } satisfies HtlcLedgerSnapshot;
+  });
   return {
-    adapter: { observe, prepareAction, broadcastRetained } satisfies CrossChainHtlcAdapter,
+    adapter: { observe, observeSourceLeg, prepareAction, broadcastRetained } satisfies CrossChainHtlcAdapter,
     actions,
     preimages,
     prepareAction,
     broadcastRetained,
     observe,
+    observeSourceLeg,
     setMode(action: HtlcAction, mode: NonNullable<HarnessOptions["mode"]>[HtlcAction]) {
       if (mode === undefined) delete modes[action];
       else modes[action] = mode;
@@ -327,6 +336,19 @@ function runner(overrides: Partial<AdvanceCrossChainHtlcInput> = {}) {
     },
     setClock(value: number) { clock = value; },
   };
+}
+
+/** The promise's value, or "no result" if it has not settled within `ms` real milliseconds. */
+async function settlesWithin<T>(promise: Promise<T>, ms: number): Promise<T | "no result"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<"no result">((resolve) => { timer = setTimeout(() => resolve("no result"), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function sourceClaimStoreFixture(options: {
@@ -2753,6 +2775,207 @@ describe("advanceCrossChainHtlc", () => {
       .toEqual(["source-lock", "destination-lock", "source-refund"]);
   });
 
+  test.each(["throws", "never answers"] as const)(
+    "sends the payer's source refund when the whole-session observation %s on the payee's side",
+    async (failure) => {
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      const observeLedger = h.observe.getMockImplementation()!;
+      // From here `observe` depends on a payee-side service that is down.
+      h.observe.mockImplementation(failure === "throws"
+        ? async () => { throw new Error("payee observation unavailable"); }
+        : () => new Promise(() => {}));
+      const payerRefunded = {
+        status: "refund-pending",
+        reason: "destination-lock-unresolved",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "uncertain", "source-refund": "final" },
+      };
+      run.setClock(1_700_000);
+      await expect(settlesWithin(advanceCrossChainHtlc({ ...run.shared, owner: "payee-down" }), 2_000))
+        .resolves.toEqual(payerRefunded);
+      expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund"]);
+      expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+      // Later calls read the refund on the source leg and never send it again.
+      await expect(settlesWithin(
+        advanceCrossChainHtlc({ ...run.shared, owner: "payee-still-down", now: () => 1_700_101 }),
+        2_000,
+      )).resolves.toEqual(payerRefunded);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund"]);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(3);
+      // Once the payee's side is back, its own refund follows.
+      h.observe.mockImplementation(observeLedger);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "payee-back", now: () => 1_700_202 }))
+        .resolves.toMatchObject({
+          status: "refund-pending",
+          reason: "destination-timeout",
+          refunds: { "destination-refund": "final", "source-refund": "final" },
+        });
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "both-refunded", now: () => 1_700_303 }))
+        .resolves.toMatchObject({ status: "refunded", reason: "destination-timeout" });
+    },
+  );
+
+  test("returns at the lease when the payee hangs after the payer's refund broadcast failed, then resends it", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const prepare = h.adapter.prepareAction;
+    const broadcast = h.adapter.broadcastRetained;
+    const sent: Readonly<HtlcPreparedAction>[] = [];
+    let rpcDown = true;
+    h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) =>
+      request.action === "destination-refund" ? new Promise(() => {}) : prepare(request, fence));
+    h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+      sent.push(prepared);
+      if (prepared.action === "source-refund" && rpcDown) {
+        rpcDown = false;
+        throw new Error("RPC 503");
+      }
+      return broadcast(prepared, fence);
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    // A host that awaits each call before the next gets this one back.
+    await expect(settlesWithin(advanceCrossChainHtlc({ ...run.shared, owner: "refund-503" }), 2_000))
+      .resolves.toEqual({
+        status: "refund-pending",
+        reason: "destination-timeout",
+        txRefs: [refFor("source-lock"), refFor("destination-lock")],
+        refunds: { "destination-refund": "uncertain", "source-refund": "uncertain" },
+      });
+    await expect(settlesWithin(
+      advanceCrossChainHtlc({ ...run.shared, owner: "refund-resent", now: () => 1_700_101 }),
+      2_000,
+    )).resolves.toEqual({
+      status: "refund-pending",
+      reason: "destination-timeout",
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+      refunds: { "destination-refund": "uncertain", "source-refund": "final" },
+    });
+    const refunds = sent.filter((item) => item.action === "source-refund");
+    expect(refunds).toHaveLength(2);
+    expect(refunds[1]).toEqual(refunds[0]);
+    expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-refund")).toHaveLength(1);
+  });
+
+  test("without a source-leg observation sends only a first source refund, from the checkpoint", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const broadcast = h.adapter.broadcastRetained;
+    let rpcDown = true;
+    h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+      if (prepared.action === "source-refund" && rpcDown) {
+        rpcDown = false;
+        throw new Error("RPC 503");
+      }
+      return broadcast(prepared, fence);
+    });
+    const { observeSourceLeg: _sourceLeg, ...wholeSessionOnly } = h.adapter;
+    const run = runner({
+      adapter: wholeSessionOnly as unknown as CrossChainHtlcAdapter,
+      authorizeDestinationClaim: false,
+    });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const observeLedger = h.observe.getMockImplementation()!;
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "no-source-leg" })).resolves.toEqual({
+      status: "refund-pending",
+      reason: "destination-lock-unresolved",
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
+      refunds: { "destination-refund": "uncertain", "source-refund": "uncertain" },
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "source-refund"]);
+    // Nothing shows the retained refund is not dead, so it is not resent.
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "still-unobserved", now: () => 1_700_101 }))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-ledger-observation-unavailable" });
+    expect(h.prepareAction).toHaveBeenCalledTimes(3);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(2);
+    expect(h.actions["source-refund"]).toBeUndefined();
+    h.observe.mockImplementation(observeLedger);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "observed-again", now: () => 1_700_202 }))
+      .resolves.toMatchObject({
+        status: "refund-pending",
+        refunds: { "destination-refund": "final", "source-refund": "final" },
+      });
+    expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-refund")).toHaveLength(1);
+  });
+
+  test.each([
+    ["failed", "refund-stalled"],
+    ["absent", "operator-alert"],
+  ] as const)(
+    "pages a source refund read %s on the source leg while the payee's side is down, never resending it",
+    async (state, status) => {
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, mode: { "source-refund": "pending" } });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      run.setClock(1_700_000);
+      await advanceCrossChainHtlc({ ...run.shared, owner: "refunds-sent" });
+      const pending = h.actions["source-refund"];
+      if (!pending || pending.state !== "pending") throw new Error("expected pending source refund");
+      h.actions["source-refund"] = { state, txRef: pending.txRef, authenticationHash: AUTH_HASH };
+      h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+      const preparations = h.prepareAction.mock.calls.length;
+      const broadcasts = h.broadcastRetained.mock.calls.length;
+      const progress = await advanceCrossChainHtlc({ ...run.shared, owner: "payee-down", now: () => 1_700_101 });
+      expect(progress).toEqual({
+        status,
+        reason: status === "operator-alert" ? "htlc-refund-absent" : "destination-lock-unresolved",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "uncertain", "source-refund": state },
+      });
+      expect(htlcNeedsOperator(progress)).toBe(true);
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    },
+  );
+
+  test("refuses a source-leg observation that reports the destination leg", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    h.observeSourceLeg.mockImplementation(h.observe.getMockImplementation()!);
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "mixed-source-leg" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(h.observeSourceLeg).toHaveBeenCalled();
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+  });
+
+  test("abandons an adapter broadcast that outlasts the lease and resends the same bytes next call", async () => {
+    const h = harness();
+    const broadcast = h.adapter.broadcastRetained;
+    const sent: Readonly<HtlcPreparedAction>[] = [];
+    h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+      sent.push(prepared);
+      return sent.length === 1 ? new Promise(() => {}) : broadcast(prepared, fence);
+    });
+    const run = runner({ adapter: h.adapter });
+    await expect(settlesWithin(advanceCrossChainHtlc(run.shared), 2_000)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-lock-effect-uncertain",
+    });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-source-lock-finality-pending",
+    });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(h.prepareAction).toHaveBeenCalledTimes(1);
+  });
+
   test("reports a reverted source refund as refund-stalled and never re-sends it", async () => {
     const h = harness({
       sourceExpiry: 1_700,
@@ -3188,12 +3411,25 @@ describe("advanceCrossChainHtlc", () => {
     const { [field]: _dropped, ...malformed } = valid;
     h.actions[action] = malformed as HtlcObservedAction;
     run.setClock(1_700_000);
-    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "malformed-lock" })).resolves.toEqual({
-      status: "indeterminate",
-      reason: "htlc-adapter-lock-observation-invalid",
-    });
-    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
-      .toEqual(["source-lock", "destination-lock"]);
+    if (action === "source-lock") {
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "malformed-lock" })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-adapter-lock-observation-invalid",
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock"]);
+    } else {
+      // A malformed destination lock is the payee's leg: the payer's source
+      // refund, decided on the source leg, still goes out first.
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "malformed-lock" })).resolves.toEqual({
+        status: "refund-pending",
+        reason: "destination-lock-unresolved",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "uncertain", "source-refund": "final" },
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund"]);
+    }
     // A corrected observation resumes the refunds.
     h.actions[action] = valid;
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "corrected-lock", now: () => 1_700_101 }))

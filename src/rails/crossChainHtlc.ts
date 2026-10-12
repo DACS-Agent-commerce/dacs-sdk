@@ -11,7 +11,10 @@ import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_LEASE_MS = 30_000;
+/** Longest delay a timer accepts; a longer lease is abandoned only this late. */
+const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_SAFETY_WINDOW_SEC = 600;
+const SOURCE_LEG_ACTIONS: ReadonlySet<HtlcAction> = new Set(["source-lock", "source-claim", "source-refund"]);
 /** Replacements of a failed destination claim allowed per session. */
 const MAX_DESTINATION_CLAIM_REPLACEMENTS = 3;
 /** Replacements of a failed source claim allowed per session. */
@@ -310,10 +313,23 @@ export interface HtlcEffectFence {
  * Chain boundary. The adapter may dispatch payer and payee effects to separate
  * role services; this coordinator never needs either role's private key. The
  * adapter also owns authentication: the core takes every observation as
- * authenticated once its fields are well formed.
+ * authenticated once its fields are well formed. Every call must return or
+ * throw well within the host's lease; the core abandons one still running
+ * when the lease lapses.
  */
 export interface CrossChainHtlcAdapter {
   observe(
+    intent: Readonly<CrossChainHtlcIntent>,
+    fence: Readonly<HtlcEffectFence>,
+  ): Promise<Readonly<HtlcLedgerSnapshot>>;
+  /**
+   * The source chain's actions only (`source-lock`, `source-claim` and
+   * `source-refund`), reported exactly as `observe` reports them. It must
+   * not depend on the destination chain or on the payee's role service: the
+   * payer's source refund is decided on it, before `observe` is called, so
+   * that nothing on the payee's side can hold that refund up.
+   */
+  observeSourceLeg(
     intent: Readonly<CrossChainHtlcIntent>,
     fence: Readonly<HtlcEffectFence>,
   ): Promise<Readonly<HtlcLedgerSnapshot>>;
@@ -608,8 +624,10 @@ export interface AdvanceCrossChainHtlcInput {
    * The lease is taken when the call starts and fences every effect in it: an
    * adapter preparation that returns after it lapses is discarded unrecorded,
    * and a broadcast that does is reported uncertain; the next owner retries
-   * either. Other callers wait (`htlc-settlement-held`) until it lapses. Set
-   * it above the slowest adapter call; the core sets no adapter timeouts.
+   * either. Other callers wait (`htlc-settlement-held`) until it lapses. An
+   * adapter call still running when it lapses is abandoned with that same
+   * outcome, so a call returns soon after its lease ends even if an adapter
+   * call never does. Set it above the slowest adapter call.
    */
   leaseDurationMs?: number;
 }
@@ -1422,8 +1440,11 @@ export async function advanceCrossChainHtlc(
   const recordRevealFinal = store.recordRevealFinal.bind(store);
   const recordSettlement = store.recordSettlement.bind(store);
   const observeLedger = adapter.observe.bind(adapter);
-  const prepareAction = adapter.prepareAction.bind(adapter);
-  const broadcastRetained = adapter.broadcastRetained.bind(adapter);
+  const observeSourceLedger = typeof adapter.observeSourceLeg === "function"
+    ? adapter.observeSourceLeg.bind(adapter)
+    : undefined;
+  const prepareAdapterAction = adapter.prepareAction.bind(adapter);
+  const broadcastAdapterAction = adapter.broadcastRetained.bind(adapter);
   const now = input.now ?? Date.now;
   let owner: string;
   let leaseDurationMs: number;
@@ -1534,6 +1555,30 @@ export async function advanceCrossChainHtlc(
       })) throw new DacsError("pay-cross-chain-htlc: stale effect fence");
     },
   });
+  // An adapter call still running when this call's lease lapses is abandoned:
+  // its outcome is fenced off by then anyway (a preparation is discarded
+  // unrecorded, a broadcast is uncertain, an observation unavailable), so
+  // waiting for it could only keep this call, and a host that awaits it, from
+  // reaching the next one.
+  const leaseExpiresAt = claimed.lease.expiresAt;
+  const withinLease = async <T>(call: () => Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lapsed = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new DacsError("pay-cross-chain-htlc: adapter call outlasted the lease")),
+        Math.min(Math.max(0, leaseExpiresAt - readNow()), MAX_TIMER_MS),
+      );
+    });
+    try {
+      return await Promise.race([call(), lapsed]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const prepareAction: typeof prepareAdapterAction = (request, effectFence) =>
+    withinLease(() => prepareAdapterAction(request, effectFence));
+  const broadcastRetained: typeof broadcastAdapterAction = (action, effectFence) =>
+    withinLease(() => broadcastAdapterAction(action, effectFence));
   let retainedActions: readonly Readonly<HtlcPreparedAction>[];
   let sourceFinalityCheckpoint: Readonly<HtlcSourceFinalityCheckpoint> | undefined;
   try {
@@ -1615,12 +1660,38 @@ export async function advanceCrossChainHtlc(
   const observe = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     try {
       await fence.assertCurrent();
-      const snapshot = await observeLedger(intent, fence);
+      const snapshot = await withinLease(() => observeLedger(intent, fence));
       await fence.assertCurrent();
       validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory, destinationClaimAttemptHistory);
       return snapshot;
     } catch (error) {
       lockObservationInvalid = error instanceof InvalidLockObservation;
+      return null;
+    }
+  };
+  // The source chain alone, through the adapter's source-leg observation: null
+  // when the adapter has none, or it fails or outlasts the lease, and also
+  // when it is invalid or reports another leg's action, which sets
+  // `sourceObservationInvalid`.
+  let sourceObservationInvalid = false;
+  const observeSource = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
+    if (!observeSourceLedger) return null;
+    let snapshot: Readonly<HtlcLedgerSnapshot>;
+    try {
+      await fence.assertCurrent();
+      snapshot = await withinLease(() => observeSourceLedger(intent, fence));
+      await fence.assertCurrent();
+    } catch {
+      return null;
+    }
+    try {
+      validateSnapshot(snapshot, prepared, sourceClaimAttemptHistory, destinationClaimAttemptHistory);
+      if (Object.keys(snapshot.actions).some((action) => !SOURCE_LEG_ACTIONS.has(action as HtlcAction))) {
+        throw new DacsError("pay-cross-chain-htlc: source-leg observation reports another leg");
+      }
+      return snapshot;
+    } catch {
+      sourceObservationInvalid = true;
       return null;
     }
   };
@@ -1644,11 +1715,13 @@ export async function advanceCrossChainHtlc(
   // until the adapter reports it, or while it still reads `absent` in this
   // same call, it is `pending`, so only a later call can find it `absent`.
   // A tracked destination leg keeps its retained lock's reference even while
-  // the adapter does not report that lock.
+  // the adapter does not report that lock, as do the retained actions in
+  // `unreported`.
   const refundProgress = (
     reason: HtlcRefundReason,
     latest: Readonly<HtlcLedgerSnapshot>,
     attempts: Partial<Record<"source-refund" | "destination-refund", "none" | "sent" | "uncertain">>,
+    unreported: readonly HtlcAction[] = [],
   ): CrossChainHtlcProgress => {
     const refunds: Partial<Record<"source-refund" | "destination-refund", HtlcRefundLegState>> = {};
     for (const leg of ["destination-refund", "source-refund"] as const) {
@@ -1665,8 +1738,8 @@ export async function advanceCrossChainHtlc(
     }
     const states = Object.values(refunds);
     const unreportedLocks: HtlcAction[] = attempts["destination-refund"] === undefined
-      ? []
-      : ["destination-lock"];
+      ? [...unreported]
+      : [...unreported, "destination-lock"];
     if (states.includes("absent")) {
       return {
         status: "operator-alert",
@@ -1825,6 +1898,7 @@ export async function advanceCrossChainHtlc(
       destinationExpiry?: number;
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
     } = {},
+    observeAfter: () => Promise<Readonly<HtlcLedgerSnapshot> | null> = observe,
   ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     let retained = prepared.get(action);
     if (!retained) {
@@ -1871,7 +1945,7 @@ export async function advanceCrossChainHtlc(
     } catch {
       return null;
     }
-    return observe();
+    return observeAfter();
   };
   const replaceFailedSourceClaim = async (
     failedObservation: Readonly<HtlcFailedObservation>,
@@ -2070,7 +2144,76 @@ export async function advanceCrossChainHtlc(
     return observe();
   };
 
+  // The payer's source refund is decided on the source leg alone and sent
+  // before the whole session is observed, so that nothing on the payee's side
+  // (its role service, the destination chain, or an `observe` that depends on
+  // either and fails or never returns) can delay, skip or reorder it. It is
+  // due only on durable evidence: the source lock was final (the checkpoint),
+  // its expiry has passed, and no reveal or source claim is retained, so the
+  // preimage never left the core. The adapter's source-leg observation then
+  // applies the refund path's rule: a refund is sent when none is reported or
+  // an `absent` names none, and one reported `pending`, `final`, `failed` or
+  // `absent` naming it is never re-sent. When that observation is unavailable
+  // only a first refund is prepared, from the checkpoint; a retained one is
+  // left to the whole-session path, because only an observation can show it
+  // is not dead. An invalid one, like a source lock it does not report final
+  // as checkpointed, leaves the whole refund to that path.
+  let sourceRefundFirst: Readonly<{
+    attempt: "none" | "sent" | "uncertain";
+    latest: Readonly<HtlcLedgerSnapshot>;
+    reason: HtlcRefundReason;
+  }> | undefined;
+  if (sourceFinalityCheckpoint && !retainedCheckpoint && !prepared.has("destination-claim") &&
+      !prepared.has("source-claim") &&
+      readNow() >= secondsToMilliseconds(sourceFinalityCheckpoint.sourceExpiry, "source refund expiry")) {
+    const checkpointed = sourceFinalityCheckpoint;
+    const sourceView = await observeSource();
+    let viewedLock: Readonly<FinalHtlcObservation> | undefined;
+    try {
+      viewedLock = sourceView ? final(sourceView, "source-lock", prepared.get("source-lock")) : undefined;
+    } catch {
+      viewedLock = undefined;
+    }
+    // A source lock the view does not report final as checkpointed is left to
+    // the whole-session path, which treats it as regressed or conflicting.
+    const viewAgrees = viewedLock !== undefined &&
+      sameRef(viewedLock.txRef, checkpointed.sourceLockTxRef) &&
+      viewedLock.includedAt === checkpointed.includedAt &&
+      viewedLock.expiresAt === checkpointed.sourceExpiry;
+    const termsVerdict = viewedLock && viewAgrees
+      ? lockTermsVerdict(viewedLock, expectedSourceLockTerms(intent))
+      : undefined;
+    const reason: HtlcRefundReason = termsVerdict === "missing"
+      ? "source-lock-terms-missing"
+      : termsVerdict === "mismatch" ? "source-lock-terms-mismatch" : "destination-lock-missing";
+    const sendRefund = async (from: Readonly<HtlcLedgerSnapshot>) => {
+      const advanced = await execute("source-refund", { sourceExpiry: checkpointed.sourceExpiry }, observeSource);
+      return Object.freeze({ attempt: advanced ? "sent" as const : "uncertain" as const, latest: advanced ?? from, reason });
+    };
+    if (sourceView && viewAgrees) {
+      const refund = sourceView.actions["source-refund"];
+      sourceRefundFirst = !refund || (refund.state === "absent" && !refundAbsent("source-refund", sourceView))
+        ? await sendRefund(sourceView)
+        : Object.freeze({ attempt: "none" as const, latest: sourceView, reason });
+    } else if (!sourceView && !sourceObservationInvalid && !prepared.has("source-refund")) {
+      sourceRefundFirst = await sendRefund(Object.freeze({ observedAt: 0, authenticationHash: "", actions: {} }));
+    }
+  }
+
   let snapshot = await observe();
+  if (!snapshot && sourceRefundFirst) {
+    // The whole session could not be observed, so the destination leg is
+    // unknown in this call; the payer's source leg is reported as it stands.
+    const destinationTracked = prepared.has("destination-lock");
+    return refundProgress(
+      destinationTracked ? "destination-lock-unresolved" : sourceRefundFirst.reason,
+      sourceRefundFirst.latest,
+      destinationTracked
+        ? { "destination-refund": "uncertain", "source-refund": sourceRefundFirst.attempt }
+        : { "source-refund": sourceRefundFirst.attempt },
+      ["source-lock"],
+    );
+  }
   if (!snapshot) {
     return {
       status: "indeterminate",
@@ -2111,7 +2254,7 @@ export async function advanceCrossChainHtlc(
     const destinationLockMayLand = prepared.has("destination-lock") &&
       destinationLockState?.state !== "failed" && destinationLockState?.state !== "absent";
     const attempts: Partial<Record<"source-refund" | "destination-refund", "none" | "sent" | "uncertain">> = {
-      "source-refund": "none",
+      "source-refund": sourceRefundFirst?.attempt ?? "none",
       ...(destinationLock || destinationLockMayLand || prepared.has("destination-refund")
         ? { "destination-refund": "none" as const }
         : {}),
@@ -2496,6 +2639,8 @@ export async function advanceCrossChainHtlc(
       destinationLockMayLand
         ? { "destination-refund": "none", "source-refund": sourceRefund }
         : { "source-refund": sourceRefund };
+    // A source refund already driven in this call is never driven again in it.
+    if (sourceRefundFirst) return refundProgress(refundReason, snapshot, refundLegs(sourceRefundFirst.attempt));
     if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry")) {
       const refund = snapshot.actions["source-refund"];
       if (!refund || (refund.state === "absent" && !refundAbsent("source-refund", snapshot))) {
@@ -2557,7 +2702,7 @@ export async function advanceCrossChainHtlc(
   if (destinationLock.expiresAt === undefined || destinationLock.includedAt === undefined) {
     return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
   }
-  const sourceExpired =
+  const sourceExpired = sourceRefundFirst !== undefined ||
     readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
   // An expiry beyond the safe-integer range never arrives for the core.
   const destinationExpired = readNow() >= lockExpiryMillis(destinationLock.expiresAt);
@@ -2614,10 +2759,13 @@ export async function advanceCrossChainHtlc(
       "source-refund": "none",
     };
     // The payer's source refund never waits on the payee's destination refund:
-    // it is driven first, inside this call's fresh lease, so a payee role
-    // service that fails, answers after the lease or never answers cannot
-    // delay or skip it. Only the destination leg then reads `uncertain`.
-    if (sourceExpired && (!sourceRefund ||
+    // it was normally driven before the session was observed, and otherwise
+    // is driven here first, so a payee role service that fails, answers after
+    // the lease or never answers cannot delay or skip it. Only the destination
+    // leg then reads `uncertain`.
+    if (sourceRefundFirst) {
+      attempts["source-refund"] = sourceRefundFirst.attempt;
+    } else if (sourceExpired && (!sourceRefund ||
         (sourceRefund.state === "absent" && !refundAbsent("source-refund", snapshot)))) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
       if (advanced) latest = advanced;
