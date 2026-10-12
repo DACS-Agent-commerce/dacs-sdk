@@ -52,6 +52,8 @@ const SEND_ABSENCE_REASON =
 const NODE_DUPLICATE_MESSAGE = "Duplicate message";
 const DUPLICATE_REASON =
   "Demos L2PS refused the packet hash as a duplicate that history does not show";
+const STORED_FRAME_REASON =
+  "Demos L2PS RFQ stored send frame does not open to this packet";
 const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "delivered",
@@ -1115,7 +1117,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
    * that the shared reconcile deadline no longer leaves time for.
    */
   async function openStored(
-    message: DemosL2psRfqStoredMessage,
+    encrypted: DemosL2psRfqEncryptedMessage,
     packet: Readonly<RfqLifecyclePacket<TSignature>>,
     recipientPeer: string,
     budget: { deadline: number; spent: boolean },
@@ -1126,7 +1128,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     try {
       plaintext = await bounded(
         () =>
-          captured.open(message.encrypted, {
+          captured.open(encrypted, {
             messageHash: packet.packetId,
             fromPeer: captured.localPeerKey,
             toPeer: recipientPeer,
@@ -1230,7 +1232,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           spent: false,
         };
         const opened = await openStored(
-          message,
+          message.encrypted,
           prepared.packet,
           prepared.recipientPeer,
           openBudget,
@@ -1582,6 +1584,13 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           // An acknowledged entry is neither resent nor overwritten.
           if (absence.disposition === "acknowledged" ||
               absence.disposition === "indeterminate") return absence;
+          // Resend only a stored frame that still opens to this exact packet
+          // (a custom codec, or a key rotated under the same codecId, may not).
+          const opened = await openStored(entry.encrypted, routed.packet, routed.recipientPeer,
+            { deadline: performance.now() + captured.operationTimeoutMs, spent: false });
+          if (opened !== "match") {
+            return { disposition: "indeterminate", reason: STORED_FRAME_REASON };
+          }
         } else {
           const prepared = await sealPacket(routed);
           entry = {

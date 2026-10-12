@@ -476,7 +476,7 @@ async function delayedSendFixture(options: {
   let timedOut = false;
   const hub = new FakeL2psHub();
   const basePeer = hub.peer(BUYER_PEER);
-  const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+  let codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
   const sendEntered = gate();
   const framesAtCall: unknown[] = [];
   const submissions: Array<{ to: string; encrypted: DemosL2psRfqEncryptedMessage; messageHash: string }> = [];
@@ -567,6 +567,8 @@ async function delayedSendFixture(options: {
       transport = makeTransport();
       client = createDurableRfqLifecycleClient({ ...lifecycleOptions, transport });
     },
+    /** The next transport (after restart) uses a new key under the same codecId. */
+    rotateKey() { codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }); },
     /** Let the held first save reach the store; resolves to its CAS result. */
     releaseFirstSave() {
       if (heldSaveResult === undefined) throw new Error("no held save");
@@ -742,6 +744,20 @@ describe("Demos L2PS durable RFQ transport", () => {
       await expect(fixture.transport.publish(fixture.packet())).resolves.toEqual({ disposition: "acknowledged" });
       expect(fixture.submissions).toHaveLength(1);
       expect(await fixture.outboxStore.load(id)).toEqual(acknowledged);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: a stored frame that no longer opens to the packet is never resent", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      fixture.rotateKey();
+      fixture.restart();
+      fixture.setTicks(72_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: "Demos L2PS RFQ stored send frame does not open to this packet",
+      });
+      expect(fixture.submissions).toHaveLength(1);
     } finally { await fixture.cleanup(); }
   });
 
