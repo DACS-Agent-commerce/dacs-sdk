@@ -240,43 +240,43 @@ discriminator for this is left to a later release.
 
 ## Polluted or replaced built-ins
 
-The settlement key (`jobId`, `railId`, `phaseIndex`) and every field of the
-intent the core hands to the store and adapter (amount and base units, payee
-and origin, chains, assets, decimals, tank IDs, job, rail and phase) come from
-the authority's own data properties. They are read, NFC-normalized, matched
-and hashed only through built-ins captured when the SDK loads. The shared
-canonical-JSON code still runs on the authority, through the live built-ins,
-for two things: deciding whether its representation is stable canonical JSON,
-and computing the operation and binding hashes.
+**What the rail does.** It validates and derives the settlement key (`jobId`,
+`railId`, `phaseIndex`), the amount and base units, the payee and every other
+intent field from the authority's own data properties. It reads them before
+any shared code runs on the authority, and the shared code gets only frozen
+copies of what it hashes. Whether a store write succeeded, and the top-level
+fields of a store claim or adapter observation (including whether a claim
+retains a submission), are read the same way.
+These reads use built-ins the SDK captures when it loads:
+`Reflect.getOwnPropertyDescriptor`, `Reflect.ownKeys`, `Object.hasOwn`,
+`Object.freeze`, `util.types.isProxy`, `RegExp.prototype.exec`,
+`String.prototype.normalize`, `charCodeAt` and `slice`, and the one-shot
+`crypto.hash`.
 
-So a polluted prototype, or a built-in replaced after the SDK loads (for
-example `String.prototype.normalize`, `RegExp.prototype.exec`,
-`Hash.prototype.digest` or the global `Number`), can only:
+So a data-only prototype pollution, such as an extra property on
+`Object.prototype` or `Array.prototype`, can't change the settlement key,
+amount or payee, or make a store's refusal read as success. A polluted field
+the authority lacks reads as absent and is refused, and an over-precise
+amount is refused before any padding lookup. The shared canonical-JSON code
+still uses the live built-ins. It decides whether the authority's
+representation is stable canonical JSON, computes the operation and binding
+hashes, and reads the contents of store and adapter results. Pollution there
+can make the core refuse an authority or a result (`indeterminate`). For a
+phase that already holds a binding, a changed binding hash is a binding
+conflict (`indeterminate`).
 
-- refuse the authority (`indeterminate`, before any claim); or
-- change the binding hash, which for a phase that already holds a binding is
-  a binding conflict (`indeterminate`, with no preparation or broadcast).
+**What it doesn't.** Code that replaces JavaScript built-ins or intrinsics in
+the same process after the SDK loads is outside the rail's threat model.
+Examples are a prototype method, a static such as `Object.entries`,
+`util.types.isProxy`, or an accessor on an internal slot. Such code can call
+the adapter or the signer directly, or forge what the store or adapter
+returns, so no rail can stop it. The captured built-ins make accidental
+interference, such as a dependency that patches a prototype, unlikely, not
+impossible. Run the rail only in a process whose code you trust.
 
-It cannot change the amount, payee or settlement key, so it cannot open a
-second phase beside a locked one: the store sees the locked phase, and the
-core prepares, persists and broadcasts nothing new for it. A phase first
-claimed under such a process
-records the changed binding hash, so the same authority from a sound process
-later gets a binding conflict that an operator resolves.
-
-After the claim, the core reads store and adapter results through the same
-shared code. A replaced built-in there can make a result read as invalid or a
-retained row as corrupt (`indeterminate`); the core checks retained bytes
-without any live regex. If such a built-in hid a locked phase's retained
-submission, observation and failure all at once, the core would ask the
-adapter to prepare again, but the store's rule that a phase keeps its first
-submission (the reference store refuses a replacement) stops that submission
-from being persisted or broadcast.
-
-Code that can replace built-ins in the host process can also call the adapter
-directly, or forge what the store or adapter returns. No rail can prevent
-that; the guarantee is only that this core never derives a different amount,
-payee or settlement key from the authority it was given.
+The reference store also keeps a phase's first submission and refuses a
+replacement. A production store should do the same, as its own check that
+does not depend on how the core reads results.
 
 ## Adapter trust boundary
 
