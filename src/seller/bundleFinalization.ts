@@ -387,6 +387,13 @@ export interface SellerBundleFinalizationProvider {
   }) =>
     | Promise<SellerPaymentPhaseIndexResolution>
     | SellerPaymentPhaseIndexResolution;
+  /**
+   * `indeterminate`, a thrown `SubstrateError` and any thrown error that is
+   * not a `DacsError` mean the read could not be answered and may be retried.
+   * Throw a `DacsError` that is not a `SubstrateError` for a permanent
+   * failure, such as invalid anchored content or an invalid receipt. The same
+   * applies to `resolveBundleBinding`.
+   */
   resolveSellerBundle: (
     logicalAddress: string,
   ) => Promise<SellerBundleLookup> | SellerBundleLookup;
@@ -3287,6 +3294,17 @@ function assertCanonicalBundleSignatures(value: unknown, subject: string): void 
   }
 }
 
+/**
+ * Classifies an error thrown by a provider read. The provider decides: a
+ * DacsError that is not a substrate fault reports a permanent failure (for
+ * example invalid anchored content or an invalid receipt) and passes through.
+ * Any other thrown read failure may succeed on retry.
+ */
+function unavailableUnlessPermanent(error: unknown, message: string): Error {
+  if (error instanceof DacsError && !(error instanceof SubstrateError)) return error;
+  return new IndeterminateSubstrateError(message, { cause: error });
+}
+
 async function resolveBundle(
   logicalAddress: string,
   provider: SellerBundleFinalizationProvider,
@@ -3295,9 +3313,7 @@ async function resolveBundle(
   try {
     raw = await provider.resolveSellerBundle(logicalAddress);
   } catch (error) {
-    throw new IndeterminateSubstrateError("seller bundle lookup errored and is indeterminate", {
-      cause: error,
-    });
+    throw unavailableUnlessPermanent(error, "seller bundle lookup errored and is indeterminate");
   }
   const lookup = snapshot(raw, "seller bundle lookup");
   if (
@@ -4008,7 +4024,7 @@ export async function verifyFinalizedSellerBundleReadOnly(
     try {
       bindingLookup = await retainedProvider.resolveBundleBinding(logicalAddress, session.seller.primaryClaim);
     } catch (error) {
-      throw new IndeterminateSubstrateError("retained BundleBinding readback errored", { cause: error });
+      throw unavailableUnlessPermanent(error, "retained BundleBinding readback errored");
     }
     bindingLookup = snapshot(bindingLookup, "retained BundleBinding readback");
     if (isRecord(bindingLookup) && bindingLookup.disposition === "indeterminate" &&

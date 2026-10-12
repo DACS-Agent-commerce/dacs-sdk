@@ -1,4 +1,4 @@
-import { IndeterminateSubstrateError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
@@ -3089,6 +3089,58 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       ).rejects.toThrow(/BundleBinding|readable|exact|binding/i);
     },
   );
+
+  // The provider decides: a DacsError that is not a substrate fault is a
+  // permanent failure; any other thrown read failure may succeed on retry.
+  test.each([
+    ["a permanent provider DacsError", () => new DacsError("seller bundle readback is invalid"), false],
+    ["a thrown substrate read failure", () => new SubstrateError("native read failed"), true],
+    ["a thrown network error", () => new TypeError("fetch failed"), true],
+    ["a thrown unavailable read", () => new IndeterminateSubstrateError("unavailable"), true],
+  ])("classifies a seller readback that throws %s", async (_label, thrown, retryable) => {
+    const retained = await finalizedForReadVerification("pure");
+    const permanent = thrown();
+    const provider = {
+      ...retained.provider,
+      resolveSellerBundle: vi.fn(async () => {
+        throw permanent;
+      }),
+    };
+    const error = await verifyFinalizedSellerBundleReadOnly(retained.input, retained.result, provider)
+      .then(() => undefined, (error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof IndeterminateSubstrateError).toBe(retryable);
+    if (!retryable) expect(error).toBe(permanent);
+  });
+
+  test.each([
+    ["authoritative absence", () => ({ disposition: "absent" }), false],
+    ["an invalid disposition", () => ({ disposition: "unknown" }), false],
+    ["an invalid indeterminate shape", () => ({ disposition: "indeterminate", reason: "" }), false],
+    ["null output", () => null, false],
+    ["a permanent provider DacsError", () => {
+      throw new DacsError("BundleBinding readback is invalid: bundle-binding-invalid");
+    }, false],
+    ["an unavailable read", () => ({
+      disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
+    }), true],
+    ["a thrown substrate read failure", () => {
+      throw new SubstrateError("native read failed");
+    }, true],
+    ["a thrown network error", () => {
+      throw new TypeError("fetch failed");
+    }, true],
+  ])("classifies a BundleBinding readback with %s", async (_label, lookup, retryable) => {
+    const retained = await finalizedForReadVerification("write-input");
+    const provider = { ...retained.provider, resolveBundleBinding: vi.fn(async () => lookup()) };
+    const error = await verifyFinalizedSellerBundleReadOnly(
+      retained.input,
+      retained.result,
+      provider as never,
+    ).then(() => undefined, (error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error instanceof IndeterminateSubstrateError).toBe(retryable);
+  });
 });
 
 describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {

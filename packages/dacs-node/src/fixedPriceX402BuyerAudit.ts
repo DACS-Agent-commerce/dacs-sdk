@@ -93,15 +93,14 @@ import {
 } from
   "./sessionBootstrapAgreementRuntime.js";
 import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
+import {
+  createClassifiedDemosSellerBundleReads,
+  permanentDemosBundleReadReason,
+  TRANSIENT_BINDING_RESOLUTION_REASONS,
+} from "./demosSellerBundleReads.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
-// Binding lookups that Demos could not answer, as opposed to a binding that
-// was read and failed authentication.
-const TRANSIENT_BINDING_RESOLUTION_REASONS = new Set([
-  "bundle-binding-resolution-indeterminate",
-  "bundle-binding-resolution-unavailable",
-]);
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
 type PayDemBuyerAuditOptions = Omit<
@@ -1274,14 +1273,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           : { disposition: "invalid" as const,
               reason: "buyer-audit-payment-binding-invalid" };
       },
-      async resolveSellerBundle(logicalAddress: string) {
-        if (logicalAddress !== bundleAddress(order.jobId, "seller")) {
-          return { disposition: "absent" as const };
-        }
-        const anchored = await publication.resolveRoleBundle("seller");
-        return anchored === null ? { disposition: "absent" as const }
-          : { disposition: "present" as const, anchored };
-      },
+      ...createClassifiedDemosSellerBundleReads(publication, order.jobId),
       verifyBundleAnchorReceipt: async (anchored) => {
         if (!isFaultAttestationBundle(anchored.bundle)) return "invalid" as const;
         return publication.verifyBundleAnchorReceipt({
@@ -1289,7 +1281,6 @@ export function createDacsFixedPriceBuyerAuditV1(
           bundle: anchored.bundle,
         });
       },
-      resolveBundleBinding: publication.resolveBundleBinding,
       verifyBundleBinding: publication.verifyBundleBinding,
     } satisfies SellerBundleFinalizationReadProvider;
 
@@ -1436,7 +1427,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         if (binding.disposition !== "present") {
           return binding.disposition === "absent"
             ? { disposition: "absent" as const, reason: "seller-binding-pending" }
-            : { disposition: "indeterminate" as const, reason: binding.reason };
+            : TRANSIENT_BINDING_RESOLUTION_REASONS.has(binding.reason)
+              ? { disposition: "indeterminate" as const, reason: binding.reason }
+              : { disposition: "rejected" as const, reason: binding.reason };
         }
         const sellerBundle = copy(anchored.bundle);
         const buyerBundle = copy({ ...sellerBundle, anchoredByRole: "buyer" as const });
@@ -1454,9 +1447,12 @@ export function createDacsFixedPriceBuyerAuditV1(
           resumedBinding: true,
         };
         return { disposition: "present" as const, value: result };
-      } catch {
-        return { disposition: "indeterminate" as const,
-          reason: "seller-finalization-unavailable" };
+      } catch (error) {
+        const reason = permanentDemosBundleReadReason(error);
+        return reason !== undefined
+          ? { disposition: "rejected" as const, reason }
+          : { disposition: "indeterminate" as const,
+              reason: "seller-finalization-unavailable" };
       }
     },
   };
