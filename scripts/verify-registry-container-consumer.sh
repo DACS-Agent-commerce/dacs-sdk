@@ -60,20 +60,29 @@ image_started=0
 cleanup() {
   local status=$?
   local evidence_exported=1
+  # A failed evidence write must not skip the Docker cleanup below or replace
+  # the original exit status.
+  set +e
   # Preserve only collected, secret-free evidence, including on early failure.
   if [ -d "$artifact_stage" ]; then
     # These are the same secret-free diagnostics exported on a complete run.
-    for name in doctor.log npm-audit.json npm-audit.exit-code consumer-lock.cdx.json \
+    for name in generated-tests.exit-code doctor.log doctor.exit-code npm-audit.json \
+      npm-audit.exit-code consumer-lock.cdx.json \
       consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
       consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
       engine-strict.exit-code; do
       if [ -f "$consumer_root/$name" ]; then
-        cp "$consumer_root/$name" "$artifact_stage/" || true
+        cp "$consumer_root/$name" "$artifact_stage/"
+      fi
+    done
+    for name in package.json package-lock.json; do
+      if [ -f "$consumer_root/one-click-agent/$name" ]; then
+        cp "$consumer_root/one-click-agent/$name" "$artifact_stage/generated-$name"
       fi
     done
     for name in release-provenance.json SHA256SUMS; do
       if [ -f "$release_set/$name" ]; then
-        cp "$release_set/$name" "$artifact_stage/" || true
+        cp "$release_set/$name" "$artifact_stage/"
       fi
     done
     printf '%s\n' "$status" > "$artifact_stage/acceptance.exit-code"
@@ -219,11 +228,18 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
   test "$observed" = "$version"
 done
 
+# The generator arguments are recorded in the summary from these values.
+generated_mode=live-demos
+generated_role=seller
+generated_rails=both
 docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
+  --env DACS_GENERATED_MODE="$generated_mode" \
+  --env DACS_GENERATED_ROLE="$generated_role" \
+  --env DACS_GENERATED_RAILS="$generated_rails" \
   --env DACS_HOST_UID="$host_uid" \
   --env DACS_HOST_GID="$host_gid" \
   --env npm_config_registry="$consumer_registry" \
@@ -238,16 +254,19 @@ docker run --rm \
     npm install --global --ignore-scripts npm@11.19.0
     npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
       --yes \
-      --mode live-demos \
+      --mode "$DACS_GENERATED_MODE" \
       --profile dacs-sdk:fixed-price-x402:v1 \
-      --rails both \
-      --role seller \
+      --rails "$DACS_GENERATED_RAILS" \
+      --role "$DACS_GENERATED_ROLE" \
       --deploy docker
     cd one-click-agent
-    npm run build
-    npm test
+    tests_status=0
+    { npm run build && npm test; } || tests_status=$?
+    printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
+    test "$tests_status" -eq 0
     doctor_status=0
     npm run dacs:doctor > /work/doctor.log 2>&1 || doctor_status=$?
+    printf "%s\n" "$doctor_status" > /work/doctor.exit-code
     test "$doctor_status" -eq 5
     audit_status=0
     npm audit --registry https://registry.npmjs.org --omit=dev --json > /work/npm-audit.json || audit_status=$?
@@ -314,19 +333,26 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
     }
   }
 }
-for (const name of [
-  "node_modules/@kynesyslabs/dacs",
-  "node_modules/@kynesyslabs/dacs-node",
-]) {
-  const entry = lock.packages?.[name];
-  const resolved = entry?.resolved;
-  if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
-    throw new Error("candidate package did not resolve through the isolated registry: " + name);
-  }
-  const archive = path.join(releaseSet, name.replace("node_modules/@", "").replace("/", "-") + "-" + version + ".tgz");
+// Every installed copy of a candidate package, top-level or nested, must be
+// the exact packed tarball served by the isolated registry.
+for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
+  const archive = path.join(releaseSet, name.slice(1).replace("/", "-") + "-" + version + ".tgz");
   const integrity = "sha512-" + createHash("sha512").update(fs.readFileSync(archive)).digest("base64");
-  if (entry.integrity !== integrity) {
-    throw new Error("candidate package integrity does not match the packed tarball: " + name);
+  const locations = Object.keys(lock.packages ?? {}).filter((location) =>
+    location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
+  if (!locations.includes("node_modules/" + name)) {
+    throw new Error("candidate package is not installed at the top level: " + name);
+  }
+  for (const location of locations) {
+    const entry = lock.packages[location];
+    const resolved = entry?.resolved;
+    if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
+      throw new Error("candidate package did not resolve through the isolated registry: " + location);
+    }
+    if (entry.integrity !== integrity) {
+      throw new Error("candidate package integrity does not match the packed tarball: " + location +
+        " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+    }
   }
 }
 fs.writeFileSync(reportPath, JSON.stringify({
@@ -344,10 +370,20 @@ if (!counts || !Number.isInteger(counts.total) || !Number.isInteger(counts.criti
   throw new Error("npm audit did not produce vulnerability metadata");
 }
 const baselineExceeded = counts.total > 66 || counts.critical > 3;
+// Recorded so the count baseline can be replaced by a checked-in advisory list.
+const advisories = new Set();
+for (const vulnerability of Object.values(audit.vulnerabilities ?? {})) {
+  for (const via of Array.isArray(vulnerability?.via) ? vulnerability.via : []) {
+    if (typeof via?.url === "string") {
+      advisories.add(via.url.replace(/^https:\/\/github\.com\/advisories\//, ""));
+    }
+  }
+}
 fs.writeFileSync(process.argv[3], JSON.stringify({
   schema: "dacs-registry-audit-policy/v1",
   baseline: { total: 66, critical: 3 },
   observed: counts,
+  observedAdvisories: [...advisories].sort(),
   baselineExceeded,
 }, null, 2) + "\n");
 process.stdout.write(JSON.stringify(counts) + "\n");
@@ -429,7 +465,9 @@ cp "$release_set/release-provenance.json" "$artifact_stage/"
 cp "$release_set/SHA256SUMS" "$artifact_stage/"
 cp "$project/package.json" "$artifact_stage/generated-package.json"
 cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
+cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
 cp "$consumer_root/doctor.log" "$artifact_stage/"
+cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
 cp "$consumer_root/npm-audit.json" "$artifact_stage/"
 cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
 cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
@@ -441,12 +479,14 @@ cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
 cp "$consumer_root/engine-strict.log" "$artifact_stage/"
 cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
 
-node - "$artifact_stage" "$version" "$runtime_image" <<'NODE'
+node - "$artifact_stage" "$version" "$runtime_image" \
+  "$generated_mode" "$generated_role" "$generated_rails" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const root = process.argv[2];
 const version = process.argv[3];
 const image = process.argv[4];
+const [generatedMode, generatedRole, generatedRails] = process.argv.slice(5);
 const inspect = JSON.parse(fs.readFileSync(path.join(root, "docker-image.json"), "utf8"))[0];
 const audit = JSON.parse(fs.readFileSync(path.join(root, "npm-audit.json"), "utf8"));
 const dependencyPolicy = JSON.parse(
@@ -470,18 +510,29 @@ const lockSbomExitCode = Number(
 const physicalSbomExitCode = Number(
   fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
 );
+const generatedTestsExitCode = Number(
+  fs.readFileSync(path.join(root, "generated-tests.exit-code"), "utf8").trim(),
+);
+const doctorExitCode = Number(
+  fs.readFileSync(path.join(root, "doctor.exit-code"), "utf8").trim(),
+);
+const generatedTestsPassed = generatedTestsExitCode === 0;
+const doctorBlockedWithoutCredentials = doctorExitCode === 5;
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
   packageVersion: version,
-  generatedMode: "live-demos",
-  generatedRole: "seller",
-  generatedRails: ["x402", "pay-dem"],
-  registryDependencyOnly: true,
-  generatedTestsPassed: true,
-  functionalPassed: runtimeImagePolicy.functionalPassed,
+  generatedMode,
+  generatedRole,
+  generatedRails: generatedRails === "both" ? ["x402", "pay-dem"] : [generatedRails],
+  registryDependencyOnly: dependencyPolicy.passed === true &&
+    Array.isArray(dependencyPolicy.violations) && dependencyPolicy.violations.length === 0,
+  generatedTestsPassed,
+  functionalPassed: runtimeImagePolicy.functionalPassed === true && generatedTestsPassed &&
+    doctorBlockedWithoutCredentials,
   doctor: {
     expectedExitCode: 5,
-    disposition: "blocked-without-credentials",
+    observedExitCode: doctorExitCode,
+    disposition: doctorBlockedWithoutCredentials ? "blocked-without-credentials" : "unexpected",
   },
   docker: {
     image,
