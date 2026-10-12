@@ -1964,6 +1964,29 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
     });
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
+
+  test("a stored field behind a descriptor trap is read once, so a later answer never reaches the result",
+    async () => {
+      let reads = 0;
+      const value = stored();
+      // The first descriptor read of finalityObservedAt answers 7; any later
+      // read answers store text.
+      value.settlementFinality = new Proxy(value.settlementFinality, {
+        getOwnPropertyDescriptor(target, key) {
+          const field = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key !== "finalityObservedAt" || field === undefined) return field;
+          reads += 1;
+          return { ...field, value: reads === 1 ? 7 : `store ${SECRET}` };
+        },
+      });
+      const result = await settledWith(value);
+      expect(reads).toBe(1);
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+      expect(result).toEqual({
+        status: "settled",
+        settlement: { ...stored(), settlementFinality: { ...stored().settlementFinality, finalityObservedAt: 7 } },
+      });
+    });
 });
 
 describe("advanceSolanaSplSettlement with an adapter result that changes between reads", () => {
