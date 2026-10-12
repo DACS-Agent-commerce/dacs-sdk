@@ -384,6 +384,28 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       },
     };
   }), /2 of a concurrent timely completion and recovery expiry were recorded/],
+  [CASE.completionExpiryRace, "refuses both an overlapping completion and expiry", () => database((inner) => {
+    let completions = 0;
+    let expiries = 0;
+    let overlapped = false;
+    return {
+      recordObservation: async (input) => {
+        if (input.observation.status !== "completed") return inner.recordObservation(input);
+        completions += 1;
+        await yieldTurn();
+        overlapped ||= expiries > 0;
+        completions -= 1;
+        return overlapped ? { status: "conflict", reason: "serialization-failure" } : inner.recordObservation(input);
+      },
+      recordRecoveryExpired: async (input) => {
+        expiries += 1;
+        await yieldTurn();
+        overlapped ||= completions > 0;
+        expiries -= 1;
+        return overlapped ? { status: "conflict", reason: "serialization-failure" } : inner.recordRecoveryExpired(input);
+      },
+    };
+  }), /0 of a concurrent timely completion and recovery expiry were recorded/],
   [CASE.settlementExpiryRace, "records an overlapping settlement and expiry (Daybreak's racey store)",
     () => database((inner) => {
       let settlementsInFlight = 0;
