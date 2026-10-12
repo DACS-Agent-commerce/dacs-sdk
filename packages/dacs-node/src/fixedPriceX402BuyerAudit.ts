@@ -102,6 +102,12 @@ import {
 } from "./demosSellerBundleReads.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
+// The coordinator records the audit's result only while the audit track's
+// lease is current, and nothing renews that lease during the completion check.
+// The check ends this long before the lease does, so that what it decides can
+// still be recorded: the SQLite store's default busy timeout, which bounds how
+// long that write waits for another writer.
+const COMPLETION_LEASE_MARGIN_MS = 5_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
@@ -126,8 +132,10 @@ export interface DacsFixedPriceX402BuyerAuditOptionsV1 {
   leaseTtlMs?: number;
   /**
    * Bounds the audit's completion check and its wait for Demos reads still in
-   * flight. At the deadline Demos's answer against a copy, if already seen,
-   * fails the audit; otherwise it stays retryable. Defaults as for
+   * flight. The check ends 5 seconds before the audit track's coordinator
+   * lease expires, or after `timeoutMs` if that is sooner. At that deadline
+   * Demos's answer against a copy, if already seen, fails the audit; otherwise
+   * it stays retryable. `timeoutMs` defaults as for
    * `verifyCompletedTwoSidedSession`.
    */
   completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
@@ -241,6 +249,25 @@ function startTimer(expire: () => void, timeoutMs: number): () => void {
   const timer = setTimeout(expire, timeoutMs);
   timer.unref();
   return () => clearTimeout(timer);
+}
+
+// When the audit track's coordinator lease expires. The coordinator hands the
+// operation its claimed order, whose audit track carries the fence's lease.
+function auditLeaseExpiry(
+  operation: Readonly<{
+    order: Readonly<{ tracks?: Readonly<{ audit?: Readonly<{ lease?: Readonly<{
+      owner: string; generation: number; expiresAt: number;
+    }> }> }> }>;
+    fence: Readonly<{ owner: string; generation: number }>;
+  }>,
+): number {
+  const lease = operation.order.tracks?.audit?.lease;
+  if (lease === undefined || lease.owner !== operation.fence.owner ||
+      lease.generation !== operation.fence.generation ||
+      !Number.isSafeInteger(lease.expiresAt)) {
+    throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-lease-invalid");
+  }
+  return lease.expiresAt;
 }
 
 function timing(value: unknown): number {
@@ -1608,6 +1635,15 @@ export function createDacsFixedPriceBuyerAuditV1(
           buyerPublication.bundleContentHash !== result.bundleContentHash ||
           completion.sellerClosure.result.nativeAddress !==
             sellerPublication.nativeAddress) return false;
+      // The lease left, less the margin, measured on the role database's
+      // clock, which is the coordinator store's.
+      const timeoutMs = Math.min(
+        deadline.timeoutMs,
+        auditLeaseExpiry(operation) - context.database.readTime() - COMPLETION_LEASE_MARGIN_MS,
+      );
+      // Too little lease is left to decide and still record the result: the
+      // track retries under a fresh lease.
+      if (timeoutMs <= 0) return "indeterminate";
       // A Demos read that could not be answered is not evidence against the
       // session. Remember it so a rejection caused by it stays retryable
       // instead of being reported as an authentication failure.
@@ -1633,11 +1669,25 @@ export function createDacsFixedPriceBuyerAuditV1(
       // One deadline bounds the verification and that wait, so a read that
       // never settles cannot hold the audit. At the deadline Demos's answer
       // already seen still fails the audit; without one it stays retryable,
-      // and whatever settles later is ignored.
-      let disarm = (): void => undefined;
-      const expired = new Promise<"expired">((resolve) => {
-        disarm = deadline.start(() => resolve("expired"), deadline.timeoutMs);
-      });
+      // and whatever settles later is ignored. It is armed once, here: the
+      // strict verifier is handed the same expiry instead of arming its own.
+      const verifierExpiries = new Set<() => void>();
+      let passed = false;
+      let expire = (_expired: "expired"): void => undefined;
+      const expired = new Promise<"expired">((resolve) => { expire = resolve; });
+      const disarm = deadline.start(() => {
+        passed = true;
+        expire("expired");
+        for (const verifierExpiry of [...verifierExpiries]) verifierExpiry();
+      }, timeoutMs);
+      const verifierDeadline: CompletedTwoSidedSessionDeadline = {
+        timeoutMs,
+        start: (verifierExpiry) => {
+          if (passed) verifierExpiry();
+          else verifierExpiries.add(verifierExpiry);
+          return () => { verifierExpiries.delete(verifierExpiry); };
+        },
+      };
       const drained = async (): Promise<"drained"> => {
         while (reads.size > 0) await Promise.allSettled([...reads]);
         return "drained";
@@ -1667,7 +1717,7 @@ export function createDacsFixedPriceBuyerAuditV1(
             },
           },
         }, {
-          deadline,
+          deadline: verifierDeadline,
           sellerFinalizationProvider: material.provider,
           async readBundleCopy(nativeAddress, role) {
             let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
