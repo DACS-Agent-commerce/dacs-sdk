@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { assertPositiveAmount, baseUnits } from "../../src/canonical/index.js";
 import {
   advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
@@ -2278,7 +2279,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["sourceTokenDecimals as a string", { sourceTokenDecimals: "6" },
         "pay-cross-chain-liquidity-tank: sourceTokenDecimals must be a non-negative safe integer"],
       ["amount as a number", { amount: 1.25 },
-        "invalid decimal: 1.25"],
+        "pay-cross-chain-liquidity-tank: amount must be a plain decimal string"],
       ["an upper-cased hash", { agreementHash: AGREEMENT_HASH.toUpperCase() },
         "pay-cross-chain-liquidity-tank: authority hashes must be 32-byte lower-case hex"],
     ] as const)("a lock, then the authority with %s, is indeterminate before claim and still settles", async (_label, shift, reason) => {
@@ -2354,6 +2355,166 @@ describe("advanceLiquidityTankSettlement", () => {
           .resolves.toEqual(settled);
       },
     );
+
+    const HASH_REFUSED = "pay-cross-chain-liquidity-tank: authority hashes must be 32-byte lower-case hex";
+
+    // The boxed string is already refused at capture (not JSON data); the
+    // one-element array is JSON data and was coerced by `RegExp.prototype.test`.
+    test.each([
+      ["a one-element array", [AGREEMENT_HASH], HASH_REFUSED],
+      ["a boxed string", Object(AGREEMENT_HASH), "liquidity-tank authority is not stable canonical JSON"],
+    ] as const)("refuses an agreementHash given as %s instead of coercing it", async (_label, hash, reason) => {
+      const coerced = authority({ agreementHash: hash as never });
+      expect(() => createLiquidityTankIntent(coerced)).toThrow(reason);
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      await expect(advanceLiquidityTankSettlement(runner({ authority: coerced, store, adapter: h.adapter }).shared))
+        .resolves.toEqual({ status: "indeterminate", reason });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    test("a polluted Object.prototype cannot supply a missing authority field", async () => {
+      const { sr5BindingHash: _missing, ...partial } = authority();
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const proto = Object.prototype as Record<string, unknown>;
+      let result: unknown;
+      try {
+        proto.sr5BindingHash = SR5_HASH;
+        proto.phaseIndex = 2;
+        expect(() => createLiquidityTankIntent(partial as never)).toThrow(HASH_REFUSED);
+        expect(() => liquidityTankSettlementKey({ jobId: JOB_ID, railId: authority().railId } as never))
+          .toThrow(/phaseIndex must be a non-negative safe integer/);
+        result = await advanceLiquidityTankSettlement(runner({
+          authority: partial as never,
+          store,
+          adapter: h.adapter,
+        }).shared);
+      } finally {
+        delete proto.sr5BindingHash;
+        delete proto.phaseIndex;
+      }
+      expect(result).toEqual({ status: "indeterminate", reason: HASH_REFUSED });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      "1", "01.2500", "0.000001", ".5", "5.", "100.100", "000120", "999999999999999999999.999999",
+      "0", "000", "0.0", ".", "", "1.0000001", "1e3", "-1", "+1", " 1", "1 ", "1.2.3", "١", "0x10",
+    ])("amount %j gives the CD-1 canonical amount and 6-decimal base units, or is refused", (amount) => {
+      let expected: { amount: string; units: string } | undefined;
+      try {
+        const canonical = assertPositiveAmount(amount);
+        expected = { amount: canonical, units: baseUnits(canonical, 6) };
+      } catch {
+        expected = undefined;
+      }
+      if (expected === undefined) {
+        expect(() => createLiquidityTankIntent(authority({ amount }))).toThrow();
+        return;
+      }
+      expect(createLiquidityTankIntent(authority({ amount }))).toMatchObject({
+        amount: expected.amount,
+        sourceAmountBaseUnits: expected.units,
+        destinationAmountBaseUnits: expected.units,
+      });
+    });
+
+    test("identical content under a throwing RegExp.prototype.test never runs it and continues the lock", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 500);
+      const originalTest = RegExp.prototype.test;
+      const poisoned = vi.fn(() => {
+        throw new Error("prototype poisoned");
+      });
+      let result: unknown;
+      try {
+        RegExp.prototype.test = poisoned;
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "poisoned" });
+      } finally {
+        RegExp.prototype.test = originalTest;
+      }
+      expect(poisoned).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    test("an always-true RegExp.prototype.test cannot admit an upper-cased hash for a locked phase", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const originalTest = RegExp.prototype.test;
+      let result: unknown;
+      try {
+        RegExp.prototype.test = () => true;
+        result = await advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "lenient",
+          authority: authority({ agreementHash: AGREEMENT_HASH.toUpperCase() }),
+        });
+      } finally {
+        RegExp.prototype.test = originalTest;
+      }
+      expect(result).toEqual({ status: "indeterminate", reason: HASH_REFUSED });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    // Pinning: capture already refused this as indeterminate on 4a9ae7b. The
+    // shared canonical-JSON capture still dispatches through
+    // `String.prototype.normalize`, so this is the replaced intrinsic the core
+    // cannot avoid; it must stay a retry-safe refusal before any claim.
+    test("identical content under a throwing String.prototype.normalize is indeterminate before claim", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const claim = vi.spyOn(store, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      const originalNormalize = String.prototype.normalize;
+      let result: unknown;
+      try {
+        String.prototype.normalize = () => {
+          throw new Error("prototype poisoned");
+        };
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "poisoned" });
+      } finally {
+        String.prototype.normalize = originalNormalize;
+      }
+      expect(result).toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank authority is not stable canonical JSON",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    test("binding store and adapter methods reads no getter on the method", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      const touched = vi.fn();
+      for (const method of [store.claim, store.recordRecoveryFailure, h.adapter.observe]) {
+        Object.defineProperty(method, "name", { get() { touched("name"); return "m"; } });
+        Object.defineProperty(method, "length", { get() { touched("length"); return 1; } });
+      }
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toMatchObject({ status: "settled" });
+      expect(touched).not.toHaveBeenCalled();
+    });
 
     test("a host store's claim conflict keeps its reason and is indeterminate", async () => {
       const store = createInMemoryLiquidityTankStore();

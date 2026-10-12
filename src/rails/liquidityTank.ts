@@ -1,20 +1,58 @@
 import { types as nodeTypes } from "node:util";
 
-import {
-  assertPositiveAmount,
-  baseUnits,
-  canonicalize,
-  sha256Hex,
-} from "../canonical/index.js";
+import { canonicalize, sha256Hex } from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { requireCanonicalJobId } from "../negotiate/jobId.js";
+
+// Captured once at module load, so validation and method binding never
+// dispatch through a prototype or static a host replaces later.
+// `RegExp.prototype.test` looks `exec` up on every call, so `exec` is captured.
+const reflectApply = Reflect.apply;
+const hasOwn = Object.hasOwn;
+const isArray = Array.isArray;
+const isSafeInteger = Number.isSafeInteger;
+const regExpExec = RegExp.prototype.exec;
+const stringNormalize = String.prototype.normalize;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
+/** CORE §B.1 canonical job ID, as in `negotiate/jobId.ts`. */
+const CANONICAL_JOB_ID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+/** CD-1 plain decimal (§14.4): integer and fraction digits, at most one dot. */
+const DECIMAL_PARTS_RE = /^([0-9]*)(?:\.([0-9]*))?$/;
+const LEADING_ZEROS_RE = /^0*([0-9]*)$/;
+const TRAILING_ZEROS_RE = /^([0-9]*?)0*$/;
+const USDC_DECIMALS = 6;
+const ZERO_PADDING = Object.freeze(["", "0", "00", "000", "0000", "00000", "000000"]);
+const AUTHORITY_FIELDS = Object.freeze(Object.keys({
+  jobId: true,
+  phaseIndex: true,
+  railId: true,
+  railDescriptorHash: true,
+  agreementHash: true,
+  sr5BindingHash: true,
+  assetKind: true,
+  networkKind: true,
+  mechanism: true,
+  sourceChainId: true,
+  destinationChainId: true,
+  sourceChainType: true,
+  destinationChainType: true,
+  sourceAsset: true,
+  destinationAsset: true,
+  sourceTokenDecimals: true,
+  destinationTokenDecimals: true,
+  amount: true,
+  currency: true,
+  originAddress: true,
+  destinationAddress: true,
+  sourceLiquidityTankId: true,
+  destinationLiquidityTankId: true,
+  supportedScope: true,
+} satisfies Record<keyof LiquidityTankAuthority, true>));
 const DEFAULT_LEASE_MS = 30_000;
 const ETH_SEPOLIA_CHAIN_ID = 11_155_111;
 const POLYGON_AMOY_CHAIN_ID = 80_002;
@@ -387,8 +425,63 @@ function requireString(value: unknown, label: string): string {
   return value;
 }
 
+/** Matches a primitive string only: a boxed string or an array is never coerced. */
+function matchesPattern(pattern: RegExp, value: unknown): value is string {
+  return typeof value === "string" && reflectApply(regExpExec, pattern, [value]) !== null;
+}
+
+/** The capture groups of a match, or null; `pattern` must not be global or sticky. */
+function patternGroups(pattern: RegExp, value: string): RegExpExecArray | null {
+  return reflectApply(regExpExec, pattern, [value]) as RegExpExecArray | null;
+}
+
+function normalizeNfc(value: string): string {
+  return reflectApply(stringNormalize, value, ["NFC"]) as string;
+}
+
+function requireJobId(value: unknown): string {
+  if (!matchesPattern(CANONICAL_JOB_ID_RE, value)) {
+    throw new DacsError("jobId must be a canonical uppercase ULID");
+  }
+  return value;
+}
+
+/** An own field only, so a polluted `Object.prototype` cannot supply it. */
+function ownField(source: object, key: string): unknown {
+  return hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
+}
+
+/**
+ * The CD-1 canonical form of a positive amount and its base units at the fixed
+ * route's 6 decimals: the results of `assertPositiveAmount` and `baseUnits`,
+ * computed through the captured intrinsics only.
+ */
+function positiveUsdcAmount(value: unknown): { amount: string; baseUnits: string } {
+  const parts = typeof value === "string" ? patternGroups(DECIMAL_PARTS_RE, value) : null;
+  const integerDigits = parts?.[1] ?? "";
+  const fractionDigits = parts?.[2] ?? "";
+  if (parts === null || integerDigits.length + fractionDigits.length === 0) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: amount must be a plain decimal string");
+  }
+  const integer = patternGroups(LEADING_ZEROS_RE, integerDigits)?.[1] || "0";
+  const fraction = patternGroups(TRAILING_ZEROS_RE, fractionDigits)?.[1] ?? "";
+  const amount = fraction === "" ? integer : `${integer}.${fraction}`;
+  if (amount === "0") {
+    throw new DacsError("pay-cross-chain-liquidity-tank: amount must be greater than zero");
+  }
+  const padding = ZERO_PADDING[USDC_DECIMALS - fraction.length];
+  if (padding === undefined) {
+    throw new DacsError(
+      `pay-cross-chain-liquidity-tank: amount has more precision than ${USDC_DECIMALS} decimals`,
+    );
+  }
+  // A positive amount has a non-zero digit, so the stripped units are never empty.
+  const baseUnits = patternGroups(LEADING_ZEROS_RE, `${integer}${fraction}${padding}`)?.[1] ?? "";
+  return { amount, baseUnits };
+}
+
 function requireUInt(value: unknown, label: string, positive = false): number {
-  if (!Number.isSafeInteger(value) || (positive ? Number(value) <= 0 : Number(value) < 0)) {
+  if (!isSafeInteger(value) || (positive ? Number(value) <= 0 : Number(value) < 0)) {
     throw new DacsError(
       `pay-cross-chain-liquidity-tank: ${label} must be a ${positive ? "positive" : "non-negative"} safe integer`,
     );
@@ -451,7 +544,8 @@ function stableBoundMethod<T extends LiquidityTankMethod>(
       `pay-cross-chain-liquidity-tank: ${label} must be a stable method`,
     );
   }
-  return Function.prototype.bind.call(method, source) as T;
+  // Unlike `bind`, reads no `name` or `length` getter on the method.
+  return ((...args: unknown[]) => reflectApply(method, source, args)) as unknown as T;
 }
 
 function successfulStoreWrite(value: unknown): boolean {
@@ -568,13 +662,13 @@ function captureSettlement(
     "liquidity-tank stored settlement",
   ) as LiquidityTankSettlement;
   if (settlement.txRef?.kind !== "liquidity-tank" ||
-      !BRIDGE_ID_RE.test(settlement.txRef.bridgeId) ||
+      !matchesPattern(BRIDGE_ID_RE, settlement.txRef.bridgeId) ||
       settlement.txRef.sourceChainId !== intent.sourceChainId ||
       settlement.txRef.destChainId !== intent.destinationChainId ||
       settlement.paymentAmount?.amount !== intent.amount ||
       settlement.paymentAmount.currency !== intent.currency ||
       settlement.settlementFinality?.model !== "liquidity-tank" ||
-      !HASH_RE.test(settlement.authenticationHash)) {
+      !matchesPattern(HASH_RE, settlement.authenticationHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement authority mismatch");
   }
   const recoveryDeadline = recoveryDeadlineUnixMs(settlement.txRef.recoveryDeadline);
@@ -613,15 +707,14 @@ export function liquidityTankSettlementKey(input: {
   return liquidityTankSettlementKeyFromCaptured(captured);
 }
 
-function liquidityTankSettlementKeyFromCaptured(input: {
-  jobId: string;
-  railId: string;
-  phaseIndex: number;
-}): string {
-  const phaseIndex = requireUInt(input.phaseIndex, "phaseIndex");
+function liquidityTankSettlementKeyFromCaptured(input: unknown): string {
+  if (input === null || typeof input !== "object") {
+    throw new DacsError("pay-cross-chain-liquidity-tank: settlement key authority must be an object");
+  }
+  const phaseIndex = requireUInt(ownField(input, "phaseIndex"), "phaseIndex");
   return sha256Hex(
-    `dacs-liquidity-tank:v1:${requireCanonicalJobId(input.jobId)}:` +
-      `${requireString(input.railId, "railId").normalize("NFC")}:${phaseIndex}`,
+    `dacs-liquidity-tank:v1:${requireJobId(ownField(input, "jobId"))}:` +
+      `${normalizeNfc(requireString(ownField(input, "railId"), "railId"))}:${phaseIndex}`,
   );
 }
 
@@ -635,10 +728,31 @@ function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTa
   return snapshotCanonicalJson(authority as LiquidityTankAuthority, "liquidity-tank authority");
 }
 
-/** Deterministic over the captured content: reads no clock, store or caller code. */
+/**
+ * Re-homes the snapshot's own authority fields onto a null prototype, so a
+ * polluted `Object.prototype` cannot supply one: a missing field reads as
+ * `undefined` and is refused by its check.
+ */
+function ownAuthorityFields(captured: unknown): Readonly<LiquidityTankAuthority> {
+  if (captured === null || typeof captured !== "object" || isArray(captured)) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: authority must be a JSON object");
+  }
+  const fields = { __proto__: null } as unknown as Record<string, unknown>;
+  for (let index = 0; index < AUTHORITY_FIELDS.length; index += 1) {
+    const key = AUTHORITY_FIELDS[index] as string;
+    fields[key] = ownField(captured, key);
+  }
+  return fields as unknown as Readonly<LiquidityTankAuthority>;
+}
+
+/**
+ * Deterministic over the captured content: reads no clock, store or caller
+ * code, and only the captured intrinsics decide what it accepts.
+ */
 function intentFromCapturedAuthority(
-  authority: Readonly<LiquidityTankAuthority>,
+  captured: Readonly<LiquidityTankAuthority>,
 ): Readonly<LiquidityTankIntent> {
+  const authority = ownAuthorityFields(captured);
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "liquidity-tank") {
     throw new DacsError("pay-cross-chain-liquidity-tank: selected rail mechanism mismatch");
@@ -651,8 +765,9 @@ function intentFromCapturedAuthority(
       authority.currency !== "USDC") {
     throw new DacsError("pay-cross-chain-liquidity-tank: route is outside DACS v0.1 supported scope");
   }
-  if (!HASH_RE.test(authority.railDescriptorHash) || !HASH_RE.test(authority.agreementHash) ||
-      !HASH_RE.test(authority.sr5BindingHash)) {
+  if (!matchesPattern(HASH_RE, authority.railDescriptorHash) ||
+      !matchesPattern(HASH_RE, authority.agreementHash) ||
+      !matchesPattern(HASH_RE, authority.sr5BindingHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: authority hashes must be 32-byte lower-case hex");
   }
   const sourceTokenDecimals = requireUInt(authority.sourceTokenDecimals, "sourceTokenDecimals");
@@ -665,14 +780,14 @@ function intentFromCapturedAuthority(
       "pay-cross-chain-liquidity-tank: fixed USDC route token decimals must both be exactly 6",
     );
   }
-  const amount = assertPositiveAmount(authority.amount);
+  const { amount, baseUnits } = positiveUsdcAmount(authority.amount);
   const operation = {
     originChainType: authority.sourceChainType,
     destinationChainType: authority.destinationChainType,
     originAddress: requireString(authority.originAddress, "originAddress"),
     destinationAddress: requireString(authority.destinationAddress, "destinationAddress"),
-    originAmount: baseUnits(amount, sourceTokenDecimals),
-    destinationAmount: baseUnits(amount, destinationTokenDecimals),
+    originAmount: baseUnits,
+    destinationAmount: baseUnits,
     originAsset: authority.sourceAsset,
     destinationAsset: authority.destinationAsset,
     sourceLiquidityTankId: requireString(authority.sourceLiquidityTankId, "sourceLiquidityTankId"),
@@ -689,9 +804,9 @@ function intentFromCapturedAuthority(
     intentVersion: "1" as const,
     settlementKey: liquidityTankSettlementKeyFromCaptured(authority),
     operationHash,
-    jobId: requireCanonicalJobId(authority.jobId),
+    jobId: requireJobId(authority.jobId),
     phaseIndex: authority.phaseIndex,
-    railId: requireString(authority.railId, "railId").normalize("NFC"),
+    railId: normalizeNfc(requireString(authority.railId, "railId")),
     railDescriptorHash: authority.railDescriptorHash,
     agreementHash: authority.agreementHash,
     sr5BindingHash: authority.sr5BindingHash,
@@ -735,7 +850,7 @@ function validateCapturedSubmission(
   intent: Readonly<LiquidityTankIntent>,
 ): Readonly<LiquidityTankPreparedSubmission> {
   if (value.submissionVersion !== "1" || value.authorityHash !== intent.bindingHash ||
-      value.operationHash !== intent.operationHash || !BRIDGE_ID_RE.test(value.bridgeId)) {
+      value.operationHash !== intent.operationHash || !matchesPattern(BRIDGE_ID_RE, value.bridgeId)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: prepared submission authority mismatch");
   }
   requireString(value.substrateTxHash, "substrateTxHash");
@@ -812,7 +927,7 @@ function validateCapturedObservation(
     throw new DacsError("pay-cross-chain-liquidity-tank: bridge status is invalid");
   }
   if (value.bridgeId !== submission.bridgeId || value.operationHash !== intent.operationHash ||
-      !HASH_RE.test(value.authenticationHash)) {
+      !matchesPattern(HASH_RE, value.authenticationHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: unauthenticated bridge observation");
   }
   requireUInt(value.observedAt, "observedAt");
@@ -1216,8 +1331,8 @@ export async function advanceLiquidityTankSettlement(
   if (claimStatus === "waiting") {
     const waitingClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "waiting" }>;
     try {
-      if (!Number.isSafeInteger(waitingClaim.lease.generation) || waitingClaim.lease.generation <= 0 ||
-          !Number.isSafeInteger(waitingClaim.lease.expiresAt) || waitingClaim.lease.expiresAt <= claimNow ||
+      if (!isSafeInteger(waitingClaim.lease.generation) || waitingClaim.lease.generation <= 0 ||
+          !isSafeInteger(waitingClaim.lease.expiresAt) || waitingClaim.lease.expiresAt <= claimNow ||
           typeof waitingClaim.lease.owner !== "string" || waitingClaim.lease.owner.length === 0) {
         throw new DacsError("invalid waiting lease");
       }
@@ -1252,7 +1367,7 @@ export async function advanceLiquidityTankSettlement(
   let lease: Readonly<LiquidityTankLease>;
   try {
     if (acquiredClaim.lease.owner !== owner ||
-        !Number.isSafeInteger(acquiredClaim.lease.generation) || acquiredClaim.lease.generation <= 0 ||
+        !isSafeInteger(acquiredClaim.lease.generation) || acquiredClaim.lease.generation <= 0 ||
         acquiredClaim.lease.expiresAt !== expectedLeaseExpiry) {
       throw new DacsError("invalid acquired lease");
     }
@@ -1644,7 +1759,7 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
           };
         }
         const generation = existing.lease.generation + 1;
-        if (!Number.isSafeInteger(generation)) {
+        if (!isSafeInteger(generation)) {
           return { status: "corrupt", reason: "liquidity-tank-lease-generation-exhausted" };
         }
         const lease = {
