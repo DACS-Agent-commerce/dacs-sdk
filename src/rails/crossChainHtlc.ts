@@ -1867,8 +1867,11 @@ export async function advanceCrossChainHtlc(
     }
   }
 
+  // Once the reveal has claimed the destination lock, a contract may delete
+  // the lock's record, so a settlement names the retained destination lock.
+  const destinationLockRef = destinationLock?.txRef ?? prepared.get("destination-lock")?.txRef;
   if (sourceClaim) {
-    if (!sourceLock || !destinationLock || !destinationClaim) {
+    if (!sourceLock || !destinationLockRef || !destinationClaim) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-incomplete" };
     }
     if (sourceLock.expiresAt === undefined) {
@@ -1915,7 +1918,7 @@ export async function advanceCrossChainHtlc(
     const settlement = Object.freeze({
       txRefs: Object.freeze([
         sourceLock.txRef,
-        destinationLock.txRef,
+        destinationLockRef,
         destinationClaim.txRef,
         sourceClaim.txRef,
       ]),
@@ -1947,14 +1950,17 @@ export async function advanceCrossChainHtlc(
 
   let checkpoint = retainedCheckpoint;
   if (destinationClaim) {
-    // The reveal is final, so a lock observation that is no longer final
-    // regressed; it stays resumable rather than ending the session.
-    if (!sourceLock || !destinationLock) {
+    // The reveal is final, so the payer holds the destination funds and the
+    // preimage is public: driving the payee's source claim can no longer cost
+    // the payer anything, and it is the payee's only way to the source. It
+    // needs no final destination-lock observation, because a contract may
+    // delete the lock's record once the reveal claims it. The source expiry
+    // comes from the retained source-finality checkpoint, which a final source
+    // lock observation was compared with above.
+    if (!sourceLock || !sourceFinalityCheckpoint || !destinationLockRef) {
       return { status: "indeterminate", reason: "htlc-destination-lock-finality-regressed" };
     }
-    if (sourceLock.expiresAt === undefined || destinationLock.expiresAt === undefined) {
-      return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
-    }
+    const sourceExpiry = sourceFinalityCheckpoint.sourceExpiry;
     try {
       if (!revealedPreimageMatches(destinationClaim.revealedPreimageHex, secrets.preimage)) {
         return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-mismatch" };
@@ -1962,14 +1968,14 @@ export async function advanceCrossChainHtlc(
     } catch {
       return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-invalid" };
     }
-    if (checkpoint && (checkpoint.sourceExpiry !== sourceLock.expiresAt ||
+    if (checkpoint && (checkpoint.sourceExpiry !== sourceExpiry ||
         !sameRef(checkpoint.revealTxRef, destinationClaim.txRef))) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-reveal-checkpoint-conflict" };
     }
     if (!checkpoint) {
       checkpoint = Object.freeze({
         revealTxRef: destinationClaim.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
-        sourceExpiry: sourceLock.expiresAt,
+        sourceExpiry,
         finalityObservedAt: destinationClaim.finalityObservedAt,
         authenticationHash: destinationClaim.authenticationHash,
       });
@@ -2022,7 +2028,7 @@ export async function advanceCrossChainHtlc(
       } catch (error) {
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
-      if (sourceClaim && sourceLock && destinationLock && destinationClaim) {
+      if (sourceClaim && sourceLock && destinationLockRef && destinationClaim) {
         if (sourceClaim.finalityReachedAt >
             secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
           return {
@@ -2032,7 +2038,7 @@ export async function advanceCrossChainHtlc(
           };
         }
         const settlement = Object.freeze({
-          txRefs: Object.freeze([sourceLock.txRef, destinationLock.txRef, destinationClaim.txRef, sourceClaim.txRef]),
+          txRefs: Object.freeze([sourceLock.txRef, destinationLockRef, destinationClaim.txRef, sourceClaim.txRef]),
           paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
           settlementFinality: Object.freeze({
             model: "htlc-reveal" as const,
