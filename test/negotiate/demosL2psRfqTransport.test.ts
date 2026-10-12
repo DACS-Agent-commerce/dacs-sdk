@@ -1,4 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -53,6 +56,14 @@ const SELLER_PEER = "b".repeat(64);
 const THIRD_PEER = "c".repeat(64);
 // Base64 length of the largest frame the codec accepts (16 MiB + GCM tag).
 const MAX_CIPHERTEXT_CHARS = Math.ceil((16 * 1024 * 1024 + 16) / 3) * 4;
+
+function memorySendOutbox(): DemosL2psRfqTransportOptions["outboxStore"] {
+  const entries = new Map<string, unknown>();
+  return {
+    load: (packetId) => structuredClone(entries.get(packetId)),
+    save: (packetId, entry) => { entries.set(packetId, structuredClone(entry)); },
+  };
+}
 
 function identity(claim: string): IdentityBundle {
   return {
@@ -284,6 +295,7 @@ async function buyerWithSentOffer(options: {
   codec?: (base: DemosL2psRfqWireCodec) => DemosL2psRfqWireCodec;
   history?: (base: DemosL2psRfqPeerLike["history"]) => DemosL2psRfqPeerLike["history"];
   operationTimeoutMs?: number;
+  monotonicNowMs?: () => number;
 } = {}) {
   const hub = new FakeL2psHub();
   const sharedKey = randomBytes(32);
@@ -295,11 +307,13 @@ async function buyerWithSentOffer(options: {
       : { ...basePeer, history: options.history(basePeer.history) },
     codec: options.codec?.(baseCodec) ?? baseCodec,
     l2psUid: L2PS_UID,
+    outboxStore: memorySendOutbox(),
     localClaim: BUYER,
     localPeerKey: BUYER_PEER,
     peerForClaim,
     claimForPeer,
     onError: vi.fn(),
+    ...(options.monotonicNowMs === undefined ? {} : { monotonicNowMs: options.monotonicNowMs }),
     ...(options.operationTimeoutMs === undefined
       ? {}
       : { operationTimeoutMs: options.operationTimeoutMs }),
@@ -336,6 +350,7 @@ async function inboundReceiver(options: {
       open: options.open?.(sent.baseCodec) ?? ((encrypted, context) => sent.baseCodec.open(encrypted, context)),
     },
     l2psUid: L2PS_UID,
+    outboxStore: memorySendOutbox(),
     localClaim: SELLER,
     localPeerKey: SELLER_PEER,
     peerForClaim,
@@ -382,7 +397,250 @@ async function expectFullLiveCapacity(fixture: Awaited<ReturnType<typeof inbound
   await fixture.transport.drain();
 }
 
+const ABSENCE_GRACE_REASON = "Demos L2PS history cannot yet prove packet absence after a timed-out send";
+
+async function delayedSendFixture(options: {
+  refuseSeal?: boolean;
+  failWrite?: boolean;
+  ack?: Record<string, unknown>;
+  graceMs?: number;
+  historyAdvanceMs?: number;
+} = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "sdk249-send-outbox-"));
+  const integrityKey = randomBytes(32);
+  const mac = (body: string) => createHmac("sha256", integrityKey).update(body).digest("hex");
+  const outboxStore: DemosL2psRfqTransportOptions["outboxStore"] = {
+    async load(id) {
+      let text: string;
+      try { text = await readFile(join(dir, id), "utf8"); }
+      catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw cause; }
+      const stored = JSON.parse(text) as { body: string; mac: string };
+      if (stored.mac !== mac(stored.body)) throw new Error("send outbox integrity failure");
+      return JSON.parse(stored.body) as unknown;
+    },
+    async save(id, entry) {
+      if (options.failWrite) throw new Error("durable outbox unavailable");
+      const body = JSON.stringify(entry);
+      await writeFile(join(dir, id + ".tmp"), JSON.stringify({ body, mac: mac(body) }), { mode: 0o600 });
+      await rename(join(dir, id + ".tmp"), join(dir, id));
+    },
+  };
+  let ticks = 10_000;
+  let calls = 0;
+  let sealed = 0;
+  let refused = false;
+  let timedOut = false;
+  const hub = new FakeL2psHub();
+  const basePeer = hub.peer(BUYER_PEER);
+  const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+  const sendEntered = gate();
+  const framesAtCall: unknown[] = [];
+  const submissions: Array<{ to: string; encrypted: DemosL2psRfqEncryptedMessage; messageHash: string }> = [];
+  let accept: (() => void) | undefined;
+  let visible = false;
+  const peer: DemosL2psRfqPeerLike = {
+    ...basePeer,
+    async send(to, encrypted, messageHash) {
+      // At the first peer call, the EXACT frame must already be durable.
+      const stored = await outboxStore.load(messageHash) as Record<string, unknown> | undefined;
+      framesAtCall.push(structuredClone(stored));
+      submissions.push(structuredClone({ to, encrypted, messageHash }));
+      sendEntered.release();
+      if (options.ack !== undefined) return { messageHash, ...options.ack } as never;
+      if (options.refuseSeal || timedOut) return { messageHash, l2psStatus: "submitted" };
+      return new Promise((resolve) => {
+        accept = () => {
+          void basePeer.send(to, encrypted, messageHash).then(resolve);
+        };
+      });
+    },
+    async history(peerKey, historyOptions) {
+      calls += 1;
+      ticks += options.historyAdvanceMs ?? 0;
+      return visible ? basePeer.history(peerKey, historyOptions) : { messages: [], hasMore: false };
+    },
+  };
+  function makeTransport() {
+    return createDemosL2psRfqTransport<string>({
+      peer,
+      codec: { codecId: codec.codecId, open: codec.open, seal(bytes, context) {
+        if (options.refuseSeal && !refused) { refused = true; throw new Error("seal refused before send"); }
+        sealed += 1;
+        return codec.seal(bytes, context);
+      } },
+      l2psUid: L2PS_UID, localClaim: BUYER, localPeerKey: BUYER_PEER,
+      peerForClaim, claimForPeer, onError: vi.fn(), outboxStore,
+      monotonicNowMs: () => ticks, operationTimeoutMs: 200,
+      ...(options.graceMs === undefined ? {} : { sendAbsenceGraceMs: options.graceMs }),
+    });
+  }
+  const lifecycleOptions = clientOptions("buyer", makeTransport(), durableReservation());
+  let client = createDurableRfqLifecycleClient(lifecycleOptions);
+  await client.open(openInput());
+  let packet: Awaited<ReturnType<typeof buyerWithSentOffer>>["packet"] | undefined;
+  async function offer() {
+    const result = await client.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("outbox missing");
+    packet = status.record.outbox[0]!.packet;
+    return result;
+  }
+  return {
+    get client() { return client; }, submissions, framesAtCall, outboxStore, offer,
+    packet: () => { if (packet === undefined) throw new Error("packet missing"); return packet; },
+    setTicks: (now: number) => { ticks = now; },
+    seals: () => sealed,
+    historyCalls: () => calls,
+    async timeout() {
+      // Only operation timers are faked. The persisted monotonic clock has an
+      // independent origin, which a new transport instance must honour.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const pending = offer();
+      await sendEntered.promise;
+      ticks = 12_000;
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(pending).resolves.toMatchObject({ status: "indeterminate" });
+      timedOut = true;
+      vi.useRealTimers();
+    },
+    restart() { client = createDurableRfqLifecycleClient({ ...lifecycleOptions, transport: makeTransport() }); },
+    acceptLate() { if (accept === undefined) throw new Error("no pending send"); accept(); },
+    showHistory() { visible = true; },
+    async cleanup() { vi.useRealTimers(); await rm(dir, { recursive: true }); },
+  };
+}
+
 describe("Demos L2PS durable RFQ transport", () => {
+  test("round 5: late acceptance stays unsent while history lags, across a restart", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      expect(fixture.submissions).toHaveLength(1);
+      fixture.acceptLate();
+      fixture.setTicks(12_001);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: ABSENCE_GRACE_REASON,
+      });
+      fixture.restart();
+      fixture.setTicks(71_999); // 59,999 after the SEND ENDED, not its start.
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: ABSENCE_GRACE_REASON,
+      });
+      expect(fixture.submissions).toHaveLength(1);
+      expect(fixture.framesAtCall[0]).toMatchObject({
+        state: "sending", encrypted: fixture.submissions[0]!.encrypted,
+      });
+      fixture.showHistory();
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 5: persisted end time expires once; empty history resends identical bytes", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      const stored = await fixture.outboxStore.load(fixture.packet().packetId) as Record<string, unknown>;
+      fixture.restart();
+      fixture.setTicks(71_999);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(1);
+      fixture.setTicks(72_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(2);
+      expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(2);
+      expect(fixture.seals()).toBe(1);
+      expect(stored.attemptEndedAtMs).toBe(12_000);
+      expect(stored.state).toBe("indeterminate");
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 5: configured grace holds a history read that crosses its boundary", async () => {
+    const fixture = await delayedSendFixture({ graceMs: 5_000, historyAdvanceMs: 100 });
+    try {
+      await fixture.timeout();
+      fixture.restart();
+      fixture.setTicks(16_999);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: ABSENCE_GRACE_REASON,
+      });
+      expect(fixture.submissions).toHaveLength(1);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(2);
+      expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 5: seal refusal has no send end marker and retries immediately", async () => {
+    const fixture = await delayedSendFixture({ refuseSeal: true });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(0);
+      expect(await fixture.outboxStore.load(fixture.packet().packetId)).toBeUndefined();
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 5: crash marker and a backwards monotonic clock get a fresh persisted grace", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      const id = fixture.packet().packetId;
+      const entry = await fixture.outboxStore.load(id) as Parameters<typeof fixture.outboxStore.save>[1];
+      const crash = { ...entry, state: "sending" as const };
+      delete crash.attemptEndedAtMs;
+      await fixture.outboxStore.save(id, crash);
+      fixture.restart();
+      fixture.setTicks(50_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect((await fixture.outboxStore.load(id) as typeof entry).attemptEndedAtMs).toBe(50_000);
+      fixture.restart();
+      fixture.setTicks(100);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect((await fixture.outboxStore.load(id) as typeof entry).attemptEndedAtMs).toBe(100);
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 5: failed durable write prevents the first peer call", async () => {
+    const fixture = await delayedSendFixture({ failWrite: true });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(0);
+    } finally { await fixture.cleanup(); }
+  });
+
+  // Fixtures copied from demosdk 4.0.16 build/instant_messaging/l2ps_types.d.ts:
+  // MessageSentResponse:104-109; MessageQueuedResponse:111-117.
+  // L2PSMessagingPeer.js:116-126,319 returns frame.payload (no outer metadata).
+  test.each([
+    { l2psStatus: "submitted" },
+    { status: "queued" },
+  ])("round 5: source acknowledgement fixture %j is accepted", async (fields) => {
+    const fixture = await delayedSendFixture({ ack: fields });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.historyCalls()).toBe(0);
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test.each([
+    { l2psStatus: "submitted", unexpected: "extra" },
+    { status: "queued", unexpected: "extra" },
+    { l2psStatus: "submitted", error: "server error" },
+    { status: "queued", error: "server error" },
+  ])("round 5: extra acknowledgement fields %j remain indeterminate", async (fields) => {
+    const fixture = await delayedSendFixture({ ack: fields });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
   test("round 4: a stuck consumer from a retired generation does not hold back the next one", async () => {
     const fixture = await inboundReceiver();
     // Never advanced: neither the consumer nor any operation timeout can fire.
@@ -569,6 +827,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
       peerForClaim,
@@ -776,6 +1035,7 @@ describe("Demos L2PS durable RFQ transport", () => {
           throw new Error("temporary codec outage");
         } },
         localClaim: SELLER, localPeerKey: SELLER_PEER, l2psUid: L2PS_UID,
+        outboxStore: memorySendOutbox(),
         peerForClaim, claimForPeer, onError: vi.fn(), operationTimeoutMs: 20, historyPageSize: 1,
       });
       transport.start(fixture.receive);
@@ -901,6 +1161,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -911,6 +1172,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
       peerForClaim,
@@ -981,6 +1243,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -992,6 +1255,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
       peerForClaim,
@@ -1043,6 +1307,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1098,6 +1363,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1127,6 +1393,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim(claim) {
@@ -1165,6 +1432,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         open: () => new Uint8Array(),
       },
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1227,6 +1495,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec,
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim(claim) {
@@ -1298,6 +1567,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1330,12 +1600,15 @@ describe("Demos L2PS durable RFQ transport", () => {
   });
 
   test("ignores a counterparty-authored history entry that reuses the packet hash", async () => {
+    let ticks = 0;
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
     const transport = createDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      monotonicNowMs: () => ticks,
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1381,6 +1654,7 @@ describe("Demos L2PS durable RFQ transport", () => {
 
     // Without our own entry the counterparty frame proves nothing either way.
     hub.messages.splice(hub.messages.indexOf(own), 1);
+    ticks = 60_000;
     await expect(transport.reconcile(packet)).resolves.toEqual({
       disposition: "absent",
     });
@@ -1393,6 +1667,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1445,6 +1720,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1478,6 +1754,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
       peerForClaim,
@@ -1541,8 +1818,10 @@ describe("Demos L2PS durable RFQ transport", () => {
   });
 
   test("refuses a history page over the aggregate budget before the canonical snapshot", async () => {
+    let ticks = 0;
     let page: DemosL2psRfqHistoryPage | undefined;
     const { transport, packet, own } = await buyerWithSentOffer({
+      monotonicNowMs: () => ticks,
       history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
     });
     // Each frame is within the per-frame limit; two together exceed the page budget.
@@ -1577,6 +1856,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       hasMore: false,
     };
     snapshotLabels.length = 0;
+    ticks = 60_000;
     await expect(transport.reconcile(packet)).resolves.toEqual({
       disposition: "absent",
     });
@@ -1586,6 +1866,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("refuses an oversized send acknowledgement before the canonical snapshot", async () => {
     const { hub, packet } = await buyerWithSentOffer();
     const send = hub.peer(BUYER_PEER).send;
+    let ticks = 0;
     let bloated = true;
     const bloatedTransport = createDemosL2psRfqTransport<string>({
       peer: {
@@ -1599,6 +1880,8 @@ describe("Demos L2PS durable RFQ transport", () => {
       },
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      monotonicNowMs: () => ticks,
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -1614,6 +1897,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(snapshotLabels).not.toContain("Demos L2PS RFQ send acknowledgement");
 
     bloated = false;
+    ticks = 60_000;
     snapshotLabels.length = 0;
     await expect(bloatedTransport.publish(packet)).resolves.toEqual({
       disposition: "acknowledged",
@@ -1733,8 +2017,10 @@ describe("Demos L2PS durable RFQ transport", () => {
   });
 
   test("ignores our own packet hash sent to a different recipient peer", async () => {
+    let ticks = 0;
     let page: DemosL2psRfqHistoryPage | undefined;
     const { baseCodec, transport, packet, own } = await buyerWithSentOffer({
+      monotonicNowMs: () => ticks,
       history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
     });
     const elsewhere = { messageHash: packet.packetId, fromPeer: BUYER_PEER, toPeer: THIRD_PEER };
@@ -1749,14 +2035,17 @@ describe("Demos L2PS durable RFQ transport", () => {
       }],
       hasMore: false,
     };
+    ticks = 60_000;
     await expect(transport.reconcile(packet)).resolves.toEqual({
       disposition: "absent",
     });
   });
 
   test("ignores another sender's frame to our recipient that reuses the packet hash", async () => {
+    let ticks = 0;
     let page: DemosL2psRfqHistoryPage | undefined;
     const { baseCodec, transport, packet, own } = await buyerWithSentOffer({
+      monotonicNowMs: () => ticks,
       history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
     });
     const otherSender = { messageHash: packet.packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER };
@@ -1768,6 +2057,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       }],
       hasMore: false,
     };
+    ticks = 60_000;
     await expect(transport.reconcile(packet)).resolves.toEqual({
       disposition: "absent",
     });
@@ -1782,6 +2072,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
       localClaim,
       localPeerKey,
       peerForClaim,

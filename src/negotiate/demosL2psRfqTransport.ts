@@ -42,6 +42,10 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFAULT_HISTORY_MAX_PAGES = 100;
 const DEFAULT_OPERATION_TIMEOUT_MS = 20_000;
 const DEFAULT_CONSUMER_TIMEOUT_MS = 30_000;
+// Provisional until the host verifies its node's inclusion/indexing bound.
+const DEFAULT_SEND_ABSENCE_GRACE_MS = 60_000;
+const SEND_ABSENCE_REASON =
+  "Demos L2PS history cannot yet prove packet absence after a timed-out send";
 const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "delivered",
@@ -176,6 +180,18 @@ export interface DemosL2psRfqAesGcmCodecOptions {
   sharedKey: Uint8Array;
 }
 
+/** Private, role-local companion to the lifecycle's signed-packet outbox. */
+type SendOutboxEntry = {
+  packetId: string;
+  fromPeer: string;
+  toPeer: string;
+  l2psUid: string;
+  codecId: string;
+  encrypted: DemosL2psRfqEncryptedMessage;
+  state: "sending" | "indeterminate" | "acknowledged";
+  attemptEndedAtMs?: number;
+};
+
 export interface DemosL2psRfqTransportOptions {
   peer: DemosL2psRfqPeerLike;
   codec: DemosL2psRfqWireCodec;
@@ -185,6 +201,24 @@ export interface DemosL2psRfqTransportOptions {
   peerForClaim(claim: string): string | undefined;
   claimForPeer(peerKey: string): string | undefined;
   onError(error: Error): void;
+  /**
+   * Authenticated, durable, role-local send outbox, keyed by packetId. A save
+   * must commit before resolving; a missing load returns undefined. The host
+   * must serialize drivers of the same outbox, including across processes.
+   * Retain entries until the corresponding lifecycle job is retired.
+   */
+  outboxStore: {
+    load(packetId: string): Promise<unknown> | unknown;
+    save(packetId: string, entry: Readonly<SendOutboxEntry>): Promise<void> | void;
+  };
+  /** Absence hold after an ambiguous send, default 60,000 ms; max 600,000. */
+  sendAbsenceGraceMs?: number;
+  /**
+   * Trusted monotonic milliseconds with a common origin across process
+   * restarts. Defaults to the host's process.hrtime clock (same machine boot).
+   * A clock rollback conservatively starts a new grace period.
+   */
+  monotonicNowMs?: () => number;
   historyPageSize?: number;
   historyMaxPages?: number;
   operationTimeoutMs?: number;
@@ -594,6 +628,8 @@ function captureSendResult(
   value: unknown,
   messageHash: string,
 ): "acknowledged" | "indeterminate" {
+  // demosdk 4.0.16: instant_messaging/l2ps_types.d.ts:104-117;
+  // L2PSMessagingPeer.js:116-126,319 returns frame.payload unchanged.
   try {
     const label = "Demos L2PS RFQ send acknowledgement";
     const fields = admittedFields(value, ["messageHash", "status", "l2psStatus"], label);
@@ -695,8 +731,9 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "peerForClaim",
         "claimForPeer",
         "onError",
+        "outboxStore",
       ],
-      ["historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs"],
+      ["historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
     )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
@@ -742,6 +779,20 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
   }
+  const store = descriptors.outboxStore?.value as DemosL2psRfqTransportOptions["outboxStore"];
+  const clock = descriptors.monotonicNowMs?.value ??
+    (() => Number(process.hrtime.bigint() / 1_000_000n));
+  if (!isRecord(store) || nodeTypes.isProxy(store) ||
+      typeof clock !== "function" || nodeTypes.isProxy(clock)) {
+    throw new DacsError("Demos L2PS RFQ outbox or clock is malformed or unsafe");
+  }
+  const storeDescriptors = Object.getOwnPropertyDescriptors(store);
+  const load = storeDescriptors.load?.value;
+  const save = storeDescriptors.save?.value;
+  if (typeof load !== "function" || typeof save !== "function" ||
+      nodeTypes.isProxy(load) || nodeTypes.isProxy(save)) {
+    throw new DacsError("Demos L2PS RFQ outbox capabilities are malformed or unsafe");
+  }
   const send = peer.send;
   const history = peer.history;
   const onMessage = peer.onMessage;
@@ -765,6 +816,17 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   }
   canonicalString(codecId, "L2PS RFQ codecId");
   return Object.freeze({
+    load: (packetId: string) => Reflect.apply(load, store, [packetId]) as unknown,
+    save: (packetId: string, entry: Readonly<SendOutboxEntry>) =>
+      Reflect.apply(save, store, [packetId, entry]) as Promise<void> | void,
+    monotonicNowMs: () => Reflect.apply(clock, value, []) as number,
+    codecId,
+    sendAbsenceGraceMs: positiveInteger(
+      descriptors.sendAbsenceGraceMs?.value,
+      DEFAULT_SEND_ABSENCE_GRACE_MS,
+      "sendAbsenceGraceMs",
+      600_000,
+    ),
     send: (...args: Parameters<DemosL2psRfqPeerLike["send"]>) =>
       Reflect.apply(send, peer, args) as ReturnType<DemosL2psRfqPeerLike["send"]>,
     history: (...args: Parameters<DemosL2psRfqPeerLike["history"]>) =>
@@ -928,6 +990,65 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     return { packet, recipientPeer, encrypted };
   }
 
+  function monotonicNow(): number {
+    const now = captured.monotonicNowMs();
+    if (!Number.isSafeInteger(now) || now < 0) {
+      throw new DacsError("Demos L2PS RFQ monotonic clock is invalid");
+    }
+    return now;
+  }
+
+  async function saveSendEntry(packetId: string, entry: SendOutboxEntry): Promise<void> {
+    // Never lend the peer or the store our retained object.
+    await bounded(() => captured.save(packetId, structuredClone(entry)),
+      "Demos L2PS RFQ send outbox write");
+  }
+
+  async function loadSendEntry(routed: ReturnType<typeof routePacket>): Promise<SendOutboxEntry | undefined> {
+    let value = await bounded(() => captured.load(routed.packet.packetId),
+      "Demos L2PS RFQ send outbox read");
+    if (value === undefined) return undefined;
+    const label = "Demos L2PS RFQ send outbox entry";
+    const fields = admittedFields(value,
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "attemptEndedAtMs"], label);
+    admitEncrypted(fields.encrypted);
+    for (const key of ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "state"]) {
+      admittedChars(fields[key], MAX_CANONICAL_STRING_CHARS, label);
+    }
+    value = ownedJson(value, label);
+    if (!isRecord(value) || !exactKeys(value,
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state"], ["attemptEndedAtMs"]) ||
+      value.packetId !== routed.packet.packetId ||
+      value.fromPeer !== captured.localPeerKey || value.toPeer !== routed.recipientPeer ||
+      value.l2psUid !== captured.l2psUid || value.codecId !== captured.codecId ||
+      !["sending", "indeterminate", "acknowledged"].includes(value.state as string) ||
+      (value.attemptEndedAtMs !== undefined &&
+        (!Number.isSafeInteger(value.attemptEndedAtMs) || (value.attemptEndedAtMs as number) < 0))) {
+      throw new DacsError("Demos L2PS RFQ send outbox entry is invalid");
+    }
+    return { ...value, encrypted: captureEncrypted(value.encrypted) } as SendOutboxEntry;
+  }
+
+  async function absenceAfterSend(packetId: string, entry: SendOutboxEntry | undefined): Promise<RfqLifecycleTransportResult> {
+    // No peer call took place (e.g. a seal refusal), or its ack was definite.
+    if (entry === undefined || entry.state === "acknowledged") return { disposition: "absent" };
+    try {
+      const now = monotonicNow();
+      // A crash before the outcome write has no known end time. Start the
+      // entire grace on recovery, once; also fail closed on clock rollback.
+      if (entry.attemptEndedAtMs === undefined || now < entry.attemptEndedAtMs) {
+        entry.attemptEndedAtMs = now;
+        await saveSendEntry(packetId, entry);
+      }
+      if (now - entry.attemptEndedAtMs >= captured.sendAbsenceGraceMs) {
+        return { disposition: "absent" };
+      }
+      return { disposition: "indeterminate", reason: SEND_ABSENCE_REASON };
+    } catch {
+      return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+    }
+  }
+
   /**
    * Only a frame that opens to different bytes, or that the built-in codec
    * proves unauthenticated, is a conflict. A timeout or other codec failure
@@ -984,6 +1105,15 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
             : "rejected",
         reason: errorFrom(cause, "RFQ packet failed").message,
       };
+    }
+    let absence: RfqLifecycleTransportResult;
+    try {
+      const sendEntry = await loadSendEntry(prepared);
+      // Decide BEFORE the history snapshot is requested. A read started
+      // inside the grace cannot prove absence merely by finishing after it.
+      absence = await absenceAfterSend(prepared.packet.packetId, sendEntry);
+    } catch {
+      return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
     let before: number | undefined;
     let paginated = false;
@@ -1057,7 +1187,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
               disposition: "indeterminate",
               reason: "Demos L2PS timestamp pagination cannot prove packet absence",
             }
-          : { disposition: "absent" };
+          : absence;
       }
       paginated = true;
       if (page.messages.length === 0) {
@@ -1369,43 +1499,67 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           reason: errorFrom(cause, "Demos L2PS RFQ packet preparation failed").message,
         };
       }
-      let prepared: Awaited<ReturnType<typeof sealPacket>>;
+      let entry: SendOutboxEntry | undefined;
       try {
-        prepared = await sealPacket(routed);
+        entry = await loadSendEntry(routed);
+      } catch {
+        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+      }
+      try {
+        if (entry !== undefined) {
+          const absence = await absenceAfterSend(routed.packet.packetId, entry);
+          if (absence.disposition === "indeterminate") return absence;
+        } else {
+          const prepared = await sealPacket(routed);
+          entry = {
+            packetId: routed.packet.packetId,
+            fromPeer: captured.localPeerKey,
+            toPeer: prepared.recipientPeer,
+            l2psUid: captured.l2psUid,
+            codecId: captured.codecId,
+            encrypted: prepared.encrypted,
+            state: "sending",
+          };
+        }
       } catch (cause) {
         return {
-          disposition:
-            cause instanceof TransientTransportCapabilityError
-              ? "indeterminate" as const
-              : "rejected" as const,
-          reason: errorFrom(cause, "Demos L2PS RFQ packet encryption failed").message,
+          disposition: cause instanceof TransientTransportCapabilityError
+            ? "indeterminate" as const : "rejected" as const,
+          reason: errorFrom(cause, "Demos L2PS RFQ packet encryption or outbox failed").message,
         };
+      }
+      // Persist the exact submitted payload and a crash marker BEFORE calling
+      // the peer. Retries reuse ciphertext, nonce and optional ephemeral key.
+      entry.state = "sending";
+      delete entry.attemptEndedAtMs;
+      try {
+        monotonicNow();
+        await saveSendEntry(routed.packet.packetId, entry);
+      } catch {
+        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+      }
+      let result: Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>;
+      try {
+        const ack = captureSendResult(
+          await bounded(() => captured.send(routed.recipientPeer,
+            structuredClone(entry.encrypted), routed.packet.packetId), "Demos L2PS RFQ send"),
+          routed.packet.packetId,
+        );
+        result = ack === "acknowledged"
+          ? { disposition: "acknowledged" }
+          : { disposition: "indeterminate", reason: "Demos L2PS RFQ send acknowledgement is missing or failed" };
+      } catch {
+        result = { disposition: "indeterminate", reason: "Demos L2PS RFQ send outcome is unknown" };
       }
       try {
-        const result = captureSendResult(
-          await bounded(
-            () =>
-              captured.send(
-                prepared.recipientPeer,
-                prepared.encrypted,
-                prepared.packet.packetId,
-              ),
-            "Demos L2PS RFQ send",
-          ),
-          prepared.packet.packetId,
-        );
-        return result === "acknowledged"
-          ? { disposition: "acknowledged" }
-          : {
-              disposition: "indeterminate",
-              reason: "Demos L2PS RFQ send acknowledgement is missing or failed",
-            };
+        entry.attemptEndedAtMs = monotonicNow();
+        entry.state = result.disposition === "acknowledged" ? "acknowledged" : "indeterminate";
+        await saveSendEntry(routed.packet.packetId, entry);
       } catch {
-        return {
-          disposition: "indeterminate",
-          reason: "Demos L2PS RFQ send outcome is unknown",
-        };
+        // The durable sending marker remains; recovery starts a full grace.
+        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
       }
+      return result;
     },
     reconcile: reconcilePacket,
     resumeInbound,

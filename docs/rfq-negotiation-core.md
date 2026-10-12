@@ -193,6 +193,8 @@ const transport = createDemosL2psRfqTransport({
   peerForClaim,
   claimForPeer,
   onError: recordChannelFailure,
+  outboxStore: authenticatedRoleLocalSendOutbox,
+  sendAbsenceGraceMs: 60_000,
   operationTimeoutMs: 20_000,
   consumerTimeoutMs: 30_000,
 });
@@ -211,6 +213,31 @@ await buyerRfq.resumeOutbox(jobId);
 ```
 
 A Demos `submitted` or offline `queued` response acknowledges the exact packet.
+The accepted payloads are exactly `{ messageHash, l2psStatus: "submitted" }`
+and `{ messageHash, status: "queued" }`, with string fields and the matching
+packet hash. `{ messageHash, l2psStatus: "failed" }` is indeterminate. Unknown
+keys, including any `error` key, remain indeterminate. These are the shapes in
+pinned demosdk 4.0.16 `build/instant_messaging/l2ps_types.d.ts:104-117`;
+`L2PSMessagingPeer.js:116-126,319` returns `frame.payload` unchanged, without
+the outer `type`, `requestId` or `timestamp` fields.
+
+`outboxStore` is a required plain object with `load`/`save` data methods. It is
+an authenticated, durable, role-local
+companion to the lifecycle's signed-packet store, keyed by packet ID. Its
+`load(packetId)` returns an entry or `undefined`; `save(packetId, entry)` must
+atomically commit the supplied entry before resolving. Authenticate the key
+and entry together, isolate buyer and seller authority, retain entries until
+the job is retired, and serialize drivers of the same outbox across processes.
+There is no volatile fallback. Read/write failure stays indeterminate, and a
+failed pre-send write never calls the peer. The entry binds the packet ID,
+peers, subnet and codec, and contains only the encrypted envelope, send state
+and attempt end time; it stores no shared key. The exact `to`, encrypted
+ciphertext/nonce/optional ephemeral key, and message hash are saved before
+calling `peer.send()`, and retries reuse them. The demosdk sends that payload
+unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer
+request ID and timestamp. Byte identity refers to the message payload, not
+those RPC metadata fields.
+
 After an ambiguous response, `resumeOutbox()` searches authenticated Demos
 conversation history, decrypts the stored frame, and compares the complete
 canonical packet and route. It returns `absent` only when one unpaginated
@@ -221,6 +248,54 @@ normal lifecycle verifier; duplicate packets are harmless. Peer and codec
 operations are bounded (20 seconds by default); a send timeout is
 `indeterminate`, because the server may accept the packet after the local wait
 ends.
+
+After any ambiguous send, including a rejected peer promise or an unrecognised
+acknowledgement, an empty history page cannot prove absence until
+`sendAbsenceGraceMs` has passed since the local attempt **ended**. Until then,
+reconciliation returns `indeterminate` with the fixed reason
+"Demos L2PS history cannot yet prove packet absence after a timed-out send".
+Presence can still acknowledge immediately. The grace is checked before the
+history request, so a request begun during the grace cannot authorize redrive
+by finishing after it. A refusal before the peer call (for example, a transient
+seal failure) has no send marker and remains immediately retryable.
+
+The default grace is 60,000 ms; configure a positive integer up to 600,000 ms.
+This is a **provisional operational default**, twice the pinned demosdk's
+15-second send wait plus 10-second history wait, rounded up to 60 seconds
+(`L2PSMessagingPeer.js:126,151`). These client waits do not bound node inclusion
+or history indexing. No node source or lag bound was supplied with this
+snapshot, so the default's coverage of node lag has not been established;
+verify it against the deployed testnet node before declaring this transport
+ready. Arbitrarily delayed acceptance cannot be excluded by a finite grace.
+
+The end timestamp is persisted in the send outbox. `monotonicNowMs` is an
+injectable trusted clock; its default uses `process.hrtime.bigint()` in
+milliseconds, with a common monotonic origin across process restarts on the
+same machine boot. Supply a durable common-origin monotonic clock when moving
+between machines or boots; a detected rollback starts and persists a new full
+grace. A crash before the end write leaves a durable `sending` marker;
+recovery starts one full grace from its first observation and persists that
+time. Restarting again does not reset an already persisted end time. Do not
+migrate a legacy ambiguous lifecycle entry without its companion send marker;
+settle it first or seed a conservative `sending` marker through the host store.
+
+| Situation | Extra hold before absence can authorize retry |
+| --- | --- |
+| Refusal before peer call | 0 |
+| Ambiguous send, known end | At most 60 seconds (configured grace) from that end |
+| Crash before end write, or detected clock rollback | One full grace from first recovery observation |
+| Exact history match at any time | 0; acknowledge immediately |
+| Paginated/failed history, or an unavailable outbox | Unbounded; stay indeterminate |
+
+The hold itself adds at most the configured grace; the host's next
+`resumeOutbox()` cadence adds its polling interval. With the default 20-second
+operation limit, a successful single-page absence check and retry dispatch can
+also spend up to 80 seconds on outbox read, history, retry outbox read and
+pre-send write: at most 140 seconds plus the polling interval after a known
+send end. This transport-only calculation excludes host lifecycle storage, the retry's
+own send/acknowledgement wait and end write.
+There is no finite whole-call bound for paginated history (a follow-up),
+persistence failures, repeated failures or scheduling stalls.
 
 Payloads from Demos are size-checked before they are copied or canonicalized:
 a frame over the 16 MiB plaintext limit, a history page of more than 100
@@ -286,10 +361,12 @@ own frames fail authentication and every job whose outbox still needs
 reconciliation fails permanently. Keep the previous key until those jobs have
 settled.
 
-A Demos `failed` submission status, in the send response or in history, is
-`indeterminate`: the message may still have reached the peer, so the adapter
-never resends it automatically. The SDK currently has no call that clears or
-resends such an entry: `resumeOutbox()` keeps returning `indeterminate`, and
+A Demos `failed` submission status is `indeterminate`: the message may still
+have reached the peer. A failed send acknowledgement without a matching history
+entry follows the same grace and exhaustive-absence rule as any ambiguous send.
+A matching failed history entry cannot prove absence, so it prevents automatic
+resend even after the grace expires. The SDK currently has no call that clears
+such a failed-history entry: `resumeOutbox()` keeps returning `indeterminate`, and
 `sendAbort()` is refused while the counterparty owns the next turn. If
 the counterparty did receive the packet, its reply still arrives through
 `receive()` and the job continues, with the stale entry left `indeterminate`.
