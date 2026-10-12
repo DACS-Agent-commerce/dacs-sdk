@@ -57,6 +57,8 @@ import type {
 import { dacsSessionAgreementFactsIdV1 } from "./sessionAgreementFactsId.js";
 import { dacsHttpPayloadHashV1 } from "./transport/envelope.js";
 import {
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT,
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING,
   DacsVetTerminalBundleTransportError,
   type DacsVetTerminalBundleTransportRuntimeV1,
 } from "./terminalBundleTransportRuntime.js";
@@ -387,6 +389,16 @@ export async function advanceDacsVetTerminalTrackV1(
         error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
       return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
     }
+    // Both Vets failed with different plans: an operator decides, on both
+    // roles, once the peer has this role's plan.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT) {
+      return operator(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+    }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING) {
+      return pending(context, delay, error.reasonCode);
+    }
     return operator(error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
       ? "vet-terminal-finalization-conflict"
@@ -409,18 +421,34 @@ export async function advanceDacsVetTerminalTrackV1(
       authenticationHash: progress.result.planHash,
     });
   }
+  // A second plan the peer offered after this role committed is an operator
+  // alert; while the job continues with the retained plan, its track says so.
+  const alert = await peerEquivocationAlert(runtime, jobId);
   if (progress.disposition === "waiting") {
-    return pending(context, delay, "vet-terminal-finalization-pending");
+    return pending(context, delay, alert ?? "vet-terminal-finalization-pending");
   }
   if (progress.disposition === "indeterminate") {
     return pending(
       context,
       delay,
-      "vet-terminal-finalization-indeterminate",
+      alert ?? "vet-terminal-finalization-indeterminate",
       "indeterminate",
     );
   }
   return operator("vet-terminal-finalization-rejected");
+}
+
+async function peerEquivocationAlert(
+  runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>,
+  jobId: string,
+): Promise<string | undefined> {
+  try {
+    const evidence = await runtime.loadPeerEquivocationEvidence?.(jobId);
+    return evidence?.afterCommit?.operatorAlert === true
+      ? "vet-terminal-peer-equivocation-alert" : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function finalizeLocalVetFailure(
@@ -448,6 +476,16 @@ async function finalizeLocalVetFailure(
     if (error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
       return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+    }
+    // The track sends this role's plan to the peer before it stops.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT) {
+      return await advanceDacsVetTerminalTrackV1(
+        terminalBundle.runtime,
+        context,
+        delay,
+        input.operation.order.jobId,
+      ) ?? operator(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
     }
     return operator(error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")

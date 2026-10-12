@@ -194,16 +194,39 @@ runtime supports both fixed-price x402 and native DEM orders and rejects a
 terminal pipeline for the other rail. The host deliberately does not replace
 the recursive Vet authenticator with a sender assertion.
 
-A role keeps the first terminal plan it retained. If the authenticated peer
-later offers a second, authentic plan for the same job, that message is
-refused (`vet-terminal-proposal-equivocation`), never sealed and never signed,
-and the job continues with the retained plan, because the role only signs that
-plan. `loadPeerEquivocationEvidence(jobId)` returns the first refused plan from
-before this role committed (sent, accepted or signed its plan) and the first
-from after it; the latter has `operatorAlert: true`. The inbox keeps the
-authenticated envelope. A conflict between plans the role retained itself (a
-second local plan over retained material or an accepted proposal) is still
-sealed for an operator, as below.
+A role selects one terminal plan per job: the first plan written, from its own
+Vet failure or from the peer's proposal. Local registration and inbound
+proposals share one insert-once selection row, written before the phase claim
+and the plan's binding, so two processes racing on one database agree on it,
+and a crash after it is completed on the next tick instead of stranding the
+phase. A plan that differs from the selected one is classified:
+
+- This role's own Vet failure and the peer's first plan, in either arrival
+  order: both Vets failed, with different plans. DACS-2 defers mutual-Vet
+  composition and DACS-5 §10.4.3(d) leaves which party failed to adjudication,
+  so neither plan is signed. The job stops at operator action
+  (`vet-terminal-plan-disagreement`) once this role has sent its own plan to the
+  peer, which then stops the same way; until the peer acknowledges it, the track
+  is pending (`vet-terminal-plan-disagreement-notice-pending`).
+  `loadPlanDisagreementEvidence(jobId)` returns both plan hashes and the losing
+  plan, with `operatorAlert: true`. A role that already contributed its
+  signature to the peer's plan before its own failure arrived has signed only
+  that plan.
+- A second plan from the peer after one this role retained from it:
+  equivocation. The message is refused (`vet-terminal-proposal-equivocation`),
+  never sealed and never signed, and the job continues with the retained plan,
+  because the role only signs that plan. `loadPeerEquivocationEvidence(jobId)`
+  returns the first refused plan from before this role committed (sent,
+  accepted or signed its plan) and the first from after it; the latter has
+  `operatorAlert: true`, and while the job continues its track reports
+  `vet-terminal-peer-equivocation-alert`. The inbox keeps the authenticated
+  envelope.
+- A second local plan over this role's own retained material is still sealed
+  for an operator, as below.
+
+Both evidence loaders are optional members of
+`DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations of the
+interface still conform.
 
 The fixed-price live factories also connect that runtime to the agreement
 worker. The first local objective `fail` stores a durable Vet invocation,

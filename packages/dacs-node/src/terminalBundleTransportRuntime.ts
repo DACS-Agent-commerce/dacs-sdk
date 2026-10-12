@@ -69,7 +69,18 @@ const PLAN_CONFLICT_SEQUENCES = new WeakMap<
 
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
-type TransportRecordKind = BindingKind | "conflict" | "equivocation";
+type TransportRecordKind = BindingKind | "conflict" | "equivocation" | "selection" | "disagreement";
+
+/**
+ * Operator-action reason when this role's own Vet failure and the peer's first
+ * plan name different terminals. DACS-2 defers mutual-Vet composition and
+ * DACS-5 §10.4.3(d) leaves which party failed to adjudication, so neither
+ * plan is signed.
+ */
+export const DACS_VET_TERMINAL_PLAN_DISAGREEMENT = "vet-terminal-plan-disagreement";
+/** Pending reason while this role's disagreement notice awaits the peer. */
+export const DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING =
+  "vet-terminal-plan-disagreement-notice-pending";
 
 interface DacsVetTerminalTransportBindingV1 {
   bindingVersion: typeof BINDING_VERSION;
@@ -88,6 +99,21 @@ interface DacsVetTerminalTransportConflictV1 {
   localBindingHash: string;
   kind: "plan-conflict";
   planHashes: readonly [string, string];
+}
+
+// The job's one terminal plan for this role: the first plan written, from this
+// role's own Vet failure or from the peer's proposal. Local registration and
+// inbound proposals, in any process, share this insert-once row.
+interface DacsVetTerminalPlanSelectionV1 {
+  selectionVersion: "1";
+  localBindingHash: string;
+  kind: "plan-selection";
+  source: "material" | "peer";
+  planHash: string;
+  payloadHash: string;
+  payload: Readonly<DacsVetTerminalBundleProposalV1>;
+  authenticationHash?: string;
+  identityEvidenceHash?: string;
 }
 
 export interface DacsVetTerminalBundleTransportOptionsV1 {
@@ -120,14 +146,42 @@ export interface DacsVetTerminalBundleTransportRuntimeV1 {
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1>;
   /**
-   * Evidence of the peer offering a second, authentic plan for a job: the
-   * first one refused before this role committed to a plan, and the first one
-   * refused after it (an operator alert). Neither stops the job.
+   * Evidence of the peer offering a second, authentic plan for a job after
+   * this role retained one from it: the first one refused before this role
+   * committed to its plan, and the first one refused after it (an operator
+   * alert). Neither stops the job. Optional, so existing implementations of
+   * this interface still conform.
    */
-  loadPeerEquivocationEvidence(jobId: string): Promise<Readonly<{
+  loadPeerEquivocationEvidence?(jobId: string): Promise<Readonly<{
     beforeCommit?: Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
     afterCommit?: Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
   }>>;
+  /**
+   * Evidence of a two-sided disagreement: this role's own Vet failure and the
+   * peer's first plan name different terminals. The job stops at operator
+   * action on both roles and nothing is signed. Optional, like the above.
+   */
+  loadPlanDisagreementEvidence?(jobId: string): Promise<
+    Readonly<DacsVetTerminalPlanDisagreementEvidenceV1> | undefined
+  >;
+}
+
+export interface DacsVetTerminalPlanDisagreementEvidenceV1 {
+  evidenceVersion: "1";
+  kind: "plan-disagreement";
+  localBindingHash: string;
+  /** This role's own Vet-failure plan. */
+  localPlanHash: string;
+  /** The peer's first plan. */
+  peerPlanHash: string;
+  /** Which plan this role selected first; the other is kept below. */
+  selected: "local" | "peer";
+  losingPayloadHash: string;
+  losingPayload: Readonly<DacsVetTerminalBundleProposalV1>;
+  /** Set when the losing plan is the peer's authenticated proposal. */
+  authenticationHash?: string;
+  identityEvidenceHash?: string;
+  operatorAlert: true;
 }
 
 export interface DacsVetTerminalPeerEquivocationEvidenceV1 {
@@ -153,10 +207,18 @@ export class DacsVetTerminalBundleTransportError extends Error {
   }
 }
 
-// An authentic proposal whose plan differs from the plan this role retained.
+// An authentic proposal whose plan differs from the plan this role retained
+// from the peer.
 class PeerPlanEquivocation extends DacsVetTerminalBundleTransportError {
   constructor(readonly retainedPlanHash: string, readonly offeredPlanHash: string) {
     super("vet-terminal-proposal-equivocation");
+  }
+}
+
+// The peer's first plan differs from this role's own Vet-failure plan.
+class PeerPlanDisagreement extends DacsVetTerminalBundleTransportError {
+  constructor(readonly localPlanHash: string, readonly peerPlanHash: string) {
+    super(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
   }
 }
 
@@ -640,6 +702,24 @@ async function withPlanConflictSequence<T>(
   }
 }
 
+// A plan-conflict seal or a two-sided disagreement ends the job's terminal.
+function stopsTerminal(reasonCode: string): boolean {
+  return reasonCode === "vet-terminal-binding-conflict" ||
+    reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT;
+}
+
+// A recorded two-sided disagreement stops the job like a plan conflict:
+// nothing more is retained, published or signed for it.
+function assertNoPlanDisagreement(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+): void {
+  if (context.database.loadEffectInput("session", transportId(context.role, "disagreement", jobId)) !==
+      undefined) {
+    throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+  }
+}
+
 async function assertNoPlanConflict(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   jobId: string,
@@ -647,6 +727,7 @@ async function assertNoPlanConflict(
   if (await loadPlanConflict(context, jobId) !== undefined) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
   }
+  assertNoPlanDisagreement(context, jobId);
 }
 
 async function putPlanConflict(
@@ -711,6 +792,7 @@ async function invokeConflictFenced<T>(
         "vet-terminal-binding-conflict",
       );
     }
+    assertNoPlanDisagreement(context, jobId);
     try {
       const value = callback();
       return {
@@ -769,6 +851,7 @@ async function putBinding(
   ) !== undefined) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
   }
+  assertNoPlanDisagreement(context, jobId);
   if (kind !== "contribution" &&
       (payload as DacsVetTerminalBundleProposalV1).terminalInput.evaluatedRole === "seller") {
     try {
@@ -873,8 +956,54 @@ type ProposalAssessment =
       disposition: "rejected";
       reasonCode: string;
       equivocation?: Readonly<{ jobId: string; retainedPlanHash: string; offeredPlanHash: string }>;
+      disagreement?: Readonly<{ jobId: string; localPlanHash: string; peerPlanHash: string }>;
+      proposal?: Readonly<DacsVetTerminalBundleProposalV1>;
     }>
   | Readonly<{ disposition: "indeterminate"; reasonCode: string }>;
+
+const optionalHash = (value: unknown): boolean =>
+  value === undefined || (typeof value === "string" && HASH_RE.test(value));
+
+function captureSelection(value: unknown): Readonly<DacsVetTerminalPlanSelectionV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "selectionVersion", "localBindingHash", "kind", "source", "planHash", "payloadHash", "payload",
+  ], ["authenticationHash", "identityEvidenceHash"]) || value.selectionVersion !== "1" ||
+      value.kind !== "plan-selection" || (value.source !== "material" && value.source !== "peer") ||
+      !["localBindingHash", "planHash", "payloadHash"].every((field) =>
+        typeof value[field] === "string" && HASH_RE.test(value[field] as string)) ||
+      sha256Hex(canonicalize(value.payload)) !== value.payloadHash ||
+      !optionalHash(value.authenticationHash) || !optionalHash(value.identityEvidenceHash) ||
+      (value.authenticationHash === undefined) !== (value.identityEvidenceHash === undefined)) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  let payload: Readonly<DacsVetTerminalBundleProposalV1>;
+  try {
+    payload = captureProposal(value.payload);
+  } catch {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  if (payload.plan.planHash !== value.planHash) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return Object.freeze({ ...value, payload }) as unknown as Readonly<DacsVetTerminalPlanSelectionV1>;
+}
+
+function captureDisagreement(value: unknown): Readonly<DacsVetTerminalPlanDisagreementEvidenceV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "evidenceVersion", "kind", "localBindingHash", "localPlanHash", "peerPlanHash", "selected",
+    "losingPayloadHash", "losingPayload", "operatorAlert",
+  ], ["authenticationHash", "identityEvidenceHash"]) || value.evidenceVersion !== "1" ||
+      value.kind !== "plan-disagreement" || value.operatorAlert !== true ||
+      (value.selected !== "local" && value.selected !== "peer") ||
+      !["localBindingHash", "localPlanHash", "peerPlanHash", "losingPayloadHash"].every((field) =>
+        typeof value[field] === "string" && HASH_RE.test(value[field] as string)) ||
+      value.localPlanHash === value.peerPlanHash ||
+      sha256Hex(canonicalize(value.losingPayload)) !== value.losingPayloadHash ||
+      !optionalHash(value.authenticationHash) || !optionalHash(value.identityEvidenceHash)) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return Object.freeze({ ...value }) as unknown as Readonly<DacsVetTerminalPlanDisagreementEvidenceV1>;
+}
 
 function captureEquivocation(
   value: unknown,
@@ -1097,14 +1226,23 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   };
 
   // `seal` records a conflict between plans this role itself retained. A
-  // peer's message ("peer") never writes: its conflicting plan is refused as
-  // equivocation and the job continues with the plan retained first.
+  // peer's message ("peer") never writes here: a plan that differs from the
+  // selected one is classified against it (disagreement or equivocation).
   const detectPlanConflict = async (
     proposal: Readonly<DacsVetTerminalBundleProposalV1>,
     seal: boolean | "peer",
   ): Promise<void> => {
     const jobId = proposal.plan.authority.jobId;
     await assertNoPlanConflict(context, jobId);
+    if (seal === "peer") {
+      const choice = await classifyPlan(proposal, "peer", await loadSelection(jobId));
+      if (choice.disposition === "equivocation") {
+        throw new PeerPlanEquivocation(choice.retainedPlanHash, choice.offeredPlanHash);
+      }
+      if (choice.disposition === "disagreement") {
+        throw new PeerPlanDisagreement(choice.localPlanHash, choice.peerPlanHash);
+      }
+    }
     const bindings = await Promise.all([
       loadBinding(context, "material", jobId),
       loadBinding(context, "proposal", jobId),
@@ -1162,6 +1300,18 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           }),
         });
       }
+      if (error instanceof PeerPlanDisagreement) {
+        return Object.freeze({
+          disposition: "rejected" as const,
+          reasonCode: error.reasonCode,
+          disagreement: Object.freeze({
+            jobId: assessment.proposal.plan.authority.jobId,
+            localPlanHash: error.localPlanHash,
+            peerPlanHash: error.peerPlanHash,
+          }),
+          proposal: assessment.proposal,
+        });
+      }
       return Object.freeze({
         disposition: "rejected" as const,
         reasonCode: error instanceof DacsVetTerminalBundleTransportError
@@ -1204,22 +1354,193 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     });
   };
 
+  const loadSelection = async (
+    jobId: string,
+  ): Promise<Readonly<DacsVetTerminalPlanSelectionV1> | undefined> => {
+    const order = await loadOrder(context, jobId);
+    const value = context.database.loadEffectInput("session", transportId(role, "selection", jobId));
+    if (value === undefined) return undefined;
+    const selection = captureSelection(value);
+    if (selection.localBindingHash !== order.localBindingHash) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    return selection;
+  };
+
+  // Selects `proposal` as the job's plan unless one is already selected, and
+  // returns the selected plan. It is one insert-once write before the phase
+  // claim and the binding, so local registration and an inbound proposal racing
+  // in two processes agree on the first plan, and a crash after it leaves a
+  // selection that the next tick completes rather than a stranded phase.
+  const selectPlan = async (
+    proposal: Readonly<DacsVetTerminalBundleProposalV1>,
+    source: "material" | "peer",
+    authentication?: Readonly<{ authenticationHash: string; identityEvidenceHash: string }>,
+  ): Promise<Readonly<DacsVetTerminalPlanSelectionV1>> => {
+    const jobId = proposal.plan.authority.jobId;
+    const order = await loadOrder(context, jobId);
+    const id = transportId(role, "selection", jobId);
+    context.database.putEffectIntent({
+      kind: "session",
+      effectId: id,
+      bindingHash: order.localBindingHash,
+      input: {
+        selectionVersion: "1",
+        localBindingHash: order.localBindingHash,
+        kind: "plan-selection",
+        source,
+        planHash: proposal.plan.planHash,
+        payloadHash: sha256Hex(canonicalize(proposal)),
+        payload: proposal,
+        ...(authentication ?? {}),
+      },
+      idempotencyKey: id,
+      jobId,
+    });
+    const selection = await loadSelection(jobId);
+    if (selection === undefined) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    return selection;
+  };
+
+  // How a plan relates to the selected one. This role's own Vet failure and
+  // the peer's first plan disagree in either arrival order; a peer plan after
+  // one this role retained from the peer is equivocation; two plans of this
+  // role's own are a plan conflict.
+  const classifyPlan = async (
+    proposal: Readonly<DacsVetTerminalBundleProposalV1>,
+    source: "material" | "peer",
+    selection: Readonly<DacsVetTerminalPlanSelectionV1> | undefined,
+  ): Promise<
+    | Readonly<{ disposition: "selected" }>
+    | Readonly<{ disposition: "disagreement"; localPlanHash: string; peerPlanHash: string }>
+    | Readonly<{ disposition: "equivocation"; retainedPlanHash: string; offeredPlanHash: string }>
+    | Readonly<{ disposition: "own-conflict"; retainedPlanHash: string }>
+  > => {
+    const planHash = proposal.plan.planHash;
+    if (selection === undefined || selection.planHash === planHash) {
+      return { disposition: "selected" };
+    }
+    if (source === "material") {
+      return selection.source === "peer"
+        ? { disposition: "disagreement", localPlanHash: planHash, peerPlanHash: selection.planHash }
+        : { disposition: "own-conflict", retainedPlanHash: selection.planHash };
+    }
+    const peerPlanRetained = selection.source === "peer" ||
+      (await loadBinding(context, "proposal", proposal.plan.authority.jobId))
+        ?.authenticationHash !== undefined;
+    return peerPlanRetained
+      ? { disposition: "equivocation", retainedPlanHash: selection.planHash, offeredPlanHash: planHash }
+      : { disposition: "disagreement", localPlanHash: selection.planHash, peerPlanHash: planHash };
+  };
+
+  // Keeps the losing plan as evidence and stops the job for this role.
+  // Insert-once: the first disagreement recorded stays.
+  const recordDisagreement = async (
+    jobId: string,
+    disagreement: Readonly<{ localPlanHash: string; peerPlanHash: string }>,
+    losing: Readonly<DacsVetTerminalBundleProposalV1>,
+    authentication?: Readonly<{ authenticationHash: string; identityEvidenceHash: string }>,
+  ): Promise<void> => {
+    const order = await loadOrder(context, jobId);
+    const id = transportId(role, "disagreement", jobId);
+    const evidence = captureDisagreement({
+      evidenceVersion: "1",
+      kind: "plan-disagreement",
+      localBindingHash: order.localBindingHash,
+      localPlanHash: disagreement.localPlanHash,
+      peerPlanHash: disagreement.peerPlanHash,
+      selected: losing.plan.planHash === disagreement.localPlanHash ? "peer" : "local",
+      losingPayloadHash: sha256Hex(canonicalize(losing)),
+      losingPayload: losing,
+      ...(authentication ?? {}),
+      operatorAlert: true,
+    });
+    context.database.putEffectIntent({
+      kind: "session",
+      effectId: id,
+      bindingHash: order.localBindingHash,
+      input: evidence,
+      idempotencyKey: id,
+      jobId,
+    });
+  };
+
+  const loadDisagreement = async (
+    jobId: string,
+  ): Promise<Readonly<DacsVetTerminalPlanDisagreementEvidenceV1> | undefined> => {
+    const order = await loadOrder(context, jobId);
+    const value = context.database.loadEffectInput("session", transportId(role, "disagreement", jobId));
+    if (value === undefined) return undefined;
+    const evidence = captureDisagreement(value);
+    if (evidence.localBindingHash !== order.localBindingHash) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    return evidence;
+  };
+
+  // The peer stops only once it sees this role's own plan, so the notice is
+  // that plan as a proposal, with the same idempotency key a publication of it
+  // uses. Any acknowledgement, including a refusal, delivers it.
+  const deliverDisagreementNotice = async (jobId: string): Promise<boolean> => {
+    const disagreement = await loadDisagreement(jobId);
+    const own = disagreement?.selected === "peer"
+      ? disagreement.losingPayload : (await loadSelection(jobId))?.payload;
+    if (disagreement === undefined || own === undefined ||
+        own.plan.planHash !== disagreement.localPlanHash) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    try {
+      const idempotencyKey = `vet-terminal-proposal:v1:${own.plan.planHash}`;
+      const message = role === "buyer"
+        ? await context.sendMessage({ type: "terminal-bundle-proposal-buyer", jobId, payload: own,
+            idempotencyKey } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-buyer">)
+        : await context.sendMessage({ type: "terminal-bundle-proposal-seller", jobId, payload: own,
+            idempotencyKey } satisfies DacsLiveRoleSendInputV1<"terminal-bundle-proposal-seller">);
+      return message.envelope.type === "acknowledgement";
+    } catch {
+      return false;
+    }
+  };
+
   const loadRegistered = async (
     jobId: string,
   ): Promise<Extract<ProposalAssessment, { disposition: "authorized" }>> => {
     // A job that never retained terminal state has no Vet failure to finalize.
     // Answer that before the full order lookup so an order lookup failure on a
     // healthy job cannot block its agreement and audit tracks.
-    if ((["material", "proposal", "conflict"] as const).every((kind) =>
+    if ((["material", "proposal", "conflict", "selection", "disagreement"] as const).every((kind) =>
       context.database.loadEffectInput("session", transportId(role, kind, jobId)) ===
         undefined)) {
       throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
     }
+    // A disagreement stops this role once the peer has this role's own plan,
+    // so that the peer stops too.
+    if (await loadDisagreement(jobId) !== undefined) {
+      throw new DacsVetTerminalBundleTransportError(await deliverDisagreementNotice(jobId)
+        ? DACS_VET_TERMINAL_PLAN_DISAGREEMENT : DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING);
+    }
     await assertNoPlanConflict(context, jobId);
-    const binding = await loadBinding(context, "material", jobId) ??
+    let binding = await loadBinding(context, "material", jobId) ??
       await loadBinding(context, "proposal", jobId);
     if (binding === undefined) {
-      throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+      // A crash came after the plan was selected and before its binding.
+      const selection = await loadSelection(jobId);
+      if (selection === undefined) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+      }
+      binding = await putBinding(
+        context,
+        selection.source === "material" ? "material" : "proposal",
+        jobId,
+        selection.payload,
+        selection.authenticationHash === undefined || selection.identityEvidenceHash === undefined
+          ? undefined : {
+              authenticationHash: selection.authenticationHash,
+              identityEvidenceHash: selection.identityEvidenceHash,
+            },
+      );
     }
     const assessment = await assessProposal(binding.payload, true);
     if (assessment.disposition !== "authorized") {
@@ -1365,11 +1686,13 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (input.type === proposalType) {
         await loadOrder(context, input.jobId);
         // Validation never writes. An authentic plan that conflicts with the
-        // retained one passes transport validation so the inbox keeps the
+        // selected one passes transport validation so the inbox keeps the
         // authenticated envelope as evidence; handleMessage refuses it.
         const assessment = await assessProposal(input.payload, "peer");
-        if (assessment.disposition === "rejected" && assessment.equivocation !== undefined) {
-          return assessment.equivocation.jobId === input.jobId
+        const differing = assessment.disposition === "rejected"
+          ? assessment.equivocation ?? assessment.disagreement : undefined;
+        if (differing !== undefined) {
+          return differing.jobId === input.jobId
             ? payloadValidation(true, "vet-terminal-proposal-invalid")
             : payloadValidation(false, "vet-terminal-proposal-job-mismatch");
         }
@@ -1424,7 +1747,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         }
         const assessment = await assessProposal(binding.payload);
         if (assessment.disposition === "rejected") {
-          return assessment.reasonCode === "vet-terminal-binding-conflict"
+          return stopsTerminal(assessment.reasonCode)
             ? { disposition: "rejected", reason: assessment.reasonCode }
             : { disposition: "indeterminate", reason: assessment.reasonCode };
         }
@@ -1436,7 +1759,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           : { disposition: "rejected", reason: "vet-terminal-proposal-conflict" };
       } catch (error) {
         return error instanceof DacsVetTerminalBundleTransportError &&
-            error.reasonCode === "vet-terminal-binding-conflict"
+            stopsTerminal(error.reasonCode)
           ? { disposition: "rejected", reason: error.reasonCode }
           : { disposition: "indeterminate", reason: "vet-terminal-proposal-unavailable" };
       }
@@ -1493,7 +1816,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         }
         const assessment = await assessProposal(proposal.payload);
         if (assessment.disposition === "rejected") {
-          return assessment.reasonCode === "vet-terminal-binding-conflict"
+          return stopsTerminal(assessment.reasonCode)
             ? { disposition: "rejected", reason: assessment.reasonCode }
             : { disposition: "indeterminate", reason: assessment.reasonCode };
         }
@@ -1517,7 +1840,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           : { disposition: "present", value: captureContribution(plan, binding.payload) };
       } catch (error) {
         return error instanceof DacsVetTerminalBundleTransportError &&
-            error.reasonCode === "vet-terminal-binding-conflict"
+            stopsTerminal(error.reasonCode)
           ? { disposition: "rejected", reason: error.reasonCode }
           : { disposition: "indeterminate",
               reason: "vet-terminal-contribution-unavailable" };
@@ -1591,6 +1914,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         ...(afterCommit === undefined ? {} : { afterCommit }),
       });
     },
+    loadPlanDisagreementEvidence: loadDisagreement,
     async registerLocalTerminal(input) {
       const terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
         Readonly<PrepareVetTerminalBundleInput>;
@@ -1622,6 +1946,15 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       });
       assertPlanParties(context, proposal.plan);
       await assertProposalOrder(proposal, false);
+      const choice = await classifyPlan(proposal, "material", await selectPlan(proposal, "material"));
+      if (choice.disposition === "disagreement") {
+        await recordDisagreement(input.jobId, choice, proposal);
+        throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+      }
+      if (choice.disposition === "own-conflict") {
+        await putPlanConflict(context, input.jobId, proposal.plan.planHash, choice.retainedPlanHash);
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+      }
       await detectPlanConflict(proposal, true);
       await putBinding(context, "material", input.jobId, proposal);
       return Object.freeze({ prepared, proposal });
@@ -1728,6 +2061,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           if (assessment.disposition === "indeterminate") {
             throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
           }
+          const authentication = {
+            authenticationHash: authenticated.authenticationHash,
+            identityEvidenceHash: authenticated.identityEvidenceHash,
+          };
           if (assessment.disposition === "rejected") {
             // A second authentic plan from the peer is refused and kept as
             // evidence. The job continues with the retained plan: this role
@@ -1736,12 +2073,27 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
               await recordEquivocation(envelope.jobId, assessment.equivocation,
                 envelope.payload, authenticated);
             }
+            // The peer's first plan against this role's own Vet failure: both
+            // roles stop for an operator, and the peer's plan is kept.
+            if (assessment.disagreement !== undefined && assessment.proposal !== undefined) {
+              await recordDisagreement(envelope.jobId, assessment.disagreement,
+                assessment.proposal, authentication);
+            }
             return rejected(assessment.reasonCode);
           }
-          await putBinding(context, "proposal", envelope.jobId, assessment.proposal, {
-            authenticationHash: authenticated.authenticationHash,
-            identityEvidenceHash: authenticated.identityEvidenceHash,
-          });
+          // The same choice again on the one selection row: a local Vet
+          // failure registered meanwhile, in any process, may have won it.
+          const choice = await classifyPlan(assessment.proposal, "peer",
+            await selectPlan(assessment.proposal, "peer", authentication));
+          if (choice.disposition === "equivocation") {
+            await recordEquivocation(envelope.jobId, choice, envelope.payload, authenticated);
+            return rejected("vet-terminal-proposal-equivocation");
+          }
+          if (choice.disposition === "disagreement") {
+            await recordDisagreement(envelope.jobId, choice, assessment.proposal, authentication);
+            return rejected(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+          }
+          await putBinding(context, "proposal", envelope.jobId, assessment.proposal, authentication);
           return Object.freeze({ disposition: "accepted" as const });
         }
         const proposal = await loadBinding(context, "proposal", envelope.jobId);
@@ -1763,7 +2115,8 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         return Object.freeze({ disposition: "accepted" as const });
       } catch (error) {
         if (error instanceof DacsVetTerminalBundleTransportError &&
-            error.reasonCode.endsWith("-conflict")) {
+            (error.reasonCode.endsWith("-conflict") ||
+              error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT)) {
           return rejected(error.reasonCode);
         }
         throw error;

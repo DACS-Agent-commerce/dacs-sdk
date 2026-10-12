@@ -87,7 +87,7 @@ const TERMINAL_TRANSPORT_ID_DOMAIN =
 
 function terminalTransportEffectId(
   role: "buyer" | "seller",
-  kind: "material" | "proposal" | "contribution" | "conflict",
+  kind: "material" | "proposal" | "contribution" | "conflict" | "selection" | "disagreement",
   signerRole?: "buyer" | "seller",
 ): string {
   return sha256Hex(`${TERMINAL_TRANSPORT_ID_DOMAIN}${canonicalize({
@@ -408,6 +408,7 @@ function acknowledgement(disposition: "accepted" | "existing" | "rejected") {
 describe("role-separated Vet terminal bundle transport", () => {
   const roots: string[] = [];
   const databases: DacsNodeSqliteDatabase[] = [];
+  const databasePaths = new Map<DacsNodeSqliteDatabase, string>();
 
   afterEach(() => {
     for (const database of databases.splice(0).reverse()) database.close();
@@ -429,6 +430,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       authority: role === "buyer" ? BUYER : SELLER,
     });
     databases.push(database);
+    databasePaths.set(database, join(root, "actor.sqlite"));
     if (rail === "x402") {
       const exactOrder = order(role);
       await database.createLiveCoordinatorStore(role).create({
@@ -668,6 +670,48 @@ describe("role-separated Vet terminal bundle transport", () => {
       anchorWriteOnce,
     };
   }
+
+  // Two processes on one SQLite file: one registers the buyer's own Vet
+  // failure, the other accepts the seller's different first plan. The one
+  // insert-once selection decides; the other plan becomes disagreement
+  // evidence, never a second retained plan that a restart would seal.
+  it("selects one plan when a local failure and the peer's proposal race on two connections", async () => {
+    const first = await open("buyer");
+    const second = await openDacsNodeSqliteDatabase({
+      databasePath: databasePaths.get(first)!,
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      authority: BUYER,
+    });
+    databases.push(second);
+    const runtimeOn = (database: DacsNodeSqliteDatabase) => createDacsVetTerminalBundleTransportRuntimeV1({
+      context: {
+        role: "buyer", authority: BUYER, peerAuthority: SELLER, database,
+        demos: { signComponent: vi.fn() },
+        sessionStore: createInMemoryFencedSessionStore(),
+        sendMessage: vi.fn(async () => acknowledgement("accepted")),
+      } as unknown as DacsLiveRoleOperationContextV1,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status: "valid" }),
+    });
+    const planB = await terminalProposal(terminalInput("fail", "pay-x402", "buyer"));
+    await Promise.allSettled([
+      runtimeOn(first).registerLocalTerminal(terminalInput("fail", "pay-x402")),
+      runtimeOn(second).handleMessage(
+        authenticated("terminal-bundle-proposal-seller", planB, SELLER, BUYER),
+        { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+      ),
+    ]);
+    const load = (kind: "material" | "proposal" | "conflict" | "selection" | "disagreement") =>
+      first.loadEffectInput("session", terminalTransportEffectId("buyer", kind));
+    expect(load("selection")).toMatchObject({ kind: "plan-selection" });
+    expect(load("material") !== undefined && load("proposal") !== undefined).toBe(false);
+    expect(load("conflict")).toBeUndefined();
+    expect(load("disagreement")).toMatchObject({
+      kind: "plan-disagreement", operatorAlert: true, peerPlanHash: planB.plan.planHash,
+    });
+  });
 
   it("exchanges one exact authorized plan and each role's own verified row", async () => {
     const buyerDatabase = await open("buyer");
@@ -1321,16 +1365,19 @@ describe("role-separated Vet terminal bundle transport", () => {
     })).resolves.toMatchObject({ disposition: "present" });
   });
 
+  // This role's own Vet failure and the peer's first, different plan stop the
+  // job at the same two-sided disagreement in either arrival order. Nothing is
+  // sealed, signed or retained twice; the track sends this role's own plan.
   it.each([
     ["local material first", "material"],
     ["peer proposal first", "proposal"],
-  ] as const)("durably rejects distinct authenticated Vet plans with %s", async (
+  ] as const)("durably stops distinct authenticated Vet plans with %s", async (
     _label,
     first,
   ) => {
     const buyerDatabase = await open("buyer");
     const authenticate = vi.fn(async () => ({ status: "valid" as const }));
-    const sendMessage = vi.fn();
+    const sendMessage = vi.fn(async () => acknowledgement("rejected"));
     const signComponent = vi.fn();
     const context = {
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
@@ -1358,8 +1405,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       await expect(runtime.registerLocalTerminal(localInput)).resolves.toMatchObject({
         proposal: { plan: { planHash: localProposal.plan.planHash } },
       });
-      // The peer's conflicting plan is refused as equivocation and seals
-      // nothing; validation lets the inbox retain it as evidence.
+      // Validation lets the inbox retain the peer's plan as evidence.
       await expect(runtime.validatePayload({
         type: "terminal-bundle-proposal-seller",
         payload: peerProposal,
@@ -1377,17 +1423,7 @@ describe("role-separated Vet terminal bundle transport", () => {
         { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
       )).resolves.toEqual({
         disposition: "rejected",
-        reasonCode: "vet-terminal-proposal-equivocation",
-      });
-      expect(buyerDatabase.loadEffectInput(
-        "session",
-        terminalTransportEffectId("buyer", "conflict"),
-      )).toBeUndefined();
-      // A second plan this role registers itself does seal the same pair.
-      await expect(createRuntime().registerLocalTerminal(
-        terminalInput("fail", "pay-x402", "buyer"),
-      )).rejects.toMatchObject({
-        reasonCode: "vet-terminal-binding-conflict",
+        reasonCode: "vet-terminal-plan-disagreement",
       });
     } else {
       await expect(runtime.handleMessage(
@@ -1400,7 +1436,7 @@ describe("role-separated Vet terminal bundle transport", () => {
         { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
       )).resolves.toEqual({ disposition: "accepted" });
       await expect(runtime.registerLocalTerminal(localInput)).rejects.toMatchObject({
-        reasonCode: "vet-terminal-binding-conflict",
+        reasonCode: "vet-terminal-plan-disagreement",
       });
     }
 
@@ -1417,14 +1453,18 @@ describe("role-separated Vet terminal bundle transport", () => {
     expect(buyerDatabase.loadEffectInput(
       "session",
       terminalTransportEffectId("buyer", "conflict"),
+    )).toBeUndefined();
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "disagreement"),
     )).toMatchObject({
-      conflictVersion: "1",
+      evidenceVersion: "1",
       localBindingHash: fixedPriceX402OrderLocalBindingHash(order("buyer")),
-      kind: "plan-conflict",
-      planHashes: [
-        localProposal.plan.planHash,
-        peerProposal.plan.planHash,
-      ].sort(),
+      kind: "plan-disagreement",
+      localPlanHash: localProposal.plan.planHash,
+      peerPlanHash: peerProposal.plan.planHash,
+      selected: first === "material" ? "local" : "peer",
+      operatorAlert: true,
     });
 
     const retainedPlan = first === "material" ? localProposal.plan : peerProposal.plan;
@@ -1436,31 +1476,35 @@ describe("role-separated Vet terminal bundle transport", () => {
     const restarted = createRuntime();
     await expect(restarted.transport.resolveProposal(identity)).resolves.toEqual({
       disposition: "rejected",
-      reason: "vet-terminal-binding-conflict",
+      reason: "vet-terminal-plan-disagreement",
     });
     await expect(restarted.transport.resolveContribution({
       identity,
       signerRole: "seller",
     })).resolves.toEqual({
       disposition: "rejected",
-      reason: "vet-terminal-binding-conflict",
+      reason: "vet-terminal-plan-disagreement",
     });
     await expect(restarted.transport.publishContribution({
       identity,
       contribution: contribution(retainedPlan, "buyer"),
     }, {} as never)).rejects.toMatchObject({
-      reasonCode: "vet-terminal-binding-conflict",
+      reasonCode: "vet-terminal-plan-disagreement",
     });
+    expect(sendMessage).not.toHaveBeenCalled();
+    // The track sends this role's own plan once, then stops for an operator.
     await expect(restarted.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({
-      reasonCode: "vet-terminal-binding-conflict",
+      reasonCode: "vet-terminal-plan-disagreement",
     });
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "terminal-bundle-proposal-buyer", payload: localProposal,
+    }));
     authenticate.mockClear();
     await expect(restarted.registerLocalTerminal(localInput)).rejects.toMatchObject({
-      reasonCode: "vet-terminal-binding-conflict",
+      reasonCode: "vet-terminal-plan-disagreement",
     });
     expect(authenticate).not.toHaveBeenCalled();
     expect(signComponent).not.toHaveBeenCalled();
-    expect(sendMessage).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1545,8 +1589,8 @@ describe("role-separated Vet terminal bundle transport", () => {
           }, {} as never);
       await entered;
       try {
-        // A peer's message never seals (it is refused as equivocation); a
-        // second local plan over the retained one does.
+        // A peer's message never seals (it is refused as a disagreement or
+        // equivocation); a second local plan over the retained one does.
         await expect(sealer.registerLocalTerminal(
           terminalInput("fail", "pay-x402", "buyer"),
         )).rejects.toMatchObject({
@@ -1604,8 +1648,8 @@ describe("role-separated Vet terminal bundle transport", () => {
       const advancing = harness.runtime.advanceRegisteredTerminal(JOB_ID);
       await entered;
       try {
-        // A peer's message never seals (it is refused as equivocation); a
-        // second local plan over the retained one does.
+        // A peer's message never seals (it is refused as a disagreement or
+        // equivocation); a second local plan over the retained one does.
         await expect(harness.runtime.registerLocalTerminal(
           harness.conflictProposal.terminalInput,
         )).rejects.toMatchObject({
@@ -2042,10 +2086,12 @@ describe("Vet terminal pre-agreement boundary", () => {
   });
 });
 
-// The buyer's own Vet of the seller failed (plan A, local material); the
-// seller instead proposes that the buyer failed its Vet (plan B). Both plans
-// are authentic, so a second one from the seller is equivocation.
-describe("authenticated peer equivocation on the Vet terminal plan", () => {
+// Plan A: the buyer's own Vet of the seller failed (local material). Plan B:
+// the seller's Vet of the buyer failed (the seller's proposal). Both are
+// authentic. This role's own failure against the peer's first plan is a
+// two-sided disagreement in either arrival order; a second plan from the peer
+// after one this role retained from it is equivocation.
+describe("authenticated peer plans on the Vet terminal", () => {
   const phaseOf = (rail: "x402" | "pay-dem") => rail === "x402" ? "pay-x402" as const : "pay-dem" as const;
   const inbound = { role: "buyer" } as DacsLiveRoleInboundOperationContextV1;
   const fromSeller = (payload: unknown) =>
@@ -2058,9 +2104,25 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
     });
   const sealed = (actor: ReturnType<typeof memoryRoleDatabase>) =>
     actor.effects.get(`session:${terminalTransportEffectId("buyer", "conflict")}`);
+  const row = (actor: ReturnType<typeof memoryRoleDatabase>,
+    kind: "material" | "proposal" | "selection" | "disagreement") =>
+    actor.effects.get(`session:${terminalTransportEffectId("buyer", kind)}`);
+  const disagreementStop = { status: "operator-action", reasonCode: "vet-terminal-plan-disagreement" };
+  // Fails the next write of one row once, as a crash right before it would.
+  const crashBefore = (actor: ReturnType<typeof memoryRoleDatabase>, kind: "material" | "proposal") => {
+    const database = actor.context.database as unknown as {
+      putEffectIntent: (input: Readonly<{ effectId: string }>) => unknown;
+    };
+    const put = database.putEffectIntent;
+    database.putEffectIntent = (input) => {
+      if (input.effectId !== terminalTransportEffectId("buyer", kind)) return put(input);
+      database.putEffectIntent = put;
+      throw new Error(`crash before the ${kind} binding`);
+    };
+  };
 
   for (const rail of ["x402", "pay-dem"] as const) {
-    it(`${rail}: refuses a conflicting plan before commit without sealing, and continues with the first plan`, async () => {
+    it(`${rail}: stops both roles for an operator when the peer's first plan differs from this role's own failure`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
       const registered = await actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail)));
       const planB = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
@@ -2074,28 +2136,60 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
       expect(actor.effects).toEqual(before);
 
       await expect(actor.runtime.handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
-        disposition: "rejected", reasonCode: "vet-terminal-proposal-equivocation",
+        disposition: "rejected", reasonCode: "vet-terminal-plan-disagreement",
       });
       expect(sealed(actor)).toBeUndefined();
       expect(actor.retainedProposal()).toBeUndefined();
-      await expect(actor.runtime.loadPeerEquivocationEvidence(JOB_ID)).resolves.toEqual({
-        beforeCommit: expect.objectContaining({
-          kind: "peer-equivocation", operatorAlert: false, authenticationHash: "c".repeat(64),
-          retainedPlanHash: registered.proposal.plan.planHash, offeredPlanHash: planB.plan.planHash,
-          payloadHash: sha256Hex(canonicalize(planB)),
-        }),
-      });
+      // The peer's losing plan is kept, with the envelope's authentication.
+      await expect(actor.runtime.loadPlanDisagreementEvidence!(JOB_ID)).resolves.toEqual(expect.objectContaining({
+        kind: "plan-disagreement", operatorAlert: true, selected: "local",
+        localPlanHash: registered.proposal.plan.planHash, peerPlanHash: planB.plan.planHash,
+        losingPayload: planB, losingPayloadHash: sha256Hex(canonicalize(planB)),
+        authenticationHash: "c".repeat(64), identityEvidenceHash: "d".repeat(64),
+      }));
+      await expect(actor.runtime.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({});
 
-      // The job continues with plan A after a restart.
+      // After a restart the track sends this role's own plan, which stops the
+      // peer as well, and then reports the operator action. Nothing is signed.
       const restarted = restart(actor);
+      await expect(advanceDacsVetTerminalTrackV1(restarted, actor.context, 1_000, JOB_ID))
+        .resolves.toEqual(disagreementStop);
+      expect(actor.context.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: "terminal-bundle-proposal-buyer", payload: registered.proposal,
+        idempotencyKey: `vet-terminal-proposal:v1:${registered.proposal.plan.planHash}` }));
       await expect(restarted.transport.publishProposal({
         identity: { jobId: JOB_ID, authorityHash: registered.proposal.plan.authorityHash,
           planHash: registered.proposal.plan.planHash },
         plan: registered.proposal.plan,
-      }, {} as never)).resolves.toBeUndefined();
-      expect(actor.context.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        type: "terminal-bundle-proposal-buyer", payload: registered.proposal }));
+      }, {} as never)).rejects.toMatchObject({ reasonCode: "vet-terminal-plan-disagreement" });
+      // A replay of the peer's plan is refused the same way.
+      await expect(restarted.handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
+        disposition: "rejected", reasonCode: "vet-terminal-plan-disagreement",
+      });
       expect(sealed(actor)).toBeUndefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    });
+
+    it(`${rail}: reaches the same disagreement when this role's own failure follows the peer's accepted plan`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const planB = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
+      await expect(actor.runtime.handleMessage(fromSeller(planB), inbound))
+        .resolves.toEqual({ disposition: "accepted" });
+      await expect(restart(actor).registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-plan-disagreement" });
+      expect(sealed(actor)).toBeUndefined();
+      const evidence = await actor.runtime.loadPlanDisagreementEvidence!(JOB_ID);
+      expect(evidence).toMatchObject({ kind: "plan-disagreement", operatorAlert: true, selected: "peer",
+        peerPlanHash: planB.plan.planHash });
+      // This role's own losing plan is kept; no envelope authenticated it.
+      expect(evidence?.losingPayload.plan.planHash).toBe(evidence?.localPlanHash);
+      expect(evidence?.authenticationHash).toBeUndefined();
+      expect(row(actor, "material")).toBeUndefined();
+
+      await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+        .resolves.toEqual(disagreementStop);
+      expect(actor.context.sendMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: "terminal-bundle-proposal-buyer", payload: evidence?.losingPayload }));
       expect(actor.signComponent).not.toHaveBeenCalled();
     });
 
@@ -2107,7 +2201,7 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
       // A replay of the same plan is not a conflict.
       await expect(restart(actor).handleMessage(fromSeller(planA), inbound))
         .resolves.toEqual({ disposition: "accepted" });
-      await expect(actor.runtime.loadPeerEquivocationEvidence(JOB_ID)).resolves.toEqual({});
+      await expect(actor.runtime.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({});
 
       const planB = await terminalProposal(terminalInput("fail", phaseOf(rail)));
       expect(planB.plan.planHash).not.toBe(planA.plan.planHash);
@@ -2116,7 +2210,8 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
         disposition: "rejected", reasonCode: "vet-terminal-proposal-equivocation",
       });
       expect(sealed(actor)).toBeUndefined();
-      await expect(restarted.loadPeerEquivocationEvidence(JOB_ID)).resolves.toEqual({
+      expect(row(actor, "disagreement")).toBeUndefined();
+      await expect(restarted.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({
         afterCommit: expect.objectContaining({ operatorAlert: true,
           retainedPlanHash: planA.plan.planHash, offeredPlanHash: planB.plan.planHash }),
       });
@@ -2127,8 +2222,118 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
       await expect(restarted.handleMessage(fromSeller(planA), inbound))
         .resolves.toEqual({ disposition: "accepted" });
       expect(actor.retainedProposal()).toMatchObject({ payload: planA });
+      // The job continues with plan A, and its track reports the alert.
+      await expect(advanceDacsVetTerminalTrackV1(restarted, actor.context, 1_000, JOB_ID))
+        .resolves.toMatchObject({ reasonCode: "vet-terminal-peer-equivocation-alert" });
+    });
+
+    it(`${rail}: refuses a second peer plan before commit and continues the first after a restart`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const planA = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
+      // The first plan is selected, then the process dies before its binding.
+      crashBefore(actor, "proposal");
+      await expect(actor.runtime.handleMessage(fromSeller(planA), inbound)).rejects.toThrow("crash");
+      expect(row(actor, "selection")).toMatchObject({ source: "peer", planHash: planA.plan.planHash });
+      expect(actor.retainedProposal()).toBeUndefined();
+
+      const planB = await terminalProposal(terminalInput("fail", phaseOf(rail)));
+      const restarted = restart(actor);
+      await expect(restarted.handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
+        disposition: "rejected", reasonCode: "vet-terminal-proposal-equivocation",
+      });
+      await expect(restarted.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({
+        beforeCommit: expect.objectContaining({ kind: "peer-equivocation", operatorAlert: false,
+          retainedPlanHash: planA.plan.planHash, offeredPlanHash: planB.plan.planHash,
+          payloadHash: sha256Hex(canonicalize(planB)), authenticationHash: "c".repeat(64) }),
+      });
+      // The next tick completes the selected plan's binding and continues it.
+      const progress = await advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID);
+      expect(progress?.status).not.toBe("operator-action");
+      expect(actor.retainedProposal()).toMatchObject({ payload: planA, authenticationHash: "c".repeat(64) });
+      expect(sealed(actor)).toBeUndefined();
+      expect(row(actor, "disagreement")).toBeUndefined();
+    });
+
+    it(`${rail}: finishes a local registration that crashed after selecting its plan instead of stranding the phase`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      crashBefore(actor, "material");
+      await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+        .rejects.toThrow("crash");
+      expect(row(actor, "selection")).toMatchObject({ source: "material" });
+      expect(row(actor, "material")).toBeUndefined();
+      // The bootstrap's stranded-phase check runs only when this returns
+      // undefined; the selected plan is completed and proposed instead.
+      const progress = await advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID);
+      expect(progress).toBeDefined();
+      expect(progress?.status).not.toBe("operator-action");
+      expect(row(actor, "material")).toMatchObject({ kind: "material" });
+      expect(actor.context.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        type: "terminal-bundle-proposal-buyer" }));
     });
   }
+
+  it("keeps a disagreement pending until the peer acknowledges this role's plan", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
+    await actor.runtime.handleMessage(
+      fromSeller(await terminalProposal(terminalInput("fail", "pay-x402", "buyer"))), inbound);
+    vi.mocked(actor.context.sendMessage).mockRejectedValueOnce(new Error("peer unreachable"));
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.toMatchObject({ status: "pending-retry",
+        reasonCode: "vet-terminal-plan-disagreement-notice-pending" });
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.toEqual(disagreementStop);
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
+
+  // Two processes share one role database: one registers this role's own Vet
+  // failure while the other accepts the peer's proposal. The one insert-once
+  // selection decides; the other plan is the disagreement's evidence, never a
+  // second retained plan or a sealed split.
+  it.each(["local registration", "inbound proposal"])(
+    "decides a local failure racing the peer's proposal with one selection (%s started first)",
+    async (first) => {
+      const actor = memoryRoleDatabase("buyer");
+      const planB = await terminalProposal(terminalInput("fail", "pay-x402", "buyer"));
+      const local = () => restart(actor).registerLocalTerminal(terminalInput("fail", "pay-x402"));
+      const peer = () => restart(actor).handleMessage(fromSeller(planB), inbound);
+      const settled = await Promise.allSettled(first === "local registration"
+        ? [local(), peer()] : [peer(), local()]);
+      expect(settled.some((result) => result.status === "fulfilled" &&
+        (result.value as { disposition?: string }).disposition === "accepted")).toBe(false);
+      expect(row(actor, "material") !== undefined && row(actor, "proposal") !== undefined).toBe(false);
+      expect(sealed(actor)).toBeUndefined();
+      await expect(actor.runtime.loadPlanDisagreementEvidence!(JOB_ID)).resolves.toMatchObject({
+        operatorAlert: true, peerPlanHash: planB.plan.planHash });
+      await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+        .resolves.toEqual(disagreementStop);
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("drives the track for an implementation without the optional evidence loaders", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
+    // This object literal type-checks only while both loaders stay optional.
+    const minimal: DacsVetTerminalBundleTransportRuntimeV1 = {
+      transport: actor.runtime.transport,
+      validatePayload: actor.runtime.validatePayload,
+      registerLocalTerminal: actor.runtime.registerLocalTerminal,
+      advanceRegisteredTerminal: actor.runtime.advanceRegisteredTerminal,
+      handleMessage: actor.runtime.handleMessage,
+    };
+    await expect(advanceDacsVetTerminalTrackV1(minimal, actor.context, 1_000, JOB_ID))
+      .resolves.toMatchObject({ status: "pending-retry" });
+  });
+
+  it("accepts the peer's proposal of the same plan that this role's own failure selected", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    const registered = await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
+    await expect(restart(actor).handleMessage(fromSeller(registered.proposal), inbound))
+      .resolves.toEqual({ disposition: "accepted" });
+    expect(actor.retainedProposal()).toMatchObject({ payload: registered.proposal });
+    expect(row(actor, "disagreement")).toBeUndefined();
+  });
 
   // The SDK only checks the shape of the host's recursive DACS-2 verifier.
   // Anything but a well-formed `valid` must fail closed with nothing signed.
@@ -2172,14 +2377,80 @@ describe("authenticated peer equivocation on the Vet terminal plan", () => {
       .rejects.toMatchObject({ reasonCode: "vet-terminal-binding-conflict" });
     expect(sealed(actor)).toMatchObject({ kind: "plan-conflict" });
   });
+});
 
-  it("still seals a conflict between plans this role retained itself", async () => {
-    const actor = memoryRoleDatabase("buyer");
-    const planA = await terminalProposal(terminalInput("fail", "pay-x402", "buyer"));
-    await expect(actor.runtime.handleMessage(fromSeller(planA), inbound))
-      .resolves.toEqual({ disposition: "accepted" });
-    await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402")))
-      .rejects.toMatchObject({ reasonCode: "vet-terminal-binding-conflict" });
-    expect(sealed(actor)).toMatchObject({ kind: "plan-conflict" });
-  });
+// The code reviewer's round-5 two-actor probe, as a test: each role's Vet of
+// the other failed, so each holds its own plan. The two transports deliver to
+// each other's handleMessage, and both bootstrap terminal tracks tick.
+describe("two honest, different Vet failures", () => {
+  type Actor = ReturnType<typeof memoryRoleDatabase>;
+  const stop = { status: "operator-action", reasonCode: "vet-terminal-plan-disagreement" };
+  const pair = (rail: "x402" | "pay-dem") => {
+    const buyer = memoryRoleDatabase("buyer", undefined, rail);
+    const seller = memoryRoleDatabase("seller", undefined, rail);
+    const runtimes = {} as Record<"buyer" | "seller", Readonly<DacsVetTerminalBundleTransportRuntimeV1>>;
+    for (const [role, actor] of [["buyer", buyer], ["seller", seller]] as const) {
+      const peer = role === "buyer" ? "seller" : "buyer";
+      (actor.context as unknown as { sendMessage: unknown }).sendMessage = vi.fn(
+        async (message: Readonly<{ type: string; payload: unknown }>) => acknowledgement((await runtimes[peer]
+          .handleMessage(authenticated(message.type as never, message.payload,
+            role === "buyer" ? BUYER : SELLER, role === "buyer" ? SELLER : BUYER),
+          { role: peer } as DacsLiveRoleInboundOperationContextV1)).disposition as never));
+      runtimes[role] = createDacsVetTerminalBundleTransportRuntimeV1({
+        context: actor.context,
+        expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => ({ status: "valid" }),
+      });
+    }
+    const actors: Record<"buyer" | "seller", Actor> = { buyer, seller };
+    const tick = (role: "buyer" | "seller") =>
+      advanceDacsVetTerminalTrackV1(runtimes[role], actors[role].context, 1_000, JOB_ID);
+    return { actors, runtimes, tick };
+  };
+  const conflictSealed = (actor: Actor, role: "buyer" | "seller") =>
+    actor.effects.has(`session:${terminalTransportEffectId(role, "conflict")}`);
+
+  for (const rail of ["x402", "pay-dem"] as const) {
+    const phase = rail === "x402" ? "pay-x402" as const : "pay-dem" as const;
+    for (const first of ["buyer", "seller"] as const) {
+      it(`${rail}: stops both roles at the same operator action when the ${first}'s plan arrives first`, async () => {
+        const { actors, runtimes, tick } = pair(rail);
+        await runtimes.buyer.registerLocalTerminal(terminalInput("fail", phase, "seller"));
+        await runtimes.seller.registerLocalTerminal(terminalInput("fail", phase, "buyer"));
+        const order = first === "buyer" ? ["buyer", "seller"] as const : ["seller", "buyer"] as const;
+        const last: Record<string, unknown> = {};
+        for (let round = 0; round < 3; round += 1) {
+          for (const role of order) last[role] = await tick(role);
+        }
+        expect(last).toEqual({ buyer: stop, seller: stop });
+        for (const role of ["buyer", "seller"] as const) {
+          expect(actors[role].signComponent).not.toHaveBeenCalled();
+          expect(conflictSealed(actors[role], role)).toBe(false);
+          await expect(runtimes[role].loadPlanDisagreementEvidence!(JOB_ID))
+            .resolves.toMatchObject({ operatorAlert: true, selected: "local" });
+        }
+      });
+    }
+
+    it(`${rail}: stops both roles when the buyer's own failure follows the seller's accepted plan`, async () => {
+      const { actors, runtimes, tick } = pair(rail);
+      await runtimes.seller.registerLocalTerminal(terminalInput("fail", phase, "buyer"));
+      await tick("seller");
+      expect(actors.buyer.retainedProposal()).toBeDefined();
+      await runtimes.buyer.registerLocalTerminal(terminalInput("fail", phase, "seller"))
+        .then(() => { throw new Error("registered"); }, (error: { reasonCode?: string }) =>
+          expect(error.reasonCode).toBe("vet-terminal-plan-disagreement"));
+      const last: Record<string, unknown> = {};
+      for (let round = 0; round < 3; round += 1) {
+        for (const role of ["buyer", "seller"] as const) last[role] = await tick(role);
+      }
+      expect(last).toEqual({ buyer: stop, seller: stop });
+      // The buyer signs nothing; neither role finalizes a bundle.
+      expect(actors.buyer.signComponent).not.toHaveBeenCalled();
+      await expect(runtimes.buyer.loadPlanDisagreementEvidence!(JOB_ID))
+        .resolves.toMatchObject({ selected: "peer" });
+      await expect(runtimes.seller.loadPlanDisagreementEvidence!(JOB_ID))
+        .resolves.toMatchObject({ selected: "local" });
+    });
+  }
 });
