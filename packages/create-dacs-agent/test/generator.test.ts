@@ -552,6 +552,62 @@ describe("create-dacs-agent", () => {
   );
 
   test.runIf(process.platform !== "win32")(
+    "rejects each image, probe and docker failure and withdraws the earlier pass",
+    async () => {
+      const target = await generatedDockerProject("rejected-image-agent");
+      const { config } = passingDockerScenario();
+      const composeUser = `${TEST_ONLY_RUNTIME_UID}:${TEST_ONLY_RUNTIME_GID}`;
+      const rejected: [Partial<FakeDockerScenario>, string][] = [
+        [{ imageIds: ["rejected-image-agent:local"] },
+          "image reference did not resolve to an immutable Docker image ID"],
+        [{ config: { ...config, User: "0:0" } },
+          "image runtime user is not the generated non-root identity"],
+        [{ config: { ...config, WorkingDir: "/" } },
+          "image working directory is not /app"],
+        [{ config: { ...config, Entrypoint: ["unexpected-program"] } },
+          "image entrypoint overrides the generated DACS service command"],
+        [{ config: { ...config, Cmd: ["node", "dist/src/cli.js"] } },
+          "image command does not start the generated DACS service"],
+        [{ config: { ...config, Cmd: [...GENERATED_SERVICE_COMMAND, "--inspect"] } },
+          "image command does not start the generated DACS service"],
+        [{ probe: { status: "fail", uid: TEST_ONLY_RUNTIME_UID, gid: TEST_ONLY_RUNTIME_GID } },
+          "container probe did not report a pass"],
+        [{ probe: { status: "pass", uid: 10001, gid: TEST_ONLY_RUNTIME_GID } },
+          `container runtime identity is not the compose user ${composeUser}`],
+        [{ probe: { status: "pass", uid: TEST_ONLY_RUNTIME_UID, gid: 10001 } },
+          `container runtime identity is not the compose user ${composeUser}`],
+        [{ daemonDown: true },
+          "docker image failed: Cannot connect to the test-only Docker daemon"],
+      ];
+      for (const [overrides, message] of rejected) {
+        const passed = await runGeneratedDockerSmoke(target, passingDockerScenario());
+        expect(passed.receipt).toMatchObject({ imageId: TEST_ONLY_FAKE_IMAGE_ID });
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario(overrides));
+        expect(result.status, message).toBe(1);
+        expect(result.stderr).toContain(message);
+        expect(result.receipt, message).toBeUndefined();
+      }
+      // A mutable reference is never inspected or run.
+      const mutable = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        imageIds: ["rejected-image-agent:local"],
+      }));
+      expect(mutable.invocations).toHaveLength(1);
+
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      const missing = await runGeneratedDockerSmoke(target, undefined);
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("ENOENT");
+      expect(missing.receipt).toBeUndefined();
+      const verifyMissing = await runGeneratedDockerSmoke(target, undefined, {
+        args: ["--verify-smoked"],
+      });
+      expect(verifyMissing.status).toBe(1);
+      expect(verifyMissing.stderr).toContain("ENOENT");
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
     "requires DACS_IMAGE and a non-root compose user before calling docker",
     async () => {
       const target = await generatedDockerProject("smoke-usage-agent");
