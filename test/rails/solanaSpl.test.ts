@@ -335,7 +335,7 @@ describe("advanceSolanaSplSettlement", () => {
     });
     await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual({
       status: "indeterminate",
-      reason: "rpc-unavailable",
+      reason: "solana-spl-reconciliation-indeterminate",
     });
     clock += 101;
     await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
@@ -1275,6 +1275,90 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
     ["settled", { status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } }],
   ] as const)("a complete %s claim is still accepted", async (state, expected) => {
     await expect(claimWith(state, (claim) => claim)).resolves.toMatchObject({ result: expected });
+  });
+});
+
+describe("advanceSolanaSplSettlement reason codes", () => {
+  const SECRET = "secret=abc";
+  const leaks = (result: unknown) => JSON.stringify(result).includes(SECRET);
+  const throwing = (field: string) => Object.defineProperty(preflight(), field, {
+    get() { throw new Error(`preflight ${SECRET}`); },
+  });
+
+  test.each([
+    ["a throwing preflight getter", () => throwing("payerTokenAccount")],
+    ["a null preflight", () => null],
+    ["a non-canonical balance", () => preflight({ payerTokenBalanceBaseUnits: `01 ${SECRET}` })],
+    ["a non-base58 token account", () => preflight({ payerTokenAccount: SECRET })],
+  ])("%s is a fixed preflight code before signing", async (_name, value) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const result = await advanceSolanaSplSettlement(input({
+      adapter: adapter({ preflight: async () => value() as never, prepareSignedTransfer }),
+    }));
+    expect(result).toEqual({
+      status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid",
+    });
+    expect(leaks(result)).toBe(false);
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a throwing signer", async () => { throw new Error(`signer key ${SECRET}`); },
+      "solana-spl-preparation-unavailable"],
+    ["a signer rejecting with a string", async () => { throw `signer ${SECRET}`; },
+      "solana-spl-preparation-unavailable"],
+    ["a signer returning null", async () => null,
+      "solana-spl-prepared-transaction-invalid"],
+    ["a signer returning another binding", async (plan: never, attempt: number) => ({
+      ...(await adapter().prepareSignedTransfer(plan, attempt, {
+        assertCurrent: async () => undefined,
+      } as never)),
+      authorityHash: SECRET,
+    }), "solana-spl-prepared-transaction-invalid"],
+  ] as const)("%s is a fixed code and never broadcasts", async (_name, prepare, reason) => {
+    const recordAttempt = vi.fn();
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const result = await advanceSolanaSplSettlement(input({
+      store: { ...createInMemorySolanaSplSettlementStore(), recordAttempt },
+      adapter: adapter({ prepareSignedTransfer: prepare as never, broadcastRetained }),
+    }));
+    expect(result).toEqual({ status: "indeterminate", reason });
+    expect(leaks(result)).toBe(false);
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("a stale fence after signing is a fixed code and never persists", async () => {
+    let clock = 1_000;
+    const recordAttempt = vi.fn();
+    const result = await advanceSolanaSplSettlement(input({
+      now: () => clock,
+      store: { ...createInMemorySolanaSplSettlementStore(), recordAttempt },
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
+          clock = 1_101;
+          return prepared;
+        },
+      }),
+    }));
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-preparation-unavailable" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [{ disposition: "pending", reason: `rpc body ${SECRET}` },
+      { status: "waiting", reason: "solana-spl-reconciliation-pending" }],
+    [{ disposition: "indeterminate", reason: `https://user:${SECRET}@rpc` },
+      { status: "indeterminate", reason: "solana-spl-reconciliation-indeterminate" }],
+    [{ disposition: "settled-different", reason: `rpc ${SECRET}`, authenticationHash: HASH },
+      { status: "indeterminate", reason: "solana-spl-settled-different" }],
+  ] as const)("reconciliation %j is reported by a fixed code", async (observation, expected) => {
+    const result = await advanceSolanaSplSettlement(input({
+      adapter: adapter({ reconcile: async () => observation }),
+    }));
+    expect(result).toEqual(expected);
+    expect(leaks(result)).toBe(false);
   });
 });
 

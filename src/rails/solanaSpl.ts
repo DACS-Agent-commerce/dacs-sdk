@@ -453,12 +453,9 @@ function validatePreflight(
       payerFundsAtaRentLamports: preflight.payeeAtaExists ? "0" : preflight.ataRentExemptReserveLamports,
       instruction: "TransferChecked" as const,
     });
-  } catch (error) {
-    return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "solana-spl-preflight-invalid",
-    };
+  } catch {
+    // The adapter's message may carry RPC or account detail; never echo it.
+    return { status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid" };
   }
 }
 
@@ -736,7 +733,7 @@ function readClaim(
 type ReconciledState =
   | { disposition: "settled-same"; settlement: Readonly<SolanaSplSettlementResult> | null }
   | { disposition: "settled-different" }
-  | { disposition: "pending"; reason: string }
+  | { disposition: "pending" }
   | { disposition: "absent-valid" }
   | { disposition: "absent-expired"; evidence: Readonly<SolanaSplExpiryEvidence> }
   | { disposition: "indeterminate"; reason: string };
@@ -800,15 +797,12 @@ function readReconciliation(
       } catch {
         return { disposition: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
       }
+    // The adapter's own reasons may carry RPC detail; only fixed codes leave.
     case "settled-different":
-      return { disposition };
     case "pending":
+      return { disposition };
     case "indeterminate":
-      try {
-        return { disposition, reason: result.reason as string };
-      } catch {
-        return { disposition: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
-      }
+      return { disposition, reason: "solana-spl-reconciliation-indeterminate" };
     default:
       return { disposition: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
   }
@@ -975,7 +969,9 @@ export async function advanceSolanaSplSettlement(
     if (result.disposition === "settled-different") {
       return { status: "indeterminate", reason: "solana-spl-settled-different" };
     }
-    if (result.disposition === "pending") return { status: "waiting", reason: result.reason };
+    if (result.disposition === "pending") {
+      return { status: "waiting", reason: "solana-spl-reconciliation-pending" };
+    }
     if (result.disposition === "indeterminate") return { status: "indeterminate", reason: result.reason };
     if (result.disposition === "absent-valid" || result.disposition === "absent-expired") {
       return null;
@@ -1056,20 +1052,24 @@ export async function advanceSolanaSplSettlement(
   if ("status" in plan) return plan;
 
   const attemptNumber = attempts.length + 1;
-  let attempt: Readonly<SolanaSplSignedAttempt>;
+  // The signer's errors may carry key or wallet detail; only fixed codes leave.
+  let prepared: Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>;
   try {
     await fence.assertCurrent();
-    attempt = createAttempt(
-      await prepareSignedTransfer(plan, attemptNumber, fence),
-      attemptNumber,
-      intent,
-    );
+    prepared = await prepareSignedTransfer(plan, attemptNumber, fence);
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-preparation-unavailable" };
+  }
+  let attempt: Readonly<SolanaSplSignedAttempt>;
+  try {
+    attempt = createAttempt(prepared, attemptNumber, intent);
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" };
+  }
+  try {
     await fence.assertCurrent();
-  } catch (error) {
-    return {
-      status: "indeterminate",
-      reason: error instanceof Error ? error.message : "solana-spl-preparation-unavailable",
-    };
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-preparation-unavailable" };
   }
   let retained: unknown;
   try {
