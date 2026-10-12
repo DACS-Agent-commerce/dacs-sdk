@@ -57,8 +57,13 @@ import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
-import { advanceDacsVetTerminalTrackV1 } from
-  "../src/sessionBootstrapAgreementRuntime.js";
+import {
+  advanceDacsVetTerminalTrackV1,
+  createDacsBuyerSessionBootstrapAgreementTrackV1,
+  createDacsPayDemBuyerSessionBootstrapAgreementTrackV1,
+  createDacsPayDemSellerSessionBootstrapAgreementTrackV1,
+  createDacsSellerSessionBootstrapAgreementTrackV1,
+} from "../src/sessionBootstrapAgreementRuntime.js";
 import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportRuntimeV1,
@@ -88,7 +93,8 @@ const TERMINAL_TRANSPORT_ID_DOMAIN =
 
 function terminalTransportEffectId(
   role: "buyer" | "seller",
-  kind: "material" | "proposal" | "contribution" | "conflict" | "selection" | "disagreement",
+  kind: "material" | "proposal" | "contribution" | "conflict" | "selection" | "disagreement" |
+    "local-vet",
   signerRole?: "buyer" | "seller",
 ): string {
   return sha256Hex(`${TERMINAL_TRANSPORT_ID_DOMAIN}${canonicalize({
@@ -398,6 +404,22 @@ function authenticated(
     identityRole: sender === BUYER ? "buyer" : "seller",
     receivedAt: 1_800_000_000_001,
   } as unknown as Readonly<DacsHttpAuthenticatedEnvelopeV1>;
+}
+
+// Records that `role`'s own Vet of its peer passed, on an order opened by
+// `open(role, rail)`.
+function passOwnVet(
+  runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>,
+  role: "buyer" | "seller",
+  rail: "x402" | "pay-dem" = "x402",
+) {
+  const pair = rail === "pay-dem" ? payDemOrderPair() : undefined;
+  return runtime.registerLocalVetPass!({
+    jobId: JOB_ID,
+    localBindingHash: pair === undefined
+      ? fixedPriceX402OrderLocalBindingHash(order(role))
+      : role === "buyer" ? pair.buyerLocalBindingHash : pair.sellerLocalBindingHash,
+  });
 }
 
 function acknowledgement(disposition: "accepted" | "existing" | "rejected") {
@@ -754,6 +776,8 @@ describe("role-separated Vet terminal bundle transport", () => {
       authenticateProduction: sellerAuthenticate,
     });
     const registered = await buyerRuntime.registerLocalTerminal(terminalInput());
+    // The seller's own Vet of the buyer passed, so it accepts the buyer's plan.
+    await passOwnVet(sellerRuntime, "seller");
     const exactPlan = registered.proposal.plan;
     const transportIdentity = {
       jobId: JOB_ID,
@@ -976,6 +1000,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       authenticateProduction: async () => ({ status: "valid" }),
     });
     await buyerRuntime.registerLocalTerminal(terminalInput());
+    await passOwnVet(sellerRuntime, "seller");
 
     await expect(buyerRuntime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({
       disposition: "waiting",
@@ -1091,6 +1116,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       authenticateProduction: async () => ({ status: "valid" }),
     });
     const registered = await buyerRuntime.registerLocalTerminal(terminalInput());
+    await passOwnVet(sellerRuntime, "seller");
     const identity = {
       jobId: JOB_ID,
       authorityHash: registered.proposal.plan.authorityHash,
@@ -1353,7 +1379,9 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
     configuredVersions.recipeRegistryVersion = 2;
     configuredVersions.railRegistryVersion = 2;
-    const proposal = await terminalProposal(terminalInput());
+    // The seller's failure of the buyer, whose own Vet of the seller passed.
+    const proposal = await terminalProposal(terminalInput("fail", "pay-x402", "buyer"));
+    await passOwnVet(runtime, "buyer");
 
     await expect(runtime.handleMessage(
       authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
@@ -1427,6 +1455,8 @@ describe("role-separated Vet terminal bundle transport", () => {
         reasonCode: "vet-terminal-plan-disagreement",
       });
     } else {
+      // The buyer's own Vet has not decided: the peer's plan is selected but
+      // neither accepted nor bound, and the inbox keeps the message pending.
       await expect(runtime.handleMessage(
         authenticated(
           "terminal-bundle-proposal-seller",
@@ -1435,7 +1465,7 @@ describe("role-separated Vet terminal bundle transport", () => {
           BUYER,
         ),
         { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
-      )).resolves.toEqual({ disposition: "accepted" });
+      )).rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-pending" });
       await expect(runtime.registerLocalTerminal(localInput)).rejects.toMatchObject({
         reasonCode: "vet-terminal-plan-disagreement",
       });
@@ -1450,7 +1480,11 @@ describe("role-separated Vet terminal bundle transport", () => {
       terminalTransportEffectId("buyer", "proposal"),
     );
     expect(material === undefined).toBe(first === "proposal");
-    expect(proposal === undefined).toBe(first === "material");
+    expect(proposal).toBeUndefined();
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "selection"),
+    )).toMatchObject({ source: first === "material" ? "material" : "peer" });
     expect(buyerDatabase.loadEffectInput(
       "session",
       terminalTransportEffectId("buyer", "conflict"),
@@ -1955,6 +1989,12 @@ function memoryRoleDatabase(
     },
     retainedProposal: () =>
       effects.get(`session:${terminalTransportEffectId(role, "proposal")}`),
+    // This role's own Vet of the peer passed. A peer's plan is accepted and
+    // signed only once this, or this role's own failure of it, is recorded.
+    passOwnVet: () => runtime.registerLocalVetPass!({
+      jobId: JOB_ID,
+      localBindingHash: coordinatorRecord().localBindingHash,
+    }),
   };
 }
 
@@ -1976,15 +2016,27 @@ describe("Vet terminal pre-agreement boundary", () => {
   });
 
   it.each(["buyer", "seller"] as const)(
-    "the %s accepts a peer's authenticated Vet failure before agreement",
+    "the %s accepts a peer's authenticated Vet failure before agreement once its own Vet passed",
     async (receiver) => {
       const actor = memoryRoleDatabase(receiver);
+      const message = await peerProposal(receiver);
 
+      // Until this role's own Vet of the peer decides, the plan waits: the
+      // message stays pending and nothing is bound or acknowledged.
       await expect(actor.runtime.handleMessage(
-        await peerProposal(receiver),
+        message,
+        { role: receiver } as DacsLiveRoleInboundOperationContextV1,
+      )).rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-pending" });
+      expect(actor.retainedProposal()).toBeUndefined();
+      await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+        .resolves.toBeUndefined();
+      await actor.passOwnVet();
+      await expect(actor.runtime.handleMessage(
+        message,
         { role: receiver } as DacsLiveRoleInboundOperationContextV1,
       )).resolves.toEqual({ disposition: "accepted" });
       expect(actor.retainedProposal()).toBeDefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
     },
   );
 
@@ -2033,6 +2085,7 @@ describe("Vet terminal pre-agreement boundary", () => {
     "the %s does not sign a retained Vet failure once agreement succeeded",
     async (receiver) => {
       const actor = memoryRoleDatabase(receiver);
+      await actor.passOwnVet();
       await expect(actor.runtime.handleMessage(
         await peerProposal(receiver),
         { role: receiver } as DacsLiveRoleInboundOperationContextV1,
@@ -2073,6 +2126,7 @@ describe("Vet terminal pre-agreement boundary", () => {
 
   it("still fails closed when retained terminal state cannot be bound to its order", async () => {
     const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
     await expect(actor.runtime.handleMessage(
       await peerProposal("buyer"),
       { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
@@ -2171,11 +2225,14 @@ describe("authenticated peer plans on the Vet terminal", () => {
       expect(actor.signComponent).not.toHaveBeenCalled();
     });
 
-    it(`${rail}: reaches the same disagreement when this role's own failure follows the peer's accepted plan`, async () => {
+    it(`${rail}: reaches the same disagreement when this role's own failure follows the peer's pending plan`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
       const planB = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
+      // Selected, but not accepted while this role's own Vet is undecided.
       await expect(actor.runtime.handleMessage(fromSeller(planB), inbound))
-        .resolves.toEqual({ disposition: "accepted" });
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-pending" });
+      expect(row(actor, "selection")).toMatchObject({ source: "peer", planHash: planB.plan.planHash });
+      expect(actor.retainedProposal()).toBeUndefined();
       await expect(restart(actor).registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
         .rejects.toMatchObject({ reasonCode: "vet-terminal-plan-disagreement" });
       expect(sealed(actor)).toBeUndefined();
@@ -2196,6 +2253,7 @@ describe("authenticated peer plans on the Vet terminal", () => {
 
     it(`${rail}: alerts the operator for a conflicting plan after commit and keeps the committed plan`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
+      await actor.passOwnVet();
       const planA = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
       await expect(actor.runtime.handleMessage(fromSeller(planA), inbound))
         .resolves.toEqual({ disposition: "accepted" });
@@ -2230,6 +2288,7 @@ describe("authenticated peer plans on the Vet terminal", () => {
 
     it(`${rail}: refuses a second peer plan before commit and continues the first after a restart`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
+      await actor.passOwnVet();
       const planA = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
       // The first plan is selected, then the process dies before its binding.
       crashBefore(actor, "proposal");
@@ -2279,6 +2338,7 @@ describe("authenticated peer plans on the Vet terminal", () => {
       `${rail}: lets the agreement decide when it takes the phase %s`,
       async (when) => {
         const actor = memoryRoleDatabase("buyer", undefined, rail);
+        await actor.passOwnVet();
         const planA = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
         const database = actor.context.database as unknown as {
           putEffectIntent: (input: Readonly<{ effectId: string; bindingHash: string }>) => unknown;
@@ -2395,8 +2455,11 @@ describe("authenticated peer plans on the Vet terminal", () => {
           await register(actor.runtime);
           await receive(restart(actor));
         } else {
-          await receive(actor.runtime);
+          // The peer's copy waits for this role's own failure, then is accepted.
+          await expect(actor.runtime.handleMessage(fromSeller(own), inbound))
+            .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-pending" });
           await register(restart(actor));
+          await receive(restart(actor));
         }
         expect(row(actor, "selection")).toMatchObject({ planHash: own.plan.planHash,
           source: first === "local failure" ? "material" : "peer" });
@@ -2445,6 +2508,41 @@ describe("authenticated peer plans on the Vet terminal", () => {
     }
   });
 
+  // This role's own Vet result is recorded once: a pass and a failure of the
+  // same Vet contradict each other, and an operator decides.
+  it("refuses a peer plan that blames the peer after this role's own Vet of the peer passed", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
+    // The seller sends the buyer's failure of the seller, which the buyer's
+    // recorded pass contradicts.
+    await expect(actor.runtime.handleMessage(
+      fromSeller(await terminalProposal(terminalInput("fail", "pay-x402"))), inbound,
+    )).resolves.toEqual({ disposition: "rejected", reasonCode: "vet-terminal-local-vet-conflict" });
+    expect(actor.retainedProposal()).toBeUndefined();
+    await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+      .resolves.toEqual({ status: "operator-action", reasonCode: "vet-terminal-finalization-conflict" });
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
+
+  it.each(["pass then failure", "failure then pass"] as const)(
+    "refuses to record this role's own Vet twice with different results (%s)",
+    async (order) => {
+      const actor = memoryRoleDatabase("buyer");
+      if (order === "pass then failure") {
+        await actor.passOwnVet();
+        await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402")))
+          .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
+        expect(row(actor, "selection")).toBeUndefined();
+      } else {
+        await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
+        await expect(actor.passOwnVet()).rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
+        expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
+          .toBeUndefined();
+      }
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    },
+  );
+
   it("seals when this role registers a second local plan over its retained material", async () => {
     const actor = memoryRoleDatabase("buyer");
     await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
@@ -2460,9 +2558,10 @@ describe("authenticated peer plans on the Vet terminal", () => {
 describe("two honest, different Vet failures", () => {
   type Actor = ReturnType<typeof memoryRoleDatabase>;
   const stop = { status: "operator-action", reasonCode: "vet-terminal-plan-disagreement" };
-  const pair = (rail: "x402" | "pay-dem") => {
-    const buyer = memoryRoleDatabase("buyer", undefined, rail);
-    const seller = memoryRoleDatabase("seller", undefined, rail);
+  // Passing `restartOf` builds new runtimes over the same durable state.
+  const pair = (rail: "x402" | "pay-dem", restartOf?: Record<"buyer" | "seller", Actor>) => {
+    const buyer = restartOf?.buyer ?? memoryRoleDatabase("buyer", undefined, rail);
+    const seller = restartOf?.seller ?? memoryRoleDatabase("seller", undefined, rail);
     const runtimes = {} as Record<"buyer" | "seller", Readonly<DacsVetTerminalBundleTransportRuntimeV1>>;
     for (const [role, actor] of [["buyer", buyer], ["seller", seller]] as const) {
       const peer = role === "buyer" ? "seller" : "buyer";
@@ -2507,30 +2606,308 @@ describe("two honest, different Vet failures", () => {
       });
     }
 
-    it(`${rail}: stops both roles when the buyer's own failure follows the seller's accepted plan`, async () => {
+    // Daybreak's restart probe: the seller's plan reaches the buyer before the
+    // buyer's own Vet decides, which then fails differently. The buyer never
+    // accepted the plan, so the seller never signed it either.
+    it(`${rail}: signs nothing on either role when the buyer's own failure follows the seller's plan, across ticks and a restart`, async () => {
       const { actors, runtimes, tick } = pair(rail);
       await runtimes.seller.registerLocalTerminal(terminalInput("fail", phase, "buyer"));
-      await tick("seller");
-      expect(actors.buyer.retainedProposal()).toBeDefined();
+      // Several ticks while the buyer's own Vet is undecided: the seller's
+      // proposal waits at the buyer, and the buyer's track has nothing to do.
+      for (let round = 0; round < 3; round += 1) {
+        expect(await tick("seller")).toMatchObject({ status: "indeterminate" });
+        await expect(tick("buyer")).resolves.toBeUndefined();
+      }
+      expect(actors.buyer.retainedProposal()).toBeUndefined();
+      expect(actors.buyer.effects.get(`session:${terminalTransportEffectId("buyer", "selection")}`))
+        .toMatchObject({ source: "peer" });
       await runtimes.buyer.registerLocalTerminal(terminalInput("fail", phase, "seller"))
         .then(() => { throw new Error("registered"); }, (error: { reasonCode?: string }) =>
           expect(error.reasonCode).toBe("vet-terminal-plan-disagreement"));
-      // The seller contributed its own signature to its plan while that plan
-      // was the only one; the buyer never co-signs it.
-      const sellerSignatures = vi.mocked(actors.seller.signComponent).mock.calls.length;
       const last: Record<string, unknown> = {};
       for (let round = 0; round < 3; round += 1) {
         for (const role of ["buyer", "seller"] as const) last[role] = await tick(role);
       }
       expect(last).toEqual({ buyer: stop, seller: stop });
-      // The buyer signs nothing, nothing more is signed after the
-      // disagreement, and neither role finalizes a bundle.
-      expect(actors.buyer.signComponent).not.toHaveBeenCalled();
-      expect(actors.seller.signComponent).toHaveBeenCalledTimes(sellerSignatures);
       await expect(runtimes.buyer.loadPlanDisagreementEvidence!(JOB_ID))
         .resolves.toMatchObject({ selected: "peer" });
       await expect(runtimes.seller.loadPlanDisagreementEvidence!(JOB_ID))
         .resolves.toMatchObject({ selected: "local" });
+
+      // Both processes restart on their durable state and stay stopped.
+      const restarted = pair(rail, actors);
+      for (let round = 0; round < 3; round += 1) {
+        for (const role of ["buyer", "seller"] as const) last[role] = await restarted.tick(role);
+      }
+      expect(last).toEqual({ buyer: stop, seller: stop });
+      for (const role of ["buyer", "seller"] as const) {
+        expect(actors[role].signComponent).not.toHaveBeenCalled();
+        expect(conflictSealed(actors[role], role)).toBe(false);
+      }
+    });
+
+    it(`${rail}: signs the seller's plan on both roles only after the buyer's own Vet passed`, async () => {
+      const { actors, runtimes, tick } = pair(rail);
+      await runtimes.seller.registerLocalTerminal(terminalInput("fail", phase, "buyer"));
+      await tick("seller");
+      await expect(tick("buyer")).resolves.toBeUndefined();
+      expect(actors.seller.signComponent).not.toHaveBeenCalled();
+      expect(actors.buyer.signComponent).not.toHaveBeenCalled();
+
+      await actors.buyer.passOwnVet();
+      await tick("seller");
+      await tick("buyer");
+      expect(actors.seller.signComponent).toHaveBeenCalled();
+      expect(actors.buyer.signComponent).toHaveBeenCalled();
+      expect(actors.buyer.retainedProposal()).toBeDefined();
+      for (const role of ["buyer", "seller"] as const) {
+        await expect(runtimes[role].loadPlanDisagreementEvidence!(JOB_ID)).resolves.toBeUndefined();
+      }
+    });
+  }
+});
+
+// The code reviewer's round-6 P2-1 through the real bootstrap tracks: each
+// role's agreement track drives the real terminal runtime on the memory
+// database; only the session-bootstrap transport and the Vet producer are
+// stubs. The seller's Vet of the buyer fails first, and its plan reaches the
+// buyer before the buyer's own Vet of the seller decides.
+describe("bootstrap tracks read this role's own Vet before a peer's plan", () => {
+  type Actor = ReturnType<typeof memoryRoleDatabase>;
+  type Role = "buyer" | "seller";
+  type Decision = "fail" | "pass" | "pending";
+  const EMPTY = Object.freeze({ requirementVersion: "1" as const, required: [] });
+  const stop = { status: "operator-action", reasonCode: "vet-terminal-plan-disagreement" };
+  const roles = ["buyer", "seller"] as const;
+
+  // `decisions` is read on every Vet, so a test can decide a role's own Vet
+  // later. Passing `restartOf` builds new runtimes and tracks over the same
+  // durable state.
+  const tracks = (
+    rail: "x402" | "pay-dem",
+    decisions: Record<Role, Decision>,
+    restartOf?: Record<Role, Actor>,
+  ) => {
+    const phase = rail === "x402" ? "pay-x402" as const : "pay-dem" as const;
+    const actors: Record<Role, Actor> = {
+      buyer: restartOf?.buyer ?? memoryRoleDatabase("buyer", undefined, rail),
+      seller: restartOf?.seller ?? memoryRoleDatabase("seller", undefined, rail),
+    };
+    const runtimes = {} as Record<Role, Readonly<DacsVetTerminalBundleTransportRuntimeV1>>;
+    for (const role of roles) {
+      const peer = role === "buyer" ? "seller" : "buyer";
+      (actors[role].context as unknown as { sendMessage: unknown }).sendMessage = vi.fn(
+        async (message: Readonly<{ type: string; payload: unknown }>) => acknowledgement((await runtimes[peer]
+          .handleMessage(authenticated(message.type as never, message.payload,
+            role === "buyer" ? BUYER : SELLER, role === "buyer" ? SELLER : BUYER),
+          { role: peer } as DacsLiveRoleInboundOperationContextV1)).disposition as never));
+      runtimes[role] = createDacsVetTerminalBundleTransportRuntimeV1({
+        context: actors[role].context,
+        expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => ({ status: "valid" }),
+      });
+    }
+    const agreement = vi.fn();
+    const common = (role: Role) => ({
+      context: actors[role].context,
+      agreement,
+      vet: {
+        produce: vi.fn(async () => decisions[role] === "pending"
+          ? { status: "indeterminate" as const, reasonCode: `${role}-vet-producer-pending` }
+          : { status: "ready" as const,
+              production: { record: { overallDecision: decisions[role] } } as never }),
+        authenticate: vi.fn(async () => "valid" as const),
+      },
+      terminalBundle: {
+        runtime: runtimes[role],
+        createInput: (input: Readonly<{ evaluatedRole: Role }>) =>
+          terminalInput("fail", phase, input.evaluatedRole),
+      },
+    });
+    const buyerOptions = {
+      ...common("buyer"),
+      sessionBootstrap: {
+        resolveInit: () => ({ bootstrapVersion: "1" }),
+        publishInit: vi.fn(async () => "accepted"),
+        resolveChallenge: () => ({ buyerChallenge: "challenge", sellerIdentity: identity("seller") }),
+        resolvePresentation: () => ({ buyerIdentity: identity("buyer") }),
+        publishPresentation: vi.fn(async () => "accepted"),
+        resolveAdmission: () => undefined,
+        handleMessage: vi.fn(),
+      },
+      resolveRequirements: () => ({ buyer: EMPTY, seller: EMPTY }),
+    } as never;
+    const sellerOptions = {
+      ...common("seller"),
+      sessionBootstrap: {
+        resolveInit: () => ({ bootstrapVersion: "1" }),
+        resolveChallenge: () => ({ sellerIdentity: identity("seller") }),
+        publishChallenge: vi.fn(async () => "accepted"),
+        resolvePresentation: () => ({ buyerIdentity: identity("buyer") }),
+        resolveAdmission: () => undefined,
+        publishAdmission: vi.fn(async () => "accepted"),
+        handleMessage: vi.fn(),
+      },
+      resolveBuyerRequirement: () => EMPTY,
+      agreementProposalReady: () => false,
+    } as never;
+    const track: Record<Role, (operation: never) => Promise<unknown>> = rail === "x402"
+      ? { buyer: createDacsBuyerSessionBootstrapAgreementTrackV1(buyerOptions) as never,
+          seller: createDacsSellerSessionBootstrapAgreementTrackV1(sellerOptions) as never }
+      : { buyer: createDacsPayDemBuyerSessionBootstrapAgreementTrackV1(buyerOptions) as never,
+          seller: createDacsPayDemSellerSessionBootstrapAgreementTrackV1(sellerOptions) as never };
+    const tick = async (role: Role) => {
+      const database = actors[role].context.database as unknown as Record<
+        "createLiveCoordinatorStore" | "createPayDemCoordinatorStore",
+        () => { load: () => Promise<{ record: Readonly<Record<string, unknown>> }> }
+      >;
+      const { record } = await (rail === "x402"
+        ? database.createLiveCoordinatorStore() : database.createPayDemCoordinatorStore()).load();
+      return await track[role]({
+        order: record,
+        fence: {
+          role, track: "agreement", jobId: JOB_ID,
+          bindingHash: record.bindingHash, localBindingHash: record.localBindingHash,
+          owner: `${role}-worker`, generation: 1, idempotencyKey: `${role}-agreement:${JOB_ID}`,
+          assertCurrent: vi.fn(async () => undefined),
+        },
+      } as never);
+    };
+    return { actors, runtimes, tick, agreement };
+  };
+  const effect = (actor: Actor, kind: "selection" | "local-vet") =>
+    actor.effects.get(`session:${terminalTransportEffectId(actor.context.role, kind)}`);
+
+  for (const rail of ["x402", "pay-dem"] as const) {
+    // `first` fails its Vet of the other role at once; `late`'s own Vet of
+    // `first` decides afterwards, so each role's track is the late one once.
+    for (const [first, late] of [["seller", "buyer"], ["buyer", "seller"]] as const) {
+      for (const timing of ["at once", "after two undecided ticks"] as const) {
+        it(`${rail}: registers the ${late}'s own failure after the ${first}'s plan (deciding ${timing}); neither role signs, across a restart`, async () => {
+          const decisions = {
+            [first]: "fail", [late]: timing === "at once" ? "fail" : "pending",
+          } as Record<Role, Decision>;
+          const value = tracks(rail, decisions);
+          // The first role's own failure; its plan waits at the late role.
+          await expect(value.tick(first)).resolves.toMatchObject({ status: "indeterminate" });
+          expect(effect(value.actors[late], "selection")).toMatchObject({ source: "peer" });
+          if (timing !== "at once") {
+            for (let round = 0; round < 2; round += 1) {
+              await expect(value.tick(late)).resolves.toMatchObject({
+                status: "indeterminate", reasonCode: `${late}-vet-producer-pending` });
+              await expect(value.tick(first)).resolves.toMatchObject({ status: "indeterminate" });
+            }
+            decisions[late] = "fail";
+          }
+          const last: Record<string, unknown> = {};
+          for (let round = 0; round < 3; round += 1) {
+            for (const role of [late, first]) last[role] = await value.tick(role);
+          }
+          expect(last).toEqual({ buyer: stop, seller: stop });
+          // The late role's own failure was registered against the first's plan.
+          await expect(value.runtimes[late].loadPlanDisagreementEvidence!(JOB_ID))
+            .resolves.toMatchObject({ selected: "peer" });
+          await expect(value.runtimes[first].loadPlanDisagreementEvidence!(JOB_ID))
+            .resolves.toMatchObject({ selected: "local" });
+
+          const restarted = tracks(rail, decisions, value.actors);
+          for (let round = 0; round < 3; round += 1) {
+            for (const role of roles) last[role] = await restarted.tick(role);
+          }
+          expect(last).toEqual({ buyer: stop, seller: stop });
+          for (const role of roles) {
+            expect(value.actors[role].signComponent).not.toHaveBeenCalled();
+          }
+          expect(value.agreement).not.toHaveBeenCalled();
+          expect(restarted.agreement).not.toHaveBeenCalled();
+        });
+      }
+
+      it(`${rail}: the ${late} co-signs the ${first}'s plan only after its own Vet passed`, async () => {
+        const decisions = { [first]: "fail", [late]: "pending" } as Record<Role, Decision>;
+        const value = tracks(rail, decisions);
+        await value.tick(first);
+        await value.tick(late);
+        expect(value.actors[late].signComponent).not.toHaveBeenCalled();
+        expect(value.actors[first].signComponent).not.toHaveBeenCalled();
+
+        decisions[late] = "pass";
+        await value.tick(late);
+        expect(effect(value.actors[late], "local-vet")).toMatchObject({
+          kind: "local-vet-pass", evaluatedRole: first });
+        expect(value.actors[late].signComponent).toHaveBeenCalled();
+        await value.tick(first);
+        expect(value.actors[first].signComponent).toHaveBeenCalled();
+        expect(value.agreement).not.toHaveBeenCalled();
+      });
+    }
+  }
+});
+
+// handleMessage writes the peer's plan to the one selection row and then
+// classifies it again: another writer, in another process, may have won the
+// row between the plan's first check and that write. Simulated by writing the
+// winner's row just before the peer's.
+describe("a peer plan that loses the selection between its check and its write", () => {
+  const inbound = { role: "buyer" } as DacsLiveRoleInboundOperationContextV1;
+  const fromSeller = (payload: unknown) =>
+    authenticated("terminal-bundle-proposal-seller", payload, SELLER, BUYER);
+  const selectionKey = `session:${terminalTransportEffectId("buyer", "selection")}`;
+  const loseSelectionTo = (actor: ReturnType<typeof memoryRoleDatabase>, row: unknown) => {
+    const database = actor.context.database as unknown as {
+      putEffectIntent: (input: Readonly<{ effectId: string; input: unknown }>) => unknown;
+    };
+    const put = database.putEffectIntent;
+    database.putEffectIntent = (input) => {
+      if (input.effectId === terminalTransportEffectId("buyer", "selection")) {
+        database.putEffectIntent = put;
+        actor.effects.set(selectionKey, structuredClone(row));
+      }
+      return put(input);
+    };
+  };
+
+  for (const rail of ["x402", "pay-dem"] as const) {
+    const phase = rail === "x402" ? "pay-x402" as const : "pay-dem" as const;
+
+    it(`${rail}: refuses it as a disagreement when this role's own failure won`, async () => {
+      const winner = memoryRoleDatabase("buyer", undefined, rail);
+      const own = await winner.runtime.registerLocalTerminal(terminalInput("fail", phase));
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const planB = await terminalProposal(terminalInput("fail", phase, "buyer"));
+      loseSelectionTo(actor, winner.effects.get(selectionKey));
+
+      await expect(actor.runtime.handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
+        disposition: "rejected", reasonCode: "vet-terminal-plan-disagreement",
+      });
+      await expect(actor.runtime.loadPlanDisagreementEvidence!(JOB_ID)).resolves.toMatchObject({
+        selected: "local", localPlanHash: own.proposal.plan.planHash,
+        peerPlanHash: planB.plan.planHash, losingPayload: planB, authenticationHash: "c".repeat(64),
+      });
+      expect(actor.retainedProposal()).toBeUndefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    });
+
+    it(`${rail}: refuses it as equivocation when another plan from the peer won`, async () => {
+      const winner = memoryRoleDatabase("buyer", undefined, rail);
+      const planC = await terminalProposal(terminalInput("fail", phase));
+      // The winner's own Vet is undecided, so planC is selected and held.
+      await expect(winner.runtime.handleMessage(fromSeller(planC), inbound))
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-pending" });
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      await actor.passOwnVet();
+      const planB = await terminalProposal(terminalInput("fail", phase, "buyer"));
+      loseSelectionTo(actor, winner.effects.get(selectionKey));
+
+      await expect(actor.runtime.handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
+        disposition: "rejected", reasonCode: "vet-terminal-proposal-equivocation",
+      });
+      await expect(actor.runtime.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({
+        beforeCommit: expect.objectContaining({ operatorAlert: false,
+          retainedPlanHash: planC.plan.planHash, offeredPlanHash: planB.plan.planHash }),
+      });
+      expect(actor.retainedProposal()).toBeUndefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
     });
   }
 });

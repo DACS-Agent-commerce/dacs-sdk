@@ -57,6 +57,7 @@ import type {
 import { dacsSessionAgreementFactsIdV1 } from "./sessionAgreementFactsId.js";
 import { dacsHttpPayloadHashV1 } from "./transport/envelope.js";
 import {
+  DACS_VET_TERMINAL_LOCAL_VET_PENDING,
   DACS_VET_TERMINAL_PLAN_DISAGREEMENT,
   DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING,
   DacsVetTerminalBundleTransportError,
@@ -376,6 +377,10 @@ export async function advanceDacsVetTerminalTrackV1(
     if (error instanceof DacsVetTerminalBundleTransportError &&
         (error.reasonCode === "vet-terminal-material-unavailable" ||
           error.reasonCode === "vet-terminal-not-pre-agreement")) return undefined;
+    // The peer's plan waits for this role's own Vet result, which the
+    // ordinary track reads next and records before it advances again.
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_VET_TERMINAL_LOCAL_VET_PENDING) return undefined;
     if (error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode === "vet-terminal-production-indeterminate") {
       return pending(
@@ -498,6 +503,34 @@ async function finalizeLocalVetFailure(
     delay,
     input.operation.order.jobId,
   ) ?? operator("vet-terminal-registration-missing");
+}
+
+// This role's own Vet of the peer passed: record it, then advance the peer's
+// plan that waited for it, if any. Undefined when no terminal is left.
+async function finalizeLocalVetPass(
+  terminalBundle: CommonOptionsV1["terminalBundle"],
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+): Promise<Readonly<FixedPriceX402TrackOperationResult> | undefined> {
+  if (terminalBundle === undefined) return undefined;
+  try {
+    await terminalBundle.runtime.registerLocalVetPass?.({
+      jobId: operation.order.jobId,
+      localBindingHash: operation.order.localBindingHash,
+    });
+  } catch (error) {
+    return error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode.endsWith("-conflict")
+      ? operator("vet-terminal-registration-conflict")
+      : pending(context, delay, "vet-terminal-local-vet-unavailable", "indeterminate");
+  }
+  return await advanceDacsVetTerminalTrackV1(
+    terminalBundle.runtime,
+    context,
+    delay,
+    operation.order.jobId,
+  );
 }
 
 function factsId(role: "buyer" | "seller", jobId: string): string {
@@ -771,6 +804,9 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     if (!operationBound(context, operation)) {
       return operator("buyer-session-bootstrap-track-mismatch");
     }
+    // This role's own plan, or the peer's once this role's own Vet result is
+    // recorded and agrees with it. A peer's plan that still waits for that
+    // result is not advanced: the Vet below reads it and records it first.
     if (options.terminalBundle !== undefined) {
       const terminal = await advanceDacsVetTerminalTrackV1(
         options.terminalBundle.runtime,
@@ -905,6 +941,8 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         },
       );
     }
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
+    if (passed !== undefined) return passed;
     const admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       return pending(context, delay, "buyer-session-admission-pending");
@@ -1016,6 +1054,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         return operator("seller-agreement-runtime-failed");
       }
     }
+    // As for the buyer: a peer's plan waits for this role's own Vet below.
     if (options.terminalBundle !== undefined) {
       const terminal = await advanceDacsVetTerminalTrackV1(
         options.terminalBundle.runtime,
@@ -1150,6 +1189,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         },
       );
     }
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
+    if (passed !== undefined) return passed;
     let admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       admission = Object.freeze({

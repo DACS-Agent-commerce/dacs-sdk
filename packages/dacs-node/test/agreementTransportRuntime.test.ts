@@ -599,7 +599,14 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
         const auth = authenticated("agreement-proposal", payload, BUYER, SELLER);
         return { ...auth, envelope: { ...auth.envelope, type: "terminal-bundle-proposal-buyer" } } as unknown as DacsHttpAuthenticatedEnvelopeV1;
     };
-    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound, sellerRuntime, startOrder };
+    // The role's own Vet of its peer passed: a terminal runtime accepts and
+    // signs the peer's Vet-failure plan only once this is recorded.
+    const ownVetPassed = (role: "buyer" | "seller") => {
+        const actor = role === "buyer" ? buyer : seller;
+        return createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context, expectedRegistryVersions: { recipeRegistryVersion: 1, railRegistryVersion: 1 }, authenticateProduction: async () => ({ status: "valid" }) })
+            .registerLocalVetPass!({ jobId: JOB_ID, localBindingHash: actor.record.localBindingHash });
+    };
+    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound, sellerRuntime, startOrder, ownVetPassed };
 }
 describe("memory-backed agreement and Vet terminal recovery", () => {
     it.each(["x402", "pay-dem"] as const)("publishes %s proposals using the real session Vet output", async (profile) => {
@@ -626,6 +633,7 @@ describe("memory-backed agreement and Vet terminal recovery", () => {
     });
     it.each(["x402", "pay-dem"] as const)("accepts a genuine %s seller failure before any proposal or response", async (profile) => {
         const h = await memoryAgreementHarness(profile);
+        await h.ownVetPassed("seller");
         await expect(h.terminalRuntime().handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
     });
     it.each(["x402", "pay-dem"] as const)("rejects %s seller failure after an authenticated seller-pass proposal", async (profile) => {
@@ -636,6 +644,7 @@ describe("memory-backed agreement and Vet terminal recovery", () => {
     });
     it.each(["x402", "pay-dem"] as const)("refuses a %s agreement once the seller retained a terminal first", async (profile) => {
         const h = await memoryAgreementHarness(profile);
+        await h.ownVetPassed("seller");
         await expect(h.terminalRuntime().handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
         // The terminal committed the job first, so the seller-pass proposal and any response lose.
         await expect(h.publish()).resolves.toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
@@ -724,6 +733,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
     it.each(["x402", "pay-dem"] as const)("keeps a %s seller that contributed to a Vet failure from signing a later agreement", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         const runtime = h.terminalRuntime();
+        await h.ownVetPassed("seller");
         await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
         await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
         expect(h.seller.context.demos.signComponent).toHaveBeenCalled();
@@ -759,6 +769,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
 
         const h = await memoryAgreementHarness(profile);
         const runtime = h.terminalRuntime();
+        await h.ownVetPassed("seller");
         await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
         await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
         h.seller.effects.set(proposalEntry![0], structuredClone(proposalEntry![1]));
@@ -901,6 +912,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         // The seller proposes that the buyer failed the seller's Vet.
         const fromBuyer = await h.failure("buyer");
         const fromSeller = { ...fromBuyer, envelope: { ...fromBuyer.envelope, type: "terminal-bundle-proposal-seller", sender: SELLER, audience: BUYER, keyId: SELLER } } as unknown as DacsHttpAuthenticatedEnvelopeV1;
+        await h.ownVetPassed("buyer");
         await expect(buyerTerminal.handleMessage(fromSeller, { role: "buyer" } as DacsLiveRoleInboundOperationContextV1)).resolves.toEqual({ disposition: "accepted" });
         expect(await h.publish()).toEqual({ disposition: "rejected", reason: "agreement-vet-terminal-phase-conflict" });
         expect(h.buyer.context.sendMessage).not.toHaveBeenCalled();
@@ -909,6 +921,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
     it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         const runtime = h.terminalRuntime();
+        await h.ownVetPassed("seller");
         await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
         await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
         expect(h.seller.context.demos.signComponent).toHaveBeenCalled();
@@ -1090,6 +1103,7 @@ it.each(["x402", "pay-dem"] as const)("the %s terminal outcome CAS rejects a sta
         if ((input.input as { outcome?: unknown }).outcome === "seller-failure") outcomeWriteAttempted = true;
         return put(input);
     };
+    await h.ownVetPassed("seller");
     expect(await h.terminalRuntime().handleMessage(await h.failure(), h.inbound))
         .toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
     expect(outcomeWriteAttempted).toBe(true);

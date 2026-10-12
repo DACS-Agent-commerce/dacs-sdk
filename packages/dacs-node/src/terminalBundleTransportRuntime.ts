@@ -69,7 +69,8 @@ const PLAN_CONFLICT_SEQUENCES = new WeakMap<
 
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
-type TransportRecordKind = BindingKind | "conflict" | "equivocation" | "selection" | "disagreement";
+type TransportRecordKind =
+  BindingKind | "conflict" | "equivocation" | "selection" | "disagreement" | "local-vet";
 
 /**
  * Operator-action reason when this role's own Vet failure and the peer's first
@@ -81,6 +82,13 @@ export const DACS_VET_TERMINAL_PLAN_DISAGREEMENT = "vet-terminal-plan-disagreeme
 /** Pending reason while this role's disagreement notice awaits the peer. */
 export const DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING =
   "vet-terminal-plan-disagreement-notice-pending";
+/**
+ * The peer's plan waits for this role's own Vet result: it is neither accepted
+ * nor signed until this role's own failure is that plan, or this role's Vet of
+ * the peer passed and the plan is the peer's failure of this role.
+ */
+export const DACS_VET_TERMINAL_LOCAL_VET_PENDING = "vet-terminal-local-vet-pending";
+const LOCAL_VET_CONFLICT = "vet-terminal-local-vet-conflict";
 
 interface DacsVetTerminalTransportBindingV1 {
   bindingVersion: typeof BINDING_VERSION;
@@ -116,6 +124,15 @@ interface DacsVetTerminalPlanSelectionV1 {
   identityEvidenceHash?: string;
 }
 
+// This role's own Vet of the peer passed. Its own failure is the material or
+// selection it registered instead.
+interface DacsVetTerminalLocalVetPassV1 {
+  resultVersion: "1";
+  localBindingHash: string;
+  kind: "local-vet-pass";
+  evaluatedRole: Role;
+}
+
 export interface DacsVetTerminalBundleTransportOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
   /** Trusted local registry snapshot selected by the live factory. */
@@ -141,6 +158,16 @@ export interface DacsVetTerminalBundleTransportRuntimeV1 {
     proposal: Readonly<DacsVetTerminalBundleProposalV1>;
   }>>;
   advanceRegisteredTerminal(jobId: string): Promise<DurableTerminalBundleProgress>;
+  /**
+   * Durably records that this role's own Vet of the peer passed. A peer's plan
+   * is accepted and signed only once this role's own Vet result is recorded,
+   * by this or by `registerLocalTerminal`, and agrees with it; until then it
+   * waits (`vet-terminal-local-vet-pending`). Optional, so existing
+   * implementations of this interface still conform.
+   */
+  registerLocalVetPass?(
+    order: Readonly<{ jobId: string; localBindingHash: string }>,
+  ): Promise<void>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -1021,6 +1048,20 @@ function captureEquivocation(
   return Object.freeze({ ...value }) as Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
 }
 
+function captureLocalVetPass(
+  value: unknown,
+  role: Role,
+): Readonly<DacsVetTerminalLocalVetPassV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "resultVersion", "localBindingHash", "kind", "evaluatedRole",
+  ]) || value.resultVersion !== "1" || value.kind !== "local-vet-pass" ||
+      value.evaluatedRole !== otherRole(role) ||
+      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash)) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return Object.freeze({ ...value }) as unknown as Readonly<DacsVetTerminalLocalVetPassV1>;
+}
+
 function equivocationId(role: Role, jobId: string, afterCommit: boolean): string {
   return sha256Hex(`${transportId(role, "equivocation", jobId)}:${afterCommit ? "after" : "before"}-commit`);
 }
@@ -1480,6 +1521,54 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     return evidence;
   };
 
+  // This role's own Vet result, from durable state only: the plan of its own
+  // failure (registered, selected, or kept as a disagreement's evidence) or
+  // its pass (recorded, or implied by retained agreement facts). Undefined
+  // while this role's own Vet has not decided.
+  const loadLocalVetResult = async (jobId: string): Promise<
+    Readonly<{ status: "failed"; planHash: string }> | Readonly<{ status: "passed" }> | undefined
+  > => {
+    const order = await loadOrder(context, jobId);
+    const disagreement = await loadDisagreement(jobId);
+    if (disagreement !== undefined) {
+      return { status: "failed", planHash: disagreement.localPlanHash };
+    }
+    const material = await loadBinding(context, "material", jobId);
+    if (material !== undefined) {
+      return { status: "failed", planHash: captureProposal(material.payload).plan.planHash };
+    }
+    const selection = await loadSelection(jobId);
+    if (selection?.source === "material") return { status: "failed", planHash: selection.planHash };
+    const pass = context.database.loadEffectInput("session", transportId(role, "local-vet", jobId));
+    if (pass !== undefined) {
+      if (captureLocalVetPass(pass, role).localBindingHash !== order.localBindingHash) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+      }
+      return { status: "passed" };
+    }
+    return context.database.loadEffectInput("session", dacsSessionAgreementFactsIdV1(role, jobId)) ===
+      undefined ? undefined : { status: "passed" };
+  };
+
+  // A plan is accepted from the peer, and signed, only once this role's own
+  // Vet result is durable and agrees with it: this role's own failure is that
+  // plan, or this role's Vet of the peer passed and the plan is the peer's
+  // failure of this role. The peer signs only after that acceptance, so a
+  // later, different local failure finds nothing signed on either role.
+  const assertLocalVetAgrees = async (
+    proposal: Readonly<DacsVetTerminalBundleProposalV1>,
+  ): Promise<void> => {
+    const local = await loadLocalVetResult(proposal.plan.authority.jobId);
+    if (local === undefined) {
+      throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_LOCAL_VET_PENDING);
+    }
+    if (local.status === "failed"
+      ? local.planHash !== proposal.plan.planHash
+      : proposal.terminalInput.evaluatedRole !== role) {
+      throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+    }
+  };
+
   // The peer stops only once it sees this role's own plan, so the notice is
   // that plan as a proposal, with the same idempotency key a publication of it
   // uses. Any acknowledgement, including a refusal, delivers it.
@@ -1522,11 +1611,12 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         ? DACS_VET_TERMINAL_PLAN_DISAGREEMENT : DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING);
     }
     await assertNoPlanConflict(context, jobId);
-    let binding = await loadBinding(context, "material", jobId) ??
-      await loadBinding(context, "proposal", jobId);
+    const material = await loadBinding(context, "material", jobId);
+    let binding = material ?? await loadBinding(context, "proposal", jobId);
+    const selection = binding === undefined ? await loadSelection(jobId) : undefined;
     if (binding === undefined) {
-      // A crash came after the plan was selected and before its binding.
-      const selection = await loadSelection(jobId);
+      // A crash came after the plan was selected and before its binding, or
+      // the peer's plan is selected and waits for this role's own Vet result.
       if (selection === undefined) {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
       }
@@ -1536,15 +1626,26 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (selection.source === "peer" && (await loadOrder(context, jobId)).phase === "agreement") {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
       }
+    }
+    // Without material of its own, the plan is the peer's: it is bound,
+    // the phase claimed and anything signed only once this role's own Vet
+    // result agrees with it.
+    const peerPlan = material !== undefined ? undefined
+      : binding?.payload ?? (selection?.source === "peer" ? selection.payload : undefined);
+    if (peerPlan !== undefined) {
+      await assertLocalVetAgrees(captureProposal(peerPlan));
+    }
+    if (binding === undefined) {
+      const selected = selection as Readonly<DacsVetTerminalPlanSelectionV1>;
       binding = await putBinding(
         context,
-        selection.source === "material" ? "material" : "proposal",
+        selected.source === "material" ? "material" : "proposal",
         jobId,
-        selection.payload,
-        selection.authenticationHash === undefined || selection.identityEvidenceHash === undefined
+        selected.payload,
+        selected.authenticationHash === undefined || selected.identityEvidenceHash === undefined
           ? undefined : {
-              authenticationHash: selection.authenticationHash,
-              identityEvidenceHash: selection.identityEvidenceHash,
+              authenticationHash: selected.authenticationHash,
+              identityEvidenceHash: selected.identityEvidenceHash,
             },
       );
     }
@@ -1952,6 +2053,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       });
       assertPlanParties(context, proposal.plan);
       await assertProposalOrder(proposal, false);
+      if ((await loadLocalVetResult(input.jobId))?.status === "passed") {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
       const choice = await classifyPlan(proposal, "material", await selectPlan(proposal, "material"));
       if (choice.disposition === "disagreement") {
         await recordDisagreement(input.jobId, choice, proposal);
@@ -1964,6 +2068,41 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       await detectPlanConflict(proposal, true);
       await putBinding(context, "material", input.jobId, proposal);
       return Object.freeze({ prepared, proposal });
+    },
+    // Needs no order lookup, so a healthy job whose order the terminal cannot
+    // project is not blocked here; the pass is checked against the order
+    // where a peer's plan is decided.
+    async registerLocalVetPass(order) {
+      if (!plainObject(order) || !exactFields(order, ["jobId", "localBindingHash"]) ||
+          typeof order.jobId !== "string" || order.jobId.length === 0 ||
+          typeof order.localBindingHash !== "string" || !HASH_RE.test(order.localBindingHash)) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-job-invalid");
+      }
+      const { jobId, localBindingHash } = order;
+      const selection = context.database.loadEffectInput("session", transportId(role, "selection", jobId));
+      if (context.database.loadEffectInput("session", transportId(role, "material", jobId)) !== undefined ||
+          context.database.loadEffectInput("session", transportId(role, "disagreement", jobId)) !== undefined ||
+          (selection !== undefined && captureSelection(selection).source === "material")) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
+      const id = transportId(role, "local-vet", jobId);
+      const pass = captureLocalVetPass({
+        resultVersion: "1",
+        localBindingHash,
+        kind: "local-vet-pass",
+        evaluatedRole: peerRole,
+      }, role);
+      const put = context.database.putEffectIntent({
+        kind: "session",
+        effectId: id,
+        bindingHash: localBindingHash,
+        input: pass,
+        idempotencyKey: id,
+        jobId,
+      });
+      if (put.status === "conflict") {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+      }
     },
     async advanceRegisteredTerminal(jobId) {
       if (typeof jobId !== "string" || jobId.length === 0) {
@@ -2099,6 +2238,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
             await recordDisagreement(envelope.jobId, choice, assessment.proposal, authentication);
             return rejected(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
           }
+          // The peer signs its plan only after this acceptance. Until this
+          // role's own Vet result agrees with the plan, it stays selected and
+          // the message stays pending in the inbox, to be decided again.
+          await assertLocalVetAgrees(assessment.proposal);
           await putBinding(context, "proposal", envelope.jobId, assessment.proposal, authentication);
           return Object.freeze({ disposition: "accepted" as const });
         }
