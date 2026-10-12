@@ -523,9 +523,6 @@ describe("createScanningArtifactRepository (#54)", () => {
       throw Object.assign(new Error("503"), { code: "unsupported-kind" });
     }],
     ["a plain object carrying the unsupported-kind code", () => { throw { code: "unsupported-kind" }; }],
-    ["a prototype trap around the unsupported class", () => {
-      throw new Proxy(new UnsupportedArtifactKindError("v9"), { getPrototypeOf() { throw new Error("trap"); } });
-    }],
   ])("unavailable verification (%s) stays retryable at the same row", async (_name, verify) => {
     const verifier = vi.fn(verify);
     const fixture = setup(["a", "b"], { verifyArtifact: verifier });
@@ -542,6 +539,25 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(result.state.seen.size).toBe(0);
     expect(verifier).toHaveBeenCalledOnce();
     expect(fixture.readAnchor.mock.calls).toEqual([["stor-a"]]);
+  });
+
+  test("a thrown value whose prototype trap throws stays retryable instead of final", async () => {
+    // A plain function: vi.fn itself trips the trap and rethrows a plain Error.
+    let calls = 0;
+    const verifyArtifact = () => {
+      calls++;
+      throw new Proxy(new UnsupportedArtifactKindError("v9"), { getPrototypeOf() { throw new Error("trap"); } });
+    };
+    const fixture = setup(["a"], { verifyArtifact });
+    const result = await fixture.repo.scanPage();
+    expect(result).toMatchObject({
+      status: "indeterminate", code: "verifier-unavailable", state: { pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    expect(result.results.map(({ outcome }) => outcome)).toEqual([{
+      status: "indeterminate", code: "verifier-unavailable", reason: "signature verification threw: unknown error",
+    }]);
+    expect(result.state.seen.size).toBe(0);
+    expect(calls).toBe(1);
   });
 
   test("a forwarded error carrying code unsupported-kind is retried, then deferred, never final", async () => {
