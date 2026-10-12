@@ -224,14 +224,27 @@ the outer `type`, `requestId` or `timestamp` fields.
 `outboxStore` is a required plain object with `load`/`save` data methods. It is
 an authenticated, durable, role-local
 companion to the lifecycle's signed-packet store, keyed by packet ID. Its
-`load(packetId)` returns an entry or `undefined`; `save(packetId, entry)` must
-atomically commit the supplied entry before resolving. Authenticate the key
+`load(packetId)` returns the last committed entry or `undefined`. Every
+`save(packetId, entry, expectedGeneration)` is a compare-and-swap: commit the
+entry only if the stored entry's `generation` (0 when there is no entry)
+equals `expectedGeneration`, and resolve `true`; otherwise change nothing and
+resolve `false`. `entry.generation` is always `expectedGeneration + 1`, so the
+first entry for a packet has generation 1. The compare must run atomically
+with the write at commit time (for example a conditional `UPDATE ... WHERE
+generation = ?` or an `INSERT` that fails on an existing key), not when the
+call starts. The transport stops waiting for a slow save after
+`operationTimeoutMs`, and that save may still commit later; the compare is what
+stops such a late write from replacing a newer generation. A new frame is
+stored only where no entry exists, and every later save carries the same
+frame, so once any peer call could have used a frame, every resend uses the
+same bytes. Authenticate the key
 and entry together, isolate buyer and seller authority, retain entries until
 the job is retired, and serialize drivers of the same outbox across processes.
-There is no volatile fallback. Read/write failure stays indeterminate, and a
-failed pre-send write never calls the peer. The entry binds the packet ID,
-peers, subnet and codec, and contains only the encrypted envelope, send state
-and attempt end time; it stores no shared key. The exact `to`, encrypted
+There is no volatile fallback. Read/write failure, a refused compare or a
+timed-out write stays indeterminate, and a pre-send write that is not
+confirmed never calls the peer. The entry binds the packet ID,
+peers, subnet and codec, and contains only the encrypted envelope, send state,
+generation and attempt end time; it stores no shared key. The exact `to`, encrypted
 ciphertext/nonce/optional ephemeral key, and message hash are saved before
 calling `peer.send()`, and retries reuse them. The demosdk sends that payload
 unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer

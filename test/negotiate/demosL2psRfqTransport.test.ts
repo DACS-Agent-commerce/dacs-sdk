@@ -57,11 +57,20 @@ const THIRD_PEER = "c".repeat(64);
 // Base64 length of the largest frame the codec accepts (16 MiB + GCM tag).
 const MAX_CIPHERTEXT_CHARS = Math.ceil((16 * 1024 * 1024 + 16) / 3) * 4;
 
+/** The outbox contract's compare: the stored generation, 0 when absent. */
+function generationMatches(current: unknown, expectedGeneration: number): boolean {
+  return ((current as { generation?: number } | undefined)?.generation ?? 0) === expectedGeneration;
+}
+
 function memorySendOutbox(): DemosL2psRfqTransportOptions["outboxStore"] {
   const entries = new Map<string, unknown>();
   return {
     load: (packetId) => structuredClone(entries.get(packetId)),
-    save: (packetId, entry) => { entries.set(packetId, structuredClone(entry)); },
+    save: (packetId, entry, expectedGeneration) => {
+      if (!generationMatches(entries.get(packetId), expectedGeneration)) return false;
+      entries.set(packetId, structuredClone(entry));
+      return true;
+    },
   };
 }
 
@@ -402,6 +411,10 @@ const ABSENCE_GRACE_REASON = "Demos L2PS history cannot yet prove packet absence
 async function delayedSendFixture(options: {
   refuseSeal?: boolean;
   failWrite?: boolean;
+  /** Every save loses its compare-and-swap, as if another writer won. */
+  conflictWrite?: boolean;
+  /** The first save reaches the store only when releaseFirstSave() runs. */
+  holdFirstSave?: boolean;
   ack?: Record<string, unknown>;
   graceMs?: number;
   historyAdvanceMs?: number;
@@ -409,6 +422,11 @@ async function delayedSendFixture(options: {
   const dir = await mkdtemp(join(tmpdir(), "sdk249-send-outbox-"));
   const integrityKey = randomBytes(32);
   const mac = (body: string) => createHmac("sha256", integrityKey).update(body).digest("hex");
+  // Commits run one at a time, so each compare and write is atomic.
+  let commits: Promise<unknown> = Promise.resolve();
+  const firstSaveGate = gate();
+  let heldSave = options.holdFirstSave ? firstSaveGate : undefined;
+  let heldSaveResult: Promise<boolean> | undefined;
   const outboxStore: DemosL2psRfqTransportOptions["outboxStore"] = {
     async load(id) {
       let text: string;
@@ -418,11 +436,26 @@ async function delayedSendFixture(options: {
       if (stored.mac !== mac(stored.body)) throw new Error("send outbox integrity failure");
       return JSON.parse(stored.body) as unknown;
     },
-    async save(id, entry) {
-      if (options.failWrite) throw new Error("durable outbox unavailable");
-      const body = JSON.stringify(entry);
-      await writeFile(join(dir, id + ".tmp"), JSON.stringify({ body, mac: mac(body) }), { mode: 0o600 });
-      await rename(join(dir, id + ".tmp"), join(dir, id));
+    save(id, entry, expectedGeneration) {
+      const held = heldSave;
+      heldSave = undefined;
+      const result = (async () => {
+        if (options.failWrite) throw new Error("durable outbox unavailable");
+        if (held !== undefined) await held.promise;
+        const commit = commits.then(async () => {
+          if (options.conflictWrite || !generationMatches(await outboxStore.load(id), expectedGeneration)) {
+            return false;
+          }
+          const body = JSON.stringify(entry);
+          await writeFile(join(dir, id + ".tmp"), JSON.stringify({ body, mac: mac(body) }), { mode: 0o600 });
+          await rename(join(dir, id + ".tmp"), join(dir, id));
+          return true;
+        });
+        commits = commit.catch(() => undefined);
+        return commit;
+      })();
+      if (held !== undefined) heldSaveResult = result;
+      return result;
     },
   };
   let ticks = 10_000;
@@ -474,7 +507,8 @@ async function delayedSendFixture(options: {
       ...(options.graceMs === undefined ? {} : { sendAbsenceGraceMs: options.graceMs }),
     });
   }
-  const lifecycleOptions = clientOptions("buyer", makeTransport(), durableReservation());
+  let transport = makeTransport();
+  const lifecycleOptions = clientOptions("buyer", transport, durableReservation());
   let client = createDurableRfqLifecycleClient(lifecycleOptions);
   await client.open(openInput());
   let packet: Awaited<ReturnType<typeof buyerWithSentOffer>>["packet"] | undefined;
@@ -486,7 +520,8 @@ async function delayedSendFixture(options: {
     return result;
   }
   return {
-    get client() { return client; }, submissions, framesAtCall, outboxStore, offer,
+    get client() { return client; }, get transport() { return transport; },
+    submissions, framesAtCall, outboxStore, offer,
     packet: () => { if (packet === undefined) throw new Error("packet missing"); return packet; },
     setTicks: (now: number) => { ticks = now; },
     seals: () => sealed,
@@ -503,7 +538,16 @@ async function delayedSendFixture(options: {
       timedOut = true;
       vi.useRealTimers();
     },
-    restart() { client = createDurableRfqLifecycleClient({ ...lifecycleOptions, transport: makeTransport() }); },
+    restart() {
+      transport = makeTransport();
+      client = createDurableRfqLifecycleClient({ ...lifecycleOptions, transport });
+    },
+    /** Let the held first save reach the store; resolves to its CAS result. */
+    releaseFirstSave() {
+      if (heldSaveResult === undefined) throw new Error("no held save");
+      firstSaveGate.release();
+      return heldSaveResult;
+    },
     acceptLate() { if (accept === undefined) throw new Error("no pending send"); accept(); },
     showHistory() { visible = true; },
     async cleanup() { vi.useRealTimers(); await rm(dir, { recursive: true }); },
@@ -590,9 +634,9 @@ describe("Demos L2PS durable RFQ transport", () => {
       await fixture.timeout();
       const id = fixture.packet().packetId;
       const entry = await fixture.outboxStore.load(id) as Parameters<typeof fixture.outboxStore.save>[1];
-      const crash = { ...entry, state: "sending" as const };
+      const crash = { ...entry, state: "sending" as const, generation: entry.generation + 1 };
       delete crash.attemptEndedAtMs;
-      await fixture.outboxStore.save(id, crash);
+      await expect(fixture.outboxStore.save(id, crash, entry.generation)).resolves.toBe(true);
       fixture.restart();
       fixture.setTicks(50_000);
       await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
@@ -610,6 +654,44 @@ describe("Demos L2PS durable RFQ transport", () => {
     try {
       await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
       expect(fixture.submissions).toHaveLength(0);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: a refused outbox compare-and-swap prevents the peer call", async () => {
+    const fixture = await delayedSendFixture({ conflictWrite: true });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({
+        status: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      expect(fixture.submissions).toHaveLength(0);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: a pre-send write that commits late cannot replace the frame recovery sent", async () => {
+    // Every send is ambiguous (a failed acknowledgement), and history stays empty.
+    const fixture = await delayedSendFixture({ holdFirstSave: true, ack: { l2psStatus: "failed" } });
+    try {
+      // Frame A's pre-send write outlives the 200 ms local timeout: no peer call.
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(0);
+      // Recovery finds no entry, seals frame B, commits it and sends it.
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(1);
+      expect(fixture.seals()).toBe(2);
+      const id = fixture.packet().packetId;
+      const sentB = await fixture.outboxStore.load(id);
+      expect(sentB).toMatchObject({ encrypted: fixture.submissions[0]!.encrypted, state: "indeterminate" });
+      // A's write reaches the store only now, and loses to B's newer generation.
+      const lateA = await fixture.releaseFirstSave();
+      expect(await fixture.outboxStore.load(id)).toEqual(sentB);
+      expect(lateA).toBe(false);
+      expect(sentB).toMatchObject({ generation: 2 });
+      // After the grace, empty history resends B's exact bytes, never A's.
+      fixture.setTicks(70_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(2);
+      expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
+      expect(fixture.seals()).toBe(2);
     } finally { await fixture.cleanup(); }
   });
 

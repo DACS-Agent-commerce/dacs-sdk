@@ -190,6 +190,8 @@ type SendOutboxEntry = {
   codecId: string;
   encrypted: DemosL2psRfqEncryptedMessage;
   state: "sending" | "indeterminate" | "acknowledged";
+  /** 1 for the first committed entry, then +1 per committed save. */
+  generation: number;
   attemptEndedAtMs?: number;
 };
 
@@ -209,14 +211,23 @@ export interface DemosL2psRfqTransportOptions {
   claimForPeer(peerKey: string): string | undefined;
   onError(error: Error): void;
   /**
-   * Authenticated, durable, role-local send outbox, keyed by packetId. A save
-   * must commit before resolving; a missing load returns undefined. The host
-   * must serialize drivers of the same outbox, including across processes.
-   * Retain entries until the corresponding lifecycle job is retired.
+   * Authenticated, durable, role-local send outbox, keyed by packetId. A
+   * missing load returns undefined. Every save is a compare-and-swap: commit
+   * the entry only if the stored generation (0 when there is no entry) equals
+   * expectedGeneration, then resolve true; otherwise change nothing and
+   * resolve false. entry.generation is always expectedGeneration + 1. Compare
+   * at commit time, atomically with the write, so a save that commits after
+   * the transport stopped waiting can never replace a newer generation. The
+   * host must serialize drivers of the same outbox, including across
+   * processes. Retain entries until the corresponding lifecycle job is retired.
    */
   outboxStore: {
     load(packetId: string): Promise<unknown> | unknown;
-    save(packetId: string, entry: Readonly<SendOutboxEntry>): Promise<void> | void;
+    save(
+      packetId: string,
+      entry: Readonly<SendOutboxEntry>,
+      expectedGeneration: number,
+    ): Promise<boolean> | boolean;
   };
   /** Absence hold after an ambiguous send, default 60,000 ms; max 600,000. */
   sendAbsenceGraceMs?: number;
@@ -842,8 +853,8 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   canonicalString(codecId, "L2PS RFQ codecId");
   return Object.freeze({
     load: (packetId: string) => Reflect.apply(load, store, [packetId]) as unknown,
-    save: (packetId: string, entry: Readonly<SendOutboxEntry>) =>
-      Reflect.apply(save, store, [packetId, entry]) as Promise<void> | void,
+    save: (packetId: string, entry: Readonly<SendOutboxEntry>, expectedGeneration: number) =>
+      Reflect.apply(save, store, [packetId, entry, expectedGeneration]) as Promise<boolean> | boolean,
     monotonicNowMs: () => Reflect.apply(clock, value, []) as number,
     codecId,
     sendAbsenceGraceMs: positiveInteger(
@@ -1023,10 +1034,22 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     return now;
   }
 
+  /**
+   * Compare-and-swap from entry.generation (0 before the first commit). The
+   * generation advances only on a confirmed commit; a refused, failed or
+   * timed-out save throws and leaves it unchanged.
+   */
   async function saveSendEntry(packetId: string, entry: SendOutboxEntry): Promise<void> {
+    const next = { ...entry, generation: entry.generation + 1 };
     // Never lend the peer or the store our retained object.
-    await bounded(() => captured.save(packetId, structuredClone(entry)),
-      "Demos L2PS RFQ send outbox write");
+    const committed = await bounded(
+      () => captured.save(packetId, structuredClone(next), entry.generation),
+      "Demos L2PS RFQ send outbox write",
+    );
+    if (committed !== true) {
+      throw new DacsError("Demos L2PS RFQ send outbox generation changed");
+    }
+    entry.generation = next.generation;
   }
 
   async function loadSendEntry(routed: ReturnType<typeof routePacket>): Promise<SendOutboxEntry | undefined> {
@@ -1035,14 +1058,15 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     if (value === undefined) return undefined;
     const label = "Demos L2PS RFQ send outbox entry";
     const fields = admittedFields(value,
-      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "attemptEndedAtMs"], label);
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation", "attemptEndedAtMs"], label);
     admitEncrypted(fields.encrypted);
-    for (const key of ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "state"]) {
+    for (const key of ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "state", "generation"]) {
       admittedChars(fields[key], MAX_CANONICAL_STRING_CHARS, label);
     }
     value = ownedJson(value, label);
     if (!isRecord(value) || !exactKeys(value,
-      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state"], ["attemptEndedAtMs"]) ||
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation"], ["attemptEndedAtMs"]) ||
+      !Number.isSafeInteger(value.generation) || (value.generation as number) < 1 ||
       value.packetId !== routed.packet.packetId ||
       value.fromPeer !== captured.localPeerKey || value.toPeer !== routed.recipientPeer ||
       value.l2psUid !== captured.l2psUid || value.codecId !== captured.codecId ||
@@ -1544,6 +1568,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
             codecId: captured.codecId,
             encrypted: prepared.encrypted,
             state: "sending",
+            // Not stored yet: the first save commits only if no entry exists.
+            generation: 0,
           };
         }
       } catch (cause) {
@@ -1555,6 +1581,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       }
       // Persist the exact submitted payload and a crash marker BEFORE calling
       // the peer. Retries reuse ciphertext, nonce and optional ephemeral key.
+      // A new frame commits only where no entry exists, and every later save
+      // is fenced by generation, so the stored frame never changes once any
+      // peer call could have used it.
       entry.state = "sending";
       delete entry.attemptEndedAtMs;
       try {
