@@ -43,7 +43,9 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFAULT_HISTORY_MAX_PAGES = 100;
 const DEFAULT_OPERATION_TIMEOUT_MS = 20_000;
 const DEFAULT_CONSUMER_TIMEOUT_MS = 30_000;
-// Provisional until the host verifies its node's inclusion/indexing bound.
+// Only reduces noise. Resend safety rests on node 61b8e75's unique
+// messageHash (the packet ID) and byte-identical resends; no finite grace
+// bounds a late send (docs/rfq-negotiation-core.md).
 const DEFAULT_SEND_ABSENCE_GRACE_MS = 60_000;
 const SEND_ABSENCE_REASON =
   "Demos L2PS history cannot yet prove packet absence after a timed-out send";

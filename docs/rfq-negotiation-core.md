@@ -240,7 +240,9 @@ frame, so once any peer call could have used a frame, every resend uses the
 same bytes. Authenticate the key
 and entry together, isolate buyer and seller authority, retain entries until
 the job is retired, and serialize drivers of the same outbox across processes.
-There is no volatile fallback. Read/write failure, a refused compare or a
+There is no volatile fallback. An in-memory store, like the test suite's,
+loses the grace and the identical-bytes guarantee on every restart, and the
+SDK cannot detect one; it is unsupported. Read/write failure, a refused compare or a
 timed-out write stays indeterminate, and a pre-send write that is not
 confirmed never calls the peer. The entry binds the packet ID,
 peers, subnet and codec, and contains only the encrypted envelope, send state,
@@ -287,13 +289,61 @@ by finishing after it. A refusal before the peer call (for example, a transient
 seal failure) has no send marker and remains immediately retryable.
 
 The default grace is 60,000 ms; configure a positive integer up to 600,000 ms.
-This is a **provisional operational default**, twice the pinned demosdk's
-15-second send wait plus 10-second history wait, rounded up to 60 seconds
-(`L2PSMessagingPeer.js:126,151`). These client waits do not bound node inclusion
-or history indexing. No node source or lag bound was supplied with this
-snapshot, so the default's coverage of node lag has not been established;
-verify it against the deployed testnet node before declaring this transport
-ready. Arbitrarily delayed acceptance cannot be excluded by a finite grace.
+The grace only reduces noise; it is not what makes a resend safe. The evidence
+is the Demos node source at commit `61b8e75` (paths under
+`src/features/l2ps-messaging/`):
+
+- `handleSend` awaits the messaging service before it replies or delivers
+  (`L2PSMessagingServer.ts:262-294`). The service inserts the
+  `l2ps_messages` row before it submits to the L2PS mempool
+  (`L2PSMessagingService.ts:57-63,134`), and history reads that same table
+  directly (`L2PSMessagingService.ts:337-377`). An acknowledged send is
+  therefore already visible in history.
+- The `message_hash` column is unique (`entities/L2PSMessage.ts:30`). The
+  service checks it before the insert and maps a constraint race to the same
+  error (`L2PSMessagingService.ts:50-51,136-145`). A repeat is refused with
+  "Duplicate message" and is not delivered (`L2PSMessagingServer.ts:267-278`).
+  Nothing in the node deletes these rows.
+
+The transport uses the packet ID as the Demos message hash, so on this node a
+packet is stored and delivered at most once. The generation-fenced send outbox
+also makes every resend byte-identical, so any copy carries the same frame.
+
+No finite grace can prove absence. The node keeps processing after a client
+gives up, its database statement, query and lock timeouts are commented out
+(`src/model/datasource.ts:58-60`), and demosdk queues a frame whose send
+failed, with no expiry, and flushes it on reconnect
+(`L2PSMessagingPeer.js:376-395`). A timed-out send can therefore land at any
+later time. The 60-second default (twice the pinned demosdk's 15-second send
+wait plus its 10-second history wait, rounded up; `L2PSMessagingPeer.js:126,151`)
+only avoids most resends that the node would refuse.
+
+When the node refuses a resend with "Duplicate message", the transport reads
+history. Our own exact frame there acknowledges the packet. Otherwise the send
+outbox entry is marked `duplicate`: the node holds that hash, so absence can
+never be proven, and the entry stays `indeterminate` and is never resent.
+Handle it like a failed history entry (below).
+
+The limits of this evidence:
+
+- Dedup and history are per node database. Reconcile and resend must reach
+  the same node, or nodes that share its database. Another node's history
+  cannot prove absence there, and that node would accept a resend as a new
+  message.
+- A `failed` history row for the packet blocks every resend, permanently.
+- Nothing bounds when a timed-out send lands.
+- All of this describes node `61b8e75`; recheck it when the node changes.
+
+A send outbox entry stored as `acknowledged` is proof of the acknowledgement.
+`reconcile` returns `acknowledged` without reading history, and `publish`
+returns it without sending or rewriting the entry, for example after the
+lifecycle's own write failed following the acknowledgement. Before any resend,
+the transport opens the stored frame once and compares it canonically with the
+packet. If the frame does not open (for example, after a key rotated under the
+same `codecId`) or opens to other bytes, the result is `indeterminate` and
+nothing is sent. Within one process, outbox work for each packet runs one call
+at a time, so a concurrent `publish` and `resumeOutbox()` cannot both seal a
+frame; serializing drivers across processes stays the host's job.
 
 The end timestamp is persisted in the send outbox. `monotonicNowMs` is an
 injectable trusted clock; its default uses `process.hrtime.bigint()` in
@@ -311,15 +361,15 @@ settle it first or seed a conservative `sending` marker through the host store.
 | Refusal before peer call | 0 |
 | Ambiguous send, known end | At most 60 seconds (configured grace) from that end |
 | Crash before end write, or detected clock rollback | One full grace from first recovery observation |
-| Exact history match at any time | 0; acknowledge immediately |
-| Paginated/failed history, or an unavailable outbox | Unbounded; stay indeterminate |
+| Exact history match, or a stored acknowledgement, at any time | 0; acknowledge immediately |
+| Paginated/failed history, a node duplicate refusal without our frame in history, a stored frame that does not open, or an unavailable outbox | Unbounded; stay indeterminate |
 
 The hold itself adds at most the configured grace; the host's next
 `resumeOutbox()` cadence adds its polling interval. With the default 20-second
 operation limit, a successful single-page absence check and retry dispatch can
-also spend up to 80 seconds on outbox read, history, retry outbox read and
-pre-send write: at most 140 seconds plus the polling interval after a known
-send end. This transport-only calculation excludes host lifecycle storage, the retry's
+also spend up to 100 seconds on outbox read, history, retry outbox read,
+opening the stored frame and the pre-send write: at most 160 seconds plus the
+polling interval after a known send end. This transport-only calculation excludes host lifecycle storage, the retry's
 own send/acknowledgement wait and end write.
 There is no finite whole-call bound for paginated history (a follow-up),
 persistence failures, repeated failures or scheduling stalls.
