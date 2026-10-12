@@ -977,6 +977,34 @@ describe("round 4 admission and phase regressions", () => {
             expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
         });
 
+        it(`${profile}: a valid vet-terminal phase with no terminal material goes to an operator (probe R7)`, async () => {
+            const h = await memoryAgreementHarness(profile);
+            expect(await h.publish()).toEqual({ disposition: "submitted" });
+            // A crash between the terminal phase claim and its material write.
+            h.seller.effects.set(phaseDecisionKey("seller"),
+                { decisionVersion: "1", localBindingHash: h.seller.record.localBindingHash, phase: "vet-terminal" });
+            const agreement = vi.fn();
+            const track = sellerBootstrapTrack(h, agreement);
+            for (let tick = 0; tick < 3; tick += 1) {
+                expect(await track(h.seller.operation as never))
+                    .toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
+            }
+            expect(agreement).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+            expect(sentTypes(h)).not.toContain("agreement-response");
+        });
+
+        it(`${profile}: a corrupt seller-outcome row is reported as pre-agreement-phase-corrupt (probe R4)`, async () => {
+            const h = await memoryAgreementHarness(profile);
+            const id = sha256Hex(`dacs-live-seller-vet-outcome:v1:${canonicalize({ role: "seller", jobId: JOB_ID })}`);
+            h.seller.effects.set(`session:${id}`, { nonsense: true });
+            const agreement = vi.fn();
+            expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never))
+                .toEqual({ status: "operator-action", reasonCode: "pre-agreement-phase-corrupt" });
+            expect(agreement).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        });
+
         it(`${profile}: an unreadable terminal decision cannot be treated as no decision`, async () => {
             const h = await memoryAgreementHarness(profile);
             const database = h.seller.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };

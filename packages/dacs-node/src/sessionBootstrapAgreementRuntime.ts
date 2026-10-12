@@ -964,7 +964,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         operation.order,
       ).sellerResponseRetained;
     } catch (error) {
-      return operator(error instanceof DacsAgreementTransportRuntimeError
+      return operator(error instanceof DacsAgreementTransportRuntimeError ||
+          error instanceof DacsPreAgreementPhaseError
         ? error.reasonCode : "seller-agreement-binding-unavailable");
     }
     if (responseRetained) {
@@ -985,6 +986,17 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         operation.order.jobId,
       );
       if (terminal !== undefined) return terminal;
+    }
+    // A job committed to the Vet terminal with no terminal left to advance
+    // (for example a crash before its material was written) must not wait on
+    // agreement readiness, which only reports the conflict as pending.
+    try {
+      if (loadDacsPreAgreementPhaseV1(context, operation.order) === "vet-terminal") {
+        return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+      }
+    } catch (error) {
+      return operator(error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "pre-agreement-phase-unavailable");
     }
     let retained: Readonly<DacsLiveOrderInputV1>;
     let buyerRequirement: Readonly<BundleRequirement>;
