@@ -292,6 +292,12 @@ For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
 request. A connection error, a timeout or any other HTTP status (a 5xx, a
 CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
 
+Known operational risk, not yet tested against a live node: a plain HTTP 404
+from a proxy, a CDN or a Demos node without the requested handler cannot be
+told apart from Demos's own answer. It is taken as answered, so the audit
+fails permanently (operator action) instead of being retried. Put nothing in
+front of the Demos RPC endpoint that answers 404 on its own.
+
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
 and responder to the role-owned fenced-session store and Demos signer. Every
