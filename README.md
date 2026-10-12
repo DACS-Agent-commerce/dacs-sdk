@@ -814,9 +814,10 @@ unsupported kind or version, which produces a final `unverifiable` with
 and produces a retryable `indeterminate` with `code: "verifier-unavailable"`.
 That includes an error that only carries `code: "unsupported-kind"`, such as a
 forwarded service error body: the check is `instanceof`, so throw the class
-exported by this package. Neither classification, a verified artifact nor `exhausted: true` proves complete
-enumeration, freshness, or non-revocation; perform the artifact's protocol-specific
-admission and revocation checks before using it.
+exported by this package. Neither classification, a verified artifact nor
+`exhausted: true` proves complete enumeration, freshness, or non-revocation;
+perform the artifact's protocol-specific admission and revocation checks before
+using it.
 
 Global/category discovery uses the open DACS-1 §6.3.6 catalog surface. Catalog
 summaries are untrusted candidates: use `queryListingCatalog` to search, then
