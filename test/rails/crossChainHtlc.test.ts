@@ -2118,10 +2118,11 @@ describe("advanceCrossChainHtlc", () => {
     });
     delete h.actions["destination-claim"];
     delete h.actions["source-claim"];
+    // The checkpointed reveal is still named, as the settlement names it.
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
       status: "settle-asymmetric",
       reason: "dest-revealed-source-unclaimed",
-      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-claim")],
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
     });
     // The unreported source claim is rebroadcast from its retained bytes.
     const sourceClaims = h.broadcastRetained.mock.calls
@@ -4086,7 +4087,14 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       };
       h.setMode("source-claim", "pending");
       await expect(advanceCrossChainHtlc({ ...run.shared, owner: "first-reveal-landed", now: () => landedAt }))
-        .resolves.toMatchObject({ status: "settle-asymmetric", reason: "dest-revealed-source-unclaimed" });
+        .resolves.toEqual({
+          status: "settle-asymmetric",
+          reason: "dest-revealed-source-unclaimed",
+          recoveryDeadline: 5_000,
+          // The reveal that landed is named, not the replacement that reverted.
+          txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
+          finalityObservedAt: landedAt,
+        });
       await h.markFinal("source-claim");
       const settled = {
         status: "settled",
@@ -4104,6 +4112,29 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       expect(effects.filter((action) => action === "destination-claim")).toHaveLength(2);
     },
   );
+
+  test("names the earlier reveal that landed when the payee's source claim misses the source expiry", async () => {
+    const { h, run } = await toPendingReveal();
+    const [first] = broadcastsOf(h, "destination-claim");
+    if (!first || first.txRef.kind !== "htlc-reveal") throw new Error("expected a reveal");
+    h.actions["destination-claim"] = { state: "absent", txRef: first.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: first.txRef,
+      finalityObservedAt: 1_000_505,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    h.setMode("source-claim", "pending");
+    await advanceCrossChainHtlc({ ...run.shared, owner: "first-reveal-landed", now: () => 1_000_505 });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-expired", now: () => 5_000_000 }))
+      .resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-source-claim-missed-after-reveal",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
+      });
+  });
 
   test.each([
     ["names no attempt", "htlc-destination-claim-absent-unbound"],

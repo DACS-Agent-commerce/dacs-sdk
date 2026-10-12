@@ -1193,13 +1193,16 @@ function finalSourceClaim(
 /**
  * References of retained actions the adapter reports. `unreported` names
  * retained actions whose reference is included even while the adapter does
- * not report them, because they may still land.
+ * not report them, because they may still land. `known` gives the reference
+ * of an action that durable evidence fixes, such as the checkpointed reveal,
+ * which is named whatever the adapter reports.
  */
 function collectRefs(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
   unreported: readonly HtlcAction[] = [],
   includeRetained: readonly HtlcAction[] = [],
+  known: Readonly<Partial<Record<HtlcAction, Readonly<HtlcTxRef>>>> = {},
 ): readonly Readonly<HtlcTxRef>[] {
   const refs: HtlcTxRef[] = [];
   for (const action of [
@@ -1212,7 +1215,10 @@ function collectRefs(
   ] as const) {
     const item = snapshot.actions[action];
     const retained = prepared.get(action);
-    if (item && item.state !== "absent" && retained && sameRef(item.txRef, retained.txRef)) {
+    const knownRef = known[action];
+    if (knownRef) {
+      refs.push(Object.freeze({ ...knownRef }));
+    } else if (item && item.state !== "absent" && retained && sameRef(item.txRef, retained.txRef)) {
       refs.push(Object.freeze({ ...item.txRef }));
     } else if (retained && ((!item && unreported.includes(action)) || includeRetained.includes(action))) {
       refs.push(Object.freeze({ ...retained.txRef }));
@@ -1689,10 +1695,11 @@ export async function advanceCrossChainHtlc(
     reason: HtlcOperatorAlertReason,
     latest: Readonly<HtlcLedgerSnapshot>,
     includeRetained: readonly HtlcAction[] = [],
+    known: Readonly<Partial<Record<HtlcAction, Readonly<HtlcTxRef>>>> = {},
   ): CrossChainHtlcProgress => ({
     status: "operator-alert",
     reason,
-    txRefs: collectRefs(latest, prepared, [], includeRetained),
+    txRefs: collectRefs(latest, prepared, [], includeRetained, known),
   });
   // A reveal that failed on chain published the preimage in its calldata; one
   // that is only authenticated `absent` broadcast it, so the mempool may have
@@ -2335,14 +2342,17 @@ export async function advanceCrossChainHtlc(
 
   if (checkpoint) {
     // Recovery progress and alerts name the retained destination lock even
-    // when its claimed record is omitted or authenticated absent.
+    // when its claimed record is omitted or authenticated absent, and the
+    // checkpointed reveal, which is the attempt that landed even when it is an
+    // earlier one than the active attempt or the adapter no longer reports it.
+    const landedReveal = { "destination-claim": checkpoint.revealTxRef } as const;
     // The reveal is final, so the payer holds the destination funds. Past the
     // source expiry the payee can no longer claim the source, and refunding it
     // would give the payer both legs: the source is never refunded, and a
     // person must settle the payee's leg. A source claim that is pending here
     // and later reaches finality in time still settles on a later call.
     if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
-      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"]);
+      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"], landedReveal);
     }
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
@@ -2360,9 +2370,14 @@ export async function advanceCrossChainHtlc(
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
-          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"])
+          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"], landedReveal)
           : sourceClaimReplacementLimitReached
-            ? operatorAlert("htlc-source-claim-replacement-limit-reached", snapshot, ["destination-lock"])
+            ? operatorAlert(
+              "htlc-source-claim-replacement-limit-reached",
+              snapshot,
+              ["destination-lock"],
+              landedReveal,
+            )
             : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
       }
       snapshot = advanced;
@@ -2412,7 +2427,7 @@ export async function advanceCrossChainHtlc(
       status: "settle-asymmetric",
       reason: "dest-revealed-source-unclaimed",
       recoveryDeadline: checkpoint.sourceExpiry,
-      txRefs: collectRefs(snapshot, prepared, [], ["destination-lock"]),
+      txRefs: collectRefs(snapshot, prepared, [], ["destination-lock"], landedReveal),
       finalityObservedAt: checkpoint.finalityObservedAt,
     };
   }

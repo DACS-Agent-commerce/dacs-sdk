@@ -121,7 +121,9 @@ reveal claims it. The core records the reveal checkpoint with the source
 expiry of the retained source-finality checkpoint and drives the payee's
 source claim exactly as when the lock still reads final, under the same
 source-expiry cutoff; settlements, `settle-asymmetric` progress and
-checkpoint-path operator alerts name the retained destination-lock reference.
+checkpoint-path operator alerts name the retained destination-lock reference
+and the checkpointed reveal, which is the attempt that landed even when it is
+an earlier one than the active attempt or is no longer reported.
 Neither leg is ever refunded on this path, and a source claim that
 misses the source expiry is the usual `operator-alert`
 `htlc-source-claim-missed-after-reveal`.
