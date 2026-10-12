@@ -1,15 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Keep the audit step executable as plain Node ESM; a computed import lets this
 // TypeScript suite exercise it without shipping a second declaration API.
 const summaryModulePath = "../../scripts/gitleaks-fingerprint-summary.mjs";
-const { findingsFromReport, listFingerprintsLocally, summarizeGitleaksReport } = await import(summaryModulePath);
+const { findingsFromReport, listFingerprintsLocally, readGitleaksReport, summarizeGitleaksReport } = await import(
+  summaryModulePath
+);
 const summaryScript = fileURLToPath(new URL(summaryModulePath, import.meta.url));
 
 // Assemble the values that must never be printed at runtime, so secret scanners
@@ -442,6 +444,43 @@ describe("Gitleaks finding summary", () => {
       expect(over.status).toBe(1);
       expect(over.summary).toContain("the report is over 64 MiB, so it was not read");
       expect(over.summary).not.toContain("No findings.");
+    }, 20_000);
+
+    it("refuses a report over 64 MiB without reading it", async () => {
+      // Sparse files take no disk space. Every FileHandle shares one readFile, so a
+      // spy on it sees whether a report's content is read. The assertions compare
+      // only small values, so that a failure never prints 64 MiB of text.
+      const handle = await open(stepSummary, "r");
+      const fileHandle = Object.getPrototypeOf(handle);
+      await handle.close();
+      const read = vi.spyOn(fileHandle, "readFile");
+      try {
+        await writeFile(reportPath, "");
+        await truncate(reportPath, 64 * ONE_MIB + 1);
+        const over = await readGitleaksReport(reportPath);
+        expect(Object.keys(over)).toEqual(["problem"]);
+        expect(over.problem).toBe("the report is over 64 MiB, so it was not read");
+        expect(read).not.toHaveBeenCalled();
+        await truncate(reportPath, 64 * ONE_MIB);
+        const limit = await readGitleaksReport(reportPath);
+        expect(limit.problem).toBeUndefined();
+        expect(limit.text?.length).toBe(64 * ONE_MIB);
+        expect(read).toHaveBeenCalledTimes(1);
+      } finally {
+        read.mockRestore();
+      }
+    }, 20_000);
+
+    it("lists a report over 64 MiB locally", async () => {
+      const report = Buffer.alloc(64 * ONE_MIB + 1, 0x20);
+      report.write(reportOf([NEW_A]), 0);
+      await writeFile(reportPath, report);
+      const local = runStep(["--report", reportPath, "--local"]);
+      expect(local.status).toBe(0);
+      expect(local.stdout.split("\n").slice(1)).toEqual([`${idOf(NEW_A)} ${NEW_A}`, ""]);
+      const workflow = runStep(["--report", reportPath, "--scan-outcome", "failure"]);
+      expect(workflow.status).toBe(1);
+      expect(logBody(workflow.stdout).body).toContain("the report is over 64 MiB, so it was not read");
     }, 20_000);
 
     it("gives the same input the same IDs, and each run a new stop token", async () => {

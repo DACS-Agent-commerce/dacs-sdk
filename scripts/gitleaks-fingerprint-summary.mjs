@@ -5,7 +5,8 @@ import { appendFile, open } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const SCAN_OUTCOMES = ["success", "failure", "cancelled", "skipped"];
-// A larger report is not read, so the step fails and the scan is reproduced locally.
+// The workflow step doesn't read a larger report, so it fails, and the report is
+// reviewed with --local, which has no cap.
 const MAX_REPORT_BYTES = 64 * 1024 * 1024;
 // GitHub doesn't display a step summary over 1 MiB. The summary and the job log get
 // the same text, whose list of findings stops at this size.
@@ -16,8 +17,8 @@ const COMMIT = /^[0-9a-f]{40}$/;
 const RULE = /^[A-Za-z0-9._-]{1,64}$/;
 const LINE = /^(?:0|[1-9][0-9]*)$/;
 
-// The report's text, or why there is none. Nothing over MAX_REPORT_BYTES is read.
-export async function readGitleaksReport(path) {
+// The report's text, or why there is none. Nothing over maxBytes is read.
+export async function readGitleaksReport(path, maxBytes = MAX_REPORT_BYTES) {
   let handle;
   try {
     handle = await open(path, "r");
@@ -27,9 +28,9 @@ export async function readGitleaksReport(path) {
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) return { problem: "the report is not a file" };
-    if (stats.size > MAX_REPORT_BYTES) return { problem: "the report is over 64 MiB, so it was not read" };
+    if (stats.size > maxBytes) return { problem: "the report is over 64 MiB, so it was not read" };
     const bytes = await handle.readFile();
-    if (bytes.length > MAX_REPORT_BYTES) return { problem: "the report is over 64 MiB, so it was not read" };
+    if (bytes.length > maxBytes) return { problem: "the report is over 64 MiB, so it was not read" };
     return { text: bytes.toString("utf8") };
   } catch {
     return { problem: "the report could not be read" };
@@ -232,7 +233,8 @@ async function main() {
   if (options.local && process.env.GITHUB_ACTIONS === "true") {
     throw new Error("--local prints raw fingerprints, which can contain secrets; it does not run in GitHub Actions");
   }
-  const report = await readGitleaksReport(options.report);
+  // Only the workflow step caps the report; a local run is how an over-cap report is reviewed.
+  const report = await readGitleaksReport(options.report, options.local ? Infinity : MAX_REPORT_BYTES);
   if (options.local) {
     const listing = listFingerprintsLocally(report);
     process.stdout.write(listing.text);
