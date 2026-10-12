@@ -311,7 +311,7 @@ function runner(overrides: Partial<AdvanceCrossChainHtlcInput> = {}) {
     hashlocks,
     authorizeDestinationClaim: true,
     owner: "worker-a",
-    store: createInMemoryCrossChainHtlcStore(),
+    store: createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true }),
     adapter: harness().adapter,
     now: () => clock,
     leaseDurationMs: 100,
@@ -333,7 +333,7 @@ async function sourceClaimStoreFixture(options: {
   sourceExpiry?: number;
 } = {}) {
   const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
-  const store = createInMemoryCrossChainHtlcStore();
+  const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
   const claimed = await store.claim({
     intent,
     secrets,
@@ -462,7 +462,7 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     })).toThrow("jobId must be a canonical uppercase ULID");
 
     const deriveHashlock = vi.fn(hashlocks.deriveHashlock);
-    const store = createInMemoryCrossChainHtlcStore();
+    const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const claim = vi.spyOn(store, "claim");
     const h = harness();
     const result = await advanceCrossChainHtlc(runner({
@@ -586,7 +586,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("rejects cross-session buyer-salt reuse in the durable store", async () => {
-    const store = createInMemoryCrossChainHtlcStore();
+    const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const first = runner({ store, adapter: harness({ mode: { "source-lock": "pending" } }).adapter });
     await advanceCrossChainHtlc(first.shared);
     first.setClock(2_000_000);
@@ -742,7 +742,7 @@ describe("advanceCrossChainHtlc", () => {
 
   test("persists source finality before preparing the causally bound destination lock", async () => {
     const events: string[] = [];
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const store: CrossChainHtlcStore = {
       ...base,
       async recordSourceFinality(input) {
@@ -770,7 +770,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("accepts fresh source-finality evidence metadata without replacing the checkpoint", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const recordSourceFinality = vi.fn(base.recordSourceFinality.bind(base));
     const store: CrossChainHtlcStore = { ...base, recordSourceFinality };
     const h = harness();
@@ -829,7 +829,7 @@ describe("advanceCrossChainHtlc", () => {
   );
 
   test("does not prepare a destination lock when source-finality persistence fails", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const store: CrossChainHtlcStore = {
       ...base,
       async recordSourceFinality() {
@@ -901,7 +901,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("rejects a new destination lock after the preparation window and refunds the source", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let interruptCheckpoint = true;
     const store: CrossChainHtlcStore = {
       ...base,
@@ -1108,7 +1108,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("fails closed before effects when a runtime store lacks the reveal replacement contract", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const { replacePreparedDestinationClaim: _unsupported, ...legacyStore } = base;
     const h = harness();
     await expect(advanceCrossChainHtlc(runner({
@@ -1124,7 +1124,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("fails closed before effects when a runtime store lacks the checkpoint contract", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const { recordSourceFinality: _unsupported, ...legacyStore } = base;
     const h = harness();
     await expect(advanceCrossChainHtlc(runner({
@@ -1143,7 +1143,7 @@ describe("advanceCrossChainHtlc", () => {
   test.each(["missing", "mismatched"] as const)(
     "fails a takeover with a %s destination-lock causal checkpoint before effects",
     async (mode) => {
-      const base = createInMemoryCrossChainHtlcStore();
+      const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
       const h = harness();
       const run = runner({ adapter: h.adapter, store: base });
       await advanceCrossChainHtlc(run.shared);
@@ -1230,7 +1230,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("accepts fresh reveal evidence metadata without replacing the checkpoint", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const recordRevealFinal = vi.fn(base.recordRevealFinal.bind(base));
     const store: CrossChainHtlcStore = { ...base, recordRevealFinal };
     const h = harness({ mode: { "source-claim": "pending" } });
@@ -1322,7 +1322,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("persists a source-claim replacement before broadcasting it", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const order: string[] = [];
     const replacePreparedSourceClaim = vi.fn<CrossChainHtlcStore["replacePreparedSourceClaim"]>(
       async (input) => {
@@ -1361,7 +1361,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("does not broadcast an initial source claim when expiry arrives after persistence", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let expireClock = () => {};
     const store: CrossChainHtlcStore = {
       ...base,
@@ -1389,7 +1389,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("does not broadcast a replacement when expiry arrives after its CAS", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let expireClock = () => {};
     const store: CrossChainHtlcStore = {
       ...base,
@@ -1613,7 +1613,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("accepts an equivalent 0X preimage when recovering an already-final source claim", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let failSettlementOnce = true;
     const store: CrossChainHtlcStore = {
       ...base,
@@ -2322,7 +2322,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("broadcasts nothing when the stored reveal changed under the replacement compare-and-swap", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const { intent } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
     const rival = preparedFor(intent, "destination-claim", "-rival");
     const store: CrossChainHtlcStore = {
@@ -2352,7 +2352,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("rebroadcasts a persisted reveal replacement after a restart, never preparing a third reveal", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let crashAfterCommit = true;
     const store: CrossChainHtlcStore = {
       ...base,
@@ -2447,7 +2447,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("does not broadcast a committed reveal replacement when the claim window closes after its CAS", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     let closeWindow = () => {};
     const store: CrossChainHtlcStore = {
       ...base,
@@ -2981,7 +2981,7 @@ describe("advanceCrossChainHtlc", () => {
   test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects invalid lease duration %s before durable or chain effects",
     async (leaseDurationMs) => {
-      const base = createInMemoryCrossChainHtlcStore();
+      const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
       const claim = vi.fn(base.claim);
       const h = harness();
       await expect(advanceCrossChainHtlc(runner({
@@ -3220,7 +3220,7 @@ describe("advanceCrossChainHtlc", () => {
     ["before inclusion", { includedAt: 1_450_000, finalityReachedAt: 1_400_000 }],
     ["after observation", { finalityReachedAt: 1_600_001 }],
   ])("fails closed on %s retained source-claim finality timing", async (_name, timing) => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const recordSettlement = vi.fn(base.recordSettlement);
     const store: CrossChainHtlcStore = { ...base, recordSettlement };
     const h = harness({
@@ -3252,7 +3252,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("fails closed on a retained settlement without finality-reached evidence", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const h = harness();
     const run = runner({ adapter: h.adapter, store: base });
     await advanceCrossChainHtlc(run.shared);
@@ -3287,7 +3287,7 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test("fails closed when retained settlement finality reached after its bound expiry", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const h = harness();
     const run = runner({ adapter: h.adapter, store: base });
     await advanceCrossChainHtlc(run.shared);
@@ -3706,12 +3706,21 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     h.actions["destination-claim"] = reveal;
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject(settled);
   });
+
+  test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
+    for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
+      expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);
+      expect(() => createInMemoryCrossChainHtlcStore(options as never))
+        .toThrow(/loses all state on restart, which would double-send/);
+    }
+    expect(createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true }).claim).toBeTypeOf("function");
+  });
 });
 
 describe("source-finality checkpoint store contract", () => {
   test("rejects destination-lock persistence without the exact retained checkpoint", async () => {
     const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
-    const store = createInMemoryCrossChainHtlcStore();
+    const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const claimed = await store.claim({
       intent,
       secrets,
@@ -3815,7 +3824,7 @@ async function destinationClaimStoreFixture(options: {
   sourceExpiry?: number;
 } = {}) {
   const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
-  const store = createInMemoryCrossChainHtlcStore();
+  const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
   const claimed = await store.claim({
     intent,
     secrets,
@@ -4177,7 +4186,7 @@ describe("source-claim replacement store contract", () => {
   });
 
   test("fails corrupted retained history before observing or preparing effects", async () => {
-    const base = createInMemoryCrossChainHtlcStore();
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const h = harness({ mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter, store: base });
     await advanceCrossChainHtlc(run.shared);

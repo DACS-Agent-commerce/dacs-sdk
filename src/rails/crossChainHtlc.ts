@@ -2472,8 +2472,21 @@ interface MemoryHtlcRecord {
   settlement?: Readonly<CrossChainHtlcSettlement>;
 }
 
-/** Test/development store. Production callers must use encrypted durable state. */
-export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
+/**
+ * Test/development store. It loses every secret, signed action and checkpoint
+ * on restart, after which the core would prepare a second source lock and
+ * double-send, so callers must acknowledge that explicitly. The core is
+ * restart-safe only over an encrypted, durable and atomic host store.
+ */
+export function createInMemoryCrossChainHtlcStore(
+  options: Readonly<{ acknowledgeVolatile: true }>,
+): CrossChainHtlcStore {
+  if (options?.acknowledgeVolatile !== true) {
+    throw new TypeError(
+      "pay-cross-chain-htlc: the in-memory HTLC store loses all state on restart, which would " +
+        "double-send; pass { acknowledgeVolatile: true } only in tests and development",
+    );
+  }
   const records = new Map<string, MemoryHtlcRecord>();
   const saltOwners = new Map<string, string>();
   const effects = new Map<string, string>();

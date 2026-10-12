@@ -47,6 +47,7 @@ import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
   advanceCrossChainHtlc,
+  createInMemoryCrossChainHtlcStore,
   deriveHtlcPreimage,
   type CrossChainHtlcAdapter,
   type CrossChainHtlcAuthority,
@@ -125,6 +126,12 @@ function htlcNeedsOperator(progress: CrossChainHtlcProgress): boolean {
       return unhandled;
     }
   }
+}
+/** The volatile store is a test double and must be acknowledged as one. */
+function volatileHtlcStoreForTests(): CrossChainHtlcStore {
+  // @ts-expect-error the in-memory store requires { acknowledgeVolatile: true }
+  void (() => createInMemoryCrossChainHtlcStore());
+  return createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
 }
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
@@ -237,6 +244,7 @@ void htlcLockTerms;
 void htlcTokenIds;
 void htlcRevealReplacement;
 void htlcNeedsOperator;
+void volatileHtlcStoreForTests;
 void htlcAdapter;
 void htlcStore;
 void solanaAdvance;
