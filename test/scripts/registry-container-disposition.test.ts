@@ -548,6 +548,9 @@ describe("advisory-ID baseline", () => {
 
 // The real b7b180f evidence (run 38214792229): functional pass, every non-audit
 // check failing on findings that main's published dependency tree carries.
+// The lock keeps only the entries these tests use, each byte-identical to that
+// run's lock. engine-versions.json holds the container versions its
+// engine-strict.log reports (`Actual:`); that run did not yet write the file.
 const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
 function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
   const read = (name: string) => name in overrides ? overrides[name]
