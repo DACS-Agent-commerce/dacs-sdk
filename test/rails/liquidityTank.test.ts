@@ -5776,4 +5776,53 @@ describe("round 12", () => {
       }
     });
   });
+
+  describe("code P3-1: a bridge time may fall before preparedAt by the same skew", () => {
+    test("the code review's probe: an adapter 30 s ahead and a release 20 s after signing settles", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      h.setPreparedAt(HOST_MS + 30_000);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, HOST_MS + 1_000));
+      const run = runner({ store, adapter: h.adapter, leaseDurationMs: 10 });
+      const at = async (clock: number) => {
+        run.setClock(clock);
+        return advanceLiquidityTankSettlement({ ...run.shared, owner: `worker-${clock}` });
+      };
+      await expect(at(HOST_MS + 1_000)).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased",
+      });
+      h.setObservation(lockedPendingAt(h.operationHash, HOST_MS + 10_000));
+      await expect(at(HOST_MS + 10_000)).resolves.toMatchObject({ status: "settle-asymmetric" });
+      h.setObservation(completed(h.operationHash, HOST_MS + 20_000));
+      await expect(at(HOST_MS + 40_000)).resolves.toMatchObject({
+        status: "settled", settlement: { settlementFinality: { finalityObservedAt: HOST_MS + 20_000 } },
+      });
+      await expect(at(RECOVERY_DEADLINE_MS + 1_000)).resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      ["a locked pending observed", 60_000, (op: string, time: number) => lockedPendingAt(op, time),
+        "settle-asymmetric", "liquidity-tank-lock-observed-before-preparation"],
+      ["a completion finalized", 60_000, (op: string, time: number) => completed(op, time),
+        "settled", "liquidity-tank-finality-before-preparation"],
+    ] as const)("%s a minute before preparedAt is used, and a millisecond earlier is refused", async (
+      _label, skew, observation, used, refused,
+    ) => {
+      for (const [early, expected] of [[skew, used], [skew + 1, refused]] as const) {
+        const h = harness();
+        h.setPreparedAt(HOST_MS);
+        h.setAfterBroadcast(observation(h.operationHash, HOST_MS - early));
+        const run = runner({ adapter: h.adapter });
+        run.setClock(HOST_MS);
+        const result = await advanceLiquidityTankSettlement(run.shared);
+        if (expected === refused) {
+          expect(result).toEqual({ status: "indeterminate", reason: refused });
+        } else {
+          expect(result).toMatchObject({ status: expected });
+        }
+      }
+    });
+  });
 });

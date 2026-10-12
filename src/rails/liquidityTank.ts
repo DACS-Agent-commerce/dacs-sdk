@@ -71,8 +71,9 @@ const AUTHORITY_FIELDS = Object.freeze(Object.keys({
 const DEFAULT_LEASE_MS = 30_000;
 /**
  * How far a submission's `preparedAt` may sit from this host's clock readings
- * around preparation and from the receipt stored with it: room for the
- * adapter's clock skew, while a seconds-scale value is decades outside it.
+ * around preparation and from the receipt stored with it, and how far a bridge
+ * time may fall before it: room for clock skew between the adapter, the bridge
+ * and the host, while a seconds-scale value is decades outside it.
  */
 const PREPARATION_CLOCK_SKEW_MS = 60_000;
 const ETH_SEPOLIA_CHAIN_ID = 11_155_111;
@@ -689,8 +690,8 @@ function recoveryDeadlineUnixMs(value: unknown): number {
 }
 
 /**
- * A bridge time earlier than the submission it describes, such as one sent in
- * seconds; `reason` names the field.
+ * A bridge time too far before the submission it describes, such as one sent
+ * in seconds; `reason` names the field.
  */
 class BeforePreparationError extends DacsError {
   readonly reason: string;
@@ -703,8 +704,9 @@ class BeforePreparationError extends DacsError {
 
 /**
  * A bridge time on `submission`'s operation, which cannot fall before the
- * submission was prepared. No unit heuristic: a seconds-scale value is
- * refused, not converted.
+ * submission was prepared by more than the clock skew allowed between the
+ * adapter that stamped `preparedAt` and the bridge. No unit heuristic: a
+ * seconds-scale value is refused, not converted.
  */
 function afterPreparation(
   time: number,
@@ -712,7 +714,9 @@ function afterPreparation(
   reason: string,
   label: string,
 ): number {
-  if (time < submission.preparedAt) throw new BeforePreparationError(reason, label);
+  if (time < submission.preparedAt - PREPARATION_CLOCK_SKEW_MS) {
+    throw new BeforePreparationError(reason, label);
+  }
   return time;
 }
 

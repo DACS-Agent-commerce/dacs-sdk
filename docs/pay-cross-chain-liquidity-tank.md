@@ -138,8 +138,9 @@ something to compare it with:
   core returns `liquidity-tank-preparation-time-off-host-clock` and stores and
   broadcasts nothing, so a submission stamped in seconds never starts a bridge
   operation, and the next owner signs afresh.
-- **No bridge time on the operation may fall before `preparedAt`:** not a
-  `recoveryDeadline` (`liquidity-tank-recovery-deadline-before-preparation`),
+- **No bridge time on the operation may fall more than one minute before
+  `preparedAt`,** the same allowance for clock skew between the adapter and
+  the bridge: not a `recoveryDeadline` (`liquidity-tank-recovery-deadline-before-preparation`),
   a completion's `finalityObservedAt`
   (`liquidity-tank-finality-before-preparation`), or a locked pending's
   `observedAt` (`liquidity-tank-lock-observed-before-preparation`). A value the
@@ -481,8 +482,8 @@ operator rather than polling:
 - `liquidity-tank-recovery-deadline-before-preparation`,
   `liquidity-tank-finality-before-preparation` and
   `liquidity-tank-lock-observed-before-preparation`: the adapter or a stored
-  row carries a bridge time earlier than the submission, such as one in
-  seconds (see [Timestamp units](#timestamp-units));
+  row carries a bridge time more than a minute earlier than the submission,
+  such as one in seconds (see [Timestamp units](#timestamp-units));
 - `liquidity-tank-preparation-time-off-host-clock`: the adapter stamped a
   fresh submission more than a minute from this host's clock, such as in
   seconds, or its verification took long enough to leave that window; nothing
