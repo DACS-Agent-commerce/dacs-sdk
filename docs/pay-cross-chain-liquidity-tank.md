@@ -187,8 +187,9 @@ phase they came from. So:
   representation** (a frozen or otherwise read-only authority, a `Proxy`,
   accessors, an exotic prototype, or an `input` that is a `Proxy` or exposes
   `authority` through an accessor) returns `indeterminate` with the refusal
-  message as its reason. Content validation accepts only primitive values and
-  own fields, and decides through built-ins captured when the SDK loads.
+  message as its reason. Content validation reads only the authority's own
+  data properties, accepts only primitive strings and numbers, and decides
+  through built-ins captured when the SDK loads (see below).
 - **A claim conflict**, where the store already holds a different binding for
   the phase, returns `indeterminate` with the store's reason (the reference
   store's `liquidity-tank-settlement-binding-conflict`, or the host store's
@@ -210,6 +211,72 @@ Host configuration is refused the same way, before any claim or effect:
 
 Both need an operator: the core has not read the store, so it cannot tell
 whether a lock is durable or the phase already settled.
+
+## Reasons that need an operator
+
+Every refusal and conflict is `indeterminate`, so `status` alone does not say
+whether polling can help. These reasons repeat identically on every retry
+with the same authority, configuration and store row. Escalate them to an
+operator rather than polling:
+
+- `liquidity-tank-settlement-binding-conflict`;
+- `liquidity-tank-retained-state-corrupt`;
+- `liquidity-tank-store-recovery-capability-unavailable`;
+- any reason that starts with `pay-cross-chain-liquidity-tank:` (a refused
+  authority, owner, lease, clock, store or adapter);
+- a capture refusal: `liquidity-tank authority is not stable canonical JSON`,
+  `jobId must be a canonical uppercase ULID`, or the fallbacks
+  `liquidity-tank-authority-unreadable`, `liquidity-tank-authority-invalid`
+  and `liquidity-tank-runtime-policy-invalid`;
+- any conflict reason returned by the host's own store.
+
+A refusal caused by a polluted or replaced built-in in the host process (see
+below) also repeats until that process is fixed or restarted, so the operator
+should check the process as well as the authority and the row.
+`lock-contradicted` (above) also needs an operator. Other `indeterminate`
+reasons, such as an unavailable store or an uncertain broadcast, are
+transient: retry with backoff, and alert if one persists. A typed
+discriminator for this is left to a later release.
+
+## Polluted or replaced built-ins
+
+The settlement key (`jobId`, `railId`, `phaseIndex`) and every field of the
+intent the core hands to the store and adapter (amount and base units, payee
+and origin, chains, assets, decimals, tank IDs, job, rail and phase) come from
+the authority's own data properties. They are read, NFC-normalized, matched
+and hashed only through built-ins captured when the SDK loads. The shared
+canonical-JSON code still runs on the authority, through the live built-ins,
+for two things: deciding whether its representation is stable canonical JSON,
+and computing the operation and binding hashes.
+
+So a polluted prototype, or a built-in replaced after the SDK loads (for
+example `String.prototype.normalize`, `RegExp.prototype.exec`,
+`Hash.prototype.digest` or the global `Number`), can only:
+
+- refuse the authority (`indeterminate`, before any claim); or
+- change the binding hash, which for a phase that already holds a binding is
+  a binding conflict (`indeterminate`, with no preparation or broadcast).
+
+It cannot change the amount, payee or settlement key, so it cannot open a
+second phase beside a locked one: the store sees the locked phase, and the
+core prepares, persists and broadcasts nothing new for it. A phase first
+claimed under such a process
+records the changed binding hash, so the same authority from a sound process
+later gets a binding conflict that an operator resolves.
+
+After the claim, the core reads store and adapter results through the same
+shared code. A replaced built-in there can make a result read as invalid or a
+retained row as corrupt (`indeterminate`); the core checks retained bytes
+without any live regex. If such a built-in hid a locked phase's retained
+submission, observation and failure all at once, the core would ask the
+adapter to prepare again, but the store's rule that a phase keeps its first
+submission (the reference store refuses a replacement) stops that submission
+from being persisted or broadcast.
+
+Code that can replace built-ins in the host process can also call the adapter
+directly, or forge what the store or adapter returns. No rail can prevent
+that; the guarantee is only that this core never derives a different amount,
+payee or settlement key from the authority it was given.
 
 ## Adapter trust boundary
 
