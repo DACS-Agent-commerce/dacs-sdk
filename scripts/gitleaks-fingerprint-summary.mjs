@@ -240,13 +240,15 @@ async function main() {
     return;
   }
   const summary = summarizeGitleaksReport(report, options.scanOutcome);
-  // The runner ignores workflow commands until it sees the random token again.
+  // The runner ignores workflow commands until it sees the random token again. The
+  // resume line is written even if writing the text fails, after a newline, so that
+  // it starts a line even if only part of the text was written.
   const token = randomUUID();
   process.stdout.write(`::stop-commands::${token}\n`);
   try {
     process.stdout.write(summary.markdown);
   } finally {
-    process.stdout.write(`::${token}::\n`);
+    process.stdout.write(`\n::${token}::\n`);
   }
   if (process.env.GITHUB_STEP_SUMMARY) {
     await appendFile(process.env.GITHUB_STEP_SUMMARY, summary.markdown, "utf8");

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 // Keep the audit step executable as plain Node ESM; a computed import lets this
@@ -275,8 +275,8 @@ describe("Gitleaks finding summary", () => {
     });
 
     // No shell and no PATH lookup; PATH holds only this Node's directory.
-    function runStep(args: string[], env: Record<string, string> = {}) {
-      return spawnSync(process.execPath, [summaryScript, ...args], {
+    function runStep(args: string[], env: Record<string, string> = {}, nodeArgs: string[] = []) {
+      return spawnSync(process.execPath, [...nodeArgs, summaryScript, ...args], {
         encoding: "utf8",
         env: { PATH: dirname(process.execPath), GITHUB_STEP_SUMMARY: stepSummary, ...env },
         maxBuffer: 16 * ONE_MIB,
@@ -289,19 +289,23 @@ describe("Gitleaks finding summary", () => {
       const result = runStep(["--report", reportPath, "--scan-outcome", outcome]);
       const written = await readFile(stepSummary, "utf8");
       expect(written.startsWith("earlier step\n")).toBe(true);
+      // Every summary ends its last line.
+      expect(written.endsWith("\n")).toBe(true);
       return { ...result, summary: written.slice("earlier step\n".length) };
     }
 
-    // The job log between `::stop-commands::<token>` and `::<token>::`.
+    // The job log between the `::stop-commands::<token>` line and a newline, then the
+    // `::<token>::` line.
     function logBody(stdout: string) {
-      const lines = stdout.split("\n");
-      const start = /^::stop-commands::([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(
-        lines[0] ?? "",
+      const start = /^::stop-commands::([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\n/.exec(
+        stdout,
       );
       expect(start).not.toBeNull();
       const token = start?.[1] ?? "";
-      expect(lines.slice(-2)).toEqual([`::${token}::`, ""]);
-      const body = `${lines.slice(1, -2).join("\n")}\n`;
+      const rest = stdout.slice(start?.[0].length ?? 0);
+      const resume = `\n::${token}::\n`;
+      expect(rest.endsWith(resume)).toBe(true);
+      const body = rest.slice(0, -resume.length);
       expect(body).not.toContain(token);
       return { token, body };
     }
@@ -503,6 +507,37 @@ describe("Gitleaks finding summary", () => {
       const result = runStep(["--report", reportPath, "--scan-outcome", "success"], { GITHUB_STEP_SUMMARY: directory });
       expect(result.status).toBe(1);
       expect(result.stderr).toBe("fingerprint summary failed closed: EISDIR\n");
+      // The log resumes workflow commands before the summary write fails.
+      const { token, body } = logBody(result.stdout);
+      expect(result.stdout.endsWith(`::${token}::\n`)).toBe(true);
+      expect(body).toBe("### Gitleaks findings\n\nNo findings.\n");
+    });
+
+    it("resumes workflow commands on a line of their own after a partial write", async () => {
+      // A stdout whose write of the summary text emits 10 bytes, then throws.
+      const partialWrite = join(directory, "partial-write.mjs");
+      await writeFile(
+        partialWrite,
+        [
+          "const write = process.stdout.write.bind(process.stdout);",
+          "process.stdout.write = (text, ...rest) => {",
+          '  if (!String(text).startsWith("### ")) return write(text, ...rest);',
+          "  write(String(text).slice(0, 10));",
+          '  throw new Error("partial write");',
+          "};",
+          "",
+        ].join("\n"),
+      );
+      await writeFile(reportPath, severalFindings);
+      const result = runStep(["--report", reportPath, "--scan-outcome", "failure"], {}, [
+        "--import",
+        pathToFileURL(partialWrite).href,
+      ]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("fingerprint summary failed closed: partial write\n");
+      const { token, body } = logBody(result.stdout);
+      expect(body).toBe("### Gitlea");
+      expect(result.stdout.endsWith(`### Gitlea\n::${token}::\n`)).toBe(true);
     });
 
     it("prints raw fingerprints only locally, with the IDs the workflow shows", async () => {
