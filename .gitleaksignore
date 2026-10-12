@@ -37,3 +37,11 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:870
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:899
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:921
+# Published Circle testnet USDC contract addresses (Ethereum Sepolia, Base Sepolia, Polygon Amoy) in
+# open PR branches. CI scans every fetched branch with main's config, so these exact fingerprints
+# made every SDK secret scan red (2026-10-12). PR #268's package-consumer fixture; PR #336's
+# settlement worker fixture.
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
+63e41f1d35536884cce585b7c390dcc95b47730d:test/fixtures/settlementProcessWorker.ts:generic-api-key:23
