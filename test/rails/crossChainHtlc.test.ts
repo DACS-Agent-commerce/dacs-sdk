@@ -1492,7 +1492,7 @@ describe("advanceCrossChainHtlc", () => {
     expect(replacePreparedSourceClaim).toHaveBeenCalledTimes(1);
   });
 
-  test.each(["historical pending", "historical final", "unknown failed"] as const)(
+  test.each(["historical pending", "unknown failed"] as const)(
     "rejects a %s source-claim observation after durable replacement",
     async (observation) => {
       const h = harness({ mode: { "source-claim": "pending" } });
@@ -1519,14 +1519,6 @@ describe("advanceCrossChainHtlc", () => {
           txRef: prior.txRef,
           authenticationHash: AUTH_HASH,
         };
-      } else if (observation === "historical final") {
-        h.actions["source-claim"] = {
-          state: "final",
-          txRef: prior.txRef,
-          finalityReachedAt: 1_000_000,
-          finalityObservedAt: 1_000_000,
-          authenticationHash: AUTH_HASH,
-        };
       } else {
         h.actions["source-claim"] = {
           state: "failed",
@@ -1545,6 +1537,41 @@ describe("advanceCrossChainHtlc", () => {
       expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
     },
   );
+
+  test("settles on a replaced source-claim attempt that landed after all", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const prior = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .find((prepared) => prepared.action === "source-claim");
+    if (!prior || prior.txRef.kind !== "htlc-claim") throw new Error("expected source claim");
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    h.setMode("source-claim", "throw-once");
+    await advanceCrossChainHtlc(run.nextOwner());
+    // Every attempt carries the same preimage, so the earlier claim landing
+    // pays the payee: the adapter reports it, and the session settles on it.
+    h.actions["source-claim"] = {
+      state: "final",
+      txRef: prior.txRef,
+      finalityReachedAt: 1_000_000,
+      finalityObservedAt: 1_000_000,
+      authenticationHash: AUTH_HASH,
+    };
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+      settlement: {
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
+      },
+    });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
 
   test("never replaces a pending or expired source claim", async () => {
     const h = harness({
@@ -1695,7 +1722,7 @@ describe("advanceCrossChainHtlc", () => {
     });
     // The broadcast reveal can no longer land, but the preimage was broadcast
     // and the payee may still claim the source: a person must act.
-    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc({
       ...run.shared,
       owner: "claim-reconciler-after-absence",
@@ -1726,7 +1753,7 @@ describe("advanceCrossChainHtlc", () => {
       reason: "htlc-destination-claim-unresolved-after-expiry",
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
-    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-unlanded", now: () => 1_700_101 }))
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-unlanded-done", now: () => 1_700_202 }))
@@ -1758,7 +1785,7 @@ describe("advanceCrossChainHtlc", () => {
     });
     expect(h.prepareAction.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock", "destination-claim"]);
-    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-absent", now: () => 1_700_101 }))
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
   });
@@ -3390,7 +3417,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     const { h, run } = await toPendingReveal();
     const [first] = broadcastsOf(h, "destination-claim");
     if (!first) throw new Error("expected a reveal");
-    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-claim"] = { state: "absent", txRef: first.txRef, authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "waiting",
       reason: "htlc-destination-claim-finality-pending",
@@ -3435,9 +3462,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
       const unlandActiveReveal = (state: "absent" | "failed") => {
         const active = broadcastsOf(h, "destination-claim").at(-1);
         if (!active) throw new Error("expected a reveal");
-        h.actions["destination-claim"] = state === "absent"
-          ? { state, authenticationHash: AUTH_HASH }
-          : { state, txRef: active.txRef, authenticationHash: AUTH_HASH };
+        h.actions["destination-claim"] = { state, txRef: active.txRef, authenticationHash: AUTH_HASH };
       };
       for (let replacement = 1; replacement <= 3; replacement += 1) {
         unlandActiveReveal(replacement === 1 ? firstOutcome : "absent");
@@ -3466,7 +3491,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
 
   test("alerts when a broadcast reveal is authenticated absent after the claim window closed, and refunds after both expiries", async () => {
     const { h, run } = await toPendingReveal({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
-    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
     const preparations = h.prepareAction.mock.calls.length;
     const broadcasts = h.broadcastRetained.mock.calls.length;
     // At the claim cutoff, then after the destination expiry and before the
@@ -3496,7 +3521,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     await advanceCrossChainHtlc(run.nextOwner());
     const [prior] = broadcastsOf(h, "source-claim");
     if (!prior) throw new Error("expected source claim");
-    h.actions["source-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["source-claim"] = { state: "absent", txRef: prior.txRef, authenticationHash: AUTH_HASH };
     h.setMode("source-claim", "final");
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
       status: "settled",
@@ -3801,6 +3826,113 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     expect(htlcNeedsOperator(progress)).toBe(false);
     expect(broadcastsOf(h, "destination-refund")).toHaveLength(1);
     expect(broadcastsOf(h, "source-refund")).toHaveLength(1);
+  });
+
+  test.each([
+    ["at once", 1_000_505],
+    ["only after the destination expiry", 1_500_101],
+  ] as const)(
+    "settles when a reveal replaced on a premature absent lands after all, observed %s, and never refunds",
+    async (_when, landedAt) => {
+      const { h, run } = await toPendingReveal();
+      const [first] = broadcastsOf(h, "destination-claim");
+      if (!first || first.txRef.kind !== "htlc-reveal") throw new Error("expected a reveal");
+      // A lagging node reports the first reveal absent while it is still in a mempool.
+      h.actions["destination-claim"] = { state: "absent", txRef: first.txRef, authenticationHash: AUTH_HASH };
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-claim-finality-pending",
+      });
+      expect(broadcastsOf(h, "destination-claim").map((prepared) => prepared.txRef))
+        .toEqual([refFor("destination-claim"), refFor("destination-claim", "-attempt-2")]);
+      // The first reveal lands, so the payer holds the destination funds and the
+      // replacement reverts; the adapter reports the attempt that landed.
+      h.actions["destination-claim"] = {
+        state: "final",
+        txRef: first.txRef,
+        finalityObservedAt: landedAt,
+        revealedPreimageHex: PREIMAGE_HEX,
+        authenticationHash: AUTH_HASH,
+      };
+      h.setMode("source-claim", "pending");
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "first-reveal-landed", now: () => landedAt }))
+        .resolves.toMatchObject({ status: "settle-asymmetric", reason: "dest-revealed-source-unclaimed" });
+      await h.markFinal("source-claim");
+      const settled = {
+        status: "settled",
+        settlement: {
+          txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
+        },
+      };
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "source-claimed", now: () => landedAt + 101 }))
+        .resolves.toMatchObject(settled);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "after-both-expiries", now: () => 5_000_101 }))
+        .resolves.toMatchObject(settled);
+      const effects = h.prepareAction.mock.calls.map((call) => call[0].action);
+      expect(effects).not.toContain("source-refund");
+      expect(effects).not.toContain("destination-refund");
+      expect(effects.filter((action) => action === "destination-claim")).toHaveLength(2);
+    },
+  );
+
+  test.each([
+    ["names no attempt", "htlc-destination-claim-absent-unbound"],
+    ["names a replaced attempt", "htlc-destination-claim-absent-unbound"],
+    ["names a transaction the core never prepared", "htlc-ledger-observation-unavailable"],
+  ] as const)(
+    "never replaces a reveal on an absent that %s",
+    async (variant, reason) => {
+      const { h, run } = await toPendingReveal();
+      const [first] = broadcastsOf(h, "destination-claim");
+      if (!first) throw new Error("expected a reveal");
+      if (variant === "names a replaced attempt") {
+        h.actions["destination-claim"] = { state: "failed", txRef: first.txRef, authenticationHash: AUTH_HASH };
+        await advanceCrossChainHtlc(run.nextOwner());
+        expect(broadcastsOf(h, "destination-claim")).toHaveLength(2);
+        h.actions["destination-claim"] = { state: "absent", txRef: first.txRef, authenticationHash: AUTH_HASH };
+      } else {
+        h.actions["destination-claim"] = variant === "names no attempt"
+          ? { state: "absent", authenticationHash: AUTH_HASH }
+          : { state: "absent", txRef: refFor("destination-claim", "-elsewhere"), authenticationHash: AUTH_HASH };
+      }
+      const preparations = h.prepareAction.mock.calls.length;
+      const broadcasts = h.broadcastRetained.mock.calls.length;
+      for (let call = 0; call < 2; call += 1) {
+        await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({ status: "indeterminate", reason });
+      }
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    },
+  );
+
+  test("never replaces a source claim on an absent that does not name it", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["source-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-claim-absent-unbound",
+    });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
+
+  test("refunds nothing after both expiries on a reveal absent that does not name the active attempt", async () => {
+    const { h, run } = await toPendingReveal({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    run.setClock(1_700_000);
+    const progress = await advanceCrossChainHtlc({ ...run.shared, owner: "unbound-absent-after-expiries" });
+    expect(progress).toEqual({ status: "waiting", reason: "htlc-destination-claim-unresolved-after-expiry" });
+    expect(htlcNeedsOperator(progress)).toBe(true);
+    const effects = h.prepareAction.mock.calls.map((call) => call[0].action);
+    expect(effects).not.toContain("source-refund");
+    expect(effects).not.toContain("destination-refund");
   });
 
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {

@@ -207,6 +207,12 @@ export interface HtlcDestinationClaimReplacementContext {
 export type HtlcObservedAction =
   | {
       state: "absent";
+      /**
+       * The retained attempt this `absent` is about. A retained reveal or
+       * source claim is replaced only when this names its active attempt; an
+       * `absent` that names an earlier attempt, or none, is refused.
+       */
+      txRef?: Readonly<HtlcTxRef>;
       authenticationHash: string;
     }
   | {
@@ -253,7 +259,7 @@ export type HtlcObservedAction =
 /**
  * Why a claim attempt was replaced: the adapter authenticated it `failed` on
  * chain, or `absent`, never on chain and unable to land. An `absent` entry
- * carries the reference of the active attempt it was reported for.
+ * carries the reference of the active attempt that the observation named.
  */
 export type HtlcFailedObservation = Omit<
   Extract<HtlcObservedAction, { state: "pending" | "failed" }>,
@@ -1102,14 +1108,30 @@ function expectedDestinationLockTerms(
   };
 }
 
+/** Whether `ref` names the active attempt of an action or a replaced one. */
+function namesRetainedAttempt(
+  ref: Readonly<HtlcTxRef>,
+  prepared: Readonly<HtlcPreparedAction> | undefined,
+  history: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[] = [],
+): boolean {
+  return (prepared !== undefined && sameRef(ref, prepared.txRef)) ||
+    history.some((entry) => sameRef(ref, entry.prepared.txRef));
+}
+
+/**
+ * A final observation of the action. For a claim it may name any retained
+ * attempt: every attempt of a claim carries the same preimage, so an earlier
+ * attempt that landed completes that claim.
+ */
 function final(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   action: HtlcAction,
   prepared: Readonly<HtlcPreparedAction> | undefined,
+  history: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[] = [],
 ): Extract<HtlcObservedAction, { state: "final" }> | undefined {
   const observed = snapshot.actions[action];
   if (!observed || observed.state !== "final") return undefined;
-  if (!prepared || !sameRef(observed.txRef, prepared.txRef) ||
+  if (!namesRetainedAttempt(observed.txRef, prepared, history) ||
       !HASH_RE.test(observed.authenticationHash) ||
       !Number.isSafeInteger(observed.finalityObservedAt) || observed.finalityObservedAt < 0) {
     throw new DacsError(`pay-cross-chain-htlc: invalid authenticated ${action} finality`);
@@ -1120,8 +1142,9 @@ function final(
 function finalSourceClaim(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: Readonly<HtlcPreparedAction> | undefined,
+  history: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[] = [],
 ): Readonly<FinalSourceClaimObservation> | undefined {
-  const observed = final(snapshot, "source-claim", prepared);
+  const observed = final(snapshot, "source-claim", prepared, history);
   if (!observed) return undefined;
   validateFinalityTiming(observed, "source-claim");
   return observed as Readonly<FinalSourceClaimObservation>;
@@ -1193,9 +1216,9 @@ function captureSourceFinalityCheckpoint(
 function captureRevealCheckpoint(
   value: Readonly<HtlcRevealCheckpoint>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
+  history: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[],
 ): Readonly<HtlcRevealCheckpoint> {
-  const destinationClaim = prepared.get("destination-claim");
-  if (!destinationClaim || !sameRef(value.revealTxRef, destinationClaim.txRef) ||
+  if (!namesRetainedAttempt(value.revealTxRef, prepared.get("destination-claim"), history) ||
       !HASH_RE.test(value.authenticationHash)) {
     throw new DacsError("pay-cross-chain-htlc: retained reveal checkpoint is invalid");
   }
@@ -1237,14 +1260,23 @@ function validateSnapshot(
       throw new DacsError("pay-cross-chain-htlc: action observation is unauthenticated");
     }
     const action = key as HtlcAction;
-    if (observed.state === "absent") continue;
     const retained = prepared.get(action);
     const history = action === "source-claim"
       ? sourceClaimAttemptHistory
       : action === "destination-claim" ? destinationClaimAttemptHistory : [];
-    const retainedHistoricalFailure = observed.state === "failed" &&
+    if (observed.state === "absent") {
+      // An `absent` may name the attempt it is about, which must be retained;
+      // whether it can replace a claim is decided where it is used.
+      if (observed.txRef !== undefined && !namesRetainedAttempt(observed.txRef, retained, history)) {
+        throw new DacsError(`pay-cross-chain-htlc: ${action} observation is not retained`);
+      }
+      continue;
+    }
+    // A replaced claim attempt may still be reported `failed`, or `final` once
+    // it has landed after all; only the active attempt can be `pending`.
+    const replacedAttempt = (observed.state === "failed" || observed.state === "final") &&
       history.some((entry) => sameRef(observed.txRef, entry.prepared.txRef));
-    if ((!retained || !sameRef(observed.txRef, retained.txRef)) && !retainedHistoricalFailure) {
+    if ((!retained || !sameRef(observed.txRef, retained.txRef)) && !replacedAttempt) {
       throw new DacsError(`pay-cross-chain-htlc: ${action} observation is not retained`);
     }
     if (observed.state === "pending" || observed.state === "failed") {
@@ -1510,7 +1542,7 @@ export async function advanceCrossChainHtlc(
   try {
     retainedCheckpoint = claimed.revealCheckpoint === undefined
       ? undefined
-      : captureRevealCheckpoint(claimed.revealCheckpoint, prepared);
+      : captureRevealCheckpoint(claimed.revealCheckpoint, prepared, destinationClaimAttemptHistory);
   } catch (error) {
     return {
       status: "failed",
@@ -1607,7 +1639,8 @@ export async function advanceCrossChainHtlc(
       ? "htlc-destination-claim-failed-preimage-public"
       : "htlc-destination-claim-absent-preimage-broadcast";
   // The active claim attempt as authenticated unlanded: `failed` on chain, or
-  // `absent`, which names no transaction and is bound to the active attempt.
+  // `absent` naming that attempt. An `absent` that names an earlier attempt,
+  // or none, says nothing about the active one.
   const unlandedActiveClaim = (
     action: "source-claim" | "destination-claim",
     latest: Readonly<HtlcLedgerSnapshot>,
@@ -1616,16 +1649,25 @@ export async function advanceCrossChainHtlc(
     const observed = latest.actions[action];
     if (!active || !observed) return undefined;
     if (observed.state === "absent") {
-      return Object.freeze({
-        state: "absent",
-        txRef: active.txRef,
-        authenticationHash: observed.authenticationHash,
-      });
+      return observed.txRef !== undefined && sameRef(observed.txRef, active.txRef)
+        ? Object.freeze({
+          state: "absent",
+          txRef: active.txRef,
+          authenticationHash: observed.authenticationHash,
+        })
+        : undefined;
     }
     return observed.state === "failed" && sameRef(observed.txRef, active.txRef)
       ? observed as Readonly<HtlcFailedObservation>
       : undefined;
   };
+  // A retained claim reported `absent` without naming its active attempt: it
+  // is never replaced on that report.
+  const unboundAbsentClaim = (
+    action: "source-claim" | "destination-claim",
+    latest: Readonly<HtlcLedgerSnapshot>,
+  ): boolean => prepared.has(action) && latest.actions[action]?.state === "absent" &&
+    !unlandedActiveClaim(action, latest);
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
   // own expiry instead of the session stopping with both legs locked. No reveal
@@ -1977,8 +2019,13 @@ export async function advanceCrossChainHtlc(
   try {
     sourceLock = final(snapshot, "source-lock", prepared.get("source-lock"));
     destinationLock = final(snapshot, "destination-lock", prepared.get("destination-lock"));
-    destinationClaim = final(snapshot, "destination-claim", prepared.get("destination-claim"));
-    sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"));
+    destinationClaim = final(
+      snapshot,
+      "destination-claim",
+      prepared.get("destination-claim"),
+      destinationClaimAttemptHistory,
+    );
+    sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"), sourceClaimAttemptHistory);
   } catch (error) {
     return { status: "failed", errorClass: "permanent", reason: String(error) };
   }
@@ -2229,8 +2276,13 @@ export async function advanceCrossChainHtlc(
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
         sourceClaimState.state === "failed") {
-      // A retained claim authenticated `failed` or `absent` can never land,
-      // so it is replaced; an unreported one is rebroadcast byte for byte.
+      // A retained claim authenticated `failed`, or `absent` naming it, can
+      // never land, so it is replaced; an unreported one is rebroadcast byte
+      // for byte. An `absent` that does not name the active claim says
+      // nothing about it, so it moves nothing.
+      if (unboundAbsentClaim("source-claim", snapshot)) {
+        return { status: "indeterminate", reason: "htlc-source-claim-absent-unbound" };
+      }
       const unlanded = unlandedActiveClaim("source-claim", snapshot);
       const advanced = unlanded
         ? await replaceFailedSourceClaim(unlanded, checkpoint.sourceExpiry)
@@ -2244,7 +2296,7 @@ export async function advanceCrossChainHtlc(
       }
       snapshot = advanced;
       try {
-        sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"));
+        sourceClaim = finalSourceClaim(snapshot, prepared.get("source-claim"), sourceClaimAttemptHistory);
       } catch (error) {
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
@@ -2428,14 +2480,11 @@ export async function advanceCrossChainHtlc(
       // until the payee's source-claim window has closed and the adapter
       // authenticates that the claim did not land. A pending claim may still,
       // and a claim the adapter does not report at all is not authenticated.
-      // A failed observation of a replaced reveal says nothing about the
-      // active one, so only the active reveal can be authenticated unlanded.
-      const activeClaim = prepared.get("destination-claim")!;
+      // A failed observation of a replaced reveal, or an `absent` that does not
+      // name the active one, says nothing about the active reveal, so only the
+      // active reveal can be authenticated unlanded.
       const pendingClaim = snapshot.actions["destination-claim"];
-      const failedActive = pendingClaim?.state === "failed" &&
-        sameRef(pendingClaim.txRef, activeClaim.txRef);
-      const absentActive = pendingClaim?.state === "absent";
-      const unlanded = absentActive || failedActive;
+      const unlanded = unlandedActiveClaim("destination-claim", snapshot);
       if (!unlanded || !sourceExpired || !destinationExpired) {
         // A reveal that failed on chain or is authenticated absent has
         // broadcast the preimage. Here the claim window has closed or the
@@ -2445,9 +2494,9 @@ export async function advanceCrossChainHtlc(
         if (pendingClaim?.state !== "pending" &&
             (unlanded || destinationClaimAttemptHistory.length > 0)) {
           return operatorAlert(
-            revealExposedReason(failedActive),
+            revealExposedReason(unlanded?.state === "failed"),
             snapshot,
-            absentActive ? ["destination-claim"] : [],
+            pendingClaim?.state === "absent" ? ["destination-claim"] : [],
           );
         }
         // Still safe to wait, but past both expiries a reveal that never
@@ -2510,6 +2559,10 @@ export async function advanceCrossChainHtlc(
   }
   if (!activeClaim && !authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
+  }
+  // An `absent` that does not name the active reveal says nothing about it.
+  if (unboundAbsentClaim("destination-claim", snapshot)) {
+    return { status: "indeterminate", reason: "htlc-destination-claim-absent-unbound" };
   }
   // Unreported, absent before any reveal, or only a replaced reveal is
   // reported failed: send the active reveal, rebroadcasting its exact retained

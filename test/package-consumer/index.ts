@@ -56,8 +56,11 @@ import {
   type CrossChainHtlcProgress,
   type CrossChainHtlcStore,
   type HtlcDestinationClaimReplacementContext,
+  type HtlcFailedObservation,
   type HtlcLockTerms,
+  type HtlcObservedAction,
   type HtlcRefundLegState,
+  type HtlcTxRef,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -145,6 +148,25 @@ function htlcPage(progress: CrossChainHtlcProgress): string | undefined {
 }
 const rootHtlcPage: typeof htlcNeedsOperator = rootHtlcNeedsOperator;
 const htlcAbsentLeg: HtlcRefundLegState = "absent";
+/** A claim's `absent` names the attempt it is about; one before any attempt names none. */
+const htlcRevealRef: HtlcTxRef = {
+  kind: "htlc-reveal",
+  chainId: 80002,
+  contractAddress: "0x0000000000000000000000000000000000000003",
+  revealTxHash: `0x${"1".repeat(64)}`,
+};
+const htlcAbsentReveal: HtlcObservedAction = {
+  state: "absent",
+  txRef: htlcRevealRef,
+  authenticationHash: "c".repeat(64),
+};
+const htlcNothingOnChain: HtlcObservedAction = { state: "absent", authenticationHash: "c".repeat(64) };
+/** A replaced attempt's history records the `absent` with that attempt's reference. */
+const htlcAbsentAttempt: HtlcFailedObservation = {
+  state: "absent",
+  txRef: htlcRevealRef,
+  authenticationHash: "c".repeat(64),
+};
 /** The volatile store is a test double and must be acknowledged as one. */
 function volatileHtlcStoreForTests(): CrossChainHtlcStore {
   // @ts-expect-error the in-memory store requires { acknowledgeVolatile: true }
@@ -264,6 +286,9 @@ void htlcRevealReplacement;
 void htlcPage;
 void rootHtlcPage;
 void htlcAbsentLeg;
+void htlcAbsentReveal;
+void htlcNothingOnChain;
+void htlcAbsentAttempt;
 void volatileHtlcStoreForTests;
 void htlcAdapter;
 void htlcStore;
