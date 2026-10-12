@@ -907,9 +907,12 @@ describe("assessed advisories", () => {
 // run's lock. engine-versions.json holds the container versions its
 // engine-strict.log reports (`Actual:`); that run did not yet write the file.
 const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
+// .gitignore ignores *.log, so that run's engine-strict.log is stored as
+// engine-strict.log.txt; every other file keeps its artifact name.
+const b7b180fFile = (name: string) => join(b7b180f, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
 function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
   const read = (name: string) => name in overrides ? overrides[name]
-    : (() => { try { return readFileSync(join(b7b180f, name), "utf8"); } catch { return undefined; } })();
+    : (() => { try { return readFileSync(b7b180fFile(name), "utf8"); } catch { return undefined; } })();
   const summary = JSON.parse(readFileSync(join(b7b180f, "acceptance-summary.json"), "utf8"));
   summary.securityGate.findings = extractPolicyFindings(read);
   return summary;
@@ -935,7 +938,7 @@ describe("#191 policy-finding baseline", () => {
   const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
   const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
     value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
-  const strictLog = readFileSync(join(b7b180f, "engine-strict.log"), "utf8");
+  const strictLog = readFileSync(b7b180fFile("engine-strict.log"), "utf8");
   const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
   it.each([
     ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
