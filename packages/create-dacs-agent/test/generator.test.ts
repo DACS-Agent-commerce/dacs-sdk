@@ -461,6 +461,23 @@ describe("create-dacs-agent", () => {
     }
   });
 
+  test("checks the runtime user, directory and command the Dockerfile writes", async () => {
+    const target = await generatedDockerProject("image-config-agent");
+    const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
+    const smoke = await readFile(join(target, "scripts", "docker-runtime-smoke.mjs"), "utf8");
+    const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    const user = /^USER (.+)$/m.exec(runtimeStage)![1]!;
+    const workingDirectory = /^WORKDIR (.+)$/m.exec(runtimeStage)![1]!;
+    const command = JSON.parse(/^CMD (.+)$/m.exec(runtimeStage)![1]!) as string[];
+    expect(user).toBe("10001:10001");
+    expect(runtimeStage).toContain("--gid 10001 dacs && useradd --system --uid 10001 ");
+    expect(command).toEqual(GENERATED_SERVICE_COMMAND);
+    expect(smoke).toContain(`if (config.User !== ${JSON.stringify(user)}) {`);
+    expect(smoke).toContain(`if (config.WorkingDir !== ${JSON.stringify(workingDirectory)}) {`);
+    const checked = /^const expectedCommand = (.+);$/m.exec(smoke);
+    expect(JSON.parse(checked![1]!)).toEqual(command);
+  });
+
   test.runIf(process.platform !== "win32")(
     "smokes DACS_IMAGE as the compose runtime user and records its one image ID",
     async () => {

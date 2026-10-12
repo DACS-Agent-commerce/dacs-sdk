@@ -4502,6 +4502,21 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
+// The Dockerfile writes this image configuration and the image smoke checks it.
+const IMAGE_RUNTIME_ID = 10001;
+const IMAGE_USER = `${IMAGE_RUNTIME_ID}:${IMAGE_RUNTIME_ID}`;
+const IMAGE_WORKING_DIRECTORY = "/app";
+const IMAGE_SERVICE_COMMAND = Object.freeze([
+  "node",
+  "--import",
+  "@kynesyslabs/dacs-node/demos-loader",
+  "dist/src/service.js",
+]);
+
+function quotedList(values: readonly string[]): string {
+  return "[" + values.map((value) => JSON.stringify(value)).join(", ") + "]";
+}
+
 const PROBE_VERSIONS = JSON.stringify({
   "@kynesyslabs/dacs": SDK_VERSION,
   "@kynesyslabs/dacs-node": SDK_VERSION,
@@ -4589,22 +4604,17 @@ if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) {
 const config = JSON.parse(docker([
   "image", "inspect", "--format", "{{json .Config}}", imageId,
 ]));
-if (config.User !== "10001:10001") {
+if (config.User !== ${JSON.stringify(IMAGE_USER)}) {
   throw new Error("image runtime user is not the generated non-root identity");
 }
-if (config.WorkingDir !== "/app") {
-  throw new Error("image working directory is not /app");
+if (config.WorkingDir !== ${JSON.stringify(IMAGE_WORKING_DIRECTORY)}) {
+  throw new Error("image working directory is not ${IMAGE_WORKING_DIRECTORY}");
 }
 if (config.Entrypoint !== null &&
     (!Array.isArray(config.Entrypoint) || config.Entrypoint.length !== 0)) {
   throw new Error("image entrypoint overrides the generated DACS service command");
 }
-const expectedCommand = [
-  "node",
-  "--import",
-  "@kynesyslabs/dacs-node/demos-loader",
-  "dist/src/service.js",
-];
+const expectedCommand = ${quotedList(IMAGE_SERVICE_COMMAND)};
 if (JSON.stringify(config.Cmd) !== JSON.stringify(expectedCommand)) {
   throw new Error("image command does not start the generated DACS service");
 }
@@ -4712,16 +4722,16 @@ RUN npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
 
 FROM node:20.19.1-bookworm-slim
 ENV NODE_ENV=production
-WORKDIR /app
-RUN groupadd --system --gid 10001 dacs && useradd --system --uid 10001 --gid dacs --home-dir /app dacs \\
+WORKDIR ${IMAGE_WORKING_DIRECTORY}
+RUN groupadd --system --gid ${IMAGE_RUNTIME_ID} dacs && useradd --system --uid ${IMAGE_RUNTIME_ID} --gid dacs --home-dir ${IMAGE_WORKING_DIRECTORY} dacs \\
   && install --directory --owner=dacs --group=dacs --mode=0700 /var/lib/dacs \\
-  && install --directory --owner=dacs --group=dacs --mode=0755 /app
+  && install --directory --owner=dacs --group=dacs --mode=0755 ${IMAGE_WORKING_DIRECTORY}
 COPY --from=build --chown=dacs:dacs /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=dacs:dacs /app/node_modules ./node_modules
 COPY --from=build --chown=dacs:dacs /app/dist ./dist
 ENTRYPOINT []
-USER 10001:10001
-CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]
+USER ${IMAGE_USER}
+CMD ${quotedList(IMAGE_SERVICE_COMMAND)}
 `;
 
 const DOCKERIGNORE = `**
