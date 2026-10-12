@@ -38,6 +38,13 @@ function summaryAudit(summary, baseline) {
 }
 
 export function registryAuditDriftDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+  // A run that stopped before its audit was classified has no advisory IDs to
+  // compare: report where and why it stopped, not a malformed baseline.
+  if (summary?.schema === ACCEPTANCE_SUMMARY_SCHEMA && summary.complete === false) {
+    const failureClass = FAILURE_CLASSES.includes(summary.failureClass) ? summary.failureClass : "functional";
+    return { exitCode: 1, evaluated: false, failureClass, message: "Advisory-ID drift was not evaluated: acceptance stopped " +
+      `at stage ${String(summary.failedStage)} (${failureClass} failure${failureClass === "network" ? "; rerun the workflow" : ""})` };
+  }
   try {
     const policy = summaryAudit(summary, baseline);
     return { exitCode: policy.unlistedAdvisories.length ? 3 : 0,
@@ -45,10 +52,30 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
   } catch (error) { return { exitCode: 3, message: String(error) }; }
 }
 
-// Why a run failed: an unreachable registry or audit endpoint (or 5xx after
-// retries), a security-policy result, or the rehearsal itself.
+// Why a run failed: an unreachable registry or audit endpoint (a timeout, or
+// 5xx/408/429 after retries), a security-policy result, or the rehearsal itself.
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
-const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234])\b|socket hang up|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
+// npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
+// `Response timeout while trying to fetch` for a body timeout.
+const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
+
+// When the audit endpoint fails, `npm audit --json` writes npm's audit error
+// object (lib/utils/audit-error.js) instead of a report: the HTTP answer's
+// `statusCode` and message, or a fetch error's message with no status. A
+// timeout, an unreachable endpoint and 5xx/408/429 are transient (network);
+// any other answer means the audit could not be run (functional). Neither is a
+// policy result. Returns null for anything else.
+export function auditEndpointError(text) {
+  let value;
+  try { value = JSON.parse(text ?? ""); } catch { return null; }
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" ||
+      "auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value) return null;
+  const status = Number.isInteger(value.statusCode) ? value.statusCode : null;
+  if (status === null && !/^(?:network timeout at: |request to \S+ failed, reason: )/.test(value.message)) return null;
+  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429;
+  return { transient, statusCode: status, message: value.message.replace(/\s+/g, " ").slice(0, 300) };
+}
+
 // The evidence each network-dependent stage leaves behind. Consumer output
 // also holds generated-test logs, so only npm and Docker errors count there.
 const stageEvidence = {
@@ -62,6 +89,13 @@ const stageEvidence = {
 const policyStages = new Set(["dependency-policy", "audit-policy"]);
 
 export function classifyAcceptanceFailure({ stage, read }) {
+  if (stage === "audit-policy") {
+    const endpoint = auditEndpointError(read("npm-audit.json"));
+    if (endpoint) {
+      return { failureClass: endpoint.transient ? "network" : "functional",
+        evidence: [`npm-audit.json: audit endpoint error: ${endpoint.message}`] };
+    }
+  }
   const evidence = [];
   for (const [name, relevant] of stageEvidence[stage] ?? []) {
     for (const line of (read(name) ?? "").split("\n")) {
@@ -359,6 +393,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Required acceptance names unlisted IDs in its error; drift warns.
     if (drift && result.unlistedAdvisories?.length) {
       process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
+    }
+    if (drift && result.evaluated === false) {
+      process.stdout.write(`::warning title=Registry audit advisory drift::${result.message}\n`);
     }
     if (!drift) annotate(result);
     (result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.message}\n`);
