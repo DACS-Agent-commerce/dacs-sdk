@@ -743,23 +743,29 @@ address while rejecting conflicting logical metadata.
 
 Every non-`page` result carries a machine-readable `code`. Act on its `status`:
 
-- `indeterminate`: retry later with the returned state. It keeps the page's
+- `indeterminate`: retry later with the returned state, backing off between
+  retries: attempts are counted per call, not per unit of time, so a tight retry
+  loop defers a row moments into a short outage. The state keeps the page's
   starting cursor and remembers only the handled prefix, so the retry re-fetches
   the page and re-reads the failed row. Row codes are `index-indeterminate`,
   `binding-not-yet-visible`, `read-indeterminate` and `verifier-unavailable`;
-  page codes are `history-unavailable`, `page-limit-exceeded` (a fetcher returned
-  more entries than `limit`) and `invalid-limit`. The rows after a failed row are
-  not read until it succeeds or is deferred.
+  `history-unavailable` is a page that could not be fetched. The rows after a
+  failed row are not read until it succeeds or is deferred. The Demos fetcher's
+  `history-unavailable` for history that "assigns conflicting logical metadata"
+  does not clear on retry with the same fetcher; treat it like `conflict`.
+- `indeterminate` with `invalid-limit` or `page-limit-exceeded` (a fetcher
+  returned more entries than `limit`) is a caller or fetcher fault, not a reason
+  to retry later: retrying cannot clear it. Fix the `limit` option or the
+  fetcher.
 - Deferral: after `maxRowAttempts` (default 5) consecutive `indeterminate`
   attempts on the same row, counted in `state.pendingRow`, the row is deferred
   with its code, reason and attempt count, and the page continues. The call
   returns the rows it deferred in `deferred`; `state.deferred` keeps all of them,
   and they never enter `seen`. Alert on deferred rows. The traversal does not
   retry them, even after a restart from a valid state: start a new traversal
-  from null (`scanPage()` without state), which
-  re-reads every row, or check one row with `repository.read(anchor.logicalAddress,
-  expectedOwner, verifier)` and compare its `nativeAddress` with the deferred
-  `anchor.nativeAddress`.
+  from null (`scanPage()` without state), which re-reads every row, or check one
+  row with `repository.read(anchor.logicalAddress, expectedOwner, verifier)` and
+  compare its `nativeAddress` with the deferred `anchor.nativeAddress`.
 - `restart-required`: retrying the same state cannot succeed. Continue with the
   returned `state`, which restarts from a null cursor; this call reads and
   advances nothing.
@@ -767,11 +773,10 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
     `history-restart-required` (the fetcher threw
     `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
     boundary is missing or duplicated or its cursor cannot be decoded for this
-    owner) come from a valid state. The returned
-    state keeps `seen`, `metadata`, `deferred` and `pendingRow`, so rows already
-    reported are not reported again, but the pages are fetched again: a history
-    longer than 10,000 pages reaches `page-bound` again, and a fetcher whose
-    cursors cycle keeps cycling.
+    owner) come from a valid state. The returned state keeps `seen`, `metadata`,
+    `deferred` and `pendingRow`, so rows already reported are not reported
+    again, but the pages are fetched again: a history longer than 10,000 pages
+    reaches `page-bound` again, and a fetcher whose cursors cycle keeps cycling.
   - `invalid-state` (including a state saved before `pendingRow` and `deferred`
     existed) and `foreign-owner-state`: nothing in the old state can be
     trusted, so the returned state is a fresh traversal that reads and reports
@@ -785,7 +790,9 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
 
 State size is bounded only by the page bound: `seen` and `metadata` hold up to
 10,000 × `limit` entries (one million at the default limit of 100), and each page
-copies them. Reducing this state is a follow-up.
+copies them. `deferred` gains one row, with its anchor and reason, per deferred
+row; it is copied on every page too and is not pruned until a new traversal.
+Reducing this state is a follow-up.
 
 Each result retains its classified `anchor` and discriminated `outcome`:
 `conflict`, `binding-mismatch`, `unreadable`, `hash-mismatch`,

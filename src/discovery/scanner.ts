@@ -126,7 +126,8 @@ export class AnchorHistoryRestartRequiredError extends Error {
 /**
  * Machine-readable causes of an indeterminate page. An uncoded result is an
  * unavailable or malformed fetch that may succeed on retry. `cursor-cycle` and
- * `history-restart-required` cannot succeed on retry of the same cursor.
+ * `history-restart-required` cannot succeed on retry of the same cursor;
+ * `page-limit-exceeded` and `invalid-limit` are fetcher or caller faults.
  */
 export type ScanPageCode =
   | "metadata-conflict"

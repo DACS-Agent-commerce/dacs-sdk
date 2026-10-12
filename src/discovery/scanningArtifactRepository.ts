@@ -66,7 +66,11 @@ export type ArtifactRowIndeterminateCode =
   | "read-indeterminate"
   | "verifier-unavailable";
 
-/** Retry the same state: a row diagnostic or an unavailable or refused page. */
+/**
+ * Retry the same state, with backoff: a row diagnostic or an unavailable page.
+ * `page-limit-exceeded` and `invalid-limit` are fetcher or caller faults that
+ * retrying cannot clear.
+ */
 export type ArtifactScanIndeterminateCode =
   | ArtifactRowIndeterminateCode
   | "history-unavailable"
