@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import {
+  AnchorHistoryRestartRequiredError,
   classifyAnchor,
   scanAllAnchors,
   scanAnchorPage,
@@ -208,9 +209,41 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     );
     expect(stuck).toMatchObject({
       status: "indeterminate",
+      code: "cursor-cycle",
       cursor: "cursor-2",
       reason: expect.stringContaining("did not advance"),
     });
+  });
+
+  test("codes a page larger than the limit and a fetcher's restart signal", async () => {
+    const oversized = await scanAnchorPage(
+      async () => ({ entries: [entry("stor-a", "dacs1:s:a:v1"), entry("stor-b", "dacs1:s:b:v1")], nextCursor: null }),
+      "cursor-1",
+      { limit: 1 },
+    );
+    expect(oversized).toEqual({
+      status: "indeterminate",
+      code: "page-limit-exceeded",
+      reason: "page fetch failed: history page returned 2 entries for limit 1",
+      cursor: "cursor-1",
+    });
+
+    const seen = new Map<string, string>();
+    const restart = await scanAnchorPage(
+      async () => { throw new AnchorHistoryRestartRequiredError("boundary lost; restart from null"); },
+      "cursor-1",
+      { seen },
+    );
+    expect(restart).toEqual({
+      status: "indeterminate",
+      code: "history-restart-required",
+      reason: "page fetch failed: boundary lost; restart from null",
+      cursor: "cursor-1",
+    });
+    expect(seen.size).toBe(0);
+
+    const plain = await scanAnchorPage(async () => { throw new Error("rpc 503"); }, "cursor-1");
+    expect(plain).toEqual({ status: "indeterminate", reason: "page fetch failed: rpc 503", cursor: "cursor-1" });
   });
 
   test("invalid page limits are indeterminate and never call the RPC seam", async () => {
@@ -220,6 +253,7 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     }));
     await expect(scanAnchorPage(fetch, null, { limit: 0 })).resolves.toMatchObject({
       status: "indeterminate",
+      code: "invalid-limit",
       cursor: null,
     });
     expect(fetch).not.toHaveBeenCalled();

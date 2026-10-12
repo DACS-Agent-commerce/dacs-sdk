@@ -109,13 +109,39 @@ export interface ScannedAnchor {
   kind: AnchorKind;
 }
 
+/**
+ * Thrown by a history fetcher when its cursor can no longer be resumed, for
+ * example because the page boundary left the history window. Retrying the same
+ * cursor cannot succeed; the traversal must restart from a null cursor.
+ */
+export class AnchorHistoryRestartRequiredError extends Error {
+  readonly code = "history-restart-required" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AnchorHistoryRestartRequiredError";
+  }
+}
+
+/**
+ * Machine-readable causes of an indeterminate page. An uncoded result is an
+ * unavailable or malformed fetch that may succeed on retry. `cursor-cycle` and
+ * `history-restart-required` cannot succeed on retry of the same cursor.
+ */
+export type ScanPageCode =
+  | "metadata-conflict"
+  | "cursor-cycle"
+  | "history-restart-required"
+  | "page-limit-exceeded"
+  | "invalid-limit";
+
 export type ScanPage =
   | { status: "page"; anchors: ScannedAnchor[]; nextCursor: string | null }
   | {
       status: "indeterminate";
       reason: string;
       cursor: string | null;
-      code?: "metadata-conflict";
+      code?: ScanPageCode;
     };
 
 /**
@@ -153,6 +179,19 @@ const logicalMetadataByLegacySeenSet = new WeakMap<
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Read a thrown value's restart code without letting a hostile value throw. */
+function requiresRestart(e: unknown): boolean {
+  try {
+    return (
+      typeof e === "object" &&
+      e !== null &&
+      (e as { code?: unknown }).code === "history-restart-required"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validateRawPage(value: unknown): RawScanPage {
@@ -227,6 +266,7 @@ export async function scanAnchorPage(
   if (!Number.isSafeInteger(limit) || limit <= 0) {
     return {
       status: "indeterminate",
+      code: "invalid-limit",
       reason: "page limit must be a positive safe integer",
       cursor,
     };
@@ -235,13 +275,28 @@ export async function scanAnchorPage(
   let page: RawScanPage;
   try {
     page = validateRawPage(await fetchPage(cursor, limit));
-    if (cursor !== null && page.nextCursor === cursor) {
-      throw new Error("history page cursor did not advance");
-    }
   } catch (e) {
     return {
       status: "indeterminate",
       reason: `page fetch failed: ${describeError(e)}`,
+      cursor,
+      ...(requiresRestart(e) ? { code: "history-restart-required" as const } : {}),
+    };
+  }
+  if (cursor !== null && page.nextCursor === cursor) {
+    return {
+      status: "indeterminate",
+      code: "cursor-cycle",
+      reason: "page fetch failed: history page cursor did not advance",
+      cursor,
+    };
+  }
+  // A custom fetcher must honour the bound; an oversized page is never consumed.
+  if (page.entries.length > limit) {
+    return {
+      status: "indeterminate",
+      code: "page-limit-exceeded",
+      reason: `page fetch failed: history page returned ${page.entries.length} entries for limit ${limit}`,
       cursor,
     };
   }

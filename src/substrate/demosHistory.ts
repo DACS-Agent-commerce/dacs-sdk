@@ -1,6 +1,7 @@
-import type {
-  AnchorHistoryPageFetcher,
-  RawAnchorEntry,
+import {
+  AnchorHistoryRestartRequiredError,
+  type AnchorHistoryPageFetcher,
+  type RawAnchorEntry,
 } from "../discovery/scanner.js";
 
 const CURSOR_PREFIX = "dacs-demos-history-v1.";
@@ -210,7 +211,8 @@ async function fetchRows(
  * The cursor is owner-bound and locates the previous raw transaction in a
  * bounded overlap window before advancing. This tolerates normal prepends to
  * Demos' newest-first, confirmed history. A missing/duplicated boundary fails
- * closed; the caller can restart from a null cursor against a fresh snapshot.
+ * closed with {@link AnchorHistoryRestartRequiredError}; the caller must restart
+ * from a null cursor against a fresh snapshot.
  *
  * Only confirmed CREATE_STORAGE_PROGRAM transactions carrying explicit logical
  * metadata are candidates. Program names are deliberately ignored: DACS makes
@@ -264,7 +266,7 @@ export function createDemosHistoryPageFetcher(
           : [],
       );
       if (boundaryIndexes.length !== 1) {
-        throw new Error(
+        throw new AnchorHistoryRestartRequiredError(
           "Demos transaction history boundary is missing or duplicated; restart from null",
         );
       }

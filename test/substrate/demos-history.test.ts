@@ -5,6 +5,7 @@ import {
   type DemosHistoryClient,
 } from "../../src/substrate/index.js";
 import {
+  AnchorHistoryRestartRequiredError,
   createDemosHistoryPageFetcher as createDemosHistoryPageFetcherFromRoot,
   scanAnchorPage,
 } from "../../src/index.js";
@@ -246,8 +247,10 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     await expect(foreign(first.nextCursor, 1)).rejects.toThrow(/different owner/);
 
     changed = true;
+    await expect(fetchPage(first.nextCursor, 1)).rejects.toBeInstanceOf(AnchorHistoryRestartRequiredError);
     await expect(scanAnchorPage(fetchPage, first.nextCursor, { limit: 1 })).resolves.toMatchObject({
       status: "indeterminate",
+      code: "history-restart-required",
       cursor: first.nextCursor,
       reason: expect.stringContaining("boundary is missing or duplicated"),
     });

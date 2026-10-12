@@ -437,6 +437,7 @@ export {
   classifyAnchor,
   scanAnchorPage,
   scanAllAnchors,
+  AnchorHistoryRestartRequiredError,
   type AnchorBinding,
   type BindingResolution,
   type BindingIndex,
@@ -470,6 +471,7 @@ export {
   type RawScanPage,
   type ScannedAnchor,
   type ScanPage,
+  type ScanPageCode,
   type ScanOptions,
   type ScanSeen,
 } from "./discovery/index.js";
