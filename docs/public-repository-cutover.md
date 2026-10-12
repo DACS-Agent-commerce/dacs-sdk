@@ -70,8 +70,25 @@ reported by that run rather than creating a similarly named placeholder.
 - Enable the dependency graph, Dependabot alerts, and Dependabot security
   updates.
 - Enable GitHub secret scanning and push protection in addition to the Gitleaks
-  workflow. Gitleaks covers reviewed history and custom mnemonic patterns;
+  workflows. Gitleaks covers reviewed history and custom mnemonic patterns;
   GitHub's scanner provides provider-backed detection and revocation signals.
+- Keep the **Secret scan (all branches)** workflow
+  (`.github/workflows/secret-scan-all-branches.yml`). The required
+  `secret scan` covers only the history of the commit under test, so this audit
+  is the only Gitleaks scan of unmerged branches and tags. Its limits:
+  - it runs once a day (04:17 UTC) and when dispatched from **Actions**, so a
+    secret pushed to a branch can go unreported for about a day;
+  - GitHub emails a failed scheduled run only to whoever last edited its `cron`
+    line, and nothing else notifies anyone. GitHub also disables scheduled
+    workflows in a public repository after 60 days without activity;
+  - it is not a required check, so a red run blocks nothing. Don't add it to
+    the ruleset: it never runs on pull requests, so the check would never
+    report.
+
+  Each run's summary lists the Gitleaks fingerprint of every finding, never the
+  secret value. Fingerprints already in `.gitleaksignore` are not reported, so
+  a fingerprint missing from the previous run's list is a new finding, even
+  while the audit is already red.
 - Enable GitHub private vulnerability reporting and verify that the
   **Security → Report a vulnerability** route is visible when logged out.
 - Enable code scanning when an appropriate TypeScript configuration is ready;
@@ -82,6 +99,12 @@ reported by that run rather than creating a similarly named placeholder.
 - [ ] Inspect the repository while logged out and confirm only intended content
       is exposed.
 - [ ] Run CI, package-artifact verification, and the secret scan on `main`.
+- [ ] Merge #346, which pins the reviewed fingerprints of the known #336 and
+      #268 findings in `.gitleaksignore`, before #345, which adds the
+      all-branch audit; in the other order the audit is red for those four
+      fingerprints from its first run. After #345 merges, dispatch
+      **Actions → Secret scan (all branches)** once and confirm that the run is
+      green. It is the clean baseline for later runs.
 - [ ] Re-run any pull request previously blocked by private-repository Actions
       billing and require the configured checks before merge.
 - [ ] Confirm ruleset enforcement with a non-admin test pull request.
@@ -106,5 +129,11 @@ reported by that run rather than creating a similarly named placeholder.
 - Rotate any credential whose confidentiality is uncertain. Removing a secret
   from the current tree does not make a previously published secret private.
 - Review dependency and secret-scanning alerts before every release.
+- Before every release, open **Actions → Secret scan (all branches)** and
+  confirm a green run that started after the last push to any branch or tag.
+  If there is none, dispatch the workflow and wait for it. A red run blocks the
+  release until every fingerprint in its summary has been reviewed: rotate any
+  real credential, and pin only reviewed fingerprints, exactly, in
+  `.gitleaksignore`.
 - Publish npm packages only from a reviewed, immutable commit using a separate
   release procedure with provenance and least-privilege credentials.
