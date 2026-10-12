@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the production disposition executable as plain Node ESM; a computed
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit } = await import(dispositionModulePath);
+const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
+  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary } = await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -59,15 +60,31 @@ afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-// Runs the workflow step in a scratch checkout holding the real disposition
+// Every child runs without rc files and with an explicit PATH whose `node` is
+// this process's own binary, never a host node.
+function stubBin(directory: string, stubs: Record<string, string> = {}) {
+  const bin = join(directory, "bin");
+  mkdirSync(bin, { recursive: true });
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  for (const [name, body] of Object.entries({ node: `exec ${node} "$@"`, ...stubs })) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, name), 0o700);
+  }
+  return [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter);
+}
+function runBash(args: string[], options: { cwd: string; env: Record<string, string> }) {
+  return spawnSync("bash", ["--norc", "--noprofile", ...args], { cwd: options.cwd, encoding: "utf8",
+    env: { HOME: options.cwd, ...options.env } });
+}
+
+// Runs a workflow step in a scratch checkout holding the real disposition
 // script. The npm stub writes `summary` (if given) where acceptance would, then
 // exits with the acceptance status.
-function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false) {
+function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false,
+  stepName = "Run registry-shaped Linux and Docker acceptance") {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
-  const bin = join(directory, "bin");
   const checkout = join(directory, "checkout");
-  mkdirSync(bin);
   mkdirSync(join(checkout, "scripts"), { recursive: true });
   writeFileSync(join(checkout, "scripts/registry-container-disposition.mjs"),
     readFileSync(join(repoRoot, "scripts/registry-container-disposition.mjs")));
@@ -77,15 +94,17 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
     "mkdir -p registry-container-artifacts",
     `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${JSON.stringify(summary)}\nJSON`,
   ].join("\n");
-  const npmStub = join(bin, "npm");
-  writeFileSync(npmStub, `#!/bin/sh\n${write}\nexit ${acceptanceExitCode}\n`);
-  chmodSync(npmStub, 0o700);
-  return spawnSync("bash", ["-e", "-c", workflowStepScript("Run registry-shaped Linux and Docker acceptance")], {
-    cwd: checkout,
-    encoding: "utf8",
-    env: { ...process.env, ENFORCE_AUDIT_DRIFT: String(strictAudit), PATH: `${bin}:${process.env.PATH ?? ""}` },
+  const PATH = stubBin(directory, { npm: `${write}\nexit ${acceptanceExitCode}` });
+  // The drift step runs after acceptance has (or has not) written the summary.
+  if (stepName !== "Run registry-shaped Linux and Docker acceptance") {
+    runBash(["-e", "-c", "npm || true"], { cwd: checkout, env: { PATH } });
+  }
+  return runBash(["-e", "-c", workflowStepScript(stepName)], {
+    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), PATH },
   });
 }
+const runDriftStep = (summary?: unknown, strictAudit = false) =>
+  runWorkflowStep(0, summary, strictAudit, "Check advisory-ID drift");
 
 describe("registry/container acceptance disposition", () => {
   it("passes only when both the rehearsal and the release security gate pass", () => {
@@ -148,7 +167,22 @@ describe("registry/container acceptance disposition", () => {
     });
     expect(result.status).toBe(4);
     expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8"))
-      .toContain('node scripts/registry-container-disposition.mjs "$output_dir/acceptance-summary.json"');
+      .toContain('node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json"');
+    const recorded = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", summaryPath], {
+      cwd: repoRoot, encoding: "utf8",
+    });
+    expect(recorded.status).toBe(4);
+    expect(JSON.parse(readFileSync(summaryPath, "utf8"))).toMatchObject({ failureClass: "policy",
+      disposition: { exitCode: 4, failureClass: "policy" } });
+  });
+
+  it("cross-checks the unlisted advisory IDs the summary recorded", () => {
+    // R5-228a: an unlisted ID dropped from the recorded list is a tampered summary.
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push("GHSA-2222-3333-4444");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3,
+      message: expect.stringContaining("does not match baseline") });
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
   });
 });
 
@@ -204,15 +238,13 @@ function runEarlyFailure(extraStubCommands = "") {
     "done",
     "exit 17",
   ].join("\n");
-  for (const [name, body] of [["docker", "exit 0"], ["npm", npmBody]]) {
-    const stub = join(directory, name!);
-    writeFileSync(stub, `#!/bin/sh\n${body}\n`);
-    chmodSync(stub, 0o700);
-  }
+  // curl, docker and npm are stubs and node is this process's binary; the
+  // script's temporary root is this private directory.
+  chmodSync(directory, 0o700);
+  const PATH = stubBin(directory, { curl: "exit 0", docker: "exit 0", npm: npmBody });
   const output = join(directory, "evidence");
-  const result = spawnSync("bash", ["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
-    cwd: repoRoot, encoding: "utf8",
-    env: { ...process.env, RUNNER_TEMP: directory, PATH: `${directory}:${process.env.PATH ?? ""}` },
+  const result = runBash(["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
+    cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH },
   });
   return { directory, output, result };
 }
@@ -263,6 +295,7 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "dependency-policy.json": JSON.stringify({ passed: true, violations: [] }),
     "audit-policy.json": JSON.stringify({ observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ functionalPassed: true, productionDependencyPolicyPassed: true }),
+    "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [] }),
     "engine-strict.exit-code": "0\n",
     "npm-audit.exit-code": "1\n",
     "consumer-lock-sbom.exit-code": "0\n",
@@ -383,7 +416,24 @@ describe("advisory-ID baseline", () => {
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`Unlisted advisory IDs: ${unknown}`);
-    expect(runWorkflowStep(4, summary, true).status).toBe(3);
+    expect(runWorkflowStep(4, summary, true).status).toBe(0);
+    expect(runDriftStep(summary, false).status).toBe(0);
+    expect(runDriftStep(summary, true).status).toBe(3);
+  });
+  it("reports drift even when a non-audit failure fails the acceptance step", () => {
+    // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.
+    const summary = baselineOnlySummary();
+    const unknown = "GHSA-2222-3333-4444";
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    summary.securityGate.registryDependencyPolicyPassed = false;
+    expect(runWorkflowStep(3, summary, true).status).toBe(3);
+    const drift = runDriftStep(summary, true);
+    expect(drift.status).toBe(3);
+    expect(drift.stdout).toContain(`Unlisted advisory IDs: ${unknown}`);
+    expect(runDriftStep(baselineOnlySummary(), true).status).toBe(0);
+    expect(runDriftStep(undefined, true).status).toBe(1);
+    expect(runDriftStep(undefined, false).status).toBe(0);
   });
   it("passes the scheduled classification for a listed advisory regardless of diagnostic counts", () => {
     const summary = baselineOnlySummary();
@@ -402,5 +452,119 @@ describe("advisory-ID baseline", () => {
     expect(() => classifyRegistryAudit([], bad)).toThrow();
     expect(registryContainerDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
     expect(registryAuditDriftDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+  });
+});
+
+// The real b7b180f evidence (run 38214792229): functional pass, every non-audit
+// check failing on findings that main's published dependency tree carries.
+const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
+function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
+  const read = (name: string) => name in overrides ? overrides[name]
+    : (() => { try { return readFileSync(join(b7b180f, name), "utf8"); } catch { return undefined; } })();
+  const summary = JSON.parse(readFileSync(join(b7b180f, "acceptance-summary.json"), "utf8"));
+  summary.securityGate.findings = extractPolicyFindings(read);
+  return summary;
+}
+
+describe("#191 policy-finding baseline", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+
+  it("classifies the b7b180f run as baseline-only (exit 4), not exit 3", () => {
+    const summary = b7b180fEvidence();
+    expect(classifyPolicyChecks(summary, baseline)).toEqual({ registryDependency: "baseline", productionImage: "baseline",
+      engineStrict: "baseline", lockSbom: "baseline", physicalSbom: "baseline" });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
+    expect(summary.securityGate.findings.engine.violations).toHaveLength(16);
+    // Without the recorded findings the same run is blocked, as at b7b180f.
+    expect(registryContainerDisposition(summary, { ...baseline, policyFindings: undefined }).exitCode).toBe(3);
+  });
+
+  const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
+  const withLock = (edit: (packages: Record<string, Record<string, unknown>>) => void) => {
+    const value = lock(); edit(value.packages); return JSON.stringify(value);
+  };
+  const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
+  const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
+    value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
+  const scan = readFileSync(join(b7b180f, "engine-scan.log"), "utf8");
+  const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
+  it.each([
+    ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
+      { location: "node_modules/other", field: "dependencies.x", value: "git+https://github.com/x/y.git" }]) }],
+    ["the same Git dependency from another ref", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }]) }],
+    ["the Git dependency under a different arbundles", "registryDependency", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/@bundlr-network/client/node_modules/arbundles"]!.integrity = "sha512-other"; }) }],
+    ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
+    ["a new engine violation", "engineStrict", { "engine-scan.log": scan + "npm warn EBADENGINE   package: 'new-pkg@1.0.0',\n" }],
+    ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
+    ["a strict failure not explained by the scan", "engineStrict", { "engine-scan.log": scan.replace(/.*@npmcli\/agent@5\.0\.2.*\n/, "") }],
+    ["an incomplete engine scan", "engineStrict", { "engine-scan.exit-code": "1\n" }],
+    ["a missing engine scan", "engineStrict", { "engine-scan.log": undefined }],
+    ["an engine-strict failure other than EBADENGINE", "engineStrict", { "engine-strict.log": "npm error code EBADPLATFORM\n" }],
+    ["a new lock SBOM problem", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err") +
+      "npm error invalid: viem@2.0.0, ^2.55.19 required by x@1.0.0\n" }],
+    ["a lock SBOM usage error", "lockSbom", { "consumer-lock-sbom.err": "npm error code EUSAGE\n" }],
+    ["baselined SBOM lines under another error code", "physicalSbom", { "consumer-physical-sbom.err":
+      sbomErr("consumer-physical-sbom.err").replace("ESBOMPROBLEMS", "EINVALIDTREE") }],
+    ["a new physical SBOM problem", "physicalSbom", { "consumer-physical-sbom.err": sbomErr("consumer-physical-sbom.err") +
+      "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
+    ["a different typescript in the image", "productionImage", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/typescript"]!.version = "5.9.3"; }) }],
+    ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
+      ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
+  ])("still exits 3 for %s", (_label, check, overrides) => {
+    const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  it("passes a check with no findings and blocks a passing flag that carries findings", () => {
+    const summary = b7b180fEvidence();
+    summary.securityGate.registryDependencyPolicyPassed = true;
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
+    summary.securityGate.findings.gitDependencies = [];
+    expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
+  });
+});
+
+describe("acceptance failure class", () => {
+  const reader = (files: Record<string, string>) => (name: string) => files[name];
+  it.each([
+    ["consumer", { "generation.log": "npm error code ETIMEDOUT\nnpm error network request failed" }, "network"],
+    ["consumer", { "generation.log": "npm error code E503\nnpm error 503 Service Unavailable" }, "network"],
+    ["consumer", { "generation.log": "not ok 3 - doctor rejects ECONNREFUSED port\nnpm error code 1" }, "functional"],
+    ["registry-start", { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout" }, "network"],
+    ["registry-ready", {}, "network"],
+    ["registry-auth", { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
+    ["publish", { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
+    ["audit-policy", { "npm-audit.json": '{"error":{"code":"ENOTFOUND","summary":"getaddrinfo ENOTFOUND registry.npmjs.org"}}' }, "network"],
+    ["audit-policy", { "npm-audit.json": '{"metadata":{}}' }, "policy"],
+    ["dependency-policy", {}, "policy"],
+    ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
+    ["image-build", { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
+    ["release-set", { "generation.log": "npm error code ETIMEDOUT" }, "functional"],
+  ])("classifies a %s failure with %j as %s", (stage, files, failureClass) => {
+    expect(classifyAcceptanceFailure({ stage, read: reader(files) }).failureClass).toBe(failureClass);
+    const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
+    expect(summary).toMatchObject({ complete: false, failedStage: stage, failureClass });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass });
+  });
+
+  it("records the class in the early-failure summary and its annotation", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      schema: "dacs-registry-container-acceptance/v1", complete: false, failedStage: "release-set", exitCode: 17,
+      failureClass: "functional" });
+    expect(result.stdout).toContain(
+      "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
+  });
+
+  it("does not let an early failure summary pass the exit-4 waiver", () => {
+    const summary = failureSummary({ stage: "consumer", exitCode: 4, read: () => undefined });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
   });
 });

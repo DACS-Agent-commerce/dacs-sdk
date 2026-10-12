@@ -1195,7 +1195,7 @@ async function completionHarness(paymentProfile: "x402" | "pay-dem") {
     readAnchor: vi.fn(async (address: string) => structuredClone(artifacts.get(address) ?? null)),
     resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
       structuredClone(receipts.get(input.nativeAddress) ?? null)),
-    verifyDemosAnchorReceipt: vi.fn(async () => true),
+    verifyDemosAnchorReceipt: vi.fn(async (_receipt: { nativeAddress: string }) => true),
     anchorWriteOnce: vi.fn(),
     sign: vi.fn(),
   };
@@ -1266,26 +1266,39 @@ async function completionHarness(paymentProfile: "x402" | "pay-dem") {
 
 // The strict verifier's use of the adapter: exact readback at each native
 // address, receipt authentication, and BB-1 binding resolution/verification.
-async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps) {
-  for (const role of ["buyer", "seller"] as const) {
-    const copy = input.copies[role];
-    const readback = await deps.readBundleCopy(copy.nativeAddress, role);
-    if (readback === null || canonicalize(readback) !== canonicalize(copy.bundle)) {
-      throw new DacsError(`completed ${role} bundle is not independently readable`);
-    }
-    const anchor = await deps.verifyBundleAnchor(structuredClone(copy));
-    if (anchor.disposition !== "valid") {
-      throw new DacsError(`completed ${role} bundle anchor verification is ${anchor.disposition}`);
-    }
-    const lookup = await deps.resolveBundleBinding(copy.binding.logicalAddress, copy.binding.signer);
-    if (lookup.disposition !== "present") {
-      throw new DacsError(`completed ${role} BundleBinding is not resolvable`);
-    }
-    const verified = await deps.verifyBundleBinding(structuredClone(copy.binding));
-    if (verified.disposition !== "valid") {
-      throw new DacsError(`completed ${role} BundleBinding verification is ${verified.disposition}`);
-    }
+async function driveCopy(role: "buyer" | "seller", input: CompletionInput, deps: CompletionDeps) {
+  const copy = input.copies[role];
+  const readback = await deps.readBundleCopy(copy.nativeAddress, role);
+  if (readback === null || canonicalize(readback) !== canonicalize(copy.bundle)) {
+    throw new DacsError(`completed ${role} bundle is not independently readable`);
   }
+  const anchor = await deps.verifyBundleAnchor(structuredClone(copy));
+  if (anchor.disposition !== "valid") {
+    throw new DacsError(`completed ${role} bundle anchor verification is ${anchor.disposition}`);
+  }
+  const lookup = await deps.resolveBundleBinding(copy.binding.logicalAddress, copy.binding.signer);
+  if (lookup.disposition !== "present") {
+    throw new DacsError(`completed ${role} BundleBinding is not resolvable`);
+  }
+  const verified = await deps.verifyBundleBinding(structuredClone(copy.binding));
+  if (verified.disposition !== "valid") {
+    throw new DacsError(`completed ${role} BundleBinding verification is ${verified.disposition}`);
+  }
+}
+
+async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps) {
+  for (const role of ["buyer", "seller"] as const) await driveCopy(role, input, deps);
+  return { state: "audit-complete" };
+}
+
+// The real verifier checks both copies concurrently and rejects with whichever
+// fails first; here both copies' reads finish before the first rejection.
+async function driveBothCopies(input: CompletionInput, deps: CompletionDeps) {
+  const settled = await Promise.allSettled(
+    (["buyer", "seller"] as const).map((role) => driveCopy(role, input, deps)),
+  );
+  const rejected = settled.find((result) => result.status === "rejected");
+  if (rejected) throw (rejected as PromiseRejectedResult).reason;
   return { state: "audit-complete" };
 }
 
@@ -1466,6 +1479,66 @@ describe("buyer two-copy completion adapter", () => {
 
     await expect(harness.authorize()).resolves.toBe("indeterminate");
   });
+
+  // Receipt verification answers `false` for one role's copy and goes
+  // unanswered for the other's.
+  const splitReceiptAnswers = (h: CompletionHarness, answered: "buyer" | "seller") => {
+    h.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
+      if (receipt.nativeAddress === h.copies[answered].nativeAddress) return false;
+      throw new SubstrateError("Demos anchor receipt observation unavailable");
+    });
+  };
+
+  for (const paymentProfile of ["x402", "pay-dem"] as const) {
+    it.each(["buyer", "seller"] as const)(
+      `reports Demos's answer against the ${paymentProfile} %s copy although the other copy's read went unanswered`,
+      async (answered) => {
+        const harness = await completionHarness(paymentProfile);
+        mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
+        splitReceiptAnswers(harness, answered);
+        await expect(harness.authorize()).resolves.toBe(false);
+      },
+    );
+
+    it(`reports a ${paymentProfile} anchor answer that arrives after an authentic readback`, async () => {
+      // The answered copy's readback authenticates; only its anchor check gets `false`.
+      const harness = await completionHarness(paymentProfile);
+      mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
+      let answeredCalls = 0;
+      harness.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
+        if (receipt.nativeAddress !== harness.copies.buyer.nativeAddress) {
+          throw new SubstrateError("Demos anchor receipt observation unavailable");
+        }
+        answeredCalls += 1;
+        return answeredCalls === 1;
+      });
+      await expect(harness.authorize()).resolves.toBe(false);
+      expect(answeredCalls).toBe(2);
+    });
+
+    it(`keeps ${paymentProfile} retryable when the only answered result is valid`, async () => {
+      const harness = await completionHarness(paymentProfile);
+      mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
+      harness.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
+        if (receipt.nativeAddress === harness.copies.buyer.nativeAddress) return true;
+        throw new SubstrateError("Demos anchor receipt observation unavailable");
+      });
+      await expect(harness.authorize()).resolves.toBe("indeterminate");
+    });
+
+    it(`keeps ${paymentProfile} retryable when an unattributed rejection meets an unanswered read`, async () => {
+      // The strict verifier's own checks (signatures, roster, pair) do not
+      // name a copy, so they cannot be shown independent of the unanswered read.
+      const harness = await completionHarness(paymentProfile);
+      mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
+        await driveBothCopies(input, deps).catch(() => undefined);
+        throw new DacsError("completed buyer bundle signature verification failed: forged");
+      });
+      harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
+        new SubstrateError("Demos anchor receipt observation unavailable"));
+      await expect(harness.authorize()).resolves.toBe("indeterminate");
+    });
+  }
 });
 
 // Demos state changes that make the seller's publication permanently invalid

@@ -799,3 +799,122 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       .rejects.toThrow(/authenticated durable session closure|seller-as-orchestrator topology/);
   });
 });
+
+// Coordinator statuses for one rail whose audit tracks end as given; every
+// other track succeeds. The bundles and closure stay authentic, so only the
+// operational audit tracks can stop the gate.
+type AuditTrackResult = Awaited<ReturnType<FixedPriceX402TrackOperation>>;
+const auditSuccess = (reference: string): AuditTrackResult => ({ status: "final", outcome: "success", reference });
+const auditFailure = (reference: string): AuditTrackResult => ({
+  status: "final", outcome: "failure", errorClass: "counterparty", faultedParty: "seller", reference,
+});
+const auditPending: AuditTrackResult = { status: "pending-retry", reasonCode: "audit-read-unanswered", retryAt: 1780000060000 };
+
+// A failed payment is the failing terminal path an audit failure must match.
+const paymentFailure = (role: FixedPriceX402CoordinatorRole): AuditTrackResult => auditFailure(`${role}:payment`);
+type TrackResults = Partial<Record<string, AuditTrackResult>>;
+
+async function gateWithAudit(
+  rail: "pay-x402" | "pay-dem",
+  audit: (fx: Awaited<ReturnType<typeof fixture>>) => Record<FixedPriceX402CoordinatorRole, AuditTrackResult | TrackResults>,
+) {
+  const fx = await fixture(rail);
+  const results = audit(fx);
+  const trackResult = (role: FixedPriceX402CoordinatorRole, track: string): AuditTrackResult | undefined => {
+    const value = results[role];
+    return "status" in value ? (track === "audit" ? value as AuditTrackResult : undefined) : (value as TrackResults)[track];
+  };
+  const operation = (role: FixedPriceX402CoordinatorRole, track: string) => async () =>
+    trackResult(role, track) ?? { status: "final" as const, outcome: "success" as const, reference: `${role}:${track}` };
+  const tracks = {
+    buyer: ["agreement", "payment", "payment-evidence", "buyer-received", "audit"],
+    seller: ["agreement", "payment", "payment-evidence", "delivery", "delivery-evidence", "audit"],
+  };
+  const operations = (role: FixedPriceX402CoordinatorRole) =>
+    Object.fromEntries(tracks[role].map((track) => [track, operation(role, track)]));
+  const now = () => 1780000000000;
+  let buyerStatus;
+  let sellerStatus;
+  if (rail === "pay-x402") {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now });
+    const buyer = createFixedPriceX402BuyerCoordinator({ store, workerId: "buyer-gate", operations: operations("buyer") });
+    const seller = createFixedPriceX402SellerCoordinator({ store, workerId: "seller-gate", operations: operations("seller") });
+    await buyer.startOrder(order("buyer"));
+    await seller.startOrder(order("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+  } else {
+    const store = createInMemoryFixedPricePayDemCoordinatorStore({ now });
+    const buyer = createFixedPricePayDemBuyerCoordinator({ store, workerId: "buyer-gate", operations: operations("buyer") });
+    const seller = createFixedPricePayDemSellerCoordinator({ store, workerId: "seller-gate", operations: operations("seller") });
+    await buyer.startOrder(payDemOrder("buyer"));
+    await seller.startOrder(payDemOrder("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+  }
+  const input = { ...fx.input, buyer: buyerStatus, seller: sellerStatus };
+  const verify = () => rail === "pay-x402"
+    ? verifyFixedPriceX402AuditCompletion(input as never, fx.deps)
+    : verifyFixedPricePayDemAuditCompletion(input as never, fx.deps);
+  return { fx, buyerStatus, sellerStatus, verify };
+}
+
+describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over operational audit tracks", (rail) => {
+  it("grants audit-complete when both audit tracks are final successes on the exact bundles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({ buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative) }));
+    await expect(gate.verify()).resolves.toMatchObject({ milestone: "audit-complete" });
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses while only the other side is final (%s audit pending)", async (pending) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: pending === "buyer" ? auditPending : auditSuccess(fx.buyerNative),
+      seller: pending === "seller" ? auditPending : auditSuccess(fx.sellerNative),
+    }));
+    const status = pending === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    expect(status.tracks.audit?.state).not.toBe("final");
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it("refuses when both audit tracks are final failures on the exact bundles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) },
+      seller: { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) },
+    }));
+    expect(gate.buyerStatus.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    expect(gate.sellerStatus.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses one failed audit track while the other is pending (%s failed)", async (failed) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: failed === "buyer" ? { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) }
+        : { payment: paymentFailure("buyer"), audit: auditPending },
+      seller: failed === "seller" ? { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) }
+        : { payment: paymentFailure("seller"), audit: auditPending },
+    }));
+    const status = failed === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    expect(status.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses contradicting final audit outcomes (%s failed)", async (failed) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: failed === "buyer" ? { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) }
+        : auditSuccess(fx.buyerNative),
+      seller: failed === "seller" ? { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) }
+        : auditSuccess(fx.sellerNative),
+    }));
+    expect(gate.buyerStatus.tracks.audit?.state).toBe("final");
+    expect(gate.sellerStatus.tracks.audit?.state).toBe("final");
+    expect(gate.buyerStatus.tracks.audit?.outcome).not.toBe(gate.sellerStatus.tracks.audit?.outcome);
+    await expect(gate.verify()).rejects.toThrow(/outcomes contradict|both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+});

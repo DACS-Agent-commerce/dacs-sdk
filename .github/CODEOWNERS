@@ -1,0 +1,7 @@
+# Changes to the #191 registry/container baseline and its acceptance workflows
+# need review from a code owner.
+/scripts/registry-container-audit-baseline.json @randomblocker
+/scripts/registry-container-audit-baseline.md @randomblocker
+/.github/workflows/registry-container-acceptance.yml @randomblocker
+/.github/workflows/registry-container-audit-drift.yml @randomblocker
+/.github/CODEOWNERS @randomblocker
