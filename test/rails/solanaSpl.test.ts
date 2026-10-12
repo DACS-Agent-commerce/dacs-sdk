@@ -1125,6 +1125,23 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
       .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-dependencies-invalid" });
   });
 
+  test.each(["store", "adapter", "now"] as const)(
+    "a throwing %s getter returns a classified result before any effect",
+    async (name) => {
+      const memory = createInMemorySolanaSplSettlementStore();
+      const claim = vi.fn(memory.claim);
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const request = Object.defineProperty(input({
+        store: { ...memory, claim },
+        adapter: adapter({ prepareSignedTransfer }),
+      }), name, { get() { throw new Error("caller secret=abc"); } });
+      await expect(advanceSolanaSplSettlement(request))
+        .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-dependencies-invalid" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    },
+  );
+
   test("a missing method on resume leaves the retained broadcast to recover", async () => {
     const settlement = await retained("broadcast");
     const before = settlement.effects();

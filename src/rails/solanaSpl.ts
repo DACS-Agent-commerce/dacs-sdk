@@ -819,9 +819,16 @@ export async function advanceSolanaSplSettlement(
   } catch {
     return { status: "indeterminate", reason: "solana-spl-authority-invalid" };
   }
-  const store = input.store;
-  const adapter = input.adapter;
-  const now = input.now ?? Date.now;
+  let store: SolanaSplSettlementStore;
+  let adapter: SolanaSplAdapter;
+  let now: () => number;
+  try {
+    store = input.store;
+    adapter = input.adapter;
+    now = input.now ?? Date.now;
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-dependencies-invalid" };
+  }
   let owner: string;
   let leaseDurationMs: number;
   try {
