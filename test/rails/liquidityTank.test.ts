@@ -3511,6 +3511,169 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  // Data-only prototype pollution, as a JSON merge writes it: plain values on
+  // `Object.prototype`, no built-in replaced. A field a store or adapter result
+  // does not hold must read as absent, never as the polluted value.
+  describe("round 9", () => {
+    const D = RECOVERY_DEADLINE_MS;
+    const WAITING = { status: "waiting", reason: "liquidity-tank-pending" } as const;
+
+    /** Runs `body` with `fields` set on `Object.prototype`; removed in `finally`. */
+    async function withPollution<T>(fields: Record<string, unknown>, body: () => Promise<T>): Promise<T> {
+      const proto = Object.prototype as Record<string, unknown>;
+      try {
+        for (const [key, value] of Object.entries(fields)) proto[key] = value;
+        return await body();
+      } finally {
+        for (const key of Object.keys(fields)) delete proto[key];
+      }
+    }
+
+    function retainedSubmission(omit?: "substrateTxHash" | "submissionHash") {
+      const intent = createLiquidityTankIntent(authority());
+      const unsigned: Record<string, unknown> = {
+        submissionVersion: "1",
+        authorityHash: intent.bindingHash,
+        operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID,
+        substrateTxHash: "retained-tx",
+        signedSubmissionBase64: Buffer.from("signed", "utf8").toString("base64"),
+        preparedAt: 900,
+      };
+      if (omit === "substrateTxHash") delete unsigned["substrateTxHash"];
+      const submissionHash = sha256Hex(canonicalize(unsigned));
+      return {
+        intent,
+        submissionHash,
+        submission: omit === "submissionHash" ? unsigned : { ...unsigned, submissionHash },
+      };
+    }
+
+    /** A store whose claim answers `claimed` for a lease the core holds. */
+    function claimingStore(claimed: unknown): LiquidityTankStore {
+      return {
+        ...createInMemoryLiquidityTankStore(),
+        claim: vi.fn(async () => claimed as never),
+        isCurrent: vi.fn(async () => true),
+        recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
+      };
+    }
+
+    // Code review P2 (probes R1 and R2): an unlocked pending holds no own
+    // `lockTxHash` or `recoveryDeadline`, so both fell through to the
+    // prototype and the core committed a terminal recovery expiry for a
+    // transfer the bridge then paid.
+    test.each([
+      ["polluted", { lockTxHash: "forged-lock", recoveryDeadline: 500 }],
+      ["unpolluted control", {}],
+    ] as const)("%s: an unlocked pending stays waiting and later settles", async (_label, fields) => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash));
+      const store = createInMemoryLiquidityTankStore();
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      const run = runner({ store, adapter: h.adapter, leaseDurationMs: 1 });
+      const results = await withPollution(fields, async () => [
+        await advanceLiquidityTankSettlement(run.shared),
+        await advanceLiquidityTankSettlement(run.nextOwner()),
+      ]);
+      expect(results).toEqual([WAITING, WAITING]);
+      expect(expire).not.toHaveBeenCalled();
+      h.setObservation(completed(h.operationHash));
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+    });
+
+    // The observation is validated on its own fields too: a failure without a
+    // reason is refused, not reported as a permanent failure.
+    test("a polluted Object.prototype cannot supply a failed observation's missing reason", async () => {
+      const intent = createLiquidityTankIntent(authority());
+      const h = harness({
+        status: "failed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty", "failed"], observedAt: 2_000, authenticationHash: AUTH_HASH,
+      } as unknown as LiquidityTankObservation);
+      const result = await withPollution({ reason: "forged-failure" }, () =>
+        advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-status-unavailable" });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ["acquired", "lease", { owner: "worker-a", generation: 1, expiresAt: 1_100 }],
+      ["acquired", "owner", "worker-a"],
+      ["waiting", "lease", { owner: "worker-b", generation: 1, expiresAt: 1_100 }],
+      ["waiting", "owner", "worker-b"],
+    ] as const)("a polluted Object.prototype cannot supply the lease of a claim that is %s: missing %s", async (status, field, value) => {
+      const intent = createLiquidityTankIntent(authority());
+      const store = claimingStore(field === "lease"
+        ? { status, intent }
+        : { status, intent, lease: { generation: 1, expiresAt: 1_100 } });
+      const h = harness();
+      const result = await withPollution({ [field]: value }, () =>
+        advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid" });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ["settlement", undefined],
+      ["lockTxHash", "txRef"],
+      ["currency", "paymentAmount"],
+      ["finalityObservedAt", "settlementFinality"],
+      ["authenticationHash", ""],
+    ] as const)("a polluted Object.prototype cannot supply a stored settlement's missing %s", async (field, holder) => {
+      const intent = createLiquidityTankIntent(authority());
+      const settlement: Record<string, Record<string, unknown> | string> = {
+        txRef: {
+          kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+          lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx", recoveryDeadline: D,
+        },
+        paymentAmount: { amount: intent.amount, currency: intent.currency },
+        settlementFinality: { model: "liquidity-tank", finalityObservedAt: 3_000 },
+        authenticationHash: AUTH_HASH,
+      };
+      const value = holder === undefined
+        ? settlement
+        : holder === "" ? settlement[field] : (settlement[holder] as Record<string, unknown>)[field];
+      if (holder === "") delete settlement[field];
+      else if (holder !== undefined) delete (settlement[holder] as Record<string, unknown>)[field];
+      const store = claimingStore(holder === undefined
+        ? { status: "settled", intent }
+        : { status: "settled", intent, settlement });
+      const result = await withPollution({ [field]: value }, () =>
+        advanceLiquidityTankSettlement(runner({ store }).shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-stored-settlement-mismatch" });
+    });
+
+    test.each([
+      "substrateTxHash",
+      "submissionHash",
+    ] as const)("a polluted Object.prototype cannot supply a retained submission's missing %s", async (field) => {
+      const { intent, submission, submissionHash } = retainedSubmission(field);
+      const store = claimingStore({
+        status: "acquired", intent, lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 }, submission,
+      });
+      const h = harness();
+      const result = await withPollution({ [field]: field === "submissionHash" ? submissionHash : "forged-tx" }, () =>
+        advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("a polluted Object.prototype cannot supply retained recovery evidence's missing checkpoint", async () => {
+      const { intent, submission } = retainedSubmission();
+      const store = claimingStore({
+        status: "recovery-expired", intent, submission,
+        observation: { status: "failed-after-lock", failure: failedAfterLock(intent.operationHash, D) },
+      });
+      const run = runner({ store });
+      run.setClock(D);
+      const result = await withPollution({ checkpoint: lockedPendingAt(intent.operationHash, 2_000) }, () =>
+        advanceLiquidityTankSettlement(run.shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
+    });
+  });
+
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
     const store = createInMemoryLiquidityTankStore();
     const h = harness();

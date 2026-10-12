@@ -738,6 +738,15 @@ function snapshotOptionalCanonicalRead<T>(
   return snapshotOptionalCanonicalReadWithPresence(value, label, optionalUndefined).value;
 }
 
+/**
+ * A frozen copy of a snapshot's own fields with no prototype, so a field the
+ * store or adapter result does not hold reads as `undefined` rather than
+ * falling through to a polluted `Object.prototype`.
+ */
+function withoutPrototype<T>(value: T): T {
+  return freeze({ __proto__: null, ...(value as object) }) as unknown as T;
+}
+
 function snapshotStoreClaim(value: unknown): Readonly<{
   value: LiquidityTankStoreClaim;
   submissionPresent: boolean;
@@ -756,7 +765,7 @@ function snapshotStoreClaim(value: unknown): Readonly<{
   const observation = getOwnPropertyDescriptor(snapshot.value as object, "observation");
   const failure = getOwnPropertyDescriptor(snapshot.value as object, "recoveryFailure");
   return Object.freeze({
-    value: snapshot.value as LiquidityTankStoreClaim,
+    value: withoutPrototype(snapshot.value as LiquidityTankStoreClaim),
     submissionPresent: snapshot.present["submission"] === true,
     submissionValue: submission && hasOwn(submission, "value") ? submission.value : undefined,
     observationPresent: snapshot.present["observation"] === true,
@@ -770,23 +779,26 @@ function captureSettlement(
   value: unknown,
   intent: Readonly<LiquidityTankIntent>,
 ): Readonly<LiquidityTankSettlement> {
-  const settlement = snapshotCanonicalJsonRead(
+  const settlement = withoutPrototype(snapshotCanonicalJsonRead(
     value,
     "liquidity-tank stored settlement",
-  ) as LiquidityTankSettlement;
-  if (settlement.txRef?.kind !== "liquidity-tank" ||
-      !matchesPattern(BRIDGE_ID_RE, settlement.txRef.bridgeId) ||
-      settlement.txRef.sourceChainId !== intent.sourceChainId ||
-      settlement.txRef.destChainId !== intent.destinationChainId ||
-      settlement.paymentAmount?.amount !== intent.amount ||
-      settlement.paymentAmount.currency !== intent.currency ||
-      settlement.settlementFinality?.model !== "liquidity-tank" ||
+  ) as LiquidityTankSettlement);
+  const txRef = withoutPrototype(settlement.txRef);
+  const paymentAmount = withoutPrototype(settlement.paymentAmount);
+  const settlementFinality = withoutPrototype(settlement.settlementFinality);
+  if (txRef.kind !== "liquidity-tank" ||
+      !matchesPattern(BRIDGE_ID_RE, txRef.bridgeId) ||
+      txRef.sourceChainId !== intent.sourceChainId ||
+      txRef.destChainId !== intent.destinationChainId ||
+      paymentAmount.amount !== intent.amount ||
+      paymentAmount.currency !== intent.currency ||
+      settlementFinality.model !== "liquidity-tank" ||
       !matchesPattern(HASH_RE, settlement.authenticationHash)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement authority mismatch");
   }
-  const recoveryDeadline = recoveryDeadlineUnixMs(settlement.txRef.recoveryDeadline);
+  const recoveryDeadline = recoveryDeadlineUnixMs(txRef.recoveryDeadline);
   const finalityObservedAt = requireUInt(
-    settlement.settlementFinality.finalityObservedAt,
+    settlementFinality.finalityObservedAt,
     "stored finalityObservedAt",
   );
   if (finalityObservedAt >= recoveryDeadline) {
@@ -795,11 +807,11 @@ function captureSettlement(
   return Object.freeze({
     txRef: Object.freeze({
       kind: "liquidity-tank" as const,
-      bridgeId: settlement.txRef.bridgeId,
-      sourceChainId: settlement.txRef.sourceChainId,
-      destChainId: settlement.txRef.destChainId,
-      lockTxHash: requireString(settlement.txRef.lockTxHash, "stored lockTxHash"),
-      releaseTxHash: requireString(settlement.txRef.releaseTxHash, "stored releaseTxHash"),
+      bridgeId: txRef.bridgeId,
+      sourceChainId: txRef.sourceChainId,
+      destChainId: txRef.destChainId,
+      lockTxHash: requireString(txRef.lockTxHash, "stored lockTxHash"),
+      releaseTxHash: requireString(txRef.releaseTxHash, "stored releaseTxHash"),
       recoveryDeadline,
     }),
     paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
@@ -978,6 +990,7 @@ function validateCapturedSubmission(
   value: Readonly<Omit<LiquidityTankPreparedSubmission, "submissionHash">>,
   intent: Readonly<LiquidityTankIntent>,
 ): Readonly<LiquidityTankPreparedSubmission> {
+  value = withoutPrototype(value);
   if (value.submissionVersion !== "1" || value.authorityHash !== intent.bindingHash ||
       value.operationHash !== intent.operationHash || !matchesPattern(BRIDGE_ID_RE, value.bridgeId)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: prepared submission authority mismatch");
@@ -1002,7 +1015,7 @@ function validateRetainedSubmission(
     value,
     "liquidity-tank retained submission",
   );
-  const { submissionHash, ...unsigned } = captured;
+  const { submissionHash, ...unsigned } = withoutPrototype(captured);
   const validated = validateCapturedSubmission(unsigned, intent);
   if (validated.submissionHash !== submissionHash) {
     throw new DacsError("pay-cross-chain-liquidity-tank: retained submission integrity mismatch");
@@ -1044,6 +1057,10 @@ function validateCapturedObservation(
   intent: Readonly<LiquidityTankIntent>,
   submission: Readonly<LiquidityTankPreparedSubmission>,
 ): Exclude<LiquidityTankObservation, { status: "indeterminate" }> | LiquidityTankObservation {
+  // Validated on, and returned as, a copy with no prototype: an unlocked
+  // pending's missing `lockTxHash` and `recoveryDeadline` stay missing in
+  // every later read.
+  value = withoutPrototype(value);
   if (value.status === "indeterminate") {
     return Object.freeze({
       status: "indeterminate" as const,
@@ -1090,10 +1107,11 @@ function validateCapturedObservation(
   if (value.status === "failed" || value.status === "capacity-unavailable") {
     requireString(value.reason, "reason");
   }
-  return Object.freeze({
+  return freeze({
+    __proto__: null,
     ...value,
     history: Object.freeze([...value.history]),
-  }) as Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
+  }) as unknown as Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 }
 
 function progressFromDurableObservation(
@@ -1167,10 +1185,10 @@ function validateRecoveryEvidence(
   intent: Readonly<LiquidityTankIntent>,
   submission: Readonly<LiquidityTankPreparedSubmission>,
 ): LiquidityTankRecoveryEvidence {
-  const captured = snapshotCanonicalJsonRead(
+  const captured = withoutPrototype(snapshotCanonicalJsonRead(
     value,
     "liquidity-tank recovery evidence",
-  ) as LiquidityTankRecoveryEvidence;
+  ) as LiquidityTankRecoveryEvidence);
   if (captured.status === "failed-after-lock") {
     const checkpoint = validateCapturedObservation(captured.checkpoint, intent, submission);
     const failure = validateCapturedObservation(captured.failure, intent, submission);
@@ -1460,9 +1478,10 @@ export async function advanceLiquidityTankSettlement(
   if (claimStatus === "waiting") {
     const waitingClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "waiting" }>;
     try {
-      if (!isSafeInteger(waitingClaim.lease.generation) || waitingClaim.lease.generation <= 0 ||
-          !isSafeInteger(waitingClaim.lease.expiresAt) || waitingClaim.lease.expiresAt <= claimNow ||
-          typeof waitingClaim.lease.owner !== "string" || waitingClaim.lease.owner.length === 0) {
+      const waitingLease = withoutPrototype(waitingClaim.lease);
+      if (!isSafeInteger(waitingLease.generation) || waitingLease.generation <= 0 ||
+          !isSafeInteger(waitingLease.expiresAt) || waitingLease.expiresAt <= claimNow ||
+          typeof waitingLease.owner !== "string" || waitingLease.owner.length === 0) {
         throw new DacsError("invalid waiting lease");
       }
     } catch {
@@ -1495,15 +1514,16 @@ export async function advanceLiquidityTankSettlement(
   const acquiredClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "acquired" }>;
   let lease: Readonly<LiquidityTankLease>;
   try {
-    if (acquiredClaim.lease.owner !== owner ||
-        !isSafeInteger(acquiredClaim.lease.generation) || acquiredClaim.lease.generation <= 0 ||
-        acquiredClaim.lease.expiresAt !== expectedLeaseExpiry) {
+    const acquiredLease = withoutPrototype(acquiredClaim.lease);
+    if (acquiredLease.owner !== owner ||
+        !isSafeInteger(acquiredLease.generation) || acquiredLease.generation <= 0 ||
+        acquiredLease.expiresAt !== expectedLeaseExpiry) {
       throw new DacsError("invalid acquired lease");
     }
     lease = Object.freeze({
-      owner: acquiredClaim.lease.owner,
-      generation: acquiredClaim.lease.generation,
-      expiresAt: acquiredClaim.lease.expiresAt,
+      owner: acquiredLease.owner,
+      generation: acquiredLease.generation,
+      expiresAt: acquiredLease.expiresAt,
     });
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid" };
