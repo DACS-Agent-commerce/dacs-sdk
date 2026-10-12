@@ -997,10 +997,14 @@ type FinalSourceClaimObservation = FinalHtlcObservation & { finalityReachedAt: n
 /** A malformed final lock observation: an adapter fault, not a chain state. */
 class InvalidLockObservation extends DacsError {}
 
-/** A lock expiry in Unix milliseconds; `Infinity` beyond the safe-integer range. */
+/**
+ * A lock expiry in Unix milliseconds. Beyond the safe-integer range it is
+ * `Infinity`, which never arrives, or `-Infinity`, which has long passed.
+ */
 function lockExpiryMillis(expiresAt: number): number {
   const millis = expiresAt * 1_000;
-  return Number.isSafeInteger(millis) ? millis : Number.POSITIVE_INFINITY;
+  if (Number.isSafeInteger(millis)) return millis;
+  return millis < 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
 }
 
 /**

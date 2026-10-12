@@ -4016,6 +4016,20 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     },
   );
 
+  test("treats a destination expiry far below the safe-integer range as long passed", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: -10_000_000_000_000 });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "refund-pending",
+      reason: "destination-lock-expiry-invalid",
+      refunds: { "destination-refund": "final", "source-refund": "waiting" },
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-refund"]);
+  });
+
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
     for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
       expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);
