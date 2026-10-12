@@ -167,6 +167,33 @@ const htlcAbsentAttempt: HtlcFailedObservation = {
   txRef: htlcRevealRef,
   authenticationHash: "c".repeat(64),
 };
+/** Every refund reason, handled exhaustively. */
+function htlcRefundReason(progress: CrossChainHtlcProgress): string | undefined {
+  if (progress.status !== "refund-pending" && progress.status !== "refunded" &&
+      progress.status !== "refund-stalled") {
+    return undefined;
+  }
+  const reason = progress.reason;
+  switch (reason) {
+    case "destination-timeout":
+    case "destination-lock-missing":
+    case "destination-lock-unresolved":
+    case "destination-lock-failed":
+    case "destination-lock-window-closed":
+    case "destination-expiry-margin-insufficient":
+    case "destination-lock-expiry-invalid":
+    case "source-lock-terms-missing":
+    case "source-lock-terms-mismatch":
+    case "destination-lock-terms-missing":
+    case "destination-lock-terms-mismatch":
+    case "destination-claim-unlanded":
+      return reason;
+    default: {
+      const unhandled: never = reason;
+      return unhandled;
+    }
+  }
+}
 /** The volatile store is a test double and must be acknowledged as one. */
 function volatileHtlcStoreForTests(): CrossChainHtlcStore {
   // @ts-expect-error the in-memory store requires { acknowledgeVolatile: true }
@@ -289,6 +316,7 @@ void htlcAbsentLeg;
 void htlcAbsentReveal;
 void htlcNothingOnChain;
 void htlcAbsentAttempt;
+void htlcRefundReason;
 void volatileHtlcStoreForTests;
 void htlcAdapter;
 void htlcStore;
