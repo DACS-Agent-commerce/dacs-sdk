@@ -487,6 +487,7 @@ async function delayedSendFixture(options: {
   const hub = new FakeL2psHub();
   const basePeer = hub.peer(BUYER_PEER);
   let codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+  let openFault: "throw" | "hang" | undefined;
   const sendEntered = gate();
   const framesAtCall: unknown[] = [];
   const submissions: Array<{ to: string; encrypted: DemosL2psRfqEncryptedMessage; messageHash: string }> = [];
@@ -517,9 +518,14 @@ async function delayedSendFixture(options: {
     },
   };
   function makeTransport() {
+    const current = codec;
     return createDemosL2psRfqTransport<string>({
       peer,
-      codec: { codecId: codec.codecId, open: codec.open, seal(bytes, context) {
+      codec: { codecId: current.codecId, open(encrypted, context) {
+        if (openFault === "throw") throw new Error("codec temporarily unavailable");
+        if (openFault === "hang") return new Promise<Uint8Array>(() => {});
+        return current.open(encrypted, context);
+      }, seal(bytes, context) {
         if (options.refuseSeal && !refused) { refused = true; throw new Error("seal refused before send"); }
         sealed += 1;
         return codec.seal(bytes, context);
@@ -580,6 +586,8 @@ async function delayedSendFixture(options: {
     failReads(on: boolean) { failRead = on; },
     /** The next transport (after restart) uses a new key under the same codecId. */
     rotateKey() { codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }); },
+    /** Every codec open throws or never settles, until cleared with undefined. */
+    failOpens(fault: "throw" | "hang" | undefined) { openFault = fault; },
     /** Let the held first save reach the store; resolves to its CAS result. */
     releaseFirstSave() {
       if (heldSaveResult === undefined) throw new Error("no held save");
@@ -1021,6 +1029,219 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(received).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
     sellerTransport.stop();
+  });
+
+  test.each(["sync", "async"] as const)("round 7: an outbox save that returns undefined (%s) is not a commit", async (mode) => {
+    const { hub, sharedKey, packet } = await buyerWithSentOffer();
+    // The old `save(): void` contract: the write lands but confirms nothing.
+    const entries = new Map<string, unknown>();
+    let saves = 0;
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      outboxStore: {
+        load: (packetId) => structuredClone(entries.get(packetId)),
+        save(packetId, entry) {
+          saves += 1;
+          entries.set(packetId, structuredClone(entry));
+          return (mode === "sync" ? undefined : Promise.resolve(undefined)) as never;
+        },
+      },
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const sendsBefore = hub.sends;
+    // The pre-send save, then the recovery-start save on the stored marker.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(transport.publish(packet)).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+    }
+    expect(saves).toBe(2);
+    expect(hub.sends).toBe(sendsBefore);
+  });
+
+  test.each([
+    { generation: 0 },
+    { generation: -1 },
+    { generation: 1.5 },
+    { generation: "2" },
+    { generation: undefined },
+  ])("round 7: a stored outbox generation of $generation is refused, never resent", async ({ generation }) => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      const id = fixture.packet().packetId;
+      const entry = await fixture.outboxStore.load(id) as Record<string, unknown> & { generation: number };
+      const lost = { ...entry, generation };
+      await expect(fixture.outboxStore.save(id, lost as never, entry.generation)).resolves.toBe(true);
+      // Past the grace with empty history, a valid entry would authorize a resend.
+      fixture.setTicks(72_000);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      await expect(fixture.transport.publish(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      expect(fixture.historyCalls()).toBe(0);
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test.each([
+    { mapped: THIRD_PEER, delivered: true },
+    { mapped: `0X${THIRD_PEER.toUpperCase()}`, delivered: true },
+    { mapped: BUYER_PEER, delivered: false },
+    { mapped: undefined, delivered: false },
+    { mapped: "not-a-peer-key", delivered: false },
+  ])("round 7: live receive needs peerForClaim(claimForPeer(from)) to be from (mapped $mapped)", async ({ mapped, delivered }) => {
+    const { hub, baseCodec, packet } = await buyerWithSentOffer();
+    // A valid frame from THIRD_PEER, which claimForPeer maps to the buyer.
+    const encrypted = await baseCodec.seal(
+      new TextEncoder().encode(canonicalize(packet as unknown as Record<string, unknown>)),
+      { messageHash: packet.packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER },
+    );
+    const errors: Error[] = [];
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(SELLER_PEER),
+      codec: baseCodec,
+      l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      localClaim: SELLER,
+      localPeerKey: SELLER_PEER,
+      peerForClaim: (claim) => (claim === BUYER ? mapped : peerForClaim(claim)),
+      claimForPeer: (peerKey) => (peerKey === THIRD_PEER ? BUYER : claimForPeer(peerKey)),
+      onError: (error) => errors.push(error),
+    });
+    const client = createDurableRfqLifecycleClient(clientOptions("seller", transport, durableReservation()));
+    await client.open(openInput());
+    const receive = vi.fn((candidate: unknown) => client.receive(candidate));
+    transport.start(receive);
+    for (const handler of hub.handlers.get(SELLER_PEER) ?? []) {
+      handler({ from: THIRD_PEER, encrypted: structuredClone(encrypted), messageHash: packet.packetId });
+    }
+    await transport.drain();
+    transport.stop();
+    if (delivered) {
+      expect(errors).toEqual([]);
+      expect(receive).toHaveBeenCalledTimes(1);
+    } else {
+      expect(errors.map((error) => error.message)).toEqual([
+        "Demos L2PS RFQ peer/claim mapping is not reciprocal",
+      ]);
+      expect(receive).not.toHaveBeenCalled();
+    }
+  });
+
+  test("round 7: reconcile waits for an in-flight publish of the same packet", async () => {
+    const { hub, sharedKey, packet } = await buyerWithSentOffer();
+    const base = hub.peer(BUYER_PEER);
+    const sendEntered = gate();
+    const sendRelease = gate();
+    let historyReads = 0;
+    const expectedGenerations: number[] = [];
+    const store = memorySendOutbox();
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: {
+        ...base,
+        async send(to, encrypted, messageHash) {
+          sendEntered.release();
+          await sendRelease.promise;
+          return base.send(to, encrypted, messageHash);
+        },
+        history(peerKey, options) {
+          historyReads += 1;
+          return base.history(peerKey, options);
+        },
+      },
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      outboxStore: {
+        load: store.load,
+        save(packetId, entry, expectedGeneration) {
+          expectedGenerations.push(expectedGeneration);
+          return store.save(packetId, entry, expectedGeneration);
+        },
+      },
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const publishing = transport.publish(packet);
+    // The pre-send entry is committed as `sending`, with no end time yet.
+    await sendEntered.promise;
+    const reconciling = transport.reconcile(packet);
+    await settle();
+    sendRelease.release();
+    await expect(publishing).resolves.toEqual({ disposition: "acknowledged" });
+    await expect(reconciling).resolves.toEqual({ disposition: "acknowledged" });
+    expect(expectedGenerations).toEqual([0, 1]);
+    expect(historyReads).toBe(0);
+    expect(await store.load(packet.packetId)).toMatchObject({ state: "acknowledged", generation: 2 });
+  });
+
+  test.each(["throw", "hang"] as const)("round 7: a stored frame whose open is unavailable (codec %s) is never resent", async (fault) => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      fixture.failOpens(fault);
+      // Past the grace with empty history: only the open check holds the resend.
+      fixture.setTicks(72_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: "Demos L2PS RFQ stored send frame does not open to this packet",
+      });
+      expect(fixture.submissions).toHaveLength(1);
+      fixture.failOpens(undefined);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(2);
+      expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 7: a peer key shorter than 64 hex digits is refused", async () => {
+    const hub = new FakeL2psHub();
+    const base = {
+      peer: hub.peer(SELLER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      localClaim: SELLER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    };
+    for (const localPeerKey of ["b".repeat(64), `0x${"B".repeat(64)}`]) {
+      expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey })).not.toThrow();
+    }
+    for (const localPeerKey of ["b".repeat(63), `0x${"b".repeat(63)}`, "b".repeat(40), "0x"]) {
+      expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey }))
+        .toThrow("localPeerKey must be a hex public key");
+    }
+    // A mapped recipient key meets the same floor, before any seal or send.
+    const sent = await buyerWithSentOffer();
+    const short = "b".repeat(63);
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: sent.hub.peer(BUYER_PEER),
+      codec: sent.baseCodec,
+      l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim: (claim) => (claim === SELLER ? short : peerForClaim(claim)),
+      claimForPeer: (peerKey) => (peerKey === short ? SELLER : claimForPeer(peerKey)),
+      onError: vi.fn(),
+    });
+    const sendsBefore = sent.hub.sends;
+    await expect(transport.publish(sent.packet)).resolves.toEqual({
+      disposition: "rejected", reason: "resolved peer key must be a hex public key",
+    });
+    expect(sent.hub.sends).toBe(sendsBefore);
   });
 
   test("round 4: a stuck consumer from a retired generation does not hold back the next one", async () => {
