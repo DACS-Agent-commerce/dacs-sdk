@@ -404,6 +404,26 @@ describe("create-dacs-agent", () => {
     expect(await readFile(join(local, "README.md"), "utf8")).not.toContain("docker build");
   });
 
+  test("probes the image for the exact versions the project depends on", async () => {
+    const target = await generatedDockerProject("probe-version-agent");
+    const dependencies = JSON.parse(
+      await readFile(join(target, "package.json"), "utf8"),
+    ).dependencies as Record<string, string>;
+    const smoke = await readFile(join(target, "scripts", "docker-runtime-smoke.mjs"), "utf8");
+    const probed = /'const expected = (\{[^']*\});',/.exec(smoke);
+    expect(probed).not.toBeNull();
+    const expected = JSON.parse(probed![1]!) as Record<string, string>;
+    expect(Object.keys(expected).sort()).toEqual([
+      "@kynesyslabs/dacs",
+      "@kynesyslabs/dacs-node",
+      "@kynesyslabs/demosdk",
+      "better-sqlite3",
+    ]);
+    for (const [name, version] of Object.entries(expected)) {
+      expect(version, name).toBe(dependencies[name]);
+    }
+  });
+
   test.runIf(process.platform !== "win32")(
     "smokes DACS_IMAGE as the compose runtime user and records its one image ID",
     async () => {

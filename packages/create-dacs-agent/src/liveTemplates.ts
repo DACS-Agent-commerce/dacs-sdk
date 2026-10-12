@@ -12,6 +12,7 @@ export interface LiveProjectTemplateOptions {
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
+const DEMOSDK_VERSION = "4.0.16";
 const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 const CONFIG_SCHEMA_VERSION = 1;
@@ -50,7 +51,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demosdk": DEMOSDK_VERSION,
       "better-sqlite3": BETTER_SQLITE_VERSION,
       ...(x402 ? {
         "@x402/core": "2.15.0",
@@ -4501,6 +4502,13 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
+const PROBE_VERSIONS = JSON.stringify({
+  "@kynesyslabs/dacs": SDK_VERSION,
+  "@kynesyslabs/dacs-node": SDK_VERSION,
+  "@kynesyslabs/demosdk": DEMOSDK_VERSION,
+  "better-sqlite3": BETTER_SQLITE_VERSION,
+});
+
 const DOCKER_RUNTIME_SMOKE = `import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
@@ -4610,7 +4618,7 @@ const probe = [
   '  try { await access(path); throw new Error("development or secret path is present: " + path); }',
   '  catch (error) { if (error && error.code !== "ENOENT") throw error; }',
   '}',
-  'const expected = {"@kynesyslabs/dacs":"0.1.0-alpha.0","@kynesyslabs/dacs-node":"0.1.0-alpha.0","@kynesyslabs/demosdk":"4.0.16","better-sqlite3":"12.6.2"};',
+  'const expected = ${PROBE_VERSIONS};',
   'const versions = {};',
   'for (const [name, version] of Object.entries(expected)) {',
   '  const manifest = JSON.parse(await readFile("/app/node_modules/" + name + "/package.json", "utf8"));',
