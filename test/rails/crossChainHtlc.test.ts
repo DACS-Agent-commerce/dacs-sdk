@@ -2951,6 +2951,36 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-refund")).toHaveLength(1);
   });
 
+  test("without a source-leg observation reports a first source refund it broadcast as pending, not uncertain", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const { observeSourceLeg: _sourceLeg, ...wholeSessionOnly } = h.adapter;
+    const run = runner({
+      adapter: wholeSessionOnly as unknown as CrossChainHtlcAdapter,
+      authorizeDestinationClaim: false,
+    });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const observeLedger = h.observe.getMockImplementation()!;
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "refund-unconfirmed" })).resolves.toEqual({
+      status: "refund-pending",
+      reason: "destination-lock-unresolved",
+      txRefs: [refFor("source-lock"), refFor("destination-lock")],
+      refunds: { "destination-refund": "uncertain", "source-refund": "pending" },
+    });
+    expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+    h.observe.mockImplementation(observeLedger);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "observed-again", now: () => 1_700_101 }))
+      .resolves.toMatchObject({
+        status: "refund-pending",
+        reason: "destination-timeout",
+        refunds: { "destination-refund": "final", "source-refund": "final" },
+      });
+    expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-refund")).toHaveLength(1);
+    expect(h.broadcastRetained.mock.calls.filter((call) => call[0].action === "source-refund")).toHaveLength(1);
+  });
+
   test.each([
     ["failed", "refund-stalled"],
     ["absent", "operator-alert"],

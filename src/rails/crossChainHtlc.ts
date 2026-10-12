@@ -1899,6 +1899,9 @@ export async function advanceCrossChainHtlc(
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
     } = {},
     observeAfter: () => Promise<Readonly<HtlcLedgerSnapshot> | null> = observe,
+    // Set when the broadcast went through, whether or not `observeAfter` can
+    // then observe it.
+    outcome?: { broadcast: boolean },
   ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     let retained = prepared.get(action);
     if (!retained) {
@@ -1945,6 +1948,7 @@ export async function advanceCrossChainHtlc(
     } catch {
       return null;
     }
+    if (outcome) outcome.broadcast = true;
     return observeAfter();
   };
   const replaceFailedSourceClaim = async (
@@ -2186,9 +2190,21 @@ export async function advanceCrossChainHtlc(
     const reason: HtlcRefundReason = termsVerdict === "missing"
       ? "source-lock-terms-missing"
       : termsVerdict === "mismatch" ? "source-lock-terms-mismatch" : "destination-lock-missing";
+    // A refund broadcast here that the source leg cannot then show is still
+    // sent: it reads `pending` until observed, as in the whole-session path.
     const sendRefund = async (from: Readonly<HtlcLedgerSnapshot>) => {
-      const advanced = await execute("source-refund", { sourceExpiry: checkpointed.sourceExpiry }, observeSource);
-      return Object.freeze({ attempt: advanced ? "sent" as const : "uncertain" as const, latest: advanced ?? from, reason });
+      const outcome = { broadcast: false };
+      const advanced = await execute(
+        "source-refund",
+        { sourceExpiry: checkpointed.sourceExpiry },
+        observeSource,
+        outcome,
+      );
+      return Object.freeze({
+        attempt: advanced || outcome.broadcast ? "sent" as const : "uncertain" as const,
+        latest: advanced ?? from,
+        reason,
+      });
     };
     if (sourceView && viewAgrees) {
       const refund = sourceView.actions["source-refund"];
