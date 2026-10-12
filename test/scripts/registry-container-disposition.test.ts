@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // Keep the production disposition executable as plain Node ESM; a computed
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { registryContainerDisposition } = await import(dispositionModulePath);
+const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit } = await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -20,14 +20,13 @@ function baselineOnlySummary() {
     schema: "dacs-registry-container-acceptance/v1",
     generatedTestsPassed: true,
     functionalPassed: true,
-    audit: { info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
+    audit: { observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
     securityGate: {
       passed: false,
       registryDependencyPolicyPassed: true,
       productionImageDependencyPolicyPassed: true,
       engineStrictExitCode: 0,
       auditExitCode: 1,
-      auditBaselineExceeded: false,
       lockSbomExitCode: 0,
       physicalSbomExitCode: 0,
     },
@@ -63,7 +62,7 @@ afterEach(() => {
 // Runs the workflow step in a scratch checkout holding the real disposition
 // script. The npm stub writes `summary` (if given) where acceptance would, then
 // exits with the acceptance status.
-function runWorkflowStep(acceptanceExitCode: number, summary?: unknown) {
+function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false) {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
   const bin = join(directory, "bin");
@@ -72,6 +71,8 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown) {
   mkdirSync(join(checkout, "scripts"), { recursive: true });
   writeFileSync(join(checkout, "scripts/registry-container-disposition.mjs"),
     readFileSync(join(repoRoot, "scripts/registry-container-disposition.mjs")));
+  writeFileSync(join(checkout, "scripts/registry-container-audit-baseline.json"),
+    readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json")));
   const write = summary === undefined ? "" : [
     "mkdir -p registry-container-artifacts",
     `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${JSON.stringify(summary)}\nJSON`,
@@ -82,7 +83,7 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown) {
   return spawnSync("bash", ["-e", "-c", workflowStepScript("Run registry-shaped Linux and Docker acceptance")], {
     cwd: checkout,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    env: { ...process.env, ENFORCE_AUDIT_DRIFT: String(strictAudit), PATH: `${bin}:${process.env.PATH ?? ""}` },
   });
 }
 
@@ -91,6 +92,8 @@ describe("registry/container acceptance disposition", () => {
     const summary = baselineOnlySummary();
     summary.securityGate.passed = true;
     summary.audit.total = 0;
+    summary.audit.observedAdvisories = [];
+    summary.securityGate.auditExitCode = 0;
     expect(registryContainerDisposition(summary).exitCode).toBe(0);
     expect(registryContainerDisposition({ ...summary, functionalPassed: false }).exitCode).toBe(1);
     expect(registryContainerDisposition({}).exitCode).toBe(1);
@@ -109,9 +112,6 @@ describe("registry/container acceptance disposition", () => {
   });
 
   it.each([
-    ["audit beyond the baseline", (s: ReturnType<typeof baselineOnlySummary>) => {
-      s.securityGate.auditBaselineExceeded = true;
-    }],
     ["a registry dependency policy violation", (s: ReturnType<typeof baselineOnlySummary>) => {
       s.securityGate.registryDependencyPolicyPassed = false;
     }],
@@ -129,9 +129,6 @@ describe("registry/container acceptance disposition", () => {
     }],
     ["a failed audit with no findings", (s: ReturnType<typeof baselineOnlySummary>) => {
       s.audit.total = 0;
-    }],
-    ["a missing baseline verdict", (s: ReturnType<typeof baselineOnlySummary>) => {
-      delete (s.securityGate as Partial<typeof s.securityGate>).auditBaselineExceeded;
     }],
   ])("keeps %s as a blocking security result", (_label, mutate) => {
     const summary = baselineOnlySummary();
@@ -172,9 +169,9 @@ describe("registry/container pull_request job", () => {
     ["an unexpected schema", { ...baselineOnlySummary(), schema: "other/v1" }],
     ["a functional failure", { ...baselineOnlySummary(), functionalPassed: false }],
     ["failed generated tests", { ...baselineOnlySummary(), generatedTestsPassed: false }],
-    ["a security result beyond the baseline", {
+    ["a dependency policy violation", {
       ...baselineOnlySummary(),
-      securityGate: { ...baselineOnlySummary().securityGate, auditBaselineExceeded: true },
+      securityGate: { ...baselineOnlySummary().securityGate, registryDependencyPolicyPassed: false },
     }],
   ])("fails exit 4 when the summary records %s", (_label, summary) => {
     const result = runWorkflowStep(4, summary);
@@ -228,7 +225,7 @@ const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).di
 function dependencyPolicyHarness() {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
   scratch.push(directory);
-  const packages: Record<string, { resolved: string; integrity: string }> = {};
+  const packages: Record<string, { resolved: string; integrity: string; name?: string }> = {};
   for (const name of ["dacs", "dacs-node"]) {
     const bytes = Buffer.from(name);
     writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
@@ -263,7 +260,7 @@ function writeSummary(overrides: Record<string, string> = {}) {
     "docker-image.json": JSON.stringify([{ Id: "sha256:image", Size: 1, Config: { User: "10001:10001" } }]),
     "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: baselineOnlySummary().audit } }),
     "dependency-policy.json": JSON.stringify({ passed: true, violations: [] }),
-    "audit-policy.json": JSON.stringify({ baselineExceeded: false }),
+    "audit-policy.json": JSON.stringify({ observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ functionalPassed: true, productionDependencyPolicyPassed: true }),
     "engine-strict.exit-code": "0\n",
     "npm-audit.exit-code": "1\n",
@@ -339,6 +336,14 @@ describe("registry/container evidence", () => {
     expect(outside.stderr).toContain(`did not resolve through the isolated registry: ${nested}`);
   });
 
+  it.each(["dacs", "dacs-node"])("rejects a substituted npm alias of %s", (name) => {
+    const { packages, run } = dependencyPolicyHarness();
+    packages["node_modules/alias"] = { ...packages[`node_modules/@kynesyslabs/${name}`]!, name: `@kynesyslabs/${name}` };
+    expect(run().status).toBe(0);
+    packages["node_modules/alias"]!.integrity = "sha512-wrong";
+    expect(run().status).not.toBe(0);
+  });
+
   it("derives the summary fields from the checks that ran", () => {
     const passing = writeSummary();
     expect(passing).toMatchObject({
@@ -361,5 +366,34 @@ describe("registry/container evidence", () => {
     const doctor = writeSummary({ "doctor.exit-code": "0\n" });
     expect(doctor).toMatchObject({ functionalPassed: false, doctor: { disposition: "unexpected" } });
     expect(registryContainerDisposition(doctor).exitCode).toBe(1);
+  });
+});
+
+
+describe("advisory-ID baseline", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  it("reports an unlisted advisory without failing required acceptance, and fails the drift check", () => {
+    const summary = baselineOnlySummary();
+    const unknown = "GHSA-2222-3333-4444";
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [unknown] });
+    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: [unknown] });
+    const result = runWorkflowStep(4, summary);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`Unlisted advisory IDs: ${unknown}`);
+    expect(runWorkflowStep(4, summary, true).status).toBe(3);
+  });
+  it("passes the scheduled classification for a listed advisory regardless of diagnostic counts", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.total = 145; summary.audit.critical = 5;
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
+    expect(registryContainerDisposition(summary).exitCode).toBe(4);
+  });
+  it.each([{}, { ...baseline, advisoryIds: ["bogus"] }, { ...baseline, source: {} },
+    { ...baseline, advisoryIds: [] }])("fails closed for a malformed baseline %j", (bad) => {
+    expect(() => classifyRegistryAudit([], bad)).toThrow();
+    expect(registryContainerDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+    expect(registryAuditDriftDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
   });
 });
