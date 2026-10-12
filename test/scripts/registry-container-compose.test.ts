@@ -30,3 +30,12 @@ it("supplies every required generated Compose variable with inert run-local inpu
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+it("keeps Verdaccio's writable authentication state under its configured storage", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const config = source.split('cat > "$registry_config"')[1]!.split("\nYAML")[0]!;
+  const storage = config.match(/^storage: (.+)$/m)![1]!;
+  const authFile = config.match(/^    file: (.+)$/m)![1]!;
+  expect(authFile.startsWith(storage + "/")).toBe(true);
+  expect(source).toContain('$registry_config:/verdaccio/conf/config.yaml:ro');
+});
