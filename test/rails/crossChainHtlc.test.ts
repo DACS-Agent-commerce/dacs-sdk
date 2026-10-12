@@ -3749,6 +3749,60 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     },
   );
 
+  test("reads a refund observed absent in the call that first sends it as pending, then alerts", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    // The observation lags the broadcast: the new source refund still reads absent.
+    const broadcast = h.adapter.broadcastRetained;
+    h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+      await broadcast(prepared, fence);
+      if (prepared.action === "source-refund") {
+        h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+      }
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "refunds-sent" })).resolves.toMatchObject({
+      status: "refund-pending",
+      reason: "destination-timeout",
+      refunds: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "still-absent", now: () => 1_700_101 }))
+      .resolves.toMatchObject({
+        status: "operator-alert",
+        reason: "htlc-refund-absent",
+        refunds: { "destination-refund": "pending", "source-refund": "absent" },
+      });
+    expect(broadcastsOf(h, "source-refund")).toHaveLength(1);
+  });
+
+  test("prepares the first refund of a leg the adapter reports absent before any refund was prepared", async () => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    run.setClock(1_700_000);
+    const progress = await advanceCrossChainHtlc({ ...run.shared, owner: "refunds-due" });
+    expect(progress).toMatchObject({
+      status: "refund-pending",
+      refunds: { "destination-refund": "pending", "source-refund": "pending" },
+    });
+    expect(htlcNeedsOperator(progress)).toBe(false);
+    expect(broadcastsOf(h, "destination-refund")).toHaveLength(1);
+    expect(broadcastsOf(h, "source-refund")).toHaveLength(1);
+  });
+
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
     for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
       expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);

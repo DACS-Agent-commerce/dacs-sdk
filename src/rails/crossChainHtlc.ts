@@ -1539,7 +1539,9 @@ export async function advanceCrossChainHtlc(
     latest: Readonly<HtlcLedgerSnapshot>,
   ): boolean => prepared.has(leg) && latest.actions[leg]?.state === "absent";
   // Reports each locked leg's refund from the latest observation. `sent` is a
-  // refund broadcast in this call, reported as refunded only on a later call.
+  // refund broadcast in this call, reported as refunded only on a later call;
+  // until the adapter reports it, or while it still reads `absent` in this
+  // same call, it is `pending`, so only a later call can find it `absent`.
   // A tracked destination leg keeps its retained lock's reference even while
   // the adapter does not report that lock.
   const refundProgress = (
@@ -1554,11 +1556,11 @@ export async function advanceCrossChainHtlc(
       const observed = latest.actions[leg];
       refunds[leg] = attempt === "uncertain"
         ? "uncertain"
-        : refundAbsent(leg, latest)
-          ? "absent"
-          : observed && observed.state !== "absent"
-            ? observed.state
-            : attempt === "sent" ? "pending" : "waiting";
+        : observed && observed.state !== "absent"
+          ? observed.state
+          : attempt === "sent"
+            ? "pending"
+            : refundAbsent(leg, latest) ? "absent" : "waiting";
     }
     const states = Object.values(refunds);
     const unreportedLocks: HtlcAction[] = attempts["destination-refund"] === undefined
