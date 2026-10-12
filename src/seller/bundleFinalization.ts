@@ -39,7 +39,6 @@ import { isExactJsonRecord } from "../artifacts/validators.js";
 import {
   bundleAddress,
   canonicalize,
-  encodeAddressSegment,
   contentHash,
   listingAddress,
   sha256Hex,
@@ -72,6 +71,7 @@ import {
   type SellerFulfilmentAgreement,
   type SellerFulfilmentResult,
 } from "../agent/runFulfilmentCore.js";
+import { compositeVerificationAddress } from "../agent/vetCore.js";
 /*
  * Payment authorization is an operational handoff, not a bundle artifact.
  * Its store-backed shape is nevertheless revalidated at this boundary before
@@ -2111,7 +2111,7 @@ async function auditResolvedDependencyGraph(
     const vetDependency = dependencies.get(dependencySourceId(refSource(ref)));
     if (vetDependency !== undefined && ref.anchor.locator === vetDependency.anchorReceipt.nativeAddress &&
         vetDependency.anchorReceipt.logicalAddress !==
-          `dacs2:composite:${session.jobId}:${encodeAddressSegment(record.evaluatedParty)}`) {
+          compositeVerificationAddress(session.jobId, record.evaluatedParty)) {
       throw new DacsError("native Vet dependency receipt binds a different logical address");
     }
     await verifiedDisposition("Vet requirement invocation provenance", () =>
