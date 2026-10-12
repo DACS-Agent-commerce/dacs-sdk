@@ -1771,3 +1771,14 @@ describe("durable buyer bundle finalization", () => {
     );
   });
 });
+
+
+test("retries missing settled session state and completes when it becomes readable", async () => {
+  const f = await fixture();
+  const store = { ...f.store, load: vi.fn(f.store.load).mockResolvedValueOnce({ status: "missing" }) };
+  const durability = { ...f.durability, store };
+  await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, durability)).resolves.toMatchObject({
+    disposition: "indeterminate", reason: "buyer bundle finalization requires existing settled session state" });
+  expect(f.state.fences).toHaveLength(0);
+  await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, durability)).resolves.toMatchObject({ disposition: "finalised" });
+});
