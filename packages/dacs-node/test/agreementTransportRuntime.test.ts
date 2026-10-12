@@ -608,6 +608,21 @@ describe("memory-backed agreement and Vet terminal recovery", () => {
         await expect(h.publish()).resolves.toEqual({ disposition: "submitted" });
         expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never)).toEqual({ sellerPassRetained: true, sellerResponseRetained: false });
     });
+    it.each(["x402", "pay-dem"] as const)("rejects a %s native seller Vet ref whose receipt names another logical address", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        const payload = (sellerVetReceipt: ProtocolAnchorReceipt) => ({
+            proposal: h.request.proposal, transportIdentity: h.request.transportIdentity,
+            sellerVetRecord: h.production.record, sellerVetRef: h.production.recordRef, sellerVetReceipt,
+        });
+        const validate = (sellerVetReceipt: ProtocolAnchorReceipt) => h.sellerRuntime.validatePayload({ type: "agreement-proposal", payload: payload(sellerVetReceipt), jobId: JOB_ID, sender: BUYER, audience: SELLER });
+        expect(await validate(h.production.anchorReceipt)).toEqual({ status: "valid" });
+        // Same native address, hash and writer; only the logical binding differs.
+        const rebound = { ...h.production.anchorReceipt, logicalAddress: compositeVerificationAddress(JOB_ID, BUYER) };
+        expect(await validate(rebound)).toEqual({ status: "invalid", reasonCode: "agreement-proposal-invalid" });
+        expect(await h.sellerRuntime.handleMessage(authenticated("agreement-proposal", payload(rebound), BUYER, SELLER), h.inbound))
+            .toEqual({ disposition: "rejected", reasonCode: "agreement-proposal-invalid" });
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(false);
+    });
     it.each(["x402", "pay-dem"] as const)("accepts a genuine %s seller failure before any proposal or response", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         await expect(h.terminalRuntime().handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
