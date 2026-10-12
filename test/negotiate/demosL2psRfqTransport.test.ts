@@ -438,8 +438,10 @@ async function delayedSendFixture(options: {
   const firstSaveGate = gate();
   let heldSave = options.holdFirstSave ? firstSaveGate : undefined;
   let heldSaveResult: Promise<boolean> | undefined;
+  let failRead = false;
   const outboxStore: DemosL2psRfqTransportOptions["outboxStore"] = {
     async load(id) {
+      if (failRead) throw new Error("durable outbox read unavailable");
       let text: string;
       try { text = await readFile(join(dir, id), "utf8"); }
       catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw cause; }
@@ -567,6 +569,7 @@ async function delayedSendFixture(options: {
       transport = makeTransport();
       client = createDurableRfqLifecycleClient({ ...lifecycleOptions, transport });
     },
+    failReads(on: boolean) { failRead = on; },
     /** The next transport (after restart) uses a new key under the same codecId. */
     rotateKey() { codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }); },
     /** Let the held first save reach the store; resolves to its CAS result. */
@@ -758,6 +761,47 @@ describe("Demos L2PS durable RFQ transport", () => {
         status: "indeterminate", reason: "Demos L2PS RFQ stored send frame does not open to this packet",
       });
       expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test.each([
+    { field: "packetId", value: "f".repeat(64) },
+    { field: "fromPeer", value: THIRD_PEER },
+    { field: "toPeer", value: THIRD_PEER },
+    { field: "l2psUid", value: "l2ps:another-subnet" },
+    { field: "codecId", value: "another-codec:v1" },
+  ])("round 6: an outbox entry bound to another $field is refused, never resent", async ({ field, value }) => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      const id = fixture.packet().packetId;
+      const entry = await fixture.outboxStore.load(id) as Record<string, unknown> & { generation: number };
+      const swapped = { ...entry, [field]: value, generation: entry.generation + 1 };
+      await expect(fixture.outboxStore.save(id, swapped as never, entry.generation)).resolves.toBe(true);
+      // Past the grace with empty history, a valid entry would authorize a resend.
+      fixture.setTicks(72_000);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      await expect(fixture.transport.publish(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: an outbox read failure in reconcile stays indeterminate", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      fixture.setTicks(72_000);
+      fixture.failReads(true);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
+      });
+      expect(fixture.historyCalls()).toBe(0);
+      fixture.failReads(false);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({ disposition: "absent" });
     } finally { await fixture.cleanup(); }
   });
 
