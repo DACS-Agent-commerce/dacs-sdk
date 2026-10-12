@@ -5039,6 +5039,8 @@ Fresh generation is deliberately read-only. Run:
 
 \`\`\`bash
 cp .env.example .env
+# Review dependency advisories yourself; nothing here blocks on them.
+npm audit
 ${imageCommands}npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
@@ -5158,8 +5160,10 @@ manual deletion.
 Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
-are omitted, and image assembly disables install-time audit and funding network
-requests; dependency auditing remains a separate release gate.
+are omitted. Image assembly skips npm's install-time audit and funding requests,
+and nothing in this project or its generator blocks on dependency advisories:
+run \`npm audit\` in this project yourself before you build or deploy an image,
+and review what it reports.
 
 The generated \`dacs:image:smoke\` command resolves \`DACS_IMAGE\` to one image ID
 and checks that image's configured user, working directory, entrypoint and

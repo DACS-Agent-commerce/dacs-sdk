@@ -355,6 +355,43 @@ describe("create-dacs-agent", () => {
     ).rejects.toThrow(/symbolic link/);
   });
 
+  test.runIf(process.platform !== "win32")(
+    "installs with npm's audit report visible and tells users to run npm audit",
+    async () => {
+      const fakeBin = await temporaryDirectory();
+      const npmLog = join(fakeBin, "npm-calls.jsonl");
+      await writeFakeExecutable(fakeBin, "npm", `require("node:fs").appendFileSync(
+  ${JSON.stringify(npmLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+`);
+      const target = join(await temporaryDirectory(), "audited-agent");
+      const inheritedPath = process.env.PATH;
+      process.env.PATH = fakeBin;
+      try {
+        await createDacsAgentProject({
+          targetDirectory: target,
+          mode: "live-demos",
+          profile: "dacs-sdk:fixed-price-x402:v1",
+          role: "buyer",
+          deployment: "docker",
+          rails: "both",
+        });
+      } finally {
+        process.env.PATH = inheritedPath;
+      }
+      const invocations = (await readFile(npmLog, "utf8")).trim().split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(invocations[0]).toEqual([
+        "install", "--ignore-scripts", "--omit=optional", "--no-fund",
+      ]);
+      expect(invocations.flat()).not.toContain("--no-audit");
+      const readme = await readFile(join(target, "README.md"), "utf8");
+      expect(readme).toContain("\nnpm audit\n");
+      expect(readme).toContain("run `npm audit` in this project yourself");
+      expect(readme).not.toContain("release gate");
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
   test("renders compose, .env and README around the one image the smoke checks", async () => {
     const target = await generatedDockerProject("compose-image-agent");
     const compose = await readFile(join(target, "compose.yaml"), "utf8");

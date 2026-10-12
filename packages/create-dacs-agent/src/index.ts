@@ -263,7 +263,6 @@ export async function createDacsAgentProject(
       "install",
       "--ignore-scripts",
       "--omit=optional",
-      "--no-audit",
       "--no-fund",
     ], targetDirectory);
     if (mode === "live-demos") {
