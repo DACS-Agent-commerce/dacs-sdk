@@ -205,16 +205,29 @@ has succeeded, or its retained agreement facts record the evaluated party's Vet
 as passed, that role rejects the proposal (`vet-terminal-not-pre-agreement`),
 never signs it, and its agreement and audit tracks continue normally.
 
-For each role, the agreement and the Vet terminal are mutually exclusive. Before
-a role retains an authenticated agreement proposal or terminal material, or
-signs on either path, it durably records which path the job is on. The first
-path recorded wins. The other path then fails closed with
-`agreement-vet-terminal-phase-conflict`, which needs an operator: a seller that
-has retained or co-signed a Vet failure refuses a later seller-pass proposal and
-never signs an agreement response, and a seller that admitted a seller-pass
-proposal refuses a later Vet failure. The proposal is retained before the
-coordinator order is started, so a crash during admission cannot leave an order
-without it.
+For each role, agreement signing and the Vet terminal are mutually exclusive.
+Before signing or handing off to agreement signing, or retaining terminal
+material, the role records a durable first-writer phase decision. The other
+path fails closed with `agreement-vet-terminal-phase-conflict`. A seller that
+retained or co-signed a Vet failure refuses a later proposal and never signs an
+agreement response.
+
+Proposal admission is not agreement signing. It separately records the
+buyer's authenticated seller-pass evidence before retaining the proposal and
+starting the coordinator order. This excludes seller-failure terminals even
+if admission crashes before proposal retention. It still permits the seller's
+own Vet to fail the buyer: that buyer-failure terminal wins the signing phase,
+is co-signed, and the admitted proposal is refused without an agreement signature.
+
+An operator must never clear or overwrite a valid first-writer phase or
+seller-Vet outcome decision, including when a repair/requeue hits the same
+conflict. Abandon a conflicted or corrupt job out of band and restart under a
+new job ID. Preserve a read-only database snapshot, both decision rows and
+material/proposal/response bindings, the local binding hashes, authenticated
+transport envelopes and acknowledgements, Vet records and anchor receipts,
+and track/error logs with the affected job ID and SDK version. Keep this
+evidence in private operator storage for diagnosis. A read-only phase
+diagnostic is a follow-up; repairTrack does not resolve a phase conflict.
 
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
