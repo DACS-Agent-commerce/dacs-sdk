@@ -194,20 +194,22 @@ export interface CompletedTwoSidedSessionDeps {
   ) =>
     | Promise<FixedPriceX402AuditVerificationDisposition>
     | FixedPriceX402AuditVerificationDisposition;
-  /** Bounds the wait for both copies; see `CompletedTwoSidedSessionDeadline`. */
+  /** Bounds the whole gate; see `CompletedTwoSidedSessionDeadline`. */
   deadline?: Readonly<CompletedTwoSidedSessionDeadline>;
 }
 
-/** Default bound on the wait for both copies of a completed session. */
+/** Default bound on the completed-session gate. */
 export const COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS = 60_000;
 
 /**
- * How long the gate waits for both copies' verification. At the deadline an
- * authoritative rejection already observed is reported; without one the gate
- * throws `IndeterminateSubstrateError`, which is retryable. Whatever settles
- * later changes nothing. `start` arms the deadline, calls `expire` when it
- * passes and returns a function that disarms it; inject it to drive the
- * clock. The default is an unreferenced `setTimeout`.
+ * How long the gate may take. One deadline, armed once when the gate starts
+ * and disarmed when it returns, bounds the seller-closure re-verification,
+ * both copies' verification and the final pair check. At the deadline an
+ * authoritative rejection of a copy already observed is reported; without one
+ * the gate throws `IndeterminateSubstrateError`, which is retryable. Whatever
+ * settles later changes nothing. `start` arms the deadline, calls `expire`
+ * when it passes and returns a function that disarms it; inject it to drive
+ * the clock. The default is an unreferenced `setTimeout`.
  */
 export interface CompletedTwoSidedSessionDeadline {
   /** Defaults to `COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS`. */
@@ -471,11 +473,40 @@ function captureDeadline(source: object): Readonly<Required<CompletedTwoSidedSes
   });
 }
 
+interface ArmedDeadline {
+  timeoutMs: number;
+  /** Settles once the deadline passes. */
+  expired: Promise<void>;
+  disarm(): void;
+}
+
+function armDeadline(
+  deadline: Readonly<Required<CompletedTwoSidedSessionDeadline>>,
+): ArmedDeadline {
+  let expire = (): void => undefined;
+  const expired = new Promise<void>((resolve) => { expire = resolve; });
+  const disarm = deadline.start(() => expire(), deadline.timeoutMs);
+  return { timeoutMs: deadline.timeoutMs, expired, disarm: () => disarm() };
+}
+
+// Settles as `phase` does, or throws an indeterminate result once the deadline
+// passes first; whatever `phase` does later is ignored.
+async function within<T>(phase: Promise<T>, deadline: ArmedDeadline, label: string): Promise<T> {
+  const settled = await Promise.race([
+    phase.then((value) => ({ value })),
+    deadline.expired.then(() => undefined),
+  ]);
+  if (settled === undefined) {
+    throw new IndeterminateSubstrateError(`${label} did not settle within ${deadline.timeoutMs} ms`);
+  }
+  return settled.value;
+}
+
 // Settles both verifications, or stops at the deadline. A verification still
 // pending then is reported as undefined; whatever it does later is ignored.
 async function settleWithin<T>(
   verifications: readonly [Promise<T>, Promise<T>],
-  deadline: Readonly<Required<CompletedTwoSidedSessionDeadline>>,
+  deadline: ArmedDeadline,
 ): Promise<[PromiseSettledResult<T> | undefined, PromiseSettledResult<T> | undefined]> {
   const settled: [PromiseSettledResult<T> | undefined, PromiseSettledResult<T> | undefined] =
     [undefined, undefined];
@@ -483,15 +514,7 @@ async function settleWithin<T>(
     (value) => { settled[index] = { status: "fulfilled", value }; },
     (reason: unknown) => { settled[index] = { status: "rejected", reason }; },
   ));
-  let disarm = (): void => undefined;
-  const expired = new Promise<void>((resolve) => {
-    disarm = deadline.start(() => resolve(), deadline.timeoutMs);
-  });
-  try {
-    await Promise.race([Promise.all(tracked), expired]);
-  } finally {
-    disarm();
-  }
+  await Promise.race([Promise.all(tracked), deadline.expired]);
   return [settled[0], settled[1]];
 }
 
@@ -780,76 +803,82 @@ export async function verifyCompletedTwoSidedSession(
 ): Promise<CompletedTwoSidedSessionResult> {
   const retained = captureCompletedInput(input);
   const capturedDeps = captureDeps(deps);
-  const verifiedClosure = await verifyFinalizedSellerBundleReadOnly(
-    clone(retained.sellerClosure.verificationInput),
-    clone(retained.sellerClosure.result),
-    capturedDeps.sellerFinalizationProvider,
-  );
-  if (verifiedClosure.state !== "finalised" ||
-      verifiedClosure.nativeAddress !== retained.copies.seller.nativeAddress ||
-      !exact(verifiedClosure.anchorReceipt, retained.copies.seller.anchorReceipt) ||
-      !exact(verifiedClosure.sellerBundle, retained.copies.seller.bundle) ||
-      !exact(verifiedClosure.buyerBundle, retained.copies.buyer.bundle) ||
-      ((verifiedClosure.binding !== undefined ||
-        retained.copies.seller.binding !== undefined) &&
-        !exact(verifiedClosure.binding, retained.copies.seller.binding)) ||
-      verifiedClosure.bundleContentHash !==
-        attestationBundleHash(retained.copies.seller.bundle)) {
-    throw new DacsError(
-      "completed bundle copies do not match the authenticated durable session closure",
-    );
-  }
+  // One deadline, from here to the result, bounds every read below.
+  const deadline = armDeadline(capturedDeps.deadline);
+  try {
+    const verifiedClosure = await within(verifyFinalizedSellerBundleReadOnly(
+      clone(retained.sellerClosure.verificationInput),
+      clone(retained.sellerClosure.result),
+      capturedDeps.sellerFinalizationProvider,
+    ), deadline, "completed seller closure re-verification");
+    if (verifiedClosure.state !== "finalised" ||
+        verifiedClosure.nativeAddress !== retained.copies.seller.nativeAddress ||
+        !exact(verifiedClosure.anchorReceipt, retained.copies.seller.anchorReceipt) ||
+        !exact(verifiedClosure.sellerBundle, retained.copies.seller.bundle) ||
+        !exact(verifiedClosure.buyerBundle, retained.copies.buyer.bundle) ||
+        ((verifiedClosure.binding !== undefined ||
+          retained.copies.seller.binding !== undefined) &&
+          !exact(verifiedClosure.binding, retained.copies.seller.binding)) ||
+        verifiedClosure.bundleContentHash !==
+          attestationBundleHash(retained.copies.seller.bundle)) {
+      throw new DacsError(
+        "completed bundle copies do not match the authenticated durable session closure",
+      );
+    }
 
-  // Both copies settle before either rejection is reported: an unavailable
-  // read of one copy must not hide an answer about the other that arrives
-  // later. Any other rejection is reported before an unavailable read, then
-  // the buyer copy's before the seller's. A read that never settles is cut
-  // off at the deadline: a rejection already observed is reported as above,
-  // and without one the result is indeterminate.
-  const [buyerResult, sellerResult] = await settleWithin([
-    verifyCopy(retained.copies.buyer, {
-      role: "buyer",
-      jobId: retained.jobId,
-      buyer: retained.buyer,
-      seller: retained.seller,
-    }, capturedDeps),
-    verifyCopy(retained.copies.seller, {
-      role: "seller",
-      jobId: retained.jobId,
-      buyer: retained.buyer,
-      seller: retained.seller,
-    }, capturedDeps),
-  ], capturedDeps.deadline);
-  if (buyerResult?.status === "rejected" || sellerResult?.status === "rejected") {
-    const reasons = [buyerResult, sellerResult]
-      .flatMap((result): unknown[] => result?.status === "rejected" ? [result.reason] : []);
-    throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
-  }
-  if (buyerResult === undefined || sellerResult === undefined) {
-    throw new IndeterminateSubstrateError(
-      `completed ${buyerResult === undefined ? "buyer" : "seller"} bundle copy verification ` +
-        `did not settle within ${capturedDeps.deadline.timeoutMs} ms`,
-    );
-  }
-  const buyerCopy = buyerResult.value;
-  const sellerCopy = sellerResult.value;
-  if (!exact(
-    bundleSignedScope(retained.copies.buyer.bundle),
-    bundleSignedScope(retained.copies.seller.bundle),
-  )) {
-    throw new DacsError("completed buyer and seller bundles carry different signed scopes");
-  }
-  const consistency = await bundleConsistency({
-    buyer: { disposition: "present", bundle: buyerCopy.bundle },
-    seller: { disposition: "present", bundle: sellerCopy.bundle },
-  }, {
-    isValid: async (bundle, role) => {
-      const verdict = await verifyBundleCopy(bundle, role, capturedDeps.bundleCopyVerifier);
-      return verdict.valid && verdict.fullySigned && !verdict.abortStanding;
-    },
-  });
-  if (consistency !== "unified") {
-    throw new DacsError(`completed bundle pair is ${consistency}, not unified`);
+    // Both copies settle before either rejection is reported: an unavailable
+    // read of one copy must not hide an answer about the other that arrives
+    // later. Any other rejection is reported before an unavailable read, then
+    // the buyer copy's before the seller's. A read that never settles is cut
+    // off at the deadline: a rejection already observed is reported as above,
+    // and without one the result is indeterminate.
+    const [buyerResult, sellerResult] = await settleWithin([
+      verifyCopy(retained.copies.buyer, {
+        role: "buyer",
+        jobId: retained.jobId,
+        buyer: retained.buyer,
+        seller: retained.seller,
+      }, capturedDeps),
+      verifyCopy(retained.copies.seller, {
+        role: "seller",
+        jobId: retained.jobId,
+        buyer: retained.buyer,
+        seller: retained.seller,
+      }, capturedDeps),
+    ], deadline);
+    if (buyerResult?.status === "rejected" || sellerResult?.status === "rejected") {
+      const reasons = [buyerResult, sellerResult]
+        .flatMap((result): unknown[] => result?.status === "rejected" ? [result.reason] : []);
+      throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
+    }
+    if (buyerResult === undefined || sellerResult === undefined) {
+      throw new IndeterminateSubstrateError(
+        `completed ${buyerResult === undefined ? "buyer" : "seller"} bundle copy verification ` +
+          `did not settle within ${deadline.timeoutMs} ms`,
+      );
+    }
+    const buyerCopy = buyerResult.value;
+    const sellerCopy = sellerResult.value;
+    if (!exact(
+      bundleSignedScope(retained.copies.buyer.bundle),
+      bundleSignedScope(retained.copies.seller.bundle),
+    )) {
+      throw new DacsError("completed buyer and seller bundles carry different signed scopes");
+    }
+    const consistency = await within(bundleConsistency({
+      buyer: { disposition: "present", bundle: buyerCopy.bundle },
+      seller: { disposition: "present", bundle: sellerCopy.bundle },
+    }, {
+      isValid: async (bundle, role) => {
+        const verdict = await verifyBundleCopy(bundle, role, capturedDeps.bundleCopyVerifier);
+        return verdict.valid && verdict.fullySigned && !verdict.abortStanding;
+      },
+    }), deadline, "completed bundle pair consistency check");
+    if (consistency !== "unified") {
+      throw new DacsError(`completed bundle pair is ${consistency}, not unified`);
+    }
+  } finally {
+    deadline.disarm();
   }
   return clone({
     state: "audit-complete" as const,

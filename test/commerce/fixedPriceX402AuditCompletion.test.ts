@@ -28,6 +28,7 @@ import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { bundlesDiverge } from "../../src/agent/bundleConsistency.js";
 import { bundleAddress, contentHash } from "../../src/canonical/index.js";
 import {
+  COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
   FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
   FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
@@ -1040,6 +1041,124 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
     await expect(gate.verify({ ...gate.fx.deps, deadline: { start: clock.start } }))
       .resolves.toMatchObject({ milestone: "audit-complete" });
     expect(clock.armed()).toEqual([]);
+  });
+
+  // The one deadline is armed when the gate starts. It already runs while the
+  // seller closure is re-verified, before either copy is read.
+  it("decides at the deadline when the seller closure's re-verification never settles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    let lateClosure = (_error: Error): void => undefined;
+    verifySellerClosure.mockImplementationOnce(() =>
+      new Promise<never>((_resolve, reject) => { lateClosure = reject; }));
+    const readBundleCopy = vi.fn(gate.fx.deps.readBundleCopy);
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      readBundleCopy,
+      deadline: { timeoutMs: 5_000, start: clock.start },
+    }).then(() => "verified", (error: unknown) => error);
+    let decided = false;
+    void outcome.then(() => { decided = true; });
+    await flush();
+    expect(verifySellerClosure).toHaveBeenCalledOnce();
+    expect(clock.armed()).toEqual([5_000]);
+    expect(decided).toBe(false);
+
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({
+      message: "completed seller closure re-verification did not settle within 5000 ms",
+    });
+    expect(readBundleCopy).not.toHaveBeenCalled();
+    lateClosure(new DacsError("late closure answer"));
+    await flush();
+    await expect(outcome).resolves.toBe(error);
+  });
+
+  // Daybreak's round-7 probe: both copies verify and both anchors answer, then
+  // a key resolution of the final pair check never settles. The same deadline,
+  // still armed, decides; no fresh one is started for that check.
+  it("decides at the same deadline when the final pair check's key resolution never settles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    const start = vi.fn(clock.start);
+    const verifier = (gate.fx.sellerFinalizationProvider as unknown as {
+      bundleCopyVerifier: {
+        resolvePublicKey(did: string): Promise<Uint8Array | null>;
+        verify(bytes: Uint8Array, signature: Uint8Array, key: Uint8Array): boolean;
+      };
+    }).bundleCopyVerifier;
+    const anchors: string[] = [];
+    let lateKey = (_key: Uint8Array | null): void => undefined;
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      deadline: { timeoutMs: 5_000, start },
+      sellerFinalizationProvider: {
+        mapping: "pure",
+        bundleCopyVerifier: {
+          // Once both anchors answered, only the final pair check resolves keys.
+          resolvePublicKey: (did: string) => anchors.length < 2
+            ? verifier.resolvePublicKey(did)
+            : new Promise<Uint8Array | null>((resolve) => { lateKey = resolve; }),
+          verify: verifier.verify,
+        },
+      } as never,
+      verifyBundleAnchor: (copy) => {
+        anchors.push(copy.role);
+        return { disposition: "valid", mapping: "pure" };
+      },
+    }).then(() => "verified", (error: unknown) => error);
+    let decided = false;
+    void outcome.then(() => { decided = true; });
+    await flush();
+    expect([...anchors].sort()).toEqual(["buyer", "seller"]);
+    expect(clock.armed()).toEqual([5_000]);
+    expect(decided).toBe(false);
+
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({
+      message: "completed bundle pair consistency check did not settle within 5000 ms",
+    });
+    lateKey(null);
+    await flush();
+    await expect(outcome).resolves.toBe(error);
+    expect(start).toHaveBeenCalledOnce();
+    expect(clock.armed()).toEqual([]);
+  });
+
+  // The default deadline is a real timer that cannot keep a host process
+  // alive, and the gate clears it when it returns.
+  it("runs its default deadline on an unreferenced timer and clears it", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const clears = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const deadlineTimer = () => timers.mock.results[timers.mock.calls.findIndex(
+        ([, timeoutMs]) => timeoutMs === COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
+      )]?.value as ReturnType<typeof setTimeout> | undefined;
+      let referenced: boolean | undefined;
+      await expect(gate.verify({
+        ...gate.fx.deps,
+        verifyBundleAnchor: (copy) => {
+          referenced = deadlineTimer()?.hasRef();
+          return gate.fx.deps.verifyBundleAnchor(copy);
+        },
+      })).resolves.toMatchObject({ milestone: "audit-complete" });
+      expect(referenced).toBe(false);
+      expect(clears).toHaveBeenCalledWith(deadlineTimer());
+    } finally {
+      timers.mockRestore();
+      clears.mockRestore();
+    }
   });
 
   it.each([0, -1, 1.5, "5000"])("refuses a malformed deadline (%s ms) before reading either copy", async (timeoutMs) => {
