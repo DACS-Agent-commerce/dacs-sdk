@@ -2047,6 +2047,8 @@ export async function advanceLiquidityTankSettlement(
         reason: "liquidity-tank-observation-persistence-uncertain",
       };
     }
+    // The core keeps no tank balance: the bridge enforces its capacity across
+    // concurrent phases, and its authenticated refusal is trusted here.
     if (observation.status === "capacity-unavailable") {
       return { status: "waiting", reason: "liquidity-tank-capacity-unavailable" };
     }

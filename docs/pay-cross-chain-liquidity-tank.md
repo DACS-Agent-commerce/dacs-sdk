@@ -47,6 +47,11 @@ and that passes `runLiquidityTankStoreConformance` (see
 exported in-memory store loses everything on restart and refuses to construct
 without `{ acknowledgeVolatile: true }`.
 
+**A shared tank's balance comes from the bridge, not the core.** The core
+checks one operation at a time. That the bridge never locks more than a tank's
+capacity across concurrent phases is a launch requirement on the bridge, which
+the SDK does not check (see [Tank balance](#tank-balance-is-the-bridges)).
+
 ```ts
 import {
   advanceLiquidityTankSettlement,
@@ -149,6 +154,21 @@ retained submission's `preparedAt` was bound to the host clock when it was
 prepared and is not bound again; the ordering checks run on every stored row.
 A settled row carries no `preparedAt`, so its `finalityObservedAt` is checked
 only against its deadline.
+
+## Tank balance is the bridge's
+
+The core keeps no tank balance and does no pool accounting. It checks each
+phase on its own: one bridge operation per phase, whose signed bytes the host
+verifier confirms carry exactly the intent, so one operation never locks more
+than its own amount. It trusts an authenticated `capacity-unavailable` from the
+bridge and waits.
+
+**Launch requirement:** the bridge must enforce `reserved + available =
+capacity` atomically across concurrent phases, so a shared tank never locks
+more than its capacity and never goes negative. The SDK does not check this,
+and none of its tests run concurrent phases against one tank. Before a live
+adapter is wired, the bridge's accounting needs its own review and evidence. A
+shared reservation interface in the SDK would be a separate change.
 
 ## Host verifier
 
@@ -300,7 +320,7 @@ restarts between every step. After every step they check that no second
 signed submission was broadcast, that the funds this one operation locked
 never exceed its intent, and that the phase is never reported both settled
 and expired; each must end in exactly one. That is a check on one operation,
-not on a tank's balance.
+not on a tank's balance (see [Tank balance](#tank-balance-is-the-bridges)).
 
 **Race cases** start two operations through two handles before either
 settles, in both start orders: two claims on a fresh phase and two takeovers
@@ -528,6 +548,9 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   that `@kynesyslabs/dacs/rails` stays dependency-free;
 - a durable production store that passes `runLiquidityTankStoreConformance`
   against a real backend, with funded restart and ambiguity evidence;
+- reviewed evidence that the bridge enforces `reserved + available =
+  capacity` atomically across concurrent phases (see
+  [Tank balance](#tank-balance-is-the-bridges)); the SDK does not;
 - a lock whose bridge reads contradict it (`empty`, `capacity-unavailable`, a
   failure not bound to the lock, or a different lock/deadline) does not expire
   while they do, and reports `lock-contradicted` past the deadline D. §9.5.5
