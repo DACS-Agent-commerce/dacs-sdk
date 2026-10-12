@@ -38,7 +38,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
-import { DacsError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 import { createInMemoryFencedSessionStore } from "../../src/agent/fencedSessionStore.js";
 import {
   advanceCompletedBuyerBundleDurable,
@@ -1284,6 +1284,78 @@ describe("durable buyer bundle finalization", () => {
         ({ effect }) => effect === "anchor" || effect === "binding-publication",
       ),
     ).toBe(false);
+  });
+
+  test.each([
+    "retained seller bundle is authoritatively absent",
+    "seller bundle lookup returned an invalid disposition",
+  ])("reports a permanent seller-finalisation failure (%s) instead of retrying it", async (message) => {
+    const f = await fixture("write-input");
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(new SubstrateError(message));
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).rejects.toThrow(message);
+    expect(f.state.anchored).toBeUndefined();
+  });
+
+  test("retries a seller-finalisation read that could not be answered", async () => {
+    const f = await fixture("write-input");
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new IndeterminateSubstrateError("retained seller bundle readback is indeterminate: rpc"),
+    );
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: "retained seller bundle readback is indeterminate: rpc",
+    });
+  });
+
+  test("classifies terminal recovery failures by whether retry can answer them", async () => {
+    const f = await fixture("write-input");
+    expect((await advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability))
+      .disposition).toBe("finalised");
+
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new IndeterminateSubstrateError("seller bundle lookup errored and is indeterminate"),
+    );
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).resolves.toMatchObject({ disposition: "indeterminate", stage: "terminal-recovery" });
+
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new SubstrateError("retained seller bundle is authoritatively absent"),
+    );
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).rejects.toThrow("retained seller bundle is authoritatively absent");
+  });
+
+  test.each([
+    ["a thrown substrate read failure", () => {
+      throw new SubstrateError("Demos receipt native read failed");
+    }, "indeterminate"],
+    ["a thrown network error", () => {
+      throw new TypeError("fetch failed");
+    }, "indeterminate"],
+    ["an unanswered lookup", () => ({ disposition: "indeterminate", reason: "rpc" }), "indeterminate"],
+    ["a permanent provider DacsError", () => {
+      throw new DacsError("buyer bundle readback is invalid: bundle-readback-invalid");
+    }, "permanent"],
+    ["an invalid lookup disposition", () => ({ disposition: "unknown" }), "permanent"],
+  ] as const)("classifies a buyer bundle lookup with %s", async (_label, lookup, kind) => {
+    const f = await fixture();
+    vi.mocked(f.provider.resolveBuyerBundle).mockImplementation(lookup as never);
+
+    const progress = advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability);
+    if (kind === "indeterminate") {
+      await expect(progress).resolves.toMatchObject({ disposition: "indeterminate" });
+    } else {
+      await expect(progress).rejects.toThrow(/invalid/);
+    }
+    expect(f.state.anchored).toBeUndefined();
   });
 
   test.each(["rejected", "indeterminate"] as const)(

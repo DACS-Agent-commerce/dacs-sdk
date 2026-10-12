@@ -14,7 +14,7 @@ import {
 } from "../artifacts/index.js";
 import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import {
   FENCED_SESSION_STORE_VERSION,
   sessionRecordShapeViolation,
@@ -640,13 +640,17 @@ function decodeCounterSignatureSet(
 function exactRecordFromLoad(
   loaded: Awaited<ReturnType<FencedSessionStoreV2["load"]>>,
 ): SessionRecord {
-  if (loaded.status !== "ok") {
+  if (loaded.status === "unsupported" || loaded.status === "corrupt") {
+    // Retained state that cannot be read needs an operator.
     throw new SubstrateError(
       loaded.status === "unsupported"
         ? `buyer bundle state uses unsupported store version ${loaded.version}`
-        : loaded.status === "corrupt"
-          ? `buyer bundle state is corrupt: ${loaded.reason}`
-          : "buyer bundle finalization requires existing settled session state",
+        : `buyer bundle state is corrupt: ${loaded.reason}`,
+    );
+  }
+  if (loaded.status !== "ok") {
+    throw new IndeterminateSubstrateError(
+      "buyer bundle finalization requires existing settled session state",
     );
   }
   const record = clone(loaded.record);
@@ -1291,7 +1295,7 @@ class DurableBuyerCoordinator {
   }
 
   async #renew(): Promise<void> {
-    if (!this.#lease) throw new SubstrateError("buyer bundle lease is unavailable");
+    if (!this.#lease) throw new IndeterminateSubstrateError("buyer bundle lease is unavailable");
     const renewed = await this.#durability.store.renewLease({
       jobId: this.#jobId(),
       leaseToken: this.#lease,
@@ -1299,12 +1303,12 @@ class DurableBuyerCoordinator {
       now: this.#now(),
     });
     if (!renewed.ok) {
-      throw new SubstrateError(`buyer bundle lease is stale: ${renewed.reason}`);
+      throw new IndeterminateSubstrateError(`buyer bundle lease is stale: ${renewed.reason}`);
     }
   }
 
   #fence(idempotencyKey: string): Readonly<BuyerBundleEffectFence> {
-    if (!this.#lease) throw new SubstrateError("buyer bundle lease is unavailable");
+    if (!this.#lease) throw new IndeterminateSubstrateError("buyer bundle lease is unavailable");
     return Object.freeze({ ...this.#lease, idempotencyKey });
   }
 
@@ -1372,7 +1376,7 @@ class DurableBuyerCoordinator {
     data: Record<string, CheckpointValue>;
     record: SessionRecord;
   }> {
-    if (!this.#lease) throw new SubstrateError("buyer bundle lease is unavailable");
+    if (!this.#lease) throw new IndeterminateSubstrateError("buyer bundle lease is unavailable");
     await this.#renew();
     const record = await this.#load();
     const requested = this.#phaseFor(record, phase);
@@ -1388,7 +1392,7 @@ class DurableBuyerCoordinator {
       return { state: "fresh", data: clone(data), record: claimed.record };
     }
     if ((claimed.reason !== "held" && claimed.reason !== "completed") || !claimed.record) {
-      throw new SubstrateError(`buyer checkpoint ${key} claim failed: ${claimed.reason}`);
+      throw new IndeterminateSubstrateError(`buyer checkpoint ${key} claim failed: ${claimed.reason}`);
     }
     const checkpoint = latestCheckpoint(claimed.record.checkpoints, key);
     if (!checkpoint?.data) throw new DacsError(`buyer checkpoint ${key} is malformed`);
@@ -1408,7 +1412,7 @@ class DurableBuyerCoordinator {
     outcome: Record<string, CheckpointValue>,
     requestedPhase?: string,
   ): Promise<void> {
-    if (!this.#lease) throw new SubstrateError("buyer bundle lease is unavailable");
+    if (!this.#lease) throw new IndeterminateSubstrateError("buyer bundle lease is unavailable");
     for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       await this.#renew();
       const record = await this.#load();
@@ -1433,12 +1437,12 @@ class DurableBuyerCoordinator {
       });
       if (transitioned.ok) return;
       if (transitioned.reason !== "revision-mismatch") {
-        throw new SubstrateError(
+        throw new IndeterminateSubstrateError(
           `buyer checkpoint ${key} outcome failed: ${transitioned.reason}`,
         );
       }
     }
-    throw new SubstrateError(`buyer checkpoint ${key} exceeded CAS retry limit`);
+    throw new IndeterminateSubstrateError(`buyer checkpoint ${key} exceeded CAS retry limit`);
   }
 
   async #ensureOutcome(
@@ -1457,7 +1461,7 @@ class DurableBuyerCoordinator {
   }
 
   async #advancePhase(phase: string): Promise<void> {
-    if (!this.#lease) throw new SubstrateError("buyer bundle lease is unavailable");
+    if (!this.#lease) throw new IndeterminateSubstrateError("buyer bundle lease is unavailable");
     for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       await this.#renew();
       const record = await this.#load();
@@ -1472,10 +1476,10 @@ class DurableBuyerCoordinator {
       });
       if (result.ok) return;
       if (result.reason !== "revision-mismatch") {
-        throw new SubstrateError(`buyer phase ${phase} failed: ${result.reason}`);
+        throw new IndeterminateSubstrateError(`buyer phase ${phase} failed: ${result.reason}`);
       }
     }
-    throw new SubstrateError(`buyer phase ${phase} exceeded CAS retry limit`);
+    throw new IndeterminateSubstrateError(`buyer phase ${phase} exceeded CAS retry limit`);
   }
 
   async #acquire(): Promise<void> {
@@ -2720,10 +2724,10 @@ class DurableBuyerCoordinator {
         );
       }
       if (transitioned.reason !== "revision-mismatch") {
-        throw new SubstrateError(`terminal buyer result failed: ${transitioned.reason}`);
+        throw new IndeterminateSubstrateError(`terminal buyer result failed: ${transitioned.reason}`);
       }
     }
-    throw new SubstrateError("terminal buyer result exceeded CAS retry limit");
+    throw new IndeterminateSubstrateError("terminal buyer result exceeded CAS retry limit");
   }
 
   async #recoverTerminal(record: SessionRecord): Promise<DurableFinalizedBuyerBundle> {
@@ -2967,7 +2971,7 @@ class DurableBuyerCoordinator {
           recovered: true,
         };
       } catch (error) {
-        if (error instanceof SubstrateError) {
+        if (error instanceof IndeterminateSubstrateError) {
           return {
             disposition: "indeterminate",
             stage: "terminal-recovery",
@@ -2989,7 +2993,7 @@ class DurableBuyerCoordinator {
       coreResult = await this.#finalizeBuyer(false);
     } catch (error) {
       if (error instanceof ProgressSignal) throw error;
-      if (error instanceof SubstrateError) {
+      if (error instanceof IndeterminateSubstrateError) {
         throw new ProgressSignal(
           "indeterminate",
           this.#buyerPublicationStage(await this.#load()),
@@ -3009,7 +3013,7 @@ class DurableBuyerCoordinator {
       };
     } catch (error) {
       if (error instanceof ProgressSignal) throw error;
-      if (error instanceof SubstrateError) {
+      if (error instanceof IndeterminateSubstrateError) {
         throw new ProgressSignal(
           "indeterminate",
           "terminal-recovery",
@@ -3084,7 +3088,7 @@ export async function advanceCompletedBuyerBundleDurable(
     await coordinator.release();
     const progress = retainedProgressSignal(error);
     if (progress) return progress.progress;
-    if (error instanceof SubstrateError) {
+    if (error instanceof IndeterminateSubstrateError) {
       return {
         disposition: "indeterminate",
         stage: "lease",

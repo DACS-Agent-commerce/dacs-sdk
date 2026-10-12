@@ -278,7 +278,10 @@ ST-11 dependency graph. Its audit reference is the authenticated native bundle
 address. Native DEM and x402 use the same two-copy finish boundary. A Demos
 read that cannot be answered leaves the track `indeterminate`
 (`buyer-audit-completion-indeterminate`) and it is retried; only a completion
-that was read and failed authentication needs operator action.
+that was read and failed authentication needs operator action. A seller bundle
+or BundleBinding that Demos returns with invalid content, an invalid receipt or
+a failed authentication is immutable, so it also goes to operator action
+instead of being retried.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange

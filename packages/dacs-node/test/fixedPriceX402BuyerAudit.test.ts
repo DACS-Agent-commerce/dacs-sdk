@@ -104,6 +104,8 @@ vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
 }));
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
+import { createDacsDemosBundlePublicationV1 } from "../src/demosBundlePublication.js";
+import { createClassifiedDemosSellerBundleReads } from "../src/demosSellerBundleReads.js";
 import {
   createDacsFixedPricePayDemBuyerAuditV1,
   createDacsFixedPriceX402BuyerAuditV1,
@@ -1197,11 +1199,22 @@ async function completionHarness(paymentProfile: "x402" | "pay-dem") {
     anchorWriteOnce: vi.fn(),
     sign: vi.fn(),
   };
+  // Only the retained order identity is read from the coordinator stores here.
+  const coordinatorStore = () => ({
+    load: async () => ({
+      status: "ok" as const,
+      record: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+    }),
+  });
   const context = {
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,
-    database: { readTime: () => NOW },
+    database: {
+      readTime: () => NOW,
+      createLiveCoordinatorStore: coordinatorStore,
+      createPayDemCoordinatorStore: coordinatorStore,
+    },
     demos: { publicKey: BUYER_KEY, adapter, signComponent: vi.fn() },
     ...(paymentProfile === "x402" ? { evm: { role: "buyer", address: BUYER_EVM } } : {}),
   } as unknown as DacsLiveRoleOperationContextV1;
@@ -1248,7 +1261,7 @@ async function completionHarness(paymentProfile: "x402" | "pay-dem") {
         publications,
       },
     } as never);
-  return { adapter, authorize, copies, sellerProvider };
+  return { adapter, audit, authorize, context, copies, sellerProvider };
 }
 
 // The strict verifier's use of the adapter: exact readback at each native
@@ -1452,5 +1465,96 @@ describe("buyer two-copy completion adapter", () => {
     harness.adapter.resolveAnchorByName.mockRejectedValueOnce(new Error("rpc unavailable"));
 
     await expect(harness.authorize()).resolves.toBe("indeterminate");
+  });
+});
+
+// Demos state changes that make the seller's publication permanently invalid
+// (retry reads the same immutable objects) or leave a read unanswered.
+const sellerBindingName = `dacs5:bundle-binding:${JOB_ID}:seller`;
+const demosReadCases: Array<[string, "permanent" | "unavailable", (h: CompletionHarness) => void]> = [
+  ["invalid seller bundle content", "permanent", (h) => {
+    const read = h.adapter.readAnchor.getMockImplementation()!;
+    h.adapter.readAnchor.mockImplementation(async (address: string) =>
+      address === h.copies.seller.nativeAddress ? { not: "a bundle" } as never : read(address));
+  }],
+  ["an invalid seller bundle receipt", "permanent", (h) => {
+    h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
+  }],
+  ["invalid BundleBinding content", "permanent", (h) => {
+    const read = h.adapter.readAnchor.getMockImplementation()!;
+    h.adapter.readAnchor.mockImplementation(async (address: string) =>
+      address === "native:seller-binding" ? { not: "a binding" } as never : read(address));
+  }],
+  ["a BundleBinding that fails authentication", "permanent", (h) => {
+    const read = h.adapter.readAnchor.getMockImplementation()!;
+    h.adapter.readAnchor.mockImplementation(async (address: string) => {
+      if (address !== "native:seller-binding") return read(address);
+      const forged = structuredClone(h.copies.seller.binding) as unknown as {
+        signature: { value: string };
+      };
+      forged.signature.value = Buffer.alloc(64, 9).toString("base64url");
+      return forged as never;
+    });
+  }],
+  ["Demos reads that cannot be answered", "unavailable", (h) => {
+    h.adapter.resolveAnchorByName.mockRejectedValue(new Error("rpc unavailable"));
+  }],
+  ["a seller bundle name lookup that is indeterminate", "unavailable", (h) => {
+    const resolve = h.adapter.resolveAnchorByName.getMockImplementation()!;
+    h.adapter.resolveAnchorByName.mockImplementation(async (name: string) =>
+      name === bundleAddress(JOB_ID, "seller") ? { status: "indeterminate" } as never : resolve(name));
+  }],
+];
+
+describe("buyer audit classification of seller Demos reads", () => {
+  for (const paymentProfile of ["x402", "pay-dem"] as const) {
+    it.each(demosReadCases)(
+      `classifies ${paymentProfile} %s through the Demos publication`,
+      async (label, kind, arrange) => {
+        const harness = await completionHarness(paymentProfile);
+        const publication = createDacsDemosBundlePublicationV1({
+          context: harness.context, jobId: JOB_ID, buyer: BUYER, seller: SELLER,
+        });
+        const reads = createClassifiedDemosSellerBundleReads(publication, JOB_ID);
+        await expect(reads.resolveSellerBundle(bundleAddress(JOB_ID, "seller")))
+          .resolves.toMatchObject({ disposition: "present" });
+        await expect(reads.resolveBundleBinding!(bundleAddress(JOB_ID, "seller"), SELLER))
+          .resolves.toMatchObject({ disposition: "present" });
+        arrange(harness);
+
+        // The strict verifier retries a SubstrateError or a non-DacsError
+        // throw, and treats any other DacsError as permanent.
+        const permanent = (error: unknown) =>
+          error instanceof DacsError && !(error instanceof SubstrateError);
+        const bundle = await Promise.resolve(reads.resolveSellerBundle(bundleAddress(JOB_ID, "seller")))
+          .then((value) => ({ value }), (error: unknown) => ({ error }));
+        const binding = await Promise.resolve(reads.resolveBundleBinding!(bundleAddress(JOB_ID, "seller"), SELLER))
+          .then((value) => ({ value }), (error: unknown) => ({ error }));
+        if (kind === "permanent") {
+          expect("error" in binding && permanent(binding.error)).toBe(true);
+          if (!label.includes("BundleBinding")) {
+            expect("error" in bundle && permanent(bundle.error)).toBe(true);
+          }
+        } else {
+          expect("error" in bundle ? permanent(bundle.error) : false).toBe(false);
+          expect(binding).toEqual({ value: {
+            disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
+          } });
+        }
+
+        const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
+          identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+        } as never);
+        expect(finalization.disposition).toBe(kind === "permanent" ? "rejected" : "indeterminate");
+      },
+    );
+  }
+
+  it("keeps the BundleBinding of a valid seller publication readable", async () => {
+    const harness = await completionHarness("x402");
+    const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
+      identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+    } as never);
+    expect(finalization).toMatchObject({ disposition: "present" });
   });
 });
