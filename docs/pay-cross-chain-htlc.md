@@ -230,9 +230,12 @@ out, so the payer's `authorizeDestinationClaim` decision gates only the first
 reveal. Each session allows at most three replacements. A failed or absent
 reveal is never reported as a routine `refund-pending` or `waiting`. A
 replacement the adapter fails to prepare (an error, a timeout, a refusal or an
-unchanged transaction, which the core cannot tell apart) is `indeterminate`
-with reason `htlc-destination-claim-effect-uncertain`, as for a source claim,
-and the next call retries it while the claim window is open. When no
+unchanged transaction, which the core cannot tell apart), or that this call
+could not persist, broadcast or observe, is `indeterminate` with reason
+`htlc-destination-claim-replacement-uncertain`, and the next call retries it
+while the claim window is open. That reason is distinct from a first reveal's
+`htlc-destination-claim-effect-uncertain`, so a host can tell that the
+preimage is out while no reveal is on its way to landing. When no
 replacement is allowed (the claim window has closed, the margin is gone or the
 cap is reached) the result is
 `operator-alert` with reason `htlc-destination-claim-failed-preimage-public`
@@ -669,10 +672,18 @@ payer's refund is not isolated from the payee's side for such an adapter.
     reconciling; keep the salt until the operator has done so.
 - Every other `waiting` and `indeterminate` result is retried by advancing
   the session again. A host may also page when one persists, for example an
-  adapter that keeps reporting `htlc-adapter-lock-observation-invalid`, an
-  `absent` that does not name the active claim (`…-absent-unbound`), or
-  `htlc-destination-claim-effect-uncertain` while a failed or absent reveal
-  awaits its replacement, because its preimage is already out.
+  adapter that keeps reporting `htlc-adapter-lock-observation-invalid` or an
+  `absent` that does not name the active claim (`…-absent-unbound`). Page soon
+  on a persistent `htlc-destination-claim-replacement-uncertain`: a failed or
+  absent reveal awaits its replacement, its preimage is already out, and the
+  payer must claim the destination before the claim cutoff.
+- Page when a `refund-pending` leg stays `pending` or `uncertain` well past
+  its lock's expiry, or past the time a refund takes to reach finality on that
+  chain. The core does not track elapsed time or attempts across calls, so it
+  never pages on this itself: a refund stuck behind a nonce or fee, or one the
+  adapter keeps reporting `absent` without naming it (rebroadcast once per
+  call), reads the same on every call. The threshold is the host's policy
+  until the core gains one (a launch gate, with refund replacement).
 - Two kinds of session never reach a terminal state on their own: one whose
   destination lock has an expiry beyond the safe-integer range, which stays
   `refund-pending` after the payer's refund is final, and one whose

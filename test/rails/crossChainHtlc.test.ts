@@ -2386,9 +2386,10 @@ describe("advanceCrossChainHtlc", () => {
     refuse = true;
     // A timeout, a 5xx and a refusal look alike; as for a source claim, each is
     // uncertain and the next call retries while the claim window is open.
+    // Its own reason lets a host tell it from a first reveal's broadcast hiccup.
     for (let call = 0; call < 2; call += 1) {
       const progress = await advanceCrossChainHtlc(run.nextOwner());
-      expect(progress).toEqual({ status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" });
+      expect(progress).toEqual({ status: "indeterminate", reason: "htlc-destination-claim-replacement-uncertain" });
       expect(htlcNeedsOperator(progress)).toBe(false);
     }
     expect(h.broadcastRetained.mock.calls.filter((call) => call[0].action === "destination-claim"))
@@ -2480,7 +2481,7 @@ describe("advanceCrossChainHtlc", () => {
     h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "indeterminate",
-      reason: "htlc-destination-claim-effect-uncertain",
+      reason: "htlc-destination-claim-replacement-uncertain",
     });
     expect(h.broadcastRetained.mock.calls
       .map((call) => call[0])
@@ -2512,7 +2513,7 @@ describe("advanceCrossChainHtlc", () => {
     h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "indeterminate",
-      reason: "htlc-destination-claim-effect-uncertain",
+      reason: "htlc-destination-claim-replacement-uncertain",
     });
     const reveals = () => h.broadcastRetained.mock.calls
       .map((call) => call[0])

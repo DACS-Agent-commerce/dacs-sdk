@@ -2790,7 +2790,9 @@ export async function advanceCrossChainHtlc(
   // retained the preimage may be public, and holding back its rebroadcast or
   // replacement could only cost the payer the destination leg. A retained
   // reveal authenticated `failed` or `absent` can never land, so rebroadcasting
-  // its bytes cannot help: it is replaced.
+  // its bytes cannot help: it is replaced. A replacement this call could not
+  // make has its own reason, so that a host can tell a preimage that is out
+  // while no reveal can land from a first reveal's broadcast hiccup.
   const unlandedReveal = unlandedActiveClaim("destination-claim", snapshot);
   if (unlandedReveal) {
     const advanced = await replaceFailedDestinationClaim(unlandedReveal, expiries);
@@ -2802,7 +2804,7 @@ export async function advanceCrossChainHtlc(
           snapshot,
           unlandedReveal.state === "absent" ? ["destination-claim"] : [],
         )
-        : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
+        : { status: "indeterminate", reason: "htlc-destination-claim-replacement-uncertain" };
   }
   if (!activeClaim && !authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
