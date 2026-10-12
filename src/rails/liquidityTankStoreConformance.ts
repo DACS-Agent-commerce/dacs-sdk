@@ -736,7 +736,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     }), true);
   }],
 
-  ["through the core, crashes and restarts never double-send, over-lock or settle an expired phase",
+  ["through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
     async (store, tag, reopen) => {
       await phaseSequence(store, tag, reopen, "settles");
     }],

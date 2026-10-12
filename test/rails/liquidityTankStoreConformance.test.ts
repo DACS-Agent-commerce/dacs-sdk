@@ -36,7 +36,7 @@ const CASE = {
   failureRetention: "terminal failure evidence is retained once, echoed and expires the lock",
   failureCleared: "a timely completion clears retained failure evidence and wins",
   restart: "retained state survives a restart",
-  settles: "through the core, crashes and restarts never double-send, over-lock or settle an expired phase",
+  settles: "through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
   expires: "through the core, an expired phase stays expired across restarts and a late release",
   claimRace: "concurrent claims elect exactly one owner, on a fresh phase or a takeover",
   submissionRace: "concurrent submissions for one phase keep exactly one",
