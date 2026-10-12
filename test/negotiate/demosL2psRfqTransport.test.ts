@@ -57,9 +57,16 @@ const THIRD_PEER = "c".repeat(64);
 // Base64 length of the largest frame the codec accepts (16 MiB + GCM tag).
 const MAX_CIPHERTEXT_CHARS = Math.ceil((16 * 1024 * 1024 + 16) / 3) * 4;
 
-/** The outbox contract's compare: the stored generation, 0 when absent. */
-function generationMatches(current: unknown, expectedGeneration: number): boolean {
-  return ((current as { generation?: number } | undefined)?.generation ?? 0) === expectedGeneration;
+/**
+ * The outbox contract's compare. Generation 0 matches only when no entry
+ * exists; a present entry matches only through its positive safe-integer
+ * generation, so one that lost its generation never matches.
+ */
+function generationMatches(present: boolean, current: unknown, expectedGeneration: number): boolean {
+  if (!present) return expectedGeneration === 0;
+  const generation = (current as { generation?: unknown } | null)?.generation;
+  return Number.isSafeInteger(generation) && (generation as number) >= 1 &&
+    generation === expectedGeneration;
 }
 
 function memorySendOutbox(): DemosL2psRfqTransportOptions["outboxStore"] {
@@ -67,7 +74,7 @@ function memorySendOutbox(): DemosL2psRfqTransportOptions["outboxStore"] {
   return {
     load: (packetId) => structuredClone(entries.get(packetId)),
     save: (packetId, entry, expectedGeneration) => {
-      if (!generationMatches(entries.get(packetId), expectedGeneration)) return false;
+      if (!generationMatches(entries.has(packetId), entries.get(packetId), expectedGeneration)) return false;
       entries.set(packetId, structuredClone(entry));
       return true;
     },
@@ -456,7 +463,8 @@ async function delayedSendFixture(options: {
         if (options.failWrite) throw new Error("durable outbox unavailable");
         if (held !== undefined) await held.promise;
         const commit = commits.then(async () => {
-          if (options.conflictWrite || !generationMatches(await outboxStore.load(id), expectedGeneration)) {
+          const current = await outboxStore.load(id);
+          if (options.conflictWrite || !generationMatches(current !== undefined, current, expectedGeneration)) {
             return false;
           }
           const body = JSON.stringify(entry);
@@ -694,6 +702,25 @@ describe("Demos L2PS durable RFQ transport", () => {
         status: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable",
       });
       expect(fixture.submissions).toHaveLength(0);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 7: neither test outbox overwrites a present entry that lost its generation", async () => {
+    const fixture = await delayedSendFixture();
+    try {
+      for (const store of [memorySendOutbox(), fixture.outboxStore]) {
+        for (const [index, generation] of [undefined, 0, -1, 1.5, "1"].entries()) {
+          const id = String(index).repeat(64);
+          // Expected generation 0 commits only where no entry exists.
+          expect(await store.save(id, { packetId: id, generation } as never, 0)).toBe(true);
+          const stored = await store.load(id);
+          for (const expected of [0, 1]) {
+            const next = { packetId: id, state: "sending", generation: expected + 1 };
+            expect(await store.save(id, next as never, expected)).toBe(false);
+          }
+          expect(await store.load(id)).toEqual(stored);
+        }
+      }
     } finally { await fixture.cleanup(); }
   });
 
