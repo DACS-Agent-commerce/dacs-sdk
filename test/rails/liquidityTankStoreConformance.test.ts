@@ -8,10 +8,12 @@ import { runLiquidityTankStoreConformance } from "../../src/rails/liquidityTankS
 import * as rails from "../../src/rails/index.js";
 import * as root from "../../src/index.js";
 
+const VOLATILE = { acknowledgeVolatile: true } as const;
+
 describe("runLiquidityTankStoreConformance", () => {
   test("the reference store passes every case within one process", async () => {
     const results = await runLiquidityTankStoreConformance({
-      createStore: () => createInMemoryLiquidityTankStore(),
+      createStore: () => createInMemoryLiquidityTankStore(VOLATILE),
       // The reference store cannot survive a restart; within one process the
       // same instance stands in for the reopened handle.
       reopenStore: (store) => store,
@@ -23,8 +25,8 @@ describe("runLiquidityTankStoreConformance", () => {
 
   test("the reference store fails the restart cases when a restart really drops its memory", async () => {
     const results = await runLiquidityTankStoreConformance({
-      createStore: () => createInMemoryLiquidityTankStore(),
-      reopenStore: () => createInMemoryLiquidityTankStore(),
+      createStore: () => createInMemoryLiquidityTankStore(VOLATILE),
+      reopenStore: () => createInMemoryLiquidityTankStore(VOLATILE),
     });
     const failed = results.filter((result) => !result.passed);
     expect(failed.map((result) => result.name)).toEqual([
@@ -39,7 +41,7 @@ describe("runLiquidityTankStoreConformance", () => {
   test("a store that accepts a submission replacement fails its case", async () => {
     const results = await runLiquidityTankStoreConformance({
       createStore: () => {
-        const inner = createInMemoryLiquidityTankStore();
+        const inner = createInMemoryLiquidityTankStore(VOLATILE);
         const store: LiquidityTankStore = {
           ...inner,
           recordSubmission: async (input) => {

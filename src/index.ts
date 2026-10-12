@@ -1305,6 +1305,7 @@ export {
   createLiquidityTankIntent,
   advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
+  type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAuthority,
   type LiquidityTankIntent,
   type LiquidityTankPreparedSubmission,

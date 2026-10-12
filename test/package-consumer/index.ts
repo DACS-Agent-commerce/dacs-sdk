@@ -46,8 +46,10 @@ import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
   advanceLiquidityTankSettlement,
+  createInMemoryLiquidityTankStore,
   createLiquidityTankIntent,
   runLiquidityTankStoreConformance,
+  type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAdapter,
   type LiquidityTankStore,
   type LiquidityTankStoreConformanceOptions,
@@ -88,6 +90,12 @@ const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
 const tankIntent: typeof createLiquidityTankIntent = createLiquidityTankIntent;
+const volatileTankOptions: InMemoryLiquidityTankStoreOptions = { acknowledgeVolatile: true };
+const volatileTankStore: (options: InMemoryLiquidityTankStoreOptions) => LiquidityTankStore =
+  createInMemoryLiquidityTankStore;
+// The volatile store cannot be created without the acknowledgement.
+// @ts-expect-error acknowledgeVolatile is required
+const unacknowledgedTankStore: () => LiquidityTankStore = createInMemoryLiquidityTankStore;
 const tankVerifier: LiquidityTankVerifier = {
   authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
   verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
@@ -207,6 +215,9 @@ void tankAdvance;
 void tankIntent;
 void tankAdapter;
 void tankStore;
+void volatileTankOptions;
+void volatileTankStore;
+void unacknowledgedTankStore;
 void tankVerifier;
 void tankConformanceOptions;
 void tankConformance;

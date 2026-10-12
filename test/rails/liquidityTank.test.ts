@@ -32,6 +32,8 @@ const JOB_ID = "01JZ0000000000000000000001";
 const SECOND_JOB_ID = "01JZ0000000000000000000002";
 const DIFFERENT_JOB_ID = "01JZ0000000000000000000003";
 const RECOVERY_DEADLINE_MS = 1_785_436_800_000;
+/** These tests exercise the reference store within one process. */
+const VOLATILE = { acknowledgeVolatile: true } as const;
 /** Approves every observation and submission: the flows below test the core, not the host's checks. */
 const APPROVING_VERIFIER: LiquidityTankVerifier = {
   authenticateObservation: async () => true,
@@ -203,7 +205,7 @@ function runner(overrides: Partial<AdvanceLiquidityTankInput> = {}) {
   const shared: AdvanceLiquidityTankInput = {
     authority: authority(),
     owner: "worker-a",
-    store: createInMemoryLiquidityTankStore(),
+    store: createInMemoryLiquidityTankStore(VOLATILE),
     adapter: harness().adapter,
     now: () => clock,
     leaseDurationMs: 100,
@@ -235,7 +237,7 @@ test("malformed persistence results resolve indeterminate without throwing or br
   for (const method of ["recordSubmission", "recordObservation", "recordSettlement"] as const) {
     for (const result of [null, undefined, {}, { status: "unexpected" }, { get status() { throw new Error("unsafe accessor"); } }]) {
       const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       store[method] = async () => result as never;
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared)).resolves.toMatchObject({ status: "indeterminate" });
       expect(h.broadcastRetained).not.toHaveBeenCalled();
@@ -245,7 +247,7 @@ test("malformed persistence results resolve indeterminate without throwing or br
 
 test("persistence status is captured before the post-write fence await", async () => {
   const h = harness();
-  const store = createInMemoryLiquidityTankStore();
+  const store = createInMemoryLiquidityTankStore(VOLATILE);
   const result = { status: "corrupt" };
   let mutate = false;
   const isCurrent = store.isCurrent.bind(store);
@@ -264,7 +266,7 @@ test("persistence result proxies are rejected without invoking traps", async () 
     const touched = vi.fn();
     const result = unreadableProxy({ status: "recorded" }, touched);
     const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     store[method] = async () => result as never;
 
     await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
@@ -294,7 +296,7 @@ describe("createLiquidityTankIntent", () => {
   ])("rejects contradictory %s decimals before store or adapter access", async (_label, override) => {
     expect(() => createLiquidityTankIntent(authority(override))).toThrow(/must both be exactly 6/);
 
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const claim = vi.spyOn(store, "claim");
     const h = harness();
     // The phase may already hold a lock under the same settlement key.
@@ -362,7 +364,7 @@ describe("createLiquidityTankIntent", () => {
         hostile = unreadableProxy(authority(), touched);
       }
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
 
       expect(() => createLiquidityTankIntent(hostile)).toThrow();
@@ -411,7 +413,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("records the complete signed submission before broadcast", async () => {
     const events: string[] = [];
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       async recordSubmission(input) {
@@ -430,7 +432,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("takeover replays settlement from a durable completed observation before adapter effects", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
     const baseRecordSettlement = store.recordSettlement.bind(store);
     let settlementAttempts = 0;
@@ -478,7 +480,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test.each(["conflict", "corrupt"] as const)(
     "durable completed replay maps settlement %s to indeterminate without adapter effects",
     async (status) => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       store.recordSettlement = vi.fn<LiquidityTankStore["recordSettlement"]>(async () => {
         throw new Error("simulated crash before settlement write");
       });
@@ -509,7 +511,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (kind) => {
       const touched = vi.fn();
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordSubmission = vi.spyOn(store, "recordSubmission");
       let attempts = 0;
       h.adapter.prepareSubmission = vi.fn(async (intent) => {
@@ -562,7 +564,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (kind) => {
       const touched = vi.fn();
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordObservation = vi.spyOn(store, "recordObservation");
       let attempts = 0;
       const observe = vi.fn<LiquidityTankAdapter["observe"]>(async () => {
@@ -623,7 +625,7 @@ describe("advanceLiquidityTankSettlement", () => {
       authenticationHash: AUTH_HASH,
       reason: "invented status",
     }) as never);
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
 
     await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
@@ -662,7 +664,7 @@ describe("advanceLiquidityTankSettlement", () => {
   ] as const)(
     "a present %s retained submission is corrupt before any effects",
     async (_label, malformedSubmission) => {
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const store: LiquidityTankStore = {
         ...inner,
         claim: vi.fn(async (input) => ({
@@ -998,7 +1000,7 @@ describe("advanceLiquidityTankSettlement", () => {
       createLiquidityTankIntent(authority()).operationHash,
       RECOVERY_DEADLINE_MS - 1,
     ));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     run.setClock(RECOVERY_DEADLINE_MS - 1);
@@ -1019,7 +1021,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (_label, finalityObservedAt) => {
       const h = harness();
       h.failNextBroadcast();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordObservation = vi.spyOn(store, "recordObservation");
       const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
       const recordSettlement = vi.spyOn(store, "recordSettlement");
@@ -1078,7 +1080,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("durable locked state expires durably at the exact Unix-millisecond deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const recordObservation = vi.spyOn(store, "recordObservation");
     const recordSettlement = vi.spyOn(store, "recordSettlement");
@@ -1120,7 +1122,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("an unavailable status at the deadline keeps the lock open for a timely completion", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1151,7 +1153,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (_label, observedAt) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
       const run = runner({ adapter: h.adapter, store });
       await advanceLiquidityTankSettlement(run.shared);
@@ -1191,7 +1193,7 @@ describe("advanceLiquidityTankSettlement", () => {
   ] as const)("a locked pending observed %s the deadline expires", async (_label, observedAt) => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1213,7 +1215,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("reference store and claim replay both re-check pending evidence time", async () => {
     const intent = createLiquidityTankIntent(authority());
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
     let retainedSubmission: Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
@@ -1245,7 +1247,7 @@ describe("advanceLiquidityTankSettlement", () => {
     })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" });
 
     const replay = (observation: LiquidityTankRecoveryEvidence): LiquidityTankStore => ({
-      ...createInMemoryLiquidityTankStore(),
+      ...createInMemoryLiquidityTankStore(VOLATILE),
       claim: async (input) => ({
         status: "recovery-expired",
         intent: input.intent,
@@ -1308,7 +1310,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a timely completion whose write fails after the deadline does not commit expiry", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1333,7 +1335,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a failure for another lock does not commit expiry after the deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1353,7 +1355,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a pending status observed before the deadline does not commit expiry when it arrives after it", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1387,7 +1389,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("durable locked state expires after the Unix-millisecond deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -1405,7 +1407,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("does not report recovery expiry until the checkpoint CAS is durable", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const baseRecordRecoveryExpired = store.recordRecoveryExpired.bind(store);
     store.recordRecoveryExpired = vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
       async () => ({ status: "conflict", reason: "simulated-cas-loss" }),
@@ -1431,7 +1433,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a post-deadline checkpoint whose expiry write was lost still expires only on fresh evidence", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const baseRecordRecoveryExpired = store.recordRecoveryExpired.bind(store);
     const baseRecordObservation = store.recordObservation.bind(store);
     store.recordRecoveryExpired = vi.fn<LiquidityTankStore["recordRecoveryExpired"]>(
@@ -1508,7 +1510,7 @@ describe("advanceLiquidityTankSettlement", () => {
   ) => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordSettlement = vi.spyOn(store, "recordSettlement");
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
@@ -1554,7 +1556,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a failure after the lock is retained before the deadline and expires across a restart", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
     const recordRecoveryFailure = vi.spyOn(store, "recordRecoveryFailure");
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
@@ -1655,7 +1657,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (_label, status) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordObservation = vi.spyOn(store, "recordObservation");
       const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
       const run = runner({ adapter: h.adapter, store });
@@ -1701,7 +1703,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (history) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = runner({ adapter: h.adapter, store });
       await advanceLiquidityTankSettlement(run.shared);
       const failure = {
@@ -1730,7 +1732,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (next) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = runner({ adapter: h.adapter, store });
       await advanceLiquidityTankSettlement(run.shared);
       run.setClock(RECOVERY_DEADLINE_MS - 200);
@@ -1753,7 +1755,7 @@ describe("advanceLiquidityTankSettlement", () => {
     async (status) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const expire = vi.spyOn(store, "recordRecoveryExpired");
       const run = runner({ adapter: h.adapter, store });
       await advanceLiquidityTankSettlement(run.shared);
@@ -1770,7 +1772,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("round 3: failure retention and expiry CAS reject mismatched evidence and preserve the first failure", async () => {
     const h = harness();
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(runner({ adapter: h.adapter, store }).shared);
     const intent = createLiquidityTankIntent(authority());
@@ -1820,7 +1822,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("round 3: completion persistence beats retained failure expiry CAS", async () => {
     const h = harness();
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const run = runner({ adapter: h.adapter, store });
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(run.shared);
@@ -1844,7 +1846,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("round 3: a timely completion with a lost write suppresses retained failure expiry", async () => {
     const h = harness();
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const run = runner({ adapter: h.adapter, store });
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(run.shared);
@@ -1870,7 +1872,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ["corrupt", async () => ({ status: "corrupt", reason: "simulated" })],
   ] as const)("round 3: a failure-retention write that returns %s never expires or broadcasts", async (_label, reply) => {
     const h = harness();
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const run = runner({ adapter: h.adapter, store });
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(run.shared);
@@ -1893,7 +1895,7 @@ describe("advanceLiquidityTankSettlement", () => {
     "round 3: corrupt retained terminal evidence %s fails closed before effects",
     async (recoveryFailure) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = runner({ adapter: h.adapter, store });
       h.setAfterBroadcast(pending(h.operationHash, true));
       await advanceLiquidityTankSettlement(run.shared);
@@ -1909,7 +1911,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("round 3: retained terminal evidence must match the claimed checkpoint exactly", async () => {
     const h = harness();
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const run = runner({ adapter: h.adapter, store });
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(run.shared);
@@ -1931,7 +1933,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("a store without recordRecoveryFailure is refused before any effect, even with a lock", async () => {
       const h = harness();
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(inner, h);
       const { recordRecoveryFailure: _missing, ...legacy } = inner;
       const claim = vi.spyOn(legacy, "claim");
@@ -1973,7 +1975,7 @@ describe("advanceLiquidityTankSettlement", () => {
       )],
     ] as const)("a retention reply %s is not retained and never expires", async (_label, reply) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const dropped = vi.fn(async (input: RetentionInput) => reply(input));
       store.recordRecoveryFailure = dropped as unknown as LiquidityTankStore["recordRecoveryFailure"];
@@ -1999,7 +2001,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("replaying a failure expiry waits until this host reaches the deadline (P8)", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const intent = createLiquidityTankIntent(authority());
       const peek = await store.claim({ intent, owner: "peek", now: 5_000, leaseDurationMs: 100 });
@@ -2027,7 +2029,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("P1: a pending snapshot stamped after D while the host is before D never writes expiry", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const expire = vi.spyOn(store, "recordRecoveryExpired");
       run.setClock(D - 1);
@@ -2041,7 +2043,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("P13: a retained failure then a lagging same-lock pending at D still expires", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 200);
       h.setObservation(failedAfterLock(h.operationHash, D - 200));
@@ -2055,7 +2057,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("P14: a non-success retention write is not treated as retained", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       store.recordRecoveryFailure = async () => ({ status: "conflict", reason: "simulated" });
       const expire = vi.spyOn(store, "recordRecoveryExpired");
@@ -2071,7 +2073,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("P15: the reference store refuses to move the checkpoint once a failure is retained", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 200);
       h.setObservation(failedAfterLock(h.operationHash, D - 200));
@@ -2087,7 +2089,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("P16: a lease lost right after the retention write is not reported as retained", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const retain = store.recordRecoveryFailure.bind(store);
       let lost = false;
@@ -2121,7 +2123,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("Q7: a lock, then an un-upgraded store, then the release lands: never a settlement failure", async () => {
       const h = harness();
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(inner, h);
       const legacy = withoutRetention(inner);
       const claim = vi.spyOn(legacy, "claim");
@@ -2142,7 +2144,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("Q8: a Proxy-instrumented store holding a lock is refused as indeterminate", async () => {
       const h = harness();
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(inner, h);
       const claim = vi.spyOn(inner, "claim");
       h.observe.mockClear();
@@ -2164,7 +2166,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("an already settled phase seen through an un-upgraded store is not a settlement failure", async () => {
       const h = harness();
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(inner, h);
       run.setClock(D - 400);
       h.setObservation(completed(h.operationHash, D - 450));
@@ -2198,7 +2200,7 @@ describe("advanceLiquidityTankSettlement", () => {
       }, "pay-cross-chain-liquidity-tank: authority must be stable data"],
     ] as const)("a lock, then the same authority as %s, is indeterminate and still settles", async (_label, reshape, reason) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const claim = vi.spyOn(store, "claim");
       h.observe.mockClear();
@@ -2217,7 +2219,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("Q1: a host clock stepping back across D after expiry waits without effects, then replays", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 200);
       h.setObservation(failedAfterLock(h.operationHash, D - 200));
@@ -2246,7 +2248,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("Q10: a lock contradicted past D expires once a consistent same-lock pending read at or after D arrives", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D + 1);
       h.setObservation(empty(h.operationHash));
@@ -2262,7 +2264,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("a lock contradicted past D expires once lock-bound terminal failure evidence arrives", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D + 1);
       h.setObservation(empty(h.operationHash));
@@ -2300,7 +2302,7 @@ describe("advanceLiquidityTankSettlement", () => {
         "pay-cross-chain-liquidity-tank: authority hashes must be 32-byte lower-case hex"],
     ] as const)("a lock, then the authority with %s, is indeterminate before claim and still settles", async (_label, shift, reason) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const claim = vi.spyOn(store, "claim");
       h.observe.mockClear();
@@ -2322,7 +2324,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // binding commits to, and either spelling continues one lock.
     test("an NFD-spelled address binds, prepares and continues as its NFC form", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const nfdAuthority = authority({ destinationAddress: "café-address" });
       const nfcIntent = createLiquidityTankIntent(authority({ destinationAddress: "café-address" }));
       h.setObservation(empty(nfcIntent.operationHash));
@@ -2353,7 +2355,7 @@ describe("advanceLiquidityTankSettlement", () => {
       "a lock, then a valid authority with %s for the same phase, is an indeterminate binding conflict",
       async (_label, change) => {
         const h = harness();
-        const store = createInMemoryLiquidityTankStore();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
         const run = await lockDurably(store, h);
         h.observe.mockClear();
         run.setClock(D - 500);
@@ -2376,7 +2378,7 @@ describe("advanceLiquidityTankSettlement", () => {
       "a settled phase, then a valid authority with %s, is an indeterminate binding conflict",
       async (_label, change) => {
         const h = harness();
-        const store = createInMemoryLiquidityTankStore();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
         const run = await lockDurably(store, h);
         run.setClock(D - 400);
         h.setObservation(completed(h.operationHash, D - 450));
@@ -2409,7 +2411,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ] as const)("refuses an agreementHash given as %s instead of coercing it", async (_label, hash, reason) => {
       const coerced = authority({ agreementHash: hash as never });
       expect(() => createLiquidityTankIntent(coerced)).toThrow(reason);
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       await expect(advanceLiquidityTankSettlement(runner({ authority: coerced, store, adapter: h.adapter }).shared))
@@ -2420,7 +2422,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("a polluted Object.prototype cannot supply a missing authority field", async () => {
       const { sr5BindingHash: _missing, ...partial } = authority();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const proto = Object.prototype as Record<string, unknown>;
@@ -2469,7 +2471,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("identical content under a throwing RegExp.prototype.test never runs it and continues the lock", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 500);
       const originalTest = RegExp.prototype.test;
@@ -2492,7 +2494,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     test("an always-true RegExp.prototype.test cannot admit an upper-cased hash for a locked phase", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const claim = vi.spyOn(store, "claim");
       run.setClock(D - 500);
@@ -2520,7 +2522,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // cannot avoid; it must stay a retry-safe refusal before any claim.
     test("identical content under a throwing String.prototype.normalize is indeterminate before claim", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const claim = vi.spyOn(store, "claim");
       h.observe.mockClear();
@@ -2546,7 +2548,7 @@ describe("advanceLiquidityTankSettlement", () => {
     });
 
     test("binding store and adapter methods reads no getter on the method", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
       const touched = vi.fn();
@@ -2566,7 +2568,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["no reason", {}, "liquidity-tank-settlement-store-claim-invalid"],
       ["a non-string reason", { reason: 7 }, "liquidity-tank-settlement-store-claim-invalid"],
     ] as const)("a host store's claim conflict with %s is indeterminate", async (_label, fields, reason) => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       store.claim = vi.fn(async () => ({ status: "conflict", ...fields }) as never);
       const h = harness();
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
@@ -2641,7 +2643,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["jobId", { jobId: SECOND_JOB_ID }, JOB_ID, SECOND_JOB_ID],
     ] as const)("a String.prototype.normalize replaced to rename the %s cannot open a second phase", async (_label, renamed, from, to) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       expect(createLiquidityTankIntent(authority(renamed)).settlementKey).not.toBe(lockedKey);
@@ -2684,7 +2686,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // On b6aef30 the key hashed through the live `Hash.prototype.digest`.
     test("a Hash.prototype.digest replaced after load cannot rename a locked phase", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       const claim = vi.spyOn(store, "claim");
@@ -2712,7 +2714,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // took phaseIndex 3 while the intent still said 2.
     test("a global Number replaced after load cannot shift phaseIndex in the key", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       const claim = vi.spyOn(store, "claim");
@@ -2747,7 +2749,7 @@ describe("advanceLiquidityTankSettlement", () => {
       const getter = vi.fn(() => "destination-address");
       const accessor = authority();
       Object.defineProperty(accessor, "destinationAddress", { get: getter, enumerable: true, configurable: true });
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const proto = Object.prototype as Record<string, unknown>;
@@ -2779,7 +2781,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // `charCodeAt`, and the key's UTF-8 encoding turns a lone surrogate into
     // U+FFFD, so the railId took the key of another, well-formed one.
     test("a replaced String.prototype.charCodeAt cannot admit a lone-surrogate railId", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const loneSurrogate = authority({ railId: "rail-\ud800" });
@@ -2830,7 +2832,7 @@ describe("advanceLiquidityTankSettlement", () => {
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
       class ClassStore implements LiquidityTankStore {
-        readonly #inner = createInMemoryLiquidityTankStore();
+        readonly #inner = createInMemoryLiquidityTankStore(VOLATILE);
         claim(input: Parameters<LiquidityTankStore["claim"]>[0]) {
           return this.#inner.claim(input);
         }
@@ -2878,7 +2880,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // as `liquidity-tank-retained-state-corrupt`.
     test("a throwing RegExp.prototype.exec cannot make a valid retained row read as corrupt", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 500);
       const originalExec = RegExp.prototype.exec;
@@ -2915,7 +2917,7 @@ describe("advanceLiquidityTankSettlement", () => {
       };
       const submission = Object.freeze({ ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) });
       const store: LiquidityTankStore = {
-        ...createInMemoryLiquidityTankStore(),
+        ...createInMemoryLiquidityTankStore(VOLATILE),
         claim: vi.fn(async () => ({
           status: "acquired" as const,
           intent,
@@ -2950,7 +2952,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ] as const)("a polluted Object.prototype.%s never reaches the intent of an authority that lacks it", async (field, value, reason) => {
       const partial: Record<string, unknown> = { ...authority() };
       delete partial[field];
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const proto = Object.prototype as Record<string, unknown>;
@@ -2990,7 +2992,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["Object.prototype[\"-1\"]", Object.prototype, "-1", "1.0000001"],
       ["Array.prototype[\"-2\"]", Array.prototype, "-2", "1.00000001"],
     ] as const)("a polluted %s cannot pad an over-precise amount", async (_label, prototype, index, amount) => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const polluted = prototype as unknown as Record<string, unknown>;
@@ -3061,7 +3063,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // `Hash.prototype` forged the key.
     test("a hijacked Hash handle slot cannot rename a locked phase", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       const claim = vi.spyOn(store, "claim");
@@ -3124,7 +3126,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["Object.getOwnPropertyDescriptors", "descriptors"],
     ] as const)("a %s that renames the railId during the gate cannot open a second phase", async (_label, route) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       const claim = vi.spyOn(store, "claim");
@@ -3175,7 +3177,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // where a dependency hooks the gate to shift `phaseIndex`.
     test("a restart under a Set.prototype.has hook that shifts phaseIndex signs nothing new", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
       const claim = vi.spyOn(store, "claim");
@@ -3209,7 +3211,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ] as const)("a %s that rewrites the hashed objects cannot change the payee, base units or binding", async (_label, route) => {
       const clean = createLiquidityTankIntent(authority());
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       let seen = 0;
       const rewrite = (value: unknown) => {
@@ -3271,7 +3273,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["hidden, with the store's refusal read as recorded,", true],
     ] as const)("a locked row %s is neither prepared again nor broadcast", async (_label, forge) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 500);
       const second = secondAdapter();
@@ -3309,7 +3311,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // the second submission as `recorded`, so the core broadcast it.
     test("a replaced util.types.isProxy can neither hide a locked row nor forge a store write", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       run.setClock(D - 500);
       const second = secondAdapter();
@@ -3356,7 +3358,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ["util.types.isProxy", "isProxy"],
     ] as const)("a replaced %s cannot read a store's refusal of a submission as recorded", async (_label, route) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const refusal = { status: "conflict", reason: "host-submission-refused" };
       store.recordSubmission = vi.fn(async () => ({ ...refusal }) as never);
       const input = runner({ store, adapter: h.adapter }).shared;
@@ -3405,7 +3407,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // `Object.getOwnPropertyDescriptor` says.
     test("a replaced Object.getOwnPropertyDescriptor cannot supply a missing failure-retention echo", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       const dropped = { status: "recorded" };
       let sent: unknown;
@@ -3458,7 +3460,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // Kills a mutant that accepts a lone low surrogate: with the shared check
     // passed by a replaced `charCodeAt`, only the owned check refuses it.
     test("a replaced String.prototype.charCodeAt cannot admit a lone low surrogate", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       const loneLow = authority({ railId: "rail-\udc00" });
@@ -3500,7 +3502,7 @@ describe("advanceLiquidityTankSettlement", () => {
       };
       const submission = Object.freeze({ ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) });
       const store: LiquidityTankStore = {
-        ...createInMemoryLiquidityTankStore(),
+        ...createInMemoryLiquidityTankStore(VOLATILE),
         claim: vi.fn(async () => ({
           status: "acquired" as const,
           intent,
@@ -3560,7 +3562,7 @@ describe("advanceLiquidityTankSettlement", () => {
     /** A store whose claim answers `claimed` for a lease the core holds. */
     function claimingStore(claimed: unknown): LiquidityTankStore {
       return {
-        ...createInMemoryLiquidityTankStore(),
+        ...createInMemoryLiquidityTankStore(VOLATILE),
         claim: vi.fn(async () => claimed as never),
         isCurrent: vi.fn(async () => true),
         recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
@@ -3577,7 +3579,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ] as const)("%s: an unlocked pending stays waiting and later settles", async (_label, fields) => {
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const expire = vi.spyOn(store, "recordRecoveryExpired");
       const run = runner({ store, adapter: h.adapter, leaseDurationMs: 1 });
       const results = await withPollution(fields, async () => [
@@ -3686,7 +3688,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // `Object.prototype.value` must not read as the write status.
     test("a polluted Object.prototype.value cannot read an accessor refusal of a submission as recorded", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       store.recordSubmission = vi.fn(async () => ({ get status() { return "conflict"; } }) as never);
       const result = await withPollution({ value: "recorded" }, () =>
         advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared));
@@ -3701,7 +3703,7 @@ describe("advanceLiquidityTankSettlement", () => {
     // `Object.prototype.value` equals what was sent.
     test("a polluted Object.prototype.value cannot stand in for an accessor failure-retention echo", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const run = await lockDurably(store, h);
       store.recordRecoveryFailure = vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(async (input) => {
         const sent = input.recoveryFailure;
@@ -3723,7 +3725,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
     await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
@@ -3835,7 +3837,7 @@ describe("advanceLiquidityTankSettlement", () => {
   ] as const)("durable recovery checkpoint rejects a later observation that %s", async (_label, next) => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -3856,7 +3858,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("a completed observation cannot replace a retained recovery deadline", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const recordSettlement = vi.spyOn(store, "recordSettlement");
@@ -3889,7 +3891,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test("rejects an unsafe recovery deadline without poisoning the durable checkpoint", async () => {
     const h = harness();
     h.setAfterBroadcast(pending(h.operationHash, true));
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(store, "recordObservation");
     const run = runner({ adapter: h.adapter, store });
     await advanceLiquidityTankSettlement(run.shared);
@@ -3908,7 +3910,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("reference store preserves its recovery checkpoint after rejecting an extension", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const intent = createLiquidityTankIntent(authority());
     const claim = await store.claim({
       intent,
@@ -3957,7 +3959,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("reference store atomically elects completion or expiry and rejects the loser", async () => {
     const seed = async (owner: string) => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       h.setAfterBroadcast(pending(h.operationHash, true));
       await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
@@ -4071,7 +4073,7 @@ describe("advanceLiquidityTankSettlement", () => {
       ...completed(h.operationHash),
       recoveryDeadline: undefined,
     } as never);
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordSettlement = vi.spyOn(store, "recordSettlement");
 
     await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter, store }).shared))
@@ -4080,7 +4082,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("bridge IDs are globally unique across local settlements", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const firstHarness = harness();
     await advanceLiquidityTankSettlement(runner({ store, adapter: firstHarness.adapter }).shared);
     const secondHarness = harness();
@@ -4120,7 +4122,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("lease loss during preparation cannot persist or broadcast stale bytes", async () => {
     let clock = 1_000;
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const recordSubmission = vi.spyOn(inner, "recordSubmission");
     const h = harness();
     h.adapter.prepareSubmission = vi.fn(async (intent) => {
@@ -4151,7 +4153,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("lease loss during observation cannot become a stale permanent outcome", async () => {
     let clock = 1_000;
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const recordObservation = vi.spyOn(inner, "recordObservation");
     const h = harness();
     h.adapter.observe = vi.fn(async (_intent, submission) => {
@@ -4199,7 +4201,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("captures store and adapter callbacks before the claim await", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const h = harness();
     const replacement = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
       throw new Error("mutated callback must not run");
@@ -4227,7 +4229,7 @@ describe("advanceLiquidityTankSettlement", () => {
     "rejects a %s dependency without invoking it",
     async (kind) => {
       const touched = vi.fn();
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       let store: LiquidityTankStore = inner;
       let adapter: LiquidityTankAdapter = h.adapter;
@@ -4267,7 +4269,7 @@ describe("advanceLiquidityTankSettlement", () => {
   );
 
   test("requires the effect fence read to return the literal boolean true", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordSubmission = vi.spyOn(store, "recordSubmission");
     store.isCurrent = vi.fn(async () => ({ current: true }) as never);
     const h = harness();
@@ -4284,7 +4286,7 @@ describe("advanceLiquidityTankSettlement", () => {
   test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects invalid lease duration %s before store or adapter access",
     async (leaseDurationMs) => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       const h = harness();
       await expect(advanceLiquidityTankSettlement(runner({
@@ -4301,7 +4303,7 @@ describe("advanceLiquidityTankSettlement", () => {
     ["owner", { owner: "" }, "pay-cross-chain-liquidity-tank: owner must be a non-empty string"],
     ["clock", { now: "x" as never }, "pay-cross-chain-liquidity-tank: now must be a stable function"],
   ] as const)("rejects an invalid %s as indeterminate before store or adapter access", async (_label, config, reason) => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const claim = vi.spyOn(store, "claim");
     const h = harness();
     await expect(advanceLiquidityTankSettlement({
@@ -4315,7 +4317,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("rejects an overflowing lease expiry before claiming", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const claim = vi.spyOn(store, "claim");
     const h = harness();
 
@@ -4333,7 +4335,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("requires an acquired lease to have the exact authorized expiry", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       claim: vi.fn<LiquidityTankStore["claim"]>(async (input) => ({
@@ -4357,7 +4359,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("reference store rejects unsafe lease arithmetic before retaining state", async () => {
-    const store = createInMemoryLiquidityTankStore();
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
     const intent = createLiquidityTankIntent(authority());
     await expect(store.claim({
       intent,
@@ -4379,7 +4381,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("rejects a settled claim whose durable result does not match the intent", async () => {
     const intent = createLiquidityTankIntent(authority());
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       async claim() {
@@ -4414,7 +4416,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("rejects stored settlement evidence finalized at its recovery deadline", async () => {
     const intent = createLiquidityTankIntent(authority());
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       async claim() {
@@ -4484,7 +4486,7 @@ describe("advanceLiquidityTankSettlement", () => {
       } else {
         hostile = unreadableProxy(settlement, touched);
       }
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const store: LiquidityTankStore = {
         ...inner,
         claim: vi.fn(async () => ({ status: "settled", intent, settlement: hostile }) as never),
@@ -4499,7 +4501,7 @@ describe("advanceLiquidityTankSettlement", () => {
   );
 
   test("rejects a claim carrying a different durable intent", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       async claim() {
@@ -4520,7 +4522,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("malformed store claims fail closed", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       claim: vi.fn(async () => null as never),
@@ -4535,7 +4537,7 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   test("a corrupt store claim is retry-safe indeterminate before any effects", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       claim: vi.fn<LiquidityTankStore["claim"]>(async () => ({
@@ -4588,7 +4590,7 @@ describe("advanceLiquidityTankSettlement", () => {
       } else {
         claimValue = unreadableProxy({ status: "acquired", ...fields }, touched);
       }
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const store: LiquidityTankStore = {
         ...inner,
         claim: vi.fn(async () => claimValue as never),
@@ -4606,7 +4608,7 @@ describe("advanceLiquidityTankSettlement", () => {
   );
 
   test("stateful store claims must carry the exact durable intent", async () => {
-    const inner = createInMemoryLiquidityTankStore();
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const store: LiquidityTankStore = {
       ...inner,
       claim: vi.fn(async () => ({
@@ -4679,6 +4681,29 @@ describe("round 10", () => {
     return h;
   }
 
+  describe("finding 1: the volatile store must be acknowledged", () => {
+    test.each([
+      ["no options", undefined],
+      ["null", null],
+      ["empty options", {}],
+      ["false", { acknowledgeVolatile: false }],
+      ["a truthy string", { acknowledgeVolatile: "true" }],
+      ["1", { acknowledgeVolatile: 1 }],
+      ["an inherited acknowledgement", Object.create({ acknowledgeVolatile: true })],
+      ["an accessor", { get acknowledgeVolatile() { return true; } }],
+      ["a proxy", new Proxy({ acknowledgeVolatile: true }, {})],
+    ])("refuses %s with a TypeError naming the restart double-lock", (_label, options) => {
+      expect(() => createInMemoryLiquidityTankStore(options as never)).toThrow(TypeError);
+      expect(() => createInMemoryLiquidityTankStore(options as never))
+        .toThrow(/loses it on restart.*double-lock the buyer's funds/s);
+    });
+
+    test("constructs with the literal acknowledgement", () => {
+      expect(typeof createInMemoryLiquidityTankStore({ acknowledgeVolatile: true }).claim)
+        .toBe("function");
+    });
+  });
+
   describe("finding 2: observations are used only when the host authenticates them", () => {
     test.each([
       ["no verifier", undefined],
@@ -4689,7 +4714,7 @@ describe("round 10", () => {
     ])("with %s, a completed observation with arbitrary hashes is refused before any claim",
       async (_label, verifier) => {
         const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
-        const store = createInMemoryLiquidityTankStore();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
         const claim = vi.spyOn(store, "claim");
         const run = runner({ store, adapter: h.adapter, verifier: verifier as never });
         await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
@@ -4717,7 +4742,7 @@ describe("round 10", () => {
           releaseTxHash: "y",
           authenticationHash: "f".repeat(64),
         });
-        const store = createInMemoryLiquidityTankStore();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
         const recordSettlement = vi.spyOn(store, "recordSettlement");
         const recordObservation = vi.spyOn(store, "recordObservation");
         const verifier: LiquidityTankVerifier = {
@@ -4744,7 +4769,7 @@ describe("round 10", () => {
 
     test("an unauthenticated empty status is never followed by a broadcast", async () => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordObservation = vi.spyOn(store, "recordObservation");
       await expect(advanceLiquidityTankSettlement(runner({
         store, adapter: h.adapter, verifier: { ...APPROVING_VERIFIER, authenticateObservation: async () => false },
@@ -4776,7 +4801,7 @@ describe("round 10", () => {
     });
 
     test("a retained completion that no longer authenticates is not settled from", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
       store.recordSettlement = vi.fn(async () => { throw new Error("crash before settlement write"); });
@@ -4799,7 +4824,7 @@ describe("round 10", () => {
     });
 
     test("an unauthenticated bound failure past the deadline never commits failed-substrate", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       const run = await lockDurably(store, h);
       const recordRecoveryFailure = vi.spyOn(store, "recordRecoveryFailure");
@@ -4818,7 +4843,7 @@ describe("round 10", () => {
     });
 
     test("retained failure evidence and a committed expiry are re-authenticated before use", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       const run = await lockDurably(store, h);
       run.setClock(D - 200);
@@ -4852,7 +4877,7 @@ describe("round 10", () => {
       }],
     ])("with %s, the core refuses before any claim", async (_label, verifier) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const claim = vi.spyOn(store, "claim");
       await expect(advanceLiquidityTankSettlement(runner({
         store, adapter: h.adapter, verifier: verifier as never,
@@ -4870,7 +4895,7 @@ describe("round 10", () => {
     ])("an adapter that signs %s is refused: nothing is stored or broadcast", async (_label, signed) => {
       const h = signingHarness(signed);
       h.setAfterBroadcast(completed(h.operationHash));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordSubmission = vi.spyOn(store, "recordSubmission");
       const run = runner({ store, adapter: h.adapter, verifier: decodingVerifier });
       await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
@@ -4904,7 +4929,7 @@ describe("round 10", () => {
       ["a throw", async () => { throw new Error("decoder unavailable"); }],
     ])("a hook answering %s stores and broadcasts nothing", async (_label, answer) => {
       const h = harness();
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordSubmission = vi.spyOn(store, "recordSubmission");
       await expect(advanceLiquidityTankSettlement(runner({
         store, adapter: h.adapter,
@@ -4918,7 +4943,7 @@ describe("round 10", () => {
     });
 
     test("a retained submission that fails verification is never observed against or rebroadcast", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       const run = runner({ store, adapter: h.adapter });
       h.failNextBroadcast();
@@ -4942,7 +4967,7 @@ describe("round 10", () => {
 
   describe("finding 4: the core never settles a durable late completion", () => {
     test("a store holding a completion finalized at the deadline gets expiry, not a settlement", async () => {
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const h = harness();
       const run = await lockDurably(inner, h);
       h.observe.mockClear();
@@ -4979,7 +5004,7 @@ describe("round 10", () => {
     test("the reference store names which terminal transition won", async () => {
       const intent = createLiquidityTankIntent(authority());
       const seed = async () => {
-        const store = createInMemoryLiquidityTankStore();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
         const claim = await store.claim({ intent, owner: "w", now: D - 10, leaseDurationMs: 1_000 });
         if (claim.status !== "acquired") throw new Error("expected acquired");
         const write = {
@@ -5044,7 +5069,7 @@ describe("round 10", () => {
       h.setAfterBroadcast({
         ...pending(h.operationHash, true, DEADLINE_SECONDS, lockedAt),
       });
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordObservation = vi.spyOn(store, "recordObservation");
       const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
       const run = runner({ store, adapter: h.adapter });
@@ -5069,7 +5094,7 @@ describe("round 10", () => {
     test("a completion carrying a seconds-scale deadline is neither expired nor settled", async () => {
       const h = signingHarness({}, PREPARED_AT_MS);
       h.setAfterBroadcast(completed(h.operationHash, PREPARED_AT_MS + 2_000, DEADLINE_SECONDS));
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
       const recordSettlement = vi.spyOn(store, "recordSettlement");
       const run = runner({ store, adapter: h.adapter });
@@ -5083,7 +5108,7 @@ describe("round 10", () => {
     });
 
     test("legacy seconds-scale rows fail closed with the same reason and no effects", async () => {
-      const inner = createInMemoryLiquidityTankStore();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
       const h = signingHarness({}, PREPARED_AT_MS);
       h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 1_000));
       const run = runner({ store: inner, adapter: h.adapter, leaseDurationMs: 1 });
@@ -5133,7 +5158,7 @@ describe("round 10", () => {
 
   describe("finding 9: the reference store re-checks lease expiry on ordinary writes", () => {
     test("submission, observation and settlement writes at or after expiresAt are stale", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const intent = createLiquidityTankIntent(authority());
       const claim = await store.claim({ intent, owner: "w", now: 1_000, leaseDurationMs: 100 });
       if (claim.status !== "acquired") throw new Error("expected acquired");
@@ -5170,7 +5195,7 @@ describe("round 10", () => {
     });
 
     test("the core passes its clock reading to every ordinary write", async () => {
-      const store = createInMemoryLiquidityTankStore();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
       const writes = [
         vi.spyOn(store, "recordSubmission"),
         vi.spyOn(store, "recordObservation"),

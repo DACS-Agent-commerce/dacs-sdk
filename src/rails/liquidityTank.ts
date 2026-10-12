@@ -2043,8 +2043,40 @@ function observationRank(status: Exclude<LiquidityTankObservation, { status: "in
   return 2;
 }
 
-/** Test/development store. Production callers must use authenticated durable state. */
-export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
+export interface InMemoryLiquidityTankStoreOptions {
+  /**
+   * Confirms the caller knows this store keeps every row in process memory
+   * and loses it on restart. Required, and only `true` is accepted.
+   */
+  readonly acknowledgeVolatile: true;
+}
+
+function acknowledgesVolatile(options: unknown): boolean {
+  if (options === null || typeof options !== "object" || isProxy(options)) return false;
+  const acknowledged = getOwnPropertyDescriptor(options, "acknowledgeVolatile");
+  return acknowledged !== undefined && hasOwn(acknowledged, "value") && acknowledged.value === true;
+}
+
+/**
+ * Reference store for tests and development. It is not restart-safe: every
+ * row lives in process memory, so after a restart a worker finds no retained
+ * submission, signs and broadcasts a second bridge operation, and locks the
+ * buyer's funds twice. Restart safety needs a durable, atomic host store that
+ * passes `runLiquidityTankStoreConformance`. Refuses to construct unless the
+ * caller passes `{ acknowledgeVolatile: true }`.
+ */
+export function createInMemoryLiquidityTankStore(
+  options: InMemoryLiquidityTankStoreOptions,
+): LiquidityTankStore {
+  if (!acknowledgesVolatile(options)) {
+    throw new TypeError(
+      "createInMemoryLiquidityTankStore keeps all state in process memory and loses it on " +
+        "restart: a restarted worker would prepare and broadcast a second bridge operation " +
+        "and double-lock the buyer's funds. Pass { acknowledgeVolatile: true } only in tests " +
+        "or development; production needs a durable, atomic store that passes " +
+        "runLiquidityTankStoreConformance.",
+    );
+  }
   const records = new Map<string, MemoryTankRecord>();
   const bridgeOwners = new Map<string, string>();
   const current = (
