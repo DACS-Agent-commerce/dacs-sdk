@@ -1575,6 +1575,13 @@ export function createDacsFixedPriceBuyerAuditV1(
       // session. Remember it so a rejection caused by it stays retryable
       // instead of being reported as an authentication failure.
       let unavailable = false;
+      // Demos's definitive answer against one copy is final even when a read
+      // of the other copy went unanswered: the two copies are read separately
+      // and verified concurrently, and each copy's checks stop at its first
+      // non-valid read, so that answer cannot depend on the unanswered read.
+      // Other rejections stay retryable: the strict verifier does not say
+      // which copy they came from.
+      let answeredRejection = false;
       try {
         await verifyCompletedTwoSidedSession({
           jobId: operation.order.jobId,
@@ -1609,12 +1616,16 @@ export function createDacsFixedPriceBuyerAuditV1(
               if (!(error instanceof DacsDemosBundlePublicationError) ||
                   error.reasonCode === "bundle-resolution-indeterminate") {
                 unavailable = true;
+              } else {
+                answeredRejection = true;
               }
               throw error;
             }
-            return anchored !== null && anchored.nativeAddress === nativeAddress
-              ? copy(anchored.bundle) as unknown as Record<string, unknown>
-              : null;
+            if (anchored === null || anchored.nativeAddress !== nativeAddress) {
+              answeredRejection = true;
+              return null;
+            }
+            return copy(anchored.bundle) as unknown as Record<string, unknown>;
           },
           async verifyBundleAnchor(candidate) {
             const disposition = await publication.verifyBundleAnchorReceipt({
@@ -1623,6 +1634,7 @@ export function createDacsFixedPriceBuyerAuditV1(
               anchorReceipt: candidate.anchorReceipt,
             });
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;
+            if (disposition === "invalid") answeredRejection = true;
             return disposition === "valid"
               ? { disposition: "valid" as const, mapping: "write-input" as const }
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
@@ -1632,12 +1644,15 @@ export function createDacsFixedPriceBuyerAuditV1(
             if (resolved.disposition === "indeterminate" &&
                 TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
               unavailable = true;
+            } else if (resolved.disposition !== "present") {
+              answeredRejection = true;
             }
             return resolved;
           },
           async verifyBundleBinding(binding) {
             const disposition = await publication.verifyBundleBinding(binding);
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;
+            if (disposition === "invalid") answeredRejection = true;
             return disposition === "valid"
               ? { disposition: "valid" as const }
               : { disposition, reason: `demos-bundle-binding-${disposition}` };
@@ -1647,6 +1662,7 @@ export function createDacsFixedPriceBuyerAuditV1(
       } catch (error) {
         // Retry only unanswered reads. Authoritative absence and malformed
         // provider output need operator action, even when classified as substrate faults.
+        if (answeredRejection) return false;
         return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
       }
     },
