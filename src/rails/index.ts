@@ -171,6 +171,11 @@ export {
   type LiquidityTankStoreConformanceResult,
 } from "./liquidityTankStoreConformance.js";
 export {
+  createFsLiquidityTankStore,
+  LIQUIDITY_TANK_FS_STORE_VERSION,
+  type FsLiquidityTankStoreOptions,
+} from "./liquidityTankFs.js";
+export {
   solanaSplSettlementKey,
   createSolanaSplSettlementIntent,
   advanceSolanaSplSettlement,

@@ -46,10 +46,13 @@ import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
   advanceLiquidityTankSettlement,
+  createFsLiquidityTankStore,
   createInMemoryLiquidityTankStore,
   createLiquidityTankIntent,
+  LIQUIDITY_TANK_FS_STORE_VERSION,
   runLiquidityTankStoreConformance,
   type AdvanceLiquidityTankInput,
+  type FsLiquidityTankStoreOptions,
   type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAdapter,
   type LiquidityTankAuthority,
@@ -110,6 +113,11 @@ const declaredTankSafety: LiquidityTankStoreRestartSafety = "conformance-tested"
 const declaredTankStore: LiquidityTankStore = { ...tankStore, restartSafety: "volatile-acknowledged" };
 // @ts-expect-error only the two declarations exist
 const unknownTankSafety: LiquidityTankStoreRestartSafety = "durable";
+// The SDK's durable store opens a private directory.
+const fsTankOptions: FsLiquidityTankStoreOptions = { dir: "/var/lib/dacs/liquidity-tank" };
+const fsTankStore: (options: FsLiquidityTankStoreOptions) => Promise<LiquidityTankStore> =
+  createFsLiquidityTankStore;
+const fsTankVersion: 1 = LIQUIDITY_TANK_FS_STORE_VERSION;
 const tankVerifier: LiquidityTankVerifier = {
   authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
   verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
@@ -273,6 +281,9 @@ void unacknowledgedTankStore;
 void declaredTankSafety;
 void declaredTankStore;
 void unknownTankSafety;
+void fsTankOptions;
+void fsTankStore;
+void fsTankVersion;
 void tankVerifier;
 void tankConformanceOptions;
 void tankConformance;

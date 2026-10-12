@@ -46,7 +46,10 @@ each write atomically and passes `runLiquidityTankStoreConformance` (see
 [Store conformance](#store-conformance)). The core cannot tell a lost row from
 a fresh phase, so it refuses, before any claim, preparation or signature, a
 store that does not declare `restartSafety` (see
-[Declaring restart safety](#declaring-restart-safety)). The exported in-memory
+[Declaring restart safety](#declaring-restart-safety)). The SDK ships one
+durable store, `createFsLiquidityTankStore` for a single host (see
+[Durable filesystem store](#durable-filesystem-store)); it passes conformance
+in the SDK's tests and declares `"conformance-tested"`. The exported in-memory
 store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
 
@@ -426,6 +429,40 @@ a declaration, not a proof: the core cannot check it, and a host that declares
 `"conformance-tested"` for a store that never passed the suite has removed the
 only runtime gate. Review it with the store.
 
+### Durable filesystem store
+
+`await createFsLiquidityTankStore({ dir })` keeps each phase as one JSON row
+under `dir`, for workers on one host. It applies the same row transitions as
+the in-memory reference store, so its compare-and-set checks read exactly the
+same fields, and runs each one under a per-phase filesystem lock:
+
+- **Atomic writes.** Every row write goes to a new `O_EXCL` temporary, which
+  is fsynced and renamed over the row; then the directory is fsynced. All of
+  this happens before the write reports success. A reader sees the old row or
+  the new one, never half of one.
+- **Restart.** A new store on the same directory, in the same process or
+  another, reads every committed row, including each submission's receipt and
+  the bridge-ID reservations.
+- **Bridge IDs.** A bridge ID is reserved for one phase by a file published
+  with a hard link, which never replaces an existing reservation, and before
+  the row that holds the submission. A crash in between leaves the ID reserved
+  for that phase and its row unchanged.
+- **Directory admission.** The SDK's private-store checks (see
+  [Durable filesystem safety](filesystem-store-safety.md)) refuse a directory
+  that is group- or world-writable, owned by another user, reached through a
+  symbolic link, or on a network or sync filesystem. They never `chmod` an
+  unsafe directory into acceptance.
+- **Corruption.** A row that is not exactly what the store writes (another
+  JSON spelling, an unknown field or version, a submission whose hash does not
+  recompute, an observation that fails the core's checks) reads as `corrupt`
+  with `liquidity-tank-fs-record-corrupt`, and no write replaces it.
+
+The SDK's tests run every `runLiquidityTankStoreConformance` case against it,
+reopening a new store on the same directory for each restart and race, and it
+declares `restartSafety: "conformance-tested"`. Its lock serializes writers on
+one host only; workers on several hosts need a shared database store that
+passes the suite.
+
 Passing does not show that a store is durable; `reopenStore` has to open it
 the way a restarted process would. The suite refuses only a `reopenStore`
 that returns the very handle it was given (`(store) => store`). It cannot
@@ -644,8 +681,10 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   bridge key or attestation behind `authenticateObservation`, and
   `demosdk`-backed transaction decoding behind `verifySignedSubmission`, so
   that `@kynesyslabs/dacs/rails` stays dependency-free;
-- a durable production store that passes `runLiquidityTankStoreConformance`
-  against a real backend, with funded restart and ambiguity evidence;
+- funded restart and ambiguity evidence with the durable store the deployment
+  uses: `createFsLiquidityTankStore` on one host, or a database store that
+  passes `runLiquidityTankStoreConformance` against its real backend for
+  workers on several hosts;
 - reviewed evidence that the bridge enforces `reserved + available =
   capacity` atomically across concurrent phases (see
   [Tank balance](#tank-balance-is-the-bridges)); the SDK does not;
