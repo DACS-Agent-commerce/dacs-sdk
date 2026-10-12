@@ -45,7 +45,8 @@ export interface ScanningArtifactRepositoryDeps extends BoundArtifactRepositoryD
    * unavailable and produces a retryable `indeterminate` with
    * `code: "verifier-unavailable"`; the row is not handled. That includes an
    * error that only carries `code: "unsupported-kind"`: the check is
-   * `instanceof`, so throw the class exported by this package.
+   * `instanceof`, so throw the class exported by this package, from the same
+   * installed copy as the repository. A non-function is refused at construction.
    */
   verifyArtifact: (
     record: Record<string, unknown>,
@@ -174,11 +175,13 @@ export type ArtifactScanPage =
       /**
        * Restarts from a null cursor; the pages are fetched again. After
        * `cursor-cycle`, `page-bound` or `history-restart-required` it keeps
-       * `seen`, `metadata`, `deferred` and `pendingRow`, so rows already reported
-       * are not reported again. After `invalid-state` or `foreign-owner-state`
-       * nothing is trusted: it is a fresh traversal that reports every row again.
-       * Delivery is therefore at least once; consumers that need exactly once
-       * deduplicate on `anchor.nativeAddress`, the stable key of a row.
+       * `seen`, `metadata`, `deferred` and `pendingRow`: each native address is
+       * handled at most once per valid traversal, and a binding rewritten for a
+       * handled address is seen only by a new traversal. After `invalid-state`
+       * or `foreign-owner-state` nothing is trusted: it is a fresh traversal that
+       * reports every row again. A failing row is reported on every retry, so
+       * deduplicate final outcomes only, or keep the latest result per
+       * `anchor.nativeAddress`.
        */
       state: ArtifactScanState;
     };

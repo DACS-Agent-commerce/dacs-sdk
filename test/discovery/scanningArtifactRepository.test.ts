@@ -727,7 +727,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const again = await fixture.repo.scanPage(restarted.state);
     const last = await fixture.repo.scanPage(again.state);
     expect(last.state.exhausted).toBe(true);
-    // At-least-once delivery: a and b are reported twice, with the same nativeAddress key.
+    // An invalid (legacy) state redelivers: a and b are reported twice, with the same nativeAddress key.
     const reported = [...first.results, ...again.results, ...last.results]
       .map(({ anchor, outcome }) => [anchor.nativeAddress, outcome.status]);
     expect(reported).toEqual([

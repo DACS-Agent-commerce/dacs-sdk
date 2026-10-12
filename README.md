@@ -732,10 +732,13 @@ Keep the returned `state` with its owner, cursor, `seen` and `metadata` maps,
 `new Map(entries)`; persist the set as values and reconstruct it with
 `new Set(values)`; `pendingRow` and `deferred` are plain JSON. A state that is
 not in this shape, such as a Map persisted with plain `JSON.stringify`, is never
-read. Nor is a state whose fields contradict each other: an `exhausted` state
-with a cursor, a pending row or no consumed page; a row both in `seen` and
-`deferred`, or deferred twice; a pending row already in `seen` or `deferred`; or
-`seen` or `deferred` disagreeing with `metadata` about a row's logical address.
+read. Nor is a state whose fields contradict each other: a cursor, a consumed
+cursor or `exhausted` before any consumed page; a `pagesConsumed` other than one
+more than the consumed cursors after one; a cursor after exhaustion, or no
+cursor without it; an `exhausted` state with a pending row; a row both in `seen`
+and `deferred`, or deferred twice; a pending row already in `seen` or
+`deferred`; or `seen` or `deferred` disagreeing with `metadata` about a row's
+logical address. Such a state is `restart-required` with `invalid-state`.
 Only fully handled rows enter `seen`; filtered rows remain in `metadata` for
 conflict detection and can be read on an overlapping page when `includeUnknown`
 is enabled. Input state is unchanged. Overlapping pages deduplicate by native
@@ -780,13 +783,23 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
     trusted, so the returned state is a fresh traversal that reads and reports
     every row again.
 
-  Delivery is therefore at least once. `anchor.nativeAddress` is a row's stable
-  key: deduplicate on it if you need each row exactly once. Alert on repeated
-  restarts; they do not stop by themselves.
+  Delivery: within a valid traversal, each `anchor.nativeAddress` is handled at
+  most once, even across these restarts. A binding rewritten or repaired for an
+  address already handled is therefore not read again: start a new traversal
+  (`scanPage()` without state) to see it. An `invalid-state` or
+  `foreign-owner-state` restart reports earlier rows again. A failing row is
+  reported as `indeterminate` on every retry before it is handled or deferred,
+  so deduplicate on final outcomes only, or keep the latest result per
+  `anchor.nativeAddress`; keeping the first can keep an `indeterminate` and drop
+  the `verified` that followed it. Alert on repeated restarts; they do not stop
+  by themselves.
 - `conflict` (`metadata-conflict`): history assigns two logical addresses to one
   native address, across pages or, from the Demos fetcher, in the two metadata
   fields of one row. The page stops with the unchanged cursor. Retrying cannot
-  clear it; alert on it.
+  clear it; alert on it. A restart from a valid state keeps the old `metadata`,
+  so if history was rewritten and a handled row now has another logical address,
+  every later call returns this conflict. After operator review, recover by
+  starting a new traversal (`scanPage()` without state).
 
 State size is bounded only by the page bound: `seen` and `metadata` hold up to
 10,000 × `limit` entries (one million at the default limit of 100), and each page
@@ -799,8 +812,12 @@ Each result retains its classified `anchor` and discriminated `outcome`:
 `signature-invalid`, `unverifiable`, `indeterminate` or `verified`. A history row
 whose binding is not yet in the index is `indeterminate` with
 `code: "binding-not-yet-visible"`, as in `write`, which anchors before it
-publishes. Known binding conflicts carry `code: "binding-conflict"` in the
-underlying resolver/read API and are `conflict` here. A row whose history `owner`
+publishes. `unreadable` is handled and enters `seen`, but it can be temporary: a
+lagging node can report a history-confirmed anchor as not found. Neither a retry
+nor a restart from a valid state re-reads it; start a new traversal or check it
+with `repository.read`. Known binding conflicts carry
+`code: "binding-conflict"` in the underlying resolver/read API and are
+`conflict` here. A row whose history `owner`
 differs from `expectedOwner` is `binding-mismatch`; this check depends on the
 fetcher returning `owner` (the Demos fetcher does). Without it, only the binding
 owner check, the native-address check and the verifier constrain the row. Only an
@@ -814,8 +831,13 @@ unsupported kind or version, which produces a final `unverifiable` with
 and produces a retryable `indeterminate` with `code: "verifier-unavailable"`.
 That includes an error that only carries `code: "unsupported-kind"`, such as a
 forwarded service error body: the check is `instanceof`, so throw the class
-exported by this package. Neither classification, a verified artifact nor
-`exhausted: true` proves complete enumeration, freshness, or non-revocation;
+exported by this package. The verifier and the repository must use the same
+installed copy of the package: an instance from another copy, such as a
+duplicated bundle, is not recognized and stays retryable. A row of an
+unclassified kind is a final `unsupported-kind` without calling the verifier.
+A missing or non-function `verifyArtifact` is refused when the repository is
+created. Neither classification, a verified artifact nor `exhausted: true`
+proves complete enumeration, freshness, or non-revocation;
 perform the artifact's protocol-specific admission and revocation checks before
 using it.
 
