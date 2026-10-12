@@ -69,6 +69,12 @@ const AUTHORITY_FIELDS = Object.freeze(Object.keys({
   supportedScope: true,
 } satisfies Record<keyof LiquidityTankAuthority, true>));
 const DEFAULT_LEASE_MS = 30_000;
+/**
+ * How far a fresh submission's `preparedAt` may sit from this host's clock
+ * readings around preparation: room for the adapter's clock skew, while a
+ * seconds-scale value is decades outside it.
+ */
+const PREPARATION_CLOCK_SKEW_MS = 60_000;
 const ETH_SEPOLIA_CHAIN_ID = 11_155_111;
 const POLYGON_AMOY_CHAIN_ID = 80_002;
 
@@ -203,7 +209,8 @@ export interface LiquidityTankEffectFence {
  * It must not broadcast, log or otherwise reveal the signed bytes before
  * `recordSubmission` commits them: if the worker stops in between, the next
  * owner signs a fresh submission and the first bytes must never reach the
- * bridge. `preparedAt` is Unix milliseconds.
+ * bridge. `preparedAt` is Unix milliseconds from a clock within one minute of
+ * the host's; the core refuses a fresh submission stamped outside that window.
  */
 export interface LiquidityTankAdapter {
   prepareSubmission(
@@ -660,27 +667,45 @@ function recoveryDeadlineUnixMs(value: unknown): number {
   return requireUInt(value, "recoveryDeadline", true);
 }
 
-/** A recovery deadline earlier than the submission it recovers, such as one sent in seconds. */
-class RecoveryDeadlineBeforePreparationError extends DacsError {}
+/**
+ * A bridge time earlier than the submission it describes, such as one sent in
+ * seconds; `reason` names the field.
+ */
+class BeforePreparationError extends DacsError {
+  readonly reason: string;
 
-const RECOVERY_DEADLINE_BEFORE_PREPARATION = "liquidity-tank-recovery-deadline-before-preparation";
+  constructor(reason: string, label: string) {
+    super(`pay-cross-chain-liquidity-tank: ${label} is before the submission was prepared`);
+    this.reason = reason;
+  }
+}
 
 /**
- * The deadline of a lock on `submission`, which cannot fall before the
- * submission was prepared. No unit heuristic: a seconds-scale deadline is
+ * A bridge time on `submission`'s operation, which cannot fall before the
+ * submission was prepared. No unit heuristic: a seconds-scale value is
  * refused, not converted.
  */
+function afterPreparation(
+  time: number,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+  reason: string,
+  label: string,
+): number {
+  if (time < submission.preparedAt) throw new BeforePreparationError(reason, label);
+  return time;
+}
+
+/** The deadline of a lock on `submission`, which is set when the lock commits. */
 function recoveryDeadlineAfterPreparation(
   value: unknown,
   submission: Readonly<LiquidityTankPreparedSubmission>,
 ): number {
-  const recoveryDeadline = recoveryDeadlineUnixMs(value);
-  if (recoveryDeadline < submission.preparedAt) {
-    throw new RecoveryDeadlineBeforePreparationError(
-      "pay-cross-chain-liquidity-tank: recoveryDeadline is before the submission was prepared",
-    );
-  }
-  return recoveryDeadline;
+  return afterPreparation(
+    recoveryDeadlineUnixMs(value),
+    submission,
+    "liquidity-tank-recovery-deadline-before-preparation",
+    "recoveryDeadline",
+  );
 }
 
 function stableDataProperty(
@@ -1170,13 +1195,30 @@ function validateCapturedObservation(
     if (value.lockTxHash !== undefined) {
       requireString(value.lockTxHash, "lockTxHash");
       recoveryDeadlineAfterPreparation(value.recoveryDeadline, submission);
+      // A locked snapshot proves expiry by its `observedAt`, and the lock it
+      // describes committed after the submission was signed.
+      if (value.status === "pending") {
+        afterPreparation(
+          value.observedAt,
+          submission,
+          "liquidity-tank-lock-observed-before-preparation",
+          "locked pending observedAt",
+        );
+      }
     }
   }
   if (value.status === "completed") {
     requireString(value.lockTxHash, "lockTxHash");
     requireString(value.releaseTxHash, "releaseTxHash");
     recoveryDeadlineAfterPreparation(value.recoveryDeadline, submission);
-    requireUInt(value.finalityObservedAt, "finalityObservedAt");
+    // Timeliness compares finality with the deadline: a release cannot
+    // finalize before its submission was signed.
+    afterPreparation(
+      requireUInt(value.finalityObservedAt, "finalityObservedAt"),
+      submission,
+      "liquidity-tank-finality-before-preparation",
+      "finalityObservedAt",
+    );
   }
   if (value.status === "failed" || value.status === "capacity-unavailable") {
     requireString(value.reason, "reason");
@@ -1287,12 +1329,12 @@ function validateRecoveryEvidence(
   return checkpoint;
 }
 
-/** A retained row the core refuses to act on; both reasons need an operator. */
+/** A retained row the core refuses to act on; every such reason needs an operator. */
 function retainedStateRefusal(error: unknown): LiquidityTankProgress {
   return {
     status: "indeterminate",
-    reason: error instanceof RecoveryDeadlineBeforePreparationError
-      ? RECOVERY_DEADLINE_BEFORE_PREPARATION
+    reason: error instanceof BeforePreparationError
+      ? error.reason
       : "liquidity-tank-retained-state-corrupt",
   };
 }
@@ -1724,6 +1766,13 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-submission-preparation-unavailable" };
     }
+    // Every bridge time on this submission is checked against `preparedAt`,
+    // so it must come from a clock within the skew window of this host's
+    // readings before and after preparation.
+    if (claimNow - submission.preparedAt > PREPARATION_CLOCK_SKEW_MS ||
+        submission.preparedAt - latestNow > PREPARATION_CLOCK_SKEW_MS) {
+      return { status: "indeterminate", reason: "liquidity-tank-preparation-time-off-host-clock" };
+    }
     // Bytes that do not sign exactly this intent are neither stored nor broadcast.
     if (!await verified(submission)) {
       return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
@@ -1887,7 +1936,7 @@ export async function advanceLiquidityTankSettlement(
 
   // Set when this call's observation must not be used at all, not even to
   // fall back on durable progress: the host's authenticator refused it, or
-  // its deadline cannot belong to this submission.
+  // one of its times falls before this submission was prepared.
   let observationRefusal: LiquidityTankProgress | undefined;
   const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
     const unavailable = {
@@ -1903,8 +1952,8 @@ export async function advanceLiquidityTankSettlement(
         submission,
       );
     } catch (error) {
-      if (error instanceof RecoveryDeadlineBeforePreparationError) {
-        observationRefusal = { status: "indeterminate", reason: RECOVERY_DEADLINE_BEFORE_PREPARATION };
+      if (error instanceof BeforePreparationError) {
+        observationRefusal = { status: "indeterminate", reason: error.reason };
       }
       return unavailable;
     }

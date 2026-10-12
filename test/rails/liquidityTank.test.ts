@@ -164,6 +164,7 @@ function harness(initial?: LiquidityTankObservation) {
   let observation: LiquidityTankObservation = initial ?? empty(intent.operationHash);
   let throwOnce = false;
   let nextAfterBroadcast: LiquidityTankObservation | undefined;
+  let preparedAt = 900;
   const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound, fence) => {
     await fence.assertCurrent();
     return {
@@ -173,7 +174,7 @@ function harness(initial?: LiquidityTankObservation) {
       bridgeId: BRIDGE_ID,
       substrateTxHash: "demos-native-bridge-tx",
       signedSubmissionBase64: Buffer.from("signed-native-bridge", "utf8").toString("base64"),
-      preparedAt: 900,
+      preparedAt,
     };
   });
   const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async (_submission, fence) => {
@@ -195,6 +196,8 @@ function harness(initial?: LiquidityTankObservation) {
     observe,
     setObservation(value: LiquidityTankObservation) { observation = value; },
     setAfterBroadcast(value: LiquidityTankObservation) { nextAfterBroadcast = value; },
+    /** The adapter stamps `preparedAt` from its clock, which must be near the host's. */
+    setPreparedAt(value: number) { preparedAt = value; },
     failNextBroadcast() { throwOnce = true; },
     operationHash: intent.operationHash,
   };
@@ -984,7 +987,8 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("a Unix-millisecond recovery deadline remains open at deadline minus one", async () => {
     const h = harness();
-    h.setAfterBroadcast(pending(h.operationHash, true));
+    h.setPreparedAt(RECOVERY_DEADLINE_MS - 1);
+    h.setAfterBroadcast(pending(h.operationHash, true, RECOVERY_DEADLINE_MS, RECOVERY_DEADLINE_MS - 1));
     const run = runner({ adapter: h.adapter });
     run.setClock(RECOVERY_DEADLINE_MS - 1);
 
@@ -1000,6 +1004,7 @@ describe("advanceLiquidityTankSettlement", () => {
       createLiquidityTankIntent(authority()).operationHash,
       RECOVERY_DEADLINE_MS - 1,
     ));
+    h.setPreparedAt(RECOVERY_DEADLINE_MS - 1);
     const store = createInMemoryLiquidityTankStore(VOLATILE);
     const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
     const run = runner({ adapter: h.adapter, store });
@@ -1476,17 +1481,21 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("does not reinterpret a seconds-scale deadline as Unix milliseconds", async () => {
     const h = harness();
+    // Prepared at the host clock, as the adapter must: the seconds-scale
+    // deadline falls before it and is refused, neither converted nor expired.
+    h.setPreparedAt(RECOVERY_DEADLINE_MS - 1);
     const secondsScale = RECOVERY_DEADLINE_MS / 1_000;
     h.setAfterBroadcast(pending(h.operationHash, true, secondsScale, RECOVERY_DEADLINE_MS - 1));
-    const run = runner({ adapter: h.adapter });
+    const store = createInMemoryLiquidityTankStore(VOLATILE);
+    const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+    const run = runner({ adapter: h.adapter, store });
     run.setClock(RECOVERY_DEADLINE_MS - 1);
 
     await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
-      status: "failed",
-      errorClass: "failed-substrate",
-      reason: "tank-locked-unreleased-recovery-expired",
-      reputationNeutral: true,
+      status: "indeterminate",
+      reason: "liquidity-tank-recovery-deadline-before-preparation",
     });
+    expect(recordRecoveryExpired).not.toHaveBeenCalled();
   });
 
   test("locked-unreleased resolves forward to success when release lands", async () => {
@@ -5257,6 +5266,198 @@ describe("round 10", () => {
         expect(write).toHaveBeenCalled();
         for (const [input] of write.mock.calls) expect(input.now).toBe(1_000);
       }
+    });
+  });
+});
+
+describe("round 11", () => {
+  const D = RECOVERY_DEADLINE_MS;
+  /** A Unix-millisecond preparation time, five days before the deadline. */
+  const PREPARED_AT_MS = D - 5 * 86_400_000;
+  const seconds = (ms: number) => Math.floor(ms / 1_000);
+
+  /** An adapter stamping `PREPARED_AT_MS`, with the host clock one second later. */
+  function preparedRun(store = createInMemoryLiquidityTankStore(VOLATILE)) {
+    const h = harness();
+    h.setPreparedAt(PREPARED_AT_MS);
+    const run = runner({ store, adapter: h.adapter, leaseDurationMs: 1 });
+    run.setClock(PREPARED_AT_MS + 1_000);
+    return { h, run, store };
+  }
+
+  describe("finding 3: bridge times in another unit are refused", () => {
+    test("a submission and deadline both in seconds are never stored, broadcast or expired (probe U1)", async () => {
+      const { h, run, store } = preparedRun();
+      h.setPreparedAt(seconds(PREPARED_AT_MS));
+      h.setAfterBroadcast(pending(h.operationHash, true, seconds(D), PREPARED_AT_MS + 1_000));
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-preparation-time-off-host-clock",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      // Once the adapter stamps milliseconds, the next owner signs afresh and locks.
+      h.setPreparedAt(PREPARED_AT_MS + 1_000);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 2_000));
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased", pastDeadline: false,
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(2);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      ["a minute before the host clock", (now: number) => now - 60_000, true],
+      ["more than a minute before it", (now: number) => now - 60_001, false],
+      ["a minute after it", (now: number) => now + 60_000, true],
+      ["more than a minute after it", (now: number) => now + 60_001, false],
+      ["in microseconds", (now: number) => now * 1_000, false],
+    ])("a fresh preparedAt %s is used only inside the window", async (_label, stamp, used) => {
+      const { h, run, store } = preparedRun();
+      const preparedAt = stamp(PREPARED_AT_MS + 1_000);
+      h.setPreparedAt(preparedAt);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, Math.max(preparedAt, PREPARED_AT_MS + 1_000)));
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const result = await advanceLiquidityTankSettlement(run.shared);
+      if (used) {
+        expect(result).toMatchObject({ status: "settle-asymmetric" });
+        expect(recordSubmission).toHaveBeenCalledWith(expect.objectContaining({
+          submission: expect.objectContaining({ preparedAt }),
+        }));
+      } else {
+        expect(result).toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-preparation-time-off-host-clock",
+        });
+        expect(recordSubmission).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      }
+    });
+
+    test("a seconds-scale finalityObservedAt never settles a release that missed the deadline (probe U2)", async () => {
+      const { h, run, store } = preparedRun();
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 1_000));
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "settle-asymmetric",
+      });
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      const recordSettlement = vi.spyOn(store, "recordSettlement");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      // The release finalized 100 s after the deadline; the adapter sent the block time in seconds.
+      h.setObservation(completed(h.operationHash, seconds(D + 100_000)));
+      run.setClock(D + 200_000);
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-finality-before-preparation",
+      });
+      expect(recordObservation).not.toHaveBeenCalled();
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      // The same release sent in milliseconds is late, and the lock expires.
+      h.setObservation(completed(h.operationHash, D + 100_000));
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "failed", errorClass: "failed-substrate",
+      });
+      expect(recordSettlement).not.toHaveBeenCalled();
+    });
+
+    test("a seconds-scale observedAt on a locked pending is refused, not kept as the checkpoint", async () => {
+      const { h, run, store } = preparedRun();
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, seconds(PREPARED_AT_MS + 1_000)));
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-lock-observed-before-preparation",
+      });
+      expect(recordObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        observation: expect.objectContaining({ status: "pending" }),
+      }));
+      // A later read in milliseconds locks the same submission.
+      h.setObservation(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 2_000));
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test("retained rows timed before preparation are refused with no effects", async () => {
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      const { h, run } = preparedRun(inner);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 1_000));
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "settle-asymmetric",
+      });
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+      const recordSettlement = vi.spyOn(inner, "recordSettlement");
+      const recordRecoveryExpired = vi.spyOn(inner, "recordRecoveryExpired");
+      const holding = (observation: LiquidityTankObservation): LiquidityTankStore => ({
+        ...inner,
+        claim: async (input) => {
+          const claimed = await inner.claim(input);
+          return claimed.status === "acquired" ? { ...claimed, observation: observation as never } : claimed;
+        },
+      });
+      // Read as timely against the deadline, though finalized 100 s after it.
+      const lateInSeconds = completed(h.operationHash, seconds(D + 100_000));
+      run.setClock(D + 200_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), store: holding(lateInSeconds) }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-finality-before-preparation" });
+      await expect(advanceLiquidityTankSettlement({
+        ...run.nextOwner(),
+        store: holding(lockedPendingAt(h.operationHash, seconds(PREPARED_AT_MS + 1_000))),
+      })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-lock-observed-before-preparation" });
+      const expired: LiquidityTankStore = {
+        ...inner,
+        claim: async (input) => {
+          const claimed = await inner.claim(input);
+          if (claimed.status !== "acquired" || !claimed.submission) return claimed;
+          return {
+            status: "recovery-expired",
+            intent: claimed.intent,
+            submission: claimed.submission,
+            observation: lateInSeconds as never,
+          };
+        },
+      };
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), store: expired }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-finality-before-preparation" });
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+    });
+
+    test("the reference store refuses an observation timed before its submission was prepared", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const intent = createLiquidityTankIntent(authority());
+      const claim = await store.claim({ intent, owner: "w", now: PREPARED_AT_MS, leaseDurationMs: 1_000 });
+      if (claim.status !== "acquired") throw new Error("expected acquired");
+      const write = {
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "w", generation: claim.lease.generation, now: PREPARED_AT_MS,
+      };
+      await expect(store.recordSubmission({ ...write, submission: {
+        submissionVersion: "1", authorityHash: intent.bindingHash, operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx",
+        signedSubmissionBase64: Buffer.from("signed-native-bridge").toString("base64"),
+        preparedAt: PREPARED_AT_MS, submissionHash: "e".repeat(64),
+      } })).resolves.toEqual({ status: "recorded" });
+      for (const early of [
+        lockedPendingAt(intent.operationHash, seconds(PREPARED_AT_MS)),
+        completed(intent.operationHash, seconds(D - 1_000)),
+      ]) {
+        await expect(store.recordObservation({ ...write, observation: early }))
+          .resolves.toEqual({ status: "conflict", reason: "liquidity-tank-observation-invalid" });
+      }
+      await expect(store.recordObservation({ ...write, observation: completed(intent.operationHash, D - 1_000) }))
+        .resolves.toEqual({ status: "recorded" });
     });
   });
 });

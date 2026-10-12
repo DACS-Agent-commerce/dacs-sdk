@@ -34,11 +34,8 @@ The core:
   deadline while its bridge reads contradict it. `recoveryDeadline` is an exact Unix-millisecond timestamp throughout
   pending and completed adapter observations, durable checkpoints, settlement
   replay records, progress and transaction evidence;
-  seconds-scale values are not converted or heuristically reinterpreted. A
-  deadline earlier than the submission's `preparedAt` (also Unix milliseconds),
-  such as one sent in seconds, is refused as
-  `liquidity-tank-recovery-deadline-before-preparation`, whether the adapter
-  just returned it or a store row holds it. A completion is timely only when
+  seconds-scale values are not converted or heuristically reinterpreted (see
+  [Timestamp units](#timestamp-units)). A completion is timely only when
   `finalityObservedAt < recoveryDeadline`; equality is expired. Expiry needs
   authenticated evidence; see below.
 
@@ -119,6 +116,39 @@ wins; a failed completion write never triggers expiry in that call.
 
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
+
+## Timestamp units
+
+`preparedAt`, `observedAt`, `recoveryDeadline` and `finalityObservedAt` are
+Unix milliseconds and are compared exactly as sent; a value in seconds is
+refused, never converted. The core catches a seconds-scale value where it has
+something to compare it with:
+
+- **A fresh submission's `preparedAt`** must lie within one minute of this
+  host's clock readings before and after `prepareSubmission`. Otherwise the
+  core returns `liquidity-tank-preparation-time-off-host-clock` and stores and
+  broadcasts nothing, so a submission stamped in seconds never starts a bridge
+  operation, and the next owner signs afresh.
+- **No bridge time on the operation may fall before `preparedAt`:** not a
+  `recoveryDeadline` (`liquidity-tank-recovery-deadline-before-preparation`),
+  a completion's `finalityObservedAt`
+  (`liquidity-tank-finality-before-preparation`), or a locked pending's
+  `observedAt` (`liquidity-tank-lock-observed-before-preparation`). A value the
+  adapter just returned is then not used at all, not even to fall back on
+  durable progress; a stored row holding one is refused before any effect. So
+  a seconds-scale deadline cannot expire a fresh lock at once, and a
+  seconds-scale finality cannot make a late release look timely.
+
+What the adapter must still guarantee is that every bridge time is Unix
+milliseconds from the bridge's authenticated record. The core cannot catch a
+value that is too large, such as one in microseconds: a deadline in
+microseconds never arrives, so the lock stays open and any release reads as
+timely; a finality in microseconds reads as late, so once the host clock
+reaches the deadline a timely release is expired as `failed-substrate`. A
+retained submission's `preparedAt` was bound to the host clock when it was
+prepared and is not bound again; the ordering checks run on every stored row.
+A settled row carries no `preparedAt`, so its `finalityObservedAt` is checked
+only against its deadline.
 
 ## Host verifier
 
@@ -353,9 +383,14 @@ operator rather than polling:
   an observation or signed bytes. A verifier that throws because its own
   dependency is down lands here too: still retry-safe, but a repeat needs an
   operator, not polling;
-- `liquidity-tank-recovery-deadline-before-preparation`: the adapter or a
-  stored row carries a deadline earlier than the submission, such as one in
-  seconds;
+- `liquidity-tank-recovery-deadline-before-preparation`,
+  `liquidity-tank-finality-before-preparation` and
+  `liquidity-tank-lock-observed-before-preparation`: the adapter or a stored
+  row carries a bridge time earlier than the submission, such as one in
+  seconds (see [Timestamp units](#timestamp-units));
+- `liquidity-tank-preparation-time-off-host-clock`: the adapter stamped a
+  fresh submission more than a minute from this host's clock, such as in
+  seconds; nothing was stored or broadcast;
 - any reason that starts with `pay-cross-chain-liquidity-tank:` (a refused
   authority, owner, lease, clock, store or adapter);
 - a capture refusal: `liquidity-tank authority is not stable canonical JSON`,
