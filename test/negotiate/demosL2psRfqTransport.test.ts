@@ -1,7 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -27,6 +29,8 @@ import {
   createDemosL2psRfqTransport,
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
+  DacsError,
+  DemosL2psRfqPeerChannelError,
   rfqLifecyclePacketId,
   TransientError,
   type AttestationRef,
@@ -196,6 +200,10 @@ function claimForPeer(peer: string): string | undefined {
   return undefined;
 }
 
+/**
+ * An in-process stand-in for a node. Its peers expose no URL, so every
+ * transport over them states peerChannel: "loopback".
+ */
 class FakeL2psHub {
   readonly messages: DemosL2psRfqStoredMessage[] = [];
   readonly handlers = new Map<string, Set<DemosL2psRfqMessageHandler>>();
@@ -332,6 +340,7 @@ async function buyerWithSentOffer(options: {
       : { ...basePeer, history: options.history(basePeer.history) },
     codec: options.codec?.(baseCodec) ?? baseCodec,
     l2psUid: L2PS_UID,
+    peerChannel: "loopback",
     outboxStore: memorySendOutbox(),
     localClaim: BUYER,
     localPeerKey: BUYER_PEER,
@@ -375,6 +384,7 @@ async function inboundReceiver(options: {
       open: options.open?.(sent.baseCodec) ?? ((encrypted, context) => sent.baseCodec.open(encrypted, context)),
     },
     l2psUid: L2PS_UID,
+    peerChannel: "loopback",
     outboxStore: memorySendOutbox(),
     localClaim: SELLER,
     localPeerKey: SELLER_PEER,
@@ -531,6 +541,7 @@ async function delayedSendFixture(options: {
         return codec.seal(bytes, context);
       } },
       l2psUid: L2PS_UID, localClaim: BUYER, localPeerKey: BUYER_PEER,
+      peerChannel: "loopback",
       peerForClaim, claimForPeer, onError: vi.fn(), outboxStore,
       monotonicNowMs: () => ticks, operationTimeoutMs: 200,
       ...(options.graceMs === undefined ? {} : { sendAbsenceGraceMs: options.graceMs }),
@@ -598,6 +609,56 @@ async function delayedSendFixture(options: {
     showHistory() { visible = true; },
     async cleanup() { vi.useRealTimers(); await rm(dir, { recursive: true }); },
   };
+}
+
+/**
+ * demosdk's own L2PSMessagingPeer from the installed build, so a later 4.x
+ * that moves config.serverUrl fails these tests. The package has no focused
+ * public export for it yet (kynesyslabs/sdks#125). The module has no imports,
+ * and constructing a peer opens no socket.
+ */
+async function demosPeer(config: object): Promise<DemosL2psRfqPeerLike> {
+  const build = dirname(createRequire(import.meta.url).resolve("@kynesyslabs/demosdk"));
+  const { L2PSMessagingPeer } = await import(
+    pathToFileURL(join(build, "instant_messaging", "L2PSMessagingPeer.js")).href
+  ) as { L2PSMessagingPeer: new (config: object) => DemosL2psRfqPeerLike };
+  return new L2PSMessagingPeer(config);
+}
+
+function demosConfig(serverUrl: unknown) {
+  return { serverUrl, publicKey: BUYER_PEER, l2psUid: L2PS_UID, signFn: () => "00" };
+}
+
+function channelOptions(peer: DemosL2psRfqPeerLike, peerChannel?: unknown): DemosL2psRfqTransportOptions {
+  return {
+    peer,
+    codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+    l2psUid: L2PS_UID,
+    outboxStore: memorySendOutbox(),
+    localClaim: BUYER,
+    localPeerKey: BUYER_PEER,
+    peerForClaim,
+    claimForPeer,
+    onError: vi.fn(),
+    ...(peerChannel === undefined ? {} : { peerChannel: peerChannel as "wss" }),
+  };
+}
+
+/** The construction error, or undefined when the transport was built. */
+function constructionError(options: DemosL2psRfqTransportOptions): unknown {
+  try {
+    createDemosL2psRfqTransport(options);
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function expectChannelRefusal(options: DemosL2psRfqTransportOptions, code: string): Error {
+  const error = constructionError(options);
+  expect(error).toMatchObject({ name: "DemosL2psRfqPeerChannelError", code });
+  expect(error).toBeInstanceOf(DemosL2psRfqPeerChannelError);
+  return error as Error;
 }
 
 describe("Demos L2PS durable RFQ transport", () => {
@@ -853,6 +914,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         open: (encrypted, context) => base.open(encrypted, context),
       },
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -959,6 +1021,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         },
         codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
         l2psUid: L2PS_UID,
+        peerChannel: "loopback",
         outboxStore: memorySendOutbox(),
         monotonicNowMs: () => ticks,
         localClaim,
@@ -1003,6 +1066,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(localPeerKey),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim,
       localPeerKey,
@@ -1040,6 +1104,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: {
         load: (packetId) => structuredClone(entries.get(packetId)),
         save(packetId, entry) {
@@ -1110,6 +1175,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: baseCodec,
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
@@ -1160,6 +1226,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       },
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: {
         load: store.load,
         save(packetId, entry, expectedGeneration) {
@@ -1210,6 +1277,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback" as const,
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       peerForClaim,
@@ -1230,6 +1298,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: sent.hub.peer(BUYER_PEER),
       codec: sent.baseCodec,
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -1242,6 +1311,111 @@ describe("Demos L2PS durable RFQ transport", () => {
       disposition: "rejected", reason: "resolved peer key must be a hex public key",
     });
     expect(sent.hub.sends).toBe(sendsBefore);
+  });
+
+  test("round 8: a real demosdk peer on plain ws:// is accepted only for a loopback IP literal", async () => {
+    for (const serverUrl of [
+      "ws://127.0.0.1:3006", "ws://127.8.9.10", "ws://127.1:3006", "WS://127.0.0.1",
+      "ws://[::1]:3006", "ws://[0:0:0:0:0:0:0:1]",
+    ]) {
+      expect(constructionError(channelOptions(await demosPeer(demosConfig(serverUrl))))).toBeUndefined();
+    }
+    for (const serverUrl of [
+      // localhost is a name the resolver maps, so it never counts, in any form.
+      "ws://localhost:3006", "ws://LOCALHOST", "ws://localhost.", "ws://rfq.localhost",
+      "ws://notlocalhost", "ws://127.0.0.1.example", "ws://127.0.0.1@node.example",
+      "ws://[::ffff:127.0.0.1]", "ws://128.0.0.1", "ws://0.0.0.0",
+      "http://127.0.0.1", "https://node.example",
+    ]) {
+      expectChannelRefusal(channelOptions(await demosPeer(demosConfig(serverUrl))), "insecure");
+    }
+  });
+
+  test("round 8: a real demosdk peer on remote ws:// is refused whatever peerChannel says, naming no secret", async () => {
+    // demosdk's own JSDoc URL shape, pointed at a remote node.
+    const url = "ws://rfq-user:s3cret-pass@node.example:3006/l2ps?token=hunter2";
+    for (const peerChannel of [undefined, "wss", "loopback"]) {
+      const error = expectChannelRefusal(channelOptions(await demosPeer(demosConfig(url)), peerChannel), "insecure");
+      for (const secret of ["rfq-user", "s3cret-pass", "node.example", "hunter2"]) {
+        expect(error.message).not.toContain(secret);
+        expect(String(error.stack)).not.toContain(secret);
+      }
+      expect(error.cause).toBeUndefined();
+    }
+  });
+
+  test("round 8: a real demosdk peer whose URL is not a string that parses is refused", async () => {
+    for (const serverUrl of [
+      "", "not a url", "ws://", "ws://[::1", "ws://127.0.0.256", "wss://exa mple.com",
+      // Readable but not a string: the peer still dials it, so peerChannel cannot vouch.
+      new URL("ws://node.example:3006"), new URL("wss://node.example:3006"), undefined, 3006,
+    ]) {
+      for (const peerChannel of [undefined, "wss", "loopback"]) {
+        const error = expectChannelRefusal(
+          channelOptions(await demosPeer(demosConfig(serverUrl)), peerChannel), "malformed");
+        // Node's URL error carries the input, so it must not ride along.
+        expect(error.cause).toBeUndefined();
+      }
+    }
+  });
+
+  test("round 8: a real demosdk peer on wss:// is accepted, and peerChannel must match a URL it can read", async () => {
+    const wss = demosConfig("wss://node.example:3006");
+    const loopback = demosConfig("ws://127.0.0.1:3006");
+    expect(constructionError(channelOptions(await demosPeer(wss)))).toBeUndefined();
+    expect(constructionError(channelOptions(await demosPeer(wss), "wss"))).toBeUndefined();
+    expect(constructionError(channelOptions(await demosPeer(loopback), "loopback"))).toBeUndefined();
+    expectChannelRefusal(channelOptions(await demosPeer(wss), "loopback"), "mismatch");
+    expectChannelRefusal(channelOptions(await demosPeer(loopback), "wss"), "mismatch");
+  });
+
+  test("round 8: a peer that hides its URL is refused unless peerChannel states the channel", async () => {
+    const hub = new FakeL2psHub();
+    const hidden: DemosL2psRfqPeerLike[] = [
+      hub.peer(BUYER_PEER),
+      // A wrapper's own config without a string serverUrl tells nothing.
+      Object.assign(hub.peer(BUYER_PEER), { config: { endpoint: "wss://node.example" } }),
+      Object.assign(hub.peer(BUYER_PEER), { config: "wss://node.example" }),
+    ];
+    for (const peer of hidden) {
+      expectChannelRefusal(channelOptions(peer), "unstated");
+      for (const peerChannel of ["wss", "loopback"]) {
+        expect(constructionError(channelOptions(peer, peerChannel))).toBeUndefined();
+      }
+      for (const peerChannel of ["ws", "WSS", "tls", "ws://127.0.0.1:3006", true, null]) {
+        const error = constructionError(channelOptions(peer, peerChannel));
+        expect(error).toBeInstanceOf(DacsError);
+        expect((error as Error).message).toBe('Demos L2PS RFQ peerChannel must be "wss" or "loopback"');
+      }
+    }
+  });
+
+  test("round 8: a getter-backed, inherited or proxied config or serverUrl is never read and counts as hidden", async () => {
+    const reads = vi.fn();
+    const wssConfig = () => demosConfig("wss://node.example:3006");
+    // demosdk keeps the caller's config object, so its getter sits on the real peer.
+    const getterUrl = await demosPeer(Object.defineProperty(wssConfig(), "serverUrl", {
+      enumerable: true, get: () => { reads(); return "wss://node.example:3006"; },
+    }));
+    const getterConfig = await demosPeer(wssConfig());
+    Object.defineProperty(getterConfig, "config", {
+      enumerable: true, get: () => { reads(); return wssConfig(); },
+    });
+    const proxiedConfig = await demosPeer(new Proxy(wssConfig(), {
+      get: (target, key, receiver) => { reads(); return Reflect.get(target, key, receiver); },
+      getOwnPropertyDescriptor: (target, key) => { reads(); return Reflect.getOwnPropertyDescriptor(target, key); },
+      has: (target, key) => { reads(); return Reflect.has(target, key); },
+      ownKeys: (target) => { reads(); return Reflect.ownKeys(target); },
+    }));
+    const inherited = Object.assign(
+      Object.create({ config: wssConfig() }) as object, new FakeL2psHub().peer(BUYER_PEER),
+    ) as DemosL2psRfqPeerLike;
+    for (const peer of [getterUrl, getterConfig, proxiedConfig, inherited]) {
+      expectChannelRefusal(channelOptions(peer), "unstated");
+      // Each would read as wss://, which a stated "loopback" contradicts.
+      expect(constructionError(channelOptions(peer, "loopback"))).toBeUndefined();
+    }
+    expect(reads).not.toHaveBeenCalled();
   });
 
   test("round 4: a stuck consumer from a retired generation does not hold back the next one", async () => {
@@ -1430,6 +1604,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback" as const,
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
@@ -1638,6 +1813,7 @@ describe("Demos L2PS durable RFQ transport", () => {
           throw new Error("temporary codec outage");
         } },
         localClaim: SELLER, localPeerKey: SELLER_PEER, l2psUid: L2PS_UID,
+        peerChannel: "loopback",
         outboxStore: memorySendOutbox(),
         peerForClaim, claimForPeer, onError: vi.fn(), operationTimeoutMs: 20, historyPageSize: 1,
       });
@@ -1764,6 +1940,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -1775,6 +1952,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
@@ -1846,6 +2024,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -1858,6 +2037,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
@@ -1910,6 +2090,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -1966,6 +2147,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -1996,6 +2178,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2035,6 +2218,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         open: () => new Uint8Array(),
       },
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2098,6 +2282,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec,
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2170,6 +2355,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2210,6 +2396,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       monotonicNowMs: () => ticks,
       localClaim: BUYER,
@@ -2270,6 +2457,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2325,6 +2513,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
@@ -2359,6 +2548,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       localClaim: SELLER,
       localPeerKey: SELLER_PEER,
@@ -2485,6 +2675,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       },
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback",
       outboxStore: memorySendOutbox(),
       monotonicNowMs: () => ticks,
       localClaim: BUYER,
@@ -2677,6 +2868,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       peer,
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
+      peerChannel: "loopback" as const,
       outboxStore: memorySendOutbox(),
       localClaim,
       localPeerKey,

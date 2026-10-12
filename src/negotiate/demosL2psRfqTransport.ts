@@ -39,6 +39,9 @@ const MAX_LIVE_BYTES = 64 * 1024 * 1024;
 const WIRE_DOMAIN = "dacs-rfq-l2ps-wire:v1";
 const HASH = /^[0-9a-f]{64}$/;
 const PEER_KEY = /^[0-9a-f]{64,}$/;
+// Matched against a WHATWG-parsed hostname, where IPv4 is already dotted
+// decimal (127.1 and 0x7f000001 become 127.0.0.1).
+const LOOPBACK_IPV4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFAULT_HISTORY_MAX_PAGES = 100;
 const DEFAULT_OPERATION_TIMEOUT_MS = 20_000;
@@ -85,6 +88,26 @@ class OperationTimeoutError extends DacsError {}
 class ConsumerTimeoutError extends TransientError {}
 /** The built-in codec proved a stored frame cannot open for its route. */
 class WireFrameAuthenticationError extends DacsError {}
+
+const PEER_CHANNEL_MESSAGES = {
+  unstated:
+    'Demos L2PS RFQ peer does not expose its URL; set peerChannel to "wss" or "loopback"',
+  malformed: "Demos L2PS RFQ peer URL is malformed",
+  insecure:
+    "Demos L2PS RFQ peer URL must be wss://, or ws:// to a loopback IP literal (127.0.0.0/8 or [::1])",
+  mismatch: "Demos L2PS RFQ peerChannel does not match the peer's URL",
+} as const;
+
+/**
+ * Construction refused the peer's channel to its node. The message never
+ * repeats the URL, which may carry credentials.
+ */
+export class DemosL2psRfqPeerChannelError extends DacsError {
+  constructor(readonly code: keyof typeof PEER_CHANNEL_MESSAGES) {
+    super(PEER_CHANNEL_MESSAGES[code]);
+    this.name = "DemosL2psRfqPeerChannelError";
+  }
+}
 
 export interface DemosL2psRfqEncryptedMessage {
   ciphertext: string;
@@ -210,13 +233,30 @@ export interface DemosL2psRfqTransportOptions {
    * The peer, its WebSocket channel and the node behind it are the
    * acknowledgement authority. An acknowledgement is that node's unsigned
    * statement that it saved the message, and a stored one is final, so a
-   * node that lies can make the transport stop resending a message the
-   * recipient never received. Connect the peer over authenticated wss:// to
-   * a node you trust (your own, or one the operator pins), and use that same
-   * node for history and reconcile. Plain ws:// is only for a node on the
-   * same host. The transport cannot see the peer's URL and does not check it.
+   * node that lies, or anyone who can rewrite frames on the channel, can make
+   * the transport stop resending a message the recipient never received.
+   * Connect the peer over authenticated wss:// to a node you trust (your own,
+   * or one the operator pins), and use that same node for history and
+   * reconcile. Plain ws:// is accepted only to a loopback IP literal.
+   *
+   * demosdk 4.0.16 declares the peer's config private, but at runtime the URL
+   * it dials is the own data property config.serverUrl. That is not public
+   * API. At construction the transport reads it through own data descriptors
+   * only (no getter runs, no prototype is consulted) and refuses anything but
+   * wss:// or ws:// to 127.0.0.0/8 or [::1] with a
+   * DemosL2psRfqPeerChannelError; a readable value that is not a URL string
+   * is refused too. A peer without a readable config.serverUrl, such as a
+   * wrapper, must state its channel in `peerChannel`.
    */
   peer: DemosL2psRfqPeerLike;
+  /**
+   * The channel of a peer that does not expose its URL: "wss" for TLS to the
+   * node, or "loopback" for plain ws:// to 127.0.0.0/8 or [::1]. "loopback" is
+   * the only way to allow plain WebSocket for such a peer. Without a readable
+   * URL or this option, construction fails. When the peer exposes its URL,
+   * the URL decides and this option must match it.
+   */
+  peerChannel?: "wss" | "loopback";
   codec: DemosL2psRfqWireCodec;
   l2psUid: string;
   localClaim: string;
@@ -779,6 +819,57 @@ function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
   return { messages, hasMore: value.hasMore };
 }
 
+/** An own data property of a non-proxy object; no getter or trap runs. */
+function ownData(target: object, key: string): { value: unknown } | undefined {
+  if (nodeTypes.isProxy(target)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return descriptor !== undefined && "value" in descriptor
+    ? { value: descriptor.value }
+    : undefined;
+}
+
+/**
+ * demosdk 4.0.16 keeps the URL it dials on every (re)connect in the own data
+ * property config.serverUrl (L2PSMessagingPeer.js:37,223). The WebSocket
+ * client parses it with the same WHATWG URL parser used here. "localhost" is
+ * a name the system resolver maps, not a loopback literal, so it is refused.
+ */
+function checkPeerChannel(peer: object, stated: unknown): void {
+  if (stated !== undefined && stated !== "wss" && stated !== "loopback") {
+    throw new DacsError('Demos L2PS RFQ peerChannel must be "wss" or "loopback"');
+  }
+  const config = ownData(peer, "config")?.value;
+  const serverUrl = typeof config === "object" && config !== null
+    ? ownData(config, "serverUrl")
+    : undefined;
+  if (serverUrl === undefined) {
+    if (stated === undefined) throw new DemosL2psRfqPeerChannelError("unstated");
+    return;
+  }
+  // A readable value that is not a URL string is refused, never deferred to
+  // peerChannel: the peer dials it all the same.
+  if (typeof serverUrl.value !== "string") {
+    throw new DemosL2psRfqPeerChannelError("malformed");
+  }
+  let url: URL;
+  try {
+    url = new URL(serverUrl.value);
+  } catch {
+    // The parser's error carries the input, so it is never attached.
+    throw new DemosL2psRfqPeerChannelError("malformed");
+  }
+  const channel = url.protocol === "wss:"
+    ? "wss"
+    : url.protocol === "ws:" &&
+        (LOOPBACK_IPV4.test(url.hostname) || url.hostname === "[::1]")
+      ? "loopback"
+      : undefined;
+  if (channel === undefined) throw new DemosL2psRfqPeerChannelError("insecure");
+  if (stated !== undefined && stated !== channel) {
+    throw new DemosL2psRfqPeerChannelError("mismatch");
+  }
+}
+
 function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   if (
     !isRecord(value) ||
@@ -795,7 +886,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "onError",
         "outboxStore",
       ],
-      ["historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
+      ["peerChannel", "historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
     )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
@@ -841,6 +932,8 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
   }
+  // Before any of the peer's own properties is read.
+  checkPeerChannel(peer, descriptors.peerChannel?.value);
   const store = descriptors.outboxStore?.value as DemosL2psRfqTransportOptions["outboxStore"];
   const clock = descriptors.monotonicNowMs?.value ??
     (() => Number(process.hrtime.bigint() / 1_000_000n));
@@ -947,8 +1040,10 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
  * already-signed packet and verifies it on receipt. Acknowledgement means the
  * Demos peer returned the exact message hash as submitted/queued, or history
  * contains an exact decryptable packet; both come, unsigned, from the peer's
- * node, which the host must trust. Absence is returned only from a fully
- * exhausted first history page; ambiguous pagination never authorizes redrive.
+ * node, which the host must trust. Construction refuses a peer whose channel
+ * is not wss:// or loopback ws:// (see the `peer` option). Absence is returned
+ * only from a fully exhausted first history page; ambiguous pagination never
+ * authorizes redrive.
  */
 export function createDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqTransportOptions,

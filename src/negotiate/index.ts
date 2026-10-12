@@ -97,6 +97,7 @@ export {
 export {
   createDemosL2psRfqAesGcmCodec,
   createDemosL2psRfqTransport,
+  DemosL2psRfqPeerChannelError,
   type DemosL2psRfqEncryptedMessage,
   type DemosL2psRfqIncomingPayload,
   type DemosL2psRfqMessageStatus,
