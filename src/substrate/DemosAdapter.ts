@@ -387,6 +387,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+// HTTP statuses demosdk's own transport treats as "the node did not answer";
+// 408 and 429 likewise say nothing about the request's subject.
+const UNANSWERED_HTTP_STATUSES = new Set([408, 429, 502, 503, 504]);
+
+/**
+ * Classifies a Demos read result. demosdk's `call` returns
+ * `{ result: 500, response: TransportError }` for every failed POST; the
+ * TransportError's `cause` is the HTTP client error. A connection error,
+ * timeout or 408/429/502/503/504 left the read unanswered. Any other HTTP
+ * status, or a non-200 body the node returned itself, is the node's answer.
+ */
+function demosObservationFailure(value: unknown): "answered" | "unanswered" | null {
+  if (!isRecord(value) || typeof value.result !== "number" || value.result === 200) return null;
+  const response = value.response;
+  if (!(response instanceof Error)) return "answered";
+  const cause = (response as { cause?: unknown }).cause;
+  const status = isRecord(cause) && isRecord(cause.response) ? cause.response.status : undefined;
+  return response.name === "TransportError" && typeof status === "number" &&
+      !UNANSWERED_HTTP_STATUSES.has(status)
+    ? "answered"
+    : "unanswered";
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && !Array.isArray(value);
 }
@@ -1205,9 +1228,11 @@ export class DemosAdapter implements SubstrateAdapter {
       this.#demos.storagePrograms.read(receipt.nativeAddress),
     ]) as unknown[];
     // demosdk.call catches transport failures and returns an RPC error envelope.
-    // An unanswered observation cannot establish that a receipt is invalid.
-    if (observations.some((value) => isRecord(value) &&
-        typeof value.result === "number" && value.result !== 200)) {
+    // An unanswered observation cannot establish that a receipt is invalid, but
+    // the node's answer about one read is final whatever another read did.
+    const failures = observations.map(demosObservationFailure);
+    if (failures.includes("answered")) return false;
+    if (failures.includes("unanswered")) {
       throw new SubstrateError("Demos anchor receipt observation unavailable");
     }
     const transactionResult = observations[0];
