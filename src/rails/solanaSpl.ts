@@ -608,8 +608,23 @@ function storedSettlementMatchesIntent(
 function settlementFrom(
   intent: Readonly<SolanaSplSettlementIntent>,
   attempt: Readonly<SolanaSplSignedAttempt>,
-  observed: Readonly<SolanaSplObservedTransfer>,
+  value: Readonly<SolanaSplObservedTransfer>,
 ): Readonly<SolanaSplSettlementResult> | null {
+  // Read each field once, so what is checked is what is reported.
+  const observed: SolanaSplObservedTransfer = {
+    cluster: value.cluster,
+    signature: value.signature,
+    instructionIndex: value.instructionIndex,
+    standard: value.standard,
+    mint: value.mint,
+    payer: value.payer,
+    payee: value.payee,
+    amountBaseUnits: value.amountBaseUnits,
+    tokenDecimals: value.tokenDecimals,
+    commitmentLevel: value.commitmentLevel,
+    finalityObservedAt: value.finalityObservedAt,
+    authenticationHash: value.authenticationHash,
+  };
   if (observed.cluster !== intent.cluster || observed.signature !== attempt.signature ||
       observed.instructionIndex !== attempt.transferInstructionIndex ||
       observed.standard !== "spl-transfer-checked" || observed.mint !== intent.mint ||
@@ -617,6 +632,7 @@ function settlementFrom(
       observed.amountBaseUnits !== intent.amountBaseUnits ||
       observed.tokenDecimals !== intent.tokenDecimals ||
       observed.commitmentLevel !== intent.commitmentLevel ||
+      typeof observed.authenticationHash !== "string" ||
       !HASH_RE.test(observed.authenticationHash) ||
       !Number.isSafeInteger(observed.finalityObservedAt) || observed.finalityObservedAt < 0) {
     return null;
@@ -636,6 +652,87 @@ function settlementFrom(
     }),
     authenticationHash: observed.authenticationHash,
   });
+}
+
+/** A reconciliation result after validation; nothing else leaves `reconcile`. */
+type ReconciledState =
+  | { disposition: "settled-same"; settlement: Readonly<SolanaSplSettlementResult> | null }
+  | { disposition: "settled-different"; reason: string }
+  | { disposition: "pending"; reason: string }
+  | { disposition: "absent-valid" }
+  | { disposition: "absent-expired"; evidence: Readonly<SolanaSplExpiryEvidence> }
+  | { disposition: "indeterminate"; reason: string };
+
+/**
+ * Validates an adapter's reconciliation result. A result that is not an
+ * object, or whose disposition is unknown, is indeterminate, so it can never
+ * fall through to a replacement signature.
+ */
+function readReconciliation(
+  intent: Readonly<SolanaSplSettlementIntent>,
+  attempt: Readonly<SolanaSplSignedAttempt>,
+  value: unknown,
+): ReconciledState {
+  let result: Record<string, unknown>;
+  let disposition: unknown;
+  try {
+    if (typeof value !== "object" || value === null) {
+      throw new DacsError("pay-solana-spl: reconciliation must be an object");
+    }
+    result = value as Record<string, unknown>;
+    disposition = result.disposition;
+  } catch {
+    return { disposition: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
+  }
+  switch (disposition) {
+    case "settled-same":
+      try {
+        return {
+          disposition,
+          settlement: settlementFrom(
+            intent,
+            attempt,
+            result.transfer as Readonly<SolanaSplObservedTransfer>,
+          ),
+        };
+      } catch {
+        return { disposition, settlement: null };
+      }
+    case "absent-valid":
+      try {
+        const authenticationHash = result.authenticationHash;
+        if (typeof authenticationHash === "string" && HASH_RE.test(authenticationHash)) {
+          return { disposition };
+        }
+      } catch {
+        // An unreadable proof is no proof.
+      }
+      return { disposition: "indeterminate", reason: "solana-spl-absence-proof-invalid" };
+    case "absent-expired":
+      try {
+        return {
+          disposition,
+          evidence: captureExpiryEvidence({
+            signature: attempt.signature,
+            observedBlockHeight: result.observedBlockHeight,
+            commitmentLevel: result.commitmentLevel,
+            authenticationHash: result.authenticationHash,
+          }, attempt),
+        };
+      } catch {
+        return { disposition: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
+      }
+    case "settled-different":
+    case "pending":
+    case "indeterminate":
+      try {
+        return { disposition, reason: result.reason as string };
+      } catch {
+        return { disposition: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
+      }
+    default:
+      return { disposition: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
+  }
 }
 
 export async function advanceSolanaSplSettlement(
@@ -773,44 +870,24 @@ export async function advanceSolanaSplSettlement(
 
   const reconcile = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
-  ): Promise<SolanaSplReconciliation> => {
+  ): Promise<ReconciledState> => {
+    let result: unknown;
     try {
       await fence.assertCurrent();
-      const result = await reconcileTransfer(intent, attempt, fence);
+      result = await reconcileTransfer(intent, attempt, fence);
       await fence.assertCurrent();
-      if (result.disposition === "absent-valid" &&
-          !HASH_RE.test(result.authenticationHash)) {
-        return {
-          disposition: "indeterminate",
-          reason: "solana-spl-absence-proof-invalid",
-        };
-      }
-      if (result.disposition === "absent-expired") {
-        try {
-          captureExpiryEvidence({
-            signature: attempt.signature,
-            observedBlockHeight: result.observedBlockHeight,
-            commitmentLevel: result.commitmentLevel,
-            authenticationHash: result.authenticationHash,
-          }, attempt);
-        } catch {
-          return {
-            disposition: "indeterminate",
-            reason: "solana-spl-expiry-proof-invalid",
-          };
-        }
-      }
-      return result;
     } catch {
       return { disposition: "indeterminate", reason: "solana-spl-reconciliation-unavailable" };
     }
+    return readReconciliation(intent, attempt, result);
   };
+  // Returns null only for the two absent dispositions, which the caller handles.
   const finalize = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
-    result: SolanaSplReconciliation,
+    result: ReconciledState,
   ): Promise<SolanaSplProgress | null> => {
     if (result.disposition === "settled-same") {
-      const settlement = settlementFrom(intent, attempt, result.transfer);
+      const settlement = result.settlement;
       if (!settlement) {
         return { status: "failed", errorClass: "permanent", reason: "solana-spl-settled-instruction-mismatch" };
       }
@@ -836,23 +913,16 @@ export async function advanceSolanaSplSettlement(
     }
     if (result.disposition === "pending") return { status: "waiting", reason: result.reason };
     if (result.disposition === "indeterminate") return { status: "indeterminate", reason: result.reason };
-    return null;
+    if (result.disposition === "absent-valid" || result.disposition === "absent-expired") {
+      return null;
+    }
+    return { status: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
   };
+  // Returns null only when the store acknowledged exactly this evidence.
   const persistExpiry = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
-    result: Extract<SolanaSplReconciliation, { disposition: "absent-expired" }>,
+    evidence: Readonly<SolanaSplExpiryEvidence>,
   ): Promise<SolanaSplProgress | null> => {
-    let evidence: Readonly<SolanaSplExpiryEvidence>;
-    try {
-      evidence = captureExpiryEvidence({
-        signature: attempt.signature,
-        observedBlockHeight: result.observedBlockHeight,
-        commitmentLevel: result.commitmentLevel,
-        authenticationHash: result.authenticationHash,
-      }, attempt);
-    } catch {
-      return { status: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
-    }
     let marked: SolanaSplStoreWrite;
     try {
       marked = await markAttemptExpired({
@@ -879,13 +949,10 @@ export async function advanceSolanaSplSettlement(
 
   const latest = attempts.at(-1);
   if (latest && !expiryEvidence.has(latest.signature)) {
-    let state = await reconcile(latest);
+    const state = await reconcile(latest);
     const terminal = await finalize(latest, state);
     if (terminal) return terminal;
     if (state.disposition === "absent-valid") {
-      if (!HASH_RE.test(state.authenticationHash)) {
-        return { status: "indeterminate", reason: "solana-spl-absence-proof-invalid" };
-      }
       try {
         await fence.assertCurrent();
         await broadcastRetained(latest, fence);
@@ -893,24 +960,26 @@ export async function advanceSolanaSplSettlement(
       } catch {
         return { status: "indeterminate", reason: "solana-spl-rebroadcast-unavailable" };
       }
-      state = await reconcile(latest);
-      const afterBroadcast = await finalize(latest, state);
+      const after = await reconcile(latest);
+      const afterBroadcast = await finalize(latest, after);
       if (afterBroadcast) return afterBroadcast;
-      if (state.disposition === "absent-expired") {
-        const persistenceFailure = await persistExpiry(latest, state);
+      if (after.disposition === "absent-valid") {
+        return { status: "waiting", reason: "solana-spl-broadcast-not-yet-visible" };
+      }
+      if (after.disposition === "absent-expired") {
+        const persistenceFailure = await persistExpiry(latest, after.evidence);
         if (persistenceFailure) return persistenceFailure;
       }
-      return {
-        status: state.disposition === "absent-valid" ? "waiting" : "indeterminate",
-        reason: state.disposition === "absent-valid"
-          ? "solana-spl-broadcast-not-yet-visible"
-          : "solana-spl-expiry-transition-raced",
-      };
+      return { status: "indeterminate", reason: "solana-spl-expiry-transition-raced" };
     }
-    if (state.disposition === "absent-expired") {
-      const persistenceFailure = await persistExpiry(latest, state);
-      if (persistenceFailure) return persistenceFailure;
+    // The latest attempt can still land unless the chain proved it expired
+    // and the store acknowledged exactly that proof; nothing else reaches
+    // preflight.
+    if (state.disposition !== "absent-expired") {
+      return { status: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
     }
+    const persistenceFailure = await persistExpiry(latest, state.evidence);
+    if (persistenceFailure) return persistenceFailure;
   }
 
   let preflight: Readonly<SolanaSplPreflight>;

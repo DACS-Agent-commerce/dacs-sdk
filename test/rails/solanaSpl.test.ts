@@ -1113,3 +1113,115 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
     expect(broadcastRetained).not.toHaveBeenCalled();
   });
 });
+
+describe("advanceSolanaSplSettlement with an out-of-contract reconciliation", () => {
+  // A version-skewed adapter, a JS adapter or a JSON proxy cast to the type.
+  const invalid: [string, unknown][] = [
+    ["an unknown disposition", { disposition: "dropped" }],
+    ["a future disposition", { disposition: "future-status" }],
+    ["no disposition", {}],
+    ["a string", "settled"],
+    ["null", null],
+    ["undefined", undefined],
+    ["a number", 42],
+    ["a throwing disposition getter", Object.defineProperty({}, "disposition", {
+      get() { throw new Error("adapter secret=abc"); },
+    })],
+  ];
+
+  // Leaves attempt 1 retained and broadcast with an unknown outcome, then
+  // resumes after the lease expired with the given reconciliation.
+  async function resumeRetained(observations: unknown[]) {
+    const store = createInMemorySolanaSplSettlementStore();
+    const checkedPreflight = vi.fn(adapter().preflight);
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const markAttemptExpired = vi.spyOn(store, "markAttemptExpired");
+    let first = true;
+    const reconcile = vi.fn(async () => {
+      if (first) return { disposition: "indeterminate", reason: "rpc-unavailable" };
+      return observations.shift();
+    });
+    const shared = input({
+      store,
+      adapter: adapter({
+        preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained,
+        reconcile: reconcile as never,
+      }),
+    });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+      status: "indeterminate",
+    });
+    first = false;
+    const result = await advanceSolanaSplSettlement({
+      ...shared, owner: "worker-b", now: () => 2_000,
+    });
+    return {
+      result,
+      preflights: checkedPreflight.mock.calls.length,
+      prepared: prepareSignedTransfer.mock.calls.map((call) => call[1]),
+      broadcast: broadcastRetained.mock.calls.map((call) => call[0].signature),
+      expiries: markAttemptExpired.mock.calls.length,
+    };
+  }
+
+  test.each(invalid)("%s over a retained broadcast never signs a replacement", async (_name, value) => {
+    await expect(resumeRetained([value])).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-reconciliation-invalid" },
+      preflights: 1,
+      prepared: [1],
+      broadcast: [SIGNATURE_1],
+      expiries: 0,
+    });
+  });
+
+  test.each(invalid)("%s after an authenticated rebroadcast stays indeterminate", async (_name, value) => {
+    await expect(resumeRetained([
+      { disposition: "absent-valid", authenticationHash: "d".repeat(64) },
+      value,
+    ])).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-reconciliation-invalid" },
+      preflights: 1,
+      prepared: [1],
+      broadcast: [SIGNATURE_1, SIGNATURE_1],
+      expiries: 0,
+    });
+  });
+
+  test.each(invalid)("%s after a fresh broadcast is classified", async (_name, value) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    await expect(advanceSolanaSplSettlement(input({
+      adapter: adapter({
+        prepareSignedTransfer, broadcastRetained, reconcile: async () => value as never,
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-reconciliation-invalid" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  test("an absent-valid proof behind a throwing getter does not rebroadcast", async () => {
+    await expect(resumeRetained([Object.defineProperty({ disposition: "absent-valid" },
+      "authenticationHash", { get() { throw new Error("boom"); } })]))
+      .resolves.toEqual({
+        result: { status: "indeterminate", reason: "solana-spl-absence-proof-invalid" },
+        preflights: 1,
+        prepared: [1],
+        broadcast: [SIGNATURE_1],
+        expiries: 0,
+      });
+  });
+
+  test("only durably acknowledged expiry of the retained attempt reaches a replacement", async () => {
+    const run = await resumeRetained([
+      expired({ signature: SIGNATURE_1, lastValidBlockHeight: 10_001 }),
+      { disposition: "settled-same", transfer: observed({ signature: SIGNATURE_2 }) },
+    ]);
+    expect(run).toMatchObject({
+      result: { status: "settled", settlement: { txRef: { signature: SIGNATURE_2 } } },
+      prepared: [1, 2],
+      broadcast: [SIGNATURE_1, SIGNATURE_2],
+      expiries: 1,
+    });
+  });
+});
