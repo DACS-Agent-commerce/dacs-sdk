@@ -331,6 +331,11 @@ export type LiquidityTankStoreWrite =
   | { status: "recorded" | "existing" }
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
+/**
+ * Durable settlement state. Every write must refuse a lease that is not
+ * current at its `now` (`expiresAt <= now`), as well as a stale owner or
+ * generation.
+ */
 export interface LiquidityTankStore {
   claim(input: {
     intent: Readonly<LiquidityTankIntent>;
@@ -350,6 +355,7 @@ export interface LiquidityTankStore {
     bindingHash: string;
     owner: string;
     generation: number;
+    now: number;
     submission: Readonly<LiquidityTankPreparedSubmission>;
   }): Promise<LiquidityTankStoreWrite>;
   recordObservation(input: {
@@ -357,6 +363,7 @@ export interface LiquidityTankStore {
     bindingHash: string;
     owner: string;
     generation: number;
+    now: number;
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
   }): Promise<LiquidityTankStoreWrite>;
   /**
@@ -408,6 +415,7 @@ export interface LiquidityTankStore {
     bindingHash: string;
     owner: string;
     generation: number;
+    now: number;
     settlement: Readonly<LiquidityTankSettlement>;
   }): Promise<LiquidityTankStoreWrite>;
 }
@@ -1715,6 +1723,7 @@ export async function advanceLiquidityTankSettlement(
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
+        now: readNow(),
         submission,
       }));
       await fence.assertCurrent();
@@ -1776,6 +1785,7 @@ export async function advanceLiquidityTankSettlement(
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
+        now: readNow(),
         settlement,
       }));
     } catch {
@@ -1909,6 +1919,7 @@ export async function advanceLiquidityTankSettlement(
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
+        now: readNow(),
         observation,
       }));
       await fence.assertCurrent();
@@ -2040,6 +2051,9 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
   ): record is MemoryTankRecord => record !== undefined &&
     record.intent.bindingHash === input.bindingHash && record.lease.owner === input.owner &&
     record.lease.generation === input.generation;
+  /** Ordinary writes re-check lease expiry at the caller's `now`, as claims and the fence do. */
+  const leaseExpired = (record: MemoryTankRecord, now: unknown): boolean =>
+    record.lease.expiresAt <= requireUInt(now, "write now");
   return {
     async claim(input) {
       const expiresAt = leaseExpiry(
@@ -2117,6 +2131,7 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
     async recordSubmission(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
       if (record.settlement || record.recoveryExpired) {
         return { status: "conflict", reason: "liquidity-tank-submission-after-terminal" };
       }
@@ -2136,6 +2151,7 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
     async recordObservation(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
       if (record.settlement || record.recoveryExpired) {
         return { status: "conflict", reason: "liquidity-tank-observation-after-terminal" };
       }
@@ -2269,6 +2285,7 @@ export function createInMemoryLiquidityTankStore(): LiquidityTankStore {
     async recordSettlement(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
       if (record.recoveryExpired) {
         return { status: "conflict", reason: "liquidity-tank-settlement-lost-to-recovery-expiry" };
       }

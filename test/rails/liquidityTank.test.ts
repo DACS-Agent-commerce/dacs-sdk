@@ -2080,7 +2080,8 @@ describe("advanceLiquidityTankSettlement", () => {
       const c = await store.claim({ intent, owner: "s", now: D - 100, leaseDurationMs: 50 });
       if (c.status !== "acquired") throw new Error("expected acquired");
       await expect(store.recordObservation({ settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
-        owner: "s", generation: c.lease.generation, observation: lockedPendingAt(h.operationHash, D - 150),
+        owner: "s", generation: c.lease.generation, now: D - 100,
+        observation: lockedPendingAt(h.operationHash, D - 150),
       })).resolves.toMatchObject({ status: "conflict" });
     });
 
@@ -3922,6 +3923,7 @@ describe("advanceLiquidityTankSettlement", () => {
       bindingHash: intent.bindingHash,
       owner: claim.lease.owner,
       generation: claim.lease.generation,
+      now: 1_000,
     };
     await expect(store.recordSubmission({
       ...writeAuthority,
@@ -3976,6 +3978,7 @@ describe("advanceLiquidityTankSettlement", () => {
         bindingHash: intent.bindingHash,
         owner: claim.lease.owner,
         generation: claim.lease.generation,
+        now: RECOVERY_DEADLINE_MS,
       };
       // The bridge still reports the same lock as pending at the deadline.
       const checkpoint = lockedPendingAt(intent.operationHash, RECOVERY_DEADLINE_MS) as
@@ -5128,4 +5131,59 @@ describe("round 10", () => {
     });
   });
 
+  describe("finding 9: the reference store re-checks lease expiry on ordinary writes", () => {
+    test("submission, observation and settlement writes at or after expiresAt are stale", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const intent = createLiquidityTankIntent(authority());
+      const claim = await store.claim({ intent, owner: "w", now: 1_000, leaseDurationMs: 100 });
+      if (claim.status !== "acquired") throw new Error("expected acquired");
+      const write = {
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "w", generation: claim.lease.generation, now: 1_000,
+      };
+      const expired = { ...write, now: claim.lease.expiresAt };
+      const submission = {
+        submissionVersion: "1" as const, authorityHash: intent.bindingHash, operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx",
+        signedSubmissionBase64: Buffer.from("signed-native-bridge").toString("base64"),
+        preparedAt: 900, submissionHash: "e".repeat(64),
+      };
+      await expect(store.recordSubmission({ ...expired, submission }))
+        .resolves.toEqual({ status: "stale", reason: "expired-lease" });
+      await expect(store.recordSubmission({ ...write, submission })).resolves.toEqual({ status: "recorded" });
+      await expect(store.recordObservation({ ...expired, observation: completed(intent.operationHash) }))
+        .resolves.toEqual({ status: "stale", reason: "expired-lease" });
+      await expect(store.recordObservation({ ...write, observation: completed(intent.operationHash) }))
+        .resolves.toEqual({ status: "recorded" });
+      const settlement = {
+        txRef: {
+          kind: "liquidity-tank" as const, bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+          lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx", recoveryDeadline: D,
+        },
+        paymentAmount: { amount: "1.25", currency: "USDC" as const },
+        settlementFinality: { model: "liquidity-tank" as const, finalityObservedAt: 3_000 },
+        authenticationHash: AUTH_HASH,
+      };
+      await expect(store.recordSettlement({ ...expired, settlement }))
+        .resolves.toEqual({ status: "stale", reason: "expired-lease" });
+      await expect(store.recordSettlement({ ...write, settlement })).resolves.toEqual({ status: "recorded" });
+    });
+
+    test("the core passes its clock reading to every ordinary write", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const writes = [
+        vi.spyOn(store, "recordSubmission"),
+        vi.spyOn(store, "recordObservation"),
+        vi.spyOn(store, "recordSettlement"),
+      ];
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toMatchObject({ status: "settled" });
+      for (const write of writes) {
+        expect(write).toHaveBeenCalled();
+        for (const [input] of write.mock.calls) expect(input.now).toBe(1_000);
+      }
+    });
+  });
 });
