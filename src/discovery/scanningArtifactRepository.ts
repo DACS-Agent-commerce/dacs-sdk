@@ -189,9 +189,10 @@ export interface ScanningArtifactRepository extends BoundArtifactRepository {
    * fully handled rows enter dedup state. An indeterminate row stops the page at
    * its original cursor, so retry re-fetches that page and re-reads the failing
    * row, skipping the handled prefix. After `maxRowAttempts` consecutive
-   * indeterminate attempts the row is deferred and the page continues; restart
-   * from null, or read it with `read`, to retry it. Other diagnostics are handled
-   * candidates; restart with fresh state to revisit repaired bindings or bytes.
+   * indeterminate attempts the row is deferred and the page continues; start a
+   * new traversal (`scanPage()` without state), or read it with `read`, to retry
+   * it. Other diagnostics are handled candidates; start a new traversal to
+   * revisit repaired bindings or bytes.
    * `restart-required` returns a state that restarts from a null cursor and,
    * unless the old state was invalid or foreign, keeps its handled rows. Input
    * state is never mutated.
