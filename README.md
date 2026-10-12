@@ -755,16 +755,30 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   with its code, reason and attempt count, and the page continues. The call
   returns the rows it deferred in `deferred`; `state.deferred` keeps all of them,
   and they never enter `seen`. Alert on deferred rows. The traversal does not
-  retry them: start a new traversal from null (`scanPage()` without state), which
+  retry them, even after a restart from a valid state: start a new traversal
+  from null (`scanPage()` without state), which
   re-reads every row, or check one row with `repository.read(anchor.logicalAddress,
   expectedOwner, verifier)` and compare its `nativeAddress` with the deferred
   `anchor.nativeAddress`.
-- `restart-required`: retrying the same state cannot succeed. The codes are
-  `cursor-cycle`, `page-bound` (10,000 consumed pages), `foreign-owner-state`,
-  `invalid-state` and `history-restart-required` (the fetcher threw
-  `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
-  boundary is missing or duplicated). The returned `state` is a fresh traversal
-  from a null cursor; nothing is read or advanced. Alert if restarts repeat.
+- `restart-required`: retrying the same state cannot succeed. Continue with the
+  returned `state`, which restarts from a null cursor; this call reads and
+  advances nothing.
+  - `cursor-cycle`, `page-bound` (10,000 consumed pages) and
+    `history-restart-required` (the fetcher threw
+    `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
+    boundary is missing or duplicated) come from a valid state. The returned
+    state keeps `seen`, `metadata`, `deferred` and `pendingRow`, so rows already
+    reported are not reported again, but the pages are fetched again: a history
+    longer than 10,000 pages reaches `page-bound` again, and a fetcher whose
+    cursors cycle keeps cycling.
+  - `invalid-state` (including a state saved before `pendingRow` and `deferred`
+    existed) and `foreign-owner-state`: nothing in the old state can be
+    trusted, so the returned state is a fresh traversal that reads and reports
+    every row again.
+
+  Delivery is therefore at least once. `anchor.nativeAddress` is a row's stable
+  key: deduplicate on it if you need each row exactly once. Alert on repeated
+  restarts; they do not stop by themselves.
 - `conflict` (`metadata-conflict`): history assigns two logical addresses to one
   native address. The page stops with the unchanged cursor.
 

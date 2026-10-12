@@ -73,7 +73,12 @@ export type ArtifactScanIndeterminateCode =
   | "page-limit-exceeded"
   | "invalid-limit";
 
-/** Retrying the same state cannot succeed; restart from a null cursor. */
+/**
+ * Retrying the same state cannot succeed; continue with the returned state,
+ * which restarts from a null cursor. `cursor-cycle`, `page-bound` and
+ * `history-restart-required` come from a valid state and keep its handled rows;
+ * `foreign-owner-state` and `invalid-state` start a fresh traversal.
+ */
 export type ArtifactScanRestartCode =
   | "cursor-cycle"
   | "page-bound"
@@ -106,7 +111,10 @@ export interface ArtifactScanState {
   exhausted: boolean;
   /** Row the next retry re-reads and its consecutive indeterminate attempts. */
   pendingRow: { nativeAddress: string; attempts: number } | null;
-  /** Rows deferred in this traversal; skipped until a restart from null. */
+  /**
+   * Rows deferred in this traversal, kept across a restart from a valid state;
+   * skipped until a new traversal (`scanPage()` without state).
+   */
   deferred: readonly ArtifactScanDeferredRow[];
 }
 
@@ -159,7 +167,15 @@ export type ArtifactScanPage =
       reason: string;
       results: ScannedArtifactRead[];
       deferred: ArtifactScanDeferredRow[];
-      /** A fresh traversal from a null cursor. */
+      /**
+       * Restarts from a null cursor; the pages are fetched again. After
+       * `cursor-cycle`, `page-bound` or `history-restart-required` it keeps
+       * `seen`, `metadata`, `deferred` and `pendingRow`, so rows already reported
+       * are not reported again. After `invalid-state` or `foreign-owner-state`
+       * nothing is trusted: it is a fresh traversal that reports every row again.
+       * Delivery is therefore at least once; consumers that need exactly once
+       * deduplicate on `anchor.nativeAddress`, the stable key of a row.
+       */
       state: ArtifactScanState;
     };
 
@@ -172,8 +188,9 @@ export interface ScanningArtifactRepository extends BoundArtifactRepository {
    * indeterminate attempts the row is deferred and the page continues; restart
    * from null, or read it with `read`, to retry it. Other diagnostics are handled
    * candidates; restart with fresh state to revisit repaired bindings or bytes.
-   * `restart-required` returns a fresh state from a null cursor. Input state is
-   * never mutated.
+   * `restart-required` returns a state that restarts from a null cursor and,
+   * unless the old state was invalid or foreign, keeps its handled rows. Input
+   * state is never mutated.
    *
    * Classification and RPC exhaustion prove neither completeness nor absence of
    * revocation. Even a verified artifact needs its protocol-specific admission,
@@ -348,13 +365,28 @@ export function createScanningArtifactRepository(
     pendingRow: null,
     deferred: [],
   });
-  const restart = (code: ArtifactScanRestartCode, reason: string): ArtifactScanPage => ({
+  // From a valid state, only the cursor and page-cycle fields restart, so rows
+  // already handled or deferred are not reported again. Without one, nothing
+  // can be trusted and the traversal starts over.
+  const restart = (
+    code: ArtifactScanRestartCode,
+    reason: string,
+    valid?: ArtifactScanState,
+  ): ArtifactScanPage => ({
     status: "restart-required",
     code,
     reason,
     results: [],
     deferred: [],
-    state: freshState(),
+    state: valid === undefined
+      ? freshState()
+      : {
+          ...freshState(),
+          seen: valid.seen,
+          metadata: valid.metadata,
+          pendingRow: valid.pendingRow,
+          deferred: valid.deferred,
+        },
   });
 
   async function readRow(anchor: ScannedAnchor): Promise<ScannedArtifactOutcome> {
@@ -520,10 +552,10 @@ export function createScanningArtifactRepository(
       }
       if (state.exhausted) return { status: "page", results: [], deferred: [], state };
       if (state.cursor !== null && state.consumedCursors.has(state.cursor)) {
-        return restart("cursor-cycle", `history cursor cycle detected at ${state.cursor}`);
+        return restart("cursor-cycle", `history cursor cycle detected at ${state.cursor}`, state);
       }
       if (state.pagesConsumed >= MAX_PAGES) {
-        return restart("page-bound", "stopped after 10000 pages (page-count bound)");
+        return restart("page-bound", "stopped after 10000 pages (page-count bound)", state);
       }
 
       // scanAnchorPage eagerly deduplicates classification. Stage that mutation
@@ -542,7 +574,7 @@ export function createScanningArtifactRepository(
       });
       if (page.status === "indeterminate") {
         if (page.code === "cursor-cycle" || page.code === "history-restart-required") {
-          return restart(page.code, page.reason);
+          return restart(page.code, page.reason, state);
         }
         if (page.code === "metadata-conflict") {
           return { status: "conflict", code: page.code, reason: page.reason, results: [], deferred: [], state };
@@ -557,7 +589,7 @@ export function createScanningArtifactRepository(
         };
       }
       if (page.nextCursor !== null && state.consumedCursors.has(page.nextCursor)) {
-        return restart("cursor-cycle", `history cursor cycle detected at ${page.nextCursor}`);
+        return restart("cursor-cycle", `history cursor cycle detected at ${page.nextCursor}`, state);
       }
 
       const results: ScannedArtifactRead[] = [];

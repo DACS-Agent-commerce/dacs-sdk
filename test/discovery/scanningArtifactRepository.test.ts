@@ -9,6 +9,8 @@ import {
   UnsupportedArtifactKindError,
   type AnchorBinding,
   type ArtifactScanDeferredRow,
+  type ArtifactScanPage,
+  type ArtifactScanRestartCode,
   type ArtifactScanState,
   type BoundArtifactAdapter,
   type RawAnchorEntry,
@@ -58,6 +60,10 @@ const state = (cursor: string | null): ArtifactScanState => ({
 });
 const retrying = (input: ArtifactScanState, id: string, attempts = 1): ArtifactScanState => ({
   ...input, pendingRow: { nativeAddress: `stor-${id}`, attempts },
+});
+const deferredRow = (id: string): ArtifactScanDeferredRow => ({
+  anchor: { nativeAddress: `stor-${id}`, logicalAddress: logical(id), owner: OWNER, kind: "listing" },
+  code: "read-indeterminate", reason: "r", attempts: 5,
 });
 
 function setup(ids: string[], over: Partial<ScanningArtifactRepositoryDeps> = {}) {
@@ -637,6 +643,88 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.fetchPage).not.toHaveBeenCalled();
   });
 
+  const keptRows = {
+    seen: new Map([["stor-x", logical("x")]]),
+    metadata: new Map([["stor-x", logical("x")], ["stor-y", logical("y")]]),
+    deferred: [deferredRow("y")],
+    pendingRow: { nativeAddress: "stor-z", attempts: 2 },
+  };
+  const resumable = (over: Partial<ArtifactScanState> = {}): ArtifactScanState => ({
+    ...state("cur"), ...keptRows, consumedCursors: new Set(["old"]), pagesConsumed: 3, ...over,
+  });
+  test.each<[string, ArtifactScanRestartCode, Partial<ArtifactScanState>, ScanningArtifactRepositoryDeps["fetchPage"]?]>([
+    ["a consumed current cursor", "cursor-cycle", { consumedCursors: new Set(["cur", "old"]) }],
+    ["the page bound", "page-bound", { pagesConsumed: 10_000 }],
+    ["a cursor that did not advance", "cursor-cycle", {}, async () => ({ entries: [row("w")], nextCursor: "cur" })],
+    ["a next cursor already consumed", "cursor-cycle", {}, async () => ({ entries: [row("w")], nextCursor: "old" })],
+    ["a fetcher restart signal", "history-restart-required", {},
+      async () => { throw new AnchorHistoryRestartRequiredError("restart from null"); }],
+  ])("a restart from a valid state (%s) keeps handled, deferred and pending rows", async (_name, code, over, fetchPage) => {
+    const fixture = setup(["w"], fetchPage === undefined ? {} : { fetchPage });
+    const result = await fixture.repo.scanPage(resumable(over));
+    expect(result).toMatchObject({ status: "restart-required", code, results: [], deferred: [] });
+    // Only the cursor and page-cycle fields restart; the unconsumed page adds no metadata.
+    expect(result.state).toEqual({ ...state(null), ...keptRows });
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+  });
+
+  test.each<[string, ArtifactScanRestartCode, Partial<ArtifactScanState>]>([
+    ["a foreign owner", "foreign-owner-state", { owner: "other" }],
+    ["a contradictory state", "invalid-state", { exhausted: true }],
+    ["a malformed state", "invalid-state", { pendingRow: { nativeAddress: "stor-z", attempts: 0 } }],
+  ])("a restart from an untrusted state (%s) starts a fresh traversal", async (_name, code, over) => {
+    const fixture = setup(["w"]);
+    const result = await fixture.repo.scanPage(resumable(over));
+    expect(result).toMatchObject({ status: "restart-required", code, results: [], deferred: [] });
+    expect(result.state).toEqual(state(null));
+    expect(fixture.fetchPage).not.toHaveBeenCalled();
+  });
+
+  test("a restart from a state saved before pendingRow and deferred reports earlier rows again", async () => {
+    const fixture = setup(["a", "b", "c"]);
+    fixture.fetchPage.mockImplementation(async (cursor) => cursor === null
+      ? { entries: [row("a"), row("b")], nextCursor: "p2" }
+      : { entries: [row("c")], nextCursor: null });
+    const first = await fixture.repo.scanPage();
+    const { pendingRow: _pendingRow, deferred: _deferred, ...legacy } = first.state;
+    const restarted = await fixture.repo.scanPage(legacy as ArtifactScanState);
+    expect(restarted).toMatchObject({ status: "restart-required", code: "invalid-state", state: state(null) });
+    const again = await fixture.repo.scanPage(restarted.state);
+    const last = await fixture.repo.scanPage(again.state);
+    expect(last.state.exhausted).toBe(true);
+    // At-least-once delivery: a and b are reported twice, with the same nativeAddress key.
+    const reported = [...first.results, ...again.results, ...last.results]
+      .map(({ anchor, outcome }) => [anchor.nativeAddress, outcome.status]);
+    expect(reported).toEqual([
+      ["stor-a", "verified"], ["stor-b", "verified"],
+      ["stor-a", "verified"], ["stor-b", "verified"], ["stor-c", "verified"],
+    ]);
+  });
+
+  test("a fetcher whose cursors cycle keeps restarting but reports a handled row once", async () => {
+    const fixture = setup(["a"]);
+    fixture.fetchPage.mockImplementation(async (cursor) => cursor === null
+      ? { entries: [row("a")], nextCursor: "p1" }
+      : { entries: [], nextCursor: cursor === "p1" ? "p2" : "p1" });
+    let input: ArtifactScanState | undefined;
+    const statuses: string[] = [];
+    const verified: string[] = [];
+    for (let call = 0; call < 9; call++) {
+      const page = await fixture.repo.scanPage(input);
+      statuses.push(page.status === "restart-required" ? `restart:${page.code}` : page.status);
+      verified.push(...page.results.filter(({ outcome }) => outcome.status === "verified")
+        .map(({ anchor }) => anchor.nativeAddress));
+      input = page.state;
+    }
+    // The restarts do not stop by themselves, which is why the README says to alert on them.
+    expect(statuses).toEqual([
+      "page", "page", "restart:cursor-cycle", "page", "page", "restart:cursor-cycle",
+      "page", "page", "restart:cursor-cycle",
+    ]);
+    expect(verified).toEqual(["stor-a"]);
+    expect(fixture.readAnchor).toHaveBeenCalledOnce();
+  });
+
   test("reports conflicting history metadata separately without advancing", async () => {
     const fixture = setup(["a"]);
     const first = await fixture.repo.scanPage();
@@ -889,10 +977,6 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.fetchPage).not.toHaveBeenCalled();
   });
 
-  const deferredRow = (id: string): ArtifactScanDeferredRow => ({
-    anchor: { nativeAddress: `stor-${id}`, logicalAddress: logical(id), owner: OWNER, kind: "listing" },
-    code: "read-indeterminate", reason: "r", attempts: 5,
-  });
   const pending = { nativeAddress: "stor-a", attempts: 1 };
   const handledA = { seen: new Map([["stor-a", logical("a")]]), metadata: new Map([["stor-a", logical("a")]]) };
   // Each case breaks exactly one relationship, except the review's S2 state.
@@ -1013,32 +1097,37 @@ describe("createScanningArtifactRepository (#54)", () => {
       fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
       verifyArtifact: () => true,
     });
+    const verified = (page: ArtifactScanPage) => page.results
+      .filter(({ outcome }) => outcome.status === "verified").map(({ anchor }) => anchor.nativeAddress);
     const first = await repo.scanPage(undefined, { limit: 2 });
     expect(first.status).toBe("page");
     expect(first.results.map(({ outcome }) => outcome.status)).toEqual(["verified", "verified"]);
+    const reported = verified(first);
     // More than one overlap window of rows is prepended between pages.
     const prepended = Array.from({ length: 150 }, (_, i) => 1000 + i);
     history = [...prepended.map(tx).reverse(), ...history];
     await publishAll(prepended);
     const lost = await repo.scanPage(first.state, { limit: 2 });
+    // The state was valid: only the cursor and page cycle restart.
     expect(lost).toMatchObject({
       status: "restart-required", code: "history-restart-required", results: [],
-      state: { cursor: null, seen: new Map(), pagesConsumed: 0, pendingRow: null, deferred: [] },
+      state: { cursor: null, seen: first.state.seen, pagesConsumed: 0, pendingRow: null, deferred: [] },
     });
     if (lost.status === "restart-required") expect(lost.reason).toContain("restart from null");
     // Following the returned state restarts from null and completes the traversal.
     let page = await repo.scanPage(lost.state, { limit: 100 });
     const statuses = new Set<string>();
-    let verified = 0;
     while (page.status === "page") {
-      verified += page.results.filter(({ outcome }) => outcome.status === "verified").length;
+      reported.push(...verified(page));
       if (page.state.exhausted) break;
       page = await repo.scanPage(page.state, { limit: 100 });
       statuses.add(page.status);
     }
     expect(page.status).toBe("page");
     expect([...statuses]).toEqual(["page"]);
-    expect(verified).toBe(153);
+    // Each of the 153 rows is reported verified exactly once across the restart.
+    expect(reported).toHaveLength(153);
+    expect(new Set(reported).size).toBe(153);
   });
 
   test("the README example returns unverifiable, then an empty exhausted page", async () => {
