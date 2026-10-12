@@ -1247,12 +1247,15 @@ function captureRevealCheckpoint(
       !HASH_RE.test(value.authenticationHash)) {
     throw new DacsError("pay-cross-chain-htlc: retained reveal checkpoint is invalid");
   }
-  requireUInt(value.sourceExpiry, "retained reveal sourceExpiry", true);
-  requireUInt(value.finalityObservedAt, "retained reveal finalityObservedAt");
+  const sourceExpiry = requireUInt(value.sourceExpiry, "retained reveal sourceExpiry", true);
+  // The core compares it in milliseconds, so it must convert, as the
+  // source-finality checkpoint's expiry must.
+  secondsToMilliseconds(sourceExpiry, "retained reveal sourceExpiry");
+  const finalityObservedAt = requireUInt(value.finalityObservedAt, "retained reveal finalityObservedAt");
   return Object.freeze({
     revealTxRef: Object.freeze({ ...value.revealTxRef }),
-    sourceExpiry: value.sourceExpiry,
-    finalityObservedAt: value.finalityObservedAt,
+    sourceExpiry,
+    finalityObservedAt,
     authenticationHash: value.authenticationHash,
   });
 }

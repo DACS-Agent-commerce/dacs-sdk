@@ -303,8 +303,10 @@ if the chain has changed. The reasons are:
 
 `failed` means there is nothing left for the core to drive. It is returned
 only when: the call's `owner`, `leaseDurationMs`, authority or hashlock
-deriver is unusable, so no session can be read with it; the store reports its
-record corrupt or lacks a required method; retained evidence and a new
+deriver is unusable, so no session can be read with it; the store's record is
+corrupt (reported so by `claim`, or a retained action, history or checkpoint
+that fails validation, such as an expiry that overflows in milliseconds) or
+the store lacks a required method; retained evidence and a new
 observation contradict each
 other (a changed source-lock checkpoint fact, a reveal checkpoint for another
 transaction, a final reveal of another or a malformed preimage, a final source

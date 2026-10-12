@@ -1977,6 +1977,41 @@ describe("advanceCrossChainHtlc", () => {
     expect(recordRevealFinal).not.toHaveBeenCalled();
   });
 
+  test("fails closed with a result on a retained reveal checkpoint whose source expiry overflows", async () => {
+    const { h, run } = await toFinalRevealWithRegressedLock("deleted");
+    // With the reveal unreported, the checkpoint's expiry is what the core reads.
+    delete h.actions["destination-claim"];
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "acquired") throw new Error("expected acquired session");
+        const reveal = claimed.prepared.find((action) => action.action === "destination-claim");
+        if (!reveal || reveal.txRef.kind !== "htlc-reveal") throw new Error("expected retained reveal");
+        return {
+          ...claimed,
+          revealCheckpoint: {
+            revealTxRef: reveal.txRef,
+            sourceExpiry: 10_000_000_000_000,
+            finalityObservedAt: 1_000_500,
+            authenticationHash: AUTH_HASH,
+          },
+        };
+      },
+    };
+    const observations = h.observe.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "pay-cross-chain-htlc: retained reveal sourceExpiry exceeds the safe-integer range",
+    });
+    // Rejected with the other retained records, before the ledger is observed.
+    expect(h.observe).toHaveBeenCalledTimes(observations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
+
   test.each(["deleted", "pending", "absent"] as const)(
     "drives the source claim to settlement after a final reveal whose destination lock is now %s",
     async (variant) => {
