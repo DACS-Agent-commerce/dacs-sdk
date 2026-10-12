@@ -2301,6 +2301,33 @@ describe("advanceLiquidityTankSettlement", () => {
       await releasesLater(run, h);
     });
 
+    // Pinning: capture normalizes every string to NFC and the core validates
+    // that snapshot, so the adapter signs from the same payee spelling the
+    // binding commits to, and either spelling continues one lock.
+    test("an NFD-spelled address binds, prepares and continues as its NFC form", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const nfdAuthority = authority({ destinationAddress: "café-address" });
+      const nfcIntent = createLiquidityTankIntent(authority({ destinationAddress: "café-address" }));
+      h.setObservation(empty(nfcIntent.operationHash));
+      h.setAfterBroadcast(pending(nfcIntent.operationHash, true));
+      const nfd = runner({ adapter: h.adapter, store, leaseDurationMs: 1, authority: nfdAuthority });
+      await expect(advanceLiquidityTankSettlement(nfd.shared)).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.prepareSubmission.mock.calls[0]?.[0]).toEqual(nfcIntent);
+      h.broadcastRetained.mockClear();
+      nfd.setClock(D - 500);
+      await expect(advanceLiquidityTankSettlement({
+        ...nfd.shared,
+        owner: "nfc",
+        authority: authority({ destinationAddress: "café-address" }),
+      })).resolves.toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
     const differentBindings = [
       ["a changed amount", { amount: "2.5" }],
       ["a recased destinationAddress", { destinationAddress: "DESTINATION-ADDRESS" }],
