@@ -69,7 +69,7 @@ const PLAN_CONFLICT_SEQUENCES = new WeakMap<
 
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
-type TransportRecordKind = BindingKind | "conflict";
+type TransportRecordKind = BindingKind | "conflict" | "equivocation";
 
 interface DacsVetTerminalTransportBindingV1 {
   bindingVersion: typeof BINDING_VERSION;
@@ -119,6 +119,30 @@ export interface DacsVetTerminalBundleTransportRuntimeV1 {
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
   ): Promise<DacsHttpInboundDispositionV1>;
+  /**
+   * Evidence of the peer offering a second, authentic plan for a job: the
+   * first one refused before this role committed to a plan, and the first one
+   * refused after it (an operator alert). Neither stops the job.
+   */
+  loadPeerEquivocationEvidence(jobId: string): Promise<Readonly<{
+    beforeCommit?: Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
+    afterCommit?: Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
+  }>>;
+}
+
+export interface DacsVetTerminalPeerEquivocationEvidenceV1 {
+  evidenceVersion: "1";
+  kind: "peer-equivocation";
+  localBindingHash: string;
+  /** The plan this role retained first and continues with. */
+  retainedPlanHash: string;
+  /** The conflicting plan the peer offered, which was refused. */
+  offeredPlanHash: string;
+  payloadHash: string;
+  authenticationHash: string;
+  identityEvidenceHash: string;
+  /** True once this role had sent, accepted or signed the retained plan. */
+  operatorAlert: boolean;
 }
 
 export class DacsVetTerminalBundleTransportError extends Error {
@@ -126,6 +150,13 @@ export class DacsVetTerminalBundleTransportError extends Error {
 
   constructor(readonly reasonCode: string) {
     super(reasonCode);
+  }
+}
+
+// An authentic proposal whose plan differs from the plan this role retained.
+class PeerPlanEquivocation extends DacsVetTerminalBundleTransportError {
+  constructor(readonly retainedPlanHash: string, readonly offeredPlanHash: string) {
+    super("vet-terminal-proposal-equivocation");
   }
 }
 
@@ -838,8 +869,32 @@ type ProposalAssessment =
       proposal: Readonly<DacsVetTerminalBundleProposalV1>;
       prepared: Extract<PreparedVetTerminalBundle, { status: "terminal" }>;
     }>
-  | Readonly<{ disposition: "rejected"; reasonCode: string }>
+  | Readonly<{
+      disposition: "rejected";
+      reasonCode: string;
+      equivocation?: Readonly<{ jobId: string; retainedPlanHash: string; offeredPlanHash: string }>;
+    }>
   | Readonly<{ disposition: "indeterminate"; reasonCode: string }>;
+
+function captureEquivocation(
+  value: unknown,
+): Readonly<DacsVetTerminalPeerEquivocationEvidenceV1> {
+  if (!plainObject(value) || !exactFields(value, [
+    "evidenceVersion", "kind", "localBindingHash", "retainedPlanHash", "offeredPlanHash",
+    "payloadHash", "authenticationHash", "identityEvidenceHash", "operatorAlert",
+  ]) || value.evidenceVersion !== "1" || value.kind !== "peer-equivocation" ||
+      typeof value.operatorAlert !== "boolean" ||
+      !["localBindingHash", "retainedPlanHash", "offeredPlanHash", "payloadHash",
+        "authenticationHash", "identityEvidenceHash"].every((field) =>
+        typeof value[field] === "string" && HASH_RE.test(value[field] as string))) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+  return Object.freeze({ ...value }) as Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
+}
+
+function equivocationId(role: Role, jobId: string, afterCommit: boolean): string {
+  return sha256Hex(`${transportId(role, "equivocation", jobId)}:${afterCommit ? "after" : "before"}-commit`);
+}
 
 /**
  * Symmetric, authority-separated transport for pre-agreement Vet failure
@@ -1041,9 +1096,12 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     }
   };
 
+  // `seal` records a conflict between plans this role itself retained. A
+  // peer's message ("peer") never writes: its conflicting plan is refused as
+  // equivocation and the job continues with the plan retained first.
   const detectPlanConflict = async (
     proposal: Readonly<DacsVetTerminalBundleProposalV1>,
-    seal: boolean,
+    seal: boolean | "peer",
   ): Promise<void> => {
     const jobId = proposal.plan.authority.jobId;
     await assertNoPlanConflict(context, jobId);
@@ -1055,6 +1113,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (binding === undefined) continue;
       const retained = captureProposal(binding.payload);
       if (retained.plan.planHash === proposal.plan.planHash) continue;
+      if (seal === "peer") {
+        throw new PeerPlanEquivocation(retained.plan.planHash, proposal.plan.planHash);
+      }
       if (seal) {
         await putPlanConflict(
           context,
@@ -1071,7 +1132,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
 
   const assessProposal = async (
     value: unknown,
-    sealConflict = false,
+    sealConflict: boolean | "peer" = false,
   ): Promise<ProposalAssessment> => {
     let captured: Readonly<DacsVetTerminalBundleProposalV1>;
     try {
@@ -1090,12 +1151,57 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       await detectPlanConflict(assessment.proposal, sealConflict);
       return assessment;
     } catch (error) {
+      if (error instanceof PeerPlanEquivocation) {
+        return Object.freeze({
+          disposition: "rejected" as const,
+          reasonCode: error.reasonCode,
+          equivocation: Object.freeze({
+            jobId: assessment.proposal.plan.authority.jobId,
+            retainedPlanHash: error.retainedPlanHash,
+            offeredPlanHash: error.offeredPlanHash,
+          }),
+        });
+      }
       return Object.freeze({
         disposition: "rejected" as const,
         reasonCode: error instanceof DacsVetTerminalBundleTransportError
           ? error.reasonCode : "vet-terminal-proposal-invalid",
       });
     }
+  };
+
+  // Keeps the first refused equivocation before and after this role committed
+  // to its retained plan. Insert-once, so a peer can add at most two records
+  // per job, and nothing reads them to gate the job.
+  const recordEquivocation = async (
+    jobId: string,
+    equivocation: Readonly<{ retainedPlanHash: string; offeredPlanHash: string }>,
+    payload: unknown,
+    authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
+  ): Promise<void> => {
+    const order = await loadOrder(context, jobId);
+    const committed = await loadBinding(context, "proposal", jobId) !== undefined ||
+      await loadBinding(context, "contribution", jobId, role) !== undefined;
+    const id = equivocationId(role, jobId, committed);
+    const evidence = captureEquivocation({
+      evidenceVersion: "1",
+      kind: "peer-equivocation",
+      localBindingHash: order.localBindingHash,
+      retainedPlanHash: equivocation.retainedPlanHash,
+      offeredPlanHash: equivocation.offeredPlanHash,
+      payloadHash: sha256Hex(canonicalize(payload)),
+      authenticationHash: authenticated.authenticationHash,
+      identityEvidenceHash: authenticated.identityEvidenceHash,
+      operatorAlert: committed,
+    });
+    context.database.putEffectIntent({
+      kind: "session",
+      effectId: id,
+      bindingHash: order.localBindingHash,
+      input: evidence,
+      idempotencyKey: id,
+      jobId,
+    });
   };
 
   const loadRegistered = async (
@@ -1258,7 +1364,15 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       await assertNoPlanConflict(context, input.jobId);
       if (input.type === proposalType) {
         await loadOrder(context, input.jobId);
-        const assessment = await assessProposal(input.payload, true);
+        // Validation never writes. An authentic plan that conflicts with the
+        // retained one passes transport validation so the inbox keeps the
+        // authenticated envelope as evidence; handleMessage refuses it.
+        const assessment = await assessProposal(input.payload, "peer");
+        if (assessment.disposition === "rejected" && assessment.equivocation !== undefined) {
+          return assessment.equivocation.jobId === input.jobId
+            ? payloadValidation(true, "vet-terminal-proposal-invalid")
+            : payloadValidation(false, "vet-terminal-proposal-job-mismatch");
+        }
         if (assessment.disposition === "indeterminate") {
           return Object.freeze({
             status: "authentication-failure" as const,
@@ -1459,6 +1573,24 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   const runtime: DacsVetTerminalBundleTransportRuntimeV1 = {
     transport,
     validatePayload,
+    async loadPeerEquivocationEvidence(jobId) {
+      const order = await loadOrder(context, jobId);
+      const load = (afterCommit: boolean) => {
+        const value = context.database.loadEffectInput("session", equivocationId(role, jobId, afterCommit));
+        if (value === undefined) return undefined;
+        const evidence = captureEquivocation(value);
+        if (evidence.localBindingHash !== order.localBindingHash) {
+          throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+        }
+        return evidence;
+      };
+      const beforeCommit = load(false);
+      const afterCommit = load(true);
+      return Object.freeze({
+        ...(beforeCommit === undefined ? {} : { beforeCommit }),
+        ...(afterCommit === undefined ? {} : { afterCommit }),
+      });
+    },
     async registerLocalTerminal(input) {
       const terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
         Readonly<PrepareVetTerminalBundleInput>;
@@ -1592,11 +1724,18 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (validation.status !== "valid") return rejected(validation.reasonCode);
       try {
         if (envelope.type === `terminal-bundle-proposal-${peerRole}`) {
-          const assessment = await assessProposal(envelope.payload);
+          const assessment = await assessProposal(envelope.payload, "peer");
           if (assessment.disposition === "indeterminate") {
             throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);
           }
           if (assessment.disposition === "rejected") {
+            // A second authentic plan from the peer is refused and kept as
+            // evidence. The job continues with the retained plan: this role
+            // only ever signs that plan, so nothing contradictory can be signed.
+            if (assessment.equivocation !== undefined) {
+              await recordEquivocation(envelope.jobId, assessment.equivocation,
+                envelope.payload, authenticated);
+            }
             return rejected(assessment.reasonCode);
           }
           await putBinding(context, "proposal", envelope.jobId, assessment.proposal, {

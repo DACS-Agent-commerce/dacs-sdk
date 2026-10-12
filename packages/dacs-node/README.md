@@ -168,7 +168,12 @@ define the seller's local Agreement context.
 
 Pre-agreement Vet failure uses a separate symmetric terminal path. Configure
 `terminalBundle.authenticateProduction` on both live-role factories with the
-application's recursive DACS-2 verifier. A non-empty requirement also requires
+application's recursive DACS-2 verifier. This is the only check that the peer's
+Vet production is authentic: the SDK checks only the shape of its result, so
+a stub that returns `{ status: "valid" }` lets any well-formed production
+through. Never configure a stub or a sender assertion in production. A result
+other than `valid`, a thrown error or a malformed result fails closed, with
+nothing retained or signed. A non-empty requirement also requires
 the matching `vet.produce` and `vet.authenticate` host policy; the agreement
 track will not mix a custom producer with the empty-requirement authenticator.
 A terminal proposal carries the exact
@@ -188,6 +193,17 @@ and exact finalized-head recovery all retain the same job/role authority. The
 runtime supports both fixed-price x402 and native DEM orders and rejects a
 terminal pipeline for the other rail. The host deliberately does not replace
 the recursive Vet authenticator with a sender assertion.
+
+A role keeps the first terminal plan it retained. If the authenticated peer
+later offers a second, authentic plan for the same job, that message is
+refused (`vet-terminal-proposal-equivocation`), never sealed and never signed,
+and the job continues with the retained plan, because the role only signs that
+plan. `loadPeerEquivocationEvidence(jobId)` returns the first refused plan from
+before this role committed (sent, accepted or signed its plan) and the first
+from after it; the latter has `operatorAlert: true`. The inbox keeps the
+authenticated envelope. A conflict between plans the role retained itself (a
+second local plan over retained material or an accepted proposal) is still
+sealed for an operator, as below.
 
 The fixed-price live factories also connect that runtime to the agreement
 worker. The first local objective `fail` stores a durable Vet invocation,
