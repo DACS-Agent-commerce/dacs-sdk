@@ -2766,6 +2766,36 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(h.prepareSubmission).not.toHaveBeenCalled();
     });
 
+    // On b6aef30 the shared snapshot's surrogate check went through the live
+    // `charCodeAt`, and the key's UTF-8 encoding turns a lone surrogate into
+    // U+FFFD, so the railId took the key of another, well-formed one.
+    test("a replaced String.prototype.charCodeAt cannot admit a lone-surrogate railId", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const loneSurrogate = authority({ railId: "rail-\ud800" });
+      const originalCharCodeAt = String.prototype.charCodeAt;
+      let outcome: unknown;
+      let result: unknown;
+      try {
+        String.prototype.charCodeAt = () => 0x41;
+        try {
+          outcome = createLiquidityTankIntent(loneSurrogate);
+        } catch (error) {
+          outcome = error;
+        }
+        result = await advanceLiquidityTankSettlement(runner({ authority: loneSurrogate, store, adapter: h.adapter }).shared);
+      } finally {
+        String.prototype.charCodeAt = originalCharCodeAt;
+      }
+      const refused = "pay-cross-chain-liquidity-tank: authority must be stable data";
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(refused);
+      expect(result).toEqual({ status: "indeterminate", reason: refused });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
     // Pinning, and kills an NFC-to-NFD mutant: every expected value is the
     // NFC spelling, computed independently of the rail.
     test("an NFD-spelled railId gives the NFC railId, intent key and helper key", async () => {
