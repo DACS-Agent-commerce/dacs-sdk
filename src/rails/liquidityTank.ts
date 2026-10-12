@@ -469,12 +469,14 @@ function positiveUsdcAmount(value: unknown): { amount: string; baseUnits: string
   if (amount === "0") {
     throw new DacsError("pay-cross-chain-liquidity-tank: amount must be greater than zero");
   }
-  const padding = ZERO_PADDING[USDC_DECIMALS - fraction.length];
-  if (padding === undefined) {
+  // Refused before indexing: a negative index is not an own element, so the
+  // read would fall through to a polluted `Array.prototype`/`Object.prototype`.
+  if (fraction.length > USDC_DECIMALS) {
     throw new DacsError(
       `pay-cross-chain-liquidity-tank: amount has more precision than ${USDC_DECIMALS} decimals`,
     );
   }
+  const padding = ZERO_PADDING[USDC_DECIMALS - fraction.length] as string;
   // A positive amount has a non-zero digit, so the stripped units are never empty.
   const baseUnits = patternGroups(LEADING_ZEROS_RE, `${integer}${fraction}${padding}`)?.[1] ?? "";
   return { amount, baseUnits };

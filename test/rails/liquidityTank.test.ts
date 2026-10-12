@@ -2561,6 +2561,47 @@ describe("advanceLiquidityTankSettlement", () => {
     });
   });
 
+  describe("round 7", () => {
+    const PRECISION_REFUSED =
+      "pay-cross-chain-liquidity-tank: amount has more precision than 6 decimals";
+
+    // On b6aef30 the padding lookup indexed -1/-2 and read the polluted
+    // prototype, giving 10x and 100x the base units.
+    test.each([
+      ["Object.prototype[\"-1\"]", Object.prototype, "-1", "1.0000001"],
+      ["Array.prototype[\"-2\"]", Array.prototype, "-2", "1.00000001"],
+    ] as const)("a polluted %s cannot pad an over-precise amount", async (_label, prototype, index, amount) => {
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const polluted = prototype as unknown as Record<string, unknown>;
+      let thrown: unknown;
+      let result: unknown;
+      try {
+        polluted[index] = "";
+        try {
+          createLiquidityTankIntent(authority({ amount }));
+        } catch (error) {
+          thrown = error;
+        }
+        result = await advanceLiquidityTankSettlement(runner({
+          authority: authority({ amount }),
+          store,
+          adapter: h.adapter,
+        }).shared);
+      } finally {
+        delete polluted[index];
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(PRECISION_REFUSED);
+      expect(result).toEqual({ status: "indeterminate", reason: PRECISION_REFUSED });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+  });
+
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
     const store = createInMemoryLiquidityTankStore();
     const h = harness();
