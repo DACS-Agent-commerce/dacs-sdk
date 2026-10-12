@@ -1066,6 +1066,26 @@ function captureAgentIdentityConfig(
 }
 
 /**
+ * Refuse a construction key that an unreleased revision used and the Agent no
+ * longer reads, rather than dropping it silently.
+ */
+function refuseReplacedAgentConfig(config: AgentConfig): void {
+  if (
+    stableAgentData(
+      config,
+      "resolveAttestationAnchorWriter",
+      "AgentConfig.resolveAttestationAnchorWriter",
+    ) !== undefined
+  ) {
+    throw new DacsError(
+      "AgentConfig.resolveAttestationAnchorWriter was replaced by " +
+        "AgentConfig.resolveAttestationAnchorReceipt, which returns the " +
+        "verified SR-2 AnchorReceipt for a PC-2 anchor",
+    );
+  }
+}
+
+/**
  * Snapshot every retained construction capability before the first await. The
  * wallet bytes are deliberately absent: buildAgent needs only the fact that a
  * signer was connected, never the secret which connected it.
@@ -1075,6 +1095,7 @@ function captureAgentRuntimeConfig(
   hasWallet: boolean,
   demosCci: AgentDemosCciConfig | undefined,
 ): AgentConfig {
+  refuseReplacedAgentConfig(config);
   const runtimeConfig: AgentConfig = {
     demosRpc: String(capturedCreateConfigValue(config, "demosRpc") ?? ""),
     ...(hasWallet ? { wallet: "connected-signer" } : {}),
@@ -1475,6 +1496,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.verifyCompositeRecord",
     true,
   );
+  refuseReplacedAgentConfig(config);
   const resolveAttestationAnchorReceipt = stableAgentMethod<
     AgentConfig["resolveAttestationAnchorReceipt"]
   >(

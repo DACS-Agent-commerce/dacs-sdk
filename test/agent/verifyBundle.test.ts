@@ -2472,6 +2472,28 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
     }
   });
 
+  // The unreleased predecessor key. Dropping it silently would leave every
+  // PC-2 ref unresolved with no hint why.
+  test("the replaced resolveAttestationAnchorWriter key is refused at construction", () => {
+    const adapter = { readAnchor: async () => null,
+      resolveAnchorByName: async () => ({ status: "absent" }) } as never;
+    const writer = () => sellerDid;
+    for (const config of [
+      { demosRpc: "mem", resolveAttestationAnchorWriter: writer },
+      { demosRpc: "mem", resolveAttestationAnchorWriter: writer,
+        resolveAttestationAnchorReceipt: () => null },
+      Object.assign(Object.create({ resolveAttestationAnchorWriter: writer }),
+        { demosRpc: "mem" }),
+    ]) {
+      expect(() => buildAgent(adapter, config as AgentConfig)).toThrow(DacsError);
+      expect(() => buildAgent(adapter, config as AgentConfig)).toThrow(
+        /AgentConfig\.resolveAttestationAnchorWriter .*AgentConfig\.resolveAttestationAnchorReceipt/);
+    }
+    // An explicit undefined configures nothing, as for every optional key.
+    expect(() => buildAgent(adapter, { demosRpc: "mem",
+      resolveAttestationAnchorWriter: undefined } as AgentConfig)).not.toThrow();
+  });
+
   test("receipt callback is captured once and cannot mutate verification input", async () => {
     const h = await harness({ receipt: (honest, input) => {
       (input.ref as { contentHash: string }).contentHash = "0".repeat(64);
