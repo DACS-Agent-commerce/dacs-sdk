@@ -166,6 +166,10 @@ export interface HtlcPreparedAction {
  * before the destination lock is prepared or rebroadcast, and a final
  * destination lock's terms before the payer reveals the preimage. Missing or
  * different terms forbid that step; they never block observation or refunds.
+ *
+ * "Authenticated" is the adapter's promise, not a check by the core: the core
+ * checks only the terms' format and never reads them from a chain or verifies
+ * them, so the pre-reveal check is only as good as the adapter.
  */
 export interface HtlcLockTerms {
   /**
@@ -204,6 +208,14 @@ export interface HtlcDestinationClaimReplacementContext {
   failureAuthenticationHash: string;
 }
 
+/**
+ * One action's state as the adapter reports it. Every state is the adapter's
+ * authenticated assertion: authentication is the adapter's responsibility,
+ * and the core checks only formats, for example that `authenticationHash` is
+ * 64 lowercase hexadecimal characters. It never verifies a state against a
+ * chain or a verifier (see the adapter audit checklist in
+ * `docs/pay-cross-chain-htlc.md`).
+ */
 export type HtlcObservedAction =
   | {
       state: "absent";
@@ -227,7 +239,8 @@ export type HtlcObservedAction =
   | ({
       /**
        * Authenticated and irreversible under the intent's selected chain
-       * finality policy. The adapter owns confirmation-depth and reorg checks;
+       * finality policy. The adapter owns authentication and the
+       * confirmation-depth and reorg checks, none of which the core repeats;
        * it must return `pending` while a reversal remains possible.
        */
       state: "final";
@@ -295,7 +308,9 @@ export interface HtlcEffectFence {
 
 /**
  * Chain boundary. The adapter may dispatch payer and payee effects to separate
- * role services; this coordinator never needs either role's private key.
+ * role services; this coordinator never needs either role's private key. The
+ * adapter also owns authentication: the core takes every observation as
+ * authenticated once its fields are well formed.
  */
 export interface CrossChainHtlcAdapter {
   observe(
