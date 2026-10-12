@@ -554,8 +554,12 @@ export interface AgentConfig {
    * orchestrator (DACS-5 SEB-3). A receipt-tuple mismatch is
    * `invalid-binding`; a writer that is not the orchestrator is
    * `invalid-evidence`; a malformed receipt is `invalid-shape`; an unmet
-   * lifecycle gate is `unresolved`. Null, undefined, a throw or a rejection is
-   * also `unresolved`: with no qualifying carrier the result is indeterminate,
+   * lifecycle gate is `unresolved`. A host that has proved a receipt invalid,
+   * e.g. forged, throws `AttestationRefRejection("fail")`: the ref is then
+   * `invalid-binding`, a permanent refusal. Only a defect in the receipt
+   * itself is such proof; a verifier that could not observe the write proves
+   * nothing. Null, undefined, or any other throw or rejection is
+   * `unresolved`: with no qualifying carrier the result is indeterminate,
    * never authoritative absence (CORE §5.1 SR2-12), so the bundle is not `ok`.
    * Without this callback every PC-2 ref is `unresolved` for the same reason,
    * and so is a not-found read at the receipt's native address (a Demos
@@ -1734,7 +1738,18 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
                 parties: structuredClone(parties),
                 signal,
               });
-            } catch {
+            } catch (error) {
+              // Only a deliberate "fail" (the host proved the receipt invalid,
+              // e.g. forged) is permanent. Any other throw stays retryable.
+              if (
+                error instanceof AttestationRefRejection &&
+                error.disposition === "fail"
+              ) {
+                throw new AttestationRefRejection(
+                  "fail",
+                  "PC-2 anchor receipt was rejected by the host",
+                );
+              }
               throw new AttestationRefRejection(
                 "indeterminate",
                 "PC-2 anchor receipt callback failed",

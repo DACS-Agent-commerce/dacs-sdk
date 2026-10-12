@@ -3,13 +3,14 @@ import { describe, expect, test, vi } from "vitest";
 import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
+  AttestationRefRejection,
   verifyBundleCore,
   type VerifyBundleDeps,
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { AnchorReceipt, CompositeVerificationRecord } from "../../src/artifacts/types.js";
 import { contentHash, paymentEvidenceAddress } from "../../src/canonical/index.js";
-import { SubstrateError } from "../../src/errors.js";
+import { DacsError, SubstrateError } from "../../src/errors.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -2202,6 +2203,44 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
     expect(reputation.exclusions).toContainEqual(expect.objectContaining({
       code: "invalid-bundle", ref: "bundle",
       reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
+  });
+
+  // A host that has proved a delivered receipt invalid, e.g. forged, reports
+  // that permanently.
+  test.each([
+    ["throws", () => { throw new AttestationRefRejection("fail", "forged receipt"); }],
+    ["rejects with", () => Promise.reject(new AttestationRefRejection("fail", "forged receipt"))],
+  ] as const)("a callback that %s AttestationRefRejection(\"fail\") is invalid-binding and never read", async (_label, receipt) => {
+    const h = await harness({ receipt: receipt as never });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("invalid-binding");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* invalid-binding$/) }));
+  });
+
+  // Only a deliberate "fail" is permanent; any other throw stays retryable.
+  test.each([
+    ["AttestationRefRejection(\"error\")", () => new AttestationRefRejection("error", "x")],
+    ["AttestationRefRejection(\"indeterminate\")",
+      () => new AttestationRefRejection("indeterminate", "x")],
+    ["a DacsError", () => new DacsError("x")],
+    ["a SubstrateError", () => new SubstrateError("rpc unavailable")],
+    ["a look-alike with disposition \"fail\"",
+      () => Object.assign(new Error("x"), { name: "AttestationRefRejection", disposition: "fail" })],
+  ] as const)("a callback that throws %s is unresolved", async (_label, error) => {
+    for (const receipt of [() => { throw error(); }, () => Promise.reject(error())]) {
+      const h = await harness({ receipt: receipt as never });
+      const result = await h.agent.verifyBundle("bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceVerdict(result)).toBe("unresolved");
+      expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    }
   });
 
   test.each<[string, (honest: AnchorReceipt) => unknown]>([
