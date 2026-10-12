@@ -38,7 +38,7 @@ import { produceDacsEmptyRequirementSessionVetV1 } from "../src/sessionIdentityV
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from "../src/purchaseDemosBudget.js";
 import { createDacsVetTerminalBundleTransportRuntimeV1 } from "../src/terminalBundleTransportRuntime.js";
 import { claimDacsPreAgreementPhaseV1 } from "../src/preAgreementPhase.js";
-import { advanceDacsVetTerminalTrackV1, createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
+import { advanceDacsVetTerminalTrackV1, createDacsBuyerSessionBootstrapAgreementTrackV1, createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "../src/agreementTransportRuntime.js";
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -664,28 +664,55 @@ type MemoryHarness = Awaited<ReturnType<typeof memoryAgreementHarness>>;
 // A full seller bootstrap tick in which everything before the agreement hand-off
 // is answered (the seller's Vet of the buyer passes), so only the terminal and
 // phase checks decide whether the seller reaches the agreement step.
-function sellerBootstrapTrack(h: MemoryHarness, agreement: ReturnType<typeof vi.fn>) {
+function bootstrapTranscript(h: MemoryHarness) {
     const record = { ...h.production.record, evaluatedParty: BUYER, bundleHash: identityBundleHash(identity(BUYER)), signature: { ...h.production.record.signature, signer: SELLER } };
     const recordHash = contentHash(record as unknown as Record<string, unknown>);
     const buyerPass = { record, recordRef: { ...h.production.recordRef, contentHash: recordHash, signer: SELLER }, anchorReceipt: { ...h.production.anchorReceipt, contentHash: recordHash, logicalAddress: compositeVerificationAddress(JOB_ID, BUYER), writer: SELLER } };
     const init = { bootstrapVersion: "1", order: h.seller.exactOrder, application: h.seller.application, sellerChallenge: "1".repeat(64) };
     const challenge = { bootstrapVersion: "1", initPayloadHash: "2".repeat(64), sellerChallenge: init.sellerChallenge, buyerChallenge: "3".repeat(64), sellerIdentity: identity(SELLER) };
     const presentation = { bootstrapVersion: "1", challengePayloadHash: "4".repeat(64), buyerChallenge: challenge.buyerChallenge, buyerIdentity: identity(BUYER) };
+    return { buyerPass, init, challenge, presentation };
+}
+
+function sellerBootstrapTrack(
+    h: MemoryHarness,
+    agreement: ReturnType<typeof vi.fn>,
+    agreementProposalReady = async ({ operation }: { operation: never }) => {
+        try {
+            await h.sellerRuntime.resolveProposal({ operation });
+            return true;
+        } catch {
+            return false;
+        }
+    },
+) {
+    const { buyerPass, init, challenge, presentation } = bootstrapTranscript(h);
     return createDacsSellerSessionBootstrapAgreementTrackV1({
         context: h.seller.context,
         sessionBootstrap: { resolveInit: () => init, resolveChallenge: () => challenge, resolvePresentation: () => presentation, resolveAdmission: () => undefined, publishAdmission: async () => "submitted", publishChallenge: async () => "submitted" },
         resolveBuyerRequirement: async () => ({ requirementVersion: "1", required: [] }),
-        agreementProposalReady: async ({ operation }: { operation: never }) => {
-            try {
-                await h.sellerRuntime.resolveProposal({ operation });
-                return true;
-            } catch {
-                return false;
-            }
-        },
+        agreementProposalReady,
         agreement,
         vet: { produce: async () => ({ status: "ready", production: buyerPass }), authenticate: async () => "valid" },
         terminalBundle: { runtime: h.terminalRuntime(), createInput: vi.fn() },
+    } as never);
+}
+
+// The buyer's counterpart: both Vets pass, so only the phase check decides
+// whether the buyer reaches its agreement step.
+function buyerBootstrapTrack(h: MemoryHarness, agreement: ReturnType<typeof vi.fn>) {
+    const { buyerPass, init, challenge, presentation } = bootstrapTranscript(h);
+    const admission = {
+        bootstrapVersion: "1", presentationPayloadHash: "5".repeat(64),
+        buyerIdentityHash: identityBundleHash(identity(BUYER)), sellerIdentityHash: identityBundleHash(identity(SELLER)),
+        buyerVetRecord: buyerPass.record, buyerVetRef: buyerPass.recordRef, buyerVetReceipt: buyerPass.anchorReceipt,
+    };
+    return createDacsBuyerSessionBootstrapAgreementTrackV1({
+        context: h.buyer.context,
+        sessionBootstrap: { resolveInit: () => init, resolveChallenge: () => challenge, resolvePresentation: () => presentation, resolveAdmission: () => admission, publishInit: async () => "submitted", publishPresentation: async () => "submitted" },
+        resolveRequirements: async () => ({ buyer: { requirementVersion: "1", required: [] }, seller: { requirementVersion: "1", required: [] } }),
+        agreement,
+        vet: { produce: async () => ({ status: "ready", production: h.production }), authenticate: async () => "valid" },
     } as never);
 }
 
@@ -784,7 +811,10 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(false);
 
         const runtime = h.terminalRuntime();
-        expect.soft(await runtime.handleMessage(await h.failure(), h.inbound)).toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        const terminal = await h.failure();
+        expect.soft(await runtime.validatePayload({ type: "terminal-bundle-proposal-buyer", payload: terminal.envelope.payload, jobId: JOB_ID, sender: BUYER, audience: SELLER }))
+            .toEqual({ status: "invalid", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect.soft(await runtime.handleMessage(terminal, h.inbound)).toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
         await expect.soft(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "vet-terminal-material-unavailable" });
         expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
     });
@@ -845,6 +875,22 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         }
         expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerResponseRetained).toBe(true);
         expect(await track(h.seller.operation as never)).toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect(agreement).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["seller", (h: MemoryHarness, agreement: ReturnType<typeof vi.fn>) => sellerBootstrapTrack(h, agreement, async () => true)(h.seller.operation as never), (h: MemoryHarness) => h.seller],
+        ["buyer", (h: MemoryHarness, agreement: ReturnType<typeof vi.fn>) => buyerBootstrapTrack(h, agreement)(h.buyer.operation as never), (h: MemoryHarness) => h.buyer],
+    ] as const)("claims the agreement before the %s bootstrap hands a job to it", async (_role, tick, actor) => {
+        const reached = await memoryAgreementHarness("x402");
+        const signs = vi.fn(async () => ({ status: "final", outcome: "success", reference: "stor:agreement" }));
+        expect(await tick(reached, signs)).toMatchObject({ status: "final", outcome: "success" });
+        expect(signs).toHaveBeenCalledTimes(1);
+
+        const h = await memoryAgreementHarness("x402");
+        claimDacsPreAgreementPhaseV1(actor(h).context, actor(h).record, "vet-terminal");
+        const agreement = vi.fn();
+        expect(await tick(h, agreement)).toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
         expect(agreement).not.toHaveBeenCalled();
     });
 
