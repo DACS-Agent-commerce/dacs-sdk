@@ -769,7 +769,7 @@ async function x402AuditHarness() {
   const authenticated = {
     envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
   } as never;
-  return { audit, authenticated, f, observation, pair };
+  return { audit, authenticated, database, f, observation, pair };
 }
 
 function requestWithFinality(
@@ -814,7 +814,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
   });
 
   it("independently reconstructs and verifies the exact seller review request", async () => {
-    const { audit, authenticated, f, observation, pair } = await x402AuditHarness();
+    const { audit, authenticated, database, f, observation, pair } = await x402AuditHarness();
     for (const evidence of [f.paymentEvidence, f.deliveryEvidence]) {
       expect(isSettlementEvidence(evidence)).toBe(true);
       expect(ed25519Verify(
@@ -877,8 +877,12 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         sellerBundle: { jobId: JOB_ID },
       },
     };
+    const lease = { ...AUDIT_LEASE, expiresAt: database.readTime() + 300_000 };
     await expect(audit.audit.authorizeFinalized({
-      operation: { order: pair.buyer },
+      operation: {
+        order: { ...pair.buyer, tracks: { audit: { state: "running", lease } } },
+        fence: { owner: lease.owner, generation: lease.generation },
+      },
       retained: { application: f.application },
       material: { provider: exact.provider },
       completion: { sellerClosure },
@@ -1139,12 +1143,19 @@ function completedBundle(role: CompletionRole) {
   };
 }
 
+// The audit track's coordinator lease as the coordinator hands it over, with
+// the dacs-node service's default lease length.
+type AuditLease = { owner: string; generation: number; expiresAt: number };
+const AUDIT_LEASE: AuditLease = { owner: "buyer-audit-worker", generation: 3, expiresAt: NOW + 300_000 };
+
 // Demos state for two published role copies, each with a signed BB-1 binding.
 // The strict two-copy verifier is mocked in this file, so each test drives the
-// adapter's own closures through it the way the verifier does.
+// adapter's own closures through it the way the verifier does. `readTime` is
+// the role database's clock, on which the coordinator lease runs.
 async function completionHarness(
   paymentProfile: "x402" | "pay-dem",
   completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>,
+  readTime: () => number = () => NOW,
 ) {
   const f = paymentProfile === "x402" ? await fixture() : await payDemFixture();
   mocks.provenance.mockReturnValue({
@@ -1215,7 +1226,7 @@ async function completionHarness(
     authority: BUYER,
     peerAuthority: SELLER,
     database: {
-      readTime: () => NOW,
+      readTime,
       createLiveCoordinatorStore: coordinatorStore,
       createPayDemCoordinatorStore: coordinatorStore,
     },
@@ -1246,9 +1257,18 @@ async function completionHarness(
       sellerBundle: copies.seller.bundle,
     },
   };
-  const authorize = (overrides: { sellerNativeAddress?: string } = {}) =>
+  const authorize = (overrides: { sellerNativeAddress?: string; lease?: AuditLease | null } = {}) =>
     audit.audit.authorizeFinalized({
-      operation: { order: { jobId: JOB_ID, buyer: BUYER, seller: SELLER } },
+      operation: {
+        order: {
+          jobId: JOB_ID, buyer: BUYER, seller: SELLER,
+          tracks: {
+            audit: overrides.lease === null ? { state: "running" }
+              : { state: "running", lease: overrides.lease ?? AUDIT_LEASE },
+          },
+        },
+        fence: { owner: AUDIT_LEASE.owner, generation: AUDIT_LEASE.generation },
+      },
       retained: { application: f.application },
       material: { provider: sellerProvider },
       completion: {
@@ -1631,17 +1651,136 @@ describe("buyer two-copy completion adapter", () => {
     },
   );
 
-  it("passes its deadline to the strict verifier and disarms it once the audit decides", async () => {
+  // The audit arms one deadline and hands the strict verifier that same
+  // expiry: the verifier's own deadline arms no second timer, and it expires
+  // with the audit's.
+  it("hands the strict verifier its one expiry and disarms it once the audit decides", async () => {
     const clock = manualDeadline();
     const harness = await completionHarness("x402", { timeoutMs: 7_000, start: clock.start });
-    let passed: unknown;
-    mocks.verifyCompleted.mockImplementationOnce(async (_input: unknown, deps: { deadline?: unknown }) => {
-      passed = deps.deadline;
-      return { state: "audit-complete" };
-    });
-    await expect(harness.authorize()).resolves.toBe(true);
-    expect(passed).toEqual({ timeoutMs: 7_000, start: clock.start });
+    let passed: CompletedTwoSidedSessionDeadline | undefined;
+    let verifierExpired = false;
+    mocks.verifyCompleted.mockImplementationOnce(
+      async (_input: unknown, deps: { deadline: Required<CompletedTwoSidedSessionDeadline> }) => {
+        passed = deps.deadline;
+        await new Promise<void>((resolve) => {
+          deps.deadline.start(() => { verifierExpired = true; resolve(); }, deps.deadline.timeoutMs);
+        });
+        throw new IndeterminateSubstrateError("completed buyer bundle copy verification did not settle");
+      });
+    const outcome = Promise.resolve(harness.authorize());
+    await flush();
+    expect(passed?.timeoutMs).toBe(7_000);
+    expect(clock.armed()).toEqual([7_000]);
+
+    clock.expire();
+    await expect(outcome).resolves.toBe("indeterminate");
+    expect(verifierExpired).toBe(true);
     expect(clock.armed()).toEqual([]);
+  });
+
+  // The coordinator records the audit's result only while the audit track's
+  // lease is current, and nothing renews it during the check. With the core
+  // coordinator's 30-second lease, claimed 2 seconds before the check starts,
+  // the check ends 5 seconds before the lease: 23 seconds after it starts.
+  for (const paymentProfile of ["x402", "pay-dem"] as const) {
+    const lease = { ...AUDIT_LEASE, expiresAt: NOW + 30_000 };
+    const started = NOW + 2_000;
+    const leaseDeadline = lease.expiresAt - 5_000;
+    // Demos answers the buyer copy's first name lookup only when the test says.
+    const heldBuyerName = (harness: CompletionHarness) => {
+      let answer = (): void => undefined;
+      let held = false;
+      const resolveName = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+      harness.adapter.resolveAnchorByName.mockImplementation(async (name: string, ...rest: unknown[]) => {
+        if (held || name !== bundleAddress(JOB_ID, "buyer")) return resolveName(name, ...(rest as []));
+        held = true;
+        return await new Promise((resolve) => {
+          answer = () => { void resolveName(name, ...(rest as [])).then(resolve); };
+        });
+      });
+      return () => answer();
+    };
+
+    it(`authorizes a ${paymentProfile} completion whose valid answer arrives just before the lease's deadline`, async () => {
+      const clock = databaseClock(started);
+      const harness = await completionHarness(paymentProfile, { start: clock.start }, clock.readTime);
+      const answer = heldBuyerName(harness);
+      const outcome = Promise.resolve(harness.authorize({ lease }));
+      await flush();
+      expect(clock.armed()).toEqual([leaseDeadline]);
+
+      clock.advance(leaseDeadline - 1);
+      answer();
+      await expect(outcome).resolves.toBe(true);
+      expect(clock.readTime()).toBeLessThan(lease.expiresAt);
+      expect(clock.armed()).toEqual([]);
+    });
+
+    it(`keeps a ${paymentProfile} audit retryable, while its lease is still current, when the valid answer would arrive after the lease`, async () => {
+      const clock = databaseClock(started);
+      const harness = await completionHarness(paymentProfile, { start: clock.start }, clock.readTime);
+      const answer = heldBuyerName(harness);
+      const outcome = Promise.resolve(harness.authorize({ lease }));
+      let decidedAt: number | undefined;
+      void outcome.then(() => { decidedAt = clock.readTime(); });
+      await flush();
+
+      clock.advance(leaseDeadline);
+      await flush();
+      expect(decidedAt).toBe(leaseDeadline);
+      await expect(outcome).resolves.toBe("indeterminate");
+      // Demos answers validly 40 seconds after the claim: nothing changes.
+      clock.advance(NOW + 40_000);
+      answer();
+      await flush();
+      await expect(outcome).resolves.toBe("indeterminate");
+      expect(clock.armed()).toEqual([]);
+    });
+
+    it(`keeps a ${paymentProfile} audit retryable without a read when no more than the margin is left on its lease`, async () => {
+      const clock = databaseClock(leaseDeadline);
+      const start = vi.fn(clock.start);
+      const harness = await completionHarness(paymentProfile, { start }, clock.readTime);
+      await expect(harness.authorize({ lease })).resolves.toBe("indeterminate");
+      expect(mocks.verifyCompleted).not.toHaveBeenCalled();
+      expect(harness.adapter.resolveAnchorByName).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+    });
+  }
+
+  it.each([
+    ["no audit lease", null],
+    ["another owner's lease", { ...AUDIT_LEASE, owner: "other-worker" }],
+    ["an earlier generation's lease", { ...AUDIT_LEASE, generation: AUDIT_LEASE.generation - 1 }],
+  ] as const)("refuses an operation with %s before reading", async (_label, lease) => {
+    const harness = await completionHarness("x402");
+    await expect(harness.authorize({ lease })).rejects.toMatchObject({
+      reasonCode: "buyer-audit-lease-invalid",
+    });
+    expect(mocks.verifyCompleted).not.toHaveBeenCalled();
+    expect(harness.adapter.resolveAnchorByName).not.toHaveBeenCalled();
+  });
+
+  it("runs its default deadline on an unreferenced timer and clears it", async () => {
+    const harness = await completionHarness("x402");
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const clears = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const deadlineTimer = () => timers.mock.results[timers.mock.calls.findIndex(
+        ([, timeoutMs]) => timeoutMs === 60_000,
+      )]?.value as ReturnType<typeof setTimeout> | undefined;
+      let referenced: boolean | undefined;
+      mocks.verifyCompleted.mockImplementationOnce(async () => {
+        referenced = deadlineTimer()?.hasRef();
+        return { state: "audit-complete" };
+      });
+      await expect(harness.authorize()).resolves.toBe(true);
+      expect(referenced).toBe(false);
+      expect(clears).toHaveBeenCalledWith(deadlineTimer());
+    } finally {
+      timers.mockRestore();
+      clears.mockRestore();
+    }
   });
 
   it.each([
@@ -1671,6 +1810,31 @@ function manualDeadline() {
         armed.delete(id);
         timer.expire();
       }
+    },
+  };
+}
+
+// The role database's clock, which the test advances, and deadlines on it: a
+// deadline armed at `t` for `ms` expires when the clock reaches `t + ms`.
+function databaseClock(start: number) {
+  let now = start;
+  const armed = new Set<{ at: number; expire: () => void }>();
+  return {
+    readTime: () => now,
+    start(expire: () => void, timeoutMs: number) {
+      const timer = { at: now + timeoutMs, expire };
+      armed.add(timer);
+      return () => { armed.delete(timer); };
+    },
+    armed: () => [...armed].map((timer) => timer.at),
+    advance(to: number) {
+      for (const timer of [...armed].sort((left, right) => left.at - right.at)) {
+        if (timer.at > to) break;
+        armed.delete(timer);
+        now = timer.at;
+        timer.expire();
+      }
+      now = to;
     },
   };
 }

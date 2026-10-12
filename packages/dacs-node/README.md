@@ -284,10 +284,18 @@ a failed authentication is immutable, so it also goes to operator action
 instead of being retried. Demos's answer against one copy goes to operator
 action even when a read of the other copy went unanswered in the same check,
 whichever arrives first: both copies settle before the check decides. A read
-that never settles is cut off at a deadline (`completionDeadline` on the buyer
-audit options, 60 seconds by default): Demos's answer already seen still goes
-to operator action, otherwise the track stays `indeterminate` and is retried,
-and an answer that arrives later changes nothing.
+that never settles is cut off at one deadline for the whole check (the seller
+closure, both copies and the final pair check): Demos's answer already seen
+still goes to operator action, otherwise the track stays `indeterminate` and is
+retried, and an answer that arrives later changes nothing. The coordinator
+records the audit's result only while the audit track's lease is current, and
+nothing renews that lease during the check. So the deadline is 5 seconds before
+that lease expires, on the role database's clock, or `completionDeadline.timeoutMs`
+on the buyer audit options (60 seconds by default) if that is sooner. With 5
+seconds or less of the lease left, the check stays `indeterminate` without
+reading. The service's coordinator lease (`coordinatorLeaseDurationMs`) is 300
+seconds by default; the core coordinator's own default is 30 seconds. A lease
+too short for the audit's Demos reads keeps it `indeterminate` on every retry.
 For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
 request. A connection error, a timeout or any other HTTP status (a 5xx, a
 CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
