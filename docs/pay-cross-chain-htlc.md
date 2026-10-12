@@ -57,6 +57,20 @@ secret, signed action and checkpoint on restart, after which the core would
 prepare and broadcast a second source lock; without that option it throws a
 `TypeError`. Use it only in tests and development.
 
+Each call holds a lease on the session for `leaseDurationMs` milliseconds, by
+default 30 000 (30 s); pass the option on every call to change it. The lease
+is taken when the call starts and covers the whole call. The core checks it
+before and after every adapter preparation and broadcast: an action prepared
+after the lease has lapsed is discarded unrecorded and prepared again by the
+next owner, and a broadcast that returns after it is reported uncertain, and
+the next owner reuses its retained bytes. While the lease is held, other
+callers get `waiting` with reason `htlc-settlement-held`, so it is also the
+longest a crashed worker holds the session up. The core sets no timeouts on
+adapter calls. Choose a lease above the slowest adapter call, and have the
+adapter time out each call well within it: an adapter call that never returns
+keeps that `advanceCrossChainHtlc` call from returning, although its late
+effects are fenced off once another owner has taken the session over.
+
 `authorizeDestinationClaim` preserves HTLC-10's payer free option: the core
 does not reveal merely because both locks exist. Once the destination claim is
 final, the preimage is public and the source refund path is forbidden. If the
@@ -112,12 +126,16 @@ Neither leg is ever refunded on this path, and a source claim that
 misses the source expiry is the usual `operator-alert`
 `htlc-source-claim-missed-after-reveal`.
 
-Refunds are per leg. After the destination expiry the payee's destination
-refund is driven; after the source expiry the payer's source refund is driven
-in the same call, even if the destination refund cannot be prepared, broadcast
-or observed. When the final destination lock's expiry breaks the absolute
-margin (`sourceExpiry` must exceed `destinationExpiry + sourceFinalitySec +
-safetyWindowSec`) or its terms do not match the intent, the payer never reveals:
+Refunds are per leg. After the source expiry the payer's source refund is
+driven, and after the destination expiry the payee's destination refund. When
+both are due in one call, the payer's source refund is prepared, persisted and
+broadcast first, before the payee's role service is asked for anything. A
+destination refund that fails, answers only after the lease has lapsed, or
+never answers therefore cannot delay or skip the payer's refund: only the
+destination leg reads `uncertain`, and the next call retries it. When the
+final destination lock's expiry breaks the absolute margin (`sourceExpiry`
+must exceed `destinationExpiry + sourceFinalitySec + safetyWindowSec`) or its
+terms do not match the intent, the payer never reveals:
 the result is `refund-pending` with reason
 `destination-expiry-margin-insufficient` or `destination-lock-terms-mismatch`
 from that point on, and each leg is refunded at its own expiry. Callers keep
@@ -538,6 +556,9 @@ also accepting byte-equivalent uppercase and prefixed values.
   every source-claim retry or replacement; retain it while retrying an alert.
 - Supply that same salt on every `advanceCrossChainHtlc` call, including after
   a restart. The current store API does not return secrets on takeover.
+- Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call.
+  The core sets no adapter timeouts, so the adapter must time out each call
+  within the lease.
 - Page an operator on each of these results, and keep advancing the session
   (except after `failed`). `htlcNeedsOperator(progress)` returns `true` for
   exactly this list:
@@ -602,6 +623,8 @@ the core cannot check them itself.
   final reveal carries `revealedPreimageHex`.
 - A replacement preparation returns a different signed transaction, and a
   retained action is broadcast byte for byte.
+- Every adapter call returns or throws within a timeout shorter than the
+  host's lease, also when a role service never answers.
 
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require

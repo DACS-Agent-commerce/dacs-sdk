@@ -1758,12 +1758,13 @@ describe("advanceCrossChainHtlc", () => {
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-unlanded-done", now: () => 1_700_202 }))
       .resolves.toMatchObject({ status: "refunded", reason: "destination-claim-unlanded" });
+    // The payer's own refund goes first when both are due in one call.
     expect(h.broadcastRetained.mock.calls.map((call) => call[0].action)).toEqual([
       "source-lock",
       "destination-lock",
       "destination-claim",
-      "destination-refund",
       "source-refund",
+      "destination-refund",
     ]);
   });
 
@@ -2125,8 +2126,8 @@ describe("advanceCrossChainHtlc", () => {
       "source-lock",
       "destination-lock",
       "destination-claim",
-      "destination-refund",
       "source-refund",
+      "destination-refund",
     ]);
   });
 
@@ -2601,6 +2602,70 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock", "source-refund"]);
     expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+  });
+
+  test("sends the payer's source refund before asking a payee role service that never answers", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const original = h.adapter.prepareAction;
+    let payeeAsked!: () => void;
+    const asked = new Promise<void>((resolve) => { payeeAsked = resolve; });
+    let payeeTimesOut!: (error: Error) => void;
+    h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
+      if (request.action !== "destination-refund") return original(request, fence);
+      payeeAsked();
+      // The payee's role service hangs until the test lets its adapter time out.
+      return new Promise((_resolve, reject) => { payeeTimesOut = reject; });
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    const call = advanceCrossChainHtlc({ ...run.shared, owner: "payee-hangs" });
+    await asked;
+    // By the time the payee is asked anything, the payer's refund is on the wire.
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "source-refund"]);
+    expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+    payeeTimesOut(new Error("payee role service timed out"));
+    await expect(call).resolves.toEqual({
+      status: "refund-pending",
+      reason: "destination-timeout",
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+      refunds: { "destination-refund": "uncertain", "source-refund": "final" },
+    });
+  });
+
+  test("sends the payer's source refund when the payee's refund preparation outlasts the lease", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const original = h.adapter.prepareAction;
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    let clock = 1_000_000;
+    h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
+      const prepared = await original(request, fence);
+      // The payee's role service answers, but only after the 100 ms lease lapsed.
+      if (request.action === "destination-refund") run.setClock(clock += 101);
+      return prepared;
+    });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    for (const tick of [1, 2]) {
+      run.setClock(clock = 1_700_000 + tick * 1_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: `slow-payee-${tick}` })).resolves.toEqual({
+        status: "refund-pending",
+        reason: "destination-timeout",
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("source-refund")],
+        refunds: { "destination-refund": "uncertain", "source-refund": "final" },
+      });
+    }
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual([
+      "source-lock",
+      "destination-lock",
+      "source-refund",
+      "destination-refund",
+      "destination-refund",
+    ]);
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "source-refund"]);
   });
 
   test("reports a reverted source refund as refund-stalled and never re-sends it", async () => {

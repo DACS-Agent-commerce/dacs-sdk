@@ -576,6 +576,14 @@ export interface AdvanceCrossChainHtlcInput {
   store: CrossChainHtlcStore;
   adapter: CrossChainHtlcAdapter;
   now?: () => number;
+  /**
+   * Milliseconds this call holds the session's lease; default 30 000 (30 s).
+   * The lease is taken when the call starts and fences every effect in it: an
+   * adapter preparation that returns after it lapses is discarded unrecorded,
+   * and a broadcast that does is reported uncertain; the next owner retries
+   * either. Other callers wait (`htlc-settlement-held`) until it lapses. Set
+   * it above the slowest adapter call; the core sets no adapter timeouts.
+   */
   leaseDurationMs?: number;
 }
 
@@ -2534,18 +2542,21 @@ export async function advanceCrossChainHtlc(
       "destination-refund": "none",
       "source-refund": "none",
     };
-    if (destinationExpired && (!destinationRefund ||
-        (destinationRefund.state === "absent" && !refundAbsent("destination-refund", snapshot)))) {
-      const advanced = await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
-      if (advanced) latest = advanced;
-      attempts["destination-refund"] = advanced ? "sent" : "uncertain";
-    }
-    // The payer's source refund never waits on the payee's destination refund.
+    // The payer's source refund never waits on the payee's destination refund:
+    // it is driven first, inside this call's fresh lease, so a payee role
+    // service that fails, answers after the lease or never answers cannot
+    // delay or skip it. Only the destination leg then reads `uncertain`.
     if (sourceExpired && (!sourceRefund ||
         (sourceRefund.state === "absent" && !refundAbsent("source-refund", snapshot)))) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
       if (advanced) latest = advanced;
       attempts["source-refund"] = advanced ? "sent" : "uncertain";
+    }
+    if (destinationExpired && (!destinationRefund ||
+        (destinationRefund.state === "absent" && !refundAbsent("destination-refund", snapshot)))) {
+      const advanced = await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
+      if (advanced) latest = advanced;
+      attempts["destination-refund"] = advanced ? "sent" : "uncertain";
     }
     return refundProgress(refundReason, latest, attempts);
   }
