@@ -1770,7 +1770,106 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
-  test("keeps a final reveal whose destination-lock observation regressed resumable", async () => {
+  // A contract that deletes its lock record on claim makes the destination
+  // lock stop reading final exactly when the payer's reveal lands.
+  async function toFinalRevealWithRegressedLock(
+    variant: "deleted" | "pending" | "absent",
+    options: HarnessOptions = {},
+  ) {
+    const h = harness({
+      sourceExpiry: 5_000,
+      destinationExpiry: 1_500,
+      ...options,
+      mode: { "destination-claim": "pending", ...options.mode },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    const reveal = h.actions["destination-claim"];
+    const lock = h.actions["destination-lock"];
+    if (!reveal || reveal.state !== "pending" || reveal.txRef.kind !== "htlc-reveal") {
+      throw new Error("expected pending reveal");
+    }
+    if (!lock || lock.state !== "final") throw new Error("expected final destination lock");
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: reveal.txRef,
+      finalityObservedAt: 1_000_500,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    if (variant === "deleted") delete h.actions["destination-lock"];
+    else if (variant === "pending") {
+      h.actions["destination-lock"] = { state: "pending", txRef: lock.txRef, authenticationHash: AUTH_HASH };
+    } else h.actions["destination-lock"] = { state: "absent", authenticationHash: AUTH_HASH };
+    return { h, run };
+  }
+
+  test.each(["deleted", "pending", "absent"] as const)(
+    "drives the source claim to settlement after a final reveal whose destination lock is now %s",
+    async (variant) => {
+      const { h, run } = await toFinalRevealWithRegressedLock(variant);
+      const settled = {
+        status: "settled",
+        settlement: {
+          txRefs: [
+            refFor("source-lock"),
+            refFor("destination-lock"),
+            refFor("destination-claim"),
+            refFor("source-claim"),
+          ],
+          settlementFinality: { model: "htlc-reveal", sourceExpiry: 5_000 },
+        },
+      };
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject(settled);
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject(settled);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "destination-claim", "source-claim"]);
+      expect(h.prepareAction.mock.calls[3]![0].sourceExpiry).toBe(5_000);
+    },
+  );
+
+  test("alerts when the source claim misses the expiry after a final reveal whose destination lock regressed", async () => {
+    const { h, run } = await toFinalRevealWithRegressedLock("deleted", { mode: { "source-claim": "pending" } });
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      reason: "dest-revealed-source-unclaimed",
+      recoveryDeadline: 5_000,
+    });
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    for (const tick of [0, 1]) {
+      await expect(advanceCrossChainHtlc({
+        ...run.shared,
+        owner: `claim-missed-${tick}`,
+        now: () => 5_000_000 + tick * 101,
+      })).resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-source-claim-missed-after-reveal",
+        txRefs: [refFor("source-lock"), refFor("destination-claim"), refFor("source-claim")],
+      });
+    }
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    const effects = h.prepareAction.mock.calls.map((call) => call[0].action);
+    expect(effects).not.toContain("source-refund");
+    expect(effects).not.toContain("destination-refund");
+  });
+
+  test("alerts, preparing nothing, when such a final reveal is first observed after the source expiry", async () => {
+    const { h, run } = await toFinalRevealWithRegressedLock("absent");
+    run.setClock(5_000_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late-observer" })).resolves.toEqual({
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: [refFor("source-lock"), refFor("destination-claim")],
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim"]);
+  });
+
+  test("keeps driving the source claim from the reveal checkpoint when the lock, then also the reveal, is no longer reported", async () => {
     const h = harness({ mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
     await advanceCrossChainHtlc(run.shared);
@@ -1779,16 +1878,37 @@ describe("advanceCrossChainHtlc", () => {
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
       status: "settle-asymmetric",
     });
-    const lock = h.actions["destination-lock"];
+    const reveal = h.actions["destination-claim"];
     delete h.actions["destination-lock"];
-    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
-      status: "indeterminate",
-      reason: "htlc-destination-lock-finality-regressed",
-    });
-    h.actions["destination-lock"] = lock;
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
       status: "settle-asymmetric",
+      reason: "dest-revealed-source-unclaimed",
     });
+    delete h.actions["destination-claim"];
+    delete h.actions["source-claim"];
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settle-asymmetric",
+      reason: "dest-revealed-source-unclaimed",
+    });
+    // The unreported source claim is rebroadcast from its retained bytes.
+    const sourceClaims = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "source-claim");
+    expect(sourceClaims.length).toBeGreaterThan(1);
+    expect(sourceClaims.at(-1)).toEqual(sourceClaims[0]);
+    h.actions["destination-claim"] = reveal;
+    await h.markFinal("source-claim");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRefs: [
+        refFor("source-lock"),
+        refFor("destination-lock"),
+        refFor("destination-claim"),
+        refFor("source-claim"),
+      ] },
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim", "source-claim"]);
   });
 
   test("alerts on a failed reveal once the claim window has closed and refunds both legs after both expiries", async () => {
