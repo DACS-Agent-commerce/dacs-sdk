@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/registry-container-acceptance.yml"
+      - ".github/workflows/registry-container-audit-drift.yml"
       - "package.json"
       - "package-lock.json"
       - "scripts/publish-exact-local-registry.mjs"
@@ -45,8 +46,9 @@ jobs:
       - name: Run registry-shaped Linux and Docker acceptance
         # Exit 4 means the functional rehearsal passed and the release security
         # gate is blocked only by findings recorded exactly in the #191
-        # baseline. Production publication stays blocked without failing
-        # every pull request; any other failure, including exit 3, still fails.
+        # baseline, including every observed advisory ID. Production
+        # publication stays blocked without failing every pull request; any
+        # other failure, including exit 3 for an unlisted advisory, still fails.
         # Any command can exit 4 under set -e, so status 4 is waived only when
         # the written summary independently re-checks as baseline-only.
         # acceptance-summary.json records failureClass: network, policy or
@@ -65,14 +67,15 @@ jobs:
               echo "::error title=Registry/container acceptance failed::Exit 4 was not produced by a baseline-only acceptance summary (summary disposition: $disposition)."
               exit "$status"
             fi
-            echo "::warning title=#191 security gate blocked::Release security gate remains blocked by findings recorded in the #191 baseline; unlisted advisory IDs are reported separately. See acceptance-summary.json."
+            echo "::warning title=#191 security gate blocked::Release security gate remains blocked by findings recorded in the #191 baseline. See acceptance-summary.json."
             exit 0
           fi
           exit "$status"
 
       - name: Check advisory-ID drift
         # Runs whenever a summary exists, so a non-audit failure above cannot
-        # mask drift. Only the scheduled/manual drift workflow fails on it.
+        # mask drift. Acceptance above already fails on an unlisted ID; this
+        # step fails only in the scheduled/manual drift workflow.
         if: always()
         env:
           ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}
