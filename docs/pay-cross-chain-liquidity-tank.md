@@ -39,13 +39,16 @@ The core:
   `finalityObservedAt < recoveryDeadline`; equality is expired. Expiry needs
   authenticated evidence; see below.
 
-**Restart safety comes from the store, not the core.** Every no-double-send and
-completion-versus-expiry guarantee holds only with a durable host store that
-keeps every row across process restarts and commits each write atomically,
-and that passes `runLiquidityTankStoreConformance` (see
-[Store conformance](#store-conformance)). The SDK ships no such store. The
-exported in-memory store loses everything on restart and refuses to construct
-without `{ acknowledgeVolatile: true }`.
+**Restart safety comes from the store, and the core runs only on a store that
+declares it.** Every no-double-send and completion-versus-expiry guarantee
+holds only with a store that keeps every row across process restarts, commits
+each write atomically and passes `runLiquidityTankStoreConformance` (see
+[Store conformance](#store-conformance)). The core cannot tell a lost row from
+a fresh phase, so it refuses, before any claim, preparation or signature, a
+store that does not declare `restartSafety` (see
+[Declaring restart safety](#declaring-restart-safety)). The exported in-memory
+store loses everything on restart, refuses to construct without
+`{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -64,7 +67,8 @@ const result = await advanceLiquidityTankSettlement({
   authority,
   owner: workerId,
   adapter: nativeBridgeAdapter satisfies LiquidityTankAdapter,
-  // Durable and atomic, and passes runLiquidityTankStoreConformance.
+  // Durable and atomic, passes runLiquidityTankStoreConformance, and
+  // declares restartSafety: "conformance-tested".
   store: durableStore satisfies LiquidityTankStore,
   verifier: hostVerifier satisfies LiquidityTankVerifier,
 });
@@ -396,6 +400,32 @@ const failed = results.filter((result) => !result.passed);
 if (failed.length > 0) throw new Error(JSON.stringify(failed));
 ```
 
+The two cases that drive the core hand it the store under test with
+`restartSafety: "conformance-tested"` added, so a host can run the suite
+before its store declares anything.
+
+### Declaring restart safety
+
+`LiquidityTankStore.restartSafety` is the store's declaration of how it
+survives a restart. `advanceLiquidityTankSettlement` reads it as a data
+property (own or inherited, never a getter) right after binding the store's
+methods. Unless it is exactly one of these two strings, the core returns
+`indeterminate` `liquidity-tank-store-restart-safety-undeclared` before any
+claim, preparation, signature, observation or broadcast:
+
+- **`"conformance-tested"`**: the store is durable and atomic and passes every
+  `runLiquidityTankStoreConformance` case against its real backend. A host
+  store sets it once it does.
+- **`"volatile-acknowledged"`**: the store loses every row on restart, and its
+  caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
+  true })` sets it. For tests and development only.
+
+The field is optional in the TypeScript type so that a store under
+development can run the suite, but the core refuses a store without it. It is
+a declaration, not a proof: the core cannot check it, and a host that declares
+`"conformance-tested"` for a store that never passed the suite has removed the
+only runtime gate. Review it with the store.
+
 Passing does not show that a store is durable; `reopenStore` has to open it
 the way a restarted process would. The suite refuses only a `reopenStore`
 that returns the very handle it was given (`(store) => store`). It cannot
@@ -442,6 +472,9 @@ Host configuration is refused the same way, before any claim or effect:
   upgraded with the SDK, or whose `recordRecoveryFailure` is missing,
   accessor-backed or a `Proxy`—returns reason
   `liquidity-tank-store-recovery-capability-unavailable` on every call.
+- **A store that does not declare `restartSafety`** (see
+  [Declaring restart safety](#declaring-restart-safety)) returns
+  `liquidity-tank-store-restart-safety-undeclared` on every call.
 - **Any other refused owner, lease, clock, store or adapter**, including a
   whole store wrapped in a `Proxy`, returns its refusal message as the reason,
   for example `pay-cross-chain-liquidity-tank: store.claim must be stable
@@ -460,6 +493,8 @@ operator rather than polling:
 - `liquidity-tank-settlement-binding-conflict`;
 - `liquidity-tank-retained-state-corrupt`;
 - `liquidity-tank-store-recovery-capability-unavailable`;
+- `liquidity-tank-store-restart-safety-undeclared`: the store does not declare
+  how it survives a restart;
 - `liquidity-tank-settlement-store-lease-invalid`: the store's lease is not
   exactly `now + leaseDurationMs`, or a waiting lease is malformed (see
   [Store contract](#store-contract));
@@ -594,7 +629,8 @@ upstream capability. The pure protocol/recovery core and its adversarial tests
 do not pretend a submit response is completion.
 
 `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })` is for tests
-and development only. Without that option it throws a `TypeError`: it keeps
+and development only, and declares `restartSafety: "volatile-acknowledged"`.
+Without that option it throws a `TypeError`: it keeps
 every row in process memory, so after a restart a worker finds no retained
 submission, signs and broadcasts a second bridge operation, and locks the
 buyer's funds twice. Production stores must authenticate retained rows,

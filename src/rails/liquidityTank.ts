@@ -356,6 +356,19 @@ export type LiquidityTankStoreWrite =
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
 /**
+ * What a store declares about surviving a restart. The core refuses, before
+ * any claim, a store that declares neither value.
+ * - `"conformance-tested"`: durable and atomic, and passes every
+ *   `runLiquidityTankStoreConformance` case against its real backend. The
+ *   SDK's `createFsLiquidityTankStore` declares it; a host store declares it
+ *   once it passes.
+ * - `"volatile-acknowledged"`: loses every row on restart, and its caller has
+ *   said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })`
+ *   declares it; tests and development only.
+ */
+export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-acknowledged";
+
+/**
  * Durable settlement state. Restart safety holds only for a store that keeps
  * every row across process restarts and commits each write atomically. Run
  * `runLiquidityTankStoreConformance` against it before production use:
@@ -365,6 +378,13 @@ export type LiquidityTankStoreWrite =
  * (`expiresAt <= now`), as well as a stale owner or generation.
  */
 export interface LiquidityTankStore {
+  /**
+   * Required by the core at run time, as a data property: without one of the
+   * two values it returns `indeterminate`
+   * `liquidity-tank-store-restart-safety-undeclared` before any claim. It is
+   * the host's declaration; the core cannot check it.
+   */
+  readonly restartSafety?: LiquidityTankStoreRestartSafety;
   /**
    * An acquired lease must carry the caller's `owner`, a generation above any
    * earlier one for the key, and `expiresAt` exactly `now + leaseDurationMs`
@@ -1569,6 +1589,20 @@ export async function advanceLiquidityTankSettlement(
       reason: "liquidity-tank-store-recovery-capability-unavailable",
     };
   }
+  // A store that loses a row after a broadcast makes the next owner sign and
+  // broadcast a second operation, and the core cannot tell a lost row from a
+  // fresh phase. So it runs only on a store that declares how it survives a
+  // restart: the SDK's durable store, a host store that passed conformance,
+  // or the in-memory store whose caller acknowledged it is volatile.
+  let restartSafety: unknown;
+  try {
+    restartSafety = stableDataProperty(store, "restartSafety", "store.restartSafety");
+  } catch {
+    restartSafety = undefined;
+  }
+  if (restartSafety !== "conformance-tested" && restartSafety !== "volatile-acknowledged") {
+    return { status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" };
+  }
   // Without the host's checks the core cannot tell a forged observation or a
   // submission signing another amount from a genuine one, so it refuses
   // before any claim rather than trusting the adapter.
@@ -2574,7 +2608,8 @@ function acknowledgesVolatile(options: unknown): boolean {
  * submission, signs and broadcasts a second bridge operation, and locks the
  * buyer's funds twice. Restart safety needs a durable, atomic host store that
  * passes `runLiquidityTankStoreConformance`. Refuses to construct unless the
- * caller passes `{ acknowledgeVolatile: true }`.
+ * caller passes `{ acknowledgeVolatile: true }`, and declares
+ * `restartSafety: "volatile-acknowledged"`.
  */
 export function createInMemoryLiquidityTankStore(
   options: InMemoryLiquidityTankStoreOptions,
@@ -2597,6 +2632,7 @@ export function createInMemoryLiquidityTankStore(
     return transition.result;
   };
   return {
+    restartSafety: "volatile-acknowledged",
     async claim(input) {
       return commit(
         input.intent.settlementKey,

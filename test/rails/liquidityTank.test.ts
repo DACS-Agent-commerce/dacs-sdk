@@ -735,6 +735,7 @@ describe("advanceLiquidityTankSettlement", () => {
         } as never;
       });
       const store: LiquidityTankStore = {
+        restartSafety: "volatile-acknowledged",
         claim,
         isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
         recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
@@ -789,6 +790,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
   test("truly absent retained fields take the fresh preparation path", async () => {
     const store: LiquidityTankStore = {
+      restartSafety: "volatile-acknowledged",
       claim: vi.fn<LiquidityTankStore["claim"]>(async (input) => ({
         status: "acquired",
         intent: input.intent,
@@ -857,6 +859,7 @@ describe("advanceLiquidityTankSettlement", () => {
       };
     });
     const store: LiquidityTankStore = {
+      restartSafety: "volatile-acknowledged",
       claim,
       isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
       recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
@@ -2850,6 +2853,7 @@ describe("advanceLiquidityTankSettlement", () => {
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
       class ClassStore implements LiquidityTankStore {
+        readonly restartSafety = "volatile-acknowledged";
         readonly #inner = createInMemoryLiquidityTankStore(VOLATILE);
         claim(input: Parameters<LiquidityTankStore["claim"]>[0]) {
           return this.#inner.claim(input);
@@ -5857,6 +5861,77 @@ describe("round 12", () => {
           expect(result).toMatchObject({ status: expected });
         }
       }
+    });
+  });
+});
+
+describe("final review, round 1", () => {
+  describe("finding 1: the core runs only on a store that declares its restart safety", () => {
+    /** The reference store without its declaration, as a host store that never ran conformance. */
+    function undeclared(): LiquidityTankStore {
+      const { restartSafety: _declared, ...store } = createInMemoryLiquidityTankStore(VOLATILE);
+      return store;
+    }
+
+    test.each([
+      ["no declaration", () => undeclared()],
+      ["an unknown value", () => ({ ...undeclared(), restartSafety: "durable" as never })],
+      ["the boolean true", () => ({ ...undeclared(), restartSafety: true as never })],
+      ["a differently cased value", () => ({ ...undeclared(), restartSafety: "Conformance-Tested" as never })],
+      ["a getter", () => Object.defineProperty(undeclared(), "restartSafety", {
+        get: () => "conformance-tested", enumerable: true,
+      })],
+    ])("a store with %s is refused before any claim or signature", async (_label, build) => {
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      const store = build();
+      const calls = (["claim", "isCurrent", "recordSubmission", "recordObservation",
+        "recordRecoveryFailure", "recordRecoveryExpired", "recordSettlement"] as const)
+        .map((method) => vi.spyOn(store, method));
+      const verifier = {
+        authenticateObservation: vi.fn(async () => true),
+        verifySignedSubmission: vi.fn(async () => true),
+      } satisfies LiquidityTankVerifier;
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter, verifier }).shared))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" });
+      for (const call of calls) expect(call).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(verifier.verifySignedSubmission).not.toHaveBeenCalled();
+    });
+
+    test("the in-memory store declares itself volatile and settles", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      expect(store.restartSafety).toBe("volatile-acknowledged");
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+        .resolves.toMatchObject({ status: "settled" });
+    });
+
+    test.each([
+      ["an object", () => ({ ...undeclared(), restartSafety: "conformance-tested" as const })],
+      ["a class instance", () => {
+        const inner = undeclared();
+        class HostStore {
+          readonly restartSafety = "conformance-tested" as const;
+          claim = inner.claim;
+          isCurrent = inner.isCurrent;
+          recordSubmission = inner.recordSubmission;
+          recordObservation = inner.recordObservation;
+          recordRecoveryFailure = inner.recordRecoveryFailure;
+          recordRecoveryExpired = inner.recordRecoveryExpired;
+          recordSettlement = inner.recordSettlement;
+        }
+        return new HostStore() satisfies LiquidityTankStore;
+      }],
+    ])("a host store that declares it passed conformance, as %s, settles", async (_label, build) => {
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      await expect(advanceLiquidityTankSettlement(runner({ store: build(), adapter: h.adapter }).shared))
+        .resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     });
   });
 });

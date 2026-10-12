@@ -991,6 +991,24 @@ function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: 
   };
 }
 
+/**
+ * `store` as the core-level cases hand it to the core, which runs only on a
+ * store that declares its restart safety: a host runs these cases to earn
+ * `restartSafety: "conformance-tested"`, so they declare it for the run.
+ */
+function declaredUnderTest(store: LiquidityTankStore): LiquidityTankStore {
+  return {
+    restartSafety: "conformance-tested",
+    claim: (input) => store.claim(input),
+    isCurrent: (input) => store.isCurrent(input),
+    recordSubmission: (input) => store.recordSubmission(input),
+    recordObservation: (input) => store.recordObservation(input),
+    recordRecoveryFailure: (input) => store.recordRecoveryFailure(input),
+    recordRecoveryExpired: (input) => store.recordRecoveryExpired(input),
+    recordSettlement: (input) => store.recordSettlement(input),
+  };
+}
+
 /** A handle on `store` whose next `recordSubmission` dies before reaching the store. */
 function crashingBeforeSubmissionCommit(store: LiquidityTankStore): LiquidityTankStore {
   return {
@@ -1033,7 +1051,7 @@ async function phaseSequence(
     const progress = await advanceLiquidityTankSettlement({
       authority: authorityFor(tag, 0),
       owner,
-      store: handle,
+      store: declaredUnderTest(handle),
       adapter: bridge.adapter,
       verifier: bridge.verifier,
       now: () => now,
@@ -1135,7 +1153,7 @@ async function concurrentStart(
   const start = (owner: string, handle: LiquidityTankStore) => advanceLiquidityTankSettlement({
     authority: authorityFor(tag, phaseIndex),
     owner,
-    store: handle,
+    store: declaredUnderTest(handle),
     adapter,
     verifier: bridge.verifier,
     now: () => now,

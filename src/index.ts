@@ -1320,6 +1320,7 @@ export {
   type LiquidityTankStoreClaim,
   type LiquidityTankStoreWrite,
   type LiquidityTankStore,
+  type LiquidityTankStoreRestartSafety,
   type LiquidityTankProgress,
   type AdvanceLiquidityTankInput,
   runLiquidityTankStoreConformance,

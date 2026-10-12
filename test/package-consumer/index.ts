@@ -62,6 +62,7 @@ import {
   type LiquidityTankStoreClaim,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
+  type LiquidityTankStoreRestartSafety,
   type LiquidityTankVerifier,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
@@ -104,6 +105,11 @@ const volatileTankStore: (options: InMemoryLiquidityTankStoreOptions) => Liquidi
 // The volatile store cannot be created without the acknowledgement.
 // @ts-expect-error acknowledgeVolatile is required
 const unacknowledgedTankStore: () => LiquidityTankStore = createInMemoryLiquidityTankStore;
+// A store declares how it survives a restart; the core refuses one that does not.
+const declaredTankSafety: LiquidityTankStoreRestartSafety = "conformance-tested";
+const declaredTankStore: LiquidityTankStore = { ...tankStore, restartSafety: "volatile-acknowledged" };
+// @ts-expect-error only the two declarations exist
+const unknownTankSafety: LiquidityTankStoreRestartSafety = "durable";
 const tankVerifier: LiquidityTankVerifier = {
   authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
   verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
@@ -264,6 +270,9 @@ void tankStore;
 void volatileTankOptions;
 void volatileTankStore;
 void unacknowledgedTankStore;
+void declaredTankSafety;
+void declaredTankStore;
+void unknownTankSafety;
 void tankVerifier;
 void tankConformanceOptions;
 void tankConformance;
