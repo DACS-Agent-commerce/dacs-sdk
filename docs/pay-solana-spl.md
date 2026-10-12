@@ -144,7 +144,10 @@ confirmed ledger view. Its `authenticationHash` must bind the cluster,
 signature, retained last-valid bound, observed height and commitment; hash
 format alone is not authentication. Adapters that omit the optional expiry
 fields remain source-compatible but produce an `indeterminate` result at
-runtime. The durable store is part of the trusted implementation boundary and
+runtime. Preflight amounts must be canonical decimal strings and
+`payeeAtaExists` a boolean; anything else, including an object that converts
+to a decimal string, is `solana-spl-preflight-invalid`, and nothing is signed.
+The durable store is part of the trusted implementation boundary and
 must return exactly the evidence it accepted. A transport response or an
 unverified signature string is not settlement evidence. A live wallet/RPC
 adapter and funded public-network proof remain a separate integration

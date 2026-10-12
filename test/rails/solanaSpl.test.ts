@@ -1389,6 +1389,31 @@ describe("advanceSolanaSplSettlement reason codes", () => {
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
   });
 
+  test.each<[string, Record<string, unknown>, Partial<SolanaSplSettlementAuthority>]>([
+    // Checked as 2039280 lamports, converted to 0 for the balance check.
+    ["a rent reserve that prints as one amount and converts to another", {
+      payeeAtaExists: false,
+      payerNativeBalanceLamports: "6000",
+      ataRentExemptReserveLamports: {
+        [Symbol.toPrimitive]: (hint: string) => (hint === "number" ? "0" : "2039280"),
+      },
+    }, { createPayeeAtaIfMissing: true }],
+    ["a payee account flag that is the string \"false\"", { payeeAtaExists: "false" }, {}],
+  ])("%s is never coerced: a fixed preflight code before signing", async (_name, fields, overrides) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const result = await advanceSolanaSplSettlement(input({
+      authority: authority(overrides),
+      adapter: adapter({
+        preflight: async () => ({ ...preflight(), ...fields }) as never,
+        prepareSignedTransfer,
+      }),
+    }));
+    expect(result).toEqual({
+      status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid",
+    });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+
   test.each([
     ["a throwing signer", async () => { throw new Error(`signer key ${SECRET}`); },
       "solana-spl-preparation-unavailable"],

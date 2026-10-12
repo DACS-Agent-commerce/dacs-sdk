@@ -347,8 +347,9 @@ function requireBase58Bytes(
   return parsed;
 }
 
-function uint(value: string, label: string): bigint {
-  if (!UINT_RE.test(value)) {
+function uint(value: unknown, label: string): bigint {
+  // Only a string: an object could print as one amount and convert to another.
+  if (typeof value !== "string" || !UINT_RE.test(value)) {
     throw new DacsError(`pay-solana-spl: ${label} must be canonical unsigned decimal`);
   }
   return BigInt(value);
@@ -453,6 +454,9 @@ function validatePreflight(
     };
     requireBase58Bytes(preflight.payerTokenAccount, "payerTokenAccount", 32);
     requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
+    if (typeof preflight.payeeAtaExists !== "boolean") {
+      throw new DacsError("pay-solana-spl: payeeAtaExists must be a boolean");
+    }
     const tokenBalance = uint(preflight.payerTokenBalanceBaseUnits, "payerTokenBalanceBaseUnits");
     const nativeBalance = uint(preflight.payerNativeBalanceLamports, "payerNativeBalanceLamports");
     const networkFee = uint(preflight.networkFeeLamports, "networkFeeLamports");
