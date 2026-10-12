@@ -194,6 +194,12 @@ class FakeL2psHub {
   readonly handlers = new Map<string, Set<DemosL2psRfqMessageHandler>>();
   sends = 0;
   loseNextResponse = false;
+  /**
+   * Node 61b8e75: message_hash is globally unique, and a repeat is refused
+   * with "Duplicate message" and not delivered (L2PSMessagingService.ts:50-51,
+   * L2PSMessagingServer.ts:267-269).
+   */
+  nodeDedup = false;
 
   peer(localPeer: string): DemosL2psRfqPeerLike {
     return {
@@ -221,6 +227,9 @@ class FakeL2psHub {
     messageHash: string,
   ) {
     this.sends += 1;
+    if (this.nodeDedup && this.messages.some((message) => message.messageHash === messageHash)) {
+      throw new Error("Duplicate message");
+    }
     let stored = this.messages.find(
       (message) =>
         message.from === from &&
@@ -734,6 +743,51 @@ describe("Demos L2PS durable RFQ transport", () => {
       expect(fixture.submissions).toHaveLength(1);
       expect(await fixture.outboxStore.load(id)).toEqual(acknowledged);
     } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: a node duplicate refusal acknowledges when history shows our frame", async () => {
+    let ticks = 0;
+    let lagging = true;
+    const { hub, transport, packet } = await buyerWithSentOffer({
+      monotonicNowMs: () => ticks,
+      history: (base) => async (peerKey, options) =>
+        lagging ? { messages: [], hasMore: false } : base(peerKey, options),
+    });
+    hub.nodeDedup = true;
+    ticks = 60_000;
+    // Lagging history lets the grace authorize a resend of the same bytes.
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "absent" });
+    lagging = false;
+    await expect(transport.publish(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(hub.sends).toBe(2);
+    expect(hub.messages).toHaveLength(1);
+    // The acknowledgement is stored: no further history read or send.
+    lagging = true;
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
+
+  test("round 6: a node duplicate refusal missing from history never loops into resends", async () => {
+    let ticks = 0;
+    const { hub, transport, client, packet } = await buyerWithSentOffer({
+      monotonicNowMs: () => ticks,
+      history: () => async () => ({ messages: [], hasMore: false }),
+    });
+    hub.nodeDedup = true;
+    ticks = 60_000;
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: "Demos L2PS refused the packet hash as a duplicate that history does not show",
+    });
+    expect(hub.sends).toBe(2);
+    for (const later of [120_000, 600_000]) {
+      ticks = later;
+      await expect(transport.reconcile(packet)).resolves.toEqual({
+        disposition: "indeterminate",
+        reason: "Demos L2PS refused the packet hash as a duplicate that history does not show",
+      });
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+    }
+    expect(hub.sends).toBe(2);
   });
 
   // Fixtures copied from demosdk 4.0.16 build/instant_messaging/l2ps_types.d.ts:

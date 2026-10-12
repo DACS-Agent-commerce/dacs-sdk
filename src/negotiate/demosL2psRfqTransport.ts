@@ -47,6 +47,11 @@ const DEFAULT_CONSUMER_TIMEOUT_MS = 30_000;
 const DEFAULT_SEND_ABSENCE_GRACE_MS = 60_000;
 const SEND_ABSENCE_REASON =
   "Demos L2PS history cannot yet prove packet absence after a timed-out send";
+// The node's error text, which demosdk rejects with unchanged (node 61b8e75
+// L2PSMessagingService.ts:51,143; demosdk L2PSMessagingPeer.js:324-330).
+const NODE_DUPLICATE_MESSAGE = "Duplicate message";
+const DUPLICATE_REASON =
+  "Demos L2PS refused the packet hash as a duplicate that history does not show";
 const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "delivered",
@@ -189,7 +194,8 @@ type SendOutboxEntry = {
   l2psUid: string;
   codecId: string;
   encrypted: DemosL2psRfqEncryptedMessage;
-  state: "sending" | "indeterminate" | "acknowledged";
+  /** "duplicate": the node refused the hash as already stored. */
+  state: "sending" | "indeterminate" | "acknowledged" | "duplicate";
   /** 1 for the first committed entry, then +1 per committed save. */
   generation: number;
   attemptEndedAtMs?: number;
@@ -1070,7 +1076,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       value.packetId !== routed.packet.packetId ||
       value.fromPeer !== captured.localPeerKey || value.toPeer !== routed.recipientPeer ||
       value.l2psUid !== captured.l2psUid || value.codecId !== captured.codecId ||
-      !["sending", "indeterminate", "acknowledged"].includes(value.state as string) ||
+      !["sending", "indeterminate", "acknowledged", "duplicate"].includes(value.state as string) ||
       (value.attemptEndedAtMs !== undefined &&
         (!Number.isSafeInteger(value.attemptEndedAtMs) || (value.attemptEndedAtMs as number) < 0))) {
       throw new DacsError("Demos L2PS RFQ send outbox entry is invalid");
@@ -1083,6 +1089,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     if (entry === undefined) return { disposition: "absent" };
     // The stored acknowledgement is proof; callers return it without history.
     if (entry.state === "acknowledged") return { disposition: "acknowledged" };
+    // The node holds this hash, so absence can never be proven: no resend.
+    if (entry.state === "duplicate") return { disposition: "indeterminate", reason: DUPLICATE_REASON };
     try {
       const now = monotonicNow();
       // A crash before the outcome write has no known end time. Start the
@@ -1167,6 +1175,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
     if (absence.disposition === "acknowledged") return absence;
+    return historyDisposition(prepared, absence);
+  }
+
+  /**
+   * Search history for our exact frame. Without a match, an exhaustive single
+   * page returns `absence`; anything else stays indeterminate.
+   */
+  async function historyDisposition(
+    prepared: ReturnType<typeof routePacket>,
+    absence: RfqLifecycleTransportResult,
+  ): Promise<RfqLifecycleTransportResult> {
     let before: number | undefined;
     let paginated = false;
     const seenIds = new Set<string>();
@@ -1598,6 +1617,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
       }
       let result: Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>;
+      let duplicate = false;
       try {
         const ack = captureSendResult(
           await bounded(() => captured.send(routed.recipientPeer,
@@ -1607,12 +1627,26 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         result = ack === "acknowledged"
           ? { disposition: "acknowledged" }
           : { disposition: "indeterminate", reason: "Demos L2PS RFQ send acknowledgement is missing or failed" };
-      } catch {
+      } catch (cause) {
+        duplicate = cause instanceof Error && cause.message === NODE_DUPLICATE_MESSAGE;
         result = { disposition: "indeterminate", reason: "Demos L2PS RFQ send outcome is unknown" };
+      }
+      if (duplicate) {
+        // The node already holds this hash and did not deliver it again. Only
+        // our own frame in history proves the acknowledgement.
+        const found = await historyDisposition(
+          routed,
+          { disposition: "indeterminate", reason: DUPLICATE_REASON },
+        );
+        result = found.disposition === "absent"
+          ? { disposition: "indeterminate", reason: DUPLICATE_REASON }
+          : found;
       }
       try {
         entry.attemptEndedAtMs = monotonicNow();
-        entry.state = result.disposition === "acknowledged" ? "acknowledged" : "indeterminate";
+        entry.state = result.disposition === "acknowledged"
+          ? "acknowledged"
+          : duplicate ? "duplicate" : "indeterminate";
         await saveSendEntry(routed.packet.packetId, entry);
       } catch {
         // The durable sending marker remains; recovery starts a full grace.
