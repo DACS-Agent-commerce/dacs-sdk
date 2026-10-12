@@ -47,8 +47,11 @@ import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
 import {
   advanceLiquidityTankSettlement,
   createLiquidityTankIntent,
+  runLiquidityTankStoreConformance,
   type LiquidityTankAdapter,
   type LiquidityTankStore,
+  type LiquidityTankStoreConformanceOptions,
+  type LiquidityTankStoreConformanceResult,
   type LiquidityTankVerifier,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
@@ -89,6 +92,13 @@ const tankVerifier: LiquidityTankVerifier = {
   authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
   verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
 };
+const tankConformanceOptions: LiquidityTankStoreConformanceOptions = {
+  createStore: () => tankStore,
+  reopenStore: (store) => store,
+};
+const tankConformance: (
+  options: LiquidityTankStoreConformanceOptions,
+) => Promise<readonly LiquidityTankStoreConformanceResult[]> = runLiquidityTankStoreConformance;
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
@@ -198,6 +208,8 @@ void tankIntent;
 void tankAdapter;
 void tankStore;
 void tankVerifier;
+void tankConformanceOptions;
+void tankConformance;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;

@@ -332,9 +332,11 @@ export type LiquidityTankStoreWrite =
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
 /**
- * Durable settlement state. Every write must refuse a lease that is not
- * current at its `now` (`expiresAt <= now`), as well as a stale owner or
- * generation.
+ * Durable settlement state. Restart safety holds only for a store that keeps
+ * every row across process restarts and commits each write atomically; run
+ * `runLiquidityTankStoreConformance` against it before production use.
+ * Every write must refuse a lease that is not current at its `now`
+ * (`expiresAt <= now`), as well as a stale owner or generation.
  */
 export interface LiquidityTankStore {
   claim(input: {

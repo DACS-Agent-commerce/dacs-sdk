@@ -164,6 +164,11 @@ export {
   type AdvanceLiquidityTankInput,
 } from "./liquidityTank.js";
 export {
+  runLiquidityTankStoreConformance,
+  type LiquidityTankStoreConformanceOptions,
+  type LiquidityTankStoreConformanceResult,
+} from "./liquidityTankStoreConformance.js";
+export {
   solanaSplSettlementKey,
   createSolanaSplSettlementIntent,
   advanceSolanaSplSettlement,
