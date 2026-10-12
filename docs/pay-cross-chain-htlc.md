@@ -82,11 +82,20 @@ A destination claim that is already final is still authenticated,
 checkpointed, and recovered after the cutoff.
 
 A reveal is only ever prepared against a final destination lock. If the
-destination-lock observation later regresses while a reveal is retained
-(omitted, `pending` or `absent`), the core returns `indeterminate` with reason
-`htlc-destination-lock-finality-regressed` and prepares, broadcasts and refunds
-nothing until the adapter reports the lock final again: the reveal may still
-land, and refunding the source then would give the payer both legs.
+destination-lock observation later regresses while a retained reveal is not
+yet final (omitted, `pending` or `absent`), the core returns `indeterminate`
+with reason `htlc-destination-lock-finality-regressed` and prepares,
+broadcasts and refunds nothing until the adapter reports the lock final again:
+the reveal may still land, and refunding the source then would give the payer
+both legs. Once the reveal itself is final, the destination-lock observation
+no longer matters, because a contract may delete the lock's record when the
+reveal claims it. The core records the reveal checkpoint with the source
+expiry of the retained source-finality checkpoint and drives the payee's
+source claim exactly as when the lock still reads final, under the same
+source-expiry cutoff; a settlement names the retained destination-lock
+reference. Neither leg is ever refunded on this path, and a source claim that
+misses the source expiry is the usual `operator-alert`
+`htlc-source-claim-missed-after-reveal`.
 
 Refunds are per leg. After the destination expiry the payee's destination
 refund is driven; after the source expiry the payer's source refund is driven
@@ -325,6 +334,23 @@ confirmation-depth and irreversibility policy selected by the intent, including
 reorg detection. It must return `pending` while reversal remains possible and
 must never report `final` for a state it could later reverse.
 
+`observe` reports each action only for the core's own transaction, the
+retained prepared action's `txRef`, never a counterparty's or anyone else's
+transaction against the same lock. In particular, a payee who claims the
+source outside the core with a published preimage must not be reported under
+`source-claim`. The core rejects an observation of a transaction it did not
+prepare: the whole snapshot is unavailable, the result is `indeterminate`
+with reason `htlc-ledger-observation-unavailable`, and nothing is replaced,
+rebroadcast or refunded until the adapter reports correctly. When a claim has
+replacement history, `observe` reports the active attempt, the one `claim`
+returns in `prepared`: `pending` while it can still land, its final or failed
+state once it has one, and `absent` only once it never reached the chain and
+can no longer. A failed earlier attempt says nothing about the active one, so
+only the active attempt's `failed` allows a replacement, and only its `failed`
+or `absent` allows refunds after both expiries; an adapter that keeps
+reporting the earlier failure holds the session at `operator-alert` and
+refunds nothing.
+
 Once a lock is final, and in particular once the core has checkpointed the
 source lock, the adapter must keep reporting it `final`, with its inclusion
 and expiry, for the rest of the session: also after the lock is claimed or
@@ -333,10 +359,14 @@ its terminal disposition and is reported on its own action; only `lockTerms`
 may then be omitted. A checkpointed source lock that is no longer reported
 final returns `indeterminate` with reason
 `htlc-source-finality-checkpoint-without-final-lock`, and a destination lock
-that regresses after a reveal returns `indeterminate` with reason
-`htlc-destination-lock-finality-regressed`. Both are resumable: nothing moves
-the regressed leg, and the next call resumes once the adapter reports the lock
-final again. While the source lock has regressed and no reveal was ever
+that regresses while a retained reveal is not yet final returns
+`indeterminate` with reason `htlc-destination-lock-finality-regressed`. Both
+are resumable: nothing moves the regressed leg, and the next call resumes once
+the adapter reports the lock final again. A destination lock that regresses
+after the reveal is final no longer waits: the reveal checkpoint and the
+payee's source claim proceed from the retained source-finality checkpoint and
+destination-lock reference, as described above, and nothing is refunded.
+While the source lock has regressed and no reveal was ever
 prepared, the preimage is still private, so the payee cannot claim the source
 and the core still drives the payee's destination refund after its expiry. A
 final lock observation that is malformed (missing or invalid inclusion or
@@ -394,6 +424,30 @@ binding; stores must not backfill a checkpoint after destination-lock
 preparation, and operators must reconcile such legacy sessions explicitly. The
 preimage parser remains compatible with canonical lowercase producers while
 also accepting byte-equivalent uppercase and prefixed values.
+
+## Adapter audit checklist
+
+An adapter is fit for production only if an audit confirms each rule below;
+the core cannot check them itself.
+
+- `final` only once the state is irreversible under the intent's finality
+  policy; `pending` while a reorg or reversal remains possible.
+- A final lock keeps being reported `final`, with its inclusion and expiry,
+  for the rest of the session, also after it is claimed or refunded and even
+  if the contract deletes its record.
+- `pending`, never `absent`, while a lock, reveal, claim or refund can still
+  land; `absent` only once it is authenticated that it cannot.
+- `failed` only once the failure itself is final.
+- `observe` reports each action only for the core's own retained
+  transaction, never a counterparty's, such as a payee's own source claim.
+- With replacement history, `observe` reports the active attempt, and
+  `absent` once that attempt never reached the chain and can no longer.
+- `lockTerms` are read from the contract's lock record in the canonical form
+  above, never copied from the intent.
+- A final source claim carries a chain-derived `finalityReachedAt`, and a
+  final reveal carries `revealedPreimageHex`.
+- A replacement preparation returns a different signed transaction, and a
+  retained action is broadcast byte for byte.
 
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require
