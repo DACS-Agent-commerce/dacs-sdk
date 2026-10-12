@@ -41,6 +41,16 @@ import {
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
   verifyBundleCore,
+  createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
+  AnchorHistoryRestartRequiredError,
+  type ScanningArtifactRepositoryDeps,
+  type ArtifactScanState,
+  type ArtifactScanPage,
+  type ArtifactScanDeferredRow,
+  type ArtifactScanIndeterminateCode,
+  type ArtifactScanRestartCode,
+  type ScannedArtifactOutcome,
 } from "@kynesyslabs/dacs";
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import { runFulfilmentCore } from "@kynesyslabs/dacs/seller";
@@ -127,6 +137,38 @@ const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSett
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
 
+declare const scanningDeps: ScanningArtifactRepositoryDeps;
+const scanningRepository = createScanningArtifactRepository({ ...scanningDeps, maxRowAttempts: 5 });
+async function nextScanState(state?: ArtifactScanState): Promise<ArtifactScanState> {
+  const page: ArtifactScanPage = await scanningRepository.scanPage(state, { limit: 100 });
+  const deferredRows: readonly ArtifactScanDeferredRow[] = [...page.deferred, ...page.state.deferred];
+  void deferredRows;
+  switch (page.status) {
+    case "page":
+    case "conflict":
+      return page.state;
+    case "indeterminate": {
+      const code: ArtifactScanIndeterminateCode = page.code;
+      void code;
+      return page.state;
+    }
+    case "restart-required": {
+      const code: ArtifactScanRestartCode = page.code;
+      void code;
+      return page.state;
+    }
+  }
+}
+const scanOutcomeCode = (outcome: ScannedArtifactOutcome): string =>
+  outcome.status === "indeterminate"
+    ? outcome.code
+    : outcome.status === "unverifiable"
+      ? (outcome.code ?? outcome.reason)
+      : outcome.status;
+const unsupportedKindCode: "unsupported-kind" = new UnsupportedArtifactKindError("unsupported").code;
+const historyRestartCode: "history-restart-required" =
+  new AnchorHistoryRestartRequiredError("restart from null").code;
+
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
@@ -177,6 +219,10 @@ void buildEvidenceBound;
 void deriveSettlementVerified;
 void deriveReplayableSettlementVerified;
 void replaySettlementVerified;
+void nextScanState;
+void scanOutcomeCode;
+void unsupportedKindCode;
+void historyRestartCode;
 void adapter;
 void journal;
 void result;
