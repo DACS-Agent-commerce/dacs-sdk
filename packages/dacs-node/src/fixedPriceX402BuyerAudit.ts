@@ -1583,8 +1583,9 @@ export function createDacsFixedPriceBuyerAuditV1(
       // which copy they came from.
       let answeredRejection = false;
       // Demos reads still in flight. The verifier settles both copies before
-      // it rejects; a read still running when a rejection arrives anyway is
-      // awaited, so the decision never depends on which answer came first.
+      // it rejects, which is what keeps the decision independent of which
+      // answer arrives first. A read still running when a rejection arrives
+      // anyway is awaited before the flags are read.
       const reads = new Set<Promise<unknown>>();
       const tracked = <T>(read: Promise<T>): Promise<T> => {
         reads.add(read);

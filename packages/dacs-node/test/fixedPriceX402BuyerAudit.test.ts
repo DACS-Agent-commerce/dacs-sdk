@@ -1291,9 +1291,10 @@ async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps)
   return { state: "audit-complete" };
 }
 
-// The strictest order a verifier can use: both copies checked concurrently,
-// rejecting as soon as either fails, while the other copy's reads continue.
-// The real verifier settles both copies first; the audit must not rely on it.
+// A verifier that rejects as soon as either copy fails, while the other copy's
+// read continues. The real verifier settles both copies first, and its own
+// tests drive that order on both gates. Here the answer is already in flight
+// when the audit sees the rejection, and the audit waits for it.
 async function driveCopiesFailFast(input: CompletionInput, deps: CompletionDeps) {
   await Promise.all((["buyer", "seller"] as const).map((role) => driveCopy(role, input, deps)));
   return { state: "audit-complete" };
