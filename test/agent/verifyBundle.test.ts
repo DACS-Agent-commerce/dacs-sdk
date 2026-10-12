@@ -2146,15 +2146,39 @@ describe("Agent PC-2 anchor receipt resolution (#316)", () => {
       code: "invalid-bundle", ref: "bundle" }));
   });
 
-  test("absent callback remains missing without guessing", async () => {
+  // CORE §5.1 SR2-12: without a receipt callback the Agent has no carrier to
+  // qualify. That is a missing capability, not established absence.
+  test("absent callback is unresolved, not missing, without guessing", async () => {
     const h = await harness();
     const result = await h.agent.verifyBundle("bundle");
     expect(result.ok).toBe(false);
-    expect(evidenceVerdict(result)).toBe("missing");
+    expect(evidenceVerdict(result)).toBe("unresolved");
     expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
     expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
     expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
     expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
+  });
+
+  // DEMOS-MAPPING: a Demos not-found read is indeterminate. A lagging node can
+  // answer not-found for a write the host verified finalized elsewhere.
+  test("a not-found read at the receipt's native address is unresolved, not missing", async () => {
+    const h = await harness({ receipt: "honest", readNative: async () => null });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result).not.toMatchObject({ ok: true, fullyVerified: true });
+    expect(evidenceVerdict(result)).toBe("unresolved");
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
   });
 
   // CORE §5.1 SR2-12: with no qualifying carrier the resolution result is

@@ -557,7 +557,11 @@ export interface AgentConfig {
    * lifecycle gate is `unresolved`. Null, undefined, a throw or a rejection is
    * also `unresolved`: with no qualifying carrier the result is indeterminate,
    * never authoritative absence (CORE §5.1 SR2-12), so the bundle is not `ok`.
-   * Captured at construction; native-reference reads are unchanged.
+   * Without this callback every PC-2 ref is `unresolved` for the same reason,
+   * and so is a not-found read at the receipt's native address (a Demos
+   * not-found is indeterminate, DEMOS-MAPPING). The Agent never reports a
+   * PC-2 ref `missing`. Captured at construction; native-reference reads are
+   * unchanged.
    *
    * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
    * expires. Without that option the SDK sets no deadline, and a host MUST
@@ -1710,12 +1714,18 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         if (tuple[2] !== jobId) {
           throw new AttestationRefRejection("fail", "PC-2 locator names another job");
         }
-        if (!resolveAttestationAnchorReceipt) return null;
+        // CORE §5.1 SR2-12: with no qualifying carrier the result is
+        // indeterminate, never authoritative absence (`missing`). This
+        // resolver never establishes absence, so it never returns null.
+        if (!resolveAttestationAnchorReceipt) {
+          throw new AttestationRefRejection(
+            "indeterminate",
+            "no PC-2 anchor receipt callback is configured",
+          );
+        }
         const resolved = await withAttestationAnchorDeadline(
           attestationAnchorReceiptTimeoutMs as number | undefined,
           async (signal) => {
-            // CORE §5.1 SR2-12: with no qualifying carrier the result is
-            // indeterminate, never authoritative absence (`missing`).
             let candidate: unknown;
             try {
               candidate = await resolveAttestationAnchorReceipt({
@@ -1730,7 +1740,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
                 "PC-2 anchor receipt callback failed",
               );
             }
-            if (signal.aborted) return null;
+            // The deadline has already reported this ref unresolved; never
+            // read after expiry.
+            if (signal.aborted) {
+              throw new AttestationRefRejection(
+                "indeterminate",
+                "PC-2 anchor resolution deadline expired",
+              );
+            }
             if (candidate === null || candidate === undefined) {
               throw new AttestationRefRejection(
                 "indeterminate",
@@ -1746,10 +1763,17 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             // CORE §5.1 step 5: fetch only the exact verified native address,
             // never a name-index result. Substrate faults propagate (#70).
             const value = await publicReads.readAnchor(receipt.nativeAddress);
-            return value === null ? null : { receipt, value };
+            // DEMOS-MAPPING: a Demos not-found read is indeterminate, not
+            // established absence (e.g. a node lagging the verified write).
+            if (value === null) {
+              throw new AttestationRefRejection(
+                "indeterminate",
+                "PC-2 anchor is not readable at its receipt's native address",
+              );
+            }
+            return { receipt, value };
           },
         );
-        if (!resolved) return null;
         pc2Receipts.set(canonicalize(artifactRef), resolved.receipt);
         return resolved.value;
       },
