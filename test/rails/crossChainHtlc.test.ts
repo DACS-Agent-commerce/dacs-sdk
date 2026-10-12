@@ -587,6 +587,30 @@ describe("advanceCrossChainHtlc", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
+  test("stops on a retained source lock reported absent by reference, and rebroadcasts one reported absent without", async () => {
+    const h = harness({ mode: { "source-lock": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    const [lock] = h.broadcastRetained.mock.calls.map((call) => call[0]);
+    if (!lock) throw new Error("expected a source lock");
+    // Nothing on chain yet, e.g. after a failed send: the same bytes go out again.
+    h.actions["source-lock"] = { state: "absent", authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-source-lock-finality-pending",
+    });
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0])).toEqual([lock, lock]);
+    // The lock can never land, so nothing was locked and nothing is left to drive.
+    h.actions["source-lock"] = { state: "absent", txRef: lock.txRef, authenticationHash: AUTH_HASH };
+    for (let call = 0; call < 2; call += 1) {
+      const progress = await advanceCrossChainHtlc(run.nextOwner());
+      expect(progress).toEqual({ status: "failed", errorClass: "permanent", reason: "htlc-source-lock-absent" });
+      expect(htlcNeedsOperator(progress)).toBe(true);
+    }
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(2);
+    expect(h.prepareAction).toHaveBeenCalledTimes(1);
+  });
+
   test("rejects cross-session buyer-salt reuse in the durable store without ending either session", async () => {
     const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const first = runner({ store, adapter: harness({ mode: { "source-lock": "pending" } }).adapter });

@@ -315,9 +315,10 @@ transaction, a final reveal of another or a malformed preimage, a final source
 claim without a final source lock or without a final or checkpointed reveal,
 or a final source claim while the checkpointed reveal is reported `pending`,
 `failed` or `absent`, `htlc-reveal-checkpoint-contradicted`);
-the source lock itself failed, so
-nothing was locked; or the source claim is final but reached finality after
-the source expiry (`settlement-atomicity`). These need an operator to
+the source lock itself failed, or is reported `absent` naming it
+(`htlc-source-lock-absent`; one reported `absent` without a reference is
+rebroadcast), so nothing was locked; or the source claim is final but reached
+finality after the source expiry (`settlement-atomicity`). These need an operator to
 reconcile the record, not a retry. A missing or different buyer salt is never
 `failed` (see `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other
 non-final state is `waiting`, `indeterminate`, `settle-asymmetric`, a refund
@@ -659,7 +660,8 @@ the core cannot check them itself.
   expiries pass refunds the payer's source as well, so the payer ends with
   both legs and the payee with neither, unless the payee claimed the source
   outside the core first. A retained refund reported `absent` naming it
-  raises `htlc-refund-absent`.
+  raises `htlc-refund-absent`, and a retained source lock reported `absent`
+  naming it ends the session with `failed` `htlc-source-lock-absent`.
 - A claim's or refund's `absent` names the attempt it is about in `txRef`
   once that attempt can no longer land. For a claim, one that names an
   earlier attempt, or none, is refused; for a refund, one that names none

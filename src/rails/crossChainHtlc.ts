@@ -2437,6 +2437,15 @@ export async function advanceCrossChainHtlc(
     if (state?.state === "failed") {
       return { status: "failed", errorClass: "permanent", reason: state.reason ?? "htlc-source-lock-failed" };
     }
+    // A retained source lock reported `absent` naming it can never land and
+    // locked nothing, so as for a failed one nothing is left to drive and its
+    // dead bytes are not re-sent. An `absent` naming nothing is only nothing on
+    // chain yet: the retained bytes are rebroadcast below.
+    const retainedSourceLock = prepared.get("source-lock");
+    if (state?.state === "absent" && retainedSourceLock && state.txRef !== undefined &&
+        sameRef(state.txRef, retainedSourceLock.txRef)) {
+      return { status: "failed", errorClass: "permanent", reason: "htlc-source-lock-absent" };
+    }
     if (!state || state.state === "absent") {
       const advanced = await execute("source-lock");
       return advanced
