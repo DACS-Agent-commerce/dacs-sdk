@@ -886,14 +886,16 @@ Public `AttestationRef` values use the DACS-2 §7.5.2
 contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
 `verifyBundleCore` resolves normative references through
 `resolveAttestationRef(ref, jobId, parties, outcome?)` so the signed locator is
-never discarded. `verifyBundleCore` always passes the bundle's validated
-`outcome`, for outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). It is
-optional in the type, so existing three-parameter resolvers and direct
-three-argument calls still compile; a resolver called without it must apply its
-strictest gate (`finalized` only). A `null` result is reported `missing`. To
-classify a refusal instead, throw `AttestationRefRejection` with disposition
-`"fail"` (`invalid-binding`), `"error"` (`invalid-shape`) or `"indeterminate"`
-(`unresolved`); any other error propagates.
+never discarded. `verifyBundleCore` always passes the bundle's `outcome`, for
+outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). The outcome has been
+checked against the supported outcomes but is not authenticated at that point:
+refs resolve even when the bundle signatures fail, and such a bundle is never
+`ok`. It is optional in the type, so existing three-parameter resolvers and
+direct three-argument calls still compile; a resolver called without it must
+apply its strictest gate (`finalized` only). A `null` result is reported
+`missing`. To classify a refusal instead, throw `AttestationRefRejection` with
+disposition `"fail"` (`invalid-binding`), `"error"` (`invalid-shape`) or
+`"indeterminate"` (`unresolved`); any other error propagates.
 
 ```ts
 import { AttestationRefRejection, type VerifyBundleDeps } from "@kynesyslabs/dacs";

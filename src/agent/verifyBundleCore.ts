@@ -222,11 +222,14 @@ export interface VerifyBundleDeps {
    * reported `missing`. Throw an {@link AttestationRefRejection} to classify a
    * refused reference instead, e.g. `indeterminate` when no qualifying carrier
    * exists but absence is not established (CORE §5.1 SR2-12); any other thrown
-   * error propagates. `outcome` is the bundle's validated outcome, for
-   * outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). `verifyBundleCore`
-   * always passes it; it is optional so three-argument callers still compile,
-   * and an implementation called without it MUST apply its strictest gate
-   * (`finalized` only), never a looser one.
+   * error propagates. `outcome` is the bundle's outcome, for
+   * outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). It has been checked
+   * against the supported outcomes but is not authenticated here: refs
+   * resolve even when the bundle signatures fail, and such a bundle is never
+   * `ok`. `verifyBundleCore` always passes it; it is optional so
+   * three-argument callers still compile, and an implementation called
+   * without it MUST apply its strictest gate (`finalized` only), never a
+   * looser one.
    */
   resolveAttestationRef?: (
     ref: Readonly<AttestationRef>,

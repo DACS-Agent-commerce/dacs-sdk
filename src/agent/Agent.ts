@@ -541,31 +541,47 @@ export interface AgentConfig {
    * host MUST have verified it against the same connected Demos chain that
    * this Agent reads: its binding-defined `evidence` (SR2-4) and the full
    * SR2-5 tuple (logical address, native address, content hash, transaction,
-   * writer and nonce), e.g. with `DemosAdapter.verifyDemosAnchorReceipt` on
-   * the Agent's adapter. The SDK cannot authenticate the receipt itself. It
-   * never resolves this locator through the program-name index (DEMOS-MAPPING
-   * A.2). It requires an exact receipt with `substrate: "demos"`, a Demos
-   * native `nativeAddress`, a canonical `writer`, a transaction and a
-   * decimal nonce, whose `logicalAddress` is the locator and whose
-   * `contentHash` is the ref's, in an established `finalized` state, or
-   * `included` when the bundle outcome is failed or aborted (DACS-5 SEB-1).
-   * It then reads only that `nativeAddress` and, during evidence
-   * verification, requires the writer to be the authenticated phase
-   * orchestrator (DACS-5 SEB-3). A receipt-tuple mismatch is
-   * `invalid-binding`; a writer that is not the orchestrator is
-   * `invalid-evidence`; a malformed receipt is `invalid-shape`; an unmet
-   * lifecycle gate is `unresolved`. A host that has proved a receipt invalid,
-   * e.g. forged, throws `AttestationRefRejection("fail")`: the ref is then
-   * `invalid-binding`, a permanent refusal. Only a defect in the receipt
-   * itself is such proof; a verifier that could not observe the write proves
-   * nothing. Null, undefined, or any other throw or rejection is
-   * `unresolved`: with no qualifying carrier the result is indeterminate,
-   * never authoritative absence (CORE §5.1 SR2-12), so the bundle is not `ok`.
-   * Without this callback every PC-2 ref is `unresolved` for the same reason,
-   * and so is a not-found read at the receipt's native address (a Demos
-   * not-found is indeterminate, DEMOS-MAPPING). The Agent never reports a
-   * PC-2 ref `missing`. Captured at construction; native-reference reads are
+   * writer and nonce). The SDK cannot authenticate the receipt itself.
+   * `createAgent` never exposes its adapter, so a host constructs and
+   * connects its own `DemosAdapter` (`@kynesyslabs/dacs/substrate`) to that
+   * chain, and can verify with its `verifyDemosAnchorReceipt`. That verifier
+   * accepts only `finalized` receipts and throws for any other state, so with
+   * it a failed or aborted bundle whose evidence is only `included` stays
+   * `unresolved`. It also returns false when its node has not yet observed
+   * the write as confirmed. Neither that throw nor a false alone proves a
+   * receipt invalid.
+   *
+   * The SDK never resolves this locator through the program-name index
+   * (DEMOS-MAPPING A.2). It requires an exact receipt with `substrate:
+   * "demos"`, a Demos native `nativeAddress`, a canonical `writer`, a
+   * transaction and a decimal nonce, whose `logicalAddress` is the locator
+   * and whose `contentHash` is the ref's, in an established `finalized`
+   * state, or `included` when the bundle outcome is failed or aborted
+   * (DACS-5 SEB-1). It then reads only that `nativeAddress` and, during
+   * evidence verification, requires the writer to be the authenticated
+   * phase orchestrator (DACS-5 SEB-3). A receipt whose logical address or
+   * content hash does not match the ref is `invalid-binding`. The SDK has
+   * nothing to compare the transaction, nonce or native address with, so
+   * only the host's verification binds them. A writer that is not the
+   * orchestrator is `invalid-evidence`; a malformed receipt is
+   * `invalid-shape`; an unmet lifecycle gate is `unresolved`.
+   *
+   * A host that has proved a receipt invalid, e.g. forged, throws
+   * `AttestationRefRejection("fail")`: the ref is then `invalid-binding`, a
+   * permanent refusal. Only a defect in the receipt itself is such proof; a
+   * verifier that could not observe the write proves nothing. Null,
+   * undefined, or any other throw or rejection is `unresolved`: with no
+   * qualifying carrier the result is indeterminate, never authoritative
+   * absence (CORE §5.1 SR2-12), so the bundle is not `ok`. Without this
+   * callback every PC-2 ref is `unresolved` for the same reason, and so is a
+   * not-found read at the receipt's native address (a Demos not-found is
+   * indeterminate, DEMOS-MAPPING). The Agent never reports a PC-2 ref
+   * `missing`. Captured at construction; native-reference reads are
    * unchanged.
+   *
+   * A substrate fault on the native read is not a refusal and propagates, as
+   * on the native path (#70): `verifyBundle` rejects, and so does the whole
+   * `getReputation` batch that contains the bundle. Both are retryable.
    *
    * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
    * expires. Without that option the SDK sets no deadline, and a host MUST
@@ -990,7 +1006,10 @@ export interface Agent {
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
    * concern, not the substrate's); invalid refs, bundles that fail strict
    * verification (including unverified vet closure), and divergent copies are
-   * excluded from the score and reported in the result.
+   * excluded from the score and reported in the result. A substrate fault
+   * while reading any bundle or its artifacts, including a PC-2 anchor's
+   * native address, is not an exclusion: the whole batch rejects with it and
+   * returns no partial result (#70). The call is retryable.
    */
   getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }
@@ -2818,6 +2837,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       const bundles: AnyAttestationBundle[] = [];
       const invalid: ReputationExclusion[] = [];
       for (const ref of bundleRefs) {
+        // A substrate fault (any read, including a PC-2 native read) rejects
+        // the whole batch rather than excluding one bundle, as on the native
+        // path (#70). The call is retryable; nothing partial is returned.
         const verdict = await verifyBundleAtRef(ref);
         if (
           verdict.ok &&
