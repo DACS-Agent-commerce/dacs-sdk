@@ -2164,9 +2164,13 @@ export async function advanceLiquidityTankSettlement(
   };
 }
 
-interface MemoryTankRecord {
+/**
+ * One phase's row as the SDK's stores keep it. The in-memory and filesystem
+ * stores apply the same transitions to it, so they compare the same fields.
+ */
+export interface LiquidityTankRecord {
   intent: Readonly<LiquidityTankIntent>;
-  lease: LiquidityTankLease;
+  lease: Readonly<LiquidityTankLease>;
   submission?: Readonly<LiquidityTankPreparedSubmission>;
   submissionRecordedAt?: number;
   observation?: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
@@ -2175,10 +2179,379 @@ interface MemoryTankRecord {
   settlement?: Readonly<LiquidityTankSettlement>;
 }
 
+/** A store method's answer, and the row to commit with it when it changed one. */
+export interface LiquidityTankRecordTransition<T> {
+  result: T;
+  next?: LiquidityTankRecord;
+}
+
+type StoreInput<K extends keyof LiquidityTankStore> =
+  LiquidityTankStore[K] extends (input: infer I) => unknown ? I : never;
+
 function observationRank(status: Exclude<LiquidityTankObservation, { status: "indeterminate" }>["status"]): number {
   if (status === "empty" || status === "capacity-unavailable") return 0;
   if (status === "pending") return 1;
   return 2;
+}
+
+function currentLease(
+  record: LiquidityTankRecord | undefined,
+  input: { bindingHash: string; owner: string; generation: number },
+): record is LiquidityTankRecord {
+  return record !== undefined &&
+    record.intent.bindingHash === input.bindingHash && record.lease.owner === input.owner &&
+    record.lease.generation === input.generation;
+}
+
+/** Ordinary writes re-check lease expiry at the caller's `now`, as claims and the fence do. */
+function leaseExpired(record: LiquidityTankRecord, now: unknown): boolean {
+  return record.lease.expiresAt <= requireUInt(now, "write now");
+}
+
+function claimTransition(
+  existing: LiquidityTankRecord | undefined,
+  input: StoreInput<"claim">,
+): LiquidityTankRecordTransition<LiquidityTankStoreClaim> {
+  const expiresAt = leaseExpiry(
+    requireUInt(input.now, "claim now"),
+    requireUInt(input.leaseDurationMs, "claim leaseDurationMs", true),
+  );
+  if (existing) {
+    if (existing.intent.bindingHash !== input.intent.bindingHash) {
+      return { result: { status: "conflict", reason: "liquidity-tank-settlement-binding-conflict" } };
+    }
+    if (existing.settlement) {
+      return { result: { status: "settled", intent: existing.intent, settlement: existing.settlement } };
+    }
+    if (existing.recoveryExpired) {
+      if (!existing.submission || existing.submissionRecordedAt === undefined) {
+        return { result: { status: "corrupt", reason: "liquidity-tank-recovery-expiry-missing-submission" } };
+      }
+      return {
+        result: {
+          status: "recovery-expired",
+          intent: existing.intent,
+          submission: existing.submission,
+          submissionRecordedAt: existing.submissionRecordedAt,
+          observation: existing.recoveryExpired,
+        },
+      };
+    }
+    if (existing.lease.expiresAt > input.now) {
+      return {
+        result: {
+          status: "waiting",
+          intent: existing.intent,
+          lease: { ...existing.lease },
+          ...(existing.submission === undefined
+            ? {}
+            : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
+          ...(existing.observation === undefined
+            ? {}
+            : { observation: existing.observation }),
+          ...(existing.recoveryFailure === undefined ? {} : { recoveryFailure: existing.recoveryFailure }),
+        },
+      };
+    }
+    const generation = existing.lease.generation + 1;
+    if (!isSafeInteger(generation)) {
+      return { result: { status: "corrupt", reason: "liquidity-tank-lease-generation-exhausted" } };
+    }
+    const lease = {
+      owner: input.owner,
+      generation,
+      expiresAt,
+    };
+    return {
+      result: {
+        status: "acquired",
+        intent: existing.intent,
+        lease: { ...lease },
+        ...(existing.submission === undefined
+          ? {}
+          : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
+        ...(existing.observation === undefined
+          ? {}
+          : { observation: existing.observation }),
+        ...(existing.recoveryFailure === undefined ? {} : { recoveryFailure: existing.recoveryFailure }),
+      },
+      next: { ...existing, lease },
+    };
+  }
+  const record: LiquidityTankRecord = {
+    intent: input.intent,
+    lease: { owner: input.owner, generation: 1, expiresAt },
+  };
+  return { result: { status: "acquired", intent: record.intent, lease: { ...record.lease } }, next: record };
+}
+
+function isCurrentTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"isCurrent">,
+): boolean {
+  return currentLease(record, input) && record.lease.expiresAt > input.now &&
+    !record.settlement && !record.recoveryExpired;
+}
+
+/** `bridgeOwner` is the settlement key that already holds the submission's bridge ID, if any. */
+function recordSubmissionTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"recordSubmission">,
+  bridgeOwner: string | undefined,
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  if (leaseExpired(record, input.now)) return { result: { status: "stale", reason: "expired-lease" } };
+  if (record.settlement || record.recoveryExpired) {
+    return { result: { status: "conflict", reason: "liquidity-tank-submission-after-terminal" } };
+  }
+  if (bridgeOwner && bridgeOwner !== input.settlementKey) {
+    return { result: { status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" } };
+  }
+  if (record.submission) {
+    return record.submission.submissionHash === input.submission.submissionHash
+      ? { result: { status: "existing" } }
+      : { result: { status: "conflict", reason: "liquidity-tank-submission-replacement-forbidden" } };
+  }
+  return {
+    result: { status: "recorded" },
+    // Validated by the lease check above; kept with the submission it receipts.
+    next: { ...record, submission: Object.freeze({ ...input.submission }), submissionRecordedAt: input.now },
+  };
+}
+
+function recordObservationTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"recordObservation">,
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  if (leaseExpired(record, input.now)) return { result: { status: "stale", reason: "expired-lease" } };
+  if (record.settlement || record.recoveryExpired) {
+    return { result: { status: "conflict", reason: "liquidity-tank-observation-after-terminal" } };
+  }
+  if (!record.submission || input.observation.bridgeId !== record.submission.bridgeId) {
+    return { result: { status: "conflict", reason: "liquidity-tank-observation-bridge-conflict" } };
+  }
+  let observation: Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
+  try {
+    observation = validateRetainedObservation(
+      input.observation,
+      record.intent,
+      record.submission,
+    );
+  } catch {
+    return { result: { status: "conflict", reason: "liquidity-tank-observation-invalid" } };
+  }
+  if (observation.status === "completed" &&
+      observation.finalityObservedAt >= observation.recoveryDeadline) {
+    return { result: { status: "conflict", reason: "liquidity-tank-completion-after-recovery-deadline" } };
+  }
+  const prior = record.observation;
+  if (record.recoveryFailure && observation.status !== "completed") {
+    return { result: { status: "conflict", reason: "liquidity-tank-terminal-failure-retained" } };
+  }
+  if (prior) {
+    if (canonicalize(prior) === canonicalize(observation)) return { result: { status: "existing" } };
+    if (!preservesRecoveryCheckpoint(prior, observation) ||
+        observationRank(observation.status) < observationRank(prior.status)) {
+      return { result: { status: "conflict", reason: "liquidity-tank-status-regression" } };
+    }
+    if (observationRank(observation.status) === observationRank(prior.status) &&
+        observation.status !== "pending" &&
+        !(["empty", "capacity-unavailable"].includes(prior.status) &&
+          ["empty", "capacity-unavailable"].includes(observation.status))) {
+      return { result: { status: "conflict", reason: "liquidity-tank-terminal-status-conflict" } };
+    }
+  }
+  const next: LiquidityTankRecord = { ...record, observation };
+  if (observation.status === "completed") delete next.recoveryFailure;
+  return { result: { status: "recorded" }, next };
+}
+
+type RecoveryFailureWrite = Awaited<ReturnType<LiquidityTankStore["recordRecoveryFailure"]>>;
+
+function recordRecoveryFailureTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"recordRecoveryFailure">,
+): LiquidityTankRecordTransition<RecoveryFailureWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  if (record.settlement || record.recoveryExpired) {
+    return { result: { status: "conflict", reason: "liquidity-tank-observation-after-terminal" } };
+  }
+  if (!record.submission) {
+    return { result: { status: "conflict", reason: "liquidity-tank-observation-bridge-conflict" } };
+  }
+  let evidence: LiquidityTankRecoveryEvidence;
+  try {
+    evidence = validateRecoveryEvidence(input.recoveryFailure, record.intent, record.submission);
+    const failureNow = requireUInt(input.now, "failure retention now");
+    if (record.lease.expiresAt <= failureNow) return { result: { status: "stale", reason: "expired-lease" } };
+  } catch {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" } };
+  }
+  if (evidence.status !== "failed-after-lock" || !recoveryCheckpoint(record.observation) ||
+      canonicalize(record.observation) !== canonicalize(evidence.checkpoint)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+  }
+  if (record.recoveryFailure) {
+    return canonicalize(record.recoveryFailure) === canonicalize(evidence)
+      ? { result: { status: "existing", recoveryFailure: record.recoveryFailure } }
+      : { result: { status: "conflict", reason: "liquidity-tank-recovery-failure-conflict" } };
+  }
+  return {
+    result: { status: "recorded", recoveryFailure: evidence },
+    next: { ...record, recoveryFailure: evidence },
+  };
+}
+
+function recordRecoveryExpiredTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"recordRecoveryExpired">,
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  const expiryNow = requireUInt(input.now, "recovery expiry now");
+  if (record.lease.expiresAt <= expiryNow) {
+    return { result: { status: "stale", reason: "expired-lease" } };
+  }
+  if (record.settlement) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-lost-to-settlement" } };
+  }
+  // A durable timely completion has won even before its settlement is
+  // written: no later evidence may expire it.
+  if (record.observation?.status === "completed") {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-lost-to-completion" } };
+  }
+  if (record.recoveryExpired) {
+    return canonicalize(record.recoveryExpired) === canonicalize(input.observation)
+      ? { result: { status: "existing" } }
+      : { result: { status: "conflict", reason: "liquidity-tank-recovery-expiry-conflict" } };
+  }
+  if (!record.submission) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+  }
+  let evidence: LiquidityTankRecoveryEvidence;
+  try {
+    evidence = validateRecoveryEvidence(input.observation, record.intent, record.submission);
+  } catch {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" } };
+  }
+  // The evidence carries its own authenticated time, so the CAS re-checks
+  // it as well as the store clock.
+  if (expiryNow < recoveryEvidenceDeadline(evidence) || !provesRecoveryExpiry(evidence)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" } };
+  }
+  const expectedObservationMatches = record.observation === undefined
+    ? input.expectedObservation === undefined
+    : input.expectedObservation !== undefined &&
+      canonicalize(record.observation) === canonicalize(input.expectedObservation);
+  if (!expectedObservationMatches) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+  }
+  const priorCheckpoint = recoveryCheckpoint(record.observation);
+  if (evidence.status === "pending") {
+    if (canonicalize(record.observation) !== canonicalize(evidence)) {
+      return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+    }
+  } else if (evidence.status === "completed") {
+    if (priorCheckpoint &&
+        (evidence.lockTxHash !== priorCheckpoint.lockTxHash ||
+          evidence.recoveryDeadline !== priorCheckpoint.recoveryDeadline)) {
+      return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+    }
+  } else if (!priorCheckpoint ||
+      canonicalize(priorCheckpoint) !== canonicalize(evidence.checkpoint) ||
+      !record.recoveryFailure || canonicalize(record.recoveryFailure) !== canonicalize(evidence)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+  }
+  return { result: { status: "recorded" }, next: { ...record, recoveryExpired: evidence } };
+}
+
+function recordSettlementTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"recordSettlement">,
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  if (leaseExpired(record, input.now)) return { result: { status: "stale", reason: "expired-lease" } };
+  if (record.recoveryExpired) {
+    return { result: { status: "conflict", reason: "liquidity-tank-settlement-lost-to-recovery-expiry" } };
+  }
+  if (record.observation?.status !== "completed") {
+    return { result: { status: "conflict", reason: "liquidity-tank-settlement-before-completion" } };
+  }
+  const expectedSettlement = settlementFromCompletedObservation(
+    record.intent,
+    record.observation,
+  );
+  if (canonicalize(input.settlement) !== canonicalize(expectedSettlement)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-settlement-evidence-conflict" } };
+  }
+  if (record.settlement) {
+    return canonicalize(record.settlement) === canonicalize(input.settlement)
+      ? { result: { status: "existing" } }
+      : { result: { status: "conflict", reason: "liquidity-tank-settlement-conflict" } };
+  }
+  return {
+    result: { status: "recorded" },
+    next: { ...record, settlement: Object.freeze({ ...input.settlement }) },
+  };
+}
+
+/**
+ * The store contract as pure transitions over one row. Each returns the
+ * answer and, when a write changes the row, the row to commit with it. A store
+ * applies each one atomically per settlement key, and for `recordSubmission`
+ * also reserves the bridge ID across keys. Internal to the SDK's own stores:
+ * the package does not export it.
+ */
+export const liquidityTankRecordTransitions = Object.freeze({
+  claim: claimTransition,
+  isCurrent: isCurrentTransition,
+  recordSubmission: recordSubmissionTransition,
+  recordObservation: recordObservationTransition,
+  recordRecoveryFailure: recordRecoveryFailureTransition,
+  recordRecoveryExpired: recordRecoveryExpiredTransition,
+  recordSettlement: recordSettlementTransition,
+});
+
+/**
+ * Checks a row read back from durable storage with the validators the core
+ * applies to a claim, and throws unless it is a row these transitions could
+ * have written for `settlementKey`. Internal to the SDK's own stores: the
+ * package does not export it.
+ */
+export function assertLiquidityTankRecord(record: LiquidityTankRecord, settlementKey: string): void {
+  const intent = withoutPrototype(record.intent);
+  const { bindingHash, ...unsigned } = intent;
+  if (intent.intentVersion !== "1" || intent.settlementKey !== settlementKey ||
+      !matchesPattern(HASH_RE, bindingHash) || sha256Hex(canonicalize(unsigned)) !== bindingHash) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: stored intent does not recompute");
+  }
+  const lease = withoutPrototype(record.lease);
+  requireString(lease.owner, "stored lease owner");
+  requireUInt(lease.generation, "stored lease generation", true);
+  requireUInt(lease.expiresAt, "stored lease expiresAt");
+  if ((record.submission === undefined) !== (record.submissionRecordedAt === undefined)) {
+    throw new DacsError("pay-cross-chain-liquidity-tank: stored submission receipt mismatch");
+  }
+  if (record.submission === undefined) {
+    if (record.observation !== undefined || record.recoveryFailure !== undefined ||
+        record.recoveryExpired !== undefined) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: stored evidence without a submission");
+    }
+  } else {
+    const submission = validateRetainedSubmission(record.submission, intent);
+    requireUInt(record.submissionRecordedAt, "stored submissionRecordedAt");
+    if (record.observation !== undefined) {
+      validateRetainedObservation(record.observation, intent, submission);
+    }
+    if (record.recoveryFailure !== undefined &&
+        validateRecoveryEvidence(record.recoveryFailure, intent, submission).status !== "failed-after-lock") {
+      throw new DacsError("pay-cross-chain-liquidity-tank: stored recovery failure is invalid");
+    }
+    if (record.recoveryExpired !== undefined) {
+      validateRecoveryEvidence(record.recoveryExpired, intent, submission);
+    }
+  }
+  if (record.settlement !== undefined) captureSettlement(record.settlement, intent);
 }
 
 export interface InMemoryLiquidityTankStoreOptions {
@@ -2215,272 +2588,50 @@ export function createInMemoryLiquidityTankStore(
         "runLiquidityTankStoreConformance.",
     );
   }
-  const records = new Map<string, MemoryTankRecord>();
+  const records = new Map<string, LiquidityTankRecord>();
   const bridgeOwners = new Map<string, string>();
-  const current = (
-    record: MemoryTankRecord | undefined,
-    input: { bindingHash: string; owner: string; generation: number },
-  ): record is MemoryTankRecord => record !== undefined &&
-    record.intent.bindingHash === input.bindingHash && record.lease.owner === input.owner &&
-    record.lease.generation === input.generation;
-  /** Ordinary writes re-check lease expiry at the caller's `now`, as claims and the fence do. */
-  const leaseExpired = (record: MemoryTankRecord, now: unknown): boolean =>
-    record.lease.expiresAt <= requireUInt(now, "write now");
+  // Each method reads, decides and commits with no await in between, so every
+  // transition is atomic within this process.
+  const commit = <T>(settlementKey: string, transition: LiquidityTankRecordTransition<T>): T => {
+    if (transition.next) records.set(settlementKey, transition.next);
+    return transition.result;
+  };
   return {
     async claim(input) {
-      const expiresAt = leaseExpiry(
-        requireUInt(input.now, "claim now"),
-        requireUInt(input.leaseDurationMs, "claim leaseDurationMs", true),
+      return commit(
+        input.intent.settlementKey,
+        claimTransition(records.get(input.intent.settlementKey), input),
       );
-      const existing = records.get(input.intent.settlementKey);
-      if (existing) {
-        if (existing.intent.bindingHash !== input.intent.bindingHash) {
-          return { status: "conflict", reason: "liquidity-tank-settlement-binding-conflict" };
-        }
-        if (existing.settlement) {
-          return { status: "settled", intent: existing.intent, settlement: existing.settlement };
-        }
-        if (existing.recoveryExpired) {
-          if (!existing.submission || existing.submissionRecordedAt === undefined) {
-            return { status: "corrupt", reason: "liquidity-tank-recovery-expiry-missing-submission" };
-          }
-          return {
-            status: "recovery-expired",
-            intent: existing.intent,
-            submission: existing.submission,
-            submissionRecordedAt: existing.submissionRecordedAt,
-            observation: existing.recoveryExpired,
-          };
-        }
-        if (existing.lease.expiresAt > input.now) {
-          return {
-            status: "waiting",
-            intent: existing.intent,
-            lease: { ...existing.lease },
-            ...(existing.submission === undefined
-              ? {}
-              : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
-            ...(existing.observation === undefined
-              ? {}
-              : { observation: existing.observation }),
-            ...(existing.recoveryFailure === undefined ? {} : { recoveryFailure: existing.recoveryFailure }),
-          };
-        }
-        const generation = existing.lease.generation + 1;
-        if (!isSafeInteger(generation)) {
-          return { status: "corrupt", reason: "liquidity-tank-lease-generation-exhausted" };
-        }
-        const lease = {
-          owner: input.owner,
-          generation,
-          expiresAt,
-        };
-        existing.lease = lease;
-        return {
-          status: "acquired",
-          intent: existing.intent,
-          lease: { ...lease },
-          ...(existing.submission === undefined
-            ? {}
-            : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
-          ...(existing.observation === undefined
-            ? {}
-            : { observation: existing.observation }),
-          ...(existing.recoveryFailure === undefined ? {} : { recoveryFailure: existing.recoveryFailure }),
-        };
-      }
-      const record: MemoryTankRecord = {
-        intent: input.intent,
-        lease: { owner: input.owner, generation: 1, expiresAt },
-      };
-      records.set(input.intent.settlementKey, record);
-      return { status: "acquired", intent: record.intent, lease: { ...record.lease } };
     },
     async isCurrent(input) {
-      const record = records.get(input.settlementKey);
-      return current(record, input) && record.lease.expiresAt > input.now &&
-        !record.settlement && !record.recoveryExpired;
+      return isCurrentTransition(records.get(input.settlementKey), input);
     },
     async recordSubmission(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
-      if (record.settlement || record.recoveryExpired) {
-        return { status: "conflict", reason: "liquidity-tank-submission-after-terminal" };
-      }
-      const bridgeOwner = bridgeOwners.get(input.submission.bridgeId);
-      if (bridgeOwner && bridgeOwner !== input.settlementKey) {
-        return { status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" };
-      }
-      if (record.submission) {
-        return record.submission.submissionHash === input.submission.submissionHash
-          ? { status: "existing" }
-          : { status: "conflict", reason: "liquidity-tank-submission-replacement-forbidden" };
-      }
-      record.submission = Object.freeze({ ...input.submission });
-      // Validated by the lease check above; kept with the submission it receipts.
-      record.submissionRecordedAt = input.now;
-      bridgeOwners.set(input.submission.bridgeId, input.settlementKey);
-      return { status: "recorded" };
+      const transition = recordSubmissionTransition(
+        records.get(input.settlementKey),
+        input,
+        bridgeOwners.get(input.submission.bridgeId),
+      );
+      if (transition.next) bridgeOwners.set(input.submission.bridgeId, input.settlementKey);
+      return commit(input.settlementKey, transition);
     },
     async recordObservation(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
-      if (record.settlement || record.recoveryExpired) {
-        return { status: "conflict", reason: "liquidity-tank-observation-after-terminal" };
-      }
-      if (!record.submission || input.observation.bridgeId !== record.submission.bridgeId) {
-        return { status: "conflict", reason: "liquidity-tank-observation-bridge-conflict" };
-      }
-      let observation: Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
-      try {
-        observation = validateRetainedObservation(
-          input.observation,
-          record.intent,
-          record.submission,
-        );
-      } catch {
-        return { status: "conflict", reason: "liquidity-tank-observation-invalid" };
-      }
-      if (observation.status === "completed" &&
-          observation.finalityObservedAt >= observation.recoveryDeadline) {
-        return { status: "conflict", reason: "liquidity-tank-completion-after-recovery-deadline" };
-      }
-      const prior = record.observation;
-      if (record.recoveryFailure && observation.status !== "completed") {
-        return { status: "conflict", reason: "liquidity-tank-terminal-failure-retained" };
-      }
-      if (prior) {
-        if (canonicalize(prior) === canonicalize(observation)) return { status: "existing" };
-        if (!preservesRecoveryCheckpoint(prior, observation) ||
-            observationRank(observation.status) < observationRank(prior.status)) {
-          return { status: "conflict", reason: "liquidity-tank-status-regression" };
-        }
-        if (observationRank(observation.status) === observationRank(prior.status) &&
-            observation.status !== "pending" &&
-            !(["empty", "capacity-unavailable"].includes(prior.status) &&
-              ["empty", "capacity-unavailable"].includes(observation.status))) {
-          return { status: "conflict", reason: "liquidity-tank-terminal-status-conflict" };
-        }
-      }
-      record.observation = observation;
-      if (observation.status === "completed") delete record.recoveryFailure;
-      return { status: "recorded" };
+      return commit(input.settlementKey, recordObservationTransition(records.get(input.settlementKey), input));
     },
     async recordRecoveryFailure(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (record.settlement || record.recoveryExpired) {
-        return { status: "conflict", reason: "liquidity-tank-observation-after-terminal" };
-      }
-      if (!record.submission) {
-        return { status: "conflict", reason: "liquidity-tank-observation-bridge-conflict" };
-      }
-      let evidence: LiquidityTankRecoveryEvidence;
-      try {
-        evidence = validateRecoveryEvidence(input.recoveryFailure, record.intent, record.submission);
-        const failureNow = requireUInt(input.now, "failure retention now");
-        if (record.lease.expiresAt <= failureNow) return { status: "stale", reason: "expired-lease" };
-      } catch {
-        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
-      }
-      if (evidence.status !== "failed-after-lock" || !recoveryCheckpoint(record.observation) ||
-          canonicalize(record.observation) !== canonicalize(evidence.checkpoint)) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-      }
-      if (record.recoveryFailure) {
-        return canonicalize(record.recoveryFailure) === canonicalize(evidence)
-          ? { status: "existing", recoveryFailure: record.recoveryFailure }
-          : { status: "conflict", reason: "liquidity-tank-recovery-failure-conflict" };
-      }
-      record.recoveryFailure = evidence;
-      return { status: "recorded", recoveryFailure: evidence };
+      return commit(
+        input.settlementKey,
+        recordRecoveryFailureTransition(records.get(input.settlementKey), input),
+      );
     },
     async recordRecoveryExpired(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      const expiryNow = requireUInt(input.now, "recovery expiry now");
-      if (record.lease.expiresAt <= expiryNow) {
-        return { status: "stale", reason: "expired-lease" };
-      }
-      if (record.settlement) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-lost-to-settlement" };
-      }
-      // A durable timely completion has won even before its settlement is
-      // written: no later evidence may expire it.
-      if (record.observation?.status === "completed") {
-        return { status: "conflict", reason: "liquidity-tank-recovery-lost-to-completion" };
-      }
-      if (record.recoveryExpired) {
-        return canonicalize(record.recoveryExpired) === canonicalize(input.observation)
-          ? { status: "existing" }
-          : { status: "conflict", reason: "liquidity-tank-recovery-expiry-conflict" };
-      }
-      if (!record.submission) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-      }
-      let evidence: LiquidityTankRecoveryEvidence;
-      try {
-        evidence = validateRecoveryEvidence(input.observation, record.intent, record.submission);
-      } catch {
-        return { status: "conflict", reason: "liquidity-tank-recovery-evidence-invalid" };
-      }
-      // The evidence carries its own authenticated time, so the CAS re-checks
-      // it as well as the store clock.
-      if (expiryNow < recoveryEvidenceDeadline(evidence) || !provesRecoveryExpiry(evidence)) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" };
-      }
-      const expectedObservationMatches = record.observation === undefined
-        ? input.expectedObservation === undefined
-        : input.expectedObservation !== undefined &&
-          canonicalize(record.observation) === canonicalize(input.expectedObservation);
-      if (!expectedObservationMatches) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-      }
-      const priorCheckpoint = recoveryCheckpoint(record.observation);
-      if (evidence.status === "pending") {
-        if (canonicalize(record.observation) !== canonicalize(evidence)) {
-          return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-        }
-      } else if (evidence.status === "completed") {
-        if (priorCheckpoint &&
-            (evidence.lockTxHash !== priorCheckpoint.lockTxHash ||
-              evidence.recoveryDeadline !== priorCheckpoint.recoveryDeadline)) {
-          return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-        }
-      } else if (!priorCheckpoint ||
-          canonicalize(priorCheckpoint) !== canonicalize(evidence.checkpoint) ||
-          !record.recoveryFailure || canonicalize(record.recoveryFailure) !== canonicalize(evidence)) {
-        return { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" };
-      }
-      record.recoveryExpired = evidence;
-      return { status: "recorded" };
+      return commit(
+        input.settlementKey,
+        recordRecoveryExpiredTransition(records.get(input.settlementKey), input),
+      );
     },
     async recordSettlement(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (leaseExpired(record, input.now)) return { status: "stale", reason: "expired-lease" };
-      if (record.recoveryExpired) {
-        return { status: "conflict", reason: "liquidity-tank-settlement-lost-to-recovery-expiry" };
-      }
-      if (record.observation?.status !== "completed") {
-        return { status: "conflict", reason: "liquidity-tank-settlement-before-completion" };
-      }
-      const expectedSettlement = settlementFromCompletedObservation(
-        record.intent,
-        record.observation,
-      );
-      if (canonicalize(input.settlement) !== canonicalize(expectedSettlement)) {
-        return { status: "conflict", reason: "liquidity-tank-settlement-evidence-conflict" };
-      }
-      if (record.settlement) {
-        return canonicalize(record.settlement) === canonicalize(input.settlement)
-          ? { status: "existing" }
-          : { status: "conflict", reason: "liquidity-tank-settlement-conflict" };
-      }
-      record.settlement = Object.freeze({ ...input.settlement });
-      return { status: "recorded" };
+      return commit(input.settlementKey, recordSettlementTransition(records.get(input.settlementKey), input));
     },
   };
 }
