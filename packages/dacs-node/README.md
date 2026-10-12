@@ -201,19 +201,32 @@ and the plan's binding, so two processes racing on one database agree on it,
 and a crash after it is completed on the next tick instead of stranding the
 phase. A peer's plan selected just before another process commits the job to
 the agreement is refused like one that arrives after it, and the agreement
-decides the job. A plan that differs from the selected one is classified:
+decides the job.
+
+No role signs a plan before its own Vet result is durable and agrees with it:
+its own failure is that plan, or its own Vet of the peer passed and the plan is
+the peer's failure of this role. A peer's plan that arrives earlier is selected
+but not accepted: `handleMessage` throws `vet-terminal-local-vet-pending`, so
+the inbox keeps the message pending and decides it again on a later cycle, and
+`advanceRegisteredTerminal` neither binds nor signs it. The peer signs its own
+plan only once this role accepts it, so until then neither role has signed.
+The session bootstrap records this role's pass with `registerLocalVetPass`, or
+its failure with `registerLocalTerminal`, before it advances the terminal
+again. `registerLocalVetPass` is optional on
+`DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations still
+conform; the bootstrap skips it when absent.
+
+A plan that differs from the selected one is classified:
 
 - This role's own Vet failure and the peer's first plan, in either arrival
   order: both Vets failed, with different plans. DACS-2 defers mutual-Vet
   composition and DACS-5 §10.4.3(d) leaves which party failed to adjudication,
-  so neither plan is signed. The job stops at operator action
+  so neither plan is signed, by either role. The job stops at operator action
   (`vet-terminal-plan-disagreement`) once this role has sent its own plan to the
   peer, which then stops the same way; until the peer acknowledges it, the track
   is pending (`vet-terminal-plan-disagreement-notice-pending`).
   `loadPlanDisagreementEvidence(jobId)` returns both plan hashes and the losing
-  plan, with `operatorAlert: true`. A role that already contributed its
-  signature to the peer's plan before its own failure arrived has signed only
-  that plan.
+  plan, with `operatorAlert: true`.
 - A second plan from the peer after one this role retained from it:
   equivocation. The message is refused (`vet-terminal-proposal-equivocation`),
   never sealed and never signed, and the job continues with the retained plan,
