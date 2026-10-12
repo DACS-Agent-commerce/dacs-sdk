@@ -3672,6 +3672,46 @@ describe("advanceLiquidityTankSettlement", () => {
         advanceLiquidityTankSettlement(run.shared));
       expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
     });
+
+    // Code review P3-2 (probe R3), kills mutant M3: a store's refusal held in
+    // an accessor has a descriptor without an own `value`, so a polluted
+    // `Object.prototype.value` must not read as the write status.
+    test("a polluted Object.prototype.value cannot read an accessor refusal of a submission as recorded", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      store.recordSubmission = vi.fn(async () => ({ get status() { return "conflict"; } }) as never);
+      const result = await withPollution({ value: "recorded" }, () =>
+        advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" });
+      expect(store.recordSubmission).toHaveBeenCalledTimes(1);
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    // The same for the failure-retention echo, kills mutant M4: an echo held
+    // in an accessor is not retained evidence, even when a polluted
+    // `Object.prototype.value` equals what was sent.
+    test("a polluted Object.prototype.value cannot stand in for an accessor failure-retention echo", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      store.recordRecoveryFailure = vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(async (input) => {
+        const sent = input.recoveryFailure;
+        return { status: "recorded", get recoveryFailure() { return sent; } } as never;
+      });
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      const evidence = {
+        status: "failed-after-lock",
+        checkpoint: pending(h.operationHash, true),
+        failure: failedAfterLock(h.operationHash, D - 200),
+      };
+      const result = await withPollution({ value: evidence }, () =>
+        advanceLiquidityTankSettlement({ ...run.shared, owner: "echo" }));
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(store.recordRecoveryFailure).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
