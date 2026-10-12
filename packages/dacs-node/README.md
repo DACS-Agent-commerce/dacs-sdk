@@ -199,7 +199,9 @@ Vet failure or from the peer's proposal. Local registration and inbound
 proposals share one insert-once selection row, written before the phase claim
 and the plan's binding, so two processes racing on one database agree on it,
 and a crash after it is completed on the next tick instead of stranding the
-phase. A plan that differs from the selected one is classified:
+phase. A peer's plan selected just before another process commits the job to
+the agreement is refused like one that arrives after it, and the agreement
+decides the job. A plan that differs from the selected one is classified:
 
 - This role's own Vet failure and the peer's first plan, in either arrival
   order: both Vets failed, with different plans. DACS-2 defers mutual-Vet

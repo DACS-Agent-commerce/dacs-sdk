@@ -46,6 +46,7 @@ import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import type { DacsDemosActorRuntimeV1 } from "../src/demosRuntime.js";
 import { createDacsFixedPricePayDemOrderPairV1 } from "../src/liveOrder.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
+import { claimDacsPreAgreementPhaseV1 } from "../src/preAgreementPhase.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
   "../src/purchaseDemosBudget.js";
 import type {
@@ -2270,6 +2271,47 @@ describe("authenticated peer plans on the Vet terminal", () => {
       expect(actor.context.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         type: "terminal-bundle-proposal-buyer" }));
     });
+
+    // Another process commits the job to the agreement before the peer's plan
+    // arrives, or between that plan's selection and its binding. Either way
+    // the plan is refused and the agreement track decides the job.
+    it.each(["before the peer's plan arrives", "between the plan's selection and its binding"] as const)(
+      `${rail}: lets the agreement decide when it takes the phase %s`,
+      async (when) => {
+        const actor = memoryRoleDatabase("buyer", undefined, rail);
+        const planA = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
+        const database = actor.context.database as unknown as {
+          putEffectIntent: (input: Readonly<{ effectId: string; bindingHash: string }>) => unknown;
+          createLiveCoordinatorStore: () => { load: () => Promise<{ record: { localBindingHash: string } }> };
+          createPayDemCoordinatorStore: () => { load: () => Promise<{ record: { localBindingHash: string } }> };
+        };
+        const claimAgreement = (localBindingHash: string) =>
+          claimDacsPreAgreementPhaseV1(actor.context, { jobId: JOB_ID, localBindingHash }, "agreement");
+        if (when === "before the peer's plan arrives") {
+          const store = rail === "x402"
+            ? database.createLiveCoordinatorStore() : database.createPayDemCoordinatorStore();
+          claimAgreement((await store.load()).record.localBindingHash);
+        } else {
+          const put = database.putEffectIntent;
+          database.putEffectIntent = (input) => {
+            const result = put(input);
+            if (input.effectId === terminalTransportEffectId("buyer", "selection")) {
+              database.putEffectIntent = put;
+              claimAgreement(input.bindingHash);
+            }
+            return result;
+          };
+        }
+        await expect(actor.runtime.handleMessage(fromSeller(planA), inbound)).resolves.toEqual({
+          disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict",
+        });
+        expect(actor.retainedProposal()).toBeUndefined();
+        await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+          .resolves.toBeUndefined();
+        expect(actor.retainedProposal()).toBeUndefined();
+        expect(actor.signComponent).not.toHaveBeenCalled();
+      },
+    );
   }
 
   it("keeps a disagreement pending until the peer acknowledges this role's plan", async () => {

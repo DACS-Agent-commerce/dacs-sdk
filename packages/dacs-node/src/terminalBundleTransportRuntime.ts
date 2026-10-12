@@ -1530,6 +1530,12 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (selection === undefined) {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
       }
+      // Or the agreement took the phase in between, in another process: the
+      // peer's plan was refused there and never bound, exactly as if it had
+      // arrived after the agreement, so the agreement track decides the job.
+      if (selection.source === "peer" && (await loadOrder(context, jobId)).phase === "agreement") {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+      }
       binding = await putBinding(
         context,
         selection.source === "material" ? "material" : "proposal",
