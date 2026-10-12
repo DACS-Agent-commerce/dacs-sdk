@@ -164,9 +164,11 @@ packages:
     access: $all
     publish: $all
     unpublish: $all
-  '@kynesyslabs/*':
+  '@kynesyslabs/demosdk':
     access: $all
     proxy: npmjs
+  '@kynesyslabs/*':
+    access: $all
   '**':
     access: $all
     publish: $all
@@ -178,8 +180,11 @@ log:
 listen: 0.0.0.0:4873
 YAML
 # The bind-mounted file is intentionally secret-free and must be readable by
-# Verdaccio's non-root container user on Linux runners. The candidate packages
-# above have no uplink: they are served only from what this run publishes.
+# Verdaccio's non-root container user on Linux runners. Verdaccio uses the
+# first matching rule. The candidate packages, and every other package in their
+# @kynesyslabs scope, have no uplink: they are served only from what this run
+# publishes, even once a version exists on npmjs. The one exception is the
+# released @kynesyslabs/demosdk the consumer depends on.
 chmod 0644 "$registry_config"
 
 cd "$repo_root"
