@@ -284,8 +284,9 @@ a failed authentication is immutable, so it also goes to operator action
 instead of being retried. Demos's answer against one copy goes to operator
 action even when a read of the other copy went unanswered in the same check,
 whichever arrives first: both copies settle before the check decides.
-For receipt reads, a connection error, a timeout or HTTP 408, 429, 502, 503
-or 504 is unanswered; any other HTTP status is Demos's answer.
+For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
+request. A connection error, a timeout or any other HTTP status (a 5xx, a
+CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange

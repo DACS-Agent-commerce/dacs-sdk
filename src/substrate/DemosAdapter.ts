@@ -387,16 +387,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-// HTTP statuses demosdk's own transport treats as "the node did not answer";
-// 408 and 429 likewise say nothing about the request's subject.
-const UNANSWERED_HTTP_STATUSES = new Set([408, 429, 502, 503, 504]);
+// HTTP statuses that answer the request itself: malformed (400, 422), unknown
+// message or subject (404; demosdk documents the node's 404 "Unknown
+// message"), or gone (410). Every other status, including a 5xx during a node
+// restart, a CDN's 52x or a gateway's 401/403/407, says nothing about the
+// request's subject.
+const ANSWERED_HTTP_STATUSES = new Set([400, 404, 410, 422]);
 
 /**
  * Classifies a Demos read result. demosdk's `call` returns
  * `{ result: 500, response: TransportError }` for every failed POST; the
- * TransportError's `cause` is the HTTP client error. A connection error,
- * timeout or 408/429/502/503/504 left the read unanswered. Any other HTTP
- * status, or a non-200 body the node returned itself, is the node's answer.
+ * TransportError's `cause` is the HTTP client error. Only HTTP 400, 404, 410
+ * or 422, or a non-200 body the node returned itself, is the node's answer. A
+ * connection error, a timeout or any other HTTP status left the read
+ * unanswered.
  */
 function demosObservationFailure(value: unknown): "answered" | "unanswered" | null {
   if (!isRecord(value) || typeof value.result !== "number" || value.result === 200) return null;
@@ -405,7 +409,7 @@ function demosObservationFailure(value: unknown): "answered" | "unanswered" | nu
   const cause = (response as { cause?: unknown }).cause;
   const status = isRecord(cause) && isRecord(cause.response) ? cause.response.status : undefined;
   return response.name === "TransportError" && typeof status === "number" &&
-      !UNANSWERED_HTTP_STATUSES.has(status)
+      ANSWERED_HTTP_STATUSES.has(status)
     ? "answered"
     : "unanswered";
 }
