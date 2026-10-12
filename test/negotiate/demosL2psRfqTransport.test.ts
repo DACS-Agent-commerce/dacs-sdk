@@ -498,6 +498,8 @@ async function delayedSendFixture(options: {
   const basePeer = hub.peer(BUYER_PEER);
   let codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
   let openFault: "throw" | "hang" | undefined;
+  let openAs: Uint8Array | undefined;
+  const plaintexts: Uint8Array[] = [];
   const sendEntered = gate();
   const framesAtCall: unknown[] = [];
   const submissions: Array<{ to: string; encrypted: DemosL2psRfqEncryptedMessage; messageHash: string }> = [];
@@ -534,10 +536,15 @@ async function delayedSendFixture(options: {
       codec: { codecId: current.codecId, open(encrypted, context) {
         if (openFault === "throw") throw new Error("codec temporarily unavailable");
         if (openFault === "hang") return new Promise<Uint8Array>(() => {});
+        if (openAs !== undefined) {
+          const other = openAs;
+          return Promise.resolve(current.open(encrypted, context)).then(() => other);
+        }
         return current.open(encrypted, context);
       }, seal(bytes, context) {
         if (options.refuseSeal && !refused) { refused = true; throw new Error("seal refused before send"); }
         sealed += 1;
+        plaintexts.push(Uint8Array.from(bytes));
         return codec.seal(bytes, context);
       } },
       l2psUid: L2PS_UID, localClaim: BUYER, localPeerKey: BUYER_PEER,
@@ -564,8 +571,8 @@ async function delayedSendFixture(options: {
   let client = createDurableRfqLifecycleClient(lifecycleOptions);
   await client.open(openInput());
   let packet: Awaited<ReturnType<typeof buyerWithSentOffer>>["packet"] | undefined;
-  async function offer() {
-    const result = await client.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount: "9", currency: "USDC" } });
+  async function offer(amount = "9") {
+    const result = await client.sendOffer(JOB_ID, { rfqProposalVersion: "1", price: { amount, currency: "USDC" } });
     const status = await client.getStatus(JOB_ID);
     if (status.status !== "ok") throw new Error("outbox missing");
     packet = status.record.outbox[0]!.packet;
@@ -599,6 +606,10 @@ async function delayedSendFixture(options: {
     rotateKey() { codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }); },
     /** Every codec open throws or never settles, until cleared with undefined. */
     failOpens(fault: "throw" | "hang" | undefined) { openFault = fault; },
+    /** Every codec open authenticates, then yields these bytes instead. */
+    openAs(bytes: Uint8Array | undefined) { openAs = bytes; },
+    /** The packet bytes each seal received, in order. */
+    plaintexts: () => plaintexts,
     /** Let the held first save reach the store; resolves to its CAS result. */
     releaseFirstSave() {
       if (heldSaveResult === undefined) throw new Error("no held save");
@@ -1268,6 +1279,48 @@ describe("Demos L2PS durable RFQ transport", () => {
       await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
       expect(fixture.submissions).toHaveLength(2);
       expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  /** The bytes of another valid packet of the same job: a different offer. */
+  async function otherOfferBytes(): Promise<Uint8Array> {
+    const donor = await delayedSendFixture({ ack: { l2psStatus: "submitted" } });
+    try {
+      await expect(donor.offer("8")).resolves.toMatchObject({ status: "ready" });
+      const bytes = donor.plaintexts()[0];
+      if (bytes === undefined) throw new Error("donor packet missing");
+      return bytes;
+    } finally { await donor.cleanup(); }
+  }
+
+  test("round 8: a stored frame that opens to another valid packet of the job is never resent", async () => {
+    const other = await otherOfferBytes();
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      expect(Buffer.from(other).equals(Buffer.from(fixture.plaintexts()[0]!))).toBe(false);
+      fixture.openAs(other);
+      // Past the grace with empty history: only the stored-frame compare holds the resend.
+      fixture.setTicks(72_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "indeterminate", reason: "Demos L2PS RFQ stored send frame does not open to this packet",
+      });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 8: our history frame that opens to another valid packet of the job is a conflict", async () => {
+    const other = await otherOfferBytes();
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      fixture.acceptLate();
+      fixture.showHistory();
+      fixture.openAs(other);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+        status: "rejected", reason: "Demos L2PS history binds packetId to different bytes or route",
+      });
+      expect(fixture.submissions).toHaveLength(1);
     } finally { await fixture.cleanup(); }
   });
 
