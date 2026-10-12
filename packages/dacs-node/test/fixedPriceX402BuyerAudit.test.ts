@@ -37,6 +37,7 @@ import {
   fixedPricePayDemOrderLocalBindingHash,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
+  type CompletedTwoSidedSessionDeadline,
 } from "@kynesyslabs/dacs/commerce";
 import {
   ed25519Sign,
@@ -1141,7 +1142,10 @@ function completedBundle(role: CompletionRole) {
 // Demos state for two published role copies, each with a signed BB-1 binding.
 // The strict two-copy verifier is mocked in this file, so each test drives the
 // adapter's own closures through it the way the verifier does.
-async function completionHarness(paymentProfile: "x402" | "pay-dem") {
+async function completionHarness(
+  paymentProfile: "x402" | "pay-dem",
+  completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>,
+) {
   const f = paymentProfile === "x402" ? await fixture() : await payDemFixture();
   mocks.provenance.mockReturnValue({
     registryVersion: 7,
@@ -1225,12 +1229,14 @@ async function completionHarness(paymentProfile: "x402" | "pay-dem") {
         evmRpcUrl: "https://rpc.example",
         authorizationSearchFromBlock: 1,
         recipeRegistryVersion: 1,
+        ...(completionDeadline === undefined ? {} : { completionDeadline }),
       })
     : createDacsFixedPricePayDemBuyerAuditV1({
         context,
         rail: f.rail as never,
         observeDemosTransfer: vi.fn(),
         recipeRegistryVersion: 1,
+        ...(completionDeadline === undefined ? {} : { completionDeadline }),
       });
   const sellerProvider = { mapping: "write-input", bundleCopyVerifier: {} };
   const sellerClosure = {
@@ -1549,7 +1555,140 @@ describe("buyer two-copy completion adapter", () => {
       await expect(harness.authorize()).resolves.toBe("indeterminate");
     });
   }
+
+  // One copy's Demos read never settles: the buyer copy's name lookup, or the
+  // seller copy's receipt check. The other copy's receipt is answered `false`
+  // or goes unanswered. Whether the verifier rejects at once or waits for both
+  // copies, the audit decides at a deadline the test expires: Demos's answer
+  // fails it, an unanswered read keeps it retryable, and the hanging read's
+  // late answer changes nothing.
+  for (const paymentProfile of ["x402", "pay-dem"] as const) {
+    for (const hanging of ["buyer", "seller"] as const) {
+      for (const verifier of ["fail-fast", "settling"] as const) {
+        it.each(["answered", "unanswered"] as const)(
+          `decides a ${paymentProfile} audit at the deadline when the ${hanging} copy's read never settles and the other copy's is %s (${verifier} verifier)`,
+          async (other) => {
+            const clock = manualDeadline();
+            const harness = await completionHarness(paymentProfile, { timeoutMs: 5_000, start: clock.start });
+            mocks.verifyCompleted.mockImplementationOnce(
+              verifier === "fail-fast" ? driveCopiesFailFast : driveCopiesSettling);
+            let reached = false;
+            let answerLate = (): void => undefined;
+            const resolveName = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+            harness.adapter.resolveAnchorByName.mockImplementation(async (name: string, ...rest: unknown[]) => {
+              if (hanging !== "buyer" || name !== bundleAddress(JOB_ID, "buyer")) {
+                return resolveName(name, ...(rest as []));
+              }
+              reached = true;
+              return await new Promise((resolve) => {
+                answerLate = () => { void resolveName(name, ...(rest as [])).then(resolve); };
+              });
+            });
+            harness.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
+              if (receipt.nativeAddress === harness.copies[hanging].nativeAddress) {
+                reached = true;
+                return await new Promise<boolean>((resolve) => { answerLate = () => resolve(true); });
+              }
+              if (other === "answered") return false;
+              throw new SubstrateError("Demos anchor receipt observation unavailable");
+            });
+
+            const outcome = Promise.resolve(harness.authorize());
+            let decided = false;
+            void outcome.then(() => { decided = true; });
+            await flush();
+            expect(reached).toBe(true);
+            expect(decided).toBe(false);
+            expect(clock.armed()).toEqual([5_000]);
+
+            clock.expire();
+            const expected = other === "answered" ? false : "indeterminate";
+            await expect(outcome).resolves.toBe(expected);
+            answerLate();
+            await flush();
+            await expect(outcome).resolves.toBe(expected);
+            expect(clock.armed()).toEqual([]);
+          },
+        );
+      }
+    }
+  }
+
+  it.each(["x402", "pay-dem"] as const)(
+    "keeps a %s audit retryable when an unattributed rejection meets a read that never settles",
+    async (paymentProfile) => {
+      const clock = manualDeadline();
+      const harness = await completionHarness(paymentProfile, { start: clock.start });
+      mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
+        void driveCopy("buyer", input, deps).catch(() => undefined);
+        throw new DacsError("completed seller bundle signature verification failed: forged");
+      });
+      harness.adapter.verifyDemosAnchorReceipt.mockImplementation(() => new Promise(() => undefined));
+      const outcome = Promise.resolve(harness.authorize());
+      await flush();
+      clock.expire();
+      await expect(outcome).resolves.toBe("indeterminate");
+    },
+  );
+
+  it("passes its deadline to the strict verifier and disarms it once the audit decides", async () => {
+    const clock = manualDeadline();
+    const harness = await completionHarness("x402", { timeoutMs: 7_000, start: clock.start });
+    let passed: unknown;
+    mocks.verifyCompleted.mockImplementationOnce(async (_input: unknown, deps: { deadline?: unknown }) => {
+      passed = deps.deadline;
+      return { state: "audit-complete" };
+    });
+    await expect(harness.authorize()).resolves.toBe(true);
+    expect(passed).toEqual({ timeoutMs: 7_000, start: clock.start });
+    expect(clock.armed()).toEqual([]);
+  });
+
+  it.each([
+    ["a zero timeout", { timeoutMs: 0 }],
+    ["a fractional timeout", { timeoutMs: 1.5 }],
+    ["a start that is not a function", { start: "soon" }],
+    ["an unknown member", { timeoutMs: 1_000, retries: 3 }],
+  ])("rejects a completion deadline with %s", async (_label, completionDeadline) => {
+    await expect(completionHarness("x402", completionDeadline as never))
+      .rejects.toThrow("fixed-price buyer audit completion deadline is invalid");
+  });
 });
+
+// A deadline the test expires itself: no real waiting.
+function manualDeadline() {
+  const armed = new Map<number, Readonly<{ timeoutMs: number; expire: () => void }>>();
+  let next = 0;
+  return {
+    start(expire: () => void, timeoutMs: number) {
+      const id = next++;
+      armed.set(id, { timeoutMs, expire });
+      return () => { armed.delete(id); };
+    },
+    armed: () => [...armed.values()].map((timer) => timer.timeoutMs),
+    expire() {
+      for (const [id, timer] of [...armed]) {
+        armed.delete(id);
+        timer.expire();
+      }
+    },
+  };
+}
+
+// Lets every promise that can settle without a timer settle.
+async function flush() {
+  for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+// The real verifier's order without its own deadline: both copies settle
+// before the first rejection is reported, so a read that never settles holds it.
+async function driveCopiesSettling(input: CompletionInput, deps: CompletionDeps) {
+  const results = await Promise.allSettled(
+    (["buyer", "seller"] as const).map((role) => driveCopy(role, input, deps)));
+  const rejected = results.find((result) => result.status === "rejected");
+  if (rejected !== undefined) throw rejected.reason;
+  return { state: "audit-complete" };
+}
 
 // Demos state changes that make the seller's publication permanently invalid
 // (retry reads the same immutable objects) or leave a read unanswered.

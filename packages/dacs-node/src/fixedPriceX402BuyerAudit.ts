@@ -1,5 +1,6 @@
 import {
   ARTIFACT_SEPARATORS,
+  COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
   FINALITY_COMMITMENT_SEPARATOR,
   baseUnits,
   bundleAddress,
@@ -14,6 +15,7 @@ import {
   type AuthenticatedRailDefinition,
   type AuditPendingSellerSessionRecord,
   type CompletedSellerPhaseEntry,
+  type CompletedTwoSidedSessionDeadline,
   type DurableBuyerBundleFinalizationProvider,
   type FinalizedSellerBundle,
   type FinalizedSessionSettlement,
@@ -122,6 +124,13 @@ export interface DacsFixedPriceX402BuyerAuditOptionsV1 {
   logPageSize?: number;
   fetchImpl?: typeof fetch;
   leaseTtlMs?: number;
+  /**
+   * Bounds the audit's completion check and its wait for Demos reads still in
+   * flight. At the deadline Demos's answer against a copy, if already seen,
+   * fails the audit; otherwise it stays retryable. Defaults as for
+   * `verifyCompletedTwoSidedSession`.
+   */
+  completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
 }
 
 export interface DacsFixedPriceX402BuyerAuditV1 {
@@ -135,6 +144,8 @@ export interface DacsFixedPricePayDemBuyerAuditOptionsV1 {
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
   recipeRegistryVersion: number;
   leaseTtlMs?: number;
+  /** As for the x402 buyer audit. */
+  completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
 }
 
 export interface DacsFixedPricePayDemBuyerAuditV1 {
@@ -205,6 +216,31 @@ function owner(claim: string): string {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-authority-invalid");
   }
   return claim.slice(prefix.length);
+}
+
+function completionDeadline(
+  value: unknown,
+): Readonly<Required<CompletedTwoSidedSessionDeadline>> {
+  if (value === undefined) {
+    return Object.freeze({ timeoutMs: COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS, start: startTimer });
+  }
+  if (!plainObject(value) || Object.keys(value).some((key) => key !== "timeoutMs" && key !== "start") ||
+      (value.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(value.timeoutMs) || Number(value.timeoutMs) <= 0)) ||
+      (value.start !== undefined && typeof value.start !== "function")) {
+    throw new TypeError("fixed-price buyer audit completion deadline is invalid");
+  }
+  return Object.freeze({
+    timeoutMs: value.timeoutMs === undefined
+      ? COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS : Number(value.timeoutMs),
+    start: (value.start as CompletedTwoSidedSessionDeadline["start"]) ?? startTimer,
+  });
+}
+
+function startTimer(expire: () => void, timeoutMs: number): () => void {
+  const timer = setTimeout(expire, timeoutMs);
+  timer.unref();
+  return () => clearTimeout(timer);
 }
 
 function timing(value: unknown): number {
@@ -429,6 +465,7 @@ export function createDacsFixedPriceBuyerAuditV1(
   }
   const context = options.context;
   const leaseTtlMs = timing(options.leaseTtlMs);
+  const deadline = completionDeadline(options.completionDeadline);
   const rail = options.rail;
   const provenance = getAuthenticatedRailProvenance(rail)!;
   const payDem = options.paymentProfile === "pay-dem";
@@ -1593,8 +1630,20 @@ export function createDacsFixedPriceBuyerAuditV1(
         read.then(settle, settle);
         return read;
       };
+      // One deadline bounds the verification and that wait, so a read that
+      // never settles cannot hold the audit. At the deadline Demos's answer
+      // already seen still fails the audit; without one it stays retryable,
+      // and whatever settles later is ignored.
+      let disarm = (): void => undefined;
+      const expired = new Promise<"expired">((resolve) => {
+        disarm = deadline.start(() => resolve("expired"), deadline.timeoutMs);
+      });
+      const drained = async (): Promise<"drained"> => {
+        while (reads.size > 0) await Promise.allSettled([...reads]);
+        return "drained";
+      };
       try {
-        await verifyCompletedTwoSidedSession({
+        const verification = verifyCompletedTwoSidedSession({
           jobId: operation.order.jobId,
           buyer: operation.order.buyer,
           seller: operation.order.seller,
@@ -1618,6 +1667,7 @@ export function createDacsFixedPriceBuyerAuditV1(
             },
           },
         }, {
+          deadline,
           sellerFinalizationProvider: material.provider,
           async readBundleCopy(nativeAddress, role) {
             let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
@@ -1669,13 +1719,21 @@ export function createDacsFixedPriceBuyerAuditV1(
               : { disposition, reason: `demos-bundle-binding-${disposition}` };
           },
         });
-        return true;
-      } catch (error) {
-        while (reads.size > 0) await Promise.allSettled([...reads]);
-        // Retry only unanswered reads. Authoritative absence and malformed
-        // provider output need operator action, even when classified as substrate faults.
-        if (answeredRejection) return false;
-        return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
+        verification.catch(() => undefined);
+        try {
+          if (await Promise.race([verification.then(() => "verified" as const), expired]) ===
+              "verified") return true;
+          return answeredRejection ? false : "indeterminate";
+        } catch (error) {
+          const settled = await Promise.race([drained(), expired]) === "drained";
+          // Retry only unanswered reads. Authoritative absence and malformed
+          // provider output need operator action, even when classified as substrate faults.
+          if (answeredRejection) return false;
+          if (!settled) return "indeterminate";
+          return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
+        }
+      } finally {
+        disarm();
       }
     },
   };
