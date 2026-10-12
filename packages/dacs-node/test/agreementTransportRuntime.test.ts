@@ -773,6 +773,24 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
     });
 
+    it.each([
+        ["corrupt", (binding: Record<string, unknown>) => { binding.payloadHash = "0".repeat(64); }, "agreement-proposal-binding-corrupt"],
+        ["unauthenticated", (binding: Record<string, unknown>) => { delete binding.transportAuthentication; }, "agreement-proposal-binding-unauthenticated"],
+    ] as const)("names a %s retained proposal binding in the seller bootstrap's operator reason", async (_label, tamper, reasonCode) => {
+        const h = await memoryAgreementHarness("x402");
+        await expect(h.publish()).resolves.toEqual({ disposition: "submitted" });
+        const [key, value] = [...h.seller.effects].find(([, entry]) =>
+            typeof entry === "object" && entry !== null && "payload" in entry &&
+            typeof (entry as { payload: unknown }).payload === "object" &&
+            "proposal" in ((entry as { payload: object }).payload))!;
+        const binding = structuredClone(value) as Record<string, unknown>;
+        tamper(binding);
+        h.seller.effects.set(key, binding);
+        const agreement = vi.fn();
+        expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never)).toEqual({ status: "operator-action", reasonCode });
+        expect(agreement).not.toHaveBeenCalled();
+    });
+
     it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         const runtime = h.terminalRuntime();

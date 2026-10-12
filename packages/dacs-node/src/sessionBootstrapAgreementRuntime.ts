@@ -1,4 +1,7 @@
-import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
+import {
+  DacsAgreementTransportRuntimeError,
+  loadDacsAgreementTerminalBoundaryForOrderV1,
+} from "./agreementTransportRuntime.js";
 import {
   claimDacsPreAgreementPhaseV1,
   DACS_PRE_AGREEMENT_PHASE_CONFLICT,
@@ -951,8 +954,9 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         context,
         operation.order,
       ).sellerResponseRetained;
-    } catch {
-      return operator("seller-agreement-runtime-failed");
+    } catch (error) {
+      return operator(error instanceof DacsAgreementTransportRuntimeError
+        ? error.reasonCode : "seller-agreement-binding-unavailable");
     }
     if (responseRetained) {
       const phaseConflict = claimAgreementPhase(context, operation);

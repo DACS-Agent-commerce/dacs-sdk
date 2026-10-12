@@ -512,7 +512,7 @@ export function loadDacsAgreementTerminalBoundaryForOrderV1(
     const authentication = proposal.transportAuthentication;
     if (authentication === undefined || authentication.sender !== order.buyer ||
         authentication.audience !== order.seller) {
-      throw new DacsAgreementTransportRuntimeError("agreement-proposal-binding-corrupt");
+      throw new DacsAgreementTransportRuntimeError("agreement-proposal-binding-unauthenticated");
     }
   }
   if (response !== undefined && (proposal === undefined ||
