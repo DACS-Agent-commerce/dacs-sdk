@@ -4524,7 +4524,8 @@ const PROBE_VERSIONS = JSON.stringify({
   "better-sqlite3": BETTER_SQLITE_VERSION,
 });
 
-const DOCKER_RUNTIME_SMOKE = `import { spawnSync } from "node:child_process";
+const DOCKER_RUNTIME_SMOKE = `import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 
@@ -4550,13 +4551,16 @@ const verifyOnly = modeArguments.length === 1 && modeArguments[0] === "--verify-
 const image = setting("DACS_IMAGE");
 const uid = setting("DACS_RUNTIME_UID");
 const gid = setting("DACS_RUNTIME_GID");
+const timeoutSeconds = setting("DACS_IMAGE_SMOKE_TIMEOUT_SECONDS") ?? "120";
 const identity = /^[1-9][0-9]{0,9}$/;
 if ((modeArguments.length !== 0 && !verifyOnly) ||
     image === undefined || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image) ||
     uid === undefined || !identity.test(uid) || Number(uid) > 2_147_483_647 ||
-    gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647) {
+    gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647 ||
+    !/^[1-9][0-9]{0,3}$/.test(timeoutSeconds)) {
   process.stderr.write("usage: set DACS_IMAGE and non-root DACS_RUNTIME_UID/GID " +
-    "(shell or .env), then run npm run dacs:image:smoke\\n");
+    "(shell or .env), then run npm run dacs:image:smoke; " +
+    "DACS_IMAGE_SMOKE_TIMEOUT_SECONDS, if set, is 1-9999\\n");
   process.exit(2);
 }
 const user = uid + ":" + gid;
@@ -4646,24 +4650,45 @@ const probe = [
 ].join("\\n");
 
 // Both containers run as the compose runtime user, without network, writable
-// root, capabilities or privilege escalation.
+// root, capabilities or privilege escalation, under an init process as compose
+// runs them. Each is named so that one still running at the timeout is removed.
 const containerOptions = [
   "run",
   "--rm",
+  "--init",
   "--network", "none",
   "--read-only",
   "--cap-drop", "ALL",
   "--security-opt", "no-new-privileges:true",
   "--user", user,
 ];
-const runtime = JSON.parse(docker([
-  ...containerOptions,
+function runContainer(args) {
+  const name = "dacs-image-smoke-" + randomBytes(6).toString("hex");
+  const child = spawnSync("docker", [...containerOptions, "--name", name, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: Number(timeoutSeconds) * 1000,
+    killSignal: "SIGKILL",
+  });
+  if (child.error && child.error.code === "ETIMEDOUT") {
+    spawnSync("docker", ["rm", "--force", name], { stdio: "ignore", timeout: 60_000 });
+    throw new Error("container " + name + " did not exit within " + timeoutSeconds +
+      "s (DACS_IMAGE_SMOKE_TIMEOUT_SECONDS) and was removed");
+  }
+  if (child.error) throw child.error;
+  return child;
+}
+const probeRun = runContainer([
   "--entrypoint", "node",
   imageId,
   "--import", "@kynesyslabs/dacs-node/demos-loader",
   "--input-type=module",
   "--eval", probe,
-]));
+]);
+if (probeRun.status !== 0) {
+  throw new Error("docker run failed: " + probeRun.stderr.trim());
+}
+const runtime = JSON.parse(probeRun.stdout.trim());
 if (runtime.status !== "pass") {
   throw new Error("container probe did not report a pass");
 }
@@ -4674,7 +4699,7 @@ if (runtime.uid !== Number(uid) || runtime.gid !== Number(gid)) {
 // The image's own command, with no role configured, loads the complete service
 // module graph and then stops at its first check, before any secret, data or
 // network access. Any other exit means the configured command cannot start.
-const service = dockerResult([...containerOptions, imageId]);
+const service = runContainer([imageId]);
 const roleCheckReport = JSON.stringify({
   event: "dacs.live-service.failed",
   reasonCode: "role-runtime-unavailable",
@@ -5184,7 +5209,9 @@ SDK entry points, and the image's configured service command, which must load
 the complete service and stop at its missing-role check. The smoke never starts
 a serving role, reads secrets or contacts a network. On success it records the
 image ID and user in \`.dacs-runtime/docker-image-smoke.json\`; a new attempt
-removes that record first. Docker \`dacs:up\` starts compose only while
+removes that record first. A container still running after
+\`DACS_IMAGE_SMOKE_TIMEOUT_SECONDS\` (default 120) is removed and the smoke fails.
+Docker \`dacs:up\` starts compose only while
 \`DACS_IMAGE\` still names the recorded image ID and the runtime user is
 unchanged; compose never builds or pulls the image.
 

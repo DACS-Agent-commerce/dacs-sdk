@@ -69,6 +69,8 @@ interface FakeDockerScenario {
   config: Readonly<Record<string, unknown>>;
   probe: Readonly<Record<string, unknown>>;
   service: Readonly<{ status: number; stderr: string }>;
+  // That container never exits by itself.
+  hang?: "probe" | "service";
 }
 
 function passingDockerScenario(
@@ -100,6 +102,9 @@ if (scenario.daemonDown) {
   process.stderr.write("Cannot connect to the test-only Docker daemon\\n");
   process.exit(1);
 }
+function hang() {
+  setTimeout(() => {}, 60_000);
+}
 if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
   const counter = log + ".resolutions";
   const count = existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;
@@ -110,10 +115,16 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
     args[3] === "{{json .Config}}") {
   process.stdout.write(JSON.stringify(scenario.config) + "\\n");
 } else if (args[0] === "run" && args.includes("--entrypoint")) {
-  process.stdout.write(JSON.stringify(scenario.probe) + "\\n");
+  if (scenario.hang === "probe") hang();
+  else process.stdout.write(JSON.stringify(scenario.probe) + "\\n");
 } else if (args[0] === "run") {
-  process.stderr.write(scenario.service.stderr);
-  process.exitCode = scenario.service.status;
+  if (scenario.hang === "service") hang();
+  else {
+    process.stderr.write(scenario.service.stderr);
+    process.exitCode = scenario.service.status;
+  }
+} else if (args[0] === "rm" && args[1] === "--force") {
+  // Removing the named smoke container succeeds.
 } else {
   process.stderr.write("unexpected test-only fake docker invocation\\n");
   process.exitCode = 64;
@@ -497,10 +508,11 @@ describe("create-dacs-agent", () => {
         runtimeUser: user,
         serviceCommand: "stopped-at-role-check",
       });
+      // An init process, as compose's init: true, and a name to remove it by.
       const containerOptions = [
-        "run", "--rm", "--network", "none", "--read-only",
+        "run", "--rm", "--init", "--network", "none", "--read-only",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-        "--user", user,
+        "--user", user, "--name", expect.stringMatching(/^dacs-image-smoke-[0-9a-f]{12}$/),
       ];
       expect(result.invocations).toHaveLength(4);
       expect(result.invocations[0]).toEqual([
@@ -514,6 +526,7 @@ describe("create-dacs-agent", () => {
       ]);
       // The image's own configured command: no entrypoint or command override.
       expect(result.invocations[3]).toEqual([...containerOptions, TEST_ONLY_FAKE_IMAGE_ID]);
+      expect(result.invocations[2]?.[13]).not.toBe(result.invocations[3]?.[13]);
       expect(result.receipt).toEqual({
         receiptVersion: 1,
         image,
@@ -579,6 +592,8 @@ describe("create-dacs-agent", () => {
       const target = await generatedDockerProject("service-command-agent");
       for (const service of [
         { status: 0, stderr: "" },
+        // The role line alone is not enough: the command must also exit 1.
+        { status: 0, stderr: GENERATED_ROLE_CHECK_REPORT + "\n" },
         { status: 1, stderr: "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'viem'\n" },
         { status: 125, stderr: GENERATED_ROLE_CHECK_REPORT + "\n" },
         { status: 1, stderr: "" },
@@ -601,6 +616,30 @@ describe("create-dacs-agent", () => {
         },
       }));
       expect(warned.status).toBe(0);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "removes a smoke container that outlives DACS_IMAGE_SMOKE_TIMEOUT_SECONDS",
+    async () => {
+      const target = await generatedDockerProject("hanging-service-agent");
+      for (const hang of ["probe", "service"] as const) {
+        expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+        const startedAt = Date.now();
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario({ hang }), {
+          env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "1" },
+        });
+        expect(Date.now() - startedAt, hang).toBeLessThan(20_000);
+        expect(result.status, hang).toBe(1);
+        const run = result.invocations.filter((args) => args[0] === "run").at(-1)!;
+        const name = run[run.indexOf("--name") + 1];
+        expect(result.stderr).toContain(
+          `container ${name} did not exit within 1s (DACS_IMAGE_SMOKE_TIMEOUT_SECONDS) and was removed`,
+        );
+        expect(result.invocations.at(-1)).toEqual(["rm", "--force", name]);
+        expect(result.receipt).toBeUndefined();
+      }
     },
     SPAWNING_TEST_TIMEOUT_MS,
   );
@@ -670,6 +709,7 @@ describe("create-dacs-agent", () => {
         { env: { DACS_IMAGE: "" } },
         { env: { DACS_RUNTIME_UID: "0" } },
         { env: { DACS_RUNTIME_GID: "root" } },
+        { env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "0" } },
       ];
       for (const options of usageErrors) {
         const result = await runGeneratedDockerSmoke(target, passingDockerScenario(), options);
