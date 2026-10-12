@@ -205,6 +205,17 @@ has succeeded, or its retained agreement facts record the evaluated party's Vet
 as passed, that role rejects the proposal (`vet-terminal-not-pre-agreement`),
 never signs it, and its agreement and audit tracks continue normally.
 
+For each role, the agreement and the Vet terminal are mutually exclusive. Before
+a role retains an authenticated agreement proposal or terminal material, or
+signs on either path, it durably records which path the job is on. The first
+path recorded wins. The other path then fails closed with
+`agreement-vet-terminal-phase-conflict`, which needs an operator: a seller that
+has retained or co-signed a Vet failure refuses a later seller-pass proposal and
+never signs an agreement response, and a seller that admitted a seller-pass
+proposal refuses a later Vet failure. The proposal is retained before the
+coordinator order is started, so a crash during admission cannot leave an order
+without it.
+
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited

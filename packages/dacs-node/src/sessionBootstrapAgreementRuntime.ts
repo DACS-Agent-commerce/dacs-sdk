@@ -1,4 +1,9 @@
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
+import {
+  claimDacsPreAgreementPhaseV1,
+  DACS_PRE_AGREEMENT_PHASE_CONFLICT,
+  DacsPreAgreementPhaseError,
+} from "./preAgreementPhase.js";
 import { randomBytes } from "node:crypto";
 
 import {
@@ -234,6 +239,21 @@ function operator(reasonCode: string): Readonly<FixedPriceX402TrackOperationResu
   return Object.freeze({ status: "operator-action", reasonCode });
 }
 
+// Commit the job to the agreement immediately before this role signs on it.
+// Returns the operator result when the role already committed to a terminal.
+function claimAgreementPhase(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  operation: Readonly<FixedPriceX402TrackOperationInput>,
+): Readonly<FixedPriceX402TrackOperationResult> | undefined {
+  try {
+    claimDacsPreAgreementPhaseV1(context, operation.order, "agreement");
+    return undefined;
+  } catch (error) {
+    return operator(error instanceof DacsPreAgreementPhaseError
+      ? error.reasonCode : "pre-agreement-phase-corrupt");
+  }
+}
+
 function operationBound(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
@@ -359,6 +379,10 @@ export async function advanceDacsVetTerminalTrackV1(
         "indeterminate",
       );
     }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
+      return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+    }
     return operator(error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
       ? "vet-terminal-finalization-conflict"
@@ -416,6 +440,10 @@ async function finalizeLocalVetFailure(
         "vet-terminal-production-indeterminate",
         "indeterminate",
       );
+    }
+    if (error instanceof DacsVetTerminalBundleTransportError &&
+        error.reasonCode === DACS_PRE_AGREEMENT_PHASE_CONFLICT) {
+      return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
     }
     return operator(error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
@@ -885,6 +913,12 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         sellerVetRef: sellerVet.production.recordRef,
         sellerVetReceipt: sellerVet.production.anchorReceipt,
       });
+    } catch {
+      return operator("buyer-session-agreement-handoff-invalid");
+    }
+    const phaseConflict = claimAgreementPhase(context, operation);
+    if (phaseConflict !== undefined) return phaseConflict;
+    try {
       await operation.fence.assertCurrent();
       return await options.agreement(operation);
     } catch {
@@ -911,13 +945,24 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
       return operator("seller-session-bootstrap-track-mismatch");
     }
     // Recover a durably signed response before advancing any competing terminal.
+    let responseRetained: boolean;
     try {
-      if (loadDacsAgreementTerminalBoundaryForOrderV1(context, operation.order).sellerResponseRetained) {
-        await operation.fence.assertCurrent();
-        return await options.agreement(operation);
-      }
+      responseRetained = loadDacsAgreementTerminalBoundaryForOrderV1(
+        context,
+        operation.order,
+      ).sellerResponseRetained;
     } catch {
       return operator("seller-agreement-runtime-failed");
+    }
+    if (responseRetained) {
+      const phaseConflict = claimAgreementPhase(context, operation);
+      if (phaseConflict !== undefined) return phaseConflict;
+      try {
+        await operation.fence.assertCurrent();
+        return await options.agreement(operation);
+      } catch {
+        return operator("seller-agreement-runtime-failed");
+      }
     }
     if (options.terminalBundle !== undefined) {
       const terminal = await advanceDacsVetTerminalTrackV1(
@@ -1080,6 +1125,8 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     } catch {
       return pending(context, delay, "seller-agreement-proposal-pending");
     }
+    const phaseConflict = claimAgreementPhase(context, operation);
+    if (phaseConflict !== undefined) return phaseConflict;
     try {
       return await options.agreement(operation);
     } catch {

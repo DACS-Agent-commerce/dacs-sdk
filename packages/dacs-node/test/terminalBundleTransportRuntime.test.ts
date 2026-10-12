@@ -1986,11 +1986,15 @@ describe("Vet terminal pre-agreement boundary", () => {
       )).resolves.toEqual({ disposition: "accepted" });
       actor.concludeAgreement();
 
+      // Retaining the terminal committed the job to it, so a concluded
+      // agreement is a contradiction for an operator, not a fall-through.
       await expect(actor.runtime.advanceRegisteredTerminal(JOB_ID))
-        .rejects.toMatchObject({ reasonCode: "vet-terminal-not-pre-agreement" });
-      // The agreement and audit wrappers fall through to their ordinary track.
+        .rejects.toMatchObject({ reasonCode: "agreement-vet-terminal-phase-conflict" });
       await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
-        .resolves.toBeUndefined();
+        .resolves.toEqual({
+          status: "operator-action",
+          reasonCode: "agreement-vet-terminal-phase-conflict",
+        });
       expect(actor.signComponent).not.toHaveBeenCalled();
       expect(actor.context.sendMessage).not.toHaveBeenCalled();
     },

@@ -29,6 +29,13 @@ import { canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity } from
   "@kynesyslabs/dacs/identity";
 
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
+import {
+  claimDacsPreAgreementPhaseV1,
+  DACS_PRE_AGREEMENT_PHASE_CONFLICT,
+  DacsPreAgreementPhaseError,
+  loadDacsPreAgreementPhaseV1,
+  type DacsPreAgreementPhaseV1,
+} from "./preAgreementPhase.js";
 import { createDacsDemosBundlePublicationV1 } from "./demosBundlePublication.js";
 import { captureDacsFixedPriceX402ApplicationV1 } from
   "./fixedPriceX402Profile.js";
@@ -377,6 +384,7 @@ async function loadOrder(
   agreementConcluded: boolean;
   sellerPassRetained: boolean;
   sellerResponseRetained: boolean;
+  phase: DacsPreAgreementPhaseV1 | undefined;
 }>> {
   const [x402, payDem] = await Promise.all([
     context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
@@ -460,16 +468,44 @@ async function loadOrder(
     ...loadDacsAgreementTerminalBoundaryForOrderV1(context, record),
     agreementConcluded: record.tracks.agreement?.state === "final" &&
       record.tracks.agreement.outcome === "success",
+    phase: loadPhase(context, record),
   });
+}
+
+function loadPhase(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<{ jobId: string; localBindingHash: string }>,
+): DacsPreAgreementPhaseV1 | undefined {
+  try {
+    return loadDacsPreAgreementPhaseV1(context, order);
+  } catch {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  }
+}
+
+// Commit the job to the terminal for this role before retaining or signing
+// terminal material. Fails if this role already committed to the agreement.
+function claimTerminalPhase(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  order: Readonly<{ jobId: string; localBindingHash: string }>,
+): void {
+  try {
+    claimDacsPreAgreementPhaseV1(context, order, "vet-terminal");
+  } catch (error) {
+    throw new DacsVetTerminalBundleTransportError(error instanceof DacsPreAgreementPhaseError
+      ? error.reasonCode : "vet-terminal-binding-corrupt");
+  }
 }
 
 // Authenticated proposal/response bindings are durable commitments even before
 // the coordinator records agreement success. A seller-pass proposal contradicts
 // seller failure; a retained seller response excludes every pre-agreement terminal.
+// A role that committed the job to the agreement refuses every terminal.
 function assertPreAgreementTerminal(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<{ jobId: string; agreementConcluded: boolean;
-    sellerPassRetained: boolean; sellerResponseRetained: boolean }>,
+    sellerPassRetained: boolean; sellerResponseRetained: boolean;
+    phase: DacsPreAgreementPhaseV1 | undefined }>,
   evaluatedRole: unknown,
 ): void {
   const factsRetained = context.database.loadEffectInput(
@@ -482,6 +518,9 @@ function assertPreAgreementTerminal(
       (order.sellerPassRetained && evaluatedRole === "seller") ||
       passedVets.includes(evaluatedRole)) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-not-pre-agreement");
+  }
+  if (order.phase === "agreement") {
+    throw new DacsVetTerminalBundleTransportError(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
   }
 }
 
@@ -698,6 +737,7 @@ async function putBinding(
   ) !== undefined) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
   }
+  claimTerminalPhase(context, order);
   const signerRole = kind === "contribution"
     ? (payload as TerminalBundleSignatureContribution).signerRole as Role
     : undefined;
@@ -1448,7 +1488,24 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (typeof jobId !== "string" || jobId.length === 0) {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-job-invalid");
       }
-      const assessment = await loadRegistered(jobId);
+      let assessment: Awaited<ReturnType<typeof loadRegistered>>;
+      try {
+        assessment = await loadRegistered(jobId);
+      } catch (error) {
+        // Once this role committed the job to the terminal (or contributed its
+        // own signature), a gate that now fails is a contradiction for an
+        // operator. It must never hand the job to the agreement.
+        if (error instanceof DacsVetTerminalBundleTransportError &&
+            error.reasonCode === "vet-terminal-not-pre-agreement") {
+          const order = await loadOrder(context, jobId);
+          if (order.phase === "vet-terminal" ||
+              await loadBinding(context, "contribution", jobId, role) !== undefined) {
+            throw new DacsVetTerminalBundleTransportError(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+          }
+        }
+        throw error;
+      }
+      claimTerminalPhase(context, await loadOrder(context, jobId));
       const loaded = await context.sessionStore.load(jobId);
       if (loaded.status === "missing") {
         await context.sessionStore.create({

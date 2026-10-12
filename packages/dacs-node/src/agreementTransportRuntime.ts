@@ -39,6 +39,10 @@ import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
 } from "./roleRuntime.js";
+import {
+  claimDacsPreAgreementPhaseV1,
+  DacsPreAgreementPhaseError,
+} from "./preAgreementPhase.js";
 import type { DacsLiveRoleSendInputV1 } from "./service.js";
 import type {
   DacsAgreementProposalPayloadV1,
@@ -224,9 +228,15 @@ async function loadOrder(
       : undefined;
 }
 
+// The order fields an agreement binding is scoped to. The retained order input
+// carries them before the coordinator records the order.
+type AgreementOrderScope = Readonly<
+  Pick<DacsLiveOrderRecordV1, "jobId" | "buyer" | "seller" | "localBindingHash" | "sdkJobs">
+>;
+
 function identityMatchesOrder(
   identity: Readonly<FixedPriceAgreementTransportIdentity>,
-  order: Readonly<DacsLiveOrderRecordV1> | Readonly<DacsLiveOrderV1>,
+  order: AgreementOrderScope | Readonly<DacsLiveOrderV1>,
   role: "buyer" | "seller",
 ): boolean {
   return order.sdkJobs.role === role && identity.jobId === order.jobId &&
@@ -341,7 +351,7 @@ function captureResponseBinding(value: unknown): Readonly<DacsAgreementResponseB
 
 function retainProposal(
   context: Readonly<DacsLiveRoleOperationContextV1>,
-  order: Readonly<DacsLiveOrderRecordV1>,
+  order: AgreementOrderScope,
   payload: Readonly<DacsAgreementProposalPayloadV1>,
   authenticated?: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
 ): Readonly<DacsAgreementProposalBindingV1> {
@@ -610,6 +620,7 @@ export function createDacsBuyerAgreementTransportRuntimeV1<
       }
       try {
         const sellerVet = await options.resolveSellerVetProduction({ order: order as Order });
+        claimDacsPreAgreementPhaseV1(context, order, "agreement");
         const binding = retainProposal(context, order, {
           proposal,
           transportIdentity: identity,
@@ -618,8 +629,12 @@ export function createDacsBuyerAgreementTransportRuntimeV1<
           sellerVetReceipt: sellerVet.anchorReceipt,
         });
         return sendProposal(context, binding);
-      } catch {
-        return { disposition: "rejected" as const, reason: "agreement-proposal-invalid" };
+      } catch (error) {
+        return {
+          disposition: "rejected" as const,
+          reason: error instanceof DacsPreAgreementPhaseError
+            ? error.reasonCode : "agreement-proposal-invalid",
+        };
       }
     },
     async reconcileProposalPublication(
@@ -748,14 +763,19 @@ export function createDacsSellerAgreementTransportRuntimeV1<
             reason: "agreement-proposal-binding-missing",
           };
         }
+        claimDacsPreAgreementPhaseV1(context, order, "agreement");
         const binding = retainResponse(context, order, {
           responseVersion: "1",
           transportIdentity: identity,
           sellerContribution: contribution,
         });
         return sendResponse(context, binding);
-      } catch {
-        return { disposition: "rejected" as const, reason: "agreement-response-invalid" };
+      } catch (error) {
+        return {
+          disposition: "rejected" as const,
+          reason: error instanceof DacsPreAgreementPhaseError
+            ? error.reasonCode : "agreement-response-invalid",
+        };
       }
     },
     async reconcileSellerContributionPublication(
@@ -794,8 +814,15 @@ export function createDacsSellerAgreementTransportRuntimeV1<
       }
       const order = await loadOrder(context, operation.order.jobId);
       const binding = order === undefined ? undefined : loadProposalBinding(context, order);
-      if (binding === undefined) {
+      if (order === undefined || binding === undefined) {
         throw new DacsAgreementTransportRuntimeError("agreement-proposal-pending");
+      }
+      // The resolved proposal is what the seller signs a response to.
+      try {
+        claimDacsPreAgreementPhaseV1(context, order, "agreement");
+      } catch (error) {
+        throw new DacsAgreementTransportRuntimeError(error instanceof DacsPreAgreementPhaseError
+          ? error.reasonCode : "agreement-proposal-binding-corrupt");
       }
       return Object.freeze(structuredClone(coreProposalEnvelope(binding.payload)));
     },
@@ -852,15 +879,29 @@ export function createDacsSellerAgreementTransportRuntimeV1<
           application: admitted.application,
         });
         if (retained.status === "conflict") throw new Error();
+        const scope: AgreementOrderScope = {
+          jobId: admitted.order.jobId,
+          buyer: admitted.order.buyer,
+          seller: admitted.order.seller,
+          sdkJobs: admitted.order.sdkJobs,
+          localBindingHash: retained.record.localBindingHash,
+        };
+        // Commit the job to the agreement and retain the authenticated proposal
+        // before the coordinator order exists, so no terminal processing can
+        // observe the order without them.
+        claimDacsPreAgreementPhaseV1(context, scope, "agreement");
+        retainProposal(context, scope, envelope.payload, authenticated);
         await inboundContext.coordinator.startOrder(admitted.order);
         const order = await loadOrder(context, admitted.order.jobId);
-        if (order === undefined) throw new Error();
-        retainProposal(context, order, envelope.payload, authenticated);
+        if (order === undefined || order.localBindingHash !== scope.localBindingHash) {
+          throw new Error();
+        }
         return Object.freeze({ disposition: "accepted" as const });
-      } catch {
+      } catch (error) {
         return Object.freeze({
           disposition: "rejected" as const,
-          reasonCode: "agreement-proposal-admission-failed",
+          reasonCode: error instanceof DacsPreAgreementPhaseError
+            ? error.reasonCode : "agreement-proposal-admission-failed",
         });
       }
     },

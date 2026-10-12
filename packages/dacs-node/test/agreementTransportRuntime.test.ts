@@ -37,7 +37,7 @@ import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from
 import { produceDacsEmptyRequirementSessionVetV1 } from "../src/sessionIdentityVetRuntime.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from "../src/purchaseDemosBudget.js";
 import { createDacsVetTerminalBundleTransportRuntimeV1 } from "../src/terminalBundleTransportRuntime.js";
-import { createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
+import { advanceDacsVetTerminalTrackV1, createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "../src/agreementTransportRuntime.js";
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -564,7 +564,8 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
         throw new Error("finalized Vet receipt missing");
     const request = await proposal(exactListing, production.recordRef);
     const sellerRuntime = createDacsSellerAgreementTransportRuntimeV1({ context: seller.context, admitProposal: () => ({ order: seller.exactOrder, application: seller.application }) });
-    const inbound = { role: "seller", coordinator: { startOrder: vi.fn(async () => seller.record) } } as unknown as DacsLiveRoleInboundOperationContextV1;
+    const startOrder = vi.fn(async () => seller.record);
+    const inbound = { role: "seller", coordinator: { startOrder } } as unknown as DacsLiveRoleInboundOperationContextV1;
     const buyerRuntime = createDacsBuyerAgreementTransportRuntimeV1({ context: buyer.context, resolveSellerVetProduction: () => production });
     vi.mocked(buyer.context.sendMessage).mockImplementation(async (message) => {
         const accepted = await sellerRuntime.handleMessage(authenticated("agreement-proposal", message.payload, BUYER, SELLER), inbound);
@@ -597,7 +598,7 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
         const auth = authenticated("agreement-proposal", payload, BUYER, SELLER);
         return { ...auth, envelope: { ...auth.envelope, type: "terminal-bundle-proposal-buyer" } } as unknown as DacsHttpAuthenticatedEnvelopeV1;
     };
-    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound };
+    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound, sellerRuntime, startOrder };
 }
 describe("memory-backed agreement and Vet terminal recovery", () => {
     it.each(["x402", "pay-dem"] as const)("publishes %s proposals using the real session Vet output", async (profile) => {
@@ -617,16 +618,16 @@ describe("memory-backed agreement and Vet terminal recovery", () => {
         await expect(h.terminalRuntime().handleMessage(await h.failure(), h.inbound)).resolves.toMatchObject({ disposition: "rejected", reasonCode: "vet-terminal-not-pre-agreement" });
         expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
     });
-    it.each(["x402", "pay-dem"] as const)("never co-signs a retained %s terminal after the crash-before-coordinator-record window", async (profile) => {
+    it.each(["x402", "pay-dem"] as const)("refuses a %s agreement once the seller retained a terminal first", async (profile) => {
         const h = await memoryAgreementHarness(profile);
-        const terminal = await h.failure();
-        await expect(h.terminalRuntime().handleMessage(terminal, h.inbound)).resolves.toEqual({ disposition: "accepted" });
-        await expect(h.publish()).resolves.toEqual({ disposition: "submitted" });
-        await h.signResponse();
-        await expect(h.terminalRuntime().advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "vet-terminal-not-pre-agreement" });
-        for (const evaluatedRole of ["buyer", "seller"] as const)
-            await expect(h.terminalRuntime().handleMessage(await h.failure(evaluatedRole), h.inbound)).resolves.toMatchObject({ disposition: "rejected", reasonCode: "vet-terminal-not-pre-agreement" });
-        expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        await expect(h.terminalRuntime().handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
+        // The terminal committed the job first, so the seller-pass proposal and any response lose.
+        await expect(h.publish()).resolves.toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+        const contribution = await createFixedPriceAgreementSignatureContribution(h.request.plan, "seller", { party: SELLER, algorithm: "ed25519", sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) });
+        await expect(h.sellerRuntime.transport.publishSellerContribution(contribution, h.request.transportIdentity, { owner: "seller", generation: 1, idempotencyKey: "memory-response" }))
+            .resolves.toEqual({ disposition: "rejected", reason: "agreement-proposal-binding-missing" });
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never)).toEqual({ sellerPassRetained: false, sellerResponseRetained: false });
+        expect(vi.mocked(h.seller.context.sendMessage).mock.calls.map(([message]) => message.type)).not.toContain("agreement-response");
     });
     it.each(["x402", "pay-dem"] as const)("recovers the retained %s agreement response before terminal processing", async (profile) => {
         const h = await memoryAgreementHarness(profile);
@@ -639,5 +640,146 @@ describe("memory-backed agreement and Vet terminal recovery", () => {
         await expect(track(h.seller.operation as never)).resolves.toMatchObject({ status: "final", outcome: "success" });
         expect(calls).toEqual(["agreement"]);
         expect(advanceRegisteredTerminal).not.toHaveBeenCalled();
+    });
+});
+
+type MemoryHarness = Awaited<ReturnType<typeof memoryAgreementHarness>>;
+
+// A full seller bootstrap tick in which everything before the agreement hand-off
+// is answered (the seller's Vet of the buyer passes), so only the terminal and
+// phase checks decide whether the seller reaches the agreement step.
+function sellerBootstrapTrack(h: MemoryHarness, agreement: ReturnType<typeof vi.fn>) {
+    const record = { ...h.production.record, evaluatedParty: BUYER, bundleHash: identityBundleHash(identity(BUYER)), signature: { ...h.production.record.signature, signer: SELLER } };
+    const recordHash = contentHash(record as unknown as Record<string, unknown>);
+    const buyerPass = { record, recordRef: { ...h.production.recordRef, contentHash: recordHash, signer: SELLER }, anchorReceipt: { ...h.production.anchorReceipt, contentHash: recordHash, logicalAddress: compositeVerificationAddress(JOB_ID, BUYER), writer: SELLER } };
+    const init = { bootstrapVersion: "1", order: h.seller.exactOrder, application: h.seller.application, sellerChallenge: "1".repeat(64) };
+    const challenge = { bootstrapVersion: "1", initPayloadHash: "2".repeat(64), sellerChallenge: init.sellerChallenge, buyerChallenge: "3".repeat(64), sellerIdentity: identity(SELLER) };
+    const presentation = { bootstrapVersion: "1", challengePayloadHash: "4".repeat(64), buyerChallenge: challenge.buyerChallenge, buyerIdentity: identity(BUYER) };
+    return createDacsSellerSessionBootstrapAgreementTrackV1({
+        context: h.seller.context,
+        sessionBootstrap: { resolveInit: () => init, resolveChallenge: () => challenge, resolvePresentation: () => presentation, resolveAdmission: () => undefined, publishAdmission: async () => "submitted", publishChallenge: async () => "submitted" },
+        resolveBuyerRequirement: async () => ({ requirementVersion: "1", required: [] }),
+        agreementProposalReady: async ({ operation }: { operation: never }) => {
+            try {
+                await h.sellerRuntime.resolveProposal({ operation });
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        agreement,
+        vet: { produce: async () => ({ status: "ready", production: buyerPass }), authenticate: async () => "valid" },
+        terminalBundle: { runtime: h.terminalRuntime(), createInput: vi.fn() },
+    } as never);
+}
+
+function sentTypes(h: MemoryHarness): string[] {
+    return vi.mocked(h.seller.context.sendMessage).mock.calls.map(([message]) => message.type);
+}
+
+describe("agreement and Vet terminal are mutually exclusive for each role", () => {
+    it.each(["x402", "pay-dem"] as const)("keeps a %s seller that contributed to a Vet failure from signing a later agreement", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        const runtime = h.terminalRuntime();
+        await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
+        await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
+        expect(h.seller.context.demos.signComponent).toHaveBeenCalled();
+        expect(sentTypes(h)).toContain("terminal-bundle-contribution-seller");
+
+        // The buyer then sends a seller-pass agreement proposal.
+        expect.soft(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+        const proposalPayload = vi.mocked(h.buyer.context.sendMessage).mock.calls[0]![0].payload;
+        expect.soft(await h.sellerRuntime.handleMessage(authenticated("agreement-proposal", proposalPayload, BUYER, SELLER), h.inbound))
+            .toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect.soft(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never)).toEqual({ sellerPassRetained: false, sellerResponseRetained: false });
+        // The terminal keeps the job; it never hands it back to the agreement.
+        expect.soft(await advanceDacsVetTerminalTrackV1(runtime, h.seller.context, 1_000, JOB_ID)).toMatchObject({ status: "pending-retry", reasonCode: "vet-terminal-finalization-pending" });
+        const agreement = vi.fn(async () => ({ status: "final", outcome: "success", reference: "stor:agreement" }));
+        expect.soft(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never)).toMatchObject({ status: "pending-retry", reasonCode: "vet-terminal-finalization-pending" });
+        expect(agreement).not.toHaveBeenCalled();
+        const contribution = await createFixedPriceAgreementSignatureContribution(h.request.plan, "seller", { party: SELLER, algorithm: "ed25519", sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) });
+        expect.soft(await h.sellerRuntime.transport.publishSellerContribution(contribution, h.request.transportIdentity, { owner: "seller", generation: 1, idempotencyKey: "memory-response" }))
+            .toEqual({ disposition: "rejected", reason: "agreement-proposal-binding-missing" });
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerResponseRetained).toBe(false);
+        expect(sentTypes(h)).not.toContain("agreement-response");
+    });
+
+    it.each(["x402", "pay-dem"] as const)("reports a %s gate failure after the seller's terminal contribution as an operator conflict", async (profile) => {
+        // Retain the authenticated seller-pass proposal the way an admitted one is stored.
+        const donor = await memoryAgreementHarness(profile);
+        await expect(donor.publish()).resolves.toEqual({ disposition: "submitted" });
+        const proposalEntry = [...donor.seller.effects].find(([, value]) =>
+            typeof value === "object" && value !== null && "payload" in value &&
+            typeof (value as { payload: unknown }).payload === "object" &&
+            "proposal" in ((value as { payload: object }).payload));
+        expect(proposalEntry).toBeDefined();
+
+        const h = await memoryAgreementHarness(profile);
+        const runtime = h.terminalRuntime();
+        await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
+        await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
+        h.seller.effects.set(proposalEntry![0], structuredClone(proposalEntry![1]));
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(true);
+
+        await expect.soft(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect.soft(await advanceDacsVetTerminalTrackV1(runtime, h.seller.context, 1_000, JOB_ID)).toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        const agreement = vi.fn(async () => ({ status: "final", outcome: "success", reference: "stor:agreement" }));
+        expect.soft(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never)).toEqual({ status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        expect(agreement).not.toHaveBeenCalled();
+        await expect(h.sellerRuntime.resolveProposal({ operation: h.seller.operation as never })).rejects.toMatchObject({ reasonCode: "agreement-vet-terminal-phase-conflict" });
+        const contribution = await createFixedPriceAgreementSignatureContribution(h.request.plan, "seller", { party: SELLER, algorithm: "ed25519", sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) });
+        expect(await h.sellerRuntime.transport.publishSellerContribution(contribution, h.request.transportIdentity, { owner: "seller", generation: 1, idempotencyKey: "memory-response" }))
+            .toEqual({ disposition: "rejected", reason: "agreement-vet-terminal-phase-conflict" });
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerResponseRetained).toBe(false);
+        expect(sentTypes(h)).not.toContain("agreement-response");
+    });
+
+    it.each(["x402", "pay-dem"] as const)("does not co-sign a %s seller failure after proposal admission fails once the order commits", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        // startOrder() commits the order and then throws, as on a crash before it returns.
+        h.startOrder.mockRejectedValueOnce(new Error("order committed, then the process crashed"));
+        expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+        expect.soft(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never)).toEqual({ sellerPassRetained: true, sellerResponseRetained: false });
+
+        const runtime = h.terminalRuntime();
+        expect.soft(await runtime.handleMessage(await h.failure(), h.inbound)).toMatchObject({ disposition: "rejected" });
+        await expect.soft(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "vet-terminal-material-unavailable" });
+        expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        expect(sentTypes(h)).not.toContain("terminal-bundle-contribution-seller");
+        // The buyer's retry completes the admission of the same proposal.
+        expect(await h.publish()).toEqual({ disposition: "submitted" });
+    });
+
+    it.each(["x402", "pay-dem"] as const)("does not co-sign a %s seller failure after a crash between the phase decision and the proposal write", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        const database = h.seller.context.database as unknown as { putEffectIntent: (input: { input: unknown }) => unknown };
+        const put = database.putEffectIntent;
+        let crashed = false;
+        database.putEffectIntent = (input) => {
+            const value = input.input as { payload?: { proposal?: unknown } };
+            if (!crashed && value.payload?.proposal !== undefined) {
+                crashed = true;
+                throw new Error("process crashed before the proposal write");
+            }
+            return put(input);
+        };
+        expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+        expect(crashed).toBe(true);
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(false);
+
+        const runtime = h.terminalRuntime();
+        expect.soft(await runtime.handleMessage(await h.failure(), h.inbound)).toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
+        await expect.soft(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "vet-terminal-material-unavailable" });
+        expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+    });
+
+    it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        const runtime = h.terminalRuntime();
+        await expect(runtime.handleMessage(await h.failure(), h.inbound)).resolves.toEqual({ disposition: "accepted" });
+        await expect(runtime.advanceRegisteredTerminal(JOB_ID)).resolves.toMatchObject({ disposition: "waiting" });
+        expect(h.seller.context.demos.signComponent).toHaveBeenCalled();
+        expect(sentTypes(h)).toContain("terminal-bundle-contribution-seller");
+        await expect(advanceDacsVetTerminalTrackV1(runtime, h.seller.context, 1_000, JOB_ID)).resolves.toMatchObject({ status: "pending-retry", reasonCode: "vet-terminal-finalization-pending" });
     });
 });
