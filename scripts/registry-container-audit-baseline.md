@@ -38,8 +38,11 @@ branch protection: a pull request outside the filter would wait for it forever.
 `policyFindings` records the non-audit security-gate failures that the
 dependency tree of `main`'s published packages already carries, by exact
 identity. They come from `@kynesyslabs/demosdk@4.0.16` and the generator's
-template, not from the acceptance tooling. The source is the b7b180f run
-38214792229 (clean registry consumer job) artifact:
+template, not from the acceptance tooling. The source, recorded in the JSON's
+`policyFindings.source`, is the `clean registry consumer (Node 20 / Docker)` job
+of run 38214792229, attempt 1, for b7b180f
+(https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38214792229/attempts/1),
+artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
 
 - `gitDependencies`: `arbundles@0.6.23` (optional, via demosdk → rubic-sdk →
   @metaplex-foundation/js → @bundlr-network/client) depends on
@@ -71,8 +74,19 @@ dependency, or a changed version, integrity or range, still exits 3.
 Update the baseline only through a reviewed PR adding the observed IDs or
 findings and citing the workflow run/job and commit that produced
 `audit-policy.json` or `acceptance-summary.json`. Retain that evidence and
-explain the #191 disposition; do not auto-accept drift. CODEOWNERS requires
-review of this file, the JSON baseline and both workflows.
-The initial advisory baseline copies all 88 IDs in the supplied job
-114652354976 artifact for commit 35e6ce0 (the task description's 94 count
-differs from the artifact). It does not use counts as policy.
+explain the #191 disposition; do not auto-accept drift.
+
+CODEOWNERS names a code owner for this file, the JSON baseline, the scripts
+that decide it and both workflows. That review is enforced only if branch
+protection on `main` requires code-owner review, a repository setting this
+change cannot make. Without it, a pull request can add its own new IDs or
+findings here and pass as baseline-only. While the only code owner is also
+the account that authors these changes, an independent review needs another
+maintainer.
+
+The initial advisory baseline copies all 88 advisory IDs from
+`audit-policy.json` in the artifact
+`dacs-registry-container-9dd394cb7d3a6db6bf767bf9c35fb24f6aae5d27` of job
+114652354976 (https://github.com/DACS-Agent-commerce/dacs-sdk/runs/114652354976)
+for commit 35e6ce0, recorded in the JSON's `source`. It does not use counts as
+policy.
