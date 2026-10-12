@@ -2516,12 +2516,18 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(touched).not.toHaveBeenCalled();
     });
 
-    test("a host store's claim conflict keeps its reason and is indeterminate", async () => {
+    // Pinning for the last two rows: a conflict without a string reason was
+    // already refused as claim-invalid on 4a9ae7b.
+    test.each([
+      ["its own reason", { reason: "host-binding-mismatch" }, "host-binding-mismatch"],
+      ["no reason", {}, "liquidity-tank-settlement-store-claim-invalid"],
+      ["a non-string reason", { reason: 7 }, "liquidity-tank-settlement-store-claim-invalid"],
+    ] as const)("a host store's claim conflict with %s is indeterminate", async (_label, fields, reason) => {
       const store = createInMemoryLiquidityTankStore();
-      store.claim = vi.fn(async () => ({ status: "conflict" as const, reason: "host-binding-mismatch" }));
+      store.claim = vi.fn(async () => ({ status: "conflict", ...fields }) as never);
       const h = harness();
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
-        .resolves.toEqual({ status: "indeterminate", reason: "host-binding-mismatch" });
+        .resolves.toEqual({ status: "indeterminate", reason });
       expect(h.prepareSubmission).not.toHaveBeenCalled();
       expect(h.observe).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
