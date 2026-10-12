@@ -88,13 +88,29 @@ reported by that run rather than creating a similarly named placeholder.
     the ruleset: it never runs on pull requests, so the check would never
     report.
 
-  Each run's summary and log list its findings by ID, the first 16 hex digits
-  of the SHA-256 of the Gitleaks fingerprint: one line per distinct
-  fingerprint, with its commit, rule, line and number of findings. They never
-  show a secret value, a file name or a fingerprint, because a file name can
-  itself hold a secret. Fingerprints already in `.gitleaksignore` are not
-  reported. The list stops at 900 KiB, but the run always gives the number of
-  findings, of IDs and of IDs omitted from the list.
+  Each run's summary and log list its findings: one line per distinct Gitleaks
+  fingerprint (`commit:file:rule:line`), with an ID and the number of findings.
+  A file name can itself hold a secret, so they never show a fingerprint's file
+  segment: besides the ID and the count, they show only the commit SHA, rule ID
+  and line number, as Gitleaks wrote them in the fingerprint. A field that
+  fails its check shows as `(invalid)`. Gitleaks writes the report in the same
+  job, from the checked-out history and with `--redact=100`. A report replaced
+  by someone who controls the job is outside what this step can protect: they
+  could print anything anyway.
+
+  The ID is the first 16 hex digits of the fingerprint's SHA-256, a short
+  digest that hides the file name from casual reading. It is not a secret:
+  given the commit, rule and line beside it, anyone can confirm a guessed file
+  name against the ID. That confirms only what the commit already shows, since
+  GitHub serves a commit, file names included, by its SHA. Rotating any
+  credential found is the control that protects it (see the operating rules
+  below).
+
+  Fingerprints already in `.gitleaksignore` are not reported. The list stops at
+  900 KiB, but the run still gives the number of findings, of IDs and of IDs
+  omitted from the list. A report that can't be read, including one over
+  64 MiB, gives no counts and fails the run; review it with the local
+  reproduction.
 
   To spot a new finding while the audit is red, compare the run with the last
   run whose findings were all reviewed, not just with the previous run. An ID
@@ -117,10 +133,13 @@ reported by that run rather than creating a similarly named placeholder.
   ```
 
   The last command prints each fingerprint after its ID, and refuses to run in
-  GitHub Actions. A fingerprint can contain a secret, so keep the output and the
-  report private, and delete them afterwards. An ID from the run that the
-  reproduction doesn't list belongs to a branch that has changed since; look up
-  its commit on GitHub, and dispatch a new run to compare.
+  GitHub Actions. Unlike the run, it reads a report over 64 MiB. A fingerprint
+  can contain a secret, so keep the output and the report private, and delete
+  them afterwards. An ID from the run that the reproduction doesn't list
+  belongs to a branch that has changed since, or to a finding that has since
+  been pinned in `main`'s `.gitleaksignore` or dropped by a change to its
+  `.gitleaks.toml`; look up its commit on GitHub, and dispatch a new run to
+  compare.
 - Enable GitHub private vulnerability reporting and verify that the
   **Security → Report a vulnerability** route is visible when logged out.
 - Enable code scanning when an appropriate TypeScript configuration is ready;
