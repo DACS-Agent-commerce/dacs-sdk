@@ -1883,3 +1883,84 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 });
+
+describe("advanceSolanaSplSettlement with an adapter result that changes between reads", () => {
+  test("a prepared transaction is retained as validated, so a lower expiry height never replaces it",
+    async () => {
+      let clock = 1_000;
+      let reads = 0;
+      let observations = 0;
+      const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => {
+        const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
+        // Valid until 10_001 on the first read, and until 1 on any later read.
+        return Object.defineProperty({ ...prepared }, "lastValidBlockHeight", {
+          enumerable: true,
+          get: () => (reads++ === 0 ? 10_001 : 1),
+        });
+      });
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      const shared = input({
+        now: () => clock,
+        adapter: adapter({
+          prepareSignedTransfer,
+          broadcastRetained,
+          async reconcile(_intent, attempt) {
+            return ++observations === 1
+              ? { disposition: "indeterminate", reason: "lost" }
+              : expired(attempt, { observedBlockHeight: 2 });
+          },
+        }),
+      });
+      await advanceSolanaSplSettlement(shared);
+      expect(broadcastRetained.mock.calls.map((call) => call[0].lastValidBlockHeight))
+        .toEqual([10_001]);
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+        .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-expiry-proof-invalid" });
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(reads).toBe(1);
+    });
+
+  test("a preflight is planned as validated, so an existing payee account is always checked",
+    async () => {
+      let reads = 0;
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      // The payee account exists but is bound to another owner and mint; the
+      // flag says it exists on every other read.
+      const value = Object.defineProperty(
+        preflight({ payeeAtaOwner: PAYER, payeeAtaMint: PAYER }),
+        "payeeAtaExists",
+        { enumerable: true, get: () => reads++ % 2 === 0 },
+      );
+      await expect(advanceSolanaSplSettlement(input({
+        adapter: adapter({ preflight: async () => value, prepareSignedTransfer }),
+      }))).resolves.toEqual({
+        status: "failed",
+        errorClass: "counterparty",
+        reason: "solana-spl-payee-ata-binding-mismatch",
+      });
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(reads).toBe(1);
+    });
+
+  test("a preflight is planned as validated, so an existing payee account is never created",
+    async () => {
+      let reads = 0;
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      // A correctly bound payee account that exists; the flag says so on every
+      // other read, and the authority forbids creating one.
+      const value = Object.defineProperty(preflight(), "payeeAtaExists", {
+        enumerable: true,
+        get: () => reads++ % 2 === 0,
+      });
+      await expect(advanceSolanaSplSettlement(input({
+        adapter: adapter({ preflight: async () => value, prepareSignedTransfer }),
+      }))).resolves.toMatchObject({ status: "settled" });
+      expect(prepareSignedTransfer.mock.calls[0]?.[0]).toMatchObject({
+        createPayeeAta: false,
+        payerFundsAtaRentLamports: "0",
+      });
+      expect(reads).toBe(1);
+    });
+});

@@ -434,9 +434,21 @@ export function createSolanaSplSettlementIntent(
 
 function validatePreflight(
   intent: Readonly<SolanaSplSettlementIntent>,
-  preflight: Readonly<SolanaSplPreflight>,
+  value: Readonly<SolanaSplPreflight>,
 ): SolanaSplTransferPlan | SolanaSplProgress {
   try {
+    // Read each field once, so what is checked is what is planned.
+    const preflight: SolanaSplPreflight = {
+      payerTokenAccount: value.payerTokenAccount,
+      payerTokenBalanceBaseUnits: value.payerTokenBalanceBaseUnits,
+      payerNativeBalanceLamports: value.payerNativeBalanceLamports,
+      payeeAta: value.payeeAta,
+      payeeAtaExists: value.payeeAtaExists,
+      payeeAtaOwner: value.payeeAtaOwner,
+      payeeAtaMint: value.payeeAtaMint,
+      networkFeeLamports: value.networkFeeLamports,
+      ataRentExemptReserveLamports: value.ataRentExemptReserveLamports,
+    };
     requireBase58Bytes(preflight.payerTokenAccount, "payerTokenAccount", 32);
     requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
     const tokenBalance = uint(preflight.payerTokenBalanceBaseUnits, "payerTokenBalanceBaseUnits");
@@ -478,10 +490,12 @@ function validatePreflight(
 }
 
 function createAttempt(
-  value: Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>,
+  prepared: Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>,
   expectedAttempt: number,
   intent: Readonly<SolanaSplSettlementIntent>,
 ): Readonly<SolanaSplSignedAttempt> {
+  // Copy once, so what is checked is what is retained, hashed and broadcast.
+  const value = { ...prepared };
   if (value.attemptVersion !== "1" || value.attempt !== expectedAttempt ||
       value.authorityHash !== intent.bindingHash) {
     throw new DacsError("pay-solana-spl: prepared transaction authority mismatch");
@@ -506,10 +520,9 @@ function createAttempt(
       throw new DacsError(`pay-solana-spl: ${label} must be a non-negative safe integer`);
     }
   }
-  const unsigned = { ...value };
   return Object.freeze({
-    ...unsigned,
-    attemptHash: sha256Hex(canonicalize(unsigned)),
+    ...value,
+    attemptHash: sha256Hex(canonicalize(value)),
   });
 }
 
