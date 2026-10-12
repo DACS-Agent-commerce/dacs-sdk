@@ -206,6 +206,16 @@ type SendOutboxEntry = {
 };
 
 export interface DemosL2psRfqTransportOptions {
+  /**
+   * The peer, its WebSocket channel and the node behind it are the
+   * acknowledgement authority. An acknowledgement is that node's unsigned
+   * statement that it saved the message, and a stored one is final, so a
+   * node that lies can make the transport stop resending a message the
+   * recipient never received. Connect the peer over authenticated wss:// to
+   * a node you trust (your own, or one the operator pins), and use that same
+   * node for history and reconcile. Plain ws:// is only for a node on the
+   * same host. The transport cannot see the peer's URL and does not check it.
+   */
   peer: DemosL2psRfqPeerLike;
   codec: DemosL2psRfqWireCodec;
   l2psUid: string;
@@ -676,6 +686,9 @@ function captureSendResult(
 ): "acknowledged" | "indeterminate" {
   // demosdk 4.0.16: instant_messaging/l2ps_types.d.ts:104-117;
   // L2PSMessagingPeer.js:116-126,319 returns frame.payload unchanged.
+  // It is the node's unsigned reply (node 61b8e75 L2PSMessagingServer.ts:
+  // 279-294,471-473), checked here only by shape and the echoed hash; the
+  // trust rests on the peer's node and channel (see the `peer` option).
   try {
     const label = "Demos L2PS RFQ send acknowledgement";
     const fields = admittedFields(value, ["messageHash", "status", "l2psStatus"], label);
@@ -930,7 +943,8 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
  * No message signature bytes are invented here: the lifecycle supplies the
  * already-signed packet and verifies it on receipt. Acknowledgement means the
  * Demos peer returned the exact message hash as submitted/queued, or history
- * contains an exact decryptable packet. Absence is returned only from a fully
+ * contains an exact decryptable packet; both come, unsigned, from the peer's
+ * node, which the host must trust. Absence is returned only from a fully
  * exhausted first history page; ambiguous pagination never authorizes redrive.
  */
 export function createDemosL2psRfqTransport<TSignature = unknown>(
@@ -1113,7 +1127,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   async function absenceAfterSend(packetId: string, entry: SendOutboxEntry | undefined): Promise<RfqLifecycleTransportResult> {
     // No peer call took place, e.g. a seal refusal.
     if (entry === undefined) return { disposition: "absent" };
-    // The stored acknowledgement is proof; callers return it without history.
+    // A stored acknowledgement is final; callers return it without history.
     if (entry.state === "acknowledged") return { disposition: "acknowledged" };
     // The node holds this hash, so absence can never be proven: no resend.
     if (entry.state === "duplicate") return { disposition: "indeterminate", reason: DUPLICATE_REASON };
@@ -1655,7 +1669,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
     if (duplicate) {
       // The node already holds this hash and did not deliver it again. Only
-      // our own frame in history proves the acknowledgement.
+      // our own frame in history acknowledges the packet.
       const found = await historyDisposition(
         routed,
         { disposition: "indeterminate", reason: DUPLICATE_REASON },

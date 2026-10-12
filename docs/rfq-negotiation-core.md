@@ -221,6 +221,31 @@ pinned demosdk 4.0.16 `build/instant_messaging/l2ps_types.d.ts:104-117`;
 `L2PSMessagingPeer.js:116-126,319` returns `frame.payload` unchanged, without
 the outer `type`, `requestId` or `timestamp` fields.
 
+The injected `peer`, its WebSocket channel and the node behind it are the
+acknowledgement authority. An acknowledgement is that node's unsigned statement
+that it saved the message. On Demos node `61b8e75` (paths under
+`src/features/l2ps-messaging/`), the server sends the `message_sent` or
+`message_queued` frame only after the messaging service has stored the row
+(`L2PSMessagingServer.ts:262-270,279-294`), as plain JSON
+(`L2PSMessagingServer.ts:471-473`). demosdk matches that reply to the request
+only by frame type and `requestId` (`L2PSMessagingPeer.js:116-126,311-321`).
+Nothing signs it, and the transport checks only its shape and that the echoed
+`messageHash` is the packet ID. A stored acknowledgement is final (see below),
+so a node that lies, a faulty peer object, or anyone who can rewrite frames on
+an unauthenticated link can make the transport stop resending a message the
+recipient never received.
+
+The host MUST therefore connect the peer over authenticated `wss://` (TLS with
+certificate checks) to a node it trusts: its own, or one the operator pins.
+It MUST use that same node for history and reconcile. Node `61b8e75` itself
+serves plain WebSocket (`Bun.serve` with no TLS options,
+`L2PSMessagingServer.ts:51-69`), so a remote node needs a TLS-terminating
+proxy in front of it; plain `ws://` is acceptable only to a node on the same
+host. The SDK cannot enforce this. It never constructs the peer, and demosdk
+4.0.16 keeps the server URL in a private field
+(`L2PSMessagingPeer.d.ts:28-29`), so the transport cannot see which URL a
+peer uses.
+
 `outboxStore` is a required plain object with `load`/`save` data methods. It is
 an authenticated, durable, role-local
 companion to the lifecycle's signed-packet store, keyed by packet ID. Its
@@ -334,9 +359,10 @@ The limits of this evidence:
 - Nothing bounds when a timed-out send lands.
 - All of this describes node `61b8e75`; recheck it when the node changes.
 
-A send outbox entry stored as `acknowledged` is proof of the acknowledgement.
-`reconcile` returns `acknowledged` without reading history, and `publish`
-returns it without sending or rewriting the entry, for example after the
+A send outbox entry stored as `acknowledged` is final. It records the node's
+unsigned acknowledgement (see the acknowledgement authority above); it is not
+proof of delivery. `reconcile` returns `acknowledged` without reading history,
+and `publish` returns it without sending or rewriting the entry, for example after the
 lifecycle's own write failed following the acknowledgement. Before any resend,
 the transport opens the stored frame once and compares it canonically with the
 packet. If the frame does not open (for example, after a key rotated under the

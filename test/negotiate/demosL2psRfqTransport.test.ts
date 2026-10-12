@@ -760,8 +760,8 @@ describe("Demos L2PS durable RFQ transport", () => {
     } finally { await fixture.cleanup(); }
   });
 
-  test("round 6: an acknowledged outbox entry is proof when the lifecycle write after the ack fails", async () => {
-    // History lags (stays empty): only the stored acknowledgement proves delivery.
+  test("round 6: an acknowledged outbox entry is final when the lifecycle write after the ack fails", async () => {
+    // History lags (stays empty): only the stored acknowledgement settles the send.
     const fixture = await delayedSendFixture({
       ack: { l2psStatus: "submitted" }, failLifecycleWriteAfterSend: true,
     });
