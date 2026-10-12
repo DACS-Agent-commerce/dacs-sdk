@@ -1161,6 +1161,19 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
     }
   });
 
+  it("reports an observed closure rejection unchanged, not as indeterminate, and disarms the deadline", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    verifySellerClosure.mockImplementationOnce(async () => { throw new DacsError("closure says no"); });
+    const error = await gate.verify({ ...gate.fx.deps, deadline: { timeoutMs: 5_000, start: clock.start } })
+      .then(() => "verified", (e: unknown) => e);
+    expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+    expect((error as Error).message).toBe("closure says no");
+    expect(clock.armed()).toEqual([]);
+  });
+
   it.each([0, -1, 1.5, "5000"])("refuses a malformed deadline (%s ms) before reading either copy", async (timeoutMs) => {
     const gate = await gateWithAudit(rail, (fx) => ({
       buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),

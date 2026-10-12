@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 // Keep the production disposition executable as plain Node ESM; a computed
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
-  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines } =
-  await import(dispositionModulePath);
+  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines,
+  registryDependencyViolations } = await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -95,9 +97,10 @@ function runBash(args: string[], options: { cwd: string; env: Record<string, str
 
 // Runs a workflow step in a scratch checkout holding the real disposition
 // script. The npm stub writes `summary` (if given) where acceptance would, then
-// exits with the acceptance status.
+// exits with the acceptance status. `event` is the run's GITHUB_EVENT_NAME;
+// `stepSummary` is GITHUB_STEP_SUMMARY's contents afterwards.
 function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false,
-  stepName = "Run registry-shaped Linux and Docker acceptance") {
+  stepName = "Run registry-shaped Linux and Docker acceptance", event = "pull_request") {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
   const checkout = join(directory, "checkout");
@@ -115,9 +118,12 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   if (stepName !== "Run registry-shaped Linux and Docker acceptance") {
     runBash(["-e", "-c", "npm || true"], { cwd: checkout, env: { PATH } });
   }
-  return runBash(["-e", "-c", workflowStepScript(stepName)], {
-    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), PATH },
+  const GITHUB_STEP_SUMMARY = join(directory, "step-summary.md");
+  writeFileSync(GITHUB_STEP_SUMMARY, "");
+  const result = runBash(["-e", "-c", workflowStepScript(stepName)], {
+    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), GITHUB_EVENT_NAME: event, GITHUB_STEP_SUMMARY, PATH },
   });
+  return { ...result, stepSummary: readFileSync(GITHUB_STEP_SUMMARY, "utf8") };
 }
 const runDriftStep = (summary?: unknown, strictAudit = false) =>
   runWorkflowStep(0, summary, strictAudit, "Check advisory-ID drift");
@@ -305,16 +311,94 @@ function runEarlyFailure(extraStubCommands = "") {
   return { directory, output, result };
 }
 
+// A gzip'd ustar archive holding package/package.json, as npm pack writes it.
+function packTarball(manifest: Record<string, string>) {
+  const body = Buffer.from(JSON.stringify(manifest));
+  const header = Buffer.alloc(512);
+  header.write("package/package.json", 0, 100, "utf8");
+  header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
+  header.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
+  header.write("00000000000\0", 136); header.write("        ", 148); header.write("0", 156); header.write("ustar\0" + "00", 257);
+  let sum = 0; for (const byte of header) sum += byte;
+  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return gzipSync(Buffer.concat([header, body, Buffer.alloc((512 - (body.length % 512)) % 512), Buffer.alloc(1024)]));
+}
+
+// Runs the whole acceptance script up to its consumer container, where the
+// generated project's doctor fails (exit 1, not the expected 5). Docker, npm
+// and curl are stubs; node is this process's binary; the registry is a
+// loopback server that serves exactly the published candidates.
+async function runToConsumerStage() {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-"));
+  scratch.push(directory);
+  chmodSync(directory, 0o700);
+  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
+  const releaseSet = join(directory, "release-set");
+  mkdirSync(releaseSet);
+  const served: Record<string, string> = {};
+  const packages: Record<string, { integrity: string }> = {};
+  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"],
+    ["create-dacs-agent", "create-dacs-agent"]] as const) {
+    const bytes = packTarball({ name, version });
+    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes);
+    served["/" + name.replace("/", "%2f")] = sri(bytes);
+    packages[name] = { integrity: sri(bytes) };
+  }
+  writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
+  writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
+  const npmRoot = join(directory, "npm-root");
+  mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
+  writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
+  const server = createServer((request, response) => {
+    const integrity = served[request.url ?? ""];
+    response.writeHead(integrity ? 200 : 404, { "content-type": "application/json" });
+    response.end(JSON.stringify(integrity ? { versions: { [version]: { dist: { integrity } } } } : {}));
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as { port: number }).port;
+  const PATH = stubBin(directory, {
+    curl: ['case "$*" in', "  *org.couchdb.user*) printf '{\"token\":\"local-acceptance-token\"}' ;;", "esac", "exit 0"].join("\n"),
+    npm: ['case "$1" in', "  --version) echo 11.19.0 ;;", `  root) echo '${npmRoot}' ;;`, `  view) echo '${version}' ;;`,
+      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, "esac", "exit 0"].join("\n"),
+    // `docker run` with a /work volume is the consumer container: it leaves
+    // what the generated project wrote before its doctor failed, then exits 1.
+    docker: ['if [ "$1" = inspect ]; then echo ' + port + "; exit 0; fi",
+      'if [ "$1" != run ]; then exit 0; fi', "work=; previous=",
+      'for argument in "$@"; do', '  if [ "$previous" = --volume ]; then case "$argument" in *:/work) work=${argument%:/work} ;; esac; fi',
+      '  previous=$argument', "done", '[ -n "$work" ] || exit 0', 'mkdir -p "$work/one-click-agent"',
+      `printf '{"name":"one-click-agent"}\\n' > "$work/one-click-agent/package.json"`,
+      `printf '{"lockfileVersion":3,"packages":{}}\\n' > "$work/one-click-agent/package-lock.json"`,
+      `printf '0\\n' > "$work/generated-tests.exit-code"`,
+      `printf 'doctor: release metadata is unreadable\\n' > "$work/doctor.log"`, `printf '1\\n' > "$work/doctor.exit-code"`,
+      "echo 'npm run dacs:doctor exited 1'", "exit 1"].join("\n"),
+  });
+  const output = join(directory, "evidence");
+  const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+    const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output],
+      { cwd: repoRoot, env: { HOME: directory, RUNNER_TEMP: directory, PATH } });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => done({ status, stdout, stderr }));
+  });
+  server.close();
+  return { directory, output, result };
+}
+
 const CANDIDATE_VERSION = "0.1.0-test";
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
-// Executes the script's own dependency-policy program against a generated
-// consumer whose lock initially names the exact packed candidate tarballs.
+// Runs the dependency-policy command the script runs against a generated
+// consumer whose lock initially names the exact packed candidate tarballs,
+// as release-provenance.json records them.
 function dependencyPolicyHarness() {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
   scratch.push(directory);
-  const packages: Record<string, { resolved: string; integrity: string; name?: string }> = {};
+  const packages: Record<string, Record<string, unknown>> = {};
+  const provenance = { version: CANDIDATE_VERSION, packages: {} as Record<string, { integrity: string }> };
   for (const name of ["dacs", "dacs-node"]) {
     const bytes = Buffer.from(name);
     writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
@@ -322,22 +406,28 @@ function dependencyPolicyHarness() {
       resolved: `${CANDIDATE_REGISTRY}/${name}.tgz`,
       integrity: sri(bytes),
     };
+    provenance.packages[`@kynesyslabs/${name}`] = { integrity: sri(bytes) };
   }
   const project = join(directory, "project");
   mkdirSync(project);
-  writeFileSync(join(project, "package.json"), JSON.stringify({ dependencies: Object.fromEntries([
+  const manifest: Record<string, unknown> = { dependencies: Object.fromEntries([
     "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
     "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
-  ].map((name) => [name, CANDIDATE_VERSION])) }));
-  const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
-    .split('"$artifact_stage/dependency-policy.json"')[1]!.split("<<'NODE'\n")[1]!.split("\nNODE")[0]!;
+  ].map((name) => [name, CANDIDATE_VERSION])) };
+  const report = join(directory, "report.json");
+  expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
+    'node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \\\n' +
+    '  "$artifact_stage/dependency-policy.json" "$release_set" "$version"');
   const run = () => {
+    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
-    return spawnSync(process.execPath, [
-      "-", project, CANDIDATE_REGISTRY, join(directory, "report.json"), directory, CANDIDATE_VERSION,
-    ], { input: script, encoding: "utf8" });
+    writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
+    rmSync(report, { force: true });
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
+      project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
+    return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
-  return { packages, run };
+  return { packages, manifest, provenance, run };
 }
 
 // Executes the script's own summary program over a stage holding the evidence
@@ -381,6 +471,26 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
     // The runner's tool versions are evidence too; the stubs print nothing.
     expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
+  });
+
+  it("keeps the consumer's diagnostics when the generated doctor fails before any of them is exported", async () => {
+    const { output, result, directory } = await runToConsumerStage();
+    expect(result.status, result.stderr).toBe(1);
+    const evidence = (name: string) => readFileSync(join(output, name), "utf8");
+    expect(evidence("doctor.log")).toBe("doctor: release metadata is unreadable\n");
+    expect(evidence("doctor.exit-code")).toBe("1\n");
+    expect(evidence("generated-tests.exit-code")).toBe("0\n");
+    expect(evidence("generated-package.json")).toBe('{"name":"one-click-agent"}\n');
+    expect(evidence("generated-package-lock.json")).toBe('{"lockfileVersion":3,"packages":{}}\n');
+    expect(evidence("generation.log")).toContain("dacs:doctor exited 1");
+    for (const name of ["release-provenance.json", "SHA256SUMS", "registry.log", "runner-tools.txt"]) {
+      expect(existsSync(join(output, name)), name).toBe(true);
+    }
+    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "consumer",
+      exitCode: 1, failureClass: "functional" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage consumer");
+    // The temporary acceptance root, which held them, is gone.
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
   });
 
   it("finishes cleanup and keeps the original status when an evidence write fails", () => {
@@ -436,6 +546,29 @@ describe("registry/container evidence", () => {
     expect(run().status).not.toBe(0);
   });
 
+  it.each(["dacs", "dacs-node"])("compares the installed @kynesyslabs/%s with release-provenance.json", (name) => {
+    const { packages, provenance, run } = dependencyPolicyHarness();
+    expect(run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
+    const packed = provenance.packages[`@kynesyslabs/${name}`]!.integrity;
+    provenance.packages[`@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    const recorded = run();
+    expect(recorded.status).not.toBe(0);
+    expect(recorded.stderr).toContain(`release-provenance.json records ${sri(Buffer.from("another build"))} ` +
+      `for @kynesyslabs/${name}, but the packed tarball is ${packed}`);
+    // A lock that matches the provenance record but not the packed bytes fails too.
+    packages[`node_modules/@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    expect(run().status).not.toBe(0);
+  });
+
+  it("writes every registry-policy violation to the report the summary reads", () => {
+    const { packages, manifest, run } = dependencyPolicyHarness();
+    packages["node_modules/x"] = { version: "1.0.0", resolved: "https://example.com/x-1.0.0.tgz", integrity: sri(Buffer.from("x")) };
+    manifest.overrides = { viem: "npm:not-viem@1.0.0" };
+    expect(run()).toMatchObject({ status: 0, report: { schema: "dacs-registry-dependency-policy/v1", passed: false,
+      violations: [{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@1.0.0"}' },
+        { location: "node_modules/x", field: "resolved", value: "https://example.com/x-1.0.0.tgz" }] } });
+  });
+
   it("derives the summary fields from the checks that ran", () => {
     const passing = writeSummary();
     expect(passing).toMatchObject({
@@ -462,44 +595,185 @@ describe("registry/container evidence", () => {
 });
 
 
+// The consumer may install registry packages only: an allowlist over every
+// lock entry and every dependency spec, not a list of known bad forms.
+describe("registry dependency allowlist", () => {
+  const registry = "http://127.0.0.1:4873";
+  const registered = (name: string) => ({ version: "1.0.0", resolved: `${registry}/${name}/-/${name}-1.0.0.tgz`,
+    integrity: sri(Buffer.from(name)) });
+  const violationsWith = (packages: Record<string, unknown>, manifest: Record<string, unknown> = {}) =>
+    registryDependencyViolations({ manifest, registry,
+      lock: { packages: { "": { name: "consumer" }, "node_modules/ok": registered("ok"), ...packages } } });
+
+  it("passes registry tarballs with an integrity and registry specs", () => {
+    expect(violationsWith({ "node_modules/a": { ...registered("a"), dependencies: { b: "^1.2.3", c: "1.x || >=2.0.0 <3",
+      d: "latest", e: "*", f: "", g: "npm:bitcoinjs-lib@^5.2.0", h: "npm:@scope/pkg@1.0.0", i: ">= 1.2.3-beta.1+build.5" },
+    optionalDependencies: { j: "~1.0.0" }, peerDependencies: { k: "^5 || ^6" } } },
+    { dependencies: { a: "1.0.0" }, devDependencies: { typescript: "5.9.2" } })).toEqual([]);
+  });
+
+  it.each([
+    ["a tarball from an arbitrary host", "https://example.com/x/-/x-1.0.0.tgz"],
+    ["a codeload.github.com tarball", "https://codeload.github.com/o/x/tar.gz/0123456789abcdef0123456789abcdef01234567"],
+    ["a Git URL with a ref", "git+ssh://git@github.com/o/x.git#0123456789abcdef0123456789abcdef01234567"],
+    ["a Git URL without a ref", "git+https://github.com/o/x.git"],
+    ["a GitLab tarball", "https://gitlab.com/o/x/-/archive/main/x-main.tar.gz"],
+    ["a file: tarball", "file:../x-1.0.0.tgz"],
+    ["a registry tarball on another port", "http://127.0.0.1:4874/x/-/x-1.0.0.tgz"],
+    ["a registry tarball over another scheme", "https://127.0.0.1:4873/x/-/x-1.0.0.tgz"],
+    ["a relative path", "../x"],
+  ])("rejects an installed entry resolved from %s", (_label, resolved) => {
+    expect(violationsWith({ "node_modules/x": { ...registered("x"), resolved } }))
+      .toEqual([{ location: "node_modules/x", field: "resolved", value: resolved }]);
+  });
+
+  it("rejects an installed entry without resolved, without integrity, or linked to a directory", () => {
+    const { resolved: _resolved, ...unresolved } = registered("x");
+    const { integrity: _integrity, ...unpinned } = registered("y");
+    expect(violationsWith({ "node_modules/x": unresolved, "node_modules/y": unpinned,
+      "node_modules/z": { link: true, resolved: "packages/z" }, "node_modules/w": { ...registered("w"), integrity: "sha512-" } }))
+      .toEqual([
+        { location: "node_modules/x", field: "resolved", value: null },
+        { location: "node_modules/y", field: "integrity", value: null },
+        { location: "node_modules/z", field: "link", value: "packages/z" },
+        { location: "node_modules/z", field: "integrity", value: null },
+        { location: "node_modules/w", field: "integrity", value: "sha512-" },
+      ]);
+  });
+
+  it.each([
+    ["a github: shorthand", "github:Irys-xyz/avsc#csp-fixes"],
+    ["an owner/repo shorthand", "Irys-xyz/avsc#csp-fixes"],
+    ["an owner/repo shorthand without a ref", "Irys-xyz/avsc"],
+    ["a GitHub URL without a ref", "https://github.com/Irys-xyz/avsc"],
+    ["a GitHub URL with a ref (the #191 avsc form)", "https://github.com/Irys-xyz/avsc#csp-fixes"],
+    ["a GitLab URL", "https://gitlab.com/o/avsc#main"],
+    ["a gitlab: shorthand", "gitlab:o/avsc"],
+    ["a Git URL", "git://github.com/o/avsc.git"],
+    ["an scp-style Git URL", "git@github.com:o/avsc.git"],
+    ["a tarball URL", "https://example.com/avsc-1.0.0.tgz"],
+    ["a file: spec", "file:../avsc"],
+    ["a link: spec", "link:../avsc"],
+    ["a relative directory", "./avsc"],
+    ["a parent directory", "../avsc"],
+    ["a tarball file", "avsc-1.0.0.tgz"],
+    ["a workspace: spec", "workspace:*"],
+  ])("rejects a dependency spec that is %s, in the lock and the manifest", (_label, spec) => {
+    expect(violationsWith({ "node_modules/z": { ...registered("z"), dependencies: { avsc: spec } } }))
+      .toEqual([{ location: "node_modules/z", field: "dependencies.avsc", value: spec }]);
+    expect(violationsWith({ "node_modules/z": { ...registered("z"), optionalDependencies: { avsc: spec } } }))
+      .toEqual([{ location: "node_modules/z", field: "optionalDependencies.avsc", value: spec }]);
+    expect(violationsWith({}, { dependencies: { avsc: spec } }))
+      .toEqual([{ location: "package.json", field: "dependencies.avsc", value: spec }]);
+  });
+
+  it("rejects overrides, which can redirect a package to another source", () => {
+    expect(violationsWith({}, { overrides: { viem: "npm:not-viem@2.55.19" } }))
+      .toEqual([{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@2.55.19"}' }]);
+    expect(violationsWith({}, { overrides: { semver: "7.5.4" } })).toHaveLength(1);
+  });
+
+  it("rejects an unreadable lock", () => {
+    expect(registryDependencyViolations({ manifest: {}, registry, lock: { packages: [] } }))
+      .toEqual([{ location: "package-lock.json", field: "packages", value: null }]);
+    expect(violationsWith({ "node_modules/x": [] })).toEqual([{ location: "node_modules/x", field: "entry", value: "[]" }]);
+  });
+
+  it("refuses a registry that is neither HTTPS nor this run's loopback registry", () => {
+    for (const value of ["http://registry.npmjs.org", "http://10.0.0.1:4873"]) {
+      expect(() => registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: value })).toThrow("HTTPS or loopback");
+    }
+    expect(registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: "https://registry.npmjs.org" })).toEqual([]);
+  });
+
+  it("reports exactly the #191 baseline's Git dependency for the b7b180f lock", () => {
+    const lock = JSON.parse(readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f/generated-package-lock.json"), "utf8"));
+    const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+    const violations = registryDependencyViolations({ manifest: lock.packages[""], lock, registry: "http://127.0.0.1:32768" });
+    expect(violations).toEqual(baseline.policyFindings.gitDependencies.map(({ location, field, value }:
+      { location: string; field: string; value: string }) => ({ location, field, value })));
+  });
+});
+
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
-  // An unlisted ID fails the required job: exit 3, and a claimed exit 4 is
-  // refused by the step's re-check.
-  const expectRequiredFailure = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
+  const unknown = "GHSA-2222-3333-4444";
+  // Outside pull requests an unlisted ID fails closed: exit 3, and a claimed
+  // exit 4 is refused by the step's re-check. On pull_request it only warns.
+  const expectUnlisted = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
     const result = registryContainerDisposition(summary);
     expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: unlisted,
       checks: { audit: "blocked" } });
     expect(result.message).toContain(`advisory IDs not in the #191 baseline: ${unlisted.join(", ")}`);
     expect(result.message).toContain("registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review");
     expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: unlisted });
-    expect(runWorkflowStep(3, summary).status).toBe(3);
-    const claimed = runWorkflowStep(4, summary);
-    expect(claimed.status).toBe(4);
-    expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
-    expect(claimed.stdout).toContain(unlisted[0]);
-    expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    for (const event of ["schedule", "workflow_dispatch", "push"]) {
+      expect(runWorkflowStep(3, summary, false, undefined, event).status).toBe(3);
+      const claimed = runWorkflowStep(4, summary, false, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
+      expect(claimed.stdout).toContain(unlisted[0]);
+      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    }
+    const warned = registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" });
+    expect(warned).toMatchObject({ exitCode: 4, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "unlisted" } });
+    expect(warned.message).toContain(`advisory IDs not in the #191 baseline (a pull-request warning; the scheduled ` +
+      `drift job and release paths fail on them): ${unlisted.join(", ")}`);
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(0);
+    expect(pullRequest.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlisted.join(", ")}. ` +
+      "Pull requests only warn; the scheduled drift job and release paths fail");
+    expect(pullRequest.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(pullRequest.stepSummary).toBe("- Advisory IDs outside the #191 baseline (warning on this pull request; the " +
+      `scheduled drift job and release paths fail on them): ${unlisted.join(", ")}\n`);
     expect(runDriftStep(summary, false).status).toBe(0);
     expect(runDriftStep(summary, true).status).toBe(3);
   };
-  it("fails required acceptance on an appended unlisted advisory, and fails the drift check", () => {
+  it("warns a pull request on an appended unlisted advisory and fails closed everywhere else, drift included", () => {
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    expectRequiredFailure(summary, [unknown]);
+    expectUnlisted(summary, [unknown]);
   });
-  it("fails required acceptance on a same-count substitution", () => {
+  it("treats a same-count substitution the same way", () => {
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories = [unknown];
     summary.audit.unlistedAdvisories = [unknown];
-    expectRequiredFailure(summary, [unknown]);
+    expectUnlisted(summary, [unknown]);
     const full = baselineOnlySummary();
     full.audit.observedAdvisories = [...baseline.advisoryIds.slice(1), unknown];
     full.audit.unlistedAdvisories = [unknown];
     expect(full.audit.observedAdvisories).toHaveLength(baseline.advisoryIds.length);
-    expectRequiredFailure(full, [unknown]);
+    expectUnlisted(full, [unknown]);
+  });
+  it("records the policy the script's --record call used, and fails closed without one", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-policy-"));
+    scratch.push(directory);
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    const record = (policy?: string) => {
+      const path = join(directory, "acceptance-summary.json");
+      writeFileSync(path, JSON.stringify(summary));
+      const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", path], {
+        cwd: repoRoot, encoding: "utf8", env: policy === undefined ? {} : { DACS_UNLISTED_ADVISORIES: policy } });
+      return { status: result.status, recorded: JSON.parse(readFileSync(path, "utf8")) };
+    };
+    expect(record("warn")).toMatchObject({ status: 4, recorded: { disposition: { exitCode: 4, unlistedAdvisories: "warn" } } });
+    expect(record()).toMatchObject({ status: 3, recorded: { disposition: { exitCode: 3, unlistedAdvisories: "fail" } } });
+    expect(record("fail").status).toBe(3);
+    expect(record("ignore").status).not.toBe(0);
+    expect(record("ignore").status).not.toBe(4);
+  });
+  it("lets a pull request pass an unlisted ID only when nothing else is blocked", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    summary.securityGate.registryDependencyPolicyPassed = false;
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" })).toMatchObject({ exitCode: 3,
+      checks: { audit: "unlisted", registryDependency: "blocked" } });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
   });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
@@ -509,12 +783,14 @@ describe("advisory-ID baseline", () => {
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
+    expect(result.stepSummary).toBe("");
+    expect(runWorkflowStep(4, summary, false, undefined, "schedule").status).toBe(0);
     expect(runDriftStep(summary, true).status).toBe(0);
   });
   it("reports drift even when a non-audit failure fails the acceptance step", () => {
     // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
     summary.securityGate.registryDependencyPolicyPassed = false;
@@ -539,10 +815,89 @@ describe("advisory-ID baseline", () => {
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
   });
   it.each([{}, { ...baseline, advisoryIds: ["bogus"] }, { ...baseline, source: {} },
-    { ...baseline, advisoryIds: [] }])("fails closed for a malformed baseline %j", (bad) => {
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-23hp-3jrh-7fpw", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "bogus", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-2222-3333-4444", assessment: " " }] },
+    { ...baseline, assessedAdvisories: "GHSA-2222-3333-4444" }])("fails closed for a malformed baseline %j", (bad) => {
     expect(() => classifyRegistryAudit([], bad)).toThrow();
     expect(registryContainerDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
     expect(registryAuditDriftDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+  });
+  it("accepts an empty #191 list, in which every observed ID is unlisted", () => {
+    expect(classifyRegistryAudit(["GHSA-23hp-3jrh-7fpw"], { ...baseline, advisoryIds: [] }))
+      .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
+  });
+});
+
+// Once #191's findings are gone, SECURITY.md's audit policy still allows
+// transitive advisories assessed for reachability; the gate must be able to
+// pass with them, and never with a direct high/critical one.
+describe("assessed advisories", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const assessedId = "GHSA-2222-3333-4444";
+  const assessed = { ...baseline, assessedAdvisories: [{ id: assessedId, assessment: "SECURITY.md#audit-policy" }] };
+  const cleared = (direct: string[] | null = []) => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    summary.audit.observedAdvisories = [assessedId];
+    if (direct !== null) summary.audit.directAdvisories = direct;
+    return summary;
+  };
+
+  it("passes the gate (exit 0) when every observed advisory is an assessed transitive one", () => {
+    expect(registryContainerDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0, failureClass: null,
+      checks: { audit: "passed" }, assessedAdvisories: [assessedId] });
+    expect(registryAuditDriftDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0 });
+    // Not yet assessed: the same tree is an unlisted ID.
+    expect(registryContainerDisposition({ ...cleared(), audit: { ...cleared().audit, unlistedAdvisories: [assessedId] } }))
+      .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("keeps #191 baseline IDs beside assessed ones baseline-only", () => {
+    const summary = cleared();
+    summary.audit.observedAdvisories = ["GHSA-23hp-3jrh-7fpw", assessedId];
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+  });
+
+  it("never accepts an assessed advisory that is high or critical on a direct dependency", () => {
+    const result = registryContainerDisposition(cleared([assessedId]), assessed, { unlistedAdvisories: "warn" });
+    expect(result).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    expect(result.message).toContain(`which an assessment cannot accept: ${assessedId}`);
+    // A summary that does not record directness cannot show it is transitive.
+    expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("records directness from npm's report and lets the summary pass the gate", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-audit-policy-"));
+    scratch.push(directory);
+    const via = (id: string, severity: string) => ({ source: 1, name: "x", dependency: "x", title: "t",
+      url: `https://github.com/advisories/${id}`, severity, cwe: [], cvss: {}, range: "<2" });
+    const report = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 2, critical: 0, total: 3 } },
+      vulnerabilities: {
+        direct: { name: "direct", severity: "high", isDirect: true, via: [via("GHSA-3333-4444-5555", "high"), "transitive"] },
+        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("GHSA-4444-5555-6666", "moderate")] },
+        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("GHSA-23hp-3jrh-7fpw", "high")] },
+      } };
+    writeFileSync(join(directory, "npm-audit.json"), JSON.stringify(report));
+    const policyPath = join(directory, "audit-policy.json");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(directory, "npm-audit.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(policyPath, "utf8"))).toMatchObject({
+      observedAdvisories: ["GHSA-23hp-3jrh-7fpw", "GHSA-3333-4444-5555", "GHSA-4444-5555-6666"],
+      unlistedAdvisories: ["GHSA-3333-4444-5555", "GHSA-4444-5555-6666"], assessedAdvisories: [],
+      directAdvisories: ["GHSA-3333-4444-5555"], passed: false });
+
+    const policy = { observedAdvisories: [assessedId], unlistedAdvisories: [], assessedAdvisories: [assessedId],
+      directAdvisories: [], passed: true };
+    const summary = writeSummary({ "audit-policy.json": JSON.stringify(policy), "npm-audit.exit-code": "1\n" });
+    expect(summary.securityGate.passed).toBe(true);
+    expect(summary.audit).toMatchObject({ assessedAdvisories: [assessedId], directAdvisories: [] });
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 0 });
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, passed: false }), "npm-audit.exit-code": "1\n" })
+      .securityGate.passed).toBe(false);
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, observedAdvisories: [], assessedAdvisories: [] }),
+      "npm-audit.exit-code": "1\n" }).securityGate.passed).toBe(false);
   });
 });
 
@@ -552,9 +907,12 @@ describe("advisory-ID baseline", () => {
 // run's lock. engine-versions.json holds the container versions its
 // engine-strict.log reports (`Actual:`); that run did not yet write the file.
 const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
+// .gitignore ignores *.log, so that run's engine-strict.log is stored as
+// engine-strict.log.txt; every other file keeps its artifact name.
+const b7b180fFile = (name: string) => join(b7b180f, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
 function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
   const read = (name: string) => name in overrides ? overrides[name]
-    : (() => { try { return readFileSync(join(b7b180f, name), "utf8"); } catch { return undefined; } })();
+    : (() => { try { return readFileSync(b7b180fFile(name), "utf8"); } catch { return undefined; } })();
   const summary = JSON.parse(readFileSync(join(b7b180f, "acceptance-summary.json"), "utf8"));
   summary.securityGate.findings = extractPolicyFindings(read);
   return summary;
@@ -580,7 +938,7 @@ describe("#191 policy-finding baseline", () => {
   const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
   const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
     value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
-  const strictLog = readFileSync(join(b7b180f, "engine-strict.log"), "utf8");
+  const strictLog = readFileSync(b7b180fFile("engine-strict.log"), "utf8");
   const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
   it.each([
     ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
@@ -667,6 +1025,13 @@ describe("lock engine scan", () => {
       errors: [expect.stringContaining("node_modules/@arbitrum/sdk")] });
   });
 
+  it("counts an array-valued lock entry as unreadable, not as evaluated", () => {
+    const value = lock();
+    value.packages["node_modules/semver"] = [];
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: false,
+      errors: ["node_modules/semver: unreadable lock entry"] });
+  });
+
   it("checks engines.npm against the container's npm", () => {
     const value = lock();
     value.packages["node_modules/semver"].engines = { node: ">=10", npm: ">=12" };
@@ -747,7 +1112,6 @@ describe("acceptance failure class", () => {
     ["registry-ready", {}, "network"],
     ["registry-auth", { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
     ["publish", { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
-    ["audit-policy", { "npm-audit.json": '{"error":{"code":"ENOTFOUND","summary":"getaddrinfo ENOTFOUND registry.npmjs.org"}}' }, "network"],
     ["audit-policy", { "npm-audit.json": '{"metadata":{}}' }, "policy"],
     ["dependency-policy", {}, "policy"],
     ["image-build", { "docker-build.log": "#12 3.1 npm error code ECONNRESET" }, "network"],
@@ -758,6 +1122,54 @@ describe("acceptance failure class", () => {
     const summary = failureSummary({ stage, exitCode: 1, read: reader(files) });
     expect(summary).toMatchObject({ complete: false, failedStage: stage, failureClass });
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass });
+  });
+
+  // Captured from real npm 10.9.9 against a loopback server: `npm audit --json`
+  // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
+  // shape), and `npm install`'s error lines when the registry fails.
+  const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
+  it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
+    "econnrefused.json", "socket-hang-up.json"])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
+    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "network",
+      message: "registry/container acceptance stopped at stage audit-policy (network failure)" });
+    // The scheduled drift check reports the stopped stage, not a malformed baseline.
+    const drift = registryAuditDriftDisposition(summary);
+    expect(drift).toMatchObject({ exitCode: 1, evaluated: false, failureClass: "network" });
+    expect(drift.message).toBe("Advisory-ID drift was not evaluated: acceptance stopped at stage audit-policy " +
+      "(network failure; rerun the workflow)");
+  });
+
+  it.each(["403.json", "404.json"])("classifies npm's non-transient audit endpoint answer %s as functional, not policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toMatchObject({ failureClass: "functional",
+      evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
+  });
+
+  it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(
+    "classifies npm install's registry error %s in the consumer stage as network", (name) => {
+      const read = reader({ "generation.log": npmOutput("npm-install-network-errors", name) });
+      expect(classifyAcceptanceFailure({ stage: "consumer", read }).failureClass).toBe("network");
+    });
+
+  it("reports an audit outage as a network stop through the script's CLI and the enforced drift step", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-outage-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), npmOutput("npm-audit-endpoint-errors", "503.json"));
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", "1"], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
+      "audit-policy with exit 1; npm-audit.json: audit endpoint error: 503 Service Unavailable - POST ");
+    const summary = JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
+    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network" });
+    const drift = runDriftStep(summary, true);
+    expect(drift.status).toBe(1);
+    expect(drift.stdout).toContain("::warning title=Registry audit advisory drift::Advisory-ID drift was not evaluated: " +
+      "acceptance stopped at stage audit-policy (network failure; rerun the workflow)");
+    expect(drift.stdout + drift.stderr).not.toContain("malformed");
+    expect(runDriftStep(summary, false).status).toBe(0);
   });
 
   it("records the class in the early-failure summary and its annotation", () => {
