@@ -62,7 +62,7 @@ default 30 000 (30 s); pass the option on every call to change it. The lease
 is taken when the call starts and covers the whole call. The core checks it
 before and after every adapter preparation and broadcast: an action prepared
 after the lease has lapsed is discarded unrecorded and prepared again by the
-next owner, and a broadcast that returns after it is reported uncertain, and
+next owner, and one whose broadcast returns after it is reported uncertain;
 the next owner reuses its retained bytes. While the lease is held, other
 callers get `waiting` with reason `htlc-settlement-held`, so it is also the
 longest a crashed worker holds the session up. The core sets no timeouts on
@@ -159,10 +159,10 @@ once.
 The core never returns `failed` while a locked leg still needs a refund or
 claim that it will drive later, nor for a missing or different buyer salt
 (`htlc-salt-missing` and `htlc-salt-mismatch` under Operator alerts). Before
-the destination lock exists, a failed
-destination lock is `refund-pending` with reason `destination-lock-failed`,
-and a destination lock that can no longer be placed with the absolute margin
-is `refund-pending` with reason `destination-lock-window-closed`; the source
+the destination lock exists, a failed destination lock is `refund-pending`
+with reason `destination-lock-failed`, and a destination lock that can no
+longer be placed with the absolute margin is `refund-pending` with reason
+`destination-lock-window-closed`; the source
 leg is refunded at its expiry (reason `destination-lock-missing` when no
 destination lock was prepared or it is authenticated `absent`). When the
 source lock's terms ruled out the destination lock, its
@@ -273,9 +273,9 @@ if the chain has changed. The reasons are:
   the public preimage until the source expiry. Page at once: while the
   destination lock has not expired, the operator tries to land a reveal by
   hand; otherwise the operator reconciles the legs with the parties. Both
-  legs are refunded automatically once both
-  expiries pass, and `refund-stalled` then shows a source refund that reverted
-  because the payee had claimed the source.
+  legs are refunded automatically once both expiries pass, and
+  `refund-stalled` then shows a source refund that reverted because the payee
+  had claimed the source.
 - `htlc-destination-claim-absent-preimage-broadcast`: as above, but every
   reveal was authenticated `absent`: none reached the chain, yet each was
   broadcast, so the preimage may be known to anyone who saw the mempool. Page
@@ -308,21 +308,21 @@ only when: the call's `owner`, `leaseDurationMs`, authority or hashlock
 deriver is unusable, so no session can be read with it; the store's record is
 corrupt (reported so by `claim`, or a retained action, history or checkpoint
 that fails validation, such as an expiry that overflows in milliseconds) or
-the store lacks a required method; retained evidence and a new
-observation contradict each
-other (a changed source-lock checkpoint fact, a reveal checkpoint for another
-transaction, a final reveal of another or a malformed preimage, a final source
-claim without a final source lock or without a final or checkpointed reveal,
-or a final source claim while the checkpointed reveal is reported `pending`,
-`failed` or `absent`, `htlc-reveal-checkpoint-contradicted`);
-the source lock itself failed, or is reported `absent` naming it
-(`htlc-source-lock-absent`; one reported `absent` without a reference is
-rebroadcast), so nothing was locked; or the source claim is final but reached
-finality after the source expiry (`settlement-atomicity`). These need an operator to
-reconcile the record, not a retry. A missing or different buyer salt is never
-`failed` (see `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other
-non-final state is `waiting`, `indeterminate`, `settle-asymmetric`, a refund
-status or `operator-alert`, and a host keeps advancing the session.
+the store lacks a required method; retained evidence and a new observation
+contradict each other (a changed source-lock checkpoint fact, a reveal
+checkpoint for another transaction, a final reveal of another or a malformed
+preimage, a final source claim without a final source lock or without a final
+or checkpointed reveal, or a final source claim while the checkpointed reveal
+is reported `pending`, `failed` or `absent`,
+`htlc-reveal-checkpoint-contradicted`); the source lock itself failed, or is
+reported `absent` naming it (`htlc-source-lock-absent`; one reported `absent`
+without a reference is rebroadcast), so nothing was locked; or the source
+claim is final but reached finality after the source expiry
+(`settlement-atomicity`). These need an operator to reconcile the record, not
+a retry. A missing or different buyer salt is never `failed` (see
+`htlc-salt-missing` and `htlc-salt-mismatch` above). Every other non-final
+state is `waiting`, `indeterminate`, `settle-asymmetric`, a refund status or
+`operator-alert`, and a host keeps advancing the session.
 
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
@@ -394,12 +394,12 @@ different salt is a host error the host can correct, not the end of the
 session: the call reads, prepares and broadcasts nothing and returns
 `operator-alert` `htlc-salt-missing` or `htlc-salt-mismatch`, never `failed`,
 and the next call with the original salt resumes the session. Production
-stores must atomically
-enforce cross-session salt uniqueness, authenticate retained signed payloads,
-and persist both finality checkpoints. `claim` returns `conflict` when it holds
-the session under another binding or secret hash, or when the salt already
-belongs to another session; the core reports that as `htlc-salt-mismatch`,
-and only a `corrupt` claim as `failed`. After the source lock becomes final, the
+stores must atomically enforce cross-session salt uniqueness, authenticate
+retained signed payloads, and persist both finality checkpoints. `claim`
+returns `conflict` when it holds the session under another binding or secret
+hash, or when the salt already belongs to another session; the core reports
+that as `htlc-salt-mismatch`, and only a `corrupt` claim as `failed`. After
+the source lock becomes final, the
 core calls `recordSourceFinality` with the exact source-lock transaction
 reference and prepared-effect hash, its within-ledger inclusion/finality
 timestamps and expiry, and the adapter's authentication hash. This
