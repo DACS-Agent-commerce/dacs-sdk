@@ -5775,6 +5775,40 @@ describe("round 12", () => {
         expect(inspected).not.toHaveProperty("submission");
       }
     });
+
+    test("the receipt stored is the clock reading the window was checked against", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const h = harness();
+      h.setPreparedAt(HOST_MS);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, HOST_MS + 1_000));
+      // After verification the clock sits at the window's edge and ticks on every read.
+      let clock = HOST_MS;
+      let ticking = false;
+      const verifier: LiquidityTankVerifier = {
+        authenticateObservation: async () => true,
+        verifySignedSubmission: async () => {
+          if (!ticking) {
+            clock = HOST_MS + 60_000;
+            ticking = true;
+          }
+          return true;
+        },
+      };
+      const input = {
+        authority: authority(), store, adapter: h.adapter, verifier, leaseDurationMs: 120_000,
+        now: () => (ticking ? clock++ : clock),
+      };
+      await expect(advanceLiquidityTankSettlement({ ...input, owner: "first" })).resolves.toMatchObject({
+        status: "settle-asymmetric",
+      });
+      expect(recordSubmission).toHaveBeenCalledWith(expect.objectContaining({ now: HOST_MS + 60_000 }));
+      clock = HOST_MS + 200_000;
+      await expect(advanceLiquidityTankSettlement({ ...input, owner: "resumed" })).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("code P3-1: a bridge time may fall before preparedAt by the same skew", () => {
