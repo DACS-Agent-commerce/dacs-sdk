@@ -244,20 +244,29 @@ discriminator for this is left to a later release.
 `railId`, `phaseIndex`), the amount and base units, the payee and every other
 intent field from the authority's own data properties. It reads them before
 any shared code runs on the authority, and the shared code gets only frozen
-copies of what it hashes. Whether a store write succeeded, and the top-level
-fields of a store claim or adapter observation (including whether a claim
-retains a submission), are read the same way.
+copies of what it hashes. Whether a store write succeeded, and which
+top-level fields a store claim or adapter observation holds (including whether
+a claim retains a submission), are decided the same way.
 These reads use built-ins the SDK captures when it loads:
 `Reflect.getOwnPropertyDescriptor`, `Reflect.ownKeys`, `Object.hasOwn`,
 `Object.freeze`, `util.types.isProxy`, `RegExp.prototype.exec`,
 `String.prototype.normalize`, `charCodeAt` and `slice`, and the one-shot
 `crypto.hash`.
 
+The values of a store or adapter result's fields come from the shared
+canonical-JSON snapshot (below). The core reads them from copies with no
+prototype, so a field the result does not hold reads as absent. The
+observations the core passes to a store are such copies: frozen, with no
+prototype.
+
 So a data-only prototype pollution, such as an extra property on
 `Object.prototype` or `Array.prototype`, can't change the settlement key,
 amount or payee, or make a store's refusal read as success. A polluted field
 the authority lacks reads as absent and is refused, and an over-precise
-amount is refused before any padding lookup. The shared canonical-JSON code
+amount is refused before any padding lookup. Nor can pollution supply a field
+a store or adapter result lacks: an unlocked pending observation stays
+unlocked, and an observation, claim, lease, submission, settlement or recovery
+evidence missing a required field is refused. The shared canonical-JSON code
 still uses the live built-ins. It decides whether the authority's
 representation is stable canonical JSON, computes the operation and binding
 hashes, and reads the contents of store and adapter results. Pollution there
@@ -266,11 +275,13 @@ phase that already holds a binding, a changed binding hash is a binding
 conflict (`indeterminate`).
 
 **What it doesn't.** Code that replaces JavaScript built-ins or intrinsics in
-the same process after the SDK loads is outside the rail's threat model.
-Examples are a prototype method, a static such as `Object.entries`,
-`util.types.isProxy`, or an accessor on an internal slot. Such code can call
-the adapter or the signer directly, or forge what the store or adapter
-returns, so no rail can stop it. The captured built-ins make accidental
+the same process is outside the rail's threat model, at any time, before or
+after the SDK loads. Built-ins replaced before it loads, by a `--import`
+preload or a polyfill imported first, are the ones it captures, so the
+captures give no protection against them. Examples are a prototype method, a
+static such as `Object.entries`, `util.types.isProxy`, or an accessor on an
+internal slot. Such code can call the adapter or the signer directly, or
+forge what the store or adapter returns, so no rail can stop it. The captured built-ins make accidental
 interference, such as a dependency that patches a prototype, unlikely, not
 impossible. Run the rail only in a process whose code you trust.
 
