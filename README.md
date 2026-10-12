@@ -790,7 +790,9 @@ which produces `signature-invalid`. Throw `UnsupportedArtifactKindError` for an
 unsupported kind or version, which produces a final `unverifiable` with
 `code: "unsupported-kind"`. Any other throw means verification is unavailable
 and produces a retryable `indeterminate` with `code: "verifier-unavailable"`.
-Neither classification, a verified artifact nor `exhausted: true` proves complete
+That includes an error that only carries `code: "unsupported-kind"`, such as a
+forwarded service error body: the check is `instanceof`, so throw the class
+exported by this package. Neither classification, a verified artifact nor `exhausted: true` proves complete
 enumeration, freshness, or non-revocation; perform the artifact's protocol-specific
 admission and revocation checks before using it.
 

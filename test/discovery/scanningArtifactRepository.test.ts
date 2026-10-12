@@ -485,6 +485,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       expect(documentation).toMatch(/unverifiable` with `code: "unsupported-kind"`/);
       expect(documentation).toMatch(/Any other throw means verification is unavailable/);
       expect(documentation).toMatch(/`indeterminate` with `code: "verifier-unavailable"`/);
+      expect(documentation).toMatch(/error that only carries `code: "unsupported-kind"`.*the check is `instanceof`/);
       expect(documentation).toMatch(/false`? only for a completed.*signature-invalid/);
     }
   });
@@ -493,7 +494,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     { mode: "completed negative", verify: () => false, outcome: { status: "signature-invalid", nativeAddress: "stor-a" } },
     { mode: "unsupported", verify: () => { throw new UnsupportedArtifactKindError("unsupported version"); },
       outcome: { status: "unverifiable", code: "unsupported-kind", nativeAddress: "stor-a" } },
-    { mode: "coded unsupported", verify: () => { throw Object.assign(new Error("unsupported"), { code: "unsupported-kind" }); },
+    { mode: "subclassed unsupported", verify: () => { throw new (class extends UnsupportedArtifactKindError {})("v9"); },
       outcome: { status: "unverifiable", code: "unsupported-kind", nativeAddress: "stor-a" } },
   ])("keeps $mode verification distinct and handled", async ({ verify, outcome }) => {
     const verifier = vi.fn(verify);
@@ -511,6 +512,14 @@ describe("createScanningArtifactRepository (#54)", () => {
     ["a hostile code getter", () => {
       throw Object.defineProperty(new Error("registry 503"), "code", { get() { throw new Error("trap"); } });
     }],
+    // Only the class is final: a forwarded error body can carry the code.
+    ["an error carrying the unsupported-kind code", () => {
+      throw Object.assign(new Error("503"), { code: "unsupported-kind" });
+    }],
+    ["a plain object carrying the unsupported-kind code", () => { throw { code: "unsupported-kind" }; }],
+    ["a prototype trap around the unsupported class", () => {
+      throw new Proxy(new UnsupportedArtifactKindError("v9"), { getPrototypeOf() { throw new Error("trap"); } });
+    }],
   ])("unavailable verification (%s) stays retryable at the same row", async (_name, verify) => {
     const verifier = vi.fn(verify);
     const fixture = setup(["a", "b"], { verifyArtifact: verifier });
@@ -527,6 +536,20 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(result.state.seen.size).toBe(0);
     expect(verifier).toHaveBeenCalledOnce();
     expect(fixture.readAnchor.mock.calls).toEqual([["stor-a"]]);
+  });
+
+  test("a forwarded error carrying code unsupported-kind is retried, then deferred, never final", async () => {
+    const forwarded = vi.fn(() => { throw Object.assign(new Error("503 from verifier"), { code: "unsupported-kind" }); });
+    const fixture = setup(["a", "b"], { verifyArtifact: forwarded, maxRowAttempts: 2 });
+    const first = await fixture.repo.scanPage();
+    expect(first).toMatchObject({
+      status: "indeterminate", code: "verifier-unavailable", state: { pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    const second = await fixture.repo.scanPage(first.state);
+    expect(second.deferred).toMatchObject([{ anchor: { nativeAddress: "stor-a" }, code: "verifier-unavailable", attempts: 2 }]);
+    expect(second.results.map(({ outcome }) => outcome.status)).toEqual(["indeterminate", "indeterminate"]);
+    expect(second.state.seen.size).toBe(0);
+    expect(second.results.some(({ outcome }) => outcome.status === "unverifiable")).toBe(false);
   });
 
   test("an indeterminate index leaves the row retryable even on the last page", async () => {

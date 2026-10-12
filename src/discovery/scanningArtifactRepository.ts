@@ -17,7 +17,9 @@ import { resolveAndRead, type VerifiedRead } from "./verifiedRead.js";
 
 /**
  * Throw from `verifyArtifact` for a kind or version the verifier cannot check.
- * Any error whose `code` is `"unsupported-kind"` is treated the same way.
+ * Only an instance of this class is final: an error that merely carries
+ * `code: "unsupported-kind"`, such as a forwarded service error body, means
+ * verification is unavailable.
  */
 export class UnsupportedArtifactKindError extends Error {
   readonly code = "unsupported-kind" as const;
@@ -41,7 +43,9 @@ export interface ScanningArtifactRepositoryDeps extends BoundArtifactRepositoryD
    * an unsupported kind or version, which produces a final `unverifiable` with
    * `code: "unsupported-kind"`. Any other throw means verification is
    * unavailable and produces a retryable `indeterminate` with
-   * `code: "verifier-unavailable"`; the row is not handled.
+   * `code: "verifier-unavailable"`; the row is not handled. That includes an
+   * error that only carries `code: "unsupported-kind"`: the check is
+   * `instanceof`, so throw the class exported by this package.
    */
   verifyArtifact: (
     record: Record<string, unknown>,
@@ -202,10 +206,13 @@ function isPositiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
-/** Read a thrown value's code without letting a hostile value throw. */
+/**
+ * Only the class is final; a merely coded value stays retryable. `instanceof`
+ * can hit a throwing Proxy trap, which also counts as unavailable.
+ */
 function isUnsupportedKind(e: unknown): boolean {
   try {
-    return isRecord(e) && e.code === "unsupported-kind";
+    return e instanceof UnsupportedArtifactKindError;
   } catch {
     return false;
   }
