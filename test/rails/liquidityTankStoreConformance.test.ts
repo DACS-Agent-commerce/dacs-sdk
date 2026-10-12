@@ -406,6 +406,22 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       },
     };
   }), /0 of a concurrent timely completion and recovery expiry were recorded/],
+  [CASE.completionExpiryRace, "lets an expiry it checked before a completion arrived win anyway", () => database((inner) => {
+    let completions = 0;
+    return {
+      recordObservation: (input) => {
+        if (input.observation.status === "completed") completions += 1;
+        return inner.recordObservation(input);
+      },
+      recordRecoveryExpired: async (input) => {
+        const seen = completions;
+        await yieldTurn();
+        const result = await inner.recordRecoveryExpired(input);
+        // Decided on the row it read before the completion arrived, so only the reversed order loses.
+        return result.status === "conflict" && completions > seen ? { status: "recorded" } : result;
+      },
+    };
+  }), /2 of a concurrent timely completion and recovery expiry were recorded \(reversed order\)/],
   [CASE.settlementExpiryRace, "records an overlapping settlement and expiry (Daybreak's racey store)",
     () => database((inner) => {
       let settlementsInFlight = 0;
@@ -448,6 +464,16 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   }), /recordSubmission by the old owner landed after another owner took its lease over/],
   [CASE.coreRace, "grants two overlapping claims", () => database(raceyClaims),
     /2 of two workers starting one phase at once went past the claim/],
+  [CASE.coreRace, "treats a phase as free until its submission is written", () => database((inner) => ({
+    claim: async (input) => {
+      await yieldTurn();
+      const claimed = await inner.claim(input);
+      // Only a worker held before its submission write is exposed: the case's barrier holds it there.
+      return claimed.status === "waiting" && claimed.submission === undefined
+        ? inner.claim({ ...input, now: claimed.lease.expiresAt })
+        : claimed;
+    },
+  })), /2 of two workers starting one phase at once went past the claim/],
 ];
 
 describe("runLiquidityTankStoreConformance", () => {
