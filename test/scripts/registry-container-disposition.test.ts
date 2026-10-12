@@ -129,6 +129,7 @@ describe("registry/container acceptance disposition", () => {
     }],
     ["a failed audit with no findings", (s: ReturnType<typeof baselineOnlySummary>) => {
       s.audit.total = 0;
+      s.audit.observedAdvisories = [];
     }],
   ])("keeps %s as a blocking security result", (_label, mutate) => {
     const summary = baselineOnlySummary();
@@ -389,6 +390,12 @@ describe("advisory-ID baseline", () => {
     summary.audit.total = 145; summary.audit.critical = 5;
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
     expect(registryContainerDisposition(summary).exitCode).toBe(4);
+  });
+  it("uses advisory IDs even when diagnostic counts change", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.total = 0; summary.audit.critical = 0;
+    expect(registryContainerDisposition(summary).exitCode).toBe(4);
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
   });
   it.each([{}, { ...baseline, advisoryIds: ["bogus"] }, { ...baseline, source: {} },
     { ...baseline, advisoryIds: [] }])("fails closed for a malformed baseline %j", (bad) => {
