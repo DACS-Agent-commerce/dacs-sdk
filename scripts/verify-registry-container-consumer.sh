@@ -84,7 +84,7 @@ cleanup() {
       npm-audit.exit-code consumer-lock.cdx.json \
       consumer-lock-sbom.err consumer-lock-sbom.exit-code consumer-physical.cdx.json \
       consumer-physical-sbom.err consumer-physical-sbom.exit-code engine-strict.log \
-      engine-strict.exit-code engine-scan.log engine-scan.exit-code; do
+      engine-strict.exit-code engine-versions.json; do
       if [ -f "$consumer_root/$name" ]; then
         cp "$consumer_root/$name" "$artifact_stage/"
       fi
@@ -327,10 +327,10 @@ docker run --rm \
     engine_status=0
     npm ci --package-lock-only --ignore-scripts --omit=optional --engine-strict > /work/engine-strict.log 2>&1 || engine_status=$?
     printf "%s\n" "$engine_status" > /work/engine-strict.exit-code
-    # --engine-strict stops at the first violation; this pass lists them all.
-    engine_scan_status=0
-    npm ci --package-lock-only --ignore-scripts --omit=optional --no-engine-strict > /work/engine-scan.log 2>&1 || engine_scan_status=$?
-    printf "%s\n" "$engine_scan_status" > /work/engine-scan.exit-code
+    # --engine-strict stops at the first violation. The disposition lists them
+    # all from the lock against these versions; npm ci without it fails its
+    # lock sync check on the nested Git dependency instead.
+    node -p "JSON.stringify({ node: process.version, npm: process.argv[1] })" "$(npm --version)" > /work/engine-versions.json
   ' 2>&1 | tee "$artifact_stage/generation.log"
 
 project="$consumer_root/one-click-agent"
@@ -524,8 +524,7 @@ cp "$consumer_root/consumer-physical-sbom.err" "$artifact_stage/"
 cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
 cp "$consumer_root/engine-strict.log" "$artifact_stage/"
 cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
-cp "$consumer_root/engine-scan.log" "$artifact_stage/"
-cp "$consumer_root/engine-scan.exit-code" "$artifact_stage/"
+cp "$consumer_root/engine-versions.json" "$artifact_stage/"
 
 stage=summary
 # Exact identities of the security-gate findings, compared with the #191

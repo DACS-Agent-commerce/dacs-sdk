@@ -22,8 +22,13 @@ template, not from the acceptance tooling. The source is the b7b180f run
 - `engineViolations`: 16 non-optional packages of the sigstore 5 chain
   (demosdk → sigstore → @sigstore/sign → make-fetch-happen → ...) require
   Node `^22.22.2 || ^24.15.0 || >=26.0.0`, below the generated project's
-  Node 20 floor. `--engine-strict` reports only the first, so the run also
-  lists every violation without it.
+  Node 20 floor. `--engine-strict` reports only the first. The disposition
+  lists them all from the generated lock: it tests every non-optional
+  package's `engines.node` and `engines.npm` against the consumer
+  container's recorded Node and npm versions, as npm's EBADENGINE check does.
+  (`npm ci --no-engine-strict` cannot: npm 11 fails its package.json/lock
+  sync check on the nested Git `avsc`.) A range the scan cannot evaluate, or
+  missing versions, leaves the scan incomplete, which blocks.
 - `lockSbomProblems` / `physicalSbomProblems`: the exact `npm sbom`
   ESBOMPROBLEMS lines for that tree (the Git `avsc`, and peer ranges of
   `@ton/core`, `@solana/web3.js` and `node-fetch`).

@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
-  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary } = await import(dispositionModulePath);
+  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines } =
+  await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -486,7 +487,7 @@ describe("#191 policy-finding baseline", () => {
   const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
   const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
     value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
-  const scan = readFileSync(join(b7b180f, "engine-scan.log"), "utf8");
+  const strictLog = readFileSync(join(b7b180f, "engine-strict.log"), "utf8");
   const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
   it.each([
     ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
@@ -497,12 +498,19 @@ describe("#191 policy-finding baseline", () => {
       p["node_modules/@bundlr-network/client/node_modules/arbundles"]!.integrity = "sha512-other"; }) }],
     ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
-    ["a new engine violation", "engineStrict", { "engine-scan.log": scan + "npm warn EBADENGINE   package: 'new-pkg@1.0.0',\n" }],
+    ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/new-pkg"] = { version: "1.0.0", integrity: "sha512-new", engines: { node: ">=22" } }; }) }],
+    ["a new violation of a package's npm engine", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: ">=16", npm: ">=12" }; }) }],
     ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
       p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
-    ["a strict failure not explained by the scan", "engineStrict", { "engine-scan.log": scan.replace(/.*@npmcli\/agent@5\.0\.2.*\n/, "") }],
-    ["an incomplete engine scan", "engineStrict", { "engine-scan.exit-code": "1\n" }],
-    ["a missing engine scan", "engineStrict", { "engine-scan.log": undefined }],
+    ["a strict failure not explained by the scan", "engineStrict", { "engine-strict.log":
+      strictLog.replaceAll("@npmcli/agent@5.0.2", "other@1.0.0") }],
+    ["an engine range the scan cannot read", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: "please-use-yarn" }; }) }],
+    ["an engine scan without the container's versions", "engineStrict", { "engine-versions.json": undefined }],
+    ["an engine scan without the container's npm version", "engineStrict", { "engine-versions.json":
+      JSON.stringify({ node: "v20.19.1" }) }],
     ["an engine-strict failure other than EBADENGINE", "engineStrict", { "engine-strict.log": "npm error code EBADPLATFORM\n" }],
     ["a new lock SBOM problem", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err") +
       "npm error invalid: viem@2.0.0, ^2.55.19 required by x@1.0.0\n" }],
@@ -527,6 +535,112 @@ describe("#191 policy-finding baseline", () => {
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
     summary.securityGate.findings.gitDependencies = [];
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
+  });
+});
+
+// The 206adc1 run stopped here: `npm ci --no-engine-strict` printed every
+// EBADENGINE and then failed npm's lock sync check on the nested Git `avsc`
+// (EUSAGE), so the scan never completed and the job exited 3.
+describe("lock engine scan", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
+  const container = { node: "v20.19.1", npm: "11.19.0" };
+  const byLocation = (items: { location: string }[]) => [...items].sort((a, b) => a.location.localeCompare(b.location));
+
+  it("lists every violation of a tree with a nested Git dependency, exactly the #191 baseline", () => {
+    const value = lock();
+    expect(value.packages["node_modules/@bundlr-network/client/node_modules/arbundles"].dependencies.avsc)
+      .toBe("https://github.com/Irys-xyz/avsc#csp-fixes");
+    const scan = scanLockEngines(value, container);
+    expect(scan).toMatchObject({ scanComplete: true, errors: [], node: "v20.19.1", npm: "11.19.0" });
+    expect(scan.evaluatedPackages).toBe(Object.values(value.packages)
+      .filter((entry) => (entry as { optional?: boolean }).optional !== true).length);
+    expect(byLocation(scan.violations)).toEqual(byLocation(baseline.policyFindings.engineViolations));
+    expect(scan.violations).toHaveLength(16);
+    expect(b7b180fEvidence().securityGate.findings.engine).toMatchObject({ scanComplete: true,
+      scan: { node: "v20.19.1", npm: "11.19.0", errors: [] }, reportedPackage: "@npmcli/agent@5.0.2" });
+  });
+
+  it("skips optional packages and non-object engines, as npm's check does", () => {
+    // @arbitrum/sdk (optional) declares engines.npm "please-use-yarn"; verror
+    // (optional) declares the legacy array form.
+    const value = lock();
+    expect(value.packages["node_modules/@arbitrum/sdk"]).toMatchObject({ optional: true,
+      engines: { npm: "please-use-yarn" } });
+    value.packages["node_modules/verror"].optional = false;
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: true, errors: [] });
+    value.packages["node_modules/@arbitrum/sdk"].optional = false;
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: false,
+      errors: [expect.stringContaining("node_modules/@arbitrum/sdk")] });
+  });
+
+  it("checks engines.npm against the container's npm", () => {
+    const value = lock();
+    value.packages["node_modules/semver"].engines = { node: ">=10", npm: ">=12" };
+    expect(scanLockEngines(value, container).violations).toContainEqual({ package: "semver@7.8.5",
+      location: "node_modules/semver", integrity: value.packages["node_modules/semver"].integrity,
+      required: { node: ">=10", npm: ">=12" } });
+    expect(scanLockEngines(value, { ...container, npm: "12.0.0" }).violations).toHaveLength(16);
+  });
+
+  it.each([
+    ["no lock", undefined, container],
+    ["no packages map", { lockfileVersion: 1, dependencies: {} }, container],
+    ["no recorded versions", "fixture", null],
+    ["a prerelease Node", "fixture", { ...container, node: "v20.19.1-nightly" }],
+    ["no recorded npm", "fixture", { node: "v20.19.1" }],
+  ])("is incomplete with %s", (_label, value, versions) => {
+    const scan = scanLockEngines(value === "fixture" ? lock() : value, versions);
+    expect(scan).toMatchObject({ scanComplete: false, evaluatedPackages: 0 });
+    expect(scan.errors.length).toBeGreaterThan(0);
+  });
+
+  // Expectations from semver.satisfies(version, range, { includePrerelease: true }),
+  // which npm's EBADENGINE check uses; the first rows are ranges in the generated lock.
+  it.each([
+    ["^22.22.2 || ^24.15.0 || >=26.0.0", "20.19.1", false], ["^22.22.2 || ^24.15.0 || >=26.0.0", "22.22.2", true],
+    ["^22.22.2 || ^24.15.0 || >=26.0.0", "24.14.9", false], ["^22.22.2 || ^24.15.0 || >=26.0.0", "26.0.0", true],
+    ["^20.19.0 || >=22.12.0", "20.19.1", true], ["^20.19.0 || >=22.12.0", "22.11.0", false],
+    [">= 0.4", "20.19.1", true], [">= 0.4", "0.3.9", false], [">=v11", "20.19.1", true], [">=v11", "10.9.9", false],
+    [">=16 || 14 >=14.17", "14.17.0", true], [">=16 || 14 >=14.17", "14.16.9", false], [">=16 || 14 >=14.17", "15.0.0", false],
+    ["4.x || >=6.0.0", "4.9.0", true], ["4.x || >=6.0.0", "5.1.0", false],
+    ["6.* || 8.* || >= 10.*", "9.0.0", false], ["6.* || 8.* || >= 10.*", "20.19.1", true],
+    ["20.x || 22.x || 23.x || 24.x || 25.x", "20.19.1", true], ["20.x || 22.x || 23.x || 24.x || 25.x", "21.0.0", false],
+    ["18 || 20 || >=22", "20.19.1", true], ["18 || 20 || >=22", "21.1.0", false],
+    ["> 0.1.90", "0.1.90", false], ["> 0.1.90", "0.1.91", true], ["^14.0 || >=16.0", "15.0.0", false],
+    ["^14.0 || >=16.0", "16.0.0", true], ["*", "20.19.1", true], ["<*", "20.19.1", false],
+    ["^0.2.3", "0.2.9", true], ["^0.2.3", "0.3.0", false], ["^0.0.3", "0.0.3", true], ["^0.0.3", "0.0.4", false],
+    ["^1.2", "1.9.9", true], ["^1.2", "2.0.0", false], ["~1.2.3", "1.2.9", true], ["~1.2.3", "1.3.0", false],
+    ["~1", "1.9.0", true], ["~1", "2.0.0", false], ["~> 1.2", "1.2.0", true], ["~> 1.2", "1.3.0", false],
+    [">1.2", "1.2.9", false], [">1.2", "1.3.0", true], ["<=1.2", "1.2.9", true], ["<=1.2", "1.3.0", false],
+    ["<1", "0.9.9", true], ["<1", "1.0.0", false], ["=1.2", "1.2.5", true], ["=1.2", "1.3.0", false],
+    ["1.2.3 - 2.3", "2.3.9", true], ["1.2.3 - 2.3", "2.4.0", false], ["1.2.3 - 2.3.4", "2.3.4", true],
+    ["1.2.3 - 2.3.4", "2.3.5", false], ["1.2.3-beta - 2.3.4-rc.1", "1.2.3", true], ["1.2.3-beta - 2.3.4-rc.1", "2.3.4", false],
+    [">1.2.3-beta", "1.2.3", true], ["<=1.2.3-beta", "1.2.3", false], ["1.2.3-beta", "1.2.3", false],
+    [">=1.2.3+build", "1.2.3", true], ["11.19.0", "11.19.0", true], ["11.19.0", "11.19.1", false],
+  ])("evaluates %j at %s as semver does (%s)", (range, version, expected) => {
+    expect(satisfiesEngineRange(version, range)).toBe(expected);
+    expect(satisfiesEngineRange(`v${version}`, range)).toBe(expected);
+  });
+
+  // semver rejects each of these, so npm would not pass them either.
+  it.each(["please-use-yarn", "01.2.3", ">=1.2.3.4", "^", "1 -2", "> = 1", "1.2-beta", ">=1 || foo", "V1.2.3"])(
+    "fails closed on the range %j", (range) => {
+      expect(() => satisfiesEngineRange("20.19.1", range)).toThrow(/unsupported engine range/);
+    });
+
+  it("records the container's Node and npm with the script's own command, not a second npm ci", () => {
+    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8");
+    expect(script).not.toContain("--no-engine-strict");
+    const command = script.split("\n").find((line) => line.includes("> /work/engine-versions.json"))!.trim()
+      .replace("/work/engine-versions.json", "engine-versions.json");
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-versions-"));
+    scratch.push(directory);
+    const result = runBash(["-ceu", command], { cwd: directory,
+      env: { PATH: stubBin(directory, { npm: "echo 11.19.0" }) } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(directory, "engine-versions.json"), "utf8")))
+      .toEqual({ node: process.version, npm: "11.19.0" });
   });
 });
 
