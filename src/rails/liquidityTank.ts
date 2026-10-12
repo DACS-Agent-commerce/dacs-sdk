@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -7,15 +8,28 @@ import {
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 
-// Captured once at module load, so validation and method binding never
-// dispatch through a prototype or static a host replaces later.
+// Captured once at module load, so reading the authority, deriving its
+// settlement key and intent, and binding methods never dispatch through a
+// prototype or static a host replaces later.
 // `RegExp.prototype.test` looks `exec` up on every call, so `exec` is captured.
 const reflectApply = Reflect.apply;
+const getOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+const getPrototypeOf = Reflect.getPrototypeOf;
 const hasOwn = Object.hasOwn;
+const freeze = Object.freeze;
 const isArray = Array.isArray;
 const isSafeInteger = Number.isSafeInteger;
+const isProxy = nodeTypes.isProxy;
 const regExpExec = RegExp.prototype.exec;
 const stringNormalize = String.prototype.normalize;
+const stringCharCodeAt = String.prototype.charCodeAt;
+const createSha256 = createHash;
+const sha256Prototype = getPrototypeOf(createHash("sha256")) as {
+  update(data: string, encoding: "utf8"): unknown;
+  digest(encoding: "hex"): string;
+};
+const hashUpdate = sha256Prototype.update;
+const hashDigest = sha256Prototype.digest;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
@@ -27,6 +41,7 @@ const LEADING_ZEROS_RE = /^0*([0-9]*)$/;
 const TRAILING_ZEROS_RE = /^([0-9]*?)0*$/;
 const USDC_DECIMALS = 6;
 const ZERO_PADDING = Object.freeze(["", "0", "00", "000", "0000", "00000", "000000"]);
+const SETTLEMENT_KEY_FIELDS = Object.freeze(["jobId", "railId", "phaseIndex"]);
 const AUTHORITY_FIELDS = Object.freeze(Object.keys({
   jobId: true,
   phaseIndex: true,
@@ -439,16 +454,72 @@ function normalizeNfc(value: string): string {
   return reflectApply(stringNormalize, value, ["NFC"]) as string;
 }
 
+/** True when `value` has no unpaired UTF-16 surrogate, as JSON text requires. */
+function isWellFormedString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = reflectApply(stringCharCodeAt, value, [index]) as number;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = reflectApply(stringCharCodeAt, value, [index + 1]) as number;
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** SHA-256 of the UTF-8 bytes of `value`, through the hash captured at load. */
+function ownedSha256Hex(value: string): string {
+  const hash = createSha256("sha256");
+  reflectApply(hashUpdate, hash, [value, "utf8"]);
+  return reflectApply(hashDigest, hash, ["hex"]) as string;
+}
+
+/**
+ * The named own data fields of `source`, read through the intrinsics captured
+ * at load, so no prototype, getter or proxy trap supplies or changes one.
+ * Strings are NFC-normalized by the captured normalizer and numbers kept;
+ * any other value reads as absent, so its field check refuses it.
+ */
+function ownFields(
+  source: object,
+  keys: readonly string[],
+  label: string,
+): Readonly<Record<string, unknown>> {
+  if (isProxy(source)) {
+    throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+  }
+  const fields = { __proto__: null } as unknown as Record<string, unknown>;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index] as string;
+    const descriptor = getOwnPropertyDescriptor(source, key);
+    if (descriptor === undefined) continue;
+    if (!hasOwn(descriptor, "value")) {
+      throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+    }
+    const value: unknown = descriptor.value;
+    if (typeof value === "string") {
+      if (!isWellFormedString(value)) {
+        throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+      }
+      fields[key] = normalizeNfc(value);
+    } else if (typeof value === "number") {
+      // Canonical JSON has no negative zero.
+      if (value === 0 && 1 / value < 0) {
+        throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
+      }
+      fields[key] = value;
+    }
+  }
+  return freeze(fields);
+}
+
 function requireJobId(value: unknown): string {
   if (!matchesPattern(CANONICAL_JOB_ID_RE, value)) {
     throw new DacsError("jobId must be a canonical uppercase ULID");
   }
   return value;
-}
-
-/** An own field only, so a polluted `Object.prototype` cannot supply it. */
-function ownField(source: object, key: string): unknown {
-  return hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
 }
 
 /**
@@ -483,12 +554,13 @@ function positiveUsdcAmount(value: unknown): { amount: string; baseUnits: string
 }
 
 function requireUInt(value: unknown, label: string, positive = false): number {
-  if (!isSafeInteger(value) || (positive ? Number(value) <= 0 : Number(value) < 0)) {
+  // A safe integer is a primitive number, so no global `Number` is called.
+  if (!isSafeInteger(value) || (positive ? (value as number) <= 0 : (value as number) < 0)) {
     throw new DacsError(
       `pay-cross-chain-liquidity-tank: ${label} must be a ${positive ? "positive" : "non-negative"} safe integer`,
     );
   }
-  return Number(value);
+  return value as number;
 }
 
 function leaseExpiry(now: number, leaseDurationMs: number): number {
@@ -510,19 +582,19 @@ function stableDataProperty(
   label: string,
 ): unknown {
   if ((typeof source !== "object" && typeof source !== "function") ||
-      source === null || nodeTypes.isProxy(source)) {
+      source === null || isProxy(source)) {
     throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
   }
   try {
     let cursor: object | null = source;
     while (cursor !== null) {
-      if (nodeTypes.isProxy(cursor)) throw new TypeError("proxy prototype");
-      const descriptor = Object.getOwnPropertyDescriptor(cursor, key);
+      if (isProxy(cursor)) throw new TypeError("proxy prototype");
+      const descriptor = getOwnPropertyDescriptor(cursor, key);
       if (descriptor !== undefined) {
-        if (!("value" in descriptor)) throw new TypeError("accessor property");
+        if (!hasOwn(descriptor, "value")) throw new TypeError("accessor property");
         return descriptor.value;
       }
-      cursor = Object.getPrototypeOf(cursor) as object | null;
+      cursor = getPrototypeOf(cursor);
     }
   } catch (cause) {
     throw new DacsError(
@@ -541,7 +613,7 @@ function stableBoundMethod<T extends LiquidityTankMethod>(
   label: string,
 ): T {
   const method = stableDataProperty(source, key, label);
-  if (typeof method !== "function" || nodeTypes.isProxy(method)) {
+  if (typeof method !== "function" || isProxy(method)) {
     throw new DacsError(
       `pay-cross-chain-liquidity-tank: ${label} must be a stable method`,
     );
@@ -705,18 +777,24 @@ export function liquidityTankSettlementKey(input: {
   railId: string;
   phaseIndex: number;
 }): string {
-  const captured = snapshotCanonicalJson(input, "liquidity-tank settlement key authority");
-  return liquidityTankSettlementKeyFromCaptured(captured);
-}
-
-function liquidityTankSettlementKeyFromCaptured(input: unknown): string {
+  // The shared snapshot only decides whether the representation is stable
+  // canonical JSON; the key is derived from the input's own fields.
+  snapshotCanonicalJson(input, "liquidity-tank settlement key authority");
   if (input === null || typeof input !== "object") {
     throw new DacsError("pay-cross-chain-liquidity-tank: settlement key authority must be an object");
   }
-  const phaseIndex = requireUInt(ownField(input, "phaseIndex"), "phaseIndex");
-  return sha256Hex(
-    `dacs-liquidity-tank:v1:${requireJobId(ownField(input, "jobId"))}:` +
-      `${normalizeNfc(requireString(ownField(input, "railId"), "railId"))}:${phaseIndex}`,
+  return settlementKeyFromOwnFields(ownFields(input, SETTLEMENT_KEY_FIELDS, "settlement key authority"));
+}
+
+/**
+ * The key of an owned, NFC-normalized record, hashed through the captured
+ * hash: no replaced built-in can rename the phase.
+ */
+function settlementKeyFromOwnFields(fields: Readonly<Record<string, unknown>>): string {
+  const phaseIndex = requireUInt(fields["phaseIndex"], "phaseIndex");
+  return ownedSha256Hex(
+    `dacs-liquidity-tank:v1:${requireJobId(fields["jobId"])}:` +
+      `${requireString(fields["railId"], "railId")}:${phaseIndex}`,
   );
 }
 
@@ -726,35 +804,33 @@ export function createLiquidityTankIntent(
   return intentFromCapturedAuthority(captureLiquidityTankAuthority(authority));
 }
 
-function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTankAuthority> {
-  return snapshotCanonicalJson(authority as LiquidityTankAuthority, "liquidity-tank authority");
-}
-
 /**
- * Re-homes the snapshot's own authority fields onto a null prototype, so a
- * polluted `Object.prototype` cannot supply one: a missing field reads as
- * `undefined` and is refused by its check.
+ * The authority's own fields. The shared snapshot only decides whether the
+ * representation is stable canonical JSON, and its result is discarded: it
+ * dispatches through live prototypes (`String.prototype.normalize`) that a
+ * host could replace to rename the phase. The settlement key and every intent
+ * field are derived from the authority's own data properties, read and
+ * NFC-normalized through the intrinsics captured at load. A polluted
+ * `Object.prototype` cannot supply a missing field: it reads as `undefined`
+ * and is refused by its check.
  */
-function ownAuthorityFields(captured: unknown): Readonly<LiquidityTankAuthority> {
-  if (captured === null || typeof captured !== "object" || isArray(captured)) {
+function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTankAuthority> {
+  snapshotCanonicalJson(authority, "liquidity-tank authority");
+  if (authority === null || typeof authority !== "object" || isArray(authority)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: authority must be a JSON object");
   }
-  const fields = { __proto__: null } as unknown as Record<string, unknown>;
-  for (let index = 0; index < AUTHORITY_FIELDS.length; index += 1) {
-    const key = AUTHORITY_FIELDS[index] as string;
-    fields[key] = ownField(captured, key);
-  }
-  return fields as unknown as Readonly<LiquidityTankAuthority>;
+  return ownFields(authority, AUTHORITY_FIELDS, "authority") as unknown as
+    Readonly<LiquidityTankAuthority>;
 }
 
 /**
- * Deterministic over the captured content: reads no clock, store or caller
- * code, and only the captured intrinsics decide what it accepts.
+ * Deterministic over the owned authority: reads no clock, store or caller
+ * code, and only the captured intrinsics decide what it accepts and derive
+ * the key and every field the adapter receives.
  */
 function intentFromCapturedAuthority(
-  captured: Readonly<LiquidityTankAuthority>,
+  authority: Readonly<LiquidityTankAuthority>,
 ): Readonly<LiquidityTankIntent> {
-  const authority = ownAuthorityFields(captured);
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "liquidity-tank") {
     throw new DacsError("pay-cross-chain-liquidity-tank: selected rail mechanism mismatch");
@@ -801,14 +877,17 @@ function intentFromCapturedAuthority(
   if (operation.sourceLiquidityTankId === operation.destinationLiquidityTankId) {
     throw new DacsError("pay-cross-chain-liquidity-tank: source and destination tank IDs must differ");
   }
+  // The operation and binding hashes go through the shared JCS, which
+  // dispatches through live prototypes. A lie there changes only a hash, never
+  // a field: for an existing phase that is a binding conflict (`indeterminate`).
   const operationHash = sha256Hex(canonicalize(operation));
   const unsigned = {
     intentVersion: "1" as const,
-    settlementKey: liquidityTankSettlementKeyFromCaptured(authority),
+    settlementKey: settlementKeyFromOwnFields(authority as unknown as Readonly<Record<string, unknown>>),
     operationHash,
     jobId: requireJobId(authority.jobId),
     phaseIndex: authority.phaseIndex,
-    railId: normalizeNfc(requireString(authority.railId, "railId")),
+    railId: requireString(authority.railId, "railId"),
     railDescriptorHash: authority.railDescriptorHash,
     agreementHash: authority.agreementHash,
     sr5BindingHash: authority.sr5BindingHash,
@@ -833,7 +912,7 @@ function intentFromCapturedAuthority(
     destinationLiquidityTankId: operation.destinationLiquidityTankId,
     supportedScope: authority.supportedScope,
   };
-  return Object.freeze({ ...unsigned, bindingHash: sha256Hex(canonicalize(unsigned)) });
+  return freeze({ ...unsigned, bindingHash: sha256Hex(canonicalize(unsigned)) });
 }
 
 function validateSubmission(

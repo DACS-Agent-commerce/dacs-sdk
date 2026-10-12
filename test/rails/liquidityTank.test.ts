@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, test, vi } from "vitest";
 
 import { assertPositiveAmount, baseUnits } from "../../src/canonical/index.js";
@@ -2562,8 +2564,245 @@ describe("advanceLiquidityTankSettlement", () => {
   });
 
   describe("round 7", () => {
+    const D = RECOVERY_DEADLINE_MS;
+    const RAIL_ID = "demos-tank-sepolia-amoy-usdc";
+    const BINDING_CONFLICT = {
+      status: "indeterminate",
+      reason: "liquidity-tank-settlement-binding-conflict",
+    } as const;
     const PRECISION_REFUSED =
       "pay-cross-chain-liquidity-tank: amount has more precision than 6 decimals";
+
+    /** The lock was live all along: the bridge releases and a plain call settles. */
+    async function releasesLater(run: Awaited<ReturnType<typeof lockDurably>>, h: ReturnType<typeof harness>) {
+      run.setClock(D - 400);
+      h.setObservation(completed(h.operationHash, D - 450));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "plain" }))
+        .resolves.toMatchObject({ status: "settled" });
+    }
+
+    /** An adapter with its own bridge ID, so only the settlement key can stop it. */
+    function secondAdapter() {
+      const bridgeId = "xyz123def456gh78";
+      const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound, fence) => {
+        await fence.assertCurrent();
+        return {
+          submissionVersion: "1",
+          authorityHash: bound.bindingHash,
+          operationHash: bound.operationHash,
+          bridgeId,
+          substrateTxHash: "second-native-bridge-tx",
+          signedSubmissionBase64: Buffer.from("second-signed", "utf8").toString("base64"),
+          preparedAt: 1_900,
+        };
+      });
+      const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async (_submission, fence) => {
+        await fence.assertCurrent();
+      });
+      const observe = vi.fn<LiquidityTankAdapter["observe"]>(async (bound, _submission, fence) => {
+        await fence.assertCurrent();
+        return { ...empty(bound.operationHash), bridgeId } as LiquidityTankObservation;
+      });
+      return {
+        adapter: { prepareSubmission, broadcastRetained, observe } satisfies LiquidityTankAdapter,
+        prepareSubmission,
+        broadcastRetained,
+        observe,
+      };
+    }
+
+    function expectNoEffects(second: ReturnType<typeof secondAdapter>, h: ReturnType<typeof harness>) {
+      expect(second.prepareSubmission).not.toHaveBeenCalled();
+      expect(second.broadcastRetained).not.toHaveBeenCalled();
+      expect(second.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    }
+
+    // Daybreak's round-7 probe: on b6aef30 the key was derived from the shared
+    // snapshot, which normalizes through the live prototype, so the store saw a
+    // new phase and the core prepared, persisted and broadcast a second time.
+    test.each([
+      ["railId", { railId: "other-tank-rail" }, RAIL_ID, "other-tank-rail"],
+      ["jobId", { jobId: SECOND_JOB_ID }, JOB_ID, SECOND_JOB_ID],
+    ] as const)("a String.prototype.normalize replaced to rename the %s cannot open a second phase", async (_label, renamed, from, to) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      expect(createLiquidityTankIntent(authority(renamed)).settlementKey).not.toBe(lockedKey);
+      const claim = vi.spyOn(store, "claim");
+      h.observe.mockClear();
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const originalNormalize = String.prototype.normalize;
+      let intent: unknown;
+      let key: unknown;
+      let result: unknown;
+      try {
+        String.prototype.normalize = function (this: unknown, form?: string) {
+          const value = String(this);
+          if (value === from) return to;
+          return Reflect.apply(originalNormalize, value, form === undefined ? [] : [form]) as string;
+        };
+        intent = createLiquidityTankIntent(authority());
+        key = liquidityTankSettlementKey({ jobId: JOB_ID, railId: RAIL_ID, phaseIndex: 2 });
+        result = await advanceLiquidityTankSettlement({
+          ...run.shared,
+          owner: "renamed",
+          authority: authority(),
+          adapter: second.adapter,
+        });
+      } finally {
+        String.prototype.normalize = originalNormalize;
+      }
+      expect(intent).toMatchObject({ settlementKey: lockedKey, jobId: JOB_ID, railId: RAIL_ID });
+      expect(key).toBe(lockedKey);
+      // The lie reaches only the shared binding hash: a conflict on the same key.
+      expect(result).toEqual(BINDING_CONFLICT);
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(claim.mock.calls[0]?.[0].intent.settlementKey).toBe(lockedKey);
+      expectNoEffects(second, h);
+      expect(h.observe).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    // On b6aef30 the key hashed through the live `Hash.prototype.digest`.
+    test("a Hash.prototype.digest replaced after load cannot rename a locked phase", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const hashPrototype = Object.getPrototypeOf(createHash("sha256")) as { digest: unknown };
+      const originalDigest = hashPrototype.digest;
+      let key: unknown;
+      let result: unknown;
+      try {
+        hashPrototype.digest = () => "0".repeat(64);
+        key = liquidityTankSettlementKey({ jobId: JOB_ID, railId: RAIL_ID, phaseIndex: 2 });
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "digest", adapter: second.adapter });
+      } finally {
+        hashPrototype.digest = originalDigest;
+      }
+      expect(key).toBe(lockedKey);
+      expect(result).toEqual(BINDING_CONFLICT);
+      expect(claim.mock.calls[0]?.[0].intent.settlementKey).toBe(lockedKey);
+      expectNoEffects(second, h);
+      await releasesLater(run, h);
+    });
+
+    // On b6aef30 `requireUInt` returned the global `Number(value)`, so the key
+    // took phaseIndex 3 while the intent still said 2.
+    test("a global Number replaced after load cannot shift phaseIndex in the key", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const lockedKey = createLiquidityTankIntent(authority()).settlementKey;
+      const claim = vi.spyOn(store, "claim");
+      run.setClock(D - 500);
+      const global = globalThis as { Number: NumberConstructor };
+      const originalNumber = global.Number;
+      let intent: unknown;
+      let result: unknown;
+      try {
+        global.Number = new Proxy(originalNumber, {
+          apply(target, thisArg, args: unknown[]) {
+            return args[0] === 2 ? 3 : Reflect.apply(target, thisArg, args);
+          },
+        });
+        intent = createLiquidityTankIntent(authority());
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "number" });
+      } finally {
+        global.Number = originalNumber;
+      }
+      expect(intent).toMatchObject({ settlementKey: lockedKey, phaseIndex: 2 });
+      // Same key, same binding: the call continues the lock.
+      expect(result).toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      expect(claim.mock.calls[0]?.[0].intent.settlementKey).toBe(lockedKey);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    // On b6aef30 the shared snapshot's `"value" in descriptor` read the
+    // polluted value, so the intent carried the attacker's payee.
+    test("a polluted Object.prototype.value cannot stand in for an accessor-backed payee", async () => {
+      const getter = vi.fn(() => "destination-address");
+      const accessor = authority();
+      Object.defineProperty(accessor, "destinationAddress", { get: getter, enumerable: true, configurable: true });
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const proto = Object.prototype as Record<string, unknown>;
+      let outcome: unknown;
+      let result: unknown;
+      try {
+        proto.value = "attacker-address";
+        proto.writable = true;
+        try {
+          outcome = createLiquidityTankIntent(accessor);
+        } catch (error) {
+          outcome = error;
+        }
+        result = await advanceLiquidityTankSettlement(runner({ authority: accessor, store, adapter: h.adapter }).shared);
+      } finally {
+        delete proto.value;
+        delete proto.writable;
+      }
+      const refused = "pay-cross-chain-liquidity-tank: authority must be stable data";
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(refused);
+      expect(result).toEqual({ status: "indeterminate", reason: refused });
+      expect(getter).not.toHaveBeenCalled();
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    // Pinning: b6aef30 already refused these through its null-prototype record.
+    test.each([
+      ["destinationAddress", "attacker-address", "pay-cross-chain-liquidity-tank: destinationAddress must be a non-empty string"],
+      ["amount", "1000", "pay-cross-chain-liquidity-tank: amount must be a plain decimal string"],
+      ["railId", "other-tank-rail", "pay-cross-chain-liquidity-tank: railId must be a non-empty string"],
+      ["jobId", SECOND_JOB_ID, "jobId must be a canonical uppercase ULID"],
+    ] as const)("a polluted Object.prototype.%s never reaches the intent of an authority that lacks it", async (field, value, reason) => {
+      const partial: Record<string, unknown> = { ...authority() };
+      delete partial[field];
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const proto = Object.prototype as Record<string, unknown>;
+      let intentError: unknown;
+      let keyError: unknown;
+      let result: unknown;
+      try {
+        proto[field] = value;
+        try {
+          createLiquidityTankIntent(partial as never);
+        } catch (error) {
+          intentError = error;
+        }
+        if (field === "railId" || field === "jobId") {
+          const keyInput: Record<string, unknown> = { jobId: JOB_ID, railId: RAIL_ID, phaseIndex: 2 };
+          delete keyInput[field];
+          try {
+            liquidityTankSettlementKey(keyInput as never);
+          } catch (error) {
+            keyError = error;
+          }
+        }
+        result = await advanceLiquidityTankSettlement(runner({ authority: partial as never, store, adapter: h.adapter }).shared);
+      } finally {
+        delete proto[field];
+      }
+      expect((intentError as Error).message).toBe(reason);
+      if (field === "railId" || field === "jobId") expect((keyError as Error).message).toBe(reason);
+      expect(result).toEqual({ status: "indeterminate", reason });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
 
     // On b6aef30 the padding lookup indexed -1/-2 and read the polluted
     // prototype, giving 10x and 100x the base units.
