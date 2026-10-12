@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { assertPositiveAmount, baseUnits } from "../../src/canonical/index.js";
+import { assertPositiveAmount, baseUnits, sha256Hex } from "../../src/canonical/index.js";
 import {
   advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
@@ -2759,6 +2759,74 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(getter).not.toHaveBeenCalled();
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    // Pinning, and kills an NFC-to-NFD mutant: every expected value is the
+    // NFC spelling, computed independently of the rail.
+    test("an NFD-spelled railId gives the NFC railId, intent key and helper key", async () => {
+      const nfc = "rail-café";
+      const nfd = "rail-café";
+      const nfcKey = sha256Hex(`dacs-liquidity-tank:v1:${JOB_ID}:${nfc}:2`);
+      const fromNfd = createLiquidityTankIntent(authority({ railId: nfd }));
+      const fromNfc = createLiquidityTankIntent(authority({ railId: nfc }));
+      expect(fromNfd.railId).toBe(nfc);
+      expect(fromNfd.settlementKey).toBe(nfcKey);
+      expect(fromNfd).toEqual(fromNfc);
+      expect(liquidityTankSettlementKey({ jobId: JOB_ID, railId: nfd, phaseIndex: 2 })).toBe(nfcKey);
+      expect(liquidityTankSettlementKey({ jobId: JOB_ID, railId: nfc, phaseIndex: 2 })).toBe(nfcKey);
+      const h = harness();
+      await advanceLiquidityTankSettlement(runner({ authority: authority({ railId: nfd }), adapter: h.adapter }).shared);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.prepareSubmission.mock.calls[0]?.[0]).toEqual(fromNfc);
+    });
+
+    // Pinning, and kills a mutant that calls methods without their receiver:
+    // each method here reaches its state through `this`.
+    test("a store and an adapter written as classes keep their receiver", async () => {
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      class ClassStore implements LiquidityTankStore {
+        readonly #inner = createInMemoryLiquidityTankStore();
+        claim(input: Parameters<LiquidityTankStore["claim"]>[0]) {
+          return this.#inner.claim(input);
+        }
+        isCurrent(input: Parameters<LiquidityTankStore["isCurrent"]>[0]) {
+          return this.#inner.isCurrent(input);
+        }
+        recordSubmission(input: Parameters<LiquidityTankStore["recordSubmission"]>[0]) {
+          return this.#inner.recordSubmission(input);
+        }
+        recordObservation(input: Parameters<LiquidityTankStore["recordObservation"]>[0]) {
+          return this.#inner.recordObservation(input);
+        }
+        recordRecoveryFailure(input: Parameters<LiquidityTankStore["recordRecoveryFailure"]>[0]) {
+          return this.#inner.recordRecoveryFailure(input);
+        }
+        recordRecoveryExpired(input: Parameters<LiquidityTankStore["recordRecoveryExpired"]>[0]) {
+          return this.#inner.recordRecoveryExpired(input);
+        }
+        recordSettlement(input: Parameters<LiquidityTankStore["recordSettlement"]>[0]) {
+          return this.#inner.recordSettlement(input);
+        }
+      }
+      class ClassAdapter implements LiquidityTankAdapter {
+        readonly #inner = h.adapter;
+        prepareSubmission(...args: Parameters<LiquidityTankAdapter["prepareSubmission"]>) {
+          return this.#inner.prepareSubmission(...args);
+        }
+        broadcastRetained(...args: Parameters<LiquidityTankAdapter["broadcastRetained"]>) {
+          return this.#inner.broadcastRetained(...args);
+        }
+        observe(...args: Parameters<LiquidityTankAdapter["observe"]>) {
+          return this.#inner.observe(...args);
+        }
+      }
+      await expect(advanceLiquidityTankSettlement(runner({
+        store: new ClassStore(),
+        adapter: new ClassAdapter(),
+      }).shared)).resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
     });
 
     // Pinning: b6aef30 already refused these through its null-prototype record.
