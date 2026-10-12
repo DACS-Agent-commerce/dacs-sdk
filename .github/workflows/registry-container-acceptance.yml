@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/registry-container-acceptance.yml"
+      - ".github/workflows/registry-container-audit-drift.yml"
       - "package.json"
       - "package-lock.json"
       - "scripts/publish-exact-local-registry.mjs"

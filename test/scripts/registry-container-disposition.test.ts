@@ -35,12 +35,27 @@ function baselineOnlySummary() {
   };
 }
 
-// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
-function workflowStepScript(stepName: string): string {
+// The lines of one workflow step, from its `- name:` line to the next step.
+function workflowStepLines(stepName: string) {
   const lines = readFileSync(workflowPath, "utf8").split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
   expect(start).toBeGreaterThanOrEqual(0);
   const stepIndent = (lines[start] ?? "").indexOf("-");
+  let end = start + 1;
+  while (end < lines.length && ((lines[end] ?? "").trim() === "" || (lines[end] ?? "").search(/\S/) > stepIndent)) end += 1;
+  return { lines, start, end, stepIndent };
+}
+
+// A step's own `if:` condition; Actions' default is success().
+function workflowStepCondition(stepName: string): string | undefined {
+  const { lines, start, end, stepIndent } = workflowStepLines(stepName);
+  const keyIndent = " ".repeat(stepIndent + 2);
+  return lines.slice(start + 1, end).find((line) => line.startsWith(`${keyIndent}if:`))?.slice(keyIndent.length + 3).trim();
+}
+
+// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
+function workflowStepScript(stepName: string): string {
+  const { lines, start, stepIndent } = workflowStepLines(stepName);
   let index = start + 1;
   while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
   const runLine = lines[index] ?? "";
@@ -221,6 +236,46 @@ describe("registry/container pull_request job", () => {
 
   it("passes when acceptance passes", () => {
     expect(runWorkflowStep(0).status).toBe(0);
+  });
+
+  it("checks drift, publishes the summary and uploads evidence even after acceptance fails", () => {
+    // Without always(), Actions' default success() would skip drift whenever
+    // acceptance exits 3, which masked drift in round 4.
+    for (const step of ["Check advisory-ID drift", "Publish acceptance summary", "Upload registry/container evidence"]) {
+      expect(workflowStepCondition(step)).toBe("always()");
+    }
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+  });
+});
+
+describe("registry/container workflow wiring", () => {
+  const acceptance = readFileSync(workflowPath, "utf8");
+  const drift = readFileSync(join(repoRoot, ".github/workflows/registry-container-audit-drift.yml"), "utf8");
+
+  it("runs pull-request acceptance when either workflow or the gate's scripts change", () => {
+    const paths = /\n  pull_request:\n    paths:\n((?: {6}- .+\n)+)/.exec(acceptance)?.[1]?.split("\n")
+      .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
+    expect(paths).toEqual(expect.arrayContaining([".github/workflows/registry-container-acceptance.yml",
+      ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs",
+      "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh"]));
+  });
+
+  it("has the scheduled drift workflow call acceptance with drift enforced", () => {
+    expect(drift).toMatch(/\non:\n  schedule:\n    - cron: "[^"]+"\n  workflow_dispatch:\n/);
+    expect(drift).toMatch(/\n    uses: \.\/\.github\/workflows\/registry-container-acceptance\.yml\n    with:\n      enforce-audit-drift: true\n/);
+    expect(acceptance).toMatch(/\n  workflow_call:\n    inputs:\n      enforce-audit-drift:\n        type: boolean\n        default: false\n/);
+    expect(workflowStepLines("Check advisory-ID drift").lines.join("\n"))
+      .toContain("ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}");
+  });
+
+  it("requires code-owner review of the baseline, the scripts that decide it, and both workflows", () => {
+    const owners = readFileSync(join(repoRoot, ".github/CODEOWNERS"), "utf8").split("\n");
+    for (const file of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
+      "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
+      ".github/workflows/registry-container-acceptance.yml", ".github/workflows/registry-container-audit-drift.yml",
+      ".github/CODEOWNERS"]) {
+      expect(owners).toContain(`/${file} @randomblocker`);
+    }
   });
 });
 
