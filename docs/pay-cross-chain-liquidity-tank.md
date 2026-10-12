@@ -84,7 +84,11 @@ broadcast, log, cache for later sending or otherwise reveal the signed bytes
 before `recordSubmission` commits them. If the worker stops after signing but
 before that write commits, the next owner finds no retained submission and
 signs a fresh one; the first bytes must never reach the bridge, or the buyer
-pays twice. The core cannot observe an adapter that breaks this.
+pays twice. This is an adapter-review requirement, not a guarantee of the
+core: the core can neither enforce nor detect it, and its tests show the safe
+outcome only for an adapter that keeps it. Review every live adapter for it,
+with a test against that adapter showing `prepareSubmission` neither
+broadcasts nor keeps the bytes for later sending.
 
 The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
@@ -203,6 +207,21 @@ A missing verifier or method, or one that is not a stable function, is refused
 before any claim with `liquidity-tank-observation-authenticator-unavailable` or
 `liquidity-tank-submission-verifier-unavailable`. The core never falls back to
 trusting the adapter.
+
+**A settled row is trusted as the store wrote it.** When a claim returns
+`settled`, the core checks the stored settlement's shape, its amount and route
+against the intent, and that it finalized before its deadline, then returns
+it without calling either hook. The core writes a settlement only after
+authenticating the completion behind it, so a forged or corrupted settled row
+is a failure of the store's own integrity, which the verifier does not catch.
+Every other retained row listed above is checked again before use.
+
+**Each hook needs its own bounded deadline.** The core sets no timeout on a
+verifier or adapter call, so a hook that never settles hangs that
+`advanceLiquidityTankSettlement` call. Another owner can take the phase over
+once the lease expires, and the stalled call, if it resumes, stores and
+broadcasts nothing without a current lease. A hook that runs out of time
+should throw or return `false`; the core treats either as a refusal.
 
 ## Contradicted locks
 
@@ -551,6 +570,9 @@ atomically, and pass `runLiquidityTankStoreConformance`.
 - reviewed evidence that the bridge enforces `reserved + available =
   capacity` atomically across concurrent phases (see
   [Tank balance](#tank-balance-is-the-bridges)); the SDK does not;
+- a review of the live adapter's signing window, with a test that
+  `prepareSubmission` neither broadcasts nor keeps the signed bytes, and
+  bounded deadlines on every adapter and verifier call;
 - a lock whose bridge reads contradict it (`empty`, `capacity-unavailable`, a
   failure not bound to the lock, or a different lock/deadline) does not expire
   while they do, and reports `lock-contradicted` past the deadline D. §9.5.5

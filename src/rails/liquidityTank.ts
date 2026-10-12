@@ -209,8 +209,11 @@ export interface LiquidityTankEffectFence {
  * It must not broadcast, log or otherwise reveal the signed bytes before
  * `recordSubmission` commits them: if the worker stops in between, the next
  * owner signs a fresh submission and the first bytes must never reach the
- * bridge. `preparedAt` is Unix milliseconds from a clock within one minute of
- * the host's; the core refuses a fresh submission stamped outside that window.
+ * bridge. The core cannot enforce or detect this, so it is part of reviewing
+ * any adapter. `preparedAt` is Unix milliseconds from a clock within one
+ * minute of the host's; the core refuses a fresh submission stamped outside
+ * that window. The core sets no timeout: every method must settle within its
+ * own bounded deadline.
  */
 export interface LiquidityTankAdapter {
   prepareSubmission(
@@ -232,6 +235,9 @@ export interface LiquidityTankAdapter {
  * Host checks the core cannot make itself. Both are required: when one is
  * missing the core refuses before any claim, and when one answers anything
  * but literal `true` (or throws) the core does not use the value it checked.
+ * The core sets no timeout, so each must settle within its own bounded
+ * deadline; a hook that never settles hangs the call. A retained `settled`
+ * row is returned as the store wrote it, without either check.
  */
 export interface LiquidityTankVerifier {
   /**

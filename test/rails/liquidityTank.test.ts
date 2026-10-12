@@ -5460,4 +5460,34 @@ describe("round 11", () => {
         .resolves.toEqual({ status: "recorded" });
     });
   });
+
+  describe("code P3-3: a retained settled row is trusted as the store wrote it", () => {
+    test("a settled phase is reported without asking either hook, while a committed expiry is re-checked", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      const run = runner({ store, adapter: h.adapter });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({ status: "settled" });
+      const refusing = {
+        authenticateObservation: vi.fn(async () => false),
+        verifySignedSubmission: vi.fn(async () => false),
+      } satisfies LiquidityTankVerifier;
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), verifier: refusing }))
+        .resolves.toMatchObject({ status: "settled", settlement: { txRef: { bridgeId: BRIDGE_ID } } });
+      expect(refusing.authenticateObservation).not.toHaveBeenCalled();
+      expect(refusing.verifySignedSubmission).not.toHaveBeenCalled();
+
+      const expiredStore = createInMemoryLiquidityTankStore(VOLATILE);
+      const expiring = harness();
+      const expiredRun = await lockDurably(expiredStore, expiring);
+      expiredRun.setClock(D + 1_000);
+      expiring.setObservation(lockedPendingAt(expiring.operationHash, D + 1_000));
+      await expect(advanceLiquidityTankSettlement({ ...expiredRun.shared, owner: "expire" }))
+        .resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
+      expiredRun.setClock(D + 2_000);
+      await expect(advanceLiquidityTankSettlement({ ...expiredRun.shared, owner: "replay", verifier: refusing }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" });
+      expect(refusing.authenticateObservation).toHaveBeenCalled();
+    });
+  });
 });
