@@ -63,7 +63,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
-import { IndeterminateSubstrateError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError } from "../../src/errors.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 
@@ -811,6 +811,31 @@ const auditFailure = (reference: string): AuditTrackResult => ({
 });
 const auditPending: AuditTrackResult = { status: "pending-retry", reasonCode: "audit-read-unanswered", retryAt: 1780000060000 };
 
+// A deadline the test expires itself: no real waiting.
+function manualDeadline() {
+  const armed = new Map<number, Readonly<{ timeoutMs: number; expire: () => void }>>();
+  let next = 0;
+  return {
+    start(expire: () => void, timeoutMs: number) {
+      const id = next++;
+      armed.set(id, { timeoutMs, expire });
+      return () => { armed.delete(id); };
+    },
+    armed: () => [...armed.values()].map((timer) => timer.timeoutMs),
+    expire() {
+      for (const [id, timer] of [...armed]) {
+        armed.delete(id);
+        timer.expire();
+      }
+    },
+  };
+}
+
+// Lets every promise that can settle without a timer settle.
+async function flush() {
+  for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
 // A failed payment is the failing terminal path an audit failure must match.
 const paymentFailure = (role: FixedPriceX402CoordinatorRole): AuditTrackResult => auditFailure(`${role}:payment`);
 type TrackResults = Partial<Record<string, AuditTrackResult>>;
@@ -936,6 +961,96 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
       },
     );
   }
+
+  // One copy's read never settles. The other copy's answer, a rejection, or
+  // its unanswered read decides at the deadline; a late read changes nothing.
+  for (const hanging of ["buyer", "seller"] as const) {
+    const other = hanging === "buyer" ? "seller" : "buyer";
+    it.each(["rejects", "goes unanswered"] as const)(
+      `decides at the deadline when the ${hanging} copy's read never settles and the other copy %s`,
+      async (otherOutcome) => {
+        const gate = await gateWithAudit(rail, (fx) => ({
+          buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+        }));
+        const clock = manualDeadline();
+        let lateRead = (_error: Error): void => undefined;
+        let reached = false;
+        const outcome = gate.verify({
+          ...gate.fx.deps,
+          deadline: { timeoutMs: 5_000, start: clock.start },
+          readBundleCopy: async (nativeAddress, role) => {
+            if (role === hanging) {
+              reached = true;
+              return await new Promise<never>((_resolve, reject) => { lateRead = reject; });
+            }
+            if (otherOutcome === "goes unanswered") {
+              throw new IndeterminateSubstrateError(`${role} bundle read unavailable`);
+            }
+            return gate.fx.deps.readBundleCopy(nativeAddress, role);
+          },
+          verifyBundleAnchor: async (copy) => ({ disposition: "invalid", reason: `${copy.role}-anchor-invalid` }),
+        }).then(() => "verified", (error: unknown) => error);
+        let decided = false;
+        void outcome.then(() => { decided = true; });
+        await flush();
+        expect(reached).toBe(true);
+        expect(clock.armed()).toEqual([5_000]);
+        expect(decided).toBe(false);
+
+        clock.expire();
+        const error = await outcome;
+        if (otherOutcome === "rejects") {
+          expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+          expect(error).toMatchObject({ message: `completed ${other} bundle anchor verification is invalid` });
+        } else {
+          expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+          expect(error).toMatchObject({ message: `${other} bundle read unavailable` });
+        }
+        // The read answers authoritatively after the deadline: nothing changes.
+        lateRead(new DacsError(`late ${hanging} answer`));
+        await flush();
+        await expect(outcome).resolves.toBe(error);
+        expect(clock.armed()).toEqual([]);
+      },
+    );
+  }
+
+  it("reports an indeterminate result when neither copy's read settles by the deadline", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      deadline: { timeoutMs: 5_000, start: clock.start },
+      readBundleCopy: () => new Promise<never>(() => undefined),
+    }).then(() => "verified", (error: unknown) => error);
+    await flush();
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({ message: "completed buyer bundle copy verification did not settle within 5000 ms" });
+  });
+
+  it("disarms the deadline once both copies settle", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    await expect(gate.verify({ ...gate.fx.deps, deadline: { start: clock.start } }))
+      .resolves.toMatchObject({ milestone: "audit-complete" });
+    expect(clock.armed()).toEqual([]);
+  });
+
+  it.each([0, -1, 1.5, "5000"])("refuses a malformed deadline (%s ms) before reading either copy", async (timeoutMs) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const readBundleCopy = vi.fn(gate.fx.deps.readBundleCopy);
+    await expect(gate.verify({ ...gate.fx.deps, readBundleCopy, deadline: { timeoutMs } as never }))
+      .rejects.toThrow("deadline.timeoutMs is malformed");
+    expect(readBundleCopy).not.toHaveBeenCalled();
+  });
 
   it.each(["buyer", "seller"] as const)("refuses contradicting final audit outcomes (%s failed)", async (failed) => {
     const gate = await gateWithAudit(rail, (fx) => ({
