@@ -47,17 +47,19 @@ const binding = (id: string): AnchorBinding => ({
   contentHash: contentHash(record(id)),
   version: 1,
 });
+// A non-null cursor is the state after the initial null-cursor page.
 const state = (cursor: string | null): ArtifactScanState => ({
   owner: OWNER,
   cursor,
   seen: new Map(),
   metadata: new Map(),
   consumedCursors: new Set(),
-  pagesConsumed: 0,
+  pagesConsumed: cursor === null ? 0 : 1,
   exhausted: false,
   pendingRow: null,
   deferred: [],
 });
+const cursors = (count: number) => new Set(Array.from({ length: count }, (_, i) => `consumed-${i}`));
 const retrying = (input: ArtifactScanState, id: string, attempts = 1): ArtifactScanState => ({
   ...input, pendingRow: { nativeAddress: `stor-${id}`, attempts },
 });
@@ -203,14 +205,14 @@ describe("createScanningArtifactRepository (#54)", () => {
       deferred = [];
       get owner() { reads.owner++; return OWNER; }
       get cursor() { reads.cursor++; return "next"; }
-      get pagesConsumed() { reads.pagesConsumed++; return 9_999; }
+      get pagesConsumed() { reads.pagesConsumed++; return 2; }
       get exhausted() { reads.exhausted++; return false; }
     }
     const fixture = setup(["a"]);
     const result = await fixture.repo.scanPage(new PersistedState());
     expect(result).toMatchObject({
       status: "page",
-      state: { cursor: null, pagesConsumed: 10_000, exhausted: true },
+      state: { cursor: null, pagesConsumed: 3, exhausted: true },
     });
     expect(result.state.consumedCursors).toEqual(new Set(["earlier", "next"]));
     expect(fixture.fetchPage).toHaveBeenCalledWith("next", expect.any(Number));
@@ -228,6 +230,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       const fieldReads = { seen: 0, metadata: 0, consumedCursors: 0 };
       const input: ArtifactScanState = {
         ...state("next"),
+        pagesConsumed: 2,
         get seen() { return ++fieldReads.seen === 1 ? retained.seen : new Map(); },
         get metadata() { return ++fieldReads.metadata === 1 ? retained.metadata : new Map(); },
         get consumedCursors() { return ++fieldReads.consumedCursors === 1 ? retained.consumedCursors : new Set<string>(); },
@@ -625,7 +628,7 @@ describe("createScanningArtifactRepository (#54)", () => {
 
   test("rejects a previously consumed current cursor before fetching", async () => {
     const fixture = setup([]);
-    const input = { ...state("A"), consumedCursors: new Set(["A"]) };
+    const input = { ...state("A"), consumedCursors: new Set(["A"]), pagesConsumed: 2 };
     const result = await fixture.repo.scanPage(input);
     expect(result).toMatchObject({ status: "restart-required", code: "cursor-cycle", results: [], state: state(null) });
     expect(fixture.fetchPage).not.toHaveBeenCalled();
@@ -652,7 +655,7 @@ describe("createScanningArtifactRepository (#54)", () => {
 
   test("bounds a traversal after 10000 consumed pages before fetching", async () => {
     const fixture = setup([]);
-    const input = Object.assign(state("next"), { pagesConsumed: 10_000 });
+    const input = Object.assign(state("next"), { pagesConsumed: 10_000, consumedCursors: cursors(9_999) });
     const result = await fixture.repo.scanPage(input);
     expect(result).toMatchObject({ status: "restart-required", code: "page-bound", results: [], state: state(null) });
     if (result.status === "restart-required") expect(result.reason).toContain("10000 pages");
@@ -665,12 +668,13 @@ describe("createScanningArtifactRepository (#54)", () => {
     deferred: [deferredRow("y")],
     pendingRow: { nativeAddress: "stor-z", attempts: 2 },
   };
+  // The third page: the null and "old" pages are consumed.
   const resumable = (over: Partial<ArtifactScanState> = {}): ArtifactScanState => ({
-    ...state("cur"), ...keptRows, consumedCursors: new Set(["old"]), pagesConsumed: 3, ...over,
+    ...state("cur"), ...keptRows, consumedCursors: new Set(["old"]), pagesConsumed: 2, ...over,
   });
   test.each<[string, ArtifactScanRestartCode, Partial<ArtifactScanState>, ScanningArtifactRepositoryDeps["fetchPage"]?]>([
-    ["a consumed current cursor", "cursor-cycle", { consumedCursors: new Set(["cur", "old"]) }],
-    ["the page bound", "page-bound", { pagesConsumed: 10_000 }],
+    ["a consumed current cursor", "cursor-cycle", { consumedCursors: new Set(["cur", "old"]), pagesConsumed: 3 }],
+    ["the page bound", "page-bound", { pagesConsumed: 10_000, consumedCursors: cursors(9_999) }],
     ["a cursor that did not advance", "cursor-cycle", {}, async () => ({ entries: [row("w")], nextCursor: "cur" })],
     ["a next cursor already consumed", "cursor-cycle", {}, async () => ({ entries: [row("w")], nextCursor: "old" })],
     ["a fetcher restart signal", "history-restart-required", {},
@@ -1028,6 +1032,20 @@ describe("createScanningArtifactRepository (#54)", () => {
       "scan state is exhausted but still has a pending row"],
     ["exhausted before consuming a page", { cursor: null, pagesConsumed: 0, exhausted: true },
       "scan state is exhausted before consuming a page"],
+    // Review COUNTERS: resuming would skip every row before the cursor.
+    ["a cursor before consuming a page", { cursor: "skip-first", pagesConsumed: 0 },
+      "scan state has a cursor before consuming a page"],
+    ["consumed cursors before consuming a page", { cursor: null, pagesConsumed: 0, consumedCursors: new Set(["c1"]) },
+      "scan state has consumed cursors before consuming a page"],
+    ["more pages than consumed cursors", { cursor: "third-page", pagesConsumed: 3, consumedCursors: new Set(["c1"]) },
+      "scan state page count does not match its consumed cursors"],
+    ["fewer pages than consumed cursors", { cursor: "next", pagesConsumed: 2, consumedCursors: new Set(["c1", "c2"]) },
+      "scan state page count does not match its consumed cursors"],
+    ["exhausted with an extra consumed cursor",
+      { cursor: null, pagesConsumed: 1, exhausted: true, consumedCursors: new Set(["impossible-extra-cursor"]) },
+      "scan state page count does not match its consumed cursors"],
+    ["no cursor after a page but not exhausted", { cursor: null, pagesConsumed: 2, consumedCursors: new Set(["c1"]) },
+      "scan state has no cursor after consuming a page but is not exhausted"],
     ["a row both seen and deferred", { ...handledA, deferred: [deferredRow("a")] },
       "scan state has stor-a both in seen and deferred"],
     ["a row deferred twice", { deferred: [deferredRow("a"), deferredRow("a")] },
@@ -1048,6 +1066,35 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.readAnchor).not.toHaveBeenCalled();
   });
 
+  // The other direction: every page-count, cursor and exhaustion shape scanPage returns.
+  test.each<[string, Partial<ArtifactScanState>]>([
+    ["a fresh traversal", { cursor: null, pagesConsumed: 0 }],
+    ["a valid restart keeping rows", { cursor: null, pagesConsumed: 0, ...handledA, pendingRow: { nativeAddress: "stor-b", attempts: 2 } }],
+    ["the second page", { cursor: "c1", pagesConsumed: 1 }],
+    ["a later page", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]) }],
+    ["a later page retrying a row", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), pendingRow: pending }],
+    ["one exhausted page", { cursor: null, pagesConsumed: 1, exhausted: true }],
+    ["several exhausted pages", { cursor: null, pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), exhausted: true }],
+  ])("consistent persisted state (%s) is resumed", async (_name, consistent) => {
+    const fixture = setup(["a"]);
+    const input = { ...state("next"), ...consistent };
+    const result = await fixture.repo.scanPage(input);
+    expect(result.status).toBe("page");
+    expect(fixture.fetchPage.mock.calls.map(([cursor]) => cursor)).toEqual(input.exhausted ? [] : [input.cursor]);
+  });
+
+  test("a pending row at the largest attempt count is deferred into a state that is resumed", async () => {
+    const fixture = setup(["a"], { verifyArtifact: () => { throw new Error("registry 503"); } });
+    fixture.fetchPage.mockResolvedValue({ entries: [row("a")], nextCursor: "later" });
+    const input = retrying(state("page"), "a", Number.MAX_SAFE_INTEGER);
+    const page = await fixture.repo.scanPage(input);
+    expect(page).toMatchObject({ status: "page", state: { cursor: "later", pendingRow: null } });
+    expect(page.state.deferred.map(({ attempts }) => attempts)).toEqual([Number.MAX_SAFE_INTEGER]);
+    fixture.fetchPage.mockResolvedValue({ entries: [], nextCursor: null });
+    const next = await fixture.repo.scanPage(page.state);
+    expect(next).toMatchObject({ status: "page", state: { exhausted: true, deferred: page.state.deferred } });
+  });
+
   test("accepts state persisted as entries, values and plain JSON rows", async () => {
     const fixture = setup(["a", "b"]);
     fixture.fetchPage.mockResolvedValue({ entries: [row("a"), row("b")], nextCursor: null });
@@ -1056,6 +1103,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       seen: [["stor-x", logical("x")]],
       metadata: [["stor-x", logical("x")]],
       consumedCursors: ["earlier"],
+      pagesConsumed: 2,
       pendingRow: { nativeAddress: "stor-a", attempts: 1 },
       deferred: [{ anchor: { ...row("b"), kind: "rating" }, code: "read-indeterminate", reason: "r", attempts: 5 }],
     })) as Omit<ArtifactScanState, "seen" | "metadata" | "consumedCursors"> & {

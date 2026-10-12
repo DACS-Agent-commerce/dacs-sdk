@@ -312,10 +312,25 @@ function ownedDeferred(value: unknown): ArtifactScanDeferredRow[] | undefined {
  * that breaks one is never resumed: its fields cannot all be true.
  */
 function stateContradiction(state: ArtifactScanState): string | undefined {
-  const { cursor, seen, metadata, pagesConsumed, exhausted, pendingRow, deferred } = state;
-  if (exhausted && cursor !== null) return "scan state is exhausted but still has a cursor";
+  const {
+    cursor, seen, metadata, consumedCursors, pagesConsumed, exhausted, pendingRow, deferred,
+  } = state;
+  // Each consumed page after the first adds the cursor it was fetched at.
+  if (pagesConsumed === 0) {
+    if (cursor !== null) return "scan state has a cursor before consuming a page";
+    if (consumedCursors.size > 0) return "scan state has consumed cursors before consuming a page";
+    if (exhausted) return "scan state is exhausted before consuming a page";
+  } else {
+    if (pagesConsumed !== consumedCursors.size + 1) {
+      return "scan state page count does not match its consumed cursors";
+    }
+    if (exhausted !== (cursor === null)) {
+      return exhausted
+        ? "scan state is exhausted but still has a cursor"
+        : "scan state has no cursor after consuming a page but is not exhausted";
+    }
+  }
   if (exhausted && pendingRow !== null) return "scan state is exhausted but still has a pending row";
-  if (exhausted && pagesConsumed === 0) return "scan state is exhausted before consuming a page";
   for (const [nativeAddress, logicalAddress] of seen) {
     const observed = metadata.get(nativeAddress);
     if (observed !== undefined && observed !== logicalAddress) {
@@ -603,8 +618,9 @@ export function createScanningArtifactRepository(
         const outcome = await readRow(anchor);
         results.push({ anchor, outcome });
         if (outcome.status === "indeterminate") {
+          // Saturate so a persisted count at the limit still yields a valid state.
           const attempts = state.pendingRow?.nativeAddress === anchor.nativeAddress
-            ? state.pendingRow.attempts + 1
+            ? Math.min(state.pendingRow.attempts + 1, Number.MAX_SAFE_INTEGER)
             : 1;
           if (attempts < maxRowAttempts) {
             return {
