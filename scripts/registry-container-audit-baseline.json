@@ -94,5 +94,168 @@
     "GHSA-xq3m-2v4x-88gg",
     "GHSA-xq7p-g2vc-g82p",
     "GHSA-xx6v-rp6x-q39c"
-  ]
+  ],
+  "policyFindings": {
+    "source": {
+      "commit": "b7b180f98f27933e0a9153e93161981f2ce2b58a",
+      "run": "38214792229/1",
+      "job": "clean registry consumer (Node 20 / Docker)",
+      "evidence": "ci-b7b180f/clean-registry-artifact"
+    },
+    "gitDependencies": [
+      {
+        "location": "node_modules/@bundlr-network/client/node_modules/arbundles",
+        "field": "dependencies.avsc",
+        "value": "https://github.com/Irys-xyz/avsc#csp-fixes",
+        "version": "0.6.23",
+        "integrity": "sha512-+gr93F3fivN+6dhiImT6BQNaXz4oECPn2GYjCZjS2yEoq7hM78FRvVp6kQyjEdhnuBFQr/q4oS/nkjnQlHdj9Q=="
+      }
+    ],
+    "engineViolations": [
+      {
+        "package": "@npmcli/agent@5.0.2",
+        "location": "node_modules/@npmcli/agent",
+        "integrity": "sha512-EkzGmEsgbQ1rqWkRJe2P0oQHx/ylZozDUNPMXCklLuSFL3GY+QyEfBUjhjCsgGXzh4OGpnHvkboSQgczjP/jJg==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@npmcli/fs@6.0.0",
+        "location": "node_modules/@npmcli/fs",
+        "integrity": "sha512-AheOs4swKka/XLtht6xxJDPezlQ7K2IYQ9Y8lST4JLDjnralnWuMM9AE2CdVcgQJ5omrXhsRzM7F7aYmeZBvKQ==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@npmcli/redact@5.0.0",
+        "location": "node_modules/@npmcli/redact",
+        "integrity": "sha512-3zcN5Q3yEmeyxXBzqB6fXPQFzYa2ROsGFSr69W0ArXIAGJqxl/aFECOVPD2kbkYPm0U/EHxFKgclK3UA9WQg5A==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@sigstore/bundle@5.0.0",
+        "location": "node_modules/@sigstore/bundle",
+        "integrity": "sha512-wefjygudENbzbQMks1t5u34EP0fFoD0XvaEP7DOUP/sXKvogzEJYFw5E6pegGyp3onGWzVEYKVa3bNZWyTYX+A==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@sigstore/core@4.0.1",
+        "location": "node_modules/@sigstore/core",
+        "integrity": "sha512-9v5hRjujn5NXq8o7XFEUgLyAtdr5Iisb4pzM05u3K61IS5q3hP3luWAndk0RkPPLTUFoTbg7Vb84UQ1ZQeajWQ==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@sigstore/sign@5.0.0",
+        "location": "node_modules/@sigstore/sign",
+        "integrity": "sha512-DSFivqz9/i5AkwZ5fq0YdjaJlc4o1WeS2Zffon0kqtChx0vy4W9NOjkEet9bF2vkzOufX72eVH8kZBIGtcBp1w==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@sigstore/tuf@5.0.0",
+        "location": "node_modules/@sigstore/tuf",
+        "integrity": "sha512-Zyqg9tcHps3uRAlKHLNmsW4ohsUZAjb9G+31r7lg0ICh/JOcadzmJsIRdjKljlRHpaR0K4aJ2kXXIdywdcdMlA==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@sigstore/verify@4.1.2",
+        "location": "node_modules/@sigstore/verify",
+        "integrity": "sha512-BfD9eLrz3A/DG58aSgfgZYmIR6V9Yw96QVN/frtu2bEH7ctSTk2TDvHU12un3JsDPBTqTNkqkIkucjxljpOFqQ==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "@tufjs/models@5.0.0",
+        "location": "node_modules/@tufjs/models",
+        "integrity": "sha512-U4mVcdFGOi6pt8n38LdWZp67Svn7ppnU1Pj8SGOVaBi1X4gm+G4ztQlLfkoJbKSHfjA6WeaiJp2A4V83AJF6nQ==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "cacache@21.0.1",
+        "location": "node_modules/cacache",
+        "integrity": "sha512-pTwz/uj3Jyp6WXdJ6fWhR+7LVxVs6RyroQSn7KJwHsSxXuyGSp0pcMVcwSwTpCFq1X2YG8QBe0W+vN+cr0SwzA==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "make-fetch-happen@16.0.1",
+        "location": "node_modules/make-fetch-happen",
+        "integrity": "sha512-uUv1yxHzaKVVEPfcFeGSNov/Cehjv08ovlY8ImTljgL7Q+SiA0dAYLQ6SYVa2kkKqNj4Y3aZEI7xv2teadie0A==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "minipass-fetch@6.0.0",
+        "location": "node_modules/minipass-fetch",
+        "integrity": "sha512-AWI8bKapGmgx/J0E6IGYSKj8TiHebZkmKWSs8raPSw8KXwgEAJ+Bw3+LSdXHR6T/RHKAWCOYk2MiLrYluaUU6w==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "proc-log@7.0.0",
+        "location": "node_modules/proc-log",
+        "integrity": "sha512-FYgfaA69XZ93zaXLoMNQ+ViDXGGBgR8aLh03txzcFhV+9xOXx7+8DLCULrKKpR9+GsH9ZfHm82aSUPpozX0Ztg==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "sigstore@5.0.0",
+        "location": "node_modules/sigstore",
+        "integrity": "sha512-hJqJfoG/e4qFQaauQL00c6J6FrHLBGKtkFvW3JbTSIEFOhLrSjdSM/gWd/yUOfYo/gsERehTXGC1VZWX+9X4Dg==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "ssri@14.0.0",
+        "location": "node_modules/ssri",
+        "integrity": "sha512-jQxKI0yx0ZnTKrqjKkLDV2DXkBQn3k49JVmVqDGcDwKDtGDbImD/GXsq04KD0VVzCQQ9wZJYal3RwR1GzWTSow==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "tuf-js@6.0.0",
+        "location": "node_modules/tuf-js",
+        "integrity": "sha512-zlJVOIO68hmgo1//X4ENEcTGfuOTAtDPi8PsTsG+FyxD85E/ww1ZnwBbWo/yCEExGpI+Kilg7Z3qCdHX2BoJTQ==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      }
+    ],
+    "lockSbomProblems": [
+      "missing: avsc@https://github.com/Irys-xyz/avsc#csp-fixes, required by arbundles@0.6.23",
+      "invalid: @ton/core@0.59.1, >=0.62.0 <1.0.0 required by @ton/ton@15.4.0",
+      "invalid: @solana/web3.js@1.89.1, ^1.95.5 required by @solana/spl-token@0.4.15"
+    ],
+    "physicalSbomProblems": [
+      "invalid: node-fetch@2.7.0, 2.6.7 required by @near-js/providers@0.2.3"
+    ],
+    "productionImageDependencies": [
+      {
+        "name": "typescript",
+        "location": "node_modules/typescript",
+        "version": "5.9.2",
+        "integrity": "sha512-CWBzXQrc/qOkhidw1OzBTQuYRbfyxDXJMVJ1XNwUHGROVmuaeiEm3OslpZ1RV96d7SKKjZKrSJu3+t/xlw3R9A=="
+      }
+    ]
+  }
 }
