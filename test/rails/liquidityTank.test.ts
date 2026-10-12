@@ -3101,6 +3101,23 @@ describe("advanceLiquidityTankSettlement", () => {
     },
   );
 
+  test.each([
+    ["owner", { owner: "" }, "pay-cross-chain-liquidity-tank: owner must be a non-empty string"],
+    ["clock", { now: "x" as never }, "pay-cross-chain-liquidity-tank: now must be a stable function"],
+  ] as const)("rejects an invalid %s as indeterminate before store or adapter access", async (_label, config, reason) => {
+    const store = createInMemoryLiquidityTankStore();
+    const claim = vi.spyOn(store, "claim");
+    const h = harness();
+    await expect(advanceLiquidityTankSettlement({
+      ...runner({ store, adapter: h.adapter }).shared,
+      ...config,
+    })).resolves.toEqual({ status: "indeterminate", reason });
+    expect(claim).not.toHaveBeenCalled();
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
+    expect(h.observe).not.toHaveBeenCalled();
+    expect(h.broadcastRetained).not.toHaveBeenCalled();
+  });
+
   test("rejects an overflowing lease expiry before claiming", async () => {
     const store = createInMemoryLiquidityTankStore();
     const claim = vi.spyOn(store, "claim");
