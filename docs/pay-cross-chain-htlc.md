@@ -155,7 +155,9 @@ below the bottom of the range has long passed, so that leg is refunded at
 once.
 
 The core never returns `failed` while a locked leg still needs a refund or
-claim that it will drive later. Before the destination lock exists, a failed
+claim that it will drive later, nor for a missing or different buyer salt
+(`htlc-salt-missing` and `htlc-salt-mismatch` under Operator alerts). Before
+the destination lock exists, a failed
 destination lock is `refund-pending` with reason `destination-lock-failed`,
 and a destination lock that can no longer be placed with the absolute margin
 is `refund-pending` with reason `destination-lock-window-closed`; the source
@@ -244,7 +246,8 @@ never re-sent there either, and the result is `htlc-refund-absent` or
 
 `operator-alert` means the core cannot safely drive the session further on
 its own and a person must act. It carries a `reason` and the session's
-current `txRefs`; `htlc-refund-absent` also carries `refunds`. It is
+current `txRefs` (empty for the two salt alerts, which are raised before the
+session is read); `htlc-refund-absent` also carries `refunds`. It is
 resumable, not terminal: a host pages an operator and keeps advancing the
 session, and a later call re-observes the chain and returns to normal progress
 if the chain has changed. The reasons are:
@@ -282,10 +285,24 @@ if the chain has changed. The reasons are:
   it can never land, and the core will not re-send it; `refunds` shows that
   leg as `absent`. The operator lands a refund for that leg by hand. Refund
   replacement is not implemented yet.
+- `htlc-salt-missing`: the call's `buyerSalt` is absent, not a byte array, or
+  shorter than 128 bits. Nothing is read, prepared or sent. A session may
+  already exist and still need driving, and only its original salt can drive
+  it, so this is never `failed`: the host supplies the original salt on the
+  next call and must not discard it.
+- `htlc-salt-mismatch`: the store refused the salt for this session (`claim`
+  returned `conflict`): it holds the session (the same `jobId`, `railId` and
+  `phaseIndex`) under another salt or authority, or the salt already belongs to
+  another session. Nothing is read, prepared or sent. The host finds the
+  session's original salt and authority, for example after a mis-keyed secret
+  cache, and supplies them on the next call. It discards no salt: this session,
+  and with a reused salt the other session too, may still need it.
 
-`failed` is returned only when the core has nothing it can drive: the inputs
-or authority are invalid; the store is corrupt, conflicting or lacks a
-required method; retained evidence and a new observation contradict each
+`failed` means there is nothing left for the core to drive. It is returned
+only when: the call's `owner`, `leaseDurationMs`, authority or hashlock
+deriver is unusable, so no session can be read with it; the store reports its
+record corrupt or lacks a required method; retained evidence and a new
+observation contradict each
 other (a changed source-lock checkpoint fact, a reveal checkpoint for another
 transaction, a final reveal of another or a malformed preimage, a final source
 claim without a final source lock or without a final or checkpointed reveal,
@@ -294,9 +311,10 @@ or a final source claim while the checkpointed reveal is reported `pending`,
 the source lock itself failed, so
 nothing was locked; or the source claim is final but reached finality after
 the source expiry (`settlement-atomicity`). These need an operator to
-reconcile the record, not a retry. Every other non-final state is
-`waiting`, `indeterminate`, `settle-asymmetric`, a refund status or
-`operator-alert`, and a host keeps advancing the session.
+reconcile the record, not a retry. A missing or different buyer salt is never
+`failed` (see `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other
+non-final state is `waiting`, `indeterminate`, `settle-asymmetric`, a refund
+status or `operator-alert`, and a host keeps advancing the session.
 
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
@@ -354,18 +372,26 @@ refunds. Use:
   address form. The adapter converts what the contract records into that form
   before reporting `lockTerms`.
 
-The buyer salt is never passed to an adapter. The host must keep the original
-buyer salt encrypted and durable until the session is terminal: settlement is
-recorded, both legs are refunded, or the core returns a permanent `failed`.
-Destination-claim finality is too early to discard it: every call to
-`advanceCrossChainHtlc` rebuilds the intent from `buyerSalt`, and the binding
-hash covers `buyerSaltHash`. Post-reveal source claims and replacements still
-need the derived preimage. A missing or different salt fails closed before
-any preparation or broadcast and prevents recovery. Because `operator-alert`
-is resumable, an alert being retried is not final; retain the salt while the
-host keeps advancing that session. Production stores must atomically
+The buyer salt is never passed to an adapter. Never discard the salt while
+the session can still be driven. The host keeps the original buyer salt
+encrypted and durable until the session is terminal: settlement is recorded
+(`settled`), both legs are refunded (`refunded`), or the core returned a
+permanent `failed`, which means nothing is left to drive, and an operator has
+reconciled the session. Every other result, `operator-alert` included, means
+the session may still need the salt. Destination-claim finality is too early
+to discard it: every call to `advanceCrossChainHtlc` rebuilds the intent from
+`buyerSalt`, and the binding hash covers `buyerSaltHash`. Post-reveal source
+claims and replacements still need the derived preimage. A missing or
+different salt is a host error the host can correct, not the end of the
+session: the call reads, prepares and broadcasts nothing and returns
+`operator-alert` `htlc-salt-missing` or `htlc-salt-mismatch`, never `failed`,
+and the next call with the original salt resumes the session. Production
+stores must atomically
 enforce cross-session salt uniqueness, authenticate retained signed payloads,
-and persist both finality checkpoints. After the source lock becomes final, the
+and persist both finality checkpoints. `claim` returns `conflict` when it holds
+the session under another binding or secret hash, or when the salt already
+belongs to another session; the core reports that as `htlc-salt-mismatch`,
+and only a `corrupt` claim as `failed`. After the source lock becomes final, the
 core calls `recordSourceFinality` with the exact source-lock transaction
 reference and prepared-effect hash, its within-ledger inclusion/finality
 timestamps and expiry, and the adapter's authentication hash. This
@@ -561,10 +587,14 @@ also accepting byte-equivalent uppercase and prefixed values.
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
   process. Restart safety depends on it; the in-memory store does not provide
   it.
-- Keep the original buyer salt encrypted and durable until the session is
-  terminal: settlement is recorded, both legs are refunded, or the core
-  returns a permanent `failed`. Keep it across destination-claim finality and
-  every source-claim retry or replacement; retain it while retrying an alert.
+- Never discard the buyer salt while the session can still be driven. Keep
+  it encrypted and durable until the session is terminal: settlement is
+  recorded, both legs are refunded, or the core returned a permanent `failed`
+  (nothing is left to drive) and an operator has reconciled the session. Keep
+  it across destination-claim finality, every source-claim retry or
+  replacement, and every alert. `htlc-salt-missing` and `htlc-salt-mismatch`
+  mean the call had no salt or the wrong one, not that the session ended:
+  supply the original salt on the next call.
 - Supply that same salt on every `advanceCrossChainHtlc` call, including after
   a restart. The current store API does not return secrets on takeover.
 - Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call.
@@ -578,7 +608,8 @@ also accepting byte-equivalent uppercase and prefixed values.
     `htlc-destination-claim-absent-preimage-broadcast`: the preimage was
     broadcast, so the payee can claim the source before its expiry. The other
     reasons are `htlc-source-claim-missed-after-reveal`,
-    `htlc-source-claim-replacement-limit-reached` and `htlc-refund-absent`;
+    `htlc-source-claim-replacement-limit-reached`, `htlc-refund-absent`,
+    `htlc-salt-missing` and `htlc-salt-mismatch`;
   - `refund-stalled`: a refund reverted and is not re-sent;
   - `waiting` with reason `htlc-destination-claim-unresolved-after-cutoff`: a
     broadcast reveal is still unresolved after the claim cutoff, so nothing
@@ -587,7 +618,7 @@ also accepting byte-equivalent uppercase and prefixed values.
   - `waiting` with reason `htlc-destination-claim-unresolved-after-expiry`: a
     reveal is still unresolved after both expiries and blocks both refunds;
   - `failed`: there is nothing left to drive and the record needs
-    reconciling.
+    reconciling; keep the salt until the operator has done so.
 - Every other `waiting` and `indeterminate` result is retried by advancing
   the session again. A host may also page when one persists, for example an
   adapter that keeps reporting `htlc-adapter-lock-observation-invalid` or an

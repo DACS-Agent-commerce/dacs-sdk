@@ -126,6 +126,10 @@ function htlcPage(progress: CrossChainHtlcProgress): string | undefined {
         case "htlc-destination-claim-failed-preimage-public":
         case "htlc-destination-claim-absent-preimage-broadcast":
           return progress.reason;
+        // A host error found before anything is read: supply the original salt, keep it.
+        case "htlc-salt-missing":
+        case "htlc-salt-mismatch":
+          return `${progress.reason}: keep the salt`;
         default: {
           const unhandled: never = progress;
           return unhandled;

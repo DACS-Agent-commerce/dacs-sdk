@@ -525,13 +525,20 @@ export type CrossChainHtlcProgress =
        * The core cannot safely drive the session further on its own and a
        * person must act. Resumable: a later call re-observes the chain and
        * returns to normal progress if it has changed.
+       *
+       * `htlc-salt-missing` (no usable `buyerSalt`) and `htlc-salt-mismatch`
+       * (the store refused the salt for this session) are host errors found
+       * before anything is read, so their `txRefs` is empty. The session may
+       * still need driving: supply its original salt and never discard it.
        */
       status: "operator-alert";
       reason:
         | "htlc-source-claim-missed-after-reveal"
         | "htlc-source-claim-replacement-limit-reached"
         | "htlc-destination-claim-failed-preimage-public"
-        | "htlc-destination-claim-absent-preimage-broadcast";
+        | "htlc-destination-claim-absent-preimage-broadcast"
+        | "htlc-salt-missing"
+        | "htlc-salt-mismatch";
       txRefs: readonly Readonly<HtlcTxRef>[];
     }
   | {
@@ -1407,6 +1414,13 @@ export async function advanceCrossChainHtlc(
     return { status: "failed", errorClass: "permanent", reason: String(error) };
   }
   const readNow = (): number => requireUInt(now(), "clock");
+  // A missing or different salt is a host error the host can correct, not the
+  // end of a session: one may still need driving, and only its original salt
+  // can drive it. So neither is ever `failed`, which would tell the host the
+  // salt can go.
+  if (!(input.buyerSalt instanceof Uint8Array) || input.buyerSalt.byteLength < 16) {
+    return { status: "operator-alert", reason: "htlc-salt-missing", txRefs: [] };
+  }
   let created: Readonly<{
     intent: Readonly<CrossChainHtlcIntent>;
     secrets: Readonly<CrossChainHtlcSecrets>;
@@ -1453,6 +1467,11 @@ export async function advanceCrossChainHtlc(
     return storedSettlementMatchesIntent(claimed.settlement, intent)
       ? { status: "settled", settlement: claimed.settlement }
       : { status: "indeterminate", reason: "htlc-stored-settlement-mismatch" };
+  }
+  if (claimed.status === "conflict") {
+    // The store holds this session under another salt or binding, or the salt
+    // belongs to another session: the wrong salt, not a finished session.
+    return { status: "operator-alert", reason: "htlc-salt-mismatch", txRefs: [] };
   }
   if (claimed.status !== "acquired") {
     return { status: "failed", errorClass: "permanent", reason: claimed.reason };

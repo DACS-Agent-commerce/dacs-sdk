@@ -587,22 +587,44 @@ describe("advanceCrossChainHtlc", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
-  test("rejects cross-session buyer-salt reuse in the durable store", async () => {
+  test("rejects cross-session buyer-salt reuse in the durable store without ending either session", async () => {
     const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const first = runner({ store, adapter: harness({ mode: { "source-lock": "pending" } }).adapter });
     await advanceCrossChainHtlc(first.shared);
     first.setClock(2_000_000);
+    const secondAdapter = harness();
     const second = runner({
       authority: authority({ jobId: OTHER_JOB_ID }),
       store,
-      adapter: harness().adapter,
+      adapter: secondAdapter.adapter,
       now: () => 2_000_000,
     });
+    // The salt is the first session's, which still needs it: a page, never `failed`.
     await expect(advanceCrossChainHtlc(second.shared)).resolves.toEqual({
+      status: "operator-alert",
+      reason: "htlc-salt-mismatch",
+      txRefs: [],
+    });
+    expect(secondAdapter.prepareAction).not.toHaveBeenCalled();
+    await expect(advanceCrossChainHtlc({ ...first.shared, owner: "first-session" })).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-source-lock-finality-pending",
+    });
+  });
+
+  test("still fails a claim the store reports corrupt", async () => {
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim() { return { status: "corrupt", reason: "htlc-store-record-unreadable" }; },
+    };
+    const h = harness();
+    await expect(advanceCrossChainHtlc(runner({ store, adapter: h.adapter }).shared)).resolves.toEqual({
       status: "failed",
       errorClass: "permanent",
-      reason: "htlc-buyer-salt-cross-session-reuse",
+      reason: "htlc-store-record-unreadable",
     });
+    expect(h.prepareAction).not.toHaveBeenCalled();
   });
 
   test("honours the payer free-option decision without revealing", async () => {
@@ -1890,22 +1912,22 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
-  test.each(["missing", "different"] as const)(
-    "requires the retained buyer salt after a final reveal (%s salt fails closed)",
-    async (variant) => {
+  // A wrong or missing salt is a host error, not the end of the session: the
+  // original salt still settles it below. `failed` would tell a host following
+  // the checklist that the salt can be discarded, so these page instead.
+  test.each([
+    ["missing", undefined as unknown as Uint8Array, "htlc-salt-missing"],
+    ["too short", Uint8Array.from(SALT.subarray(1)), "htlc-salt-missing"],
+    ["different", Uint8Array.from(SALT, (byte) => byte + 1), "htlc-salt-mismatch"],
+  ] as const)(
+    "pages without ending the session when the buyer salt after a final reveal is %s",
+    async (_variant, buyerSalt, reason) => {
       const { h, run } = await toFinalRevealWithRegressedLock("deleted");
       const preparations = h.prepareAction.mock.calls.length;
       const broadcasts = h.broadcastRetained.mock.calls.length;
-      const buyerSalt = variant === "missing"
-        ? undefined as unknown as Uint8Array
-        : Uint8Array.from(SALT, (byte) => byte + 1);
-      await expect(advanceCrossChainHtlc({ ...run.nextOwner(), buyerSalt })).resolves.toEqual({
-        status: "failed",
-        errorClass: "permanent",
-        reason: variant === "missing"
-          ? "pay-cross-chain-htlc: buyerSalt must be bytes"
-          : "htlc-settlement-binding-or-secret-conflict",
-      });
+      const progress = await advanceCrossChainHtlc({ ...run.nextOwner(), buyerSalt });
+      expect(progress).toEqual({ status: "operator-alert", reason, txRefs: [] });
+      expect(htlcNeedsOperator(progress)).toBe(true);
       expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
       expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
       await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
@@ -4215,6 +4237,8 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     { status: "operator-alert", reason: "htlc-source-claim-replacement-limit-reached", txRefs: refs },
     { status: "operator-alert", reason: "htlc-destination-claim-failed-preimage-public", txRefs: refs },
     { status: "operator-alert", reason: "htlc-destination-claim-absent-preimage-broadcast", txRefs: refs },
+    { status: "operator-alert", reason: "htlc-salt-missing", txRefs: [] },
+    { status: "operator-alert", reason: "htlc-salt-mismatch", txRefs: [] },
     { status: "operator-alert", reason: "htlc-refund-absent", txRefs: refs, refunds: { "source-refund": "absent" } },
     { status: "refund-stalled", reason: "destination-timeout", txRefs: refs, refunds: { "source-refund": "failed" } },
     { status: "waiting", reason: "htlc-destination-claim-unresolved-after-cutoff" },
