@@ -415,6 +415,8 @@ async function delayedSendFixture(options: {
   conflictWrite?: boolean;
   /** The first save reaches the store only when releaseFirstSave() runs. */
   holdFirstSave?: boolean;
+  /** The lifecycle's next record write after the first peer call is unavailable. */
+  failLifecycleWriteAfterSend?: boolean;
   ack?: Record<string, unknown>;
   graceMs?: number;
   historyAdvanceMs?: number;
@@ -471,6 +473,7 @@ async function delayedSendFixture(options: {
   const submissions: Array<{ to: string; encrypted: DemosL2psRfqEncryptedMessage; messageHash: string }> = [];
   let accept: (() => void) | undefined;
   let visible = false;
+  let failLifecycleWrite = false;
   const peer: DemosL2psRfqPeerLike = {
     ...basePeer,
     async send(to, encrypted, messageHash) {
@@ -478,6 +481,7 @@ async function delayedSendFixture(options: {
       const stored = await outboxStore.load(messageHash) as Record<string, unknown> | undefined;
       framesAtCall.push(structuredClone(stored));
       submissions.push(structuredClone({ to, encrypted, messageHash }));
+      if (options.failLifecycleWriteAfterSend && submissions.length === 1) failLifecycleWrite = true;
       sendEntered.release();
       if (options.ack !== undefined) return { messageHash, ...options.ack } as never;
       if (options.refuseSeal || timedOut) return { messageHash, l2psStatus: "submitted" };
@@ -508,7 +512,19 @@ async function delayedSendFixture(options: {
     });
   }
   let transport = makeTransport();
-  const lifecycleOptions = clientOptions("buyer", transport, durableReservation());
+  const baseLifecycleOptions = clientOptions("buyer", transport, durableReservation());
+  const baseStore = baseLifecycleOptions.store;
+  const lifecycleOptions = {
+    ...baseLifecycleOptions,
+    store: {
+      ...baseStore,
+      compareAndSwap(...args: Parameters<typeof baseStore.compareAndSwap>) {
+        if (!failLifecycleWrite) return baseStore.compareAndSwap(...args);
+        failLifecycleWrite = false;
+        return { status: "unavailable" as const, reason: "lifecycle store unavailable" };
+      },
+    },
+  };
   let client = createDurableRfqLifecycleClient(lifecycleOptions);
   await client.open(openInput());
   let packet: Awaited<ReturnType<typeof buyerWithSentOffer>>["packet"] | undefined;
@@ -692,6 +708,31 @@ describe("Demos L2PS durable RFQ transport", () => {
       expect(fixture.submissions).toHaveLength(2);
       expect(fixture.submissions[1]).toEqual(fixture.submissions[0]);
       expect(fixture.seals()).toBe(2);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test("round 6: an acknowledged outbox entry is proof when the lifecycle write after the ack fails", async () => {
+    // History lags (stays empty): only the stored acknowledgement proves delivery.
+    const fixture = await delayedSendFixture({
+      ack: { l2psStatus: "submitted" }, failLifecycleWriteAfterSend: true,
+    });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({
+        status: "indeterminate", reason: "lifecycle store unavailable",
+      });
+      const id = fixture.packet().packetId;
+      const acknowledged = await fixture.outboxStore.load(id);
+      expect(acknowledged).toMatchObject({ state: "acknowledged" });
+      fixture.restart();
+      fixture.setTicks(10_001);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.submissions).toHaveLength(1);
+      expect(fixture.historyCalls()).toBe(0);
+      expect(await fixture.outboxStore.load(id)).toEqual(acknowledged);
+      // Publishing again neither sends nor rewrites the entry.
+      await expect(fixture.transport.publish(fixture.packet())).resolves.toEqual({ disposition: "acknowledged" });
+      expect(fixture.submissions).toHaveLength(1);
+      expect(await fixture.outboxStore.load(id)).toEqual(acknowledged);
     } finally { await fixture.cleanup(); }
   });
 
@@ -1849,10 +1890,12 @@ describe("Demos L2PS durable RFQ transport", () => {
       clientOptions("buyer", transport, durableReservation()),
     );
     await client.open(openInput());
+    // A lost response: a stored acknowledgement would settle without history.
+    hub.loseNextResponse = true;
     await expect(client.sendOffer(JOB_ID, {
       rfqProposalVersion: "1",
       price: { amount: "9", currency: "USDC" },
-    })).resolves.toMatchObject({ status: "ready" });
+    })).resolves.toMatchObject({ status: "indeterminate" });
     const status = await client.getStatus(JOB_ID);
     if (status.status !== "ok") throw new Error("record did not load");
     const packet = status.record.outbox[0]?.packet;

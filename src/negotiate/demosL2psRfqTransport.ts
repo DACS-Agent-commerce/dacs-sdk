@@ -1079,8 +1079,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   }
 
   async function absenceAfterSend(packetId: string, entry: SendOutboxEntry | undefined): Promise<RfqLifecycleTransportResult> {
-    // No peer call took place (e.g. a seal refusal), or its ack was definite.
-    if (entry === undefined || entry.state === "acknowledged") return { disposition: "absent" };
+    // No peer call took place, e.g. a seal refusal.
+    if (entry === undefined) return { disposition: "absent" };
+    // The stored acknowledgement is proof; callers return it without history.
+    if (entry.state === "acknowledged") return { disposition: "acknowledged" };
     try {
       const now = monotonicNow();
       // A crash before the outcome write has no known end time. Start the
@@ -1164,6 +1166,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     } catch {
       return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
+    if (absence.disposition === "acknowledged") return absence;
     let before: number | undefined;
     let paginated = false;
     const seenIds = new Set<string>();
@@ -1557,7 +1560,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       try {
         if (entry !== undefined) {
           const absence = await absenceAfterSend(routed.packet.packetId, entry);
-          if (absence.disposition === "indeterminate") return absence;
+          // An acknowledged entry is neither resent nor overwritten.
+          if (absence.disposition === "acknowledged" ||
+              absence.disposition === "indeterminate") return absence;
         } else {
           const prepared = await sealPacket(routed);
           entry = {
