@@ -621,6 +621,8 @@ describe("advanceLiquidityTankSettlement", () => {
       await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
         status: "waiting",
         reason: "liquidity-tank-pending",
+        pendingDeadline: expect.any(Number),
+        pastDeadline: false,
       });
       expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
       expect(recordObservation).toHaveBeenCalledTimes(1);
@@ -633,7 +635,9 @@ describe("advanceLiquidityTankSettlement", () => {
     h.adapter.observe = vi.fn(async () => Object.freeze(pending(h.operationHash)));
 
     await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared))
-      .resolves.toEqual({ status: "waiting", reason: "liquidity-tank-pending" });
+      .resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: expect.any(Number), pastDeadline: false,
+      });
     expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
 
@@ -672,6 +676,8 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
       status: "waiting",
       reason: "liquidity-tank-pending",
+      pendingDeadline: expect.any(Number),
+      pastDeadline: false,
     });
     expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     expect(h.broadcastRetained).toHaveBeenCalledTimes(2);
@@ -980,6 +986,8 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
       status: "waiting",
       reason: "liquidity-tank-pending",
+      pendingDeadline: expect.any(Number),
+      pastDeadline: false,
     });
     expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
@@ -991,6 +999,8 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared)).resolves.toEqual({
       status: "waiting",
       reason: "liquidity-tank-pending",
+      pendingDeadline: expect.any(Number),
+      pastDeadline: false,
     });
   });
 
@@ -3557,7 +3567,9 @@ describe("advanceLiquidityTankSettlement", () => {
   // does not hold must read as absent, never as the polluted value.
   describe("round 9", () => {
     const D = RECOVERY_DEADLINE_MS;
-    const WAITING = { status: "waiting", reason: "liquidity-tank-pending" } as const;
+    const WAITING = {
+      status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: expect.any(Number), pastDeadline: false,
+    } as const;
 
     /** Runs `body` with `fields` set on `Object.prototype`; removed in `finally`. */
     async function withPollution<T>(fields: Record<string, unknown>, body: () => Promise<T>): Promise<T> {
@@ -6173,5 +6185,61 @@ describe("final review, round 1", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expiry" })).resolves.toEqual(expired);
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay" })).resolves.toEqual(expired);
     });
+  });
+  describe("finding 4: a pending operation with no lock is bounded too", () => {
+    test("an unlocked pending gets a deadline from the submission's receipt, and is past it later", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash));
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const run = runner({ store, adapter: h.adapter });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 601_000, pastDeadline: false,
+      });
+      // Each next owner reads the clock 101 ms later: 600_901, then 601_002.
+      run.setClock(600_800);
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 601_000, pastDeadline: false,
+      });
+      // The deadline comes from the durable receipt, not from this call's clock.
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 601_000, pastDeadline: true,
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+    });
+
+    test("the host sets the bound with pendingLockDeadlineMs", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash));
+      const run = runner({ adapter: h.adapter, pendingLockDeadlineMs: 5_000 });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 6_000, pastDeadline: false,
+      });
+      run.setClock(6_000);
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        pendingDeadline: 6_000, pastDeadline: true,
+      });
+    });
+
+    test("a locked pending keeps its recovery deadline and gets no pending deadline", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash, true));
+      const result = await advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared);
+      expect(result).toMatchObject({ status: "settle-asymmetric", recoveryDeadline: RECOVERY_DEADLINE_MS });
+      expect(result).not.toHaveProperty("pendingDeadline");
+    });
+
+    test.each([0, -1, 1.5, "5000", Number.MAX_SAFE_INTEGER + 1])(
+      "pendingLockDeadlineMs %s is refused before any claim",
+      async (value) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const claim = vi.spyOn(store, "claim");
+        await expect(advanceLiquidityTankSettlement(runner({
+          store, pendingLockDeadlineMs: value as never,
+        }).shared)).resolves.toEqual({
+          status: "indeterminate",
+          reason: "pay-cross-chain-liquidity-tank: pendingLockDeadlineMs must be a positive safe integer",
+        });
+        expect(claim).not.toHaveBeenCalled();
+      });
   });
 });

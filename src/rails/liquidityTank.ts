@@ -69,6 +69,7 @@ const AUTHORITY_FIELDS = Object.freeze(Object.keys({
   supportedScope: true,
 } satisfies Record<keyof LiquidityTankAuthority, true>));
 const DEFAULT_LEASE_MS = 30_000;
+const DEFAULT_PENDING_LOCK_DEADLINE_MS = 600_000;
 /**
  * How far a submission's `preparedAt` may sit from this host's clock readings
  * around preparation and from the receipt stored with it, and how far a bridge
@@ -496,7 +497,23 @@ export interface LiquidityTankStore {
 }
 
 export type LiquidityTankProgress =
-  | { status: "waiting" | "indeterminate"; reason: string }
+  | {
+      status: "waiting" | "indeterminate";
+      reason: string;
+      /**
+       * Set exactly with `waiting` `liquidity-tank-pending`, a bridge operation
+       * pending without a source lock: Unix milliseconds by which the bridge
+       * should have locked, the submission's receipt (`submissionRecordedAt`)
+       * plus `pendingLockDeadlineMs`.
+       */
+      pendingDeadline?: number;
+      /**
+       * Set exactly with `pendingDeadline`: the host clock read during this
+       * call was at or after it. Alert if this persists rather than polling
+       * silently.
+       */
+      pastDeadline?: boolean;
+    }
   | {
       status: "failed";
       errorClass: "permanent" | "failed-substrate";
@@ -563,6 +580,12 @@ export interface AdvanceLiquidityTankInput {
   verifier: LiquidityTankVerifier;
   now?: () => number;
   leaseDurationMs?: number;
+  /**
+   * How long after a submission was first recorded the bridge may keep it
+   * pending without a source lock before progress reports `pastDeadline`.
+   * A positive safe integer of milliseconds; 10 minutes by default.
+   */
+  pendingLockDeadlineMs?: number;
 }
 
 function requireString(value: unknown, label: string): string {
@@ -1556,6 +1579,7 @@ export async function advanceLiquidityTankSettlement(
   }
   let owner: string;
   let leaseDurationMs: number;
+  let pendingLockDeadlineMs: number;
   let now: () => number;
   let claimSettlement: LiquidityTankStore["claim"];
   let isCurrentSettlement: LiquidityTankStore["isCurrent"];
@@ -1582,6 +1606,12 @@ export async function advanceLiquidityTankSettlement(
     leaseDurationMs = requireUInt(
       leaseDurationValue ?? DEFAULT_LEASE_MS,
       "leaseDurationMs",
+      true,
+    );
+    pendingLockDeadlineMs = requireUInt(
+      stableDataProperty(input, "pendingLockDeadlineMs", "pendingLockDeadlineMs") ??
+        DEFAULT_PENDING_LOCK_DEADLINE_MS,
+      "pendingLockDeadlineMs",
       true,
     );
     const nowCandidate = nowValue ?? Date.now;
@@ -1916,6 +1946,8 @@ export async function advanceLiquidityTankSettlement(
   // Set when a hook could not check a retained row: nothing past the retained
   // checks below runs, and only a durable lock's progress is reported.
   let verifierOutage = false;
+  // The host-clock reading the store keeps as the submission's receipt.
+  let submissionReceipt = 0;
   if ((claimSnapshot.observationPresent || claimSnapshot.recoveryFailurePresent ||
       claimSnapshot.submissionRecordedAt !== undefined) && !claimSnapshot.submissionPresent) {
     return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
@@ -1931,6 +1963,7 @@ export async function advanceLiquidityTankSettlement(
     }
     const receiptRefusal = retainedReceiptRefusal(claimSnapshot.submissionRecordedAt, submission);
     if (receiptRefusal !== null) return { status: "indeterminate", reason: receiptRefusal };
+    submissionReceipt = claimSnapshot.submissionRecordedAt as number;
     // Retained bytes are re-verified before they are observed against,
     // settled from or rebroadcast. An outage still lets the retained rows
     // below be checked for a refusal and a durable lock be reported.
@@ -1991,6 +2024,7 @@ export async function advanceLiquidityTankSettlement(
     if (!stored) {
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
     }
+    submissionReceipt = recordedAt;
     if (freshAnswer === "unavailable") return verifierUnavailable();
   }
 
@@ -2273,9 +2307,15 @@ export async function advanceLiquidityTankSettlement(
     }
     if (observation.status === "pending") {
       const durablePending = await resolveRecoveryProgress(observation);
-      return durablePending ?? {
+      if (durablePending) return durablePending;
+      // No lock yet: bounded from the durable receipt, so a bridge that
+      // accepts an operation and never locks it is overdue, not parked.
+      const pendingDeadline = Math.min(submissionReceipt + pendingLockDeadlineMs, Number.MAX_SAFE_INTEGER);
+      return {
         status: "waiting",
         reason: "liquidity-tank-pending",
+        pendingDeadline,
+        pastDeadline: latestNow >= pendingDeadline,
       };
     }
     if (observation.status === "completed") {

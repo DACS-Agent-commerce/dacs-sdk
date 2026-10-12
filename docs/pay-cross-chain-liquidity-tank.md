@@ -149,6 +149,16 @@ reads the bridge for the phase, so a release that lands afterwards is not
 reported; read the bridge's record for the retained `bridgeId` before paying
 again.
 
+**A pending operation without a lock is bounded too.** An authenticated
+`pending` with no `lockTxHash` returns `waiting` `liquidity-tank-pending` with
+`pendingDeadline`: the submission's receipt (`submissionRecordedAt`, the host
+clock reading kept with the retained submission) plus `pendingLockDeadlineMs`,
+an optional input that defaults to 10 minutes. `pastDeadline` is `true` once
+this call's host clock reaches it. The core does not expire such an operation,
+since the bridge may still lock it, but a bridge that accepts an operation and
+never locks it now shows up as overdue instead of parking the phase
+silently.
+
 ## Timestamp units
 
 `preparedAt`, `observedAt`, `recoveryDeadline` and `finalityObservedAt` are
@@ -328,8 +338,11 @@ conforming. Hosts must treat `lock-contradicted` as a readiness failure for
 this rail that needs an operator, not as ordinary waiting. The SDK has no
 runtime rail-readiness surface consuming these progress results; its
 conformance tests and settlement-evidence validators check artifact/evidence
-shapes separately. Hosts should alert on overdue ordinary locked progress
-beyond normal bridge lag, and send contradictions to an operator immediately.
+shapes separately. Hosts should alert on any progress with `pastDeadline:
+true` that persists beyond normal bridge lag: ordinary locked progress past
+its `recoveryDeadline`, and `waiting` `liquidity-tank-pending` past its
+`pendingDeadline` (an operation the bridge accepted but has not locked). Send
+contradictions to an operator immediately.
 No reconciliation operation is provided here; see the open list below.
 
 ## Store contract
