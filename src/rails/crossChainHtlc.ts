@@ -14,6 +14,8 @@ const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_SAFETY_WINDOW_SEC = 600;
 /** Replacements of a failed destination claim allowed per session. */
 const MAX_DESTINATION_CLAIM_REPLACEMENTS = 3;
+/** Replacements of a failed source claim allowed per session. */
+const MAX_SOURCE_CLAIM_REPLACEMENTS = 3;
 
 export type HtlcAction =
   | "source-lock"
@@ -191,8 +193,9 @@ export interface HtlcSourceClaimReplacementContext {
 
 /**
  * Replacement of a destination claim (reveal) the adapter authenticated as
- * `failed`. The failed reveal already published the preimage, so the adapter
- * signs a new reveal of the same preimage into the same destination lock.
+ * `failed` or `absent`. The earlier reveal already broadcast the preimage, so
+ * the adapter signs a new reveal of the same preimage into the same
+ * destination lock.
  */
 export interface HtlcDestinationClaimReplacementContext {
   attempt: number;
@@ -247,10 +250,15 @@ export type HtlcObservedAction =
         }
     ));
 
+/**
+ * Why a claim attempt was replaced: the adapter authenticated it `failed` on
+ * chain, or `absent`, never on chain and unable to land. An `absent` entry
+ * carries the reference of the active attempt it was reported for.
+ */
 export type HtlcFailedObservation = Omit<
   Extract<HtlcObservedAction, { state: "pending" | "failed" }>,
   "state"
-> & { state: "failed" };
+> & { state: "failed" | "absent" };
 
 export interface HtlcSourceClaimAttemptHistoryEntry {
   attempt: number;
@@ -294,7 +302,7 @@ export interface CrossChainHtlcAdapter {
       sourceExpiry?: number;
       destinationExpiry?: number;
       sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
-      /** Set only when replacing a failed `source-claim` or `destination-claim`. */
+      /** Set only when replacing a failed or absent `source-claim` or `destination-claim`. */
       replacement?: Readonly<HtlcSourceClaimReplacementContext | HtlcDestinationClaimReplacementContext>;
     }>,
     fence: Readonly<HtlcEffectFence>,
@@ -452,9 +460,14 @@ export interface CrossChainHtlcStore {
  * - `uncertain`: due, but this call could not prepare, persist, broadcast or
  *   observe it; the next call retries with the retained bytes;
  * - `pending` / `final` / `failed`: the adapter's authenticated state of the
- *   retained refund. The core never re-sends a `failed` refund.
+ *   retained refund. The core never re-sends a `failed` refund;
+ * - `absent`: the adapter authenticated that the retained refund never reached
+ *   the chain and can no longer. The core neither re-sends nor replaces it and
+ *   returns `operator-alert` `htlc-refund-absent`.
  */
-export type HtlcRefundLegState = "waiting" | "uncertain" | "pending" | "final" | "failed";
+export type HtlcRefundLegState = "waiting" | "uncertain" | "pending" | "final" | "failed" | "absent";
+
+type HtlcRefundLegs = Readonly<Partial<Record<"source-refund" | "destination-refund", HtlcRefundLegState>>>;
 
 export type CrossChainHtlcProgress =
   | { status: "waiting" | "indeterminate"; reason: string }
@@ -483,6 +496,7 @@ export type CrossChainHtlcProgress =
         | "destination-lock-failed"
         | "destination-lock-window-closed"
         | "destination-expiry-margin-insufficient"
+        | "destination-lock-expiry-invalid"
         | "source-lock-terms-missing"
         | "source-lock-terms-mismatch"
         | "destination-lock-terms-missing"
@@ -493,7 +507,7 @@ export type CrossChainHtlcProgress =
        * Each locked leg's refund; `destination-refund` once a destination lock
        * is final or retained and not authenticated `failed` or `absent`.
        */
-      refunds: Readonly<Partial<Record<"source-refund" | "destination-refund", HtlcRefundLegState>>>;
+      refunds: HtlcRefundLegs;
     }
   | {
       /**
@@ -502,13 +516,31 @@ export type CrossChainHtlcProgress =
        * returns to normal progress if it has changed.
        */
       status: "operator-alert";
-      reason: "htlc-source-claim-missed-after-reveal" | "htlc-destination-claim-failed-preimage-public";
+      reason:
+        | "htlc-source-claim-missed-after-reveal"
+        | "htlc-source-claim-replacement-limit-reached"
+        | "htlc-destination-claim-failed-preimage-public"
+        | "htlc-destination-claim-absent-preimage-broadcast";
       txRefs: readonly Readonly<HtlcTxRef>[];
+    }
+  | {
+      /** A retained refund is authenticated `absent`; the core will not re-send it. */
+      status: "operator-alert";
+      reason: "htlc-refund-absent";
+      txRefs: readonly Readonly<HtlcTxRef>[];
+      /** Each locked leg's refund, as in a refund result; the stuck leg is `absent`. */
+      refunds: HtlcRefundLegs;
     }
   | { status: "settled"; settlement: Readonly<CrossChainHtlcSettlement> };
 
-type HtlcRefundReason = Extract<CrossChainHtlcProgress, { refunds: unknown }>["reason"];
-type HtlcOperatorAlertReason = Extract<CrossChainHtlcProgress, { status: "operator-alert" }>["reason"];
+type HtlcRefundReason = Extract<
+  CrossChainHtlcProgress,
+  { status: "refund-pending" | "refunded" | "refund-stalled" }
+>["reason"];
+type HtlcOperatorAlertReason = Extract<
+  CrossChainHtlcProgress,
+  { status: "operator-alert"; reason: string; refunds?: never }
+>["reason"];
 
 export interface AdvanceCrossChainHtlcInput {
   authority: Readonly<CrossChainHtlcAuthority>;
@@ -866,13 +898,13 @@ function captureFailedObservation(
   value: Readonly<HtlcFailedObservation>,
   prepared: Readonly<HtlcPreparedAction>,
 ): Readonly<HtlcFailedObservation> {
-  if (value.state !== "failed" || !sameRef(value.txRef, prepared.txRef) ||
+  if ((value.state !== "failed" && value.state !== "absent") || !sameRef(value.txRef, prepared.txRef) ||
       !HASH_RE.test(value.authenticationHash) ||
       (value.reason !== undefined && typeof value.reason !== "string")) {
     throw new DacsError(`pay-cross-chain-htlc: ${prepared.action} failure observation is invalid`);
   }
   return Object.freeze({
-    state: "failed",
+    state: value.state,
     txRef: Object.freeze({ ...value.txRef }),
     ...(value.reason === undefined ? {} : { reason: value.reason }),
     authenticationHash: value.authenticationHash,
@@ -940,9 +972,31 @@ type FinalSourceClaimObservation = FinalHtlcObservation & { finalityReachedAt: n
 /** A malformed final lock observation: an adapter fault, not a chain state. */
 class InvalidLockObservation extends DacsError {}
 
+/** A lock expiry in Unix milliseconds; `Infinity` beyond the safe-integer range. */
+function lockExpiryMillis(expiresAt: number): number {
+  const millis = expiresAt * 1_000;
+  return Number.isSafeInteger(millis) ? millis : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * A final destination lock whose integer expiry lies beyond the safe-integer
+ * range in milliseconds, or at or before the lock's own inclusion. The payee's
+ * role signs that lock, so this is a chain fact, not an adapter fault: the
+ * payer never reveals against it, and it never holds back the source refund.
+ */
+function destinationLockExpiryUnusable(observed: Readonly<FinalHtlcObservation>): boolean {
+  const { expiresAt, includedAt } = observed;
+  if (!Number.isInteger(expiresAt) || !Number.isSafeInteger(includedAt) || includedAt! < 0) {
+    return false;
+  }
+  const expiryMillis = lockExpiryMillis(expiresAt!);
+  return expiryMillis === Number.POSITIVE_INFINITY || expiryMillis <= includedAt!;
+}
+
 function validateFinalityTiming(
   observed: Readonly<FinalHtlcObservation>,
   action: HtlcAction,
+  checkLockExpiry = true,
 ): void {
   const finalityObservedAt = requireUInt(
     observed.finalityObservedAt,
@@ -964,9 +1018,11 @@ function validateFinalityTiming(
   }
   if (action === "source-lock" || action === "destination-lock") {
     const lockIncludedAt = requireUInt(observed.includedAt, `${action} includedAt`);
-    const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
-    if (secondsToMilliseconds(expiresAt, `${action} expiresAt`) <= lockIncludedAt) {
-      throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
+    if (checkLockExpiry) {
+      const expiresAt = requireUInt(observed.expiresAt, `${action} expiresAt`, true);
+      if (secondsToMilliseconds(expiresAt, `${action} expiresAt`) <= lockIncludedAt) {
+        throw new DacsError(`pay-cross-chain-htlc: ${action} expiry is not after inclusion`);
+      }
     }
     if (finalityObservedAt < lockIncludedAt) {
       throw new DacsError(`pay-cross-chain-htlc: ${action} finality precedes inclusion`);
@@ -1184,7 +1240,13 @@ function validateSnapshot(
     }
     if (action === "source-lock" || action === "destination-lock") {
       try {
-        validateFinalityTiming(observed, action);
+        // An unusable destination-lock expiry is the payee's chain fact; the
+        // core refunds around it instead of discarding the whole snapshot.
+        validateFinalityTiming(
+          observed,
+          action,
+          !(action === "destination-lock" && destinationLockExpiryUnusable(observed)),
+        );
         // Terms are only needed by the forward step that depends on them, so
         // their absence never makes an observation, and with it a refund,
         // unavailable.
@@ -1451,6 +1513,13 @@ export async function advanceCrossChainHtlc(
       return null;
     }
   };
+  // A retained refund the adapter authenticates `absent` can never land, so
+  // its bytes are not re-sent; only replacing it could help, and that needs a
+  // person until refund replacement exists.
+  const refundAbsent = (
+    leg: "source-refund" | "destination-refund",
+    latest: Readonly<HtlcLedgerSnapshot>,
+  ): boolean => prepared.has(leg) && latest.actions[leg]?.state === "absent";
   // Reports each locked leg's refund from the latest observation. `sent` is a
   // refund broadcast in this call, reported as refunded only on a later call.
   // A tracked destination leg keeps its retained lock's reference even while
@@ -1467,11 +1536,29 @@ export async function advanceCrossChainHtlc(
       const observed = latest.actions[leg];
       refunds[leg] = attempt === "uncertain"
         ? "uncertain"
-        : observed && observed.state !== "absent"
-          ? observed.state
-          : attempt === "sent" ? "pending" : "waiting";
+        : refundAbsent(leg, latest)
+          ? "absent"
+          : observed && observed.state !== "absent"
+            ? observed.state
+            : attempt === "sent" ? "pending" : "waiting";
     }
     const states = Object.values(refunds);
+    const unreportedLocks: HtlcAction[] = attempts["destination-refund"] === undefined
+      ? []
+      : ["destination-lock"];
+    if (states.includes("absent")) {
+      return {
+        status: "operator-alert",
+        reason: "htlc-refund-absent",
+        txRefs: collectRefs(
+          latest,
+          prepared,
+          unreportedLocks,
+          (["destination-refund", "source-refund"] as const).filter((leg) => refunds[leg] === "absent"),
+        ),
+        refunds: Object.freeze(refunds),
+      };
+    }
     return {
       status: states.includes("failed")
         ? "refund-stalled"
@@ -1479,11 +1566,7 @@ export async function advanceCrossChainHtlc(
           ? "refunded"
           : "refund-pending",
       reason,
-      txRefs: collectRefs(
-        latest,
-        prepared,
-        attempts["destination-refund"] === undefined ? [] : ["destination-lock"],
-      ),
+      txRefs: collectRefs(latest, prepared, unreportedLocks),
       refunds: Object.freeze(refunds),
     };
   };
@@ -1496,9 +1579,37 @@ export async function advanceCrossChainHtlc(
     reason,
     txRefs: collectRefs(latest, prepared, [], includeRetained),
   });
+  // A reveal that failed on chain published the preimage in its calldata; one
+  // that is only authenticated `absent` broadcast it, so the mempool may have
+  // seen it. Either way the payee may claim the source.
+  const revealExposedReason = (activeFailed: boolean): HtlcOperatorAlertReason =>
+    activeFailed || destinationClaimAttemptHistory.some((entry) => entry.failedObservation.state === "failed")
+      ? "htlc-destination-claim-failed-preimage-public"
+      : "htlc-destination-claim-absent-preimage-broadcast";
+  // The active claim attempt as authenticated unlanded: `failed` on chain, or
+  // `absent`, which names no transaction and is bound to the active attempt.
+  const unlandedActiveClaim = (
+    action: "source-claim" | "destination-claim",
+    latest: Readonly<HtlcLedgerSnapshot>,
+  ): Readonly<HtlcFailedObservation> | undefined => {
+    const active = prepared.get(action);
+    const observed = latest.actions[action];
+    if (!active || !observed) return undefined;
+    if (observed.state === "absent") {
+      return Object.freeze({
+        state: "absent",
+        txRef: active.txRef,
+        authenticationHash: observed.authenticationHash,
+      });
+    }
+    return observed.state === "failed" && sameRef(observed.txRef, active.txRef)
+      ? observed as Readonly<HtlcFailedObservation>
+      : undefined;
+  };
   let destinationClaimCutoffReached = false;
   let destinationClaimReplacementBlocked = false;
   let sourceClaimExpiryReached = false;
+  let sourceClaimReplacementLimitReached = false;
   const destinationClaimWindowIsOpen = (expiries: {
     sourceExpiry?: number;
     destinationExpiry?: number;
@@ -1601,11 +1712,18 @@ export async function advanceCrossChainHtlc(
     sourceExpiry: number,
   ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     const prior = prepared.get("source-claim");
-    if (!prior || failedObservation.state !== "failed") {
+    if (!prior) {
       return null;
     }
     if (!sourceClaimWindowIsOpen(sourceExpiry)) {
       sourceClaimExpiryReached = true;
+      return null;
+    }
+    // Each replacement is a fresh fee-paying claim; past the cap, a claim
+    // that keeps failing (a paused contract, a lock claimed outside the core)
+    // needs a person.
+    if (sourceClaimAttemptHistory.length >= MAX_SOURCE_CLAIM_REPLACEMENTS) {
+      sourceClaimReplacementLimitReached = true;
       return null;
     }
     let replacement: Readonly<HtlcPreparedAction>;
@@ -1688,18 +1806,19 @@ export async function advanceCrossChainHtlc(
     }
     return observe();
   };
-  // Replaces a reveal the adapter authenticated as `failed`. Its calldata has
-  // already published the preimage, so a fresh reveal costs the payer nothing
-  // and is the payer's only way to the destination funds. It is bounded like
-  // the first reveal, by the destination-claim cutoff, and capped per session.
-  // When no replacement is allowed it sets `destinationClaimReplacementBlocked`
-  // so that the caller raises an operator alert; other failures are uncertain.
+  // Replaces a reveal the adapter authenticated as `failed` or `absent`. It
+  // has already broadcast the preimage, so a fresh reveal costs the payer
+  // nothing and is the payer's only way to the destination funds. It is
+  // bounded like the first reveal, by the destination-claim cutoff, and capped
+  // per session. When no replacement is allowed it sets
+  // `destinationClaimReplacementBlocked` so that the caller raises an operator
+  // alert; other failures are uncertain.
   const replaceFailedDestinationClaim = async (
     failedObservation: Readonly<HtlcFailedObservation>,
     expiries: { sourceExpiry: number; destinationExpiry: number },
   ): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     const prior = prepared.get("destination-claim");
-    if (!prior || failedObservation.state !== "failed") {
+    if (!prior) {
       return null;
     }
     const blocked = (): null => {
@@ -1817,7 +1936,7 @@ export async function advanceCrossChainHtlc(
     // reveal the preimage is private, so the payee cannot claim the source and
     // the payee's own destination refund after its expiry is still safe.
     if (destinationLock?.expiresAt !== undefined && !prepared.has("destination-claim") &&
-        readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry")) {
+        readNow() >= lockExpiryMillis(destinationLock.expiresAt)) {
       const refund = snapshot.actions["destination-refund"];
       if (!refund || refund.state === "absent") {
         await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
@@ -1873,14 +1992,18 @@ export async function advanceCrossChainHtlc(
   // the lock's record, so a settlement names the retained destination lock.
   const destinationLockRef = destinationLock?.txRef ?? prepared.get("destination-lock")?.txRef;
   if (sourceClaim) {
-    if (!sourceLock || !destinationLockRef || !destinationClaim) {
+    // A reveal checkpoint is durable proof of a final reveal of this preimage,
+    // so a reveal the adapter has stopped reporting does not undo settlement.
+    const revealTxRef = destinationClaim?.txRef ?? retainedCheckpoint?.revealTxRef;
+    if (!sourceLock || !destinationLockRef || !revealTxRef) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-incomplete" };
     }
     if (sourceLock.expiresAt === undefined) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-invalid" };
     }
     try {
-      if (!revealedPreimageMatches(destinationClaim.revealedPreimageHex, secrets.preimage)) {
+      if (destinationClaim &&
+          !revealedPreimageMatches(destinationClaim.revealedPreimageHex, secrets.preimage)) {
         return { status: "failed", errorClass: "permanent", reason: "htlc-revealed-preimage-mismatch" };
       }
     } catch {
@@ -1894,7 +2017,9 @@ export async function advanceCrossChainHtlc(
         reason: "dest-revealed-source-unclaimed-expired",
       };
     }
-    if (!retainedCheckpoint) {
+    // Without a retained checkpoint the reveal reference came from a final
+    // reveal observation, which is checkpointed first.
+    if (destinationClaim && !retainedCheckpoint) {
       const checkpoint: Readonly<HtlcRevealCheckpoint> = Object.freeze({
         revealTxRef: destinationClaim.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
         sourceExpiry: sourceLock.expiresAt,
@@ -1921,7 +2046,7 @@ export async function advanceCrossChainHtlc(
       txRefs: Object.freeze([
         sourceLock.txRef,
         destinationLockRef,
-        destinationClaim.txRef,
+        revealTxRef,
         sourceClaim.txRef,
       ]),
       paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
@@ -2013,18 +2138,18 @@ export async function advanceCrossChainHtlc(
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
         sourceClaimState.state === "failed") {
-      const activeSourceClaim = prepared.get("source-claim");
-      const advanced = sourceClaimState?.state === "failed" &&
-          activeSourceClaim !== undefined && sameRef(sourceClaimState.txRef, activeSourceClaim.txRef)
-        ? await replaceFailedSourceClaim(
-          sourceClaimState as Readonly<HtlcFailedObservation>,
-          checkpoint.sourceExpiry,
-        )
+      // A retained claim authenticated `failed` or `absent` can never land,
+      // so it is replaced; an unreported one is rebroadcast byte for byte.
+      const unlanded = unlandedActiveClaim("source-claim", snapshot);
+      const advanced = unlanded
+        ? await replaceFailedSourceClaim(unlanded, checkpoint.sourceExpiry)
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
           ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"])
-          : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
+          : sourceClaimReplacementLimitReached
+            ? operatorAlert("htlc-source-claim-replacement-limit-reached", snapshot, ["destination-lock"])
+            : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
       }
       snapshot = advanced;
       try {
@@ -2135,7 +2260,7 @@ export async function advanceCrossChainHtlc(
         : { "source-refund": sourceRefund };
     if (readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry")) {
       const refund = snapshot.actions["source-refund"];
-      if (!refund || refund.state === "absent") {
+      if (!refund || (refund.state === "absent" && !refundAbsent("source-refund", snapshot))) {
         const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
         return refundProgress(refundReason, advanced ?? snapshot, refundLegs(advanced ? "sent" : "uncertain"));
       }
@@ -2201,8 +2326,8 @@ export async function advanceCrossChainHtlc(
   );
   const sourceExpired =
     readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
-  const destinationExpired =
-    readNow() >= secondsToMilliseconds(destinationLock.expiresAt, "destination refund expiry");
+  // An expiry beyond the safe-integer range never arrives for the core.
+  const destinationExpired = readNow() >= lockExpiryMillis(destinationLock.expiresAt);
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
   // own expiry instead of the session stopping with both legs locked. No reveal
@@ -2214,17 +2339,20 @@ export async function advanceCrossChainHtlc(
   const destinationTermsVerdict = prepared.has("destination-claim")
     ? undefined
     : lockTermsVerdict(destinationLock, expectedDestinationLockTerms(intent));
-  const revealForbidden = sourceLock.expiresAt <= safeAdd(
-    destinationLock.expiresAt,
-    sourceRecoveryBudgetSec,
-    "absolute expiry margin",
-  )
-    ? "destination-expiry-margin-insufficient" as const
-    : destinationTermsVerdict === "mismatch"
-      ? "destination-lock-terms-mismatch" as const
-      : destinationTermsVerdict === "missing" && !destinationExpired
-        ? "destination-lock-terms-missing" as const
-        : undefined;
+  // An unusable expiry is checked first: the margin cannot be computed for it.
+  const revealForbidden = destinationLockExpiryUnusable(destinationLock)
+    ? "destination-lock-expiry-invalid" as const
+    : sourceLock.expiresAt <= safeAdd(
+      destinationLock.expiresAt,
+      sourceRecoveryBudgetSec,
+      "absolute expiry margin",
+    )
+      ? "destination-expiry-margin-insufficient" as const
+      : destinationTermsVerdict === "mismatch"
+        ? "destination-lock-terms-mismatch" as const
+        : destinationTermsVerdict === "missing" && !destinationExpired
+          ? "destination-lock-terms-missing" as const
+          : undefined;
 
   if (revealForbidden !== undefined || destinationExpired) {
     let refundReason: HtlcRefundReason = revealForbidden ?? "destination-timeout";
@@ -2239,15 +2367,21 @@ export async function advanceCrossChainHtlc(
       const pendingClaim = snapshot.actions["destination-claim"];
       const failedActive = pendingClaim?.state === "failed" &&
         sameRef(pendingClaim.txRef, activeClaim.txRef);
-      const unlanded = pendingClaim?.state === "absent" || failedActive;
+      const absentActive = pendingClaim?.state === "absent";
+      const unlanded = absentActive || failedActive;
       if (!unlanded || !sourceExpired || !destinationExpired) {
-        // A reveal that failed on chain published the preimage in its
-        // calldata. Here the claim window has closed or the margin is gone, so
-        // no replacement is allowed: the payee can still claim the source
-        // while the payer cannot claim the destination, and a person must act.
+        // A reveal that failed on chain or is authenticated absent has
+        // broadcast the preimage. Here the claim window has closed or the
+        // margin is gone, so no replacement is allowed: the payee may still
+        // claim the source while the payer cannot claim the destination, and
+        // a person must act.
         if (pendingClaim?.state !== "pending" &&
-            (failedActive || destinationClaimAttemptHistory.length > 0)) {
-          return operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot);
+            (unlanded || destinationClaimAttemptHistory.length > 0)) {
+          return operatorAlert(
+            revealExposedReason(failedActive),
+            snapshot,
+            absentActive ? ["destination-claim"] : [],
+          );
         }
         // Still safe to wait, but past both expiries a reveal that never
         // resolves needs an operator, so it gets a reason a host can alert on.
@@ -2267,13 +2401,15 @@ export async function advanceCrossChainHtlc(
       "destination-refund": "none",
       "source-refund": "none",
     };
-    if (destinationExpired && (!destinationRefund || destinationRefund.state === "absent")) {
+    if (destinationExpired && (!destinationRefund ||
+        (destinationRefund.state === "absent" && !refundAbsent("destination-refund", snapshot)))) {
       const advanced = await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
       if (advanced) latest = advanced;
       attempts["destination-refund"] = advanced ? "sent" : "uncertain";
     }
     // The payer's source refund never waits on the payee's destination refund.
-    if (sourceExpired && (!sourceRefund || sourceRefund.state === "absent")) {
+    if (sourceExpired && (!sourceRefund ||
+        (sourceRefund.state === "absent" && !refundAbsent("source-refund", snapshot)))) {
       const advanced = await execute("source-refund", { sourceExpiry: sourceLock.expiresAt });
       if (advanced) latest = advanced;
       attempts["source-refund"] = advanced ? "sent" : "uncertain";
@@ -2289,30 +2425,35 @@ export async function advanceCrossChainHtlc(
   };
   // The payer's decision gates only the first reveal. Once a reveal is
   // retained the preimage may be public, and holding back its rebroadcast or
-  // replacement could only cost the payer the destination leg.
-  if (claimState?.state === "failed" && activeClaim && sameRef(claimState.txRef, activeClaim.txRef)) {
-    const advanced = await replaceFailedDestinationClaim(
-      claimState as Readonly<HtlcFailedObservation>,
-      expiries,
-    );
+  // replacement could only cost the payer the destination leg. A retained
+  // reveal authenticated `failed` or `absent` can never land, so rebroadcasting
+  // its bytes cannot help: it is replaced.
+  const unlandedReveal = unlandedActiveClaim("destination-claim", snapshot);
+  if (unlandedReveal) {
+    const advanced = await replaceFailedDestinationClaim(unlandedReveal, expiries);
     return advanced
       ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
       : destinationClaimReplacementBlocked
-        ? operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot)
+        ? operatorAlert(
+          revealExposedReason(unlandedReveal.state === "failed"),
+          snapshot,
+          unlandedReveal.state === "absent" ? ["destination-claim"] : [],
+        )
         : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
   }
   if (!activeClaim && !authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
   }
-  // Unreported, absent, or only a replaced reveal is reported failed: send the
-  // active reveal, rebroadcasting its exact retained bytes when it exists.
+  // Unreported, absent before any reveal, or only a replaced reveal is
+  // reported failed: send the active reveal, rebroadcasting its exact retained
+  // bytes when it exists.
   if (!claimState || claimState.state === "absent" || claimState.state === "failed") {
     const advanced = await execute("destination-claim", expiries);
     return advanced
       ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
       : destinationClaimCutoffReached
         ? destinationClaimAttemptHistory.length > 0
-          ? operatorAlert("htlc-destination-claim-failed-preimage-public", snapshot)
+          ? operatorAlert(revealExposedReason(false), snapshot)
           : { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" }
         : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
   }
@@ -2492,6 +2633,9 @@ export function createInMemoryCrossChainHtlcStore(): CrossChainHtlcStore {
       if (!prior || prior.effectHash !== input.priorEffectHash ||
           !sameRef(prior.txRef, input.priorTxRef)) {
         return { status: "conflict", reason: "htlc-source-claim-replacement-prior-mismatch" };
+      }
+      if (record.sourceClaimAttemptHistory.length >= MAX_SOURCE_CLAIM_REPLACEMENTS) {
+        return { status: "conflict", reason: "htlc-source-claim-replacement-limit" };
       }
       let failedObservation: Readonly<HtlcFailedObservation>;
       let replacement: Readonly<HtlcPreparedAction>;
