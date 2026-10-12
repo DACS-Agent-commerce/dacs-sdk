@@ -195,9 +195,13 @@ destination lock, persists it with the store's
 it. A replacement costs the payer nothing, because the preimage is already
 out, so the payer's `authorizeDestinationClaim` decision gates only the first
 reveal. Each session allows at most three replacements. A failed or absent
-reveal is never reported as a routine `refund-pending` or `waiting`. When no
-replacement is allowed (the claim window has closed, the margin is gone, the
-cap is reached, or the adapter refuses to prepare one) the result is
+reveal is never reported as a routine `refund-pending` or `waiting`. A
+replacement the adapter fails to prepare (an error, a timeout, a refusal or an
+unchanged transaction, which the core cannot tell apart) is `indeterminate`
+with reason `htlc-destination-claim-effect-uncertain`, as for a source claim,
+and the next call retries it while the claim window is open. When no
+replacement is allowed (the claim window has closed, the margin is gone or the
+cap is reached) the result is
 `operator-alert` with reason `htlc-destination-claim-failed-preimage-public`
 when any attempt failed on chain, or
 `htlc-destination-claim-absent-preimage-broadcast` when every attempt was
@@ -262,13 +266,12 @@ if the chain has changed. The reasons are:
   payer refund the source and pay the payee under the agreement.
 - `htlc-destination-claim-failed-preimage-public`: a reveal failed on chain,
   so the preimage is public, and the core cannot send another one: the
-  destination-claim window has closed, the absolute margin is gone, three
-  replacements have already failed, or the adapter would not prepare a
-  replacement. The payee can claim the source leg with the public preimage
-  until the source expiry. Page at once: while the destination lock has not
-  expired, the operator tries to land a reveal by hand (or fixes the adapter
-  so that the next call replaces it); otherwise the operator reconciles the
-  legs with the parties. Both legs are refunded automatically once both
+  destination-claim window has closed, the absolute margin is gone, or three
+  replacements have already failed. The payee can claim the source leg with
+  the public preimage until the source expiry. Page at once: while the
+  destination lock has not expired, the operator tries to land a reveal by
+  hand; otherwise the operator reconciles the legs with the parties. Both
+  legs are refunded automatically once both
   expiries pass, and `refund-stalled` then shows a source refund that reverted
   because the payee had claimed the source.
 - `htlc-destination-claim-absent-preimage-broadcast`: as above, but every
@@ -621,8 +624,10 @@ also accepting byte-equivalent uppercase and prefixed values.
     reconciling; keep the salt until the operator has done so.
 - Every other `waiting` and `indeterminate` result is retried by advancing
   the session again. A host may also page when one persists, for example an
-  adapter that keeps reporting `htlc-adapter-lock-observation-invalid` or an
-  `absent` that does not name the active claim (`…-absent-unbound`).
+  adapter that keeps reporting `htlc-adapter-lock-observation-invalid`, an
+  `absent` that does not name the active claim (`…-absent-unbound`), or
+  `htlc-destination-claim-effect-uncertain` while a failed or absent reveal
+  awaits its replacement, because its preimage is already out.
 - Two kinds of session never reach a terminal state on their own: one whose
   destination lock has an expiry beyond the safe-integer range, which stays
   `refund-pending` after the payer's refund is final, and one whose

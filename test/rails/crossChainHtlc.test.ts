@@ -2286,12 +2286,12 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
   });
 
-  test("raises an operator alert when the adapter refuses to prepare a reveal replacement", async () => {
+  test("retries a reveal replacement the adapter fails to prepare as uncertain, without paging", async () => {
     const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
     const original = h.adapter.prepareAction;
     let refuse = false;
     h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
-      if (refuse && request.replacement) throw new Error("payer role service refused");
+      if (refuse && request.replacement) throw new Error("payer role service: 503 Service Unavailable");
       return original(request, fence);
     });
     const run = runner({ adapter: h.adapter });
@@ -2302,10 +2302,13 @@ describe("advanceCrossChainHtlc", () => {
     if (!pending || pending.state !== "pending") throw new Error("expected pending reveal");
     h.actions["destination-claim"] = { state: "failed", txRef: pending.txRef, authenticationHash: AUTH_HASH };
     refuse = true;
-    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
-      status: "operator-alert",
-      reason: "htlc-destination-claim-failed-preimage-public",
-    });
+    // A timeout, a 5xx and a refusal look alike; as for a source claim, each is
+    // uncertain and the next call retries while the claim window is open.
+    for (let call = 0; call < 2; call += 1) {
+      const progress = await advanceCrossChainHtlc(run.nextOwner());
+      expect(progress).toEqual({ status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" });
+      expect(htlcNeedsOperator(progress)).toBe(false);
+    }
     expect(h.broadcastRetained.mock.calls.filter((call) => call[0].action === "destination-claim"))
       .toHaveLength(1);
     // Resumable: once the adapter prepares it, the next call replaces the reveal.

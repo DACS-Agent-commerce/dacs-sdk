@@ -1953,7 +1953,7 @@ export async function advanceCrossChainHtlc(
   // bounded like the first reveal, by the destination-claim cutoff, and capped
   // per session. When no replacement is allowed it sets
   // `destinationClaimReplacementBlocked` so that the caller raises an operator
-  // alert; other failures are uncertain.
+  // alert; other failures, including a failed preparation, are uncertain.
   const replaceFailedDestinationClaim = async (
     failedObservation: Readonly<HtlcFailedObservation>,
     expiries: { sourceExpiry: number; destinationExpiry: number },
@@ -1997,14 +1997,11 @@ export async function advanceCrossChainHtlc(
         throw new DacsError("pay-cross-chain-htlc: destination-claim replacement is not fresh");
       }
     } catch {
-      // The adapter refused or returned no usable replacement. A lost lease is
-      // not a refusal: the next owner retries.
-      try {
-        await fence.assertCurrent();
-      } catch {
-        return null;
-      }
-      return blocked();
+      // A preparation that failed (a timeout, a 5xx or a refusal look alike)
+      // or returned no usable replacement is uncertain, as for a source claim:
+      // the next call retries while the claim window is open, and only a
+      // closed window blocks the replacement.
+      return null;
     }
     let recorded: HtlcStoreWrite;
     try {
