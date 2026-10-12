@@ -3429,6 +3429,86 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
 
+    // Pinning, and kills a mutant that refuses supplementary-plane text: a
+    // surrogate pair is well-formed and keyed by its UTF-8 bytes.
+    test("a supplementary-plane character in authority strings is kept and keyed", async () => {
+      const railId = "rail-\u{1F680}";
+      const destinationAddress = "payee-\u{10348}";
+      const key = sha256Hex(`dacs-liquidity-tank:v1:${JOB_ID}:${railId}:2`);
+      const intent = createLiquidityTankIntent(authority({ railId, destinationAddress }));
+      expect(intent).toMatchObject({ railId, destinationAddress, settlementKey: key });
+      expect(liquidityTankSettlementKey({ jobId: JOB_ID, railId, phaseIndex: 2 })).toBe(key);
+      const h = harness();
+      await advanceLiquidityTankSettlement(runner({
+        authority: authority({ railId, destinationAddress }),
+        adapter: h.adapter,
+      }).shared);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.prepareSubmission.mock.calls[0]?.[0]).toEqual(intent);
+    });
+
+    // Kills a mutant that accepts a lone low surrogate: with the shared check
+    // passed by a replaced `charCodeAt`, only the owned check refuses it.
+    test("a replaced String.prototype.charCodeAt cannot admit a lone low surrogate", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const loneLow = authority({ railId: "rail-\udc00" });
+      const originalCharCodeAt = String.prototype.charCodeAt;
+      let outcome: unknown;
+      let result: unknown;
+      try {
+        String.prototype.charCodeAt = () => 0x41;
+        try {
+          outcome = createLiquidityTankIntent(loneLow);
+        } catch (error) {
+          outcome = error;
+        }
+        result = await advanceLiquidityTankSettlement(runner({ authority: loneLow, store, adapter: h.adapter }).shared);
+      } finally {
+        String.prototype.charCodeAt = originalCharCodeAt;
+      }
+      const refused = "pay-cross-chain-liquidity-tank: authority must be stable data";
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(refused);
+      expect(result).toEqual({ status: "indeterminate", reason: refused });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    // Pinning, and kills a mutant that strips at most one `=`: base64 with
+    // both padding characters omitted is canonical, and the retained row is
+    // rebroadcast exactly as stored.
+    test.each(["YQ", "YQ=="])("a retained row with base64 %s is rebroadcast as stored", async (signed) => {
+      const intent = createLiquidityTankIntent(authority());
+      const unsigned = {
+        submissionVersion: "1" as const,
+        authorityHash: intent.bindingHash,
+        operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID,
+        substrateTxHash: "retained-tx",
+        signedSubmissionBase64: signed,
+        preparedAt: 900,
+      };
+      const submission = Object.freeze({ ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) });
+      const store: LiquidityTankStore = {
+        ...createInMemoryLiquidityTankStore(),
+        claim: vi.fn(async () => ({
+          status: "acquired" as const,
+          intent,
+          lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 },
+          submission,
+        })),
+        isCurrent: vi.fn(async () => true),
+        recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
+      };
+      const h = harness();
+      const result = await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained.mock.calls[0]?.[0]).toEqual(submission);
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-status-transition-unresolved" });
+    });
   });
 
   test("reference store accepts failure-after-lock expiry only for the exact checkpoint at or after the deadline", async () => {
