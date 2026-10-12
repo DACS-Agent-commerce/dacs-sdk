@@ -2537,11 +2537,92 @@ describe("authenticated peer plans on the Vet terminal", () => {
         await actor.runtime.registerLocalTerminal(terminalInput("fail", "pay-x402"));
         await expect(actor.passOwnVet()).rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
         expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
-          .toBeUndefined();
+          .toMatchObject({ kind: "local-vet-failure" });
       }
       expect(actor.signComponent).not.toHaveBeenCalled();
     },
   );
+
+  // Daybreak's round-7 interleaving, in one process standing in for two: the
+  // failure has authenticated its production and found no pass, and the pass
+  // is recorded just before the failure's first write. Pass and failure claim
+  // one row, so exactly one of them is recorded and nothing is signed.
+  for (const rail of ["x402", "pay-dem"] as const) {
+    it(`${rail}: records one result when a pass lands between a failure's check and its first write`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const database = actor.context.database as unknown as {
+        putEffectIntent: (input: Readonly<{ effectId: string }>) => unknown;
+      };
+      const put = database.putEffectIntent;
+      let passed: Promise<void> | undefined;
+      database.putEffectIntent = (input) => {
+        database.putEffectIntent = put;
+        passed = actor.passOwnVet();
+        return put(input);
+      };
+      await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
+      await expect(passed).resolves.toBeUndefined();
+      expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
+        .toMatchObject({ kind: "local-vet-pass" });
+      expect(row(actor, "selection")).toBeUndefined();
+      expect(row(actor, "material")).toBeUndefined();
+      await advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID);
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    });
+
+    // The other order: the failure's claim is recorded first, and a pass that
+    // lands before its plan is selected finds it and is refused.
+    it(`${rail}: refuses a pass that lands after a failure's claim and before its plan is selected`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const database = actor.context.database as unknown as {
+        putEffectIntent: (input: Readonly<{ effectId: string }>) => unknown;
+      };
+      const put = database.putEffectIntent;
+      let passed: Promise<void> | undefined;
+      database.putEffectIntent = (input) => {
+        if (input.effectId !== terminalTransportEffectId("buyer", "selection")) return put(input);
+        database.putEffectIntent = put;
+        passed = actor.passOwnVet();
+        return put(input);
+      };
+      const own = await actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail)));
+      await expect(passed).rejects.toMatchObject({ reasonCode: "vet-terminal-local-vet-conflict" });
+      expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
+        .toEqual(expect.objectContaining({ kind: "local-vet-failure", planHash: own.proposal.plan.planHash }));
+      expect(row(actor, "material")).toBeDefined();
+    });
+
+    // A pass and a failure's plan both durable, as the round-7 race left them:
+    // neither stands, and this role's own plan is not signed.
+    it(`${rail}: stops for an operator, sending and signing nothing, when a recorded pass sits beside this role's own plan`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      await actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail)));
+      actor.effects.set(`session:${terminalTransportEffectId("buyer", "local-vet")}`, {
+        resultVersion: "1",
+        localBindingHash: rail === "x402"
+          ? fixedPriceX402OrderLocalBindingHash(order("buyer"))
+          : payDemOrderPair().buyerLocalBindingHash,
+        kind: "local-vet-pass",
+        evaluatedRole: "seller",
+      });
+      await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+        .resolves.toMatchObject({ status: "operator-action" });
+      expect(actor.signComponent).not.toHaveBeenCalled();
+      expect(actor.context.sendMessage).not.toHaveBeenCalled();
+    });
+  }
+
+  // A pass recorded for another binding of the job is not this order's pass.
+  it("refuses a peer plan against a pass recorded for another binding", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.runtime.registerLocalVetPass!({ jobId: JOB_ID, localBindingHash: "f".repeat(64) });
+    await expect(actor.runtime.handleMessage(
+      fromSeller(await terminalProposal(terminalInput("fail", "pay-x402", "buyer"))), inbound,
+    ).catch((error: unknown) => error)).resolves.toMatchObject({ reasonCode: "vet-terminal-binding-corrupt" });
+    expect(actor.retainedProposal()).toBeUndefined();
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
 
   it("seals when this role registers a second local plan over its retained material", async () => {
     const actor = memoryRoleDatabase("buyer");

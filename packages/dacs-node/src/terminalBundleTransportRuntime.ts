@@ -124,14 +124,26 @@ interface DacsVetTerminalPlanSelectionV1 {
   identityEvidenceHash?: string;
 }
 
-// This role's own Vet of the peer passed. Its own failure is the material or
-// selection it registered instead.
+// This role's own Vet result, in one insert-once row that a pass and a
+// failure, in any process, both claim before acting on it: either this role's
+// Vet of the peer passed, or it failed with the plan it registers.
 interface DacsVetTerminalLocalVetPassV1 {
   resultVersion: "1";
   localBindingHash: string;
   kind: "local-vet-pass";
   evaluatedRole: Role;
 }
+
+interface DacsVetTerminalLocalVetFailureV1 {
+  resultVersion: "1";
+  localBindingHash: string;
+  kind: "local-vet-failure";
+  planHash: string;
+}
+
+type DacsVetTerminalLocalVetResultV1 =
+  | DacsVetTerminalLocalVetPassV1
+  | DacsVetTerminalLocalVetFailureV1;
 
 export interface DacsVetTerminalBundleTransportOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -1048,18 +1060,21 @@ function captureEquivocation(
   return Object.freeze({ ...value }) as Readonly<DacsVetTerminalPeerEquivocationEvidenceV1>;
 }
 
-function captureLocalVetPass(
+function captureLocalVetResult(
   value: unknown,
   role: Role,
-): Readonly<DacsVetTerminalLocalVetPassV1> {
-  if (!plainObject(value) || !exactFields(value, [
-    "resultVersion", "localBindingHash", "kind", "evaluatedRole",
-  ]) || value.resultVersion !== "1" || value.kind !== "local-vet-pass" ||
-      value.evaluatedRole !== otherRole(role) ||
-      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash)) {
+): Readonly<DacsVetTerminalLocalVetResultV1> {
+  if (!plainObject(value) || value.resultVersion !== "1" ||
+      typeof value.localBindingHash !== "string" || !HASH_RE.test(value.localBindingHash) ||
+      !(value.kind === "local-vet-pass"
+        ? exactFields(value, ["resultVersion", "localBindingHash", "kind", "evaluatedRole"]) &&
+          value.evaluatedRole === otherRole(role)
+        : value.kind === "local-vet-failure" &&
+          exactFields(value, ["resultVersion", "localBindingHash", "kind", "planHash"]) &&
+          typeof value.planHash === "string" && HASH_RE.test(value.planHash))) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
   }
-  return Object.freeze({ ...value }) as unknown as Readonly<DacsVetTerminalLocalVetPassV1>;
+  return Object.freeze({ ...value }) as unknown as Readonly<DacsVetTerminalLocalVetResultV1>;
 }
 
 function equivocationId(role: Role, jobId: string, afterCommit: boolean): string {
@@ -1521,33 +1536,76 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     return evidence;
   };
 
-  // This role's own Vet result, from durable state only: the plan of its own
-  // failure (registered, selected, or kept as a disagreement's evidence) or
-  // its pass (recorded, or implied by retained agreement facts). Undefined
-  // while this role's own Vet has not decided.
+  // This role's own Vet result, from durable state only: its recorded pass or
+  // failure, the plan of a failure registered before that record existed
+  // (registered, selected, or kept as a disagreement's evidence), or a pass
+  // implied by retained agreement facts. Undefined while this role's own Vet
+  // has not decided.
   const loadLocalVetResult = async (jobId: string): Promise<
     Readonly<{ status: "failed"; planHash: string }> | Readonly<{ status: "passed" }> | undefined
   > => {
     const order = await loadOrder(context, jobId);
-    const disagreement = await loadDisagreement(jobId);
-    if (disagreement !== undefined) {
-      return { status: "failed", planHash: disagreement.localPlanHash };
+    const value = context.database.loadEffectInput("session", transportId(role, "local-vet", jobId));
+    const recorded = value === undefined ? undefined : captureLocalVetResult(value, role);
+    if (recorded !== undefined && recorded.localBindingHash !== order.localBindingHash) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
     }
-    const material = await loadBinding(context, "material", jobId);
-    if (material !== undefined) {
-      return { status: "failed", planHash: captureProposal(material.payload).plan.planHash };
+    let failedPlanHash = (await loadDisagreement(jobId))?.localPlanHash;
+    if (failedPlanHash === undefined) {
+      const material = await loadBinding(context, "material", jobId);
+      if (material !== undefined) failedPlanHash = captureProposal(material.payload).plan.planHash;
     }
-    const selection = await loadSelection(jobId);
-    if (selection?.source === "material") return { status: "failed", planHash: selection.planHash };
-    const pass = context.database.loadEffectInput("session", transportId(role, "local-vet", jobId));
-    if (pass !== undefined) {
-      if (captureLocalVetPass(pass, role).localBindingHash !== order.localBindingHash) {
-        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    if (failedPlanHash === undefined) {
+      const selection = await loadSelection(jobId);
+      if (selection?.source === "material") failedPlanHash = selection.planHash;
+    }
+    if (recorded?.kind === "local-vet-pass") {
+      // A pass beside a failure's plan: the same Vet was recorded both ways,
+      // so neither result stands and an operator decides.
+      if (failedPlanHash !== undefined) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
       }
       return { status: "passed" };
     }
+    if (recorded?.kind === "local-vet-failure") {
+      if (failedPlanHash !== undefined && failedPlanHash !== recorded.planHash) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+      }
+      return { status: "failed", planHash: recorded.planHash };
+    }
+    if (failedPlanHash !== undefined) return { status: "failed", planHash: failedPlanHash };
     return context.database.loadEffectInput("session", dacsSessionAgreementFactsIdV1(role, jobId)) ===
       undefined ? undefined : { status: "passed" };
+  };
+
+  // Records this role's own Vet result in its one insert-once row, or throws
+  // if the row already holds a different result: a pass against a failure is
+  // a conflict for an operator, and a second, different failure seals the
+  // job's plans as an own-plan conflict. Either way nothing else is written.
+  const claimLocalVetResult = async (
+    jobId: string,
+    result: Readonly<DacsVetTerminalLocalVetResultV1>,
+  ): Promise<void> => {
+    const id = transportId(role, "local-vet", jobId);
+    const put = context.database.putEffectIntent({
+      kind: "session",
+      effectId: id,
+      bindingHash: result.localBindingHash,
+      input: result,
+      idempotencyKey: id,
+      jobId,
+    });
+    if (put.status !== "conflict") return;
+    const value = context.database.loadEffectInput("session", id);
+    const retained = value === undefined ? undefined : captureLocalVetResult(value, role);
+    if (retained === undefined || retained.localBindingHash !== result.localBindingHash) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    if (retained.kind === "local-vet-failure" && result.kind === "local-vet-failure") {
+      await putPlanConflict(context, jobId, result.planHash, retained.planHash);
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+    }
+    throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
   };
 
   // A plan is accepted from the peer, and signed, only once this role's own
@@ -1634,6 +1692,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       : binding?.payload ?? (selection?.source === "peer" ? selection.payload : undefined);
     if (peerPlan !== undefined) {
       await assertLocalVetAgrees(captureProposal(peerPlan));
+    } else {
+      // This role's own plan is signed only while no pass of the same Vet is
+      // recorded beside it.
+      await loadLocalVetResult(jobId);
     }
     if (binding === undefined) {
       const selected = selection as Readonly<DacsVetTerminalPlanSelectionV1>;
@@ -2056,6 +2118,15 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if ((await loadLocalVetResult(input.jobId))?.status === "passed") {
         throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
       }
+      // Claimed before the plan is selected or bound, so a pass recorded
+      // concurrently, in any process, either finds this failure or wins and
+      // stops it here.
+      await claimLocalVetResult(input.jobId, Object.freeze({
+        resultVersion: "1" as const,
+        localBindingHash: (await loadOrder(context, input.jobId)).localBindingHash,
+        kind: "local-vet-failure" as const,
+        planHash: proposal.plan.planHash,
+      }));
       const choice = await classifyPlan(proposal, "material", await selectPlan(proposal, "material"));
       if (choice.disposition === "disagreement") {
         await recordDisagreement(input.jobId, choice, proposal);
@@ -2085,24 +2156,14 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           (selection !== undefined && captureSelection(selection).source === "material")) {
         throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
       }
-      const id = transportId(role, "local-vet", jobId);
-      const pass = captureLocalVetPass({
-        resultVersion: "1",
+      // A failure registered concurrently claims the same row first or finds
+      // this pass there.
+      await claimLocalVetResult(jobId, Object.freeze({
+        resultVersion: "1" as const,
         localBindingHash,
-        kind: "local-vet-pass",
+        kind: "local-vet-pass" as const,
         evaluatedRole: peerRole,
-      }, role);
-      const put = context.database.putEffectIntent({
-        kind: "session",
-        effectId: id,
-        bindingHash: localBindingHash,
-        input: pass,
-        idempotencyKey: id,
-        jobId,
-      });
-      if (put.status === "conflict") {
-        throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
-      }
+      }));
     },
     async advanceRegisteredTerminal(jobId) {
       if (typeof jobId !== "string" || jobId.length === 0) {

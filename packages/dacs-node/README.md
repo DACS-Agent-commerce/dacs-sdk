@@ -212,7 +212,15 @@ the inbox keeps the message pending and decides it again on a later cycle, and
 plan only once this role accepts it, so until then neither role has signed.
 The session bootstrap records this role's pass with `registerLocalVetPass`, or
 its failure with `registerLocalTerminal`, before it advances the terminal
-again. `registerLocalVetPass` is optional on
+again. Both claim one insert-once local-Vet result row, a failure before its
+plan is selected or bound, so a pass and a failure racing in two processes
+record only the first: the other is refused with
+`vet-terminal-local-vet-conflict` and its track stops at operator action. A
+pass found beside this role's own plan, as earlier versions could leave them,
+stops the terminal at operator action instead of signing either. If this
+role's own Vet never decides (it never receives what it must Vet, or a host
+that drives the runtime itself never records the pass), the peer's plan waits
+pending with nothing signed. `registerLocalVetPass` is optional on
 `DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations still
 conform; the bootstrap skips it when absent.
 
