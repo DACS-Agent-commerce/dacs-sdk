@@ -5156,6 +5156,54 @@ describe("round 10", () => {
     });
   });
 
+  describe("finding 8: a crash between signing and the submission write", () => {
+    test("leads to a fresh signature, and the first bytes are never broadcast", async () => {
+      const h = harness();
+      let signed = 0;
+      h.adapter.prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound) => {
+        signed += 1;
+        return {
+          submissionVersion: "1",
+          authorityHash: bound.bindingHash,
+          operationHash: bound.operationHash,
+          bridgeId: BRIDGE_ID,
+          preparedAt: 900,
+          ...signedTransfer(bound, { nonce: signed }),
+        };
+      });
+      h.setAfterBroadcast(completed(h.operationHash));
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      let crashed = false;
+      const store: LiquidityTankStore = {
+        ...inner,
+        recordSubmission: async (input) => {
+          if (!crashed) {
+            crashed = true;
+            throw new Error("worker stopped before the write committed");
+          }
+          return inner.recordSubmission(input);
+        },
+      };
+      const run = runner({ store, adapter: h.adapter, verifier: decodingVerifier });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-submission-persistence-uncertain",
+      });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      const first = signedTransfer(createLiquidityTankIntent(authority()), { nonce: 1 });
+      const second = signedTransfer(createLiquidityTankIntent(authority()), { nonce: 2 });
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "settled",
+      });
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(2);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained.mock.calls.map(([submission]) => submission.signedSubmissionBase64))
+        .toEqual([second.signedSubmissionBase64]);
+      expect(h.broadcastRetained.mock.calls.map(([submission]) => submission.signedSubmissionBase64))
+        .not.toContain(first.signedSubmissionBase64);
+    });
+  });
+
   describe("finding 9: the reference store re-checks lease expiry on ordinary writes", () => {
     test("submission, observation and settlement writes at or after expiresAt are stale", async () => {
       const store = createInMemoryLiquidityTankStore(VOLATILE);

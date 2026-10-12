@@ -20,7 +20,11 @@ The core:
   reads across worker takeover;
 - reconciles the same 16-character `bridgeId` and operation hash before every
   rebroadcast;
-- accepts only authenticated `empty -> pending -> completed` history;
+- refuses to run without the host's two checks: it uses a bridge observation
+  only when the host's `authenticateObservation` returns `true`, and stores or
+  broadcasts signed bytes only when `verifySignedSubmission` returns `true`
+  (see [Host verifier](#host-verifier));
+- accepts only `empty -> pending -> completed` history;
 - returns success only when both source lock and destination release hashes are
   present;
 - treats capacity exhaustion as transient on the same pinned tank rail; and
@@ -31,21 +35,36 @@ The core:
   pending and completed adapter observations, durable checkpoints, settlement
   replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted. A
-  completion is timely only when `finalityObservedAt < recoveryDeadline`;
-  equality is expired. Expiry needs authenticated evidence; see below.
+  deadline earlier than the submission's `preparedAt` (also Unix milliseconds),
+  such as one sent in seconds, is refused as
+  `liquidity-tank-recovery-deadline-before-preparation`, whether the adapter
+  just returned it or a store row holds it. A completion is timely only when
+  `finalityObservedAt < recoveryDeadline`; equality is expired. Expiry needs
+  authenticated evidence; see below.
+
+**Restart safety comes from the store, not the core.** Every no-double-send and
+completion-versus-expiry guarantee holds only with a durable host store that
+keeps every row across process restarts and commits each write atomically,
+and that passes `runLiquidityTankStoreConformance` (see
+[Store conformance](#store-conformance)). The SDK ships no such store. The
+exported in-memory store loses everything on restart and refuses to construct
+without `{ acknowledgeVolatile: true }`.
 
 ```ts
 import {
   advanceLiquidityTankSettlement,
   type LiquidityTankAdapter,
   type LiquidityTankStore,
+  type LiquidityTankVerifier,
 } from "@kynesyslabs/dacs/rails";
 
 const result = await advanceLiquidityTankSettlement({
   authority,
   owner: workerId,
   adapter: nativeBridgeAdapter satisfies LiquidityTankAdapter,
+  // Durable and atomic, and passes runLiquidityTankStoreConformance.
   store: durableStore satisfies LiquidityTankStore,
+  verifier: hostVerifier satisfies LiquidityTankVerifier,
 });
 ```
 
@@ -54,10 +73,16 @@ Demos programmatic API this corresponds to the manual confirmation path. The
 store commits those exact signed bytes first. `broadcastRetained` may then
 rebroadcast only that retained transaction, so an ambiguous response never
 authorizes a new nonce or bridge operation. The core binds the intent it passes
-to `prepareSubmission`; it checks the returned authority, operation hash and
-bridge ID but does not decode `signedSubmissionBase64` or recompute
-`substrateTxHash`. The adapter must sign exactly that intent's amount,
-destination and operation.
+to `prepareSubmission` and checks the returned authority, operation hash and
+bridge ID. It does not decode `signedSubmissionBase64` itself: the host's
+`verifySignedSubmission` must, before the bytes are stored.
+
+**Adapter contract for the signing window.** `prepareSubmission` must not
+broadcast, log, cache for later sending or otherwise reveal the signed bytes
+before `recordSubmission` commits them. If the worker stops after signing but
+before that write commits, the next owner finds no retained submission and
+signs a fresh one; the first bytes must never reach the bridge, or the buyer
+pays twice. The core cannot observe an adapter that breaks this.
 
 The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
@@ -95,6 +120,40 @@ wins; a failed completion write never triggers expiry in that call.
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
 
+## Host verifier
+
+`advanceLiquidityTankSettlement` takes a required `verifier` with two methods.
+The core cannot make either check itself: it holds no bridge key and stays
+free of Demos transaction decoding. Each is called with frozen inputs and
+counts only when it returns (or resolves to) literal `true`; `false`, any other
+value, or a throw means the value is not used.
+
+- **`authenticateObservation({ intent, submission, observation })`** checks one
+  bridge observation—status, history, bridge ID, operation hash, lock and
+  release hashes, timestamps and `recoveryDeadline`—against the bridge's own
+  authenticated record, for example a pinned bridge key or an attestation over
+  the canonical status. It runs on every observation the adapter returns
+  (except `indeterminate`, which the core never acts on) and on every retained
+  observation before the core acts on it: the durable checkpoint or
+  completion in a claim, retained failure evidence, and committed expiry
+  evidence. A refused fresh observation returns
+  `liquidity-tank-observation-unauthenticated`; a refused retained one returns
+  `liquidity-tank-retained-observation-unauthenticated`. Neither settles,
+  expires, records anything or broadcasts.
+- **`verifySignedSubmission({ intent, submission })`** decodes
+  `signedSubmissionBase64` and confirms it signs exactly the intent: the source
+  amount in base units, origin and destination addresses, asset, tank pair and
+  the submission's `bridgeId`, and that `substrateTxHash` is recomputed from
+  those bytes. It runs on a freshly prepared submission before
+  `recordSubmission`, and on a retained submission before the core observes
+  against it, settles from it or rebroadcasts it. A refusal returns
+  `liquidity-tank-signed-submission-unverified`; nothing is stored or broadcast.
+
+A missing verifier or method, or one that is not a stable function, is refused
+before any claim with `liquidity-tank-observation-authenticator-unavailable` or
+`liquidity-tank-submission-verifier-unavailable`. The core never falls back to
+trusting the adapter.
+
 ## Contradicted locks
 
 Authenticated `empty` or `capacity-unavailable` after a durable lock contradict
@@ -127,6 +186,19 @@ No reconciliation operation is provided here; see the open list below.
 
 ## Store contract
 
+**Leases.** An acquired claim must return a lease whose `owner` is the
+caller's, whose `generation` is a positive safe integer above any earlier one
+for the key, and whose `expiresAt` is exactly `now + leaseDurationMs` from the
+claim input. Use the `now` the core passed, not the store's own clock: the core
+refuses any other lease as `liquidity-tank-settlement-store-lease-invalid` on
+every call, so a store stamping its own time never progresses. Every write
+(`recordSubmission`, `recordObservation`, `recordSettlement`,
+`recordRecoveryFailure` and `recordRecoveryExpired`) carries the core's `now`
+and must refuse unless the identified owner and generation are current and
+`expiresAt > now`. The core also checks `isCurrent` before each effect, but a
+store must not rely on that: a write that lands after its lease expired may
+race a new owner.
+
 Production stores must implement the required
 `recordRecoveryFailure({ settlementKey, bindingHash, owner, generation, now,
 recoveryFailure })`. It retains the failure atomically, without replacing the
@@ -153,7 +225,9 @@ its authenticated deadline even without a prior checkpoint; with a checkpoint,
 its lock and deadline must match exactly.
 
 Completion persistence and recovery expiry race atomically. Persisting a timely
-completion clears retained failure evidence and blocks expiry. Whichever
+completion clears retained failure evidence and blocks expiry, even before its
+settlement is written: refuse any expiry once a completed observation is
+durable. Whichever
 eligible terminal transition commits first wins; the loser must report a
 non-successful write. Once expiry commits, every claim from a host whose clock
 is at or after the deadline returns the same terminal state and no later
@@ -168,6 +242,41 @@ takeover the coordinator deterministically reconstructs and records its
 settlement, including its exact `recoveryDeadline`, before any adapter
 observation, preparation or broadcast. Stores must accept an exact replay as
 `existing` and reject conflicting settlement writes.
+
+## Store conformance
+
+`runLiquidityTankStoreConformance({ createStore, reopenStore })` runs the store
+contract against any `LiquidityTankStore` and returns one result per case.
+**A production store must pass every case before the core relies on it.**
+`createStore` returns a store with no liquidity-tank rows and is called once
+per case. `reopenStore(store)` must return a new handle on the same durable
+state, opened as a restarted process would open it, sharing no in-process
+state.
+
+The cases cover exact leases, generation fencing, lease expiry on every write,
+first-submission retention, bridge-ID uniqueness, observation ordering, late
+completions, the completion-versus-expiry election in both orders, failure
+retention, settlement replay, and state that survives `reopenStore`. Two more
+drive the core through one phase with a worker that stops before its
+submission write commits, a lost broadcast response and restarts between
+every step. After every step they check that at most one signed submission was
+ever broadcast, the funds locked never exceed the intent, and the phase is
+never reported both settled and expired; each must end in exactly one.
+
+```ts
+import { runLiquidityTankStoreConformance } from "@kynesyslabs/dacs/rails";
+
+const results = await runLiquidityTankStoreConformance({
+  createStore: () => openStore(freshDatabase()),
+  reopenStore: (store) => openStore(databaseOf(store)),
+});
+const failed = results.filter((result) => !result.passed);
+if (failed.length > 0) throw new Error(JSON.stringify(failed));
+```
+
+The in-memory reference store passes when `reopenStore` returns the same
+instance, and fails the three restart cases when a restart really drops its
+memory. That failure is the reason it requires `acknowledgeVolatile`.
 
 ## Refusals before any claim
 
@@ -222,6 +331,31 @@ operator rather than polling:
 - `liquidity-tank-settlement-binding-conflict`;
 - `liquidity-tank-retained-state-corrupt`;
 - `liquidity-tank-store-recovery-capability-unavailable`;
+- `liquidity-tank-settlement-store-lease-invalid`: the store's lease is not
+  exactly `now + leaseDurationMs`, or a waiting lease is malformed (see
+  [Store contract](#store-contract));
+- `liquidity-tank-settlement-store-claim-invalid`: the store answered a claim
+  with a malformed result;
+- `liquidity-tank-clock-invalid`: the host clock returned a value that is not
+  a non-negative safe integer;
+- `liquidity-tank-settlement-store-intent-mismatch` and
+  `liquidity-tank-settlement-store-intent-invalid`: the store's row is bound to
+  another or an unreadable intent;
+- `liquidity-tank-stored-settlement-mismatch`: the phase is settled, but the
+  stored settlement does not match the intent, so it reports `indeterminate`
+  until an operator repairs the row;
+- `liquidity-tank-observation-authenticator-unavailable` and
+  `liquidity-tank-submission-verifier-unavailable`: the host supplied no
+  verifier method;
+- `liquidity-tank-observation-unauthenticated`,
+  `liquidity-tank-retained-observation-unauthenticated` and
+  `liquidity-tank-signed-submission-unverified`: the host's verifier refused
+  an observation or signed bytes. A verifier that throws because its own
+  dependency is down lands here too: still retry-safe, but a repeat needs an
+  operator, not polling;
+- `liquidity-tank-recovery-deadline-before-preparation`: the adapter or a
+  stored row carries a deadline earlier than the submission, such as one in
+  seconds;
 - any reason that starts with `pay-cross-chain-liquidity-tank:` (a refused
   authority, owner, lease, clock, store or adapter);
 - a capture refusal: `liquidity-tank authority is not stable canonical JSON`,
@@ -233,10 +367,17 @@ operator rather than polling:
 A refusal caused by a polluted or replaced built-in in the host process (see
 below) also repeats until that process is fixed or restarted, so the operator
 should check the process as well as the authority and the row.
-`lock-contradicted` (above) also needs an operator. Other `indeterminate`
-reasons, such as an unavailable store or an uncertain broadcast, are
-transient: retry with backoff, and alert if one persists. A typed
-discriminator for this is left to a later release.
+`lock-contradicted` (above) also needs an operator. Only these
+`indeterminate` reasons are transient—retry with backoff, and alert if one
+persists: `liquidity-tank-settlement-store-unavailable`,
+`liquidity-tank-status-unavailable`,
+`liquidity-tank-submission-preparation-unavailable`, the
+`…-persistence-uncertain` reasons, `liquidity-tank-broadcast-outcome-uncertain`,
+`liquidity-tank-recovery-checkpoint-conflict`,
+`liquidity-tank-recovery-expiry-not-due`,
+`liquidity-tank-completion-finality-invalid` and
+`liquidity-tank-status-transition-unresolved`. A typed discriminator for this
+is left to a later release.
 
 ## Polluted or replaced built-ins
 
@@ -291,28 +432,35 @@ does not depend on how the core reads results.
 
 ## Adapter trust boundary
 
-Production adapters must authenticate bridge status and its history. The core
-checks only the shape of `authenticationHash` and the presence of the lock and
-release hashes, so it cannot detect an adapter that skips authentication; its
-success, failure and expiry decisions rely on the adapter here. Demos SDK
-4.0.16 exposes native-bridge submission but no public bridge-status lookup that
-can satisfy this boundary, so a bundled live Demos adapter and funded proof are
-explicitly blocked on that upstream capability. The pure protocol/recovery
-core and its adversarial tests do not pretend a submit response is completion.
+The core checks only the shape of `authenticationHash` and the presence of the
+lock and release hashes. Whether an observation is genuine, and whether signed
+bytes carry the intent, is decided by the host's `verifier` (see
+[Host verifier](#host-verifier)); without it the core refuses rather than
+trusting the adapter. A verifier that always answers `true` restores the
+adapter's full trust, so its implementation is part of the security review of
+any live integration. Demos SDK 4.0.16 exposes native-bridge submission but no
+public bridge-status lookup that can back `authenticateObservation`, so a
+bundled live Demos adapter and funded proof are explicitly blocked on that
+upstream capability. The pure protocol/recovery core and its adversarial tests
+do not pretend a submit response is completion.
 
-The exported in-memory store is for tests and development only. Production
-stores must authenticate retained rows, enforce global bridge-ID uniqueness,
-preserve locked-unreleased checkpoints across process restart, and persist the
-completion-versus-expiry winner atomically.
+`createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })` is for tests
+and development only. Without that option it throws a `TypeError`: it keeps
+every row in process memory, so after a restart a worker finds no retained
+submission, signs and broadcasts a second bridge operation, and locks the
+buyer's funds twice. Production stores must authenticate retained rows,
+enforce global bridge-ID uniqueness, preserve locked-unreleased checkpoints
+across process restart, persist the completion-versus-expiry winner
+atomically, and pass `runLiquidityTankStoreConformance`.
 
 ## Open before any live adapter is wired
 
-- verify bridge observations in the core or an injected verifier (a pinned
-  bridge key or attestation over the canonical status, history, hashes and
-  timestamps) instead of checking only the shape of `authenticationHash`;
-- decode `signedSubmissionBase64` and compare it with the intent before it is
-  stored, through the `demosdk`-backed adapter or an injected decoder so that
-  `@kynesyslabs/dacs/rails` stays dependency-free;
+- implement the two `verifier` methods for the live Demos adapter: a pinned
+  bridge key or attestation behind `authenticateObservation`, and
+  `demosdk`-backed transaction decoding behind `verifySignedSubmission`, so
+  that `@kynesyslabs/dacs/rails` stays dependency-free;
+- a durable production store that passes `runLiquidityTankStoreConformance`
+  against a real backend, with funded restart and ambiguity evidence;
 - a lock whose bridge reads contradict it (`empty`, `capacity-unavailable`, a
   failure not bound to the lock, or a different lock/deadline) does not expire
   while they do, and reports `lock-contradicted` past the deadline D. §9.5.5

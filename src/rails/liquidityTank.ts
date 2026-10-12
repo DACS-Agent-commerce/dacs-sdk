@@ -200,6 +200,10 @@ export interface LiquidityTankEffectFence {
 /**
  * Native-bridge boundary. `prepareSubmission` must produce the complete signed
  * Demos transaction without broadcasting it; exact bytes are durable first.
+ * It must not broadcast, log or otherwise reveal the signed bytes before
+ * `recordSubmission` commits them: if the worker stops in between, the next
+ * owner signs a fresh submission and the first bytes must never reach the
+ * bridge. `preparedAt` is Unix milliseconds.
  */
 export interface LiquidityTankAdapter {
   prepareSubmission(
@@ -339,6 +343,12 @@ export type LiquidityTankStoreWrite =
  * (`expiresAt <= now`), as well as a stale owner or generation.
  */
 export interface LiquidityTankStore {
+  /**
+   * An acquired lease must carry the caller's `owner`, a generation above any
+   * earlier one for the key, and `expiresAt` exactly `now + leaseDurationMs`
+   * from this input, not from the store's own clock; the core refuses any
+   * other lease as `liquidity-tank-settlement-store-lease-invalid`.
+   */
   claim(input: {
     intent: Readonly<LiquidityTankIntent>;
     owner: string;
