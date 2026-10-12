@@ -67,6 +67,7 @@ import {
   type LiquidityTankStoreConformanceResult,
   type LiquidityTankStoreRestartSafety,
   type LiquidityTankVerifier,
+  type LiquidityTankVerifierAnswer,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -122,6 +123,15 @@ const tankVerifier: LiquidityTankVerifier = {
   authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
   verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
 };
+// A hook that cannot decide now answers "unavailable"; only the two literals and booleans type-check.
+const outageTankAnswer: LiquidityTankVerifierAnswer = "unavailable";
+const outageTankVerifier: LiquidityTankVerifier = {
+  // An async arrow widens a bare string literal, so it needs `as const`.
+  authenticateObservation: async () => "unavailable" as const,
+  verifySignedSubmission: () => "unavailable",
+};
+// @ts-expect-error an answer is true, false or "unavailable"
+const unknownTankAnswer: LiquidityTankVerifierAnswer = "maybe";
 const tankConformanceOptions: LiquidityTankStoreConformanceOptions = {
   createStore: () => tankStore,
   reopenStore: reopenTankStore,
@@ -285,6 +295,9 @@ void fsTankOptions;
 void fsTankStore;
 void fsTankVersion;
 void tankVerifier;
+void outageTankAnswer;
+void outageTankVerifier;
+void unknownTankAnswer;
 void tankConformanceOptions;
 void tankConformance;
 void unverifiedTankInput;

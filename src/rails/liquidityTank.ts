@@ -233,12 +233,25 @@ export interface LiquidityTankAdapter {
 }
 
 /**
+ * A verifier hook's answer: `true` accepts, `"unavailable"` says the hook
+ * could not decide now (its key, attestation service or decoder is down or
+ * timed out), and anything else, `false` included, refuses. A throw counts as
+ * `"unavailable"`.
+ */
+export type LiquidityTankVerifierAnswer = boolean | "unavailable";
+
+/**
  * Host checks the core cannot make itself. Both are required: when one is
- * missing the core refuses before any claim, and when one answers anything
- * but literal `true` (or throws) the core does not use the value it checked.
- * The core sets no timeout, so each must settle within its own bounded
- * deadline; a hook that never settles hangs the call. A retained `settled`
- * row is returned as the store wrote it, without either check.
+ * missing the core refuses before any claim. The core uses a checked value
+ * only when the hook answers literal `true`. `"unavailable"` (or a throw) is
+ * an outage: the core acts on nothing it could not check, returns the
+ * retryable `liquidity-tank-verifier-unavailable` or a durable lock's progress,
+ * and keeps fresh signed bytes it could not check without broadcasting them,
+ * so a retry re-checks those bytes instead of signing new ones. Any other
+ * answer is a refusal. The core sets no timeout, so each hook must settle
+ * within its own bounded deadline, well under a minute; a hook that never
+ * settles hangs the call. A retained `settled` row is returned as the store
+ * wrote it, without either check.
  */
 export interface LiquidityTankVerifier {
   /**
@@ -251,18 +264,19 @@ export interface LiquidityTankVerifier {
     intent: Readonly<LiquidityTankIntent>;
     submission: Readonly<LiquidityTankPreparedSubmission>;
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<LiquidityTankVerifierAnswer> | LiquidityTankVerifierAnswer;
   /**
    * Decodes `signedSubmissionBase64` and confirms it signs exactly this
    * intent: source amount in base units, origin and destination addresses,
    * asset, tank pair and the submission's `bridgeId`, and that
    * `substrateTxHash` is recomputed from those bytes. Called before a prepared
-   * submission is stored and before a retained one is used.
+   * submission is stored and before a retained one is used. Bytes it refuses
+   * are not stored; bytes it could not check are stored but not broadcast.
    */
   verifySignedSubmission(input: Readonly<{
     intent: Readonly<LiquidityTankIntent>;
     submission: Readonly<LiquidityTankPreparedSubmission>;
-  }>): Promise<boolean> | boolean;
+  }>): Promise<LiquidityTankVerifierAnswer> | LiquidityTankVerifierAnswer;
 }
 
 export interface LiquidityTankLease {
@@ -1400,6 +1414,14 @@ function validateRecoveryEvidence(
   return checkpoint;
 }
 
+/** A verifier hook's answer as the core reads it. */
+type Verdict = "accepted" | "refused" | "unavailable";
+
+/** The verifier could not decide; nothing it was asked about was used. Retry. */
+function verifierUnavailable(): LiquidityTankProgress {
+  return { status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" };
+}
+
 /** A retained row the core refuses to act on; every such reason needs an operator. */
 function retainedStateRefusal(error: unknown): LiquidityTankProgress {
   return {
@@ -1632,28 +1654,33 @@ export async function advanceLiquidityTankSettlement(
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-submission-verifier-unavailable" };
   }
-  /** Only a literal `true` counts; a throw or any other answer does not. */
+  // Only a literal `true` accepts. `"unavailable"` or a throw is an outage: a
+  // hook that timed out or lost its key cannot be told from one whose own
+  // dependency threw, and an outage acts on nothing the core could not check,
+  // so it is never a reason to escalate a forged value. Anything else refuses.
+  const verdict = (answer: unknown): Verdict =>
+    answer === true ? "accepted" : answer === "unavailable" ? "unavailable" : "refused";
   const authenticated = async (
     submissionValue: Readonly<LiquidityTankPreparedSubmission>,
     observationValue: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
-  ): Promise<boolean> => {
+  ): Promise<Verdict> => {
     try {
-      return (await authenticateObservation(freeze({
+      return verdict(await authenticateObservation(freeze({
         intent,
         submission: submissionValue,
         observation: observationValue,
-      }))) === true;
+      })));
     } catch {
-      return false;
+      return "unavailable";
     }
   };
   const verified = async (
     submissionValue: Readonly<LiquidityTankPreparedSubmission>,
-  ): Promise<boolean> => {
+  ): Promise<Verdict> => {
     try {
-      return (await verifySignedSubmission(freeze({ intent, submission: submissionValue }))) === true;
+      return verdict(await verifySignedSubmission(freeze({ intent, submission: submissionValue })));
     } catch {
-      return false;
+      return "unavailable";
     }
   };
   // The latest valid host clock reading; locked progress reports `pastDeadline`
@@ -1748,14 +1775,19 @@ export async function advanceLiquidityTankSettlement(
     >[] = evidence.status === "failed-after-lock"
       ? [evidence.checkpoint, evidence.failure]
       : [evidence];
+    // A refusal of any leg outranks an outage on another.
+    let expiryUnchecked = false;
     for (let index = 0; index < evidenceObservations.length; index += 1) {
-      if (!await authenticated(
+      const answer = await authenticated(
         expiredSubmission,
         evidenceObservations[index] as Exclude<LiquidityTankObservation, { status: "indeterminate" }>,
-      )) {
+      );
+      if (answer === "refused") {
         return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
       }
+      if (answer === "unavailable") expiryUnchecked = true;
     }
+    if (expiryUnchecked) return verifierUnavailable();
     // A terminal failure carries no time of its own: this host's clock must
     // also have reached the deadline before the expiry is reported.
     if (evidence.status === "failed-after-lock" &&
@@ -1836,6 +1868,9 @@ export async function advanceLiquidityTankSettlement(
     },
   });
   let submission: Readonly<LiquidityTankPreparedSubmission> | undefined;
+  // Set when a hook could not check a retained row: nothing past the retained
+  // checks below runs, and only a durable lock's progress is reported.
+  let verifierOutage = false;
   if ((claimSnapshot.observationPresent || claimSnapshot.recoveryFailurePresent ||
       claimSnapshot.submissionRecordedAt !== undefined) && !claimSnapshot.submissionPresent) {
     return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
@@ -1852,10 +1887,13 @@ export async function advanceLiquidityTankSettlement(
     const receiptRefusal = retainedReceiptRefusal(claimSnapshot.submissionRecordedAt, submission);
     if (receiptRefusal !== null) return { status: "indeterminate", reason: receiptRefusal };
     // Retained bytes are re-verified before they are observed against,
-    // settled from or rebroadcast.
-    if (!await verified(submission)) {
+    // settled from or rebroadcast. An outage still lets the retained rows
+    // below be checked for a refusal and a durable lock be reported.
+    const retainedAnswer = await verified(submission);
+    if (retainedAnswer === "refused") {
       return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
     }
+    if (retainedAnswer === "unavailable") verifierOutage = true;
   } else {
     try {
       await fence.assertCurrent();
@@ -1871,8 +1909,12 @@ export async function advanceLiquidityTankSettlement(
         submission.preparedAt - latestNow > PREPARATION_CLOCK_SKEW_MS) {
       return { status: "indeterminate", reason: "liquidity-tank-preparation-time-off-host-clock" };
     }
-    // Bytes that do not sign exactly this intent are neither stored nor broadcast.
-    if (!await verified(submission)) {
+    // Bytes that do not sign exactly this intent are neither stored nor
+    // broadcast. Bytes the verifier could not check are stored but not
+    // broadcast, so a retry re-verifies these bytes instead of signing new
+    // ones; the store keeps one submission per phase and refuses another.
+    const freshAnswer = await verified(submission);
+    if (freshAnswer === "refused") {
       return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
     }
     // The store keeps this reading as the submission's receipt, and a retained
@@ -1904,6 +1946,7 @@ export async function advanceLiquidityTankSettlement(
     if (!stored) {
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
     }
+    if (freshAnswer === "unavailable") return verifierUnavailable();
   }
 
   let durableObservation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined;
@@ -1919,9 +1962,11 @@ export async function advanceLiquidityTankSettlement(
     } catch (error) {
       return retainedStateRefusal(error);
     }
-    if (!await authenticated(submission, durableObservation)) {
+    const durableAnswer = await authenticated(submission, durableObservation);
+    if (durableAnswer === "refused") {
       return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
     }
+    if (durableAnswer === "unavailable") verifierOutage = true;
   }
 
   let durableFailure: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }> | undefined;
@@ -1938,10 +1983,21 @@ export async function advanceLiquidityTankSettlement(
     } catch (error) {
       return retainedStateRefusal(error);
     }
-    if (!await authenticated(submission, durableFailure.checkpoint) ||
-        !await authenticated(submission, durableFailure.failure)) {
+    const checkpointAnswer = await authenticated(submission, durableFailure.checkpoint);
+    const failureAnswer = checkpointAnswer === "refused"
+      ? "refused"
+      : await authenticated(submission, durableFailure.failure);
+    if (checkpointAnswer === "refused" || failureAnswer === "refused") {
       return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
     }
+    if (checkpointAnswer === "unavailable" || failureAnswer === "unavailable") verifierOutage = true;
+  }
+
+  // During an outage the core neither observes, broadcasts, settles nor
+  // expires. A durable lock is still reported from its stored checkpoint, so
+  // an overdue lock keeps `pastDeadline`; the report moves nothing.
+  if (verifierOutage) {
+    return progressFromDurableObservation(intent, durableObservation, latestNow) ?? verifierUnavailable();
   }
 
   const persistSettlement = async (
@@ -2067,12 +2123,19 @@ export async function advanceLiquidityTankSettlement(
       }
       return unavailable;
     }
-    if (observed.status !== "indeterminate" && !await authenticated(submission, observed)) {
-      observationRefusal = {
-        status: "indeterminate",
-        reason: "liquidity-tank-observation-unauthenticated",
-      };
-      return unavailable;
+    if (observed.status !== "indeterminate") {
+      const answer = await authenticated(submission, observed);
+      if (answer === "refused") {
+        observationRefusal = {
+          status: "indeterminate",
+          reason: "liquidity-tank-observation-unauthenticated",
+        };
+        return unavailable;
+      }
+      // Read like an unavailable bridge: durable progress, or a retry.
+      if (answer === "unavailable") {
+        return { status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" };
+      }
     }
     try {
       await fence.assertCurrent();

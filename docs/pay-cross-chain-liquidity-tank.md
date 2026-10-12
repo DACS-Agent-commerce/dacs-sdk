@@ -21,9 +21,10 @@ The core:
 - reconciles the same 16-character `bridgeId` and operation hash before every
   rebroadcast;
 - refuses to run without the host's two checks: it uses a bridge observation
-  only when the host's `authenticateObservation` returns `true`, and stores or
-  broadcasts signed bytes only when `verifySignedSubmission` returns `true`
-  (see [Host verifier](#host-verifier));
+  only when the host's `authenticateObservation` returns `true`, and
+  broadcasts signed bytes only when `verifySignedSubmission` returns `true`;
+  during a verifier outage it acts on nothing it could not check (see
+  [Host verifier](#host-verifier));
 - accepts only `empty -> pending -> completed` history;
 - returns success only when both source lock and destination release hashes are
   present;
@@ -84,7 +85,7 @@ rebroadcast only that retained transaction, so an ambiguous response never
 authorizes a new nonce or bridge operation. The core binds the intent it passes
 to `prepareSubmission` and checks the returned authority, operation hash and
 bridge ID. It does not decode `signedSubmissionBase64` itself: the host's
-`verifySignedSubmission` must, before the bytes are stored.
+`verifySignedSubmission` must, before the bytes are stored or broadcast.
 
 **Adapter contract for the signing window.** `prepareSubmission` must not
 broadcast, log, cache for later sending or otherwise reveal the signed bytes
@@ -201,8 +202,14 @@ shared reservation interface in the SDK would be a separate change.
 `advanceLiquidityTankSettlement` takes a required `verifier` with two methods.
 The core cannot make either check itself: it holds no bridge key and stays
 free of Demos transaction decoding. Each is called with frozen inputs and
-counts only when it returns (or resolves to) literal `true`; `false`, any other
-value, or a throw means the value is not used.
+returns (or resolves to) a `LiquidityTankVerifierAnswer`:
+
+- **`true`** accepts: the core may use the value.
+- **`"unavailable"`** says the hook could not decide now, for example because
+  its pinned key, attestation service or decoder is down or timed out. **A
+  throw counts as `"unavailable"`.** This is an outage, not a refusal (see
+  [Verifier outage](#verifier-outage)).
+- **Anything else**, `false` included, refuses: the value is not used.
 
 - **`authenticateObservation({ intent, submission, observation })`** checks one
   bridge observation—status, history, bridge ID, operation hash, lock and
@@ -223,7 +230,9 @@ value, or a throw means the value is not used.
   those bytes. It runs on a freshly prepared submission before
   `recordSubmission`, and on a retained submission before the core observes
   against it, settles from it or rebroadcasts it. A refusal returns
-  `liquidity-tank-signed-submission-unverified`; nothing is stored or broadcast.
+  `liquidity-tank-signed-submission-unverified`; refused fresh bytes are
+  neither stored nor broadcast, and refused retained bytes are never
+  broadcast.
 
 A missing verifier or method, or one that is not a stable function, is refused
 before any claim with `liquidity-tank-observation-authenticator-unavailable` or
@@ -243,7 +252,40 @@ verifier or adapter call, so a hook that never settles hangs that
 `advanceLiquidityTankSettlement` call. Another owner can take the phase over
 once the lease expires, and the stalled call, if it resumes, stores and
 broadcasts nothing without a current lease. A hook that runs out of time
-should throw or return `false`; the core treats either as a refusal.
+should return `"unavailable"` or throw; the core treats either as an outage.
+Return `false` only for a value the hook checked and refused. Keep each
+deadline well under a minute: fresh bytes whose check outlasts the one-minute
+preparation window are not stored (see [Timestamp units](#timestamp-units)).
+
+### Verifier outage
+
+An outage (`"unavailable"` or a throw) never authorizes anything: the core does
+not observe against, store an observation from, broadcast, settle or expire on
+a value it could not check. What it returns instead:
+
+- **A retained row it could not check** (the retained bytes, the durable
+  observation or retained failure evidence): it still checks every retained
+  row, and a refusal of any of them wins (`…-unverified` or
+  `…-unauthenticated`). Otherwise, if the row holds a durable lock, it reports
+  that lock's `settle-asymmetric` progress from the stored checkpoint, with
+  `pastDeadline` against this call's clock reading, so an overdue lock keeps
+  alerting through the outage. Without a lock it returns the retryable
+  `liquidity-tank-verifier-unavailable`. It does not read the bridge.
+- **A fresh observation it could not check**: as for an unavailable bridge
+  read, the durable lock's progress (or expiry from retained terminal
+  evidence that was checked), or else `liquidity-tank-verifier-unavailable`.
+- **A committed expiry whose evidence it could not check**:
+  `liquidity-tank-verifier-unavailable`, until the evidence is checked.
+- **Freshly signed bytes it could not check**: the core stores them with
+  `recordSubmission`, does not broadcast them, and returns
+  `liquidity-tank-verifier-unavailable`. Each retry claims the phase, finds
+  those bytes retained and checks them again, so no retry signs a new
+  transaction. They are broadcast only after a later check accepts them. If a
+  later check refuses them, the phase keeps them unbroadcast and returns
+  `liquidity-tank-signed-submission-unverified` on every call (an operator
+  resolves it). This cannot broadcast twice: the store keeps one submission
+  per phase and refuses another, only those retained bytes are ever
+  broadcast, and nothing is broadcast before a check accepts them.
 
 ## Contradicted locks
 
@@ -551,9 +593,9 @@ operator rather than polling:
 - `liquidity-tank-observation-unauthenticated`,
   `liquidity-tank-retained-observation-unauthenticated` and
   `liquidity-tank-signed-submission-unverified`: the host's verifier refused
-  an observation or signed bytes. A verifier that throws because its own
-  dependency is down lands here too: still retry-safe, but a repeat needs an
-  operator, not polling;
+  an observation or signed bytes (it answered `false` or another value that
+  is neither `true` nor `"unavailable"`). An outage is not reported here (see
+  [Verifier outage](#verifier-outage));
 - `liquidity-tank-recovery-deadline-before-preparation`,
   `liquidity-tank-finality-before-preparation` and
   `liquidity-tank-lock-observed-before-preparation`: the adapter or a stored
@@ -592,6 +634,7 @@ should check the process as well as the authority and the row.
 `indeterminate` reasons are transient—retry with backoff, and alert if one
 persists: `liquidity-tank-settlement-store-unavailable`,
 `liquidity-tank-status-unavailable`,
+`liquidity-tank-verifier-unavailable`,
 `liquidity-tank-submission-preparation-unavailable`, the
 `…-persistence-uncertain` reasons, `liquidity-tank-broadcast-outcome-uncertain`,
 `liquidity-tank-recovery-checkpoint-conflict`,

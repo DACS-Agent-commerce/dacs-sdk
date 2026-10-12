@@ -4757,7 +4757,9 @@ describe("round 10", () => {
       ["the string true", async () => "true"],
       ["1", () => 1],
       ["an object", async () => ({ authenticated: true })],
-      ["a throw", async () => { throw new Error("attestation key unavailable"); }],
+      // A throw or "unavailable" is an outage, not a refusal: see the final-review tests.
+      ["undefined", async () => undefined],
+      ["a differently cased unavailable", async () => "Unavailable"],
     ])("a completed observation with arbitrary hashes is refused when the hook answers %s",
       async (_label, answer) => {
         const h = harness();
@@ -4951,7 +4953,9 @@ describe("round 10", () => {
       ["false", async () => false],
       ["the string true", async () => "true"],
       ["1", () => 1],
-      ["a throw", async () => { throw new Error("decoder unavailable"); }],
+      // A throw or "unavailable" is an outage, not a refusal: see the final-review tests.
+      ["undefined", async () => undefined],
+      ["a differently cased unavailable", async () => "Unavailable"],
     ])("a hook answering %s stores and broadcasts nothing", async (_label, answer) => {
       const h = harness();
       const store = createInMemoryLiquidityTankStore(VOLATILE);
@@ -5933,5 +5937,176 @@ describe("final review, round 1", () => {
         .resolves.toMatchObject({ status: "settled" });
       expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     });
+  });
+  describe("finding 2: a verifier outage is retried, not refused", () => {
+    const OUTAGES = [
+      ["throws ETIMEDOUT", async () => {
+        throw Object.assign(new Error("verifier timed out"), { code: "ETIMEDOUT" });
+      }],
+      ["answers unavailable", async () => "unavailable" as const],
+    ] as const;
+    const WRITES = ["recordSubmission", "recordObservation", "recordRecoveryFailure",
+      "recordRecoveryExpired", "recordSettlement"] as const;
+    const lockedProgress = (pastDeadline: boolean) => ({
+      status: "settle-asymmetric",
+      reason: "tank-locked-unreleased",
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+      pastDeadline,
+      txRef: {
+        kind: "liquidity-tank",
+        bridgeId: BRIDGE_ID,
+        sourceChainId: 11_155_111,
+        destChainId: 80_002,
+        lockTxHash: "source-lock-tx",
+        recoveryDeadline: RECOVERY_DEADLINE_MS,
+      },
+    });
+
+    test.each([
+      ...OUTAGES.map(([label, outage]) => [`both hooks ${label}`, outage, outage] as const),
+      ...OUTAGES.map(([label, outage]) =>
+        [`only authenticateObservation ${label}`, outage, async () => true as const] as const),
+    ])("an overdue durable lock still reports settle-asymmetric past its deadline when %s",
+      async (_label, authenticate, verify) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const h = harness();
+        await lockDurably(store, h);
+        h.observe.mockClear();
+        const writes = WRITES.map((method) => vi.spyOn(store, method));
+        const run = runner({
+          store, adapter: h.adapter, leaseDurationMs: 1,
+          verifier: { authenticateObservation: vi.fn(authenticate), verifySignedSubmission: vi.fn(verify) },
+        });
+        run.setClock(RECOVERY_DEADLINE_MS - 5_000);
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual(lockedProgress(false));
+        run.setClock(RECOVERY_DEADLINE_MS + 5_000);
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual(lockedProgress(true));
+        for (const write of writes) expect(write).not.toHaveBeenCalled();
+        expect(h.observe).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      });
+
+    test("a refusal of a retained row outranks an outage on the retained bytes", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      await lockDurably(store, h);
+      const run = runner({
+        store, adapter: h.adapter, leaseDurationMs: 1,
+        verifier: {
+          authenticateObservation: async () => false,
+          verifySignedSubmission: async () => "unavailable" as const,
+        },
+      });
+      run.setClock(RECOVERY_DEADLINE_MS + 5_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated",
+      });
+    });
+
+    test.each(OUTAGES)(
+      "on a fresh phase, a verifier that %s keeps the signed bytes unbroadcast, and retries re-check them instead of signing again",
+      async (_label, outage) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const recordSubmission = vi.spyOn(store, "recordSubmission");
+        const h = harness();
+        h.setAfterBroadcast(completed(h.operationHash));
+        const verifySignedSubmission = vi.fn<LiquidityTankVerifier["verifySignedSubmission"]>(outage);
+        const run = runner({ store, adapter: h.adapter, verifier: { ...APPROVING_VERIFIER, verifySignedSubmission } });
+        const unavailable = { status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" };
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual(unavailable);
+        expect(recordSubmission).toHaveBeenCalledTimes(1);
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual(unavailable);
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+        expect(h.observe).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        verifySignedSubmission.mockImplementation(async () => true);
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+        expect(recordSubmission).toHaveBeenCalledTimes(1);
+        const checked = new Set(verifySignedSubmission.mock.calls.map(([input]) => input.submission.submissionHash));
+        expect(checked.size).toBe(1);
+        expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+        expect(checked.has(h.broadcastRetained.mock.calls[0]![0].submissionHash)).toBe(true);
+      });
+
+    test("bytes kept through an outage that the verifier then refuses are never broadcast or replaced", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      const verifySignedSubmission = vi.fn<LiquidityTankVerifier["verifySignedSubmission"]>(
+        async () => "unavailable" as const,
+      );
+      const run = runner({ store, adapter: h.adapter, verifier: { ...APPROVING_VERIFIER, verifySignedSubmission } });
+      await advanceLiquidityTankSettlement(run.shared);
+      verifySignedSubmission.mockImplementation(async () => false);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+          status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified",
+        });
+      }
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test.each(OUTAGES)("a fresh observation the authenticator %s for is retried: nothing settles until it answers",
+      async (_label, outage) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const recordSettlement = vi.spyOn(store, "recordSettlement");
+        const h = harness();
+        h.setAfterBroadcast(completed(h.operationHash));
+        let down = true;
+        const verifier: LiquidityTankVerifier = {
+          ...APPROVING_VERIFIER,
+          authenticateObservation: async ({ observation }) =>
+            observation.status === "completed" && down ? outage() : true,
+        };
+        const run = runner({ store, adapter: h.adapter, verifier });
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+          status: "indeterminate", reason: "liquidity-tank-verifier-unavailable",
+        });
+        expect(recordSettlement).not.toHaveBeenCalled();
+        down = false;
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({ status: "settled" });
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      });
+
+    test("a fresh observation the authenticator cannot check falls back on the durable lock", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      await lockDurably(store, h);
+      h.setObservation(completed(h.operationHash));
+      const run = runner({
+        store, adapter: h.adapter, leaseDurationMs: 1,
+        verifier: {
+          ...APPROVING_VERIFIER,
+          authenticateObservation: async ({ observation }) =>
+            observation.status === "completed" ? "unavailable" : true,
+        },
+      });
+      run.setClock(RECOVERY_DEADLINE_MS + 5_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual(lockedProgress(true));
+    });
+
+    test.each(OUTAGES)("a committed expiry whose evidence the authenticator %s for is retried, not refused",
+      async (_label, outage) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const h = harness();
+        await lockDurably(store, h);
+        h.setObservation(lockedPendingAt(h.operationHash, RECOVERY_DEADLINE_MS));
+        const expire = runner({ store, adapter: h.adapter, leaseDurationMs: 1 });
+        expire.setClock(RECOVERY_DEADLINE_MS + 1);
+        await expect(advanceLiquidityTankSettlement(expire.shared)).resolves.toMatchObject({
+          status: "failed", errorClass: "failed-substrate",
+        });
+        const run = runner({
+          store, adapter: h.adapter, leaseDurationMs: 1,
+          verifier: { ...APPROVING_VERIFIER, authenticateObservation: outage },
+        });
+        run.setClock(RECOVERY_DEADLINE_MS + 10);
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+          status: "indeterminate", reason: "liquidity-tank-verifier-unavailable",
+        });
+      });
   });
 });

@@ -1313,6 +1313,7 @@ export {
   type LiquidityTankEffectFence,
   type LiquidityTankAdapter,
   type LiquidityTankVerifier,
+  type LiquidityTankVerifierAnswer,
   type LiquidityTankLease,
   type LiquidityTankSettlement,
   type LiquidityTankRecoveryCheckpoint,
