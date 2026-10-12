@@ -9,12 +9,15 @@ import {
 import { DacsError } from "../errors.js";
 
 // Captured once at module load, so reading the authority, deriving its
-// settlement key and intent, and binding methods never dispatch through a
-// prototype or static a host replaces later.
+// settlement key and intent, binding methods and reading store and adapter
+// results do not dispatch through a prototype or static polluted or replaced
+// later. This makes accidental interference unlikely; code that replaces
+// built-ins in the process is outside the rail's threat model (see the docs).
 // `RegExp.prototype.test` looks `exec` up on every call, so `exec` is captured.
 const reflectApply = Reflect.apply;
 const getOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const getPrototypeOf = Reflect.getPrototypeOf;
+const ownKeys = Reflect.ownKeys;
 const hasOwn = Object.hasOwn;
 const freeze = Object.freeze;
 const isArray = Array.isArray;
@@ -652,10 +655,11 @@ function stableBoundMethod<T extends LiquidityTankMethod>(
   return ((...args: unknown[]) => reflectApply(method, source, args)) as unknown as T;
 }
 
+/** Read through the intrinsics captured at load, so a refusal reads as one. */
 function successfulStoreWrite(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) return false;
-  const status = Object.getOwnPropertyDescriptor(value, "status");
-  return status !== undefined && "value" in status &&
+  if (value === null || typeof value !== "object" || isProxy(value)) return false;
+  const status = getOwnPropertyDescriptor(value, "status");
+  return status !== undefined && hasOwn(status, "value") &&
     (status.value === "recorded" || status.value === "existing");
 }
 
@@ -665,8 +669,8 @@ function successfulStoreWrite(value: unknown): boolean {
  */
 function retainedRecoveryFailure(value: unknown, sent: LiquidityTankRecoveryEvidence): boolean {
   if (!successfulStoreWrite(value)) return false;
-  const echo = Object.getOwnPropertyDescriptor(value as object, "recoveryFailure");
-  if (echo === undefined || !("value" in echo)) return false;
+  const echo = getOwnPropertyDescriptor(value as object, "recoveryFailure");
+  if (echo === undefined || !hasOwn(echo, "value")) return false;
   try {
     return canonicalize(snapshotCanonicalJsonRead(
       echo.value,
@@ -677,30 +681,35 @@ function retainedRecoveryFailure(value: unknown, sent: LiquidityTankRecoveryEvid
   }
 }
 
+/**
+ * The top level of a store or adapter result, read through the intrinsics
+ * captured at load; `present` is an owned record, so which fields the result
+ * holds is not decided by a live `Set`.
+ */
 function snapshotOptionalCanonicalReadWithPresence<T>(
   value: T,
   label: string,
   optionalUndefined: ReadonlySet<string>,
-): Readonly<{ value: T; present: ReadonlySet<string> }> {
+): Readonly<{ value: T; present: Readonly<Record<string, true>> }> {
   try {
-    if (value === null || typeof value !== "object" || Array.isArray(value) ||
-        nodeTypes.isProxy(value)) {
+    if (value === null || typeof value !== "object" || isArray(value) || isProxy(value)) {
       throw new TypeError("value is not an ordinary object");
     }
-    const prototype = Object.getPrototypeOf(value);
+    const prototype = getPrototypeOf(value);
     if (prototype !== null && prototype !== Object.prototype) {
       throw new TypeError("value has an exotic prototype");
     }
-    const descriptors = Object.getOwnPropertyDescriptors(value);
     const normalized: Record<string, unknown> = {};
-    const present = new Set<string>();
-    for (const key of Reflect.ownKeys(descriptors)) {
+    const present = { __proto__: null } as unknown as Record<string, true>;
+    const keys = ownKeys(value);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index];
       if (typeof key !== "string") throw new TypeError("value has a symbol property");
-      const descriptor = descriptors[key];
-      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      const descriptor = getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !hasOwn(descriptor, "value") || !descriptor.enumerable) {
         throw new TypeError("properties must be enumerable data");
       }
-      present.add(key);
+      present[key] = true;
       if (descriptor.value === undefined) {
         if (optionalUndefined.has(key)) continue;
         throw new TypeError("value has an undefined required property");
@@ -714,7 +723,7 @@ function snapshotOptionalCanonicalReadWithPresence<T>(
     }
     return Object.freeze({
       value: snapshotCanonicalJsonRead(normalized, label) as T,
-      present,
+      present: freeze(present),
     });
   } catch (cause) {
     throw new DacsError(`${label} must be stable data`, { cause });
@@ -743,17 +752,17 @@ function snapshotStoreClaim(value: unknown): Readonly<{
     "liquidity-tank store claim",
     new Set(["submission", "observation", "recoveryFailure"]),
   );
-  const submission = Object.getOwnPropertyDescriptor(snapshot.value as object, "submission");
-  const observation = Object.getOwnPropertyDescriptor(snapshot.value as object, "observation");
-  const failure = Object.getOwnPropertyDescriptor(snapshot.value as object, "recoveryFailure");
+  const submission = getOwnPropertyDescriptor(snapshot.value as object, "submission");
+  const observation = getOwnPropertyDescriptor(snapshot.value as object, "observation");
+  const failure = getOwnPropertyDescriptor(snapshot.value as object, "recoveryFailure");
   return Object.freeze({
     value: snapshot.value as LiquidityTankStoreClaim,
-    submissionPresent: snapshot.present.has("submission"),
-    submissionValue: submission && "value" in submission ? submission.value : undefined,
-    observationPresent: snapshot.present.has("observation"),
-    observationValue: observation && "value" in observation ? observation.value : undefined,
-    recoveryFailurePresent: snapshot.present.has("recoveryFailure"),
-    recoveryFailureValue: failure && "value" in failure ? failure.value : undefined,
+    submissionPresent: snapshot.present["submission"] === true,
+    submissionValue: submission && hasOwn(submission, "value") ? submission.value : undefined,
+    observationPresent: snapshot.present["observation"] === true,
+    observationValue: observation && hasOwn(observation, "value") ? observation.value : undefined,
+    recoveryFailurePresent: snapshot.present["recoveryFailure"] === true,
+    recoveryFailureValue: failure && hasOwn(failure, "value") ? failure.value : undefined,
   });
 }
 
@@ -1294,7 +1303,7 @@ export async function advanceLiquidityTankSettlement(
       true,
     );
     const nowCandidate = nowValue ?? Date.now;
-    if (typeof nowCandidate !== "function" || nodeTypes.isProxy(nowCandidate)) {
+    if (typeof nowCandidate !== "function" || isProxy(nowCandidate)) {
       throw new DacsError("pay-cross-chain-liquidity-tank: now must be a stable function");
     }
     now = nowCandidate as () => number;
@@ -1393,13 +1402,13 @@ export async function advanceLiquidityTankSettlement(
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
   const claimed = claimSnapshot.value;
-  const claimStatus: unknown = Object.hasOwn(claimed, "status") ? claimed.status : undefined;
+  const claimStatus: unknown = hasOwn(claimed, "status") ? claimed.status : undefined;
   if (typeof claimStatus !== "string") {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
   const requiresIntent = claimStatus === "acquired" || claimStatus === "waiting" ||
     claimStatus === "settled" || claimStatus === "recovery-expired";
-  const hasIntent = Object.hasOwn(claimed, "intent");
+  const hasIntent = hasOwn(claimed, "intent");
   if (requiresIntent && !hasIntent) {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }

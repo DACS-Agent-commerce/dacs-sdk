@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -3251,6 +3252,181 @@ describe("advanceLiquidityTankSettlement", () => {
         expect(h.prepareSubmission).not.toHaveBeenCalled();
         expect(h.broadcastRetained).not.toHaveBeenCalled();
       }
+    });
+
+    // Code review G4: a replaced `Set.prototype.has` hid the locked row from
+    // the claim's presence check, so the core prepared again; with the store's
+    // `conflict` also read as `recorded` through a replaced
+    // `Object.getOwnPropertyDescriptor`, it broadcast the second submission.
+    test.each([
+      ["hidden", false],
+      ["hidden, with the store's refusal read as recorded,", true],
+    ] as const)("a locked row %s is neither prepared again nor broadcast", async (_label, forge) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const originalHas = Set.prototype.has;
+      const originalDescriptor = Object.getOwnPropertyDescriptor;
+      let result: unknown;
+      try {
+        Set.prototype.has = function (this: Set<unknown>, value: unknown) {
+          if (value === "submission" || value === "observation" || value === "recoveryFailure") return false;
+          return Reflect.apply(originalHas, this, [value]) as boolean;
+        };
+        if (forge) {
+          Object.getOwnPropertyDescriptor = function (target: unknown, key: PropertyKey) {
+            const descriptor = Reflect.apply(originalDescriptor, Object, [target, key]) as
+              PropertyDescriptor | undefined;
+            return key === "status" && (descriptor?.value === "conflict" || descriptor?.value === "stale")
+              ? { value: "recorded", writable: true, enumerable: true, configurable: true }
+              : descriptor;
+          } as typeof Object.getOwnPropertyDescriptor;
+        }
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "hidden", adapter: second.adapter });
+      } finally {
+        Set.prototype.has = originalHas;
+        Object.getOwnPropertyDescriptor = originalDescriptor;
+      }
+      expect(result).toMatchObject(LOCK_CONTINUES);
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expectNothingNew(second, h);
+      await releasesLater(run, h);
+    });
+
+    // Daybreak's third scenario: one replaced `util.types.isProxy` deleted the
+    // retained fields from the claim and rewrote the store's `conflict` for
+    // the second submission as `recorded`, so the core broadcast it.
+    test("a replaced util.types.isProxy can neither hide a locked row nor forge a store write", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 500);
+      const second = secondAdapter();
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const utilTypes = nodeTypes as typeof nodeTypes & { isProxy: (value: unknown) => boolean };
+      const originalIsProxy = utilTypes.isProxy;
+      const calls = vi.fn();
+      let result: unknown;
+      try {
+        utilTypes.isProxy = (value: unknown) => {
+          if (value !== null && typeof value === "object") {
+            const record = value as Record<string, unknown>;
+            if (record["status"] === "acquired" && Object.hasOwn(record, "submission")) {
+              calls("hide");
+              delete record["submission"];
+              delete record["observation"];
+              delete record["recoveryFailure"];
+            } else if (record["status"] === "conflict" || record["status"] === "stale") {
+              calls("forge");
+              record["status"] = "recorded";
+            }
+          }
+          return originalIsProxy(value);
+        };
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "proxied", adapter: second.adapter });
+      } finally {
+        utilTypes.isProxy = originalIsProxy;
+      }
+      // The shared snapshot still calls the live helper on its own copy of the
+      // claim; the core's owned presence check then reads that copy as corrupt.
+      expect(calls).toHaveBeenCalledWith("hide");
+      expect(calls).not.toHaveBeenCalledWith("forge");
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expectNothingNew(second, h);
+      await releasesLater(run, h);
+    });
+
+    // Code review P3-1 and Daybreak's third scenario, write half: the store's
+    // answer was read through the live helpers, so a refusal could read as
+    // `recorded` and the refused submission was broadcast.
+    test.each([
+      ["Object.getOwnPropertyDescriptor", "descriptor"],
+      ["util.types.isProxy", "isProxy"],
+    ] as const)("a replaced %s cannot read a store's refusal of a submission as recorded", async (_label, route) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const refusal = { status: "conflict", reason: "host-submission-refused" };
+      store.recordSubmission = vi.fn(async () => ({ ...refusal }) as never);
+      const input = runner({ store, adapter: h.adapter }).shared;
+      const forged = vi.fn();
+      const utilTypes = nodeTypes as typeof nodeTypes & { isProxy: (value: unknown) => boolean };
+      const originalIsProxy = utilTypes.isProxy;
+      const originalDescriptor = Object.getOwnPropertyDescriptor;
+      let result: unknown;
+      try {
+        if (route === "descriptor") {
+          Object.getOwnPropertyDescriptor = function (target: unknown, key: PropertyKey) {
+            const descriptor = Reflect.apply(originalDescriptor, Object, [target, key]) as
+              PropertyDescriptor | undefined;
+            if (key !== "status" || descriptor?.value !== "conflict") return descriptor;
+            forged();
+            return { value: "recorded", writable: true, enumerable: true, configurable: true };
+          } as typeof Object.getOwnPropertyDescriptor;
+        } else {
+          utilTypes.isProxy = (value: unknown) => {
+            const record = value as Record<string, unknown> | null;
+            if (record !== null && typeof record === "object" && record["status"] === "conflict") {
+              forged();
+              record["status"] = "recorded";
+            }
+            return originalIsProxy(value);
+          };
+        }
+        result = await advanceLiquidityTankSettlement(input);
+      } finally {
+        Object.getOwnPropertyDescriptor = originalDescriptor;
+        utilTypes.isProxy = originalIsProxy;
+      }
+      expect(forged).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-submission-persistence-uncertain",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(store.recordSubmission).toHaveBeenCalledTimes(1);
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    // The same for the failure-retention echo: a store that answered
+    // `recorded` without the evidence has not retained it, whatever a replaced
+    // `Object.getOwnPropertyDescriptor` says.
+    test("a replaced Object.getOwnPropertyDescriptor cannot supply a missing failure-retention echo", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      const dropped = { status: "recorded" };
+      let sent: unknown;
+      store.recordRecoveryFailure = vi.fn<LiquidityTankStore["recordRecoveryFailure"]>(async (input) => {
+        sent = input.recoveryFailure;
+        return dropped as never;
+      });
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      const forged = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor;
+      let result: unknown;
+      try {
+        Object.getOwnPropertyDescriptor = function (target: unknown, key: PropertyKey) {
+          if (target !== dropped || key !== "recoveryFailure") {
+            return Reflect.apply(originalDescriptor, Object, [target, key]) as PropertyDescriptor | undefined;
+          }
+          forged();
+          return { value: sent, writable: true, enumerable: true, configurable: true };
+        } as typeof Object.getOwnPropertyDescriptor;
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "echo" });
+      } finally {
+        Object.getOwnPropertyDescriptor = originalDescriptor;
+      }
+      expect(forged).not.toHaveBeenCalled();
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" });
+      expect(store.recordRecoveryFailure).toHaveBeenCalledTimes(1);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
 
   });
