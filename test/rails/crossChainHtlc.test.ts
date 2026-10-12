@@ -3935,6 +3935,64 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     expect(effects).not.toContain("destination-refund");
   });
 
+  test("fails closed when the active reveal is reported final after a replaced one was checkpointed", async () => {
+    const { h, run } = await toPendingReveal();
+    const [first] = broadcastsOf(h, "destination-claim");
+    if (!first || first.txRef.kind !== "htlc-reveal") throw new Error("expected a reveal");
+    h.actions["destination-claim"] = { state: "absent", txRef: first.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: first.txRef,
+      finalityObservedAt: 1_000_000,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    h.setMode("source-claim", "pending");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settle-asymmetric" });
+    // Only one reveal can claim the lock, so the replacement final as well
+    // contradicts the checkpoint of the first.
+    const second = broadcastsOf(h, "destination-claim")[1];
+    if (!second || second.txRef.kind !== "htlc-reveal") throw new Error("expected a replacement reveal");
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: second.txRef,
+      finalityObservedAt: 1_000_000,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    await h.markFinal("source-claim");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-reveal-checkpoint-conflict",
+    });
+  });
+
+  test.each([
+    ["failed", { state: "failed", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH }],
+    ["pending", { state: "pending", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH }],
+    ["absent", { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH }],
+    ["absent, naming no attempt", { state: "absent", authenticationHash: AUTH_HASH }],
+  ] as const)(
+    "fails closed instead of settling when a checkpointed reveal is reported %s",
+    async (_state, reveal) => {
+      const h = harness({ mode: { "source-claim": "pending" } });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "settle-asymmetric" });
+      h.actions["destination-claim"] = reveal;
+      await h.markFinal("source-claim");
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "failed",
+        errorClass: "permanent",
+        reason: "htlc-reveal-checkpoint-contradicted",
+      });
+    },
+  );
+
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
     for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
       expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);

@@ -2132,6 +2132,17 @@ export async function advanceCrossChainHtlc(
   if (sourceClaim) {
     // A reveal checkpoint is durable proof of a final reveal of this preimage,
     // so a reveal the adapter has stopped reporting does not undo settlement.
+    // Any other report of the reveal contradicts that proof: another attempt
+    // final, or a reveal that is `pending`, `failed` or `absent`.
+    const revealReported = snapshot.actions["destination-claim"] !== undefined;
+    if (retainedCheckpoint && revealReported &&
+        !(destinationClaim && sameRef(destinationClaim.txRef, retainedCheckpoint.revealTxRef))) {
+      return {
+        status: "failed",
+        errorClass: "permanent",
+        reason: destinationClaim ? "htlc-reveal-checkpoint-conflict" : "htlc-reveal-checkpoint-contradicted",
+      };
+    }
     const revealTxRef = destinationClaim?.txRef ?? retainedCheckpoint?.revealTxRef;
     if (!sourceLock || !destinationLockRef || !revealTxRef) {
       return { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-incomplete" };
