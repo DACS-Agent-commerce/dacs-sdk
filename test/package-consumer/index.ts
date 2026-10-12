@@ -53,10 +53,13 @@ import {
   type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAdapter,
   type LiquidityTankAuthority,
+  type LiquidityTankIntent,
   type LiquidityTankObservation,
   type LiquidityTankPreparedSubmission,
+  type LiquidityTankRecoveryEvidence,
   type LiquidityTankSettlement,
   type LiquidityTankStore,
+  type LiquidityTankStoreClaim,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
   type LiquidityTankVerifier,
@@ -125,6 +128,21 @@ void tankStore.recordSubmission({ ...tankWriteLease, submission: tankSubmission 
 void tankStore.recordObservation({ ...tankWriteLease, observation: tankObservation });
 // @ts-expect-error now is required
 void tankStore.recordSettlement({ ...tankWriteLease, settlement: tankSettlement });
+// A committed expiry returns the receipt kept with its submission.
+const expiredTankClaim: LiquidityTankStoreClaim = {
+  status: "recovery-expired",
+  intent: tankIntentValue,
+  submission: tankSubmission,
+  submissionRecordedAt: 1_785_000_000_000,
+  observation: tankExpiryEvidence,
+};
+// @ts-expect-error submissionRecordedAt is required on a committed expiry
+const unreceiptedTankClaim: LiquidityTankStoreClaim = {
+  status: "recovery-expired",
+  intent: tankIntentValue,
+  submission: tankSubmission,
+  observation: tankExpiryEvidence,
+};
 const tankConformance: (
   options: LiquidityTankStoreConformanceOptions,
 ) => Promise<readonly LiquidityTankStoreConformanceResult[]> = runLiquidityTankStoreConformance;
@@ -187,6 +205,8 @@ declare const tankAuthority: LiquidityTankAuthority;
 declare const tankSubmission: LiquidityTankPreparedSubmission;
 declare const tankObservation: Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 declare const tankSettlement: LiquidityTankSettlement;
+declare const tankIntentValue: LiquidityTankIntent;
+declare const tankExpiryEvidence: LiquidityTankRecoveryEvidence;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
 declare const qualificationMember: ClaimQualificationRequirement;
@@ -248,6 +268,8 @@ void tankVerifier;
 void tankConformanceOptions;
 void tankConformance;
 void unverifiedTankInput;
+void expiredTankClaim;
+void unreceiptedTankClaim;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;

@@ -70,9 +70,9 @@ const AUTHORITY_FIELDS = Object.freeze(Object.keys({
 } satisfies Record<keyof LiquidityTankAuthority, true>));
 const DEFAULT_LEASE_MS = 30_000;
 /**
- * How far a fresh submission's `preparedAt` may sit from this host's clock
- * readings around preparation: room for the adapter's clock skew, while a
- * seconds-scale value is decades outside it.
+ * How far a submission's `preparedAt` may sit from this host's clock readings
+ * around preparation and from the receipt stored with it: room for the
+ * adapter's clock skew, while a seconds-scale value is decades outside it.
  */
 const PREPARATION_CLOCK_SKEW_MS = 60_000;
 const ETH_SEPOLIA_CHAIN_ID = 11_155_111;
@@ -320,6 +320,8 @@ export type LiquidityTankStoreClaim =
       intent: Readonly<LiquidityTankIntent>;
       lease: Readonly<LiquidityTankLease>;
       submission?: Readonly<LiquidityTankPreparedSubmission>;
+      /** The `now` of the write that first recorded `submission`; present exactly with it. */
+      submissionRecordedAt?: number;
       observation?: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
       recoveryFailure?: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
     }
@@ -328,6 +330,8 @@ export type LiquidityTankStoreClaim =
       intent: Readonly<LiquidityTankIntent>;
       lease: Readonly<LiquidityTankLease>;
       submission?: Readonly<LiquidityTankPreparedSubmission>;
+      /** The `now` of the write that first recorded `submission`; present exactly with it. */
+      submissionRecordedAt?: number;
       observation?: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
       recoveryFailure?: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
     }
@@ -340,6 +344,8 @@ export type LiquidityTankStoreClaim =
       status: "recovery-expired";
       intent: Readonly<LiquidityTankIntent>;
       submission: Readonly<LiquidityTankPreparedSubmission>;
+      /** The `now` of the write that first recorded `submission`. */
+      submissionRecordedAt: number;
       observation: LiquidityTankRecoveryEvidence;
     }
   | { status: "conflict" | "corrupt"; reason: string };
@@ -377,6 +383,13 @@ export interface LiquidityTankStore {
     generation: number;
     now: number;
   }): Promise<boolean>;
+  /**
+   * The first recorded submission keeps this write's `now` as its
+   * `submissionRecordedAt`, in the same atomic write. Every later acquired,
+   * waiting or recovery-expired claim returns that value unchanged beside the
+   * submission; an `existing` replay never replaces it. The core uses a
+   * retained submission only when its `preparedAt` is within one minute of it.
+   */
   recordSubmission(input: {
     settlementKey: string;
     bindingHash: string;
@@ -716,6 +729,28 @@ function recoveryDeadlineAfterPreparation(
   );
 }
 
+/** Whether `preparedAt` lies within the skew window of the host-clock reading `at`. */
+function preparedNear(preparedAt: number, at: number): boolean {
+  return preparedAt - at <= PREPARATION_CLOCK_SKEW_MS && at - preparedAt <= PREPARATION_CLOCK_SKEW_MS;
+}
+
+/**
+ * Why a retained submission may not be used, or null. Its `preparedAt` is
+ * bound to this host's clock only through the receipt the store kept when it
+ * was first recorded, so a row without one, or stamped outside the window of
+ * it (such as in seconds), never reaches an observation or deadline decision.
+ */
+function retainedReceiptRefusal(
+  receipt: unknown,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+): string | null {
+  if (receipt === undefined) return "liquidity-tank-submission-receipt-missing";
+  if (!isSafeInteger(receipt) || (receipt as number) < 0) return "liquidity-tank-retained-state-corrupt";
+  return preparedNear(submission.preparedAt, receipt as number)
+    ? null
+    : "liquidity-tank-preparation-time-off-receipt";
+}
+
 function stableDataProperty(
   source: unknown,
   key: PropertyKey,
@@ -858,6 +893,8 @@ function snapshotStoreClaim(value: unknown): Readonly<{
   value: LiquidityTankStoreClaim;
   submissionPresent: boolean;
   submissionValue: unknown;
+  /** `undefined` when the claim holds no receipt. */
+  submissionRecordedAt: unknown;
   observationPresent: boolean;
   observationValue: unknown;
   recoveryFailurePresent: boolean;
@@ -866,15 +903,17 @@ function snapshotStoreClaim(value: unknown): Readonly<{
   const snapshot = snapshotOptionalCanonicalReadWithPresence(
     value,
     "liquidity-tank store claim",
-    new Set(["submission", "observation", "recoveryFailure"]),
+    new Set(["submission", "submissionRecordedAt", "observation", "recoveryFailure"]),
   );
   const submission = getOwnPropertyDescriptor(snapshot.value as object, "submission");
+  const receipt = getOwnPropertyDescriptor(snapshot.value as object, "submissionRecordedAt");
   const observation = getOwnPropertyDescriptor(snapshot.value as object, "observation");
   const failure = getOwnPropertyDescriptor(snapshot.value as object, "recoveryFailure");
   return Object.freeze({
     value: withoutPrototype(snapshot.value as LiquidityTankStoreClaim),
     submissionPresent: snapshot.present["submission"] === true,
     submissionValue: submission && hasOwn(submission, "value") ? submission.value : undefined,
+    submissionRecordedAt: receipt && hasOwn(receipt, "value") ? receipt.value : undefined,
     observationPresent: snapshot.present["observation"] === true,
     observationValue: observation && hasOwn(observation, "value") ? observation.value : undefined,
     recoveryFailurePresent: snapshot.present["recoveryFailure"] === true,
@@ -1644,6 +1683,17 @@ export async function advanceLiquidityTankSettlement(
     let expiredSubmission: Readonly<LiquidityTankPreparedSubmission>;
     try {
       expiredSubmission = validateRetainedSubmission(expiredClaim.submission, intent);
+    } catch (error) {
+      return retainedStateRefusal(error);
+    }
+    const expiredReceiptRefusal = retainedReceiptRefusal(
+      claimSnapshot.submissionRecordedAt,
+      expiredSubmission,
+    );
+    if (expiredReceiptRefusal !== null) {
+      return { status: "indeterminate", reason: expiredReceiptRefusal };
+    }
+    try {
       evidence = validateRecoveryEvidence(
         expiredClaim.observation,
         intent,
@@ -1748,8 +1798,8 @@ export async function advanceLiquidityTankSettlement(
     },
   });
   let submission: Readonly<LiquidityTankPreparedSubmission> | undefined;
-  if ((claimSnapshot.observationPresent || claimSnapshot.recoveryFailurePresent) &&
-      !claimSnapshot.submissionPresent) {
+  if ((claimSnapshot.observationPresent || claimSnapshot.recoveryFailurePresent ||
+      claimSnapshot.submissionRecordedAt !== undefined) && !claimSnapshot.submissionPresent) {
     return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
   }
   if (claimSnapshot.submissionPresent) {
@@ -1761,6 +1811,8 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
+    const receiptRefusal = retainedReceiptRefusal(claimSnapshot.submissionRecordedAt, submission);
+    if (receiptRefusal !== null) return { status: "indeterminate", reason: receiptRefusal };
     // Retained bytes are re-verified before they are observed against,
     // settled from or rebroadcast.
     if (!await verified(submission)) {
@@ -1785,6 +1837,18 @@ export async function advanceLiquidityTankSettlement(
     if (!await verified(submission)) {
       return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
     }
+    // The store keeps this reading as the submission's receipt, and a retained
+    // submission is used only within the window of it: a submission that has
+    // already left the window (a slow verifier) is not stored.
+    let recordedAt: number;
+    try {
+      recordedAt = readNow();
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+    }
+    if (!preparedNear(submission.preparedAt, recordedAt)) {
+      return { status: "indeterminate", reason: "liquidity-tank-preparation-time-off-host-clock" };
+    }
     let stored: boolean;
     try {
       stored = successfulStoreWrite(await recordSubmission({
@@ -1792,7 +1856,7 @@ export async function advanceLiquidityTankSettlement(
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
-        now: readNow(),
+        now: recordedAt,
         submission,
       }));
       await fence.assertCurrent();
@@ -2100,6 +2164,7 @@ interface MemoryTankRecord {
   intent: Readonly<LiquidityTankIntent>;
   lease: LiquidityTankLease;
   submission?: Readonly<LiquidityTankPreparedSubmission>;
+  submissionRecordedAt?: number;
   observation?: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
   recoveryFailure?: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>;
   recoveryExpired?: LiquidityTankRecoveryEvidence;
@@ -2172,13 +2237,14 @@ export function createInMemoryLiquidityTankStore(
           return { status: "settled", intent: existing.intent, settlement: existing.settlement };
         }
         if (existing.recoveryExpired) {
-          if (!existing.submission) {
+          if (!existing.submission || existing.submissionRecordedAt === undefined) {
             return { status: "corrupt", reason: "liquidity-tank-recovery-expiry-missing-submission" };
           }
           return {
             status: "recovery-expired",
             intent: existing.intent,
             submission: existing.submission,
+            submissionRecordedAt: existing.submissionRecordedAt,
             observation: existing.recoveryExpired,
           };
         }
@@ -2189,7 +2255,7 @@ export function createInMemoryLiquidityTankStore(
             lease: { ...existing.lease },
             ...(existing.submission === undefined
               ? {}
-              : { submission: existing.submission }),
+              : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
             ...(existing.observation === undefined
               ? {}
               : { observation: existing.observation }),
@@ -2212,7 +2278,7 @@ export function createInMemoryLiquidityTankStore(
           lease: { ...lease },
           ...(existing.submission === undefined
             ? {}
-            : { submission: existing.submission }),
+            : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
           ...(existing.observation === undefined
             ? {}
             : { observation: existing.observation }),
@@ -2248,6 +2314,8 @@ export function createInMemoryLiquidityTankStore(
           : { status: "conflict", reason: "liquidity-tank-submission-replacement-forbidden" };
       }
       record.submission = Object.freeze({ ...input.submission });
+      // Validated by the lease check above; kept with the submission it receipts.
+      record.submissionRecordedAt = input.now;
       bridgeOwners.set(input.submission.bridgeId, input.settlementKey);
       return { status: "recorded" };
     },

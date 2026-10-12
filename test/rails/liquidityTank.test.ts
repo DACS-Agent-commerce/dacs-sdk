@@ -715,6 +715,7 @@ describe("advanceLiquidityTankSettlement", () => {
       let retainedSubmission:
         | Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
         | undefined;
+      let retainedReceipt = 0;
       let exposeMalformedObservation = false;
       let generation = 0;
       const claim = vi.fn<LiquidityTankStore["claim"]>(async (input) => {
@@ -727,7 +728,9 @@ describe("advanceLiquidityTankSettlement", () => {
             generation,
             expiresAt: input.now + input.leaseDurationMs,
           },
-          ...(retainedSubmission === undefined ? {} : { submission: retainedSubmission }),
+          ...(retainedSubmission === undefined
+            ? {}
+            : { submission: retainedSubmission, submissionRecordedAt: retainedReceipt }),
           ...(exposeMalformedObservation ? { observation: malformedObservation } : {}),
         } as never;
       });
@@ -736,6 +739,7 @@ describe("advanceLiquidityTankSettlement", () => {
         isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
         recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
           retainedSubmission = input.submission;
+          retainedReceipt = input.now;
           return { status: "recorded" };
         }),
         recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
@@ -826,6 +830,7 @@ describe("advanceLiquidityTankSettlement", () => {
     const intent = createLiquidityTankIntent(authority());
     let retainedSubmission: Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
       | undefined;
+    let retainedReceipt = 0;
     let corruption: "hash" | "bytes" | undefined;
     let claimGeneration = 0;
     const claim = vi.fn<LiquidityTankStore["claim"]>(async (input) => {
@@ -848,7 +853,7 @@ describe("advanceLiquidityTankSettlement", () => {
           generation: claimGeneration,
           expiresAt: input.now + input.leaseDurationMs,
         },
-        ...(submission === undefined ? {} : { submission }),
+        ...(submission === undefined ? {} : { submission, submissionRecordedAt: retainedReceipt }),
       };
     });
     const store: LiquidityTankStore = {
@@ -856,6 +861,7 @@ describe("advanceLiquidityTankSettlement", () => {
       isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
       recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
         retainedSubmission = input.submission;
+        retainedReceipt = input.now;
         return { status: "recorded" };
       }),
       recordObservation: vi.fn<LiquidityTankStore["recordObservation"]>(
@@ -1225,9 +1231,11 @@ describe("advanceLiquidityTankSettlement", () => {
     h.setAfterBroadcast(pending(h.operationHash, true));
     let retainedSubmission: Parameters<LiquidityTankStore["recordSubmission"]>[0]["submission"]
       | undefined;
+    let retainedReceipt = 0;
     const recordSubmission = store.recordSubmission.bind(store);
     store.recordSubmission = async (input) => {
       retainedSubmission = input.submission;
+      retainedReceipt = input.now;
       return recordSubmission(input);
     };
     await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
@@ -1257,6 +1265,7 @@ describe("advanceLiquidityTankSettlement", () => {
         status: "recovery-expired",
         intent: input.intent,
         submission: retainedSubmission!,
+        submissionRecordedAt: retainedReceipt,
         observation,
       }),
     });
@@ -2015,9 +2024,9 @@ describe("advanceLiquidityTankSettlement", () => {
       const intent = createLiquidityTankIntent(authority());
       const peek = await store.claim({ intent, owner: "peek", now: 5_000, leaseDurationMs: 100 });
       if (peek.status !== "acquired" || !peek.submission) throw new Error("expected acquired");
-      const submission = peek.submission;
+      const { submission, submissionRecordedAt } = peek;
       store.claim = async () => ({
-        status: "recovery-expired", intent, submission,
+        status: "recovery-expired", intent, submission, submissionRecordedAt,
         observation: { status: "failed-after-lock", checkpoint: pending(h.operationHash, true),
           failure: failedAfterLock(h.operationHash, D - 10_000) },
       }) as never;
@@ -2932,6 +2941,7 @@ describe("advanceLiquidityTankSettlement", () => {
           intent,
           lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 },
           submission,
+          submissionRecordedAt: 1_000,
         })),
         isCurrent: vi.fn(async () => true),
       };
@@ -3517,6 +3527,7 @@ describe("advanceLiquidityTankSettlement", () => {
           intent,
           lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 },
           submission,
+          submissionRecordedAt: 1_000,
         })),
         isCurrent: vi.fn(async () => true),
         recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
@@ -3670,6 +3681,7 @@ describe("advanceLiquidityTankSettlement", () => {
       const { intent, submission, submissionHash } = retainedSubmission(field);
       const store = claimingStore({
         status: "acquired", intent, lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 }, submission,
+        submissionRecordedAt: 1_000,
       });
       const h = harness();
       const result = await withPollution({ [field]: field === "submissionHash" ? submissionHash : "forged-tx" }, () =>
@@ -3682,7 +3694,7 @@ describe("advanceLiquidityTankSettlement", () => {
     test("a polluted Object.prototype cannot supply retained recovery evidence's missing checkpoint", async () => {
       const { intent, submission } = retainedSubmission();
       const store = claimingStore({
-        status: "recovery-expired", intent, submission,
+        status: "recovery-expired", intent, submission, submissionRecordedAt: 1_000,
         observation: { status: "failed-after-lock", failure: failedAfterLock(intent.operationHash, D) },
       });
       const run = runner({ store });
@@ -5152,6 +5164,7 @@ describe("round 10", () => {
             status: "recovery-expired",
             intent: claimed.intent,
             submission: claimed.submission,
+            submissionRecordedAt: claimed.submissionRecordedAt as number,
             observation: legacy(claimed.observation) as never,
           };
         },
@@ -5422,6 +5435,7 @@ describe("round 11", () => {
             status: "recovery-expired",
             intent: claimed.intent,
             submission: claimed.submission,
+            submissionRecordedAt: claimed.submissionRecordedAt as number,
             observation: lateInSeconds as never,
           };
         },
@@ -5488,6 +5502,278 @@ describe("round 11", () => {
       await expect(advanceLiquidityTankSettlement({ ...expiredRun.shared, owner: "replay", verifier: refusing }))
         .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" });
       expect(refusing.authenticateObservation).toHaveBeenCalled();
+    });
+  });
+});
+
+describe("round 12", () => {
+  const HOST_MS = 1_785_000_000_000;
+  const DEADLINE_MS = HOST_MS + 5 * 86_400_000;
+  const seconds = (ms: number) => Math.floor(ms / 1_000);
+  const operationHash = createLiquidityTankIntent(authority()).operationHash;
+
+  function retainedSubmission(preparedAt: number) {
+    const intent = createLiquidityTankIntent(authority());
+    const unsigned = {
+      submissionVersion: "1" as const,
+      authorityHash: intent.bindingHash,
+      operationHash: intent.operationHash,
+      bridgeId: BRIDGE_ID,
+      substrateTxHash: "demos-native-bridge-tx",
+      signedSubmissionBase64: Buffer.from("signed-native-bridge", "utf8").toString("base64"),
+      preparedAt,
+    };
+    return { ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) };
+  }
+
+  /**
+   * A reference store whose earlier owner recorded `preparedAt`'s submission at
+   * `recordedAt`, its receipt. `observation`, if any, is held in the claims
+   * rather than written, so a row the reference store would refuse is
+   * presented too.
+   */
+  async function retainedRow(preparedAt: number, recordedAt: number, observation?: LiquidityTankObservation) {
+    const inner = createInMemoryLiquidityTankStore(VOLATILE);
+    const intent = createLiquidityTankIntent(authority());
+    const seeded = await inner.claim({ intent, owner: "first-owner", now: recordedAt, leaseDurationMs: 1 });
+    if (seeded.status !== "acquired") throw new Error("expected acquired");
+    await expect(inner.recordSubmission({
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "first-owner", generation: seeded.lease.generation, now: recordedAt,
+      submission: retainedSubmission(preparedAt),
+    })).resolves.toEqual({ status: "recorded" });
+    const store: LiquidityTankStore = {
+      ...inner,
+      claim: async (input) => {
+        const claimed = await inner.claim(input);
+        return claimed.status === "acquired" && observation
+          ? { ...claimed, observation: observation as never }
+          : claimed;
+      },
+    };
+    return { inner, store };
+  }
+
+  /** A resumed worker at `at` on `store`, with spies on every store write, adapter call and hook. */
+  function resume(store: LiquidityTankStore, observation: LiquidityTankObservation, at = HOST_MS) {
+    const h = harness(observation);
+    const verifier = {
+      authenticateObservation: vi.fn(async () => true),
+      verifySignedSubmission: vi.fn(async () => true),
+    } satisfies LiquidityTankVerifier;
+    const writes = (["recordSubmission", "recordObservation", "recordRecoveryFailure",
+      "recordRecoveryExpired", "recordSettlement"] as const).map((method) => vi.spyOn(store, method));
+    const run = runner({ store, adapter: h.adapter, verifier, leaseDurationMs: 1_000 });
+    run.setClock(at);
+    const untouched = () => {
+      for (const write of writes) expect(write).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    };
+    return { h, verifier, run, untouched };
+  }
+
+  /** `claimed` without its receipt. */
+  const withoutReceipt = <T extends object>(claimed: T): T => {
+    const { submissionRecordedAt: _dropped, ...rest } = claimed as T & { submissionRecordedAt?: number };
+    return rest as T;
+  };
+
+  describe("finding 1: a retained preparedAt is used only within the window of its durable receipt", () => {
+    test("Daybreak's probe: a retained seconds-scale preparedAt and deadline never expire a millisecond lock", async () => {
+      // Written through the reference store, as in the probe: neither the
+      // deadline nor the observation falls before the seconds-scale preparedAt.
+      const intent = createLiquidityTankIntent(authority());
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const seedNow = HOST_MS - 100;
+      const seeded = await store.claim({ intent, owner: "seed", now: seedNow, leaseDurationMs: 10 });
+      if (seeded.status !== "acquired") throw new Error("expected acquired");
+      const write = {
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "seed", generation: seeded.lease.generation, now: seedNow,
+      };
+      const lock = pending(intent.operationHash, true, seconds(DEADLINE_MS), HOST_MS);
+      await expect(store.recordSubmission({ ...write, submission: retainedSubmission(seconds(HOST_MS)) }))
+        .resolves.toEqual({ status: "recorded" });
+      await expect(store.recordObservation({ ...write, observation: lock })).resolves.toEqual({ status: "recorded" });
+      const { verifier, run, untouched } = resume(store, lock);
+      // Retryable, never terminal: not now, and not after the real deadline either.
+      for (const at of [HOST_MS, DEADLINE_MS + 1_000]) {
+        run.setClock(at);
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: `resume-${at}` })).resolves.toEqual({
+          status: "indeterminate", reason: "liquidity-tank-preparation-time-off-receipt",
+        });
+      }
+      untouched();
+      expect(verifier.verifySignedSubmission).not.toHaveBeenCalled();
+      const inspected = await store.claim({ intent, owner: "inspector", now: DEADLINE_MS + 10_000, leaseDurationMs: 1 });
+      expect(inspected).toMatchObject({ status: "acquired", submissionRecordedAt: seedNow, observation: lock });
+    });
+
+    test.each([
+      ["seconds preparedAt, millisecond receipt, seconds deadline (the probe)",
+        seconds(HOST_MS), HOST_MS, pending(operationHash, true, seconds(DEADLINE_MS), HOST_MS),
+        "liquidity-tank-preparation-time-off-receipt"],
+      ["seconds preparedAt, millisecond receipt, millisecond deadline",
+        seconds(HOST_MS), HOST_MS, pending(operationHash, true, DEADLINE_MS, HOST_MS),
+        "liquidity-tank-preparation-time-off-receipt"],
+      ["millisecond preparedAt, seconds receipt",
+        HOST_MS, seconds(HOST_MS), pending(operationHash, true, DEADLINE_MS, HOST_MS),
+        "liquidity-tank-preparation-time-off-receipt"],
+      ["millisecond preparedAt and receipt, seconds deadline",
+        HOST_MS, HOST_MS, pending(operationHash, true, seconds(DEADLINE_MS), HOST_MS),
+        "liquidity-tank-recovery-deadline-before-preparation"],
+      ["millisecond preparedAt and receipt, seconds observedAt",
+        HOST_MS, HOST_MS, pending(operationHash, true, DEADLINE_MS, seconds(HOST_MS)),
+        "liquidity-tank-lock-observed-before-preparation"],
+    ] as const)("a retained row with %s is refused with no effects", async (_label, preparedAt, recordedAt, lock, reason) => {
+      const { store } = await retainedRow(preparedAt, recordedAt, lock);
+      const { verifier, run, untouched } = resume(store, lock, DEADLINE_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({ status: "indeterminate", reason });
+      untouched();
+      if (reason === "liquidity-tank-preparation-time-off-receipt") {
+        expect(verifier.verifySignedSubmission).not.toHaveBeenCalled();
+      }
+    });
+
+    test("control: a retained row all in milliseconds stays locked before its deadline and expires after it", async () => {
+      const lock = pending(operationHash, true, DEADLINE_MS, HOST_MS);
+      const { store } = await retainedRow(HOST_MS, HOST_MS, lock);
+      const { h, run } = resume(store, lock, HOST_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased", pastDeadline: false,
+      });
+      h.setObservation(pending(operationHash, true, DEADLINE_MS, DEADLINE_MS + 1_000));
+      run.setClock(DEADLINE_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "failed", errorClass: "failed-substrate",
+      });
+    });
+
+    test("a retained submission without its receipt is refused before any use, and resumes once the store returns it", async () => {
+      const lock = lockedPendingAt(operationHash, HOST_MS + 500);
+      const { store } = await retainedRow(HOST_MS, HOST_MS, lock);
+      let drop = true;
+      const dropping: LiquidityTankStore = {
+        ...store,
+        claim: async (input) => {
+          const claimed = await store.claim(input);
+          return drop ? withoutReceipt(claimed) : claimed;
+        },
+      };
+      const { verifier, run, untouched } = resume(dropping, lock);
+      // Each attempt starts after the last one's lease.
+      for (const at of [HOST_MS + 1_000, HOST_MS + 5_000]) {
+        run.setClock(at);
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: `attempt-${at}` })).resolves.toEqual({
+          status: "indeterminate", reason: "liquidity-tank-submission-receipt-missing",
+        });
+      }
+      untouched();
+      expect(verifier.verifySignedSubmission).not.toHaveBeenCalled();
+      expect(verifier.authenticateObservation).not.toHaveBeenCalled();
+      drop = false;
+      run.setClock(HOST_MS + 10_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "restored" })).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased",
+      });
+    });
+
+    test.each([
+      ["no receipt", undefined, "liquidity-tank-submission-receipt-missing"],
+      ["a seconds-scale receipt", seconds(HOST_MS), "liquidity-tank-preparation-time-off-receipt"],
+      ["a receipt a minute and a millisecond away", HOST_MS + 60_001, "liquidity-tank-preparation-time-off-receipt"],
+    ] as const)("a committed expiry with %s is not reported as failed-substrate", async (_label, receipt, reason) => {
+      const intent = createLiquidityTankIntent(authority());
+      const evidence = pending(operationHash, true, DEADLINE_MS, DEADLINE_MS);
+      const expiredClaim = (submissionRecordedAt: number | undefined): LiquidityTankStore => ({
+        ...createInMemoryLiquidityTankStore(VOLATILE),
+        claim: async () => ({
+          status: "recovery-expired", intent, submission: retainedSubmission(HOST_MS),
+          ...(submissionRecordedAt === undefined ? {} : { submissionRecordedAt }),
+          observation: evidence as never,
+        }) as never,
+      });
+      const { verifier, run, untouched } = resume(expiredClaim(receipt), evidence, DEADLINE_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({ status: "indeterminate", reason });
+      untouched();
+      expect(verifier.authenticateObservation).not.toHaveBeenCalled();
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, store: expiredClaim(HOST_MS) }))
+        .resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
+    });
+
+    test.each([
+      ["a receipt without a submission", { submissionRecordedAt: HOST_MS }],
+      ["a string receipt", { submission: retainedSubmission(HOST_MS), submissionRecordedAt: String(HOST_MS) }],
+      ["a negative receipt", { submission: retainedSubmission(HOST_MS), submissionRecordedAt: -1 }],
+      ["a fractional receipt", { submission: retainedSubmission(HOST_MS), submissionRecordedAt: HOST_MS + 0.5 }],
+      ["a null receipt", { submission: retainedSubmission(HOST_MS), submissionRecordedAt: null }],
+    ] as const)("%s is retained-state corruption", async (_label, retained) => {
+      const store: LiquidityTankStore = {
+        ...createInMemoryLiquidityTankStore(VOLATILE),
+        claim: async (input) => ({
+          status: "acquired", intent: input.intent,
+          lease: { owner: input.owner, generation: 1, expiresAt: input.now + input.leaseDurationMs },
+          ...retained,
+        }) as never,
+      };
+      const { run, untouched } = resume(store, lockedPendingAt(operationHash, HOST_MS + 500), HOST_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt",
+      });
+      untouched();
+    });
+
+    test.each([
+      ["a minute after preparedAt", 60_000, true],
+      ["a minute and a millisecond after it", 60_001, false],
+      ["a minute before it", -60_000, true],
+      ["a minute and a millisecond before it", -60_001, false],
+    ] as const)("a retained receipt %s is used only inside the window", async (_label, offset, used) => {
+      const lock = lockedPendingAt(operationHash, HOST_MS + 500);
+      const { store } = await retainedRow(HOST_MS, HOST_MS + offset, lock);
+      const { run } = resume(store, lock, HOST_MS + 120_000);
+      const result = await advanceLiquidityTankSettlement(run.shared);
+      if (used) {
+        expect(result).toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      } else {
+        expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-preparation-time-off-receipt" });
+      }
+    });
+
+    test.each([
+      [60_000, true],
+      [60_001, false],
+    ] as const)("a fresh submission whose verification ends %i ms after preparedAt is stored only inside the window", async (delay, stored) => {
+      const intent = createLiquidityTankIntent(authority());
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const h = harness();
+      h.setPreparedAt(HOST_MS);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, HOST_MS + 1_000));
+      const run = runner({ store, adapter: h.adapter, leaseDurationMs: 120_000 });
+      run.setClock(HOST_MS);
+      const slow: LiquidityTankVerifier = {
+        authenticateObservation: async () => true,
+        verifySignedSubmission: async () => {
+          run.setClock(HOST_MS + delay);
+          return true;
+        },
+      };
+      const result = await advanceLiquidityTankSettlement({ ...run.shared, verifier: slow });
+      const inspected = await store.claim({ intent, owner: "inspector", now: HOST_MS + 200_000, leaseDurationMs: 1 });
+      if (stored) {
+        expect(result).toMatchObject({ status: "settle-asymmetric" });
+        expect(recordSubmission).toHaveBeenCalledWith(expect.objectContaining({ now: HOST_MS + delay }));
+        expect(inspected).toMatchObject({ status: "acquired", submissionRecordedAt: HOST_MS + delay });
+      } else {
+        expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-preparation-time-off-host-clock" });
+        expect(recordSubmission).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        expect(inspected).toMatchObject({ status: "acquired" });
+        expect(inspected).not.toHaveProperty("submission");
+      }
     });
   });
 });

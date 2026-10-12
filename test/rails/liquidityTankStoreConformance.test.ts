@@ -4,6 +4,7 @@ import {
   createInMemoryLiquidityTankStore,
   type LiquidityTankLease,
   type LiquidityTankStore,
+  type LiquidityTankStoreClaim,
 } from "../../src/rails/liquidityTank.js";
 import {
   runLiquidityTankStoreConformance,
@@ -24,7 +25,8 @@ const CASE = {
   takeover: "lease takeover raises the generation and fences the old owner",
   writeExpiry: "every ordinary write refuses a lease that has expired at its now",
   firstSubmission: "the first submission is kept and a replacement is refused",
-  bridge: "a bridge operation serves one settlement only",
+  receipt: "the first submission's receipt is its write's now, kept across replays and restarts",
+  bridge:"a bridge operation serves one settlement only",
   ordering: "observations need the retained submission and never regress",
   lateCompletion: "a completion at or after the deadline is never recorded as an observation",
   settlementNeedsCompletion: "a settlement needs a durable timely completion",
@@ -47,7 +49,7 @@ const CASE = {
   coreRace: "through the core, two workers starting one phase at once broadcast at most once",
 } as const;
 
-const RESTART_CASES = [CASE.restart, CASE.settles, CASE.expires];
+const RESTART_CASES = [CASE.receipt, CASE.restart, CASE.settles, CASE.expires];
 const RACE_CASES = [
   CASE.claimRace, CASE.submissionRace, CASE.bridgeRace, CASE.completionExpiryRace,
   CASE.settlementExpiryRace, CASE.takeoverRace, CASE.coreRace,
@@ -146,6 +148,42 @@ function rowsWithBridgeIndex(index: "process" | "racey"): LiquidityTankStoreConf
   return {
     createStore: () => open({ rows: new Map(), bridgeOwners: new Map() }),
     reopenStore: (store) => open(disks.get(store) as Disk),
+  };
+}
+
+/** `claimed` with its submission receipt replaced by `receipt(value)`, or removed where that is undefined. */
+function withReceipt(
+  claimed: LiquidityTankStoreClaim,
+  receipt: (value: number) => number | undefined,
+): LiquidityTankStoreClaim {
+  if (!("submissionRecordedAt" in claimed) || claimed.submissionRecordedAt === undefined) return claimed;
+  const { submissionRecordedAt, ...rest } = claimed;
+  const replaced = receipt(submissionRecordedAt);
+  return (replaced === undefined ? rest : { ...rest, submissionRecordedAt: replaced }) as LiquidityTankStoreClaim;
+}
+
+/** Rows are durable, but each handle keeps the receipts it wrote in its own memory. */
+function receiptsInProcessMemory(): LiquidityTankStoreConformanceOptions {
+  const durable = database();
+  const handles = new WeakMap<LiquidityTankStore, LiquidityTankStore>();
+  const open = (handle: LiquidityTankStore): LiquidityTankStore => {
+    const receipts = new Map<string, number>();
+    const wrapped: LiquidityTankStore = {
+      ...handle,
+      recordSubmission: async (input) => {
+        const result = await handle.recordSubmission(input);
+        if (result.status === "recorded") receipts.set(input.settlementKey, input.now);
+        return result;
+      },
+      claim: async (input) =>
+        withReceipt(await handle.claim(input), () => receipts.get(input.intent.settlementKey)),
+    };
+    handles.set(wrapped, handle);
+    return wrapped;
+  };
+  return {
+    createStore: async () => open(await durable.createStore()),
+    reopenStore: async (store) => open(await durable.reopenStore(handles.get(store) as LiquidityTankStore)),
   };
 }
 
@@ -256,6 +294,32 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   [CASE.firstSubmission, "accepts a replacement submission",
     () => database(accepting("recordSubmission", "liquidity-tank-submission-replacement-forbidden", "existing")),
     /re-signed replacement: store answered existing/],
+  [CASE.receipt, "drops the submission's receipt from its claims", () => database((inner) => ({
+    claim: async (input) => withReceipt(await inner.claim(input), () => undefined),
+  })), /a waiting claim does not return the first submission write's now/],
+  [CASE.receipt, "rewrites the receipt with each replay's now", () => database((inner) => {
+    const latest = new Map<string, number>();
+    return {
+      recordSubmission: async (input) => {
+        const result = await inner.recordSubmission(input);
+        if (result.status === "recorded" || result.status === "existing") latest.set(input.settlementKey, input.now);
+        return result;
+      },
+      claim: async (input) => withReceipt(await inner.claim(input),
+        (value) => latest.get(input.intent.settlementKey) ?? value),
+    };
+  }), /a waiting claim does not return the first submission write's now/],
+  [CASE.receipt, "stamps the receipt in seconds (Daybreak r11 P2-1)", () => database((inner) => ({
+    claim: async (input) => withReceipt(await inner.claim(input), (value) => Math.floor(value / 1_000)),
+  })), /a waiting claim does not return the first submission write's now/],
+  [CASE.receipt, "keeps each receipt in the memory of the handle that wrote it", receiptsInProcessMemory,
+    /after a restart, the acquired claim does not return the first submission write's now/],
+  [CASE.receipt, "drops the receipt once the phase has expired", () => database((inner) => ({
+    claim: async (input) => {
+      const claimed = await inner.claim(input);
+      return claimed.status === "recovery-expired" ? withReceipt(claimed, () => undefined) : claimed;
+    },
+  })), /after a restart, the recovery-expired claim does not return the first submission write's now/],
   [CASE.bridge, "lets a second settlement reuse a bridge ID",
     () => database(accepting("recordSubmission", "liquidity-tank-bridge-cross-settlement-reuse")),
     /second settlement reusing the bridge ID: store answered recorded/],

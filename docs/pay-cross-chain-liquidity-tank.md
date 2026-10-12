@@ -147,6 +147,19 @@ something to compare it with:
   durable progress; a stored row holding one is refused before any effect. So
   a seconds-scale deadline cannot expire a fresh lock at once, and a
   seconds-scale finality cannot make a late release look timely.
+- **A retained submission's `preparedAt`** must lie within one minute of its
+  receipt, `submissionRecordedAt`: the host clock reading the core passed as
+  `now` to the `recordSubmission` that first stored it, which the store keeps
+  beside it (see [Store contract](#store-contract)). The core checks this on
+  every claim that returns the submission, before it verifies, observes,
+  rebroadcasts, settles or expires anything. A row without a receipt returns
+  `liquidity-tank-submission-receipt-missing`; one outside the window, such as
+  a `preparedAt` in seconds beside a receipt in milliseconds, returns
+  `liquidity-tank-preparation-time-off-receipt`. Both are `indeterminate` and
+  retryable, never terminal, so a retained seconds-scale `preparedAt` and
+  deadline can no longer expire a millisecond lock early. Before storing a
+  fresh submission the core applies the same check to the reading it stores,
+  so a submission whose verification outlasted the window is not stored.
 
 What the adapter must still guarantee is that every bridge time is Unix
 milliseconds from the bridge's authenticated record. The core cannot catch a
@@ -154,10 +167,11 @@ value that is too large, such as one in microseconds: a deadline in
 microseconds never arrives, so the lock stays open and any release reads as
 timely; a finality in microseconds reads as late, so once the host clock
 reaches the deadline a timely release is expired as `failed-substrate`. A
-retained submission's `preparedAt` was bound to the host clock when it was
-prepared and is not bound again; the ordering checks run on every stored row.
-A settled row carries no `preparedAt`, so its `finalityObservedAt` is checked
-only against its deadline.
+retained `preparedAt` is only as well bound as its receipt: a store that
+stamps the receipt from its own clock, in its own unit, breaks the check, and
+store conformance refuses one that does. A settled row carries no
+`preparedAt`, so its `finalityObservedAt` is checked only against its
+deadline.
 
 ## Tank balance is the bridge's
 
@@ -268,6 +282,15 @@ and must refuse unless the identified owner and generation are current and
 store must not rely on that: a write that lands after its lease expired may
 race a new owner.
 
+**Submission receipt.** The `recordSubmission` that first records a
+submission must keep its input `now`, exactly as passed, as
+`submissionRecordedAt` in the same atomic write. Every acquired, waiting or
+recovery-expired claim that returns the submission returns that value beside
+it, across restarts; an exact replay answered `existing` must not replace it,
+and a claim with no submission has none. Do not stamp it from the store's own
+clock. The core uses a retained submission only when its `preparedAt` is
+within one minute of the receipt (see [Timestamp units](#timestamp-units)).
+
 Production stores must implement the required
 `recordRecoveryFailure({ settlementKey, bindingHash, owner, generation, now,
 recoveryFailure })`. It retains the failure atomically, without replacing the
@@ -329,8 +352,9 @@ would test nothing.
 
 **Sequential cases** check one write at a time: exact leases, generation
 fencing (including a re-claim by the same owner, whose earlier generation must
-stay fenced), lease expiry on every write, first-submission retention,
-bridge-ID uniqueness, observation ordering, late completions, the
+stay fenced), lease expiry on every write, first-submission retention, the
+submission receipt (the first write's `now`, kept through a replay, a
+restart and an expiry), bridge-ID uniqueness, observation ordering, late completions, the
 completion-versus-expiry election in both orders, failure retention,
 settlement replay, and state that survives `reopenStore`, including the
 bridge-ID index. Two more drive the core through one phase with a worker that
@@ -461,7 +485,22 @@ operator rather than polling:
   seconds (see [Timestamp units](#timestamp-units));
 - `liquidity-tank-preparation-time-off-host-clock`: the adapter stamped a
   fresh submission more than a minute from this host's clock, such as in
-  seconds; nothing was stored or broadcast;
+  seconds, or its verification took long enough to leave that window; nothing
+  was stored or broadcast;
+- `liquidity-tank-submission-receipt-missing` and
+  `liquidity-tank-preparation-time-off-receipt`: a retained submission has no
+  receipt, or its `preparedAt` is more than a minute from it (see
+  [Timestamp units](#timestamp-units)). The core used nothing from the row:
+  any lock stays open and the phase is neither settled nor failed, so do not
+  authorize another payment for it. For a missing receipt, fix the store so it
+  returns one; a row written before the store kept receipts may be backfilled
+  only from the store's own durable record of when that submission was first
+  written, in host-clock Unix milliseconds, never from `preparedAt`. For a
+  receipt that is right but a `preparedAt` that is not, such as one in
+  seconds, the signed submission cannot be restamped (its hash covers
+  `preparedAt`): read the bridge's authenticated record for the retained
+  `bridgeId` and resolve the phase by hand. Never sign or broadcast a new
+  submission for the phase;
 - any reason that starts with `pay-cross-chain-liquidity-tank:` (a refused
   authority, owner, lease, clock, store or adapter);
 - a capture refusal: `liquidity-tank authority is not stable canonical JSON`,
@@ -555,8 +594,8 @@ and development only. Without that option it throws a `TypeError`: it keeps
 every row in process memory, so after a restart a worker finds no retained
 submission, signs and broadcasts a second bridge operation, and locks the
 buyer's funds twice. Production stores must authenticate retained rows,
-enforce global bridge-ID uniqueness, preserve locked-unreleased checkpoints
-across process restart, persist the completion-versus-expiry winner
+enforce global bridge-ID uniqueness, keep each submission's receipt, preserve
+locked-unreleased checkpoints across process restart, persist the completion-versus-expiry winner
 atomically, and pass `runLiquidityTankStoreConformance`.
 
 ## Open before any live adapter is wired

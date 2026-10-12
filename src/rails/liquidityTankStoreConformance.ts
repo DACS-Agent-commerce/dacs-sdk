@@ -507,6 +507,30 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       "the retained submission is not the first one");
   }],
 
+  ["the first submission's receipt is its write's now, kept across replays and restarts", async (store, tag, reopen) => {
+    const fixture = new Fixture(tag, 0);
+    const write = await acquire(store, fixture.intent, "owner-a", T0);
+    await record("first submission", store.recordSubmission({ ...write, now: T0 + 1, submission: fixture.submission }), true);
+    await record("exact replay a millisecond later",
+      store.recordSubmission({ ...write, now: T0 + 2, submission: fixture.submission }), true);
+    const waiting = await claim(store, fixture.intent, "owner-b", T0 + 3);
+    check(waiting.status === "waiting" && waiting.submissionRecordedAt === T0 + 1,
+      "a waiting claim does not return the first submission write's now as submissionRecordedAt");
+    const resumed = await claim(await reopen(store), fixture.intent, "owner-b", T0 + LEASE_MS);
+    check(resumed.status === "acquired" && same(resumed.submission, fixture.submission) &&
+      resumed.submissionRecordedAt === T0 + 1,
+      "after a restart, the acquired claim does not return the first submission write's now as submissionRecordedAt");
+
+    const expiring = new Fixture(tag, 1);
+    const { write: expiryWrite, checkpoint } = await lockWith(store, expiring, "owner-c", DEADLINE - 10, LEASE_MS, DEADLINE);
+    await record("expiry", store.recordRecoveryExpired({
+      ...expiryWrite, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint,
+    }), true);
+    const expired = await claim(await reopen(store), expiring.intent, "owner-d", DEADLINE + LEASE_MS);
+    check(expired.status === "recovery-expired" && expired.submissionRecordedAt === DEADLINE - 10,
+      "after a restart, the recovery-expired claim does not return the first submission write's now as submissionRecordedAt");
+  }],
+
   ["a bridge operation serves one settlement only", async (store, tag) => {
     const first = new Fixture(tag, 0);
     const second = new Fixture(tag, 1);
@@ -1128,8 +1152,9 @@ async function concurrentStart(store: LiquidityTankStore, tag: string, reopen: R
  * Runs the liquidity-tank store contract against a store implementation and
  * returns one result per case. The sequential cases check one write at a
  * time: exact leases and generation fencing, lease expiry on every write,
- * first-submission retention, bridge-ID uniqueness, observation ordering, the
- * completion-versus-expiry election, failure retention, settlement replay,
+ * first-submission retention and its host-clock receipt, bridge-ID
+ * uniqueness, observation ordering, the completion-versus-expiry election,
+ * failure retention, settlement replay,
  * state that survives `reopenStore`, and two phase sequences through the core.
  * The race cases start two operations through two handles before either
  * settles and require one winner, seen from a fresh handle. Passing shows the
