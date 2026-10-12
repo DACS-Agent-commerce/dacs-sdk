@@ -654,10 +654,18 @@ function captureRetainedExpiryEvidence(
   return captured;
 }
 
-/** Reads an own data property once; a missing, inherited or accessor field throws. */
+/** A store write result, refused before any trap runs unless it is plain data. */
+function storeWrite(value: SolanaSplStoreWrite): SolanaSplStoreWrite {
+  if (!isDataObject(value)) {
+    throw new DacsError("pay-solana-spl: store write must be plain data");
+  }
+  return value;
+}
+
+/** Reads an own data property once; a proxy, missing, inherited or accessor field throws. */
 function ownField(value: unknown, key: string): unknown {
-  if (typeof value !== "object" || value === null) {
-    throw new DacsError("pay-solana-spl: stored settlement must be an object");
+  if (!isDataObject(value)) {
+    throw new DacsError("pay-solana-spl: stored settlement must be plain data");
   }
   const field = Object.getOwnPropertyDescriptor(value, key);
   if (field === undefined || !("value" in field)) {
@@ -670,7 +678,8 @@ function ownField(value: unknown, key: string): unknown {
  * Copies a stored settlement into fresh frozen plain data, then checks the
  * copy against the intent. Only own data properties are read, each once, so a
  * store accessor, `toJSON` hook or extra field never reaches the caller.
- * Returns null when a field is missing, inherited, an accessor or invalid.
+ * Returns null when the settlement or a nested object is a proxy, or a field
+ * is missing, inherited, an accessor or invalid.
  */
 function captureStoredSettlement(
   value: unknown,
@@ -791,7 +800,8 @@ type ClaimView =
 /**
  * Parses a store claim as the complete discriminated union before anything
  * acts on it. A partial, malformed or unreadable claim is never trusted: it
- * could belong to another binding or hide a retained broadcast.
+ * could belong to another binding or hide a retained broadcast. A proxy claim,
+ * intent or lease is refused before any of its traps runs.
  */
 function readClaim(
   value: unknown,
@@ -802,7 +812,7 @@ function readClaim(
     reason: "solana-spl-settlement-store-claim-invalid",
   } as const;
   try {
-    if (typeof value !== "object" || value === null) return invalid;
+    if (!isDataObject(value)) return invalid;
     const claim = value as Record<string, unknown>;
     const status = claim.status;
     // A conflicting binding for the same phase, or a corrupt record, may hold
@@ -815,7 +825,7 @@ function readClaim(
     }
     if (status !== "acquired" && status !== "waiting" && status !== "settled") return invalid;
     const storedIntent = claim.intent;
-    if (typeof storedIntent !== "object" || storedIntent === null) return invalid;
+    if (!isDataObject(storedIntent)) return invalid;
     try {
       if (canonicalize(storedIntent) !== canonicalize(intent)) {
         return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" };
@@ -836,7 +846,7 @@ function readClaim(
     const attempts = claim.attempts;
     const expiredSignatures = claim.expiredSignatures;
     const expiryEvidence = claim.expiryEvidence;
-    if (typeof lease !== "object" || lease === null || !Array.isArray(attempts) ||
+    if (!isDataObject(lease) || !Array.isArray(attempts) ||
         !Array.isArray(expiredSignatures) ||
         (expiryEvidence !== undefined && !Array.isArray(expiryEvidence))) {
       return invalid;
@@ -1099,14 +1109,14 @@ export async function advanceSolanaSplSettlement(
       }
       // The transfer landed; an unreadable acknowledgement is still uncertain.
       try {
-        const write = await recordSettlement({
+        const write = storeWrite(await recordSettlement({
           settlementKey: intent.settlementKey,
           bindingHash: intent.bindingHash,
           owner: fence.owner,
           generation: fence.generation,
           signature: attempt.signature,
           settlement,
-        });
+        }));
         const status = write.status;
         if (status === "recorded" || status === "existing") {
           return { status: "settled", settlement };
@@ -1134,17 +1144,17 @@ export async function advanceSolanaSplSettlement(
     evidence: Readonly<SolanaSplExpiryEvidence>,
   ): Promise<SolanaSplProgress | null> => {
     try {
-      const marked = await markAttemptExpired({
+      const marked = storeWrite(await markAttemptExpired({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
         ...evidence,
-      });
+      }));
       const status = marked.status;
       if (status === "recorded" || status === "existing") {
         const acknowledged = marked.expiryEvidence;
-        if (acknowledged &&
+        if (isDataObject(acknowledged) &&
             canonicalize(captureExpiryEvidence(acknowledged, attempt)) ===
               canonicalize(evidence)) return null;
       }
@@ -1223,7 +1233,7 @@ export async function advanceSolanaSplSettlement(
   }
   let retained: unknown;
   try {
-    retained = (await recordAttempt({
+    retained = storeWrite(await recordAttempt({
       settlementKey: intent.settlementKey,
       bindingHash: intent.bindingHash,
       owner: fence.owner,

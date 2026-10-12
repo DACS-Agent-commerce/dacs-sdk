@@ -113,6 +113,14 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
+Every store result must be plain data, not a proxy. A proxy anywhere in a
+store result is refused before the core runs any of its traps: a proxy claim,
+`intent` or `lease` is `solana-spl-settlement-store-claim-invalid`, and a
+proxy write result or acknowledged `expiryEvidence` is
+`solana-spl-retained-attempt-persistence-uncertain`,
+`solana-spl-expiry-persistence-uncertain` or
+`solana-spl-settlement-persistence-uncertain` for `recordAttempt`,
+`markAttemptExpired` and `recordSettlement` respectively.
 A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be plain,
 dense arrays: element n is an own data property at index n, so attempt n is at
 index n − 1, and the array has no other own keys. A proxy is refused before any
@@ -126,8 +134,8 @@ attempt, so the store must return every attempt it retained.
 A stored settlement must be plain data. Only its own data properties are read,
 each once, into a fresh frozen copy that is checked against the intent, and a
 `settled` result returns only that copy. Extra fields and `toJSON` hooks are
-dropped; an accessor, inherited or invalid field is
-`solana-spl-stored-settlement-mismatch`.
+dropped; a proxy anywhere in the settlement, or an accessor, inherited or
+invalid field, is `solana-spl-stored-settlement-mismatch`.
 The exported in-memory store is for tests and development only.
 
 The adapter must authenticate reconciliation from Solana ledger state. For

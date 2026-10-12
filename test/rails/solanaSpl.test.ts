@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -7,6 +9,7 @@ import {
   solanaSplSettlementKey,
   type AdvanceSolanaSplSettlementInput,
   type SolanaSplAdapter,
+  type SolanaSplExpiryEvidence,
   type SolanaSplObservedTransfer,
   type SolanaSplPreflight,
   type SolanaSplReconciliation,
@@ -14,6 +17,7 @@ import {
   type SolanaSplSettlementStore,
   type SolanaSplSignedAttempt,
   type SolanaSplStoreClaim,
+  type SolanaSplStoreWrite,
 } from "../../src/rails/solanaSpl.js";
 
 // Fixed-width values with canonical Base58 leading-zero encoding. These decode
@@ -119,19 +123,30 @@ function legacyExpiryView(store: SolanaSplSettlementStore): SolanaSplSettlementS
   };
 }
 
-// Builds proxies that record every trap the core runs on them. The handler is
-// itself a proxy, so the lookup of any trap, defined or not, is recorded.
+// Builds proxies that record every trap run on them, as the trap name plus the
+// key for property traps. The handler is itself a proxy that routes every
+// trap, defined or not, through the log.
 type WatchedProxy = <T extends object>(target: T, handler?: ProxyHandler<T>) => T;
-function trapLog(): { traps: PropertyKey[]; proxy: WatchedProxy } {
-  const traps: PropertyKey[] = [];
+function trapLog(): { traps: string[]; proxy: WatchedProxy } {
+  const traps: string[] = [];
   const proxy: WatchedProxy = (target, handler = {}) => new Proxy(target, new Proxy(handler, {
-    get(inner, trap, receiver) {
-      traps.push(trap);
-      return Reflect.get(inner, trap, receiver);
+    get(inner, trap) {
+      const run = (Reflect.get(inner, trap) ?? Reflect.get(Reflect, trap)) as
+        (...args: unknown[]) => unknown;
+      return (...args: unknown[]) => {
+        const key = args[1];
+        traps.push(typeof key === "string" || typeof key === "symbol"
+          ? `${String(trap)} ${String(key)}`
+          : String(trap));
+        return run.apply(inner, args);
+      };
     },
   }));
   return { traps, proxy };
 }
+// A proxy that an async store method resolves with is probed for `then` by
+// the promise itself, as any resolved value is, before the core receives it.
+const RESOLVED = ["get then"];
 
 function adapter(overrides: Partial<SolanaSplAdapter> = {}): SolanaSplAdapter {
   return {
@@ -1308,6 +1323,17 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
   ] as const)("a complete %s claim is still accepted", async (state, expected) => {
     await expect(claimWith(state, (claim) => claim)).resolves.toMatchObject({ result: expected });
   });
+
+  test.each<[string, (claim: Record<string, unknown>, proxy: WatchedProxy) => Record<string, unknown>,
+    string[]]>([
+    ["the claim", (claim, proxy) => proxy(claim), RESOLVED],
+    ["its intent", (claim, proxy) => ({ ...claim, intent: proxy({ ...(claim.intent as object) }) }), []],
+    ["its lease", (claim, proxy) => ({ ...claim, lease: proxy({ ...(claim.lease as object) }) }), []],
+  ])("a transparent proxy as %s is refused before the core runs any trap", async (_name, view, expected) => {
+    const { traps, proxy } = trapLog();
+    await expect(claimWith("acquired", (claim) => view(claim, proxy))).resolves.toEqual(invalid);
+    expect(traps).toEqual(expected);
+  });
 });
 
 describe("advanceSolanaSplSettlement failed is not terminal in the store", () => {
@@ -1521,6 +1547,73 @@ describe("advanceSolanaSplSettlement with a malformed store write", () => {
       expect(broadcastRetained).not.toHaveBeenCalled();
     },
   );
+
+  test("recordAttempt resolving the store's own result behind a proxy never broadcasts", async () => {
+    const { traps, proxy } = trapLog();
+    const memory = createInMemorySolanaSplSettlementStore();
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...memory, recordAttempt: async (request) => proxy(await memory.recordAttempt(request)) },
+      adapter: adapter({ broadcastRetained }),
+    }))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-retained-attempt-persistence-uncertain",
+    });
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    expect(traps).toEqual(RESOLVED);
+  });
+
+  test("recordSettlement resolving the store's own result behind a proxy after the transfer landed is uncertain",
+    async () => {
+      const { traps, proxy } = trapLog();
+      const memory = createInMemorySolanaSplSettlementStore();
+      await expect(advanceSolanaSplSettlement(input({
+        store: {
+          ...memory,
+          recordSettlement: async (request) => proxy(await memory.recordSettlement(request)),
+        },
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settlement-persistence-uncertain",
+      });
+      expect(traps).toEqual(RESOLVED);
+    });
+
+  test.each<[string, (write: SolanaSplStoreWrite, proxy: WatchedProxy) => SolanaSplStoreWrite,
+    string[]]>([
+    ["the store's exact acknowledgement behind a proxy", (write, proxy) => proxy(write), RESOLVED],
+    ["the store's exact evidence behind a proxy", (write, proxy) => ({
+      ...write,
+      expiryEvidence: proxy({ ...(write as { expiryEvidence: SolanaSplExpiryEvidence }).expiryEvidence }),
+    }), []],
+  ])("markAttemptExpired resolving %s never reaches a replacement", async (_name, wrap, expected) => {
+    const { traps, proxy } = trapLog();
+    let clock = 1_000;
+    let reconciliations = 0;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const shared = input({
+      store: {
+        ...memory,
+        markAttemptExpired: async (request) => wrap(await memory.markAttemptExpired(request), proxy),
+      },
+      now: () => clock,
+      adapter: adapter({
+        prepareSignedTransfer,
+        async reconcile(_intent, attempt) {
+          return ++reconciliations === 1
+            ? { disposition: "indeterminate", reason: "lost" }
+            : expired(attempt);
+        },
+      }),
+    });
+    await advanceSolanaSplSettlement(shared);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(traps).toEqual(expected);
+  });
 });
 
 describe("advanceSolanaSplSettlement with an out-of-contract reconciliation", () => {
@@ -1890,17 +1983,6 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
       return value;
     }],
     ["an extra field", () => ({ ...stored(), note: `store ${SECRET}` })],
-    ["a nested proxy whose reads change after the first", () => {
-      const value = stored();
-      const reads = new Map<PropertyKey, number>();
-      value.txRef = new Proxy(value.txRef, {
-        get(target, key, receiver) {
-          reads.set(key, (reads.get(key) ?? 0) + 1);
-          return key === "signature" && reads.get(key)! > 1 ? SECRET : Reflect.get(target, key, receiver);
-        },
-      });
-      return value;
-    }],
   ])("a stored settlement with %s is returned as a fresh frozen copy without store text",
     async (_name, settlement) => {
       const value = settlement();
@@ -1965,7 +2047,7 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
-  test("a stored field behind a descriptor trap is read once, so a later answer never reaches the result",
+  test("a stored field behind a descriptor trap is refused before the trap runs, so no answer reaches the result",
     async () => {
       let reads = 0;
       const value = stored();
@@ -1980,13 +2062,42 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
         },
       });
       const result = await settledWith(value);
-      expect(reads).toBe(1);
+      expect(reads).toBe(0);
       expect(JSON.stringify(result)).not.toContain(SECRET);
       expect(result).toEqual({
-        status: "settled",
-        settlement: { ...stored(), settlementFinality: { ...stored().settlementFinality, finalityObservedAt: 7 } },
+        status: "indeterminate",
+        reason: "solana-spl-stored-settlement-mismatch",
       });
     });
+
+  test.each<[string, (value: ReturnType<typeof stored>, proxy: WatchedProxy) => unknown]>([
+    ["the settlement", (value, proxy) => proxy(value)],
+    ["its txRef", (value, proxy) => ({ ...value, txRef: proxy(value.txRef) })],
+    ["its paymentAmount", (value, proxy) => ({ ...value, paymentAmount: proxy(value.paymentAmount) })],
+    ["its settlementFinality", (value, proxy) => ({
+      ...value, settlementFinality: proxy(value.settlementFinality),
+    })],
+    ["a txRef whose reads change after the first", (value, proxy) => {
+      const reads = new Map<PropertyKey, number>();
+      return {
+        ...value,
+        txRef: proxy(value.txRef, {
+          get(target, key, receiver) {
+            reads.set(key, (reads.get(key) ?? 0) + 1);
+            return key === "signature" && reads.get(key)! > 1 ? SECRET : Reflect.get(target, key, receiver);
+          },
+        }),
+      };
+    }],
+  ])("a stored settlement with a proxy as %s is refused before any trap runs", async (_name, view) => {
+    const { traps, proxy } = trapLog();
+    const result = await settledWith(view(stored(), proxy));
+    expect(traps).toEqual([]);
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-stored-settlement-mismatch",
+    });
+  });
 });
 
 describe("advanceSolanaSplSettlement with an adapter result that changes between reads", () => {
@@ -2152,5 +2263,28 @@ describe("advanceSolanaSplSettlement checks each value it relies on", () => {
       reason: "solana-spl-reconciliation-unavailable",
     });
     expect(recordSettlement).not.toHaveBeenCalled();
+  });
+});
+
+describe("advanceSolanaSplSettlement on a runtime without util.types.isProxy", () => {
+  // Every proxy check runs inside a handled step, so a runtime whose node:util
+  // has no isProxy refuses each claim instead of trusting it.
+  test("the claim is refused before anything is preflighted, signed or reported failed", async () => {
+    const isProxy = Object.getOwnPropertyDescriptor(nodeTypes, "isProxy")!;
+    const checkedPreflight = vi.fn(async () => preflight({ payerTokenBalanceBaseUnits: "0" }));
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    Reflect.deleteProperty(nodeTypes, "isProxy");
+    try {
+      await expect(advanceSolanaSplSettlement(input({
+        adapter: adapter({ preflight: checkedPreflight, prepareSignedTransfer }),
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-settlement-store-claim-invalid",
+      });
+    } finally {
+      Object.defineProperty(nodeTypes, "isProxy", isProxy);
+    }
+    expect(checkedPreflight).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
   });
 });
