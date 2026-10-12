@@ -39,14 +39,17 @@ export async function readGitleaksReport(path, maxBytes = MAX_REPORT_BYTES) {
   }
 }
 
-// An opaque, fixed-length ID for a fingerprint, which can contain a file name.
+// A short digest of a fingerprint (`commit:file:rule:line`), which can contain a
+// file name. It hides the file name from casual reading, but anyone who sees the
+// commit, rule and line can confirm a guessed file name against it.
 export function findingId(fingerprint) {
   return createHash("sha256").update(fingerprint, "utf8").digest("hex").slice(0, 16);
 }
 
 // A Gitleaks git fingerprint is `commit:file:rule:line`, and the file can contain
 // colons, so the commit is read from the left and the rule and line from the right.
-// Each field is shown only if it passes its check; the file is never shown.
+// The file is never shown. The commit, rule and line are shown as Gitleaks wrote
+// them if they pass their checks, which bound their shape, not their source.
 function checkedFields(fingerprint) {
   const first = fingerprint.indexOf(":");
   const last = fingerprint.lastIndexOf(":");
@@ -118,9 +121,9 @@ function findingsMarkdown(report, scanPassed, lines, omitted) {
       report.malformed
     } malformed, ${omitted} omitted from the list below${
       scanPassed ? ", although the scan step passed" : ""
-    }. Secret values, file names and fingerprints are not shown.`,
+    }. File names and fingerprints are not shown.`,
     "",
-    "Each line is `id commit rule line findings`. The ID is the first 16 hex digits of the SHA-256 of the Gitleaks fingerprint (`commit:file:rule:line`), and `findings` counts the findings that share it. A commit, rule or line that fails its check shows as `(invalid)`. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
+    "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
     "",
     "```text",
     ...lines,

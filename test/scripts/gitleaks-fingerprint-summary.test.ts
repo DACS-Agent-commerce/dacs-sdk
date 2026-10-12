@@ -21,6 +21,10 @@ const PERSON = ["fixture", "person"].join("-");
 const EMAIL = `${PERSON}@example.invalid`;
 // An obviously fake credential that a branch put in a file name.
 const FAKE_SECRET = ["FAKE", "SECRET", "IN", "FILE", "NAME"].join("_");
+// A credential-shaped rule ID, and 40 hex digits where the commit goes. Both pass
+// the checks, which bound a field's shape, not its source.
+const RULE_SHAPED_SECRET = ["SECRET", "RULE", "TOKEN", "123"].join("_");
+const COMMIT_SHAPED_SECRET = "decafbad".repeat(5);
 
 const ONE_MIB = 1024 * 1024;
 const OUTPUT_LIMIT = 900 * 1024;
@@ -32,7 +36,7 @@ const KNOWN =
 const NEW_A = "1111111111111111111111111111111111111111:src/a.ts:generic-api-key:4";
 const NEW_B = "2222222222222222222222222222222222222222:docs/b.md:dacs-mnemonic-assignment:9";
 
-const COUNTS_TAIL = "Secret values, file names and fingerprints are not shown.";
+const COUNTS_TAIL = "File names and fingerprints are not shown.";
 const LISTED_LINE =
   /^[0-9a-f]{16} (?:[0-9a-f]{40}|\(invalid\)) (?:[A-Za-z0-9._-]{1,64}|\(invalid\)) (?:0|[1-9][0-9]*|\(invalid\)) [1-9][0-9]*$/;
 
@@ -330,6 +334,32 @@ describe("Gitleaks finding summary", () => {
       }
       expect(logBody(result.stdout).body).toBe(result.summary);
       expect(listedLines(result.summary)).toHaveLength(fingerprints.length);
+    });
+
+    // What the docs promise: never the file, and only the commit, rule and line as
+    // Gitleaks wrote them, with a count. So a credential-shaped rule or commit shows.
+    it("shows a fingerprint's commit, rule and line as written, and never its file", async () => {
+      const ruleProbe = `${SHA}:path:with:extra:colons:${RULE_SHAPED_SECRET}:10`;
+      const commitProbe = `${COMMIT_SHAPED_SECRET}:src/a.ts:generic-api-key:11`;
+      const result = await runOn(reportOf([ruleProbe, commitProbe]));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(logBody(result.stdout).body).toBe(result.summary);
+      expect(countsLine(result.summary)).toBe(
+        `**2 findings** under 2 IDs: 0 malformed, 0 omitted from the list below. ${COUNTS_TAIL}`,
+      );
+      expect(listedLines(result.summary)).toEqual(
+        byId([
+          `${idOf(ruleProbe)} ${SHA} ${RULE_SHAPED_SECRET} 10 1`,
+          `${idOf(commitProbe)} ${COMMIT_SHAPED_SECRET} generic-api-key 11 1`,
+        ]),
+      );
+      for (const text of [result.stdout, result.summary]) {
+        expect(text).not.toContain("path:with");
+        expect(text).not.toContain("extra:colons");
+        expect(text).not.toContain("src/a.ts");
+        expectNoFindingDetails(text);
+      }
     });
 
     it("keeps workflow commands out of the job log", async () => {
