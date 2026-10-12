@@ -279,6 +279,40 @@ function ownedDeferred(value: unknown): ArtifactScanDeferredRow[] | undefined {
 }
 
 /**
+ * Relationships that every state returned by scanPage keeps. A persisted state
+ * that breaks one is never resumed: its fields cannot all be true.
+ */
+function stateContradiction(state: ArtifactScanState): string | undefined {
+  const { cursor, seen, metadata, pagesConsumed, exhausted, pendingRow, deferred } = state;
+  if (exhausted && cursor !== null) return "scan state is exhausted but still has a cursor";
+  if (exhausted && pendingRow !== null) return "scan state is exhausted but still has a pending row";
+  if (exhausted && pagesConsumed === 0) return "scan state is exhausted before consuming a page";
+  for (const [nativeAddress, logicalAddress] of seen) {
+    const observed = metadata.get(nativeAddress);
+    if (observed !== undefined && observed !== logicalAddress) {
+      return `scan state has disagreeing seen and metadata entries for ${nativeAddress}`;
+    }
+  }
+  const deferredRows = new Set<string>();
+  for (const { anchor: { nativeAddress, logicalAddress } } of deferred) {
+    if (seen.has(nativeAddress)) return `scan state has ${nativeAddress} both in seen and deferred`;
+    if (deferredRows.has(nativeAddress)) return `scan state defers ${nativeAddress} twice`;
+    const observed = metadata.get(nativeAddress);
+    if (observed !== undefined && observed !== logicalAddress) {
+      return `scan state has disagreeing deferred and metadata entries for ${nativeAddress}`;
+    }
+    deferredRows.add(nativeAddress);
+  }
+  if (pendingRow !== null && seen.has(pendingRow.nativeAddress)) {
+    return `scan state has pending row ${pendingRow.nativeAddress} already in seen`;
+  }
+  if (pendingRow !== null && deferredRows.has(pendingRow.nativeAddress)) {
+    return `scan state has pending row ${pendingRow.nativeAddress} already deferred`;
+  }
+  return undefined;
+}
+
+/**
  * Compose the bound repository with incremental verified history reads (#54).
  * The adapter, consumer index, authorized publisher, owner, fetcher and verifier
  * are injected. Scanning only reads; publication occurs only through explicit
@@ -469,6 +503,9 @@ export function createScanningArtifactRepository(
             "scan state has an invalid owner, cursor, collection, page count, row or exhaustion flag",
           );
         }
+        // Before the exhausted fast path, which would otherwise end the traversal.
+        const contradiction = stateContradiction(owned);
+        if (contradiction !== undefined) return restart("invalid-state", contradiction);
         state = owned;
       }
       if (normalizedBindingOwner(state.owner) !== owner) {

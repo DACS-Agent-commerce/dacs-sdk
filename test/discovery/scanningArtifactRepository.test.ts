@@ -8,6 +8,7 @@ import {
   createScanningArtifactRepository,
   UnsupportedArtifactKindError,
   type AnchorBinding,
+  type ArtifactScanDeferredRow,
   type ArtifactScanState,
   type BoundArtifactAdapter,
   type RawAnchorEntry,
@@ -672,8 +673,13 @@ describe("createScanningArtifactRepository (#54)", () => {
       metadata: new Map([["stor-a", logical("other")]]),
     };
     const result = await fixture.repo.scanPage(input);
-    expect(result).toMatchObject({ status: "conflict", results: [], state: { cursor: "second" } });
-    expect(result.state).toEqual(input);
+    // A contradictory state is refused before fetching, even if the row never reappears.
+    expect(result).toEqual({
+      status: "restart-required", code: "invalid-state",
+      reason: "scan state has disagreeing seen and metadata entries for stor-a",
+      results: [], deferred: [], state: state(null),
+    });
+    expect(fixture.fetchPage).not.toHaveBeenCalled();
     expect(fixture.readAnchor).not.toHaveBeenCalled();
   });
 
@@ -858,6 +864,43 @@ describe("createScanningArtifactRepository (#54)", () => {
       status: "restart-required", code: "invalid-state", results: [], state: state(null),
     });
     expect(fixture.fetchPage).not.toHaveBeenCalled();
+  });
+
+  const deferredRow = (id: string): ArtifactScanDeferredRow => ({
+    anchor: { nativeAddress: `stor-${id}`, logicalAddress: logical(id), owner: OWNER, kind: "listing" },
+    code: "read-indeterminate", reason: "r", attempts: 5,
+  });
+  const pending = { nativeAddress: "stor-a", attempts: 1 };
+  const handledA = { seen: new Map([["stor-a", logical("a")]]), metadata: new Map([["stor-a", logical("a")]]) };
+  // Each case breaks exactly one relationship, except the review's S2 state.
+  test.each<[string, Partial<ArtifactScanState>, string]>([
+    ["S2: exhausted with unread history and a pending row",
+      { cursor: "more-history", pagesConsumed: 1, exhausted: true, pendingRow: pending },
+      "scan state is exhausted but still has a cursor"],
+    ["exhausted with a cursor", { cursor: "more-history", pagesConsumed: 1, exhausted: true },
+      "scan state is exhausted but still has a cursor"],
+    ["exhausted with a pending row", { cursor: null, pagesConsumed: 1, exhausted: true, pendingRow: pending },
+      "scan state is exhausted but still has a pending row"],
+    ["exhausted before consuming a page", { cursor: null, pagesConsumed: 0, exhausted: true },
+      "scan state is exhausted before consuming a page"],
+    ["a row both seen and deferred", { ...handledA, deferred: [deferredRow("a")] },
+      "scan state has stor-a both in seen and deferred"],
+    ["a row deferred twice", { deferred: [deferredRow("a"), deferredRow("a")] },
+      "scan state defers stor-a twice"],
+    ["deferred and metadata disagree", { metadata: new Map([["stor-a", logical("other")]]), deferred: [deferredRow("a")] },
+      "scan state has disagreeing deferred and metadata entries for stor-a"],
+    ["a pending row already in seen", { ...handledA, pendingRow: pending },
+      "scan state has pending row stor-a already in seen"],
+    ["a pending row already deferred", { deferred: [deferredRow("a")], pendingRow: pending },
+      "scan state has pending row stor-a already deferred"],
+  ])("contradictory persisted state (%s) requires a restart without fetching", async (_name, contradiction, reason) => {
+    const fixture = setup(["a"]);
+    const result = await fixture.repo.scanPage({ ...state("next"), ...contradiction });
+    expect(result).toEqual({
+      status: "restart-required", code: "invalid-state", reason, results: [], deferred: [], state: state(null),
+    });
+    expect(fixture.fetchPage).not.toHaveBeenCalled();
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
   });
 
   test("accepts state persisted as entries, values and plain JSON rows", async () => {

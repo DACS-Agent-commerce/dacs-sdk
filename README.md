@@ -732,11 +732,14 @@ Keep the returned `state` with its owner, cursor, `seen` and `metadata` maps,
 `new Map(entries)`; persist the set as values and reconstruct it with
 `new Set(values)`; `pendingRow` and `deferred` are plain JSON. A state that is
 not in this shape, such as a Map persisted with plain `JSON.stringify`, is never
-read. Only fully handled rows enter `seen`; filtered rows remain in `metadata`
-for conflict detection and can be read on an overlapping page when
-`includeUnknown` is enabled. Input state is unchanged. Overlapping pages
-deduplicate by native address while rejecting conflicting logical metadata,
-including a row whose persisted `seen` and `metadata` entries disagree.
+read. Nor is a state whose fields contradict each other: an `exhausted` state
+with a cursor, a pending row or no consumed page; a row both in `seen` and
+`deferred`, or deferred twice; a pending row already in `seen` or `deferred`; or
+`seen` or `deferred` disagreeing with `metadata` about a row's logical address.
+Only fully handled rows enter `seen`; filtered rows remain in `metadata` for
+conflict detection and can be read on an overlapping page when `includeUnknown`
+is enabled. Input state is unchanged. Overlapping pages deduplicate by native
+address while rejecting conflicting logical metadata.
 
 Every non-`page` result carries a machine-readable `code`. Act on its `status`:
 
