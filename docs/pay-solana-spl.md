@@ -113,6 +113,11 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
+A claim's `attempts` must be a dense array: attempt n is an own data property
+at index n − 1, and the array has no other own keys. A hole, an inherited index
+or a length that disagrees with the array's own keys could hide the live latest
+attempt, so it is `solana-spl-retained-state-corrupt` before anything is
+reconciled, signed or broadcast.
 The exported in-memory store is for tests and development only.
 
 The adapter must authenticate reconciliation from Solana ledger state. For

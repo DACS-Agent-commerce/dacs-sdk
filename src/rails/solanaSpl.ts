@@ -520,9 +520,23 @@ function captureRetainedAttempts(
   if (!Array.isArray(values)) {
     throw new DacsError("pay-solana-spl: retained attempts must be an array");
   }
+  // Attempt n must be an own data property at index n - 1. A hole, an
+  // inherited index or a length that disagrees with the array's own keys
+  // could hide the live latest attempt, so the length and each slot are read
+  // once, into a fresh array, and anything else is corrupt state.
+  const length = values.length;
+  if (!Number.isSafeInteger(length) || length < 0 ||
+      Reflect.ownKeys(values).length !== length + 1) {
+    throw new DacsError("pay-solana-spl: retained attempts must be a dense array");
+  }
   const signatures = new Set<string>();
-  return Object.freeze(values.map((value, index) => {
-    const { attemptHash, ...unsigned } = value;
+  const retained: Readonly<SolanaSplSignedAttempt>[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const value: unknown = Object.getOwnPropertyDescriptor(values, String(index))?.value;
+    if (typeof value !== "object" || value === null) {
+      throw new DacsError("pay-solana-spl: retained attempt is missing");
+    }
+    const { attemptHash, ...unsigned } = value as Readonly<SolanaSplSignedAttempt>;
     const captured = createAttempt(unsigned, index + 1, intent);
     if (captured.attemptHash !== attemptHash) {
       throw new DacsError("pay-solana-spl: retained attempt integrity mismatch");
@@ -531,8 +545,9 @@ function captureRetainedAttempts(
       throw new DacsError("pay-solana-spl: retained signature is duplicated");
     }
     signatures.add(captured.signature);
-    return captured;
-  }));
+    retained.push(captured);
+  }
+  return Object.freeze(retained);
 }
 
 function captureExpiryEvidence(

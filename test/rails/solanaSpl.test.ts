@@ -13,6 +13,7 @@ import {
   type SolanaSplSettlementAuthority,
   type SolanaSplSettlementStore,
   type SolanaSplSignedAttempt,
+  type SolanaSplStoreClaim,
 } from "../../src/rails/solanaSpl.js";
 
 // Fixed-width values with canonical Base58 leading-zero encoding. These decode
@@ -1617,5 +1618,149 @@ describe("advanceSolanaSplSettlement with an out-of-contract reconciliation", ()
       broadcast: [SIGNATURE_1, SIGNATURE_2],
       expiries: 1,
     });
+  });
+});
+
+describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", () => {
+  type Acquired = Extract<SolanaSplStoreClaim, { status: "acquired" }>;
+  // Attempt n gets a distinct canonical 64-byte signature.
+  const signatureFor = (n: number) => `${"1".repeat(63)}${n}`;
+
+  // Retains `count` attempts through the in-memory store: each earlier one
+  // expired with durable evidence, and the latest was broadcast with an
+  // unknown outcome. Then resumes once with the claim rewritten by `view`.
+  // On resume every attempt reconciles as expired and preflight passes (or
+  // refuses), the most permissive answers, so a hidden live attempt would be
+  // replaced or reported failed.
+  async function resumeWith(
+    count: 1 | 2,
+    view: (claim: Acquired) => unknown,
+    resumedPreflight = preflight(),
+  ) {
+    let clock = 1_000;
+    let resumed = false;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const markAttemptExpired = vi.fn(memory.markAttemptExpired);
+    const store: SolanaSplSettlementStore = {
+      ...memory,
+      markAttemptExpired,
+      async claim(request) {
+        const claim = await memory.claim(request);
+        if (!resumed) return claim;
+        expect(claim.status).toBe("acquired");
+        return view(claim as Acquired) as never;
+      },
+    };
+    const checkedPreflight = vi.fn(async () => (resumed ? resumedPreflight : preflight()));
+    const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => ({
+      ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+      signature: signatureFor(attempt),
+    }));
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> =>
+      resumed || attempt.attempt < count
+        ? expired(attempt)
+        : { disposition: "indeterminate", reason: "lost" });
+    const shared = input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile,
+      }),
+    });
+    for (let call = 1; call <= count; call += 1) {
+      await advanceSolanaSplSettlement({ ...shared, owner: `worker-${call}` });
+      clock += 101;
+    }
+    expect(broadcastRetained.mock.calls.map((call) => call[0].attempt))
+      .toEqual(count === 1 ? [1] : [1, 2]);
+    for (const spy of [
+      checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile, markAttemptExpired,
+    ]) spy.mockClear();
+    resumed = true;
+    const result = await advanceSolanaSplSettlement({ ...shared, owner: "worker-resume" });
+    return {
+      result,
+      preflights: checkedPreflight.mock.calls.length,
+      prepared: prepareSignedTransfer.mock.calls.map((call) => call[1]),
+      broadcast: broadcastRetained.mock.calls.map((call) => call[0].attempt),
+      reconciled: reconcile.mock.calls.map((call) => call[1].attempt),
+      expiries: markAttemptExpired.mock.calls.length,
+    };
+  }
+  const corrupt = {
+    result: { status: "indeterminate", reason: "solana-spl-retained-state-corrupt" },
+    preflights: 0,
+    prepared: [],
+    broadcast: [],
+    reconciled: [],
+    expiries: 0,
+  };
+
+  test.each<[string, 1 | 2, (claim: Acquired) => unknown]>([
+    ["a trailing hole hiding the only attempt", 1,
+      (claim) => ({ ...claim, attempts: new Array(claim.attempts.length) })],
+    // A store that sizes the array from a counter and fills it from rows, the
+    // latest row not yet visible.
+    ["a trailing hole hiding the latest attempt", 2, (claim) => {
+      const attempts = new Array(claim.attempts.length);
+      for (const row of claim.attempts.slice(0, -1)) attempts[row.attempt - 1] = row;
+      return { ...claim, attempts };
+    }],
+    ["a leading hole hiding a predecessor whose expiry is not shown", 2, (claim) => {
+      const attempts = [...claim.attempts];
+      delete attempts[0];
+      return { ...claim, attempts, expiredSignatures: [], expiryEvidence: [] };
+    }],
+    ["an inherited index standing in for the latest attempt", 2, (claim) => {
+      const attempts = claim.attempts.slice(0, -1);
+      attempts.length = claim.attempts.length;
+      Object.setPrototypeOf(attempts, Object.assign(Object.create(Array.prototype), {
+        [claim.attempts.length - 1]: claim.attempts.at(-1),
+      }));
+      return { ...claim, attempts };
+    }],
+    ["an accessor standing in for the latest attempt", 2, (claim) => {
+      const latest = claim.attempts.at(-1);
+      return {
+        ...claim,
+        attempts: Object.defineProperty([...claim.attempts], claim.attempts.length - 1, {
+          enumerable: true,
+          get: () => latest,
+        }),
+      };
+    }],
+    ["a length that disagrees with the array's own keys", 2, (claim) => ({
+      ...claim,
+      attempts: new Proxy([...claim.attempts], {
+        get: (target, key, receiver) =>
+          key === "length" ? target.length - 1 : Reflect.get(target, key, receiver),
+      }),
+    })],
+    ["an own species constructor", 1, (claim) => ({
+      ...claim,
+      attempts: Object.assign([...claim.attempts], {
+        constructor: {
+          [Symbol.species]: function species() {
+            return new Proxy([], {
+              get(target, key, receiver) {
+                if (key === "at") throw new Error("store secret=abc");
+                return Reflect.get(target, key, receiver);
+              },
+            });
+          },
+        },
+      }),
+    })],
+  ])("%s is corrupt state: nothing is reconciled, signed or broadcast", async (_name, count, view) => {
+    await expect(resumeWith(count, view)).resolves.toEqual(corrupt);
+  });
+
+  test("a trailing hole is never a permanent failure while the hidden attempt may land", async () => {
+    await expect(resumeWith(2, (claim) => {
+      const attempts = [...claim.attempts];
+      delete attempts[attempts.length - 1];
+      return { ...claim, attempts };
+    }, preflight({ payerTokenBalanceBaseUnits: "0" }))).resolves.toEqual(corrupt);
   });
 });
