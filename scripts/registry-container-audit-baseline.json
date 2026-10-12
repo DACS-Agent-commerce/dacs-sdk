@@ -95,6 +95,7 @@
     "GHSA-xq7p-g2vc-g82p",
     "GHSA-xx6v-rp6x-q39c"
   ],
+  "assessedAdvisories": [],
   "policyFindings": {
     "source": {
       "commit": "b7b180f98f27933e0a9153e93161981f2ce2b58a",

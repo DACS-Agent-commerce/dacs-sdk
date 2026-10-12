@@ -1,18 +1,39 @@
-The required registry/container rehearsal classifies npm audit advisories by
-ID against `registry-container-audit-baseline.json`. Counts are diagnostics.
-A run that observes only listed IDs, or a subset of them (an advisory resolved
-since), is baseline-only. Any ID that is not listed fails the required job
-(exit 3), and the error names it. That includes a GHSA newly published against
-a dependency the tree already had: the required job stays red until someone
-reviews the new IDs and adds them here and to the JSON baseline in a PR under
-CODEOWNERS review. This is intended for a security gate. Production
-publication remains blocked by #191; acceptance is not publication approval.
+The registry/container acceptance job classifies npm audit advisories in the
+generated consumer's dependency tree by ID against
+`registry-container-audit-baseline.json`. Counts are diagnostics. A run that
+observes only listed IDs, or a subset of them (an advisory resolved since), is
+baseline-only (exit 4). Production publication remains blocked by #191;
+acceptance is not publication approval.
 
-`Registry consumer advisory-ID drift` runs daily and on manual dispatch. It
-uses the same registry consumer audit and fails on any unlisted ID, so a newly
-published advisory is reported without waiting for a PR. Its check runs
-whenever a summary exists, so a non-audit failure does not mask it. Audit
-errors, malformed baselines and non-audit policy failures fail closed.
+An advisory ID that is not listed, including a GHSA newly published against a
+dependency the tree already had, is treated by where the run comes from:
+
+- On `pull_request` it is a warning annotation and a line in the job's step
+  summary, and the job passes (exit 4). A new advisory on an unchanged tree
+  therefore cannot turn unrelated pull requests red, in line with SECURITY.md's
+  audit policy for transitive advisories.
+- Everywhere else it fails closed (exit 3), and the error names it: the
+  scheduled drift workflow, manual runs, and any release or publication path
+  that runs this acceptance or its disposition. Failing closed is the default;
+  only the pull-request job sets `DACS_UNLISTED_ADVISORIES=warn`.
+
+`Registry consumer advisory-ID drift` runs the same consumer audit daily and on
+manual dispatch, so a newly published advisory is reported without waiting for
+a PR. Its check runs whenever a summary exists, so a non-audit failure does not
+mask it. A run that stopped before its audit was classified (for example an
+npm audit outage, a network failure) is reported with that stage, not as a
+baseline problem. Malformed baselines and non-audit policy failures fail
+closed.
+
+`assessedAdvisories` lets the gate pass under SECURITY.md's audit policy once
+#191 is resolved: an observed ID recorded there, with `assessment` naming where
+its reachability assessment is written, does not block. It is empty today.
+An assessment cannot accept an advisory that npm reports at high or critical
+severity on a direct dependency of the consumer; that blocks (exit 3).
+
+The job runs only for pull requests that change a path in its
+`pull_request.paths` filter, so it must not be a required status check in
+branch protection: a pull request outside the filter would wait for it forever.
 
 `policyFindings` records the non-audit security-gate failures that the
 dependency tree of `main`'s published packages already carries, by exact

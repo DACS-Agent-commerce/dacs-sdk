@@ -1,11 +1,16 @@
 #!/usr/bin/env node
-// Required acceptance fails (exit 3) on any advisory ID missing from the #191
-// baseline; observing only listed IDs, or a subset of them, is baseline-only
-// (exit 4). The scheduled/manual drift workflow reports unlisted IDs daily.
-// Neither classification permits production publication while #191 remains
-// blocked.
+// Observing only advisory IDs listed in the #191 baseline, or a subset of
+// them, is baseline-only (exit 4). An ID missing from the baseline fails closed
+// (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
+// acceptance job sets: there it is a warning, so an advisory newly published
+// against an unchanged tree cannot turn every PR red. The scheduled drift job,
+// manual runs and release paths fail. An observed ID recorded in
+// `assessedAdvisories` (a transitive advisory assessed for reachability, as
+// SECURITY.md's audit policy allows) does not block the gate; one on a direct
+// dependency at high or critical severity always does. Nothing here permits
+// production publication while #191 remains blocked.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -18,20 +23,33 @@ function validIds(ids) {
     new Set(ids).size === ids.length;
 }
 
-export function classifyRegistryAudit(observedAdvisories, baseline) {
+// Each assessment names where its reachability assessment is recorded.
+const validAssessments = entries => Array.isArray(entries) && entries.every(entry => typeof entry === "object" &&
+  entry !== null && typeof entry.id === "string" && advisoryId.test(entry.id) && typeof entry.assessment === "string" &&
+  entry.assessment.trim() !== "") && new Set(entries.map(entry => entry.id)).size === entries.length;
+
+// `directAdvisories` are the observed IDs that npm reports at high or critical
+// severity on a direct dependency of the consumer.
+export function classifyRegistryAudit(observedAdvisories, baseline, directAdvisories = []) {
+  const assessments = baseline?.assessedAdvisories ?? [];
   if (baseline?.schema !== "dacs-registry-audit-baseline/v1" ||
       typeof baseline.source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(baseline.source.commit) ||
       typeof baseline.source?.job !== "string" || !baseline.source.job ||
-      !validIds(baseline.advisoryIds) || baseline.advisoryIds.length === 0 || !validIds(observedAdvisories)) {
+      !validIds(baseline.advisoryIds) || !validAssessments(assessments) ||
+      assessments.some(({ id }) => baseline.advisoryIds.includes(id)) || !validIds(observedAdvisories) ||
+      !validIds(directAdvisories) || directAdvisories.some(id => !observedAdvisories.includes(id))) {
     throw new Error("malformed registry audit baseline or observed advisory IDs");
   }
   const known = new Set(baseline.advisoryIds);
+  const assessed = new Set(assessments.map(({ id }) => id));
   return { observedAdvisories: [...observedAdvisories].sort(),
-    unlistedAdvisories: observedAdvisories.filter(id => !known.has(id)).sort() };
+    unlistedAdvisories: observedAdvisories.filter(id => !known.has(id) && !assessed.has(id)).sort(),
+    assessedAdvisories: observedAdvisories.filter(id => assessed.has(id)).sort(),
+    directAdvisories: [...directAdvisories].sort() };
 }
 
 function summaryAudit(summary, baseline) {
-  const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline);
+  const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline, summary.audit?.directAdvisories ?? []);
   if (JSON.stringify(policy.unlistedAdvisories) !== JSON.stringify(summary.audit?.unlistedAdvisories)) {
     throw new Error("summary advisory classification does not match baseline");
   }
@@ -388,7 +406,14 @@ export function classifyPolicyChecks(summary, baseline) {
   };
 }
 
-export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+// "fail" (the default) or "warn": what an advisory ID outside the baseline does.
+export const UNLISTED_ADVISORY_POLICIES = ["fail", "warn"];
+
+export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8")),
+  { unlistedAdvisories = "fail" } = {}) {
+  if (!UNLISTED_ADVISORY_POLICIES.includes(unlistedAdvisories)) {
+    throw new Error(`unknown unlisted-advisory policy ${JSON.stringify(unlistedAdvisories)}`);
+  }
   if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) {
     return { exitCode: 1, failureClass: "functional", message: "registry/container acceptance summary has an unexpected schema" };
   }
@@ -405,11 +430,19 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   catch (error) { return { exitCode: 3, failureClass: "policy", message: String(error) }; }
   const gate = summary.securityGate;
   const checks = classifyPolicyChecks(summary, baseline);
-  // An advisory ID outside the baseline blocks, even one newly published
-  // against a dependency the tree already had.
-  const audit = gate?.auditExitCode === 0 && policy.observedAdvisories.length === 0 ? "passed"
-    : policy.observedAdvisories.length > 0 && policy.unlistedAdvisories.length === 0 &&
-      [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
+  const observed = policy.observedAdvisories.length;
+  // SECURITY.md's audit policy: a transitive advisory assessed for reachability
+  // does not block; a high/critical advisory on a direct dependency always does
+  // (an older summary that does not record directness cannot show otherwise).
+  const directKnown = Array.isArray(summary.audit?.directAdvisories);
+  const assessedDirect = policy.assessedAdvisories.filter(id => !directKnown || policy.directAdvisories.includes(id));
+  // An ID outside the baseline, even one newly published against a dependency
+  // the tree already had, is "unlisted" under the pull-request warn policy and
+  // blocks otherwise.
+  const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode === 1 && observed === 0) ||
+      assessedDirect.length > 0 ? "blocked"
+    : policy.unlistedAdvisories.length > 0 ? (unlistedAdvisories === "warn" ? "unlisted" : "blocked")
+    : observed > policy.assessedAdvisories.length ? "baseline" : "passed";
   const states = { ...checks, audit };
   const named = state => Object.keys(states).filter(name => states[name] === state);
   if (named("passed").length === Object.keys(states).length && gate.passed === true) {
@@ -417,12 +450,17 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   }
   if (named("blocked").length === 0) {
     return { exitCode: 4, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed; " +
-      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})`, ...policy };
+      "production publication remains blocked" +
+      (named("baseline").length ? ` by #191 baseline findings (${named("baseline").join(", ")})` : "") +
+      (audit === "unlisted" ? `; advisory IDs not in the #191 baseline (a pull-request warning; the scheduled drift job ` +
+        `and release paths fail on them): ${policy.unlistedAdvisories.join(", ")}` : ""), ...policy };
   }
   return { exitCode: 3, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed, " +
     `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
     (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
-      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : ""),
+      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : "") +
+    (assessedDirect.length ? `; assessed advisories that are high or critical on a direct dependency (or of unrecorded ` +
+      `directness), which an assessment cannot accept: ${assessedDirect.join(", ")}` : ""),
     ...policy };
 }
 
@@ -441,16 +479,26 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       throw new Error("npm audit did not produce vulnerability metadata");
     }
     const ids = new Set();
+    const direct = new Set();
     for (const vulnerability of Object.values(audit.vulnerabilities)) {
       for (const via of Array.isArray(vulnerability?.via) ? vulnerability.via : []) {
         if (typeof via === "object" && via !== null) {
           if (typeof via.url !== "string") throw new Error("npm audit advisory URL missing");
-          ids.add(via.url.replace(/^https:\/\/github\.com\/advisories\//, ""));
+          const id = via.url.replace(/^https:\/\/github\.com\/advisories\//, "");
+          ids.add(id);
+          // The advisory is the direct dependency's own (a `via` object), not
+          // one inherited from its dependencies (a `via` name).
+          if (vulnerability.isDirect === true && ["high", "critical"].includes(via.severity)) direct.add(id);
         }
       }
     }
-    const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")));
-    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy }, null, 2) + "\n");
+    const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")), [...direct]);
+    // Passed only if every observed advisory is an assessed transitive one; the
+    // summary also requires npm audit's exit status to be 0 or 1.
+    const passed = policy.assessedAdvisories.length === policy.observedAdvisories.length &&
+      policy.assessedAdvisories.every(id => !direct.has(id));
+    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed },
+      null, 2) + "\n");
     process.stdout.write(JSON.stringify(counts) + "\n");
   } else if (mode === "--dependency-policy") {
     const [project, registry, report, releaseSet, version] = process.argv.slice(3);
@@ -498,13 +546,27 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const record = mode === "--record";
     const summaryPath = drift || record ? input : mode;
     const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
-    const result = drift ? registryAuditDriftDisposition(summary) : registryContainerDisposition(summary);
+    // Unset means fail closed; only the pull_request acceptance job sets warn.
+    const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
+    const result = drift ? registryAuditDriftDisposition(summary)
+      : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
     if (record) {
       const { exitCode, failureClass, message, checks } = result;
       writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
-        disposition: { exitCode, failureClass, message, checks } }, null, 2) + "\n");
+        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } }, null, 2) + "\n");
     }
-    // Required acceptance names unlisted IDs in its error; drift warns.
+    // The pull-request re-check of exit 4 turns unlisted IDs into a warning and
+    // a step-summary line; failing acceptance names them in its error.
+    if (!drift && !record && result.exitCode === 4 && result.unlistedAdvisories?.length) {
+      const ids = result.unlistedAdvisories.join(", ");
+      process.stdout.write(`::warning title=Advisory IDs outside the #191 baseline::${ids}. Pull requests only warn; ` +
+        "the scheduled drift job and release paths fail until they are reviewed and recorded in " +
+        "scripts/registry-container-audit-baseline.json and .md.\n");
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Advisory IDs outside the #191 baseline (warning on this ` +
+          `pull request; the scheduled drift job and release paths fail on them): ${ids}\n`);
+      }
+    }
     if (drift && result.unlistedAdvisories?.length) {
       process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
     }

@@ -95,9 +95,10 @@ function runBash(args: string[], options: { cwd: string; env: Record<string, str
 
 // Runs a workflow step in a scratch checkout holding the real disposition
 // script. The npm stub writes `summary` (if given) where acceptance would, then
-// exits with the acceptance status.
+// exits with the acceptance status. `event` is the run's GITHUB_EVENT_NAME;
+// `stepSummary` is GITHUB_STEP_SUMMARY's contents afterwards.
 function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false,
-  stepName = "Run registry-shaped Linux and Docker acceptance") {
+  stepName = "Run registry-shaped Linux and Docker acceptance", event = "pull_request") {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
   scratch.push(directory);
   const checkout = join(directory, "checkout");
@@ -115,9 +116,12 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   if (stepName !== "Run registry-shaped Linux and Docker acceptance") {
     runBash(["-e", "-c", "npm || true"], { cwd: checkout, env: { PATH } });
   }
-  return runBash(["-e", "-c", workflowStepScript(stepName)], {
-    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), PATH },
+  const GITHUB_STEP_SUMMARY = join(directory, "step-summary.md");
+  writeFileSync(GITHUB_STEP_SUMMARY, "");
+  const result = runBash(["-e", "-c", workflowStepScript(stepName)], {
+    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), GITHUB_EVENT_NAME: event, GITHUB_STEP_SUMMARY, PATH },
   });
+  return { ...result, stepSummary: readFileSync(GITHUB_STEP_SUMMARY, "utf8") };
 }
 const runDriftStep = (summary?: unknown, strictAudit = false) =>
   runWorkflowStep(0, summary, strictAudit, "Check advisory-ID drift");
@@ -595,42 +599,83 @@ describe("registry dependency allowlist", () => {
 
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
-  // An unlisted ID fails the required job: exit 3, and a claimed exit 4 is
-  // refused by the step's re-check.
-  const expectRequiredFailure = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
+  const unknown = "GHSA-2222-3333-4444";
+  // Outside pull requests an unlisted ID fails closed: exit 3, and a claimed
+  // exit 4 is refused by the step's re-check. On pull_request it only warns.
+  const expectUnlisted = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
     const result = registryContainerDisposition(summary);
     expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: unlisted,
       checks: { audit: "blocked" } });
     expect(result.message).toContain(`advisory IDs not in the #191 baseline: ${unlisted.join(", ")}`);
     expect(result.message).toContain("registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review");
     expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: unlisted });
-    expect(runWorkflowStep(3, summary).status).toBe(3);
-    const claimed = runWorkflowStep(4, summary);
-    expect(claimed.status).toBe(4);
-    expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
-    expect(claimed.stdout).toContain(unlisted[0]);
-    expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    for (const event of ["schedule", "workflow_dispatch", "push"]) {
+      expect(runWorkflowStep(3, summary, false, undefined, event).status).toBe(3);
+      const claimed = runWorkflowStep(4, summary, false, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
+      expect(claimed.stdout).toContain(unlisted[0]);
+      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    }
+    const warned = registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" });
+    expect(warned).toMatchObject({ exitCode: 4, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "unlisted" } });
+    expect(warned.message).toContain(`advisory IDs not in the #191 baseline (a pull-request warning; the scheduled ` +
+      `drift job and release paths fail on them): ${unlisted.join(", ")}`);
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(0);
+    expect(pullRequest.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlisted.join(", ")}. ` +
+      "Pull requests only warn; the scheduled drift job and release paths fail");
+    expect(pullRequest.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(pullRequest.stepSummary).toBe("- Advisory IDs outside the #191 baseline (warning on this pull request; the " +
+      `scheduled drift job and release paths fail on them): ${unlisted.join(", ")}\n`);
     expect(runDriftStep(summary, false).status).toBe(0);
     expect(runDriftStep(summary, true).status).toBe(3);
   };
-  it("fails required acceptance on an appended unlisted advisory, and fails the drift check", () => {
+  it("warns a pull request on an appended unlisted advisory and fails closed everywhere else, drift included", () => {
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    expectRequiredFailure(summary, [unknown]);
+    expectUnlisted(summary, [unknown]);
   });
-  it("fails required acceptance on a same-count substitution", () => {
+  it("treats a same-count substitution the same way", () => {
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories = [unknown];
     summary.audit.unlistedAdvisories = [unknown];
-    expectRequiredFailure(summary, [unknown]);
+    expectUnlisted(summary, [unknown]);
     const full = baselineOnlySummary();
     full.audit.observedAdvisories = [...baseline.advisoryIds.slice(1), unknown];
     full.audit.unlistedAdvisories = [unknown];
     expect(full.audit.observedAdvisories).toHaveLength(baseline.advisoryIds.length);
-    expectRequiredFailure(full, [unknown]);
+    expectUnlisted(full, [unknown]);
+  });
+  it("records the policy the script's --record call used, and fails closed without one", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-policy-"));
+    scratch.push(directory);
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    const record = (policy?: string) => {
+      const path = join(directory, "acceptance-summary.json");
+      writeFileSync(path, JSON.stringify(summary));
+      const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", path], {
+        cwd: repoRoot, encoding: "utf8", env: policy === undefined ? {} : { DACS_UNLISTED_ADVISORIES: policy } });
+      return { status: result.status, recorded: JSON.parse(readFileSync(path, "utf8")) };
+    };
+    expect(record("warn")).toMatchObject({ status: 4, recorded: { disposition: { exitCode: 4, unlistedAdvisories: "warn" } } });
+    expect(record()).toMatchObject({ status: 3, recorded: { disposition: { exitCode: 3, unlistedAdvisories: "fail" } } });
+    expect(record("fail").status).toBe(3);
+    expect(record("ignore").status).not.toBe(0);
+    expect(record("ignore").status).not.toBe(4);
+  });
+  it("lets a pull request pass an unlisted ID only when nothing else is blocked", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    summary.securityGate.registryDependencyPolicyPassed = false;
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" })).toMatchObject({ exitCode: 3,
+      checks: { audit: "unlisted", registryDependency: "blocked" } });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
   });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
@@ -640,12 +685,14 @@ describe("advisory-ID baseline", () => {
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
+    expect(result.stepSummary).toBe("");
+    expect(runWorkflowStep(4, summary, false, undefined, "schedule").status).toBe(0);
     expect(runDriftStep(summary, true).status).toBe(0);
   });
   it("reports drift even when a non-audit failure fails the acceptance step", () => {
     // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.
     const summary = baselineOnlySummary();
-    const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
     summary.securityGate.registryDependencyPolicyPassed = false;
@@ -670,10 +717,89 @@ describe("advisory-ID baseline", () => {
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
   });
   it.each([{}, { ...baseline, advisoryIds: ["bogus"] }, { ...baseline, source: {} },
-    { ...baseline, advisoryIds: [] }])("fails closed for a malformed baseline %j", (bad) => {
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-23hp-3jrh-7fpw", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "bogus", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-2222-3333-4444", assessment: " " }] },
+    { ...baseline, assessedAdvisories: "GHSA-2222-3333-4444" }])("fails closed for a malformed baseline %j", (bad) => {
     expect(() => classifyRegistryAudit([], bad)).toThrow();
     expect(registryContainerDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
     expect(registryAuditDriftDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+  });
+  it("accepts an empty #191 list, in which every observed ID is unlisted", () => {
+    expect(classifyRegistryAudit(["GHSA-23hp-3jrh-7fpw"], { ...baseline, advisoryIds: [] }))
+      .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
+  });
+});
+
+// Once #191's findings are gone, SECURITY.md's audit policy still allows
+// transitive advisories assessed for reachability; the gate must be able to
+// pass with them, and never with a direct high/critical one.
+describe("assessed advisories", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const assessedId = "GHSA-2222-3333-4444";
+  const assessed = { ...baseline, assessedAdvisories: [{ id: assessedId, assessment: "SECURITY.md#audit-policy" }] };
+  const cleared = (direct: string[] | null = []) => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    summary.audit.observedAdvisories = [assessedId];
+    if (direct !== null) summary.audit.directAdvisories = direct;
+    return summary;
+  };
+
+  it("passes the gate (exit 0) when every observed advisory is an assessed transitive one", () => {
+    expect(registryContainerDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0, failureClass: null,
+      checks: { audit: "passed" }, assessedAdvisories: [assessedId] });
+    expect(registryAuditDriftDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0 });
+    // Not yet assessed: the same tree is an unlisted ID.
+    expect(registryContainerDisposition({ ...cleared(), audit: { ...cleared().audit, unlistedAdvisories: [assessedId] } }))
+      .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("keeps #191 baseline IDs beside assessed ones baseline-only", () => {
+    const summary = cleared();
+    summary.audit.observedAdvisories = ["GHSA-23hp-3jrh-7fpw", assessedId];
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+  });
+
+  it("never accepts an assessed advisory that is high or critical on a direct dependency", () => {
+    const result = registryContainerDisposition(cleared([assessedId]), assessed, { unlistedAdvisories: "warn" });
+    expect(result).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    expect(result.message).toContain(`which an assessment cannot accept: ${assessedId}`);
+    // A summary that does not record directness cannot show it is transitive.
+    expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("records directness from npm's report and lets the summary pass the gate", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-audit-policy-"));
+    scratch.push(directory);
+    const via = (id: string, severity: string) => ({ source: 1, name: "x", dependency: "x", title: "t",
+      url: `https://github.com/advisories/${id}`, severity, cwe: [], cvss: {}, range: "<2" });
+    const report = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 2, critical: 0, total: 3 } },
+      vulnerabilities: {
+        direct: { name: "direct", severity: "high", isDirect: true, via: [via("GHSA-3333-4444-5555", "high"), "transitive"] },
+        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("GHSA-4444-5555-6666", "moderate")] },
+        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("GHSA-23hp-3jrh-7fpw", "high")] },
+      } };
+    writeFileSync(join(directory, "npm-audit.json"), JSON.stringify(report));
+    const policyPath = join(directory, "audit-policy.json");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(directory, "npm-audit.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(policyPath, "utf8"))).toMatchObject({
+      observedAdvisories: ["GHSA-23hp-3jrh-7fpw", "GHSA-3333-4444-5555", "GHSA-4444-5555-6666"],
+      unlistedAdvisories: ["GHSA-3333-4444-5555", "GHSA-4444-5555-6666"], assessedAdvisories: [],
+      directAdvisories: ["GHSA-3333-4444-5555"], passed: false });
+
+    const policy = { observedAdvisories: [assessedId], unlistedAdvisories: [], assessedAdvisories: [assessedId],
+      directAdvisories: [], passed: true };
+    const summary = writeSummary({ "audit-policy.json": JSON.stringify(policy), "npm-audit.exit-code": "1\n" });
+    expect(summary.securityGate.passed).toBe(true);
+    expect(summary.audit).toMatchObject({ assessedAdvisories: [assessedId], directAdvisories: [] });
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 0 });
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, passed: false }), "npm-audit.exit-code": "1\n" })
+      .securityGate.passed).toBe(false);
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, observedAdvisories: [], assessedAdvisories: [] }),
+      "npm-audit.exit-code": "1\n" }).securityGate.passed).toBe(false);
   });
 });
 

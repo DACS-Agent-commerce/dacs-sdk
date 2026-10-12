@@ -539,13 +539,16 @@ const summary = {
   audit: { ...audit.metadata.vulnerabilities,
     observedAdvisories: auditPolicy.observedAdvisories,
     unlistedAdvisories: auditPolicy.unlistedAdvisories,
+    assessedAdvisories: auditPolicy.assessedAdvisories,
+    directAdvisories: auditPolicy.directAdvisories,
   },
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
     passed: dependencyPolicy.passed &&
       runtimeImagePolicy.productionDependencyPolicyPassed &&
       engineStrictExitCode === 0 &&
-      auditExitCode === 0 && auditPolicy.observedAdvisories.length === 0 &&
+      auditPolicy.passed === true && (auditExitCode === 0 ||
+        (auditExitCode === 1 && auditPolicy.observedAdvisories.length > 0)) &&
       lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
     productionImageDependencyPolicyPassed:
