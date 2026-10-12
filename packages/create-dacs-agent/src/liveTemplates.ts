@@ -3645,8 +3645,16 @@ async function main(args = process.argv.slice(2)): Promise<void> {
   else if (operation === "up") {
     const gate = await startGate();
     if (gate !== 0) { process.exitCode = gate; return; }
-    process.exitCode = (process.env.DACS_DEPLOYMENT ?? "docker") === "local"
-      ? await startDacsLocalRoleServices()
+    if ((process.env.DACS_DEPLOYMENT ?? "docker") === "local") {
+      process.exitCode = await startDacsLocalRoleServices();
+      return;
+    }
+    // Compose runs DACS_IMAGE without building or pulling it. Start only when
+    // that tag still names the image ID and runtime user the smoke checked.
+    const smoked = await command(process.execPath,
+      ["scripts/docker-runtime-smoke.mjs", "--verify-smoked"]);
+    process.exitCode = smoked !== 0
+      ? smoked
       : await command("docker", ["compose", "up", "-d"]);
   } else if (operation === "down") {
     process.exitCode = (process.env.DACS_DEPLOYMENT ?? "docker") === "local"
@@ -4494,27 +4502,79 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 `;
 
 const DOCKER_RUNTIME_SMOKE = `import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 
-const image = process.argv[2];
-if (!image || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image)) {
-  process.stderr.write("usage: npm run dacs:image:smoke -- <built-image-reference>\\n");
-  process.exit(2);
+// Compose interpolates DACS_IMAGE and DACS_RUNTIME_UID/GID from the shell
+// environment first and then from .env; resolve them the same way so the smoke
+// checks the image and user that dacs:up runs.
+const projectDirectory = new URL("../", import.meta.url);
+const receiptDirectory = new URL(".dacs-runtime/", projectDirectory);
+const receiptPath = new URL("docker-image-smoke.json", receiptDirectory);
+let persisted = {};
+try {
+  persisted = parseEnv(readFileSync(new URL(".env", projectDirectory), "utf8"));
+} catch (error) {
+  if (!error || error.code !== "ENOENT") throw error;
+}
+function setting(name) {
+  const value = process.env[name] ?? persisted[name];
+  return value === undefined || value === "" ? undefined : value;
 }
 
-function docker(args, timeout = 120_000) {
+const modeArguments = process.argv.slice(2);
+const verifyOnly = modeArguments.length === 1 && modeArguments[0] === "--verify-smoked";
+const image = setting("DACS_IMAGE");
+const uid = setting("DACS_RUNTIME_UID");
+const gid = setting("DACS_RUNTIME_GID");
+const identity = /^[1-9][0-9]{0,9}$/;
+if ((modeArguments.length !== 0 && !verifyOnly) ||
+    image === undefined || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image) ||
+    uid === undefined || !identity.test(uid) || Number(uid) > 2_147_483_647 ||
+    gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647) {
+  process.stderr.write("usage: set DACS_IMAGE and non-root DACS_RUNTIME_UID/GID " +
+    "(shell or .env), then run npm run dacs:image:smoke\\n");
+  process.exit(2);
+}
+const user = uid + ":" + gid;
+
+function dockerResult(args, timeout = 120_000) {
   const child = spawnSync("docker", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout,
   });
   if (child.error) throw child.error;
+  return child;
+}
+
+function docker(args, timeout = 120_000) {
+  const child = dockerResult(args, timeout);
   if (child.status !== 0) {
     throw new Error("docker " + args[0] + " failed: " + child.stderr.trim());
   }
   return child.stdout.trim();
 }
 
+// A new smoke attempt withdraws the previous pass before inspecting anything.
+if (!verifyOnly) rmSync(receiptPath, { force: true });
 const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
+if (verifyOnly) {
+  let receipt;
+  try {
+    receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  } catch {
+    receipt = undefined;
+  }
+  if (receipt === null || typeof receipt !== "object" || receipt.receiptVersion !== 1 ||
+      receipt.image !== image || receipt.imageId !== imageId || receipt.user !== user) {
+    process.stderr.write("DACS_IMAGE and the runtime user do not match the image ID that " +
+      "last passed dacs:image:smoke; rebuild if needed and rerun npm run dacs:image:smoke\\n");
+    process.exit(5);
+  }
+  process.stdout.write(JSON.stringify({ status: "verified", image, imageId, user }) + "\\n");
+  process.exit(0);
+}
 if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) {
   throw new Error("image reference did not resolve to an immutable Docker image ID");
 }
@@ -4567,20 +4627,57 @@ const probe = [
   'process.stdout.write(JSON.stringify({status:"pass",node:process.versions.node,uid:process.getuid(),gid:process.getgid(),versions}) + "\\\\n");',
 ].join("\\n");
 
-const runtime = JSON.parse(docker([
+// Both containers run as the compose runtime user, without network, writable
+// root, capabilities or privilege escalation.
+const containerOptions = [
   "run",
   "--rm",
   "--network", "none",
   "--read-only",
+  "--cap-drop", "ALL",
+  "--security-opt", "no-new-privileges:true",
+  "--user", user,
+];
+const runtime = JSON.parse(docker([
+  ...containerOptions,
   "--entrypoint", "node",
   imageId,
   "--import", "@kynesyslabs/dacs-node/demos-loader",
   "--input-type=module",
   "--eval", probe,
 ]));
-if (runtime.uid !== 10001 || runtime.gid !== 10001) {
-  throw new Error("container runtime identity is not uid 10001 and gid 10001");
+if (runtime.status !== "pass") {
+  throw new Error("container probe did not report a pass");
 }
+if (runtime.uid !== Number(uid) || runtime.gid !== Number(gid)) {
+  throw new Error("container runtime identity is not the compose user " + user);
+}
+
+// The image's own command, with no role configured, loads the complete service
+// module graph and then stops at its first check, before any secret, data or
+// network access. Any other exit means the configured command cannot start.
+const service = dockerResult([...containerOptions, imageId]);
+const roleCheckReport = JSON.stringify({
+  event: "dacs.live-service.failed",
+  reasonCode: "role-runtime-unavailable",
+});
+if (service.status !== 1 ||
+    !service.stderr.split("\\n").some((line) => line.trim() === roleCheckReport)) {
+  throw new Error("configured service command did not load and stop at its role check");
+}
+
+const receipt = {
+  receiptVersion: 1,
+  image,
+  imageId,
+  user,
+  command: config.Cmd,
+};
+mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
+const temporaryReceipt = new URL("docker-image-smoke.json." + process.pid + ".tmp",
+  receiptDirectory);
+writeFileSync(temporaryReceipt, JSON.stringify(receipt) + "\\n", { mode: 0o600, flag: "wx" });
+renameSync(temporaryReceipt, receiptPath);
 process.stdout.write(JSON.stringify({
   status: "pass",
   image,
@@ -4588,7 +4685,9 @@ process.stdout.write(JSON.stringify({
   configuredUser: config.User,
   configuredEntrypoint: config.Entrypoint,
   configuredCommand: config.Cmd,
+  runtimeUser: user,
   runtime,
+  serviceCommand: "stopped-at-role-check",
 }) + "\\n");
 `;
 
@@ -4657,7 +4756,10 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_SELLER_PUBLIC_BASE_URL: \${DACS_SELLER_PUBLIC_BASE_URL:-}
 
 x-dacs-role: &dacs-role
-  build: .
+  # Compose never builds or pulls: dacs:up starts only the local DACS_IMAGE whose
+  # image ID and runtime user last passed dacs:image:smoke.
+  image: \${DACS_IMAGE:?set DACS_IMAGE}
+  pull_policy: never
   user: "\${DACS_RUNTIME_UID:?set DACS_RUNTIME_UID}:\${DACS_RUNTIME_GID:?set DACS_RUNTIME_GID}"
   # V1 keeps the inter-role HTTP hop on the VPS loopback interface. Public
   # traffic terminates TLS at a separately managed local reverse proxy.
@@ -4758,9 +4860,16 @@ function compose(options: LiveProjectTemplateOptions): string {
   ).join("\n");
 }
 
+function localImageReference(options: LiveProjectTemplateOptions): string {
+  // Package names are already lower-case; Docker repository names also reject
+  // repeated separators such as "..".
+  return options.packageName.replace(/[._-]+/g, "-") + ":local";
+}
+
 function envExample(options: LiveProjectTemplateOptions): string {
   const template = `# Public configuration only. Never put secret values in this file.
 DACS_DEPLOYMENT=${options.deployment}
+DACS_IMAGE=${localImageReference(options)}
 DACS_RUNTIME_UID=${options.runtimeUid}
 DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
@@ -4904,6 +5013,13 @@ function readme(options: LiveProjectTemplateOptions): string {
     : options.rails === "x402"
       ? "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-network-fee-eth 0.001"
       : "npm run dacs:buy -- --listing-ref stor-... --request-file ./request.json --max-service-amount 1 --max-total-debit-dem 3";
+  const imageCommands = options.deployment === "docker"
+    ? "# Build the DACS_IMAGE that compose runs, then smoke that exact image as\n" +
+      "# DACS_RUNTIME_UID/GID. dacs:up refuses to start unless DACS_IMAGE still\n" +
+      "# names the image ID that passed; after any rebuild, rerun the smoke.\n" +
+      `docker build -t ${localImageReference(options)} .\n` +
+      "npm run dacs:image:smoke\n"
+    : "";
   return `# DACS fixed-price ${options.rails} live bootstrap
 
 This generated project is an **experimental live bootstrap** using the exact
@@ -4915,11 +5031,7 @@ Fresh generation is deliberately read-only. Run:
 
 \`\`\`bash
 cp .env.example .env
-# A deployment installer must run both checks before reporting success. Use
-# them explicitly after a manual image build, with your own immutable tag.
-docker build -t my-dacs-agent:local .
-npm run dacs:image:smoke -- my-dacs-agent:local
-npm run dacs:doctor -- --phase pre-start --for start
+${imageCommands}npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
 ${setupCommands}
@@ -5039,10 +5151,21 @@ Deployment: **${options.deployment}**. Default local role: **${options.role}**.
 Docker installs with lifecycle scripts disabled, then explicitly rebuilds only
 the reviewed \`better-sqlite3\` native adapter. Unused optional dependency trees
 are omitted, and image assembly disables install-time audit and funding network
-requests; dependency auditing remains a separate release gate. The generated
-\`dacs:image:smoke\` command starts the built image without network or writable
-root access, verifies its non-root identity, configured command, production files
-and exact package versions, and must pass before an installer reports success.
+requests; dependency auditing remains a separate release gate.
+
+The generated \`dacs:image:smoke\` command resolves \`DACS_IMAGE\` to one image ID
+and checks that image's configured user, working directory, entrypoint and
+command. It then runs two containers from that ID as \`DACS_RUNTIME_UID:GID\`,
+the user compose runs, with no network, a read-only root and no capabilities: a
+probe that checks production files and exact package versions and imports the
+SDK entry points, and the image's configured service command, which must load
+the complete service and stop at its missing-role check. The smoke never starts
+a serving role, reads secrets or contacts a network. On success it records the
+image ID and user in \`.dacs-runtime/docker-image-smoke.json\`; a new attempt
+removes that record first. Docker \`dacs:up\` starts compose only while
+\`DACS_IMAGE\` still names the recorded image ID and the runtime user is
+unchanged; compose never builds or pulls the image.
+
 Compiled services use the host package's exact Demos ESM
 compatibility loader rather than a general TypeScript/esbuild production
 transformer. It uses separate non-root buyer/seller processes, secret mounts and durable
