@@ -22,7 +22,10 @@ template, not from the acceptance tooling. The source is the b7b180f run
 
 - `gitDependencies`: `arbundles@0.6.23` (optional, via demosdk → rubic-sdk →
   @metaplex-foundation/js → @bundlr-network/client) depends on
-  `avsc` from `https://github.com/Irys-xyz/avsc#csp-fixes`.
+  `avsc` from `https://github.com/Irys-xyz/avsc#csp-fixes`. The key holds every
+  violation of the registry-only allowlist: each installed lock entry must
+  resolve to a tarball under the run's registry with an integrity, and every
+  dependency spec must be a version, range, tag or `npm:` alias.
 - `engineViolations`: 16 non-optional packages of the sigstore 5 chain
   (demosdk → sigstore → @sigstore/sign → make-fetch-happen → ...) require
   Node `^22.22.2 || ^24.15.0 || >=26.0.0`, below the generated project's
@@ -41,7 +44,7 @@ template, not from the acceptance tooling. The source is the b7b180f run
   is not marked dev in the lock.
 
 A run whose failing checks match only these entries is baseline-only (exit 4).
-Any other Git dependency, engine violation, SBOM problem or production
+Any other non-registry dependency, engine violation, SBOM problem or production
 dependency, or a changed version, integrity or range, still exits 3.
 
 Update the baseline only through a reviewed PR adding the observed IDs or

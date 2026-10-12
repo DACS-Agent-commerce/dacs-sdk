@@ -9,8 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
-  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines } =
-  await import(dispositionModulePath);
+  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines,
+  registryDependencyViolations } = await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -309,12 +309,14 @@ const CANDIDATE_VERSION = "0.1.0-test";
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
-// Executes the script's own dependency-policy program against a generated
-// consumer whose lock initially names the exact packed candidate tarballs.
+// Runs the dependency-policy command the script runs against a generated
+// consumer whose lock initially names the exact packed candidate tarballs,
+// as release-provenance.json records them.
 function dependencyPolicyHarness() {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
   scratch.push(directory);
-  const packages: Record<string, { resolved: string; integrity: string; name?: string }> = {};
+  const packages: Record<string, Record<string, unknown>> = {};
+  const provenance = { version: CANDIDATE_VERSION, packages: {} as Record<string, { integrity: string }> };
   for (const name of ["dacs", "dacs-node"]) {
     const bytes = Buffer.from(name);
     writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
@@ -322,22 +324,28 @@ function dependencyPolicyHarness() {
       resolved: `${CANDIDATE_REGISTRY}/${name}.tgz`,
       integrity: sri(bytes),
     };
+    provenance.packages[`@kynesyslabs/${name}`] = { integrity: sri(bytes) };
   }
   const project = join(directory, "project");
   mkdirSync(project);
-  writeFileSync(join(project, "package.json"), JSON.stringify({ dependencies: Object.fromEntries([
+  const manifest: Record<string, unknown> = { dependencies: Object.fromEntries([
     "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
     "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
-  ].map((name) => [name, CANDIDATE_VERSION])) }));
-  const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
-    .split('"$artifact_stage/dependency-policy.json"')[1]!.split("<<'NODE'\n")[1]!.split("\nNODE")[0]!;
+  ].map((name) => [name, CANDIDATE_VERSION])) };
+  const report = join(directory, "report.json");
+  expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
+    'node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \\\n' +
+    '  "$artifact_stage/dependency-policy.json" "$release_set" "$version"');
   const run = () => {
+    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
-    return spawnSync(process.execPath, [
-      "-", project, CANDIDATE_REGISTRY, join(directory, "report.json"), directory, CANDIDATE_VERSION,
-    ], { input: script, encoding: "utf8" });
+    writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
+    rmSync(report, { force: true });
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
+      project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
+    return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
-  return { packages, run };
+  return { packages, manifest, provenance, run };
 }
 
 // Executes the script's own summary program over a stage holding the evidence
@@ -436,6 +444,29 @@ describe("registry/container evidence", () => {
     expect(run().status).not.toBe(0);
   });
 
+  it.each(["dacs", "dacs-node"])("compares the installed @kynesyslabs/%s with release-provenance.json", (name) => {
+    const { packages, provenance, run } = dependencyPolicyHarness();
+    expect(run()).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
+    const packed = provenance.packages[`@kynesyslabs/${name}`]!.integrity;
+    provenance.packages[`@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    const recorded = run();
+    expect(recorded.status).not.toBe(0);
+    expect(recorded.stderr).toContain(`release-provenance.json records ${sri(Buffer.from("another build"))} ` +
+      `for @kynesyslabs/${name}, but the packed tarball is ${packed}`);
+    // A lock that matches the provenance record but not the packed bytes fails too.
+    packages[`node_modules/@kynesyslabs/${name}`]!.integrity = sri(Buffer.from("another build"));
+    expect(run().status).not.toBe(0);
+  });
+
+  it("writes every registry-policy violation to the report the summary reads", () => {
+    const { packages, manifest, run } = dependencyPolicyHarness();
+    packages["node_modules/x"] = { version: "1.0.0", resolved: "https://example.com/x-1.0.0.tgz", integrity: sri(Buffer.from("x")) };
+    manifest.overrides = { viem: "npm:not-viem@1.0.0" };
+    expect(run()).toMatchObject({ status: 0, report: { schema: "dacs-registry-dependency-policy/v1", passed: false,
+      violations: [{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@1.0.0"}' },
+        { location: "node_modules/x", field: "resolved", value: "https://example.com/x-1.0.0.tgz" }] } });
+  });
+
   it("derives the summary fields from the checks that ran", () => {
     const passing = writeSummary();
     expect(passing).toMatchObject({
@@ -461,6 +492,106 @@ describe("registry/container evidence", () => {
   });
 });
 
+
+// The consumer may install registry packages only: an allowlist over every
+// lock entry and every dependency spec, not a list of known bad forms.
+describe("registry dependency allowlist", () => {
+  const registry = "http://127.0.0.1:4873";
+  const registered = (name: string) => ({ version: "1.0.0", resolved: `${registry}/${name}/-/${name}-1.0.0.tgz`,
+    integrity: sri(Buffer.from(name)) });
+  const violationsWith = (packages: Record<string, unknown>, manifest: Record<string, unknown> = {}) =>
+    registryDependencyViolations({ manifest, registry,
+      lock: { packages: { "": { name: "consumer" }, "node_modules/ok": registered("ok"), ...packages } } });
+
+  it("passes registry tarballs with an integrity and registry specs", () => {
+    expect(violationsWith({ "node_modules/a": { ...registered("a"), dependencies: { b: "^1.2.3", c: "1.x || >=2.0.0 <3",
+      d: "latest", e: "*", f: "", g: "npm:bitcoinjs-lib@^5.2.0", h: "npm:@scope/pkg@1.0.0", i: ">= 1.2.3-beta.1+build.5" },
+    optionalDependencies: { j: "~1.0.0" }, peerDependencies: { k: "^5 || ^6" } } },
+    { dependencies: { a: "1.0.0" }, devDependencies: { typescript: "5.9.2" } })).toEqual([]);
+  });
+
+  it.each([
+    ["a tarball from an arbitrary host", "https://example.com/x/-/x-1.0.0.tgz"],
+    ["a codeload.github.com tarball", "https://codeload.github.com/o/x/tar.gz/0123456789abcdef0123456789abcdef01234567"],
+    ["a Git URL with a ref", "git+ssh://git@github.com/o/x.git#0123456789abcdef0123456789abcdef01234567"],
+    ["a Git URL without a ref", "git+https://github.com/o/x.git"],
+    ["a GitLab tarball", "https://gitlab.com/o/x/-/archive/main/x-main.tar.gz"],
+    ["a file: tarball", "file:../x-1.0.0.tgz"],
+    ["a registry tarball on another port", "http://127.0.0.1:4874/x/-/x-1.0.0.tgz"],
+    ["a registry tarball over another scheme", "https://127.0.0.1:4873/x/-/x-1.0.0.tgz"],
+    ["a relative path", "../x"],
+  ])("rejects an installed entry resolved from %s", (_label, resolved) => {
+    expect(violationsWith({ "node_modules/x": { ...registered("x"), resolved } }))
+      .toEqual([{ location: "node_modules/x", field: "resolved", value: resolved }]);
+  });
+
+  it("rejects an installed entry without resolved, without integrity, or linked to a directory", () => {
+    const { resolved: _resolved, ...unresolved } = registered("x");
+    const { integrity: _integrity, ...unpinned } = registered("y");
+    expect(violationsWith({ "node_modules/x": unresolved, "node_modules/y": unpinned,
+      "node_modules/z": { link: true, resolved: "packages/z" }, "node_modules/w": { ...registered("w"), integrity: "sha512-" } }))
+      .toEqual([
+        { location: "node_modules/x", field: "resolved", value: null },
+        { location: "node_modules/y", field: "integrity", value: null },
+        { location: "node_modules/z", field: "link", value: "packages/z" },
+        { location: "node_modules/z", field: "integrity", value: null },
+        { location: "node_modules/w", field: "integrity", value: "sha512-" },
+      ]);
+  });
+
+  it.each([
+    ["a github: shorthand", "github:Irys-xyz/avsc#csp-fixes"],
+    ["an owner/repo shorthand", "Irys-xyz/avsc#csp-fixes"],
+    ["an owner/repo shorthand without a ref", "Irys-xyz/avsc"],
+    ["a GitHub URL without a ref", "https://github.com/Irys-xyz/avsc"],
+    ["a GitHub URL with a ref (the #191 avsc form)", "https://github.com/Irys-xyz/avsc#csp-fixes"],
+    ["a GitLab URL", "https://gitlab.com/o/avsc#main"],
+    ["a gitlab: shorthand", "gitlab:o/avsc"],
+    ["a Git URL", "git://github.com/o/avsc.git"],
+    ["an scp-style Git URL", "git@github.com:o/avsc.git"],
+    ["a tarball URL", "https://example.com/avsc-1.0.0.tgz"],
+    ["a file: spec", "file:../avsc"],
+    ["a link: spec", "link:../avsc"],
+    ["a relative directory", "./avsc"],
+    ["a parent directory", "../avsc"],
+    ["a tarball file", "avsc-1.0.0.tgz"],
+    ["a workspace: spec", "workspace:*"],
+  ])("rejects a dependency spec that is %s, in the lock and the manifest", (_label, spec) => {
+    expect(violationsWith({ "node_modules/z": { ...registered("z"), dependencies: { avsc: spec } } }))
+      .toEqual([{ location: "node_modules/z", field: "dependencies.avsc", value: spec }]);
+    expect(violationsWith({ "node_modules/z": { ...registered("z"), optionalDependencies: { avsc: spec } } }))
+      .toEqual([{ location: "node_modules/z", field: "optionalDependencies.avsc", value: spec }]);
+    expect(violationsWith({}, { dependencies: { avsc: spec } }))
+      .toEqual([{ location: "package.json", field: "dependencies.avsc", value: spec }]);
+  });
+
+  it("rejects overrides, which can redirect a package to another source", () => {
+    expect(violationsWith({}, { overrides: { viem: "npm:not-viem@2.55.19" } }))
+      .toEqual([{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@2.55.19"}' }]);
+    expect(violationsWith({}, { overrides: { semver: "7.5.4" } })).toHaveLength(1);
+  });
+
+  it("rejects an unreadable lock", () => {
+    expect(registryDependencyViolations({ manifest: {}, registry, lock: { packages: [] } }))
+      .toEqual([{ location: "package-lock.json", field: "packages", value: null }]);
+    expect(violationsWith({ "node_modules/x": [] })).toEqual([{ location: "node_modules/x", field: "entry", value: "[]" }]);
+  });
+
+  it("refuses a registry that is neither HTTPS nor this run's loopback registry", () => {
+    for (const value of ["http://registry.npmjs.org", "http://10.0.0.1:4873"]) {
+      expect(() => registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: value })).toThrow("HTTPS or loopback");
+    }
+    expect(registryDependencyViolations({ manifest: {}, lock: { packages: {} }, registry: "https://registry.npmjs.org" })).toEqual([]);
+  });
+
+  it("reports exactly the #191 baseline's Git dependency for the b7b180f lock", () => {
+    const lock = JSON.parse(readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f/generated-package-lock.json"), "utf8"));
+    const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+    const violations = registryDependencyViolations({ manifest: lock.packages[""], lock, registry: "http://127.0.0.1:32768" });
+    expect(violations).toEqual(baseline.policyFindings.gitDependencies.map(({ location, field, value }:
+      { location: string; field: string; value: string }) => ({ location, field, value })));
+  });
+});
 
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
@@ -665,6 +796,13 @@ describe("lock engine scan", () => {
     value.packages["node_modules/@arbitrum/sdk"].optional = false;
     expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: false,
       errors: [expect.stringContaining("node_modules/@arbitrum/sdk")] });
+  });
+
+  it("counts an array-valued lock entry as unreadable, not as evaluated", () => {
+    const value = lock();
+    value.packages["node_modules/semver"] = [];
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: false,
+      errors: ["node_modules/semver: unreadable lock entry"] });
   });
 
   it("checks engines.npm against the container's npm", () => {

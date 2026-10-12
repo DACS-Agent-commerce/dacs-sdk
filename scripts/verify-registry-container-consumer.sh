@@ -345,81 +345,10 @@ docker run --rm \
 
 project="$consumer_root/one-click-agent"
 stage=dependency-policy
-node - "$project" "$consumer_registry" "$artifact_stage/dependency-policy.json" "$release_set" "$version" <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
-const root = process.argv[2];
-const registry = process.argv[3];
-const reportPath = process.argv[4];
-const { createHash } = require("node:crypto");
-const releaseSet = process.argv[5];
-const version = process.argv[6];
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const lockSource = fs.readFileSync(path.join(root, "package-lock.json"), "utf8");
-const lock = JSON.parse(lockSource);
-const dependencies = manifest.dependencies ?? {};
-const violations = [];
-for (const name of [
-  "@kynesyslabs/dacs",
-  "@kynesyslabs/dacs-node",
-  "@kynesyslabs/demosdk",
-  "@x402/core",
-  "@x402/evm",
-  "@x402/fetch",
-  "better-sqlite3",
-  "viem",
-]) {
-  if (typeof dependencies[name] !== "string") {
-    throw new Error("dual-rail consumer is missing " + name);
-  }
-}
-for (const value of Object.values(dependencies)) {
-  if (/^(?:file:|git\+|https?:\/\/github\.com\/)/.test(value)) {
-    violations.push({ location: "package.json", value });
-  }
-}
-for (const [location, entry] of Object.entries(lock.packages ?? {})) {
-  for (const [field, value] of Object.entries(entry ?? {})) {
-    if (typeof value === "string" &&
-        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
-      violations.push({ location, field, value });
-    }
-  }
-  for (const [name, value] of Object.entries(entry?.dependencies ?? {})) {
-    if (typeof value === "string" &&
-        /^(?:file:|git\+|git:|git@|https?:\/\/github\.com\/.*#)/.test(value)) {
-      violations.push({ location, field: `dependencies.${name}`, value });
-    }
-  }
-}
-// Every installed copy of a candidate package, top-level or nested, must be
-// the exact packed tarball served by the isolated registry.
-for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
-  const archive = path.join(releaseSet, name.slice(1).replace("/", "-") + "-" + version + ".tgz");
-  const integrity = "sha512-" + createHash("sha512").update(fs.readFileSync(archive)).digest("base64");
-  const locations = Object.keys(lock.packages ?? {}).filter((location) =>
-    location === "node_modules/" + name || location.endsWith("/node_modules/" + name) || lock.packages[location]?.name === name);
-  if (!locations.includes("node_modules/" + name)) {
-    throw new Error("candidate package is not installed at the top level: " + name);
-  }
-  for (const location of locations) {
-    const entry = lock.packages[location];
-    const resolved = entry?.resolved;
-    if (typeof resolved !== "string" || !resolved.startsWith(registry + "/")) {
-      throw new Error("candidate package did not resolve through the isolated registry: " + location);
-    }
-    if (entry.integrity !== integrity) {
-      throw new Error("candidate package integrity does not match the packed tarball: " + location +
-        " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
-    }
-  }
-}
-fs.writeFileSync(reportPath, JSON.stringify({
-  schema: "dacs-registry-dependency-policy/v1",
-  passed: violations.length === 0,
-  violations,
-}, null, 2) + "\n");
-NODE
+# Registry packages only (an allowlist over the manifest and every lock entry),
+# and every candidate copy is the packed tarball release-provenance.json records.
+node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \
+  "$artifact_stage/dependency-policy.json" "$release_set" "$version"
 
 stage=audit-policy
 node scripts/registry-container-disposition.mjs --audit-policy \

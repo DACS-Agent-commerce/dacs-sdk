@@ -4,6 +4,7 @@
 // (exit 4). The scheduled/manual drift workflow reports unlisted IDs daily.
 // Neither classification permits production publication while #191 remains
 // blocked.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +51,90 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
     return { exitCode: policy.unlistedAdvisories.length ? 3 : 0,
       message: policy.unlistedAdvisories.length ? `Unlisted advisory IDs: ${policy.unlistedAdvisories.join(", ")}` : "No advisory-ID drift", ...policy };
   } catch (error) { return { exitCode: 3, message: String(error) }; }
+}
+
+// The consumer installs registry packages only. This is an allowlist: every
+// installed (non-root) lock entry resolves to a tarball under the configured
+// registry's origin and path and carries an integrity, and every dependency
+// spec in the manifest and the lock is a registry spec (a version, range or
+// tag, or an npm: alias of one). Anything else is a violation: Git URLs and
+// GitHub/GitLab shorthands with or without a ref, tarballs on any other host
+// (codeload.github.com included), file:, link:, paths, entries without
+// `resolved` or `integrity`, and `overrides`.
+const registryRange = "[\\w.*^~<>=|+ -]*";
+const registrySpec = new RegExp(`^(?:${registryRange}|npm:(?:@[\\w.-]+/)?[\\w.-]+(?:@${registryRange})?)$`);
+const tarballFile = /\.(?:tgz|tar|tar\.gz)$/i;
+const sri = /^(?:sha512|sha384|sha256|sha1)-[A-Za-z0-9+/]+={0,2}$/;
+const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
+const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
+
+// The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
+// script starts (reached as host.docker.internal from a non-Linux container).
+export function consumerRegistry(value) {
+  const registry = new URL(value);
+  if (!(registry.protocol === "https:" || (registry.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "host.docker.internal"].includes(registry.hostname)))) {
+    throw new Error(`registry dependency policy needs an HTTPS or loopback registry, not ${value}`);
+  }
+  return { origin: registry.origin, path: registry.pathname.endsWith("/") ? registry.pathname : registry.pathname + "/" };
+}
+
+export function registryDependencyViolations({ manifest, lock, registry }) {
+  const { origin, path } = consumerRegistry(registry);
+  const violations = [];
+  const specs = (location, owner) => {
+    for (const field of specFields) {
+      for (const [name, value] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+        if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
+          violations.push({ location, field: `${field}.${name}`, value });
+        }
+      }
+    }
+  };
+  specs("package.json", manifest);
+  for (const [location, owner] of [["package.json", manifest], ["", lock?.packages?.[""]]]) {
+    if (owner?.overrides !== undefined) violations.push({ location, field: "overrides", value: JSON.stringify(owner.overrides) });
+  }
+  if (!isPlainObject(lock?.packages)) return [...violations, { location: "package-lock.json", field: "packages", value: null }];
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) { violations.push({ location, field: "entry", value: JSON.stringify(entry) }); continue; }
+    specs(location, entry);
+    if (location === "") continue;
+    let url = null;
+    try { url = typeof entry.resolved === "string" ? new URL(entry.resolved) : null; } catch { /* not a URL */ }
+    if (entry.link === true || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+      violations.push({ location, field: entry.link === true ? "link" : "resolved", value: entry.resolved ?? null });
+    }
+    if (typeof entry.integrity !== "string" || !sri.test(entry.integrity)) {
+      violations.push({ location, field: "integrity", value: entry.integrity ?? null });
+    }
+  }
+  return violations;
+}
+
+// Every installed copy of a candidate package, top-level, nested or aliased,
+// must be the packed release-set tarball that release-provenance.json records.
+export function candidateIntegrityErrors({ lock, registry, candidates }) {
+  const { origin, path } = consumerRegistry(registry);
+  const packages = isPlainObject(lock?.packages) ? lock.packages : {};
+  const errors = [];
+  for (const { name, integrity } of candidates) {
+    const locations = Object.keys(packages).filter(location => location === "node_modules/" + name ||
+      location.endsWith("/node_modules/" + name) || packages[location]?.name === name);
+    if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
+    for (const location of locations) {
+      const entry = packages[location];
+      let url = null;
+      try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
+      if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+        errors.push("candidate package did not resolve through the isolated registry: " + location);
+      } else if (entry.integrity !== integrity) {
+        errors.push("candidate package integrity does not match the packed tarball: " + location +
+          " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+      }
+    }
+  }
+  return errors;
 }
 
 // Why a run failed: an unreachable registry or audit endpoint (a timeout, or
@@ -215,7 +300,7 @@ export function scanLockEngines(lock, versions) {
   const violations = [];
   let evaluatedPackages = 0;
   for (const [location, entry] of errors.length ? [] : Object.entries(packages)) {
-    if (typeof entry !== "object" || entry === null) { errors.push(`${location}: unreadable lock entry`); continue; }
+    if (!isPlainObject(entry)) { errors.push(`${location}: unreadable lock entry`); continue; }
     // npm checks only packages that are not optional.
     if (entry.optional === true) continue;
     const engines = entry.engines;
@@ -367,6 +452,35 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")));
     writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy }, null, 2) + "\n");
     process.stdout.write(JSON.stringify(counts) + "\n");
+  } else if (mode === "--dependency-policy") {
+    const [project, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (!project || !registry || !report || !releaseSet || !version) {
+      throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
+    }
+    const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
+    for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm",
+      "@x402/fetch", "better-sqlite3", "viem"]) {
+      if (typeof manifest.dependencies?.[name] !== "string") throw new Error("dual-rail consumer is missing " + name);
+    }
+    // The packed tarball and its release-provenance.json record must agree
+    // before either is compared with the consumer's lock.
+    const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+    if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
+    const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"].map(name => {
+      const archive = join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
+      const integrity = "sha512-" + createHash("sha512").update(readFileSync(archive)).digest("base64");
+      const recorded = provenance.packages?.[name]?.integrity;
+      if (recorded !== integrity) {
+        throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
+      }
+      return { name, integrity };
+    });
+    const errors = candidateIntegrityErrors({ lock, registry, candidates });
+    if (errors.length) throw new Error(errors.join("\n"));
+    const violations = registryDependencyViolations({ manifest, lock, registry });
+    writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
+      violations }, null, 2) + "\n");
   } else if (mode === "--policy-findings" && input && output) {
     const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
     writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
