@@ -23,6 +23,7 @@ const isProxy = nodeTypes.isProxy;
 const regExpExec = RegExp.prototype.exec;
 const stringNormalize = String.prototype.normalize;
 const stringCharCodeAt = String.prototype.charCodeAt;
+const stringSlice = String.prototype.slice;
 const createSha256 = createHash;
 const sha256Prototype = getPrototypeOf(createHash("sha256")) as {
   update(data: string, encoding: "utf8"): unknown;
@@ -467,6 +468,16 @@ function isWellFormedString(value: string): boolean {
     }
   }
   return true;
+}
+
+/**
+ * `value` without its trailing `=` padding. No live regex: a replaced
+ * `RegExp.prototype.exec` cannot make a valid retained row read as corrupt.
+ */
+function withoutBase64Padding(value: string): string {
+  let end = value.length;
+  while (end > 0 && reflectApply(stringCharCodeAt, value, [end - 1]) === 0x3d) end -= 1;
+  return reflectApply(stringSlice, value, [0, end]) as string;
 }
 
 /** SHA-256 of the UTF-8 bytes of `value`, through the hash captured at load. */
@@ -939,7 +950,7 @@ function validateCapturedSubmission(
   const encoded = requireString(value.signedSubmissionBase64, "signedSubmissionBase64");
   const decoded = Buffer.from(encoded, "base64");
   if (decoded.length === 0 ||
-      decoded.toString("base64").replace(/=+$/, "") !== encoded.replace(/=+$/, "")) {
+      withoutBase64Padding(decoded.toString("base64")) !== withoutBase64Padding(encoded)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: signed submission must be canonical base64");
   }
   const unsigned = { ...value };

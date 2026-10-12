@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { assertPositiveAmount, baseUnits, sha256Hex } from "../../src/canonical/index.js";
+import {
+  assertPositiveAmount,
+  baseUnits,
+  canonicalize,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 import {
   advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
@@ -2827,6 +2832,74 @@ describe("advanceLiquidityTankSettlement", () => {
       }).shared)).resolves.toMatchObject({ status: "settled" });
       expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
       expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    // On b6aef30 the base64 check stripped padding with `.replace(/=+$/)`,
+    // which dispatches through the live `exec`, so the valid retained row read
+    // as `liquidity-tank-retained-state-corrupt`.
+    test("a throwing RegExp.prototype.exec cannot make a valid retained row read as corrupt", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 500);
+      const originalExec = RegExp.prototype.exec;
+      const poisoned = vi.fn(() => {
+        throw new Error("prototype poisoned");
+      });
+      let result: unknown;
+      try {
+        RegExp.prototype.exec = poisoned;
+        result = await advanceLiquidityTankSettlement({ ...run.shared, owner: "poisoned" });
+      } finally {
+        RegExp.prototype.exec = originalExec;
+      }
+      expect(poisoned).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      await releasesLater(run, h);
+    });
+
+    // Daybreak's round-7 probe: on b6aef30 an `exec` lying for `/=+$/` made
+    // both sides strip to "", so a retained row with invalid base64 passed
+    // and was broadcast.
+    test("a lying RegExp.prototype.exec cannot admit a retained row with invalid base64", async () => {
+      const intent = createLiquidityTankIntent(authority());
+      const unsigned = {
+        submissionVersion: "1" as const,
+        authorityHash: intent.bindingHash,
+        operationHash: intent.operationHash,
+        bridgeId: BRIDGE_ID,
+        substrateTxHash: "retained-tx",
+        signedSubmissionBase64: "AAAA!!!!",
+        preparedAt: 900,
+      };
+      const submission = Object.freeze({ ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) });
+      const store: LiquidityTankStore = {
+        ...createInMemoryLiquidityTankStore(),
+        claim: vi.fn(async () => ({
+          status: "acquired" as const,
+          intent,
+          lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 },
+          submission,
+        })),
+        isCurrent: vi.fn(async () => true),
+      };
+      const h = harness();
+      const originalExec = RegExp.prototype.exec;
+      let result: unknown;
+      try {
+        RegExp.prototype.exec = function (this: RegExp, input: string) {
+          if (this.source === "=+$") return Object.assign([input], { index: 0, input }) as unknown as RegExpExecArray;
+          return Reflect.apply(originalExec, this, [input]) as RegExpExecArray | null;
+        };
+        result = await advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared);
+      } finally {
+        RegExp.prototype.exec = originalExec;
+      }
+      expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
     });
 
     // Pinning: b6aef30 already refused these through its null-prototype record.
