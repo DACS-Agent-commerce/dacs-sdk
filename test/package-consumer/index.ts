@@ -26,6 +26,7 @@ import {
   type RatingPhasePlan,
   type RatingPhaseReadyHandoff,
   type FencedSessionStoreV2,
+  type HtlcRefundLegState as RootHtlcRefundLegState,
   type SubstrateAdapter,
   createBuyerRatingRecord,
   createSellerRatingRecord,
@@ -48,7 +49,12 @@ import {
   advanceCrossChainHtlc,
   deriveHtlcPreimage,
   type CrossChainHtlcAdapter,
+  type CrossChainHtlcAuthority,
+  type CrossChainHtlcProgress,
   type CrossChainHtlcStore,
+  type HtlcDestinationClaimReplacementContext,
+  type HtlcLockTerms,
+  type HtlcRefundLegState,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -84,6 +90,42 @@ const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
 const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
+const htlcLegState: HtlcRefundLegState = "failed";
+const rootHtlcLegState: RootHtlcRefundLegState = htlcLegState;
+const htlcLockTerms: HtlcLockTerms = {
+  token: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+  amountBaseUnits: "1250000",
+  hashlock: `0x${"0".repeat(64)}`,
+  sender: "0x0000000000000000000000000000000000000001",
+  recipient: "0x0000000000000000000000000000000000000002",
+};
+const htlcTokenIds: Pick<CrossChainHtlcAuthority, "sourceTokenId" | "destinationTokenId"> = {
+  sourceTokenId: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+  destinationTokenId: "0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582",
+};
+declare const htlcRevealReplacement: HtlcDestinationClaimReplacementContext;
+/** A host pages an operator on these statuses and keeps advancing the session. */
+function htlcNeedsOperator(progress: CrossChainHtlcProgress): boolean {
+  switch (progress.status) {
+    case "refund-stalled":
+      return Object.values(progress.refunds).includes("failed");
+    case "operator-alert":
+      return progress.reason === "htlc-source-claim-missed-after-reveal" ||
+        progress.reason === "htlc-destination-claim-failed-preimage-public";
+    case "waiting":
+    case "indeterminate":
+    case "failed":
+    case "settle-asymmetric":
+    case "refund-pending":
+    case "refunded":
+    case "settled":
+      return false;
+    default: {
+      const unhandled: never = progress;
+      return unhandled;
+    }
+  }
+}
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
@@ -190,6 +232,11 @@ void journal;
 void result;
 void htlcAdvance;
 void htlcPreimage;
+void rootHtlcLegState;
+void htlcLockTerms;
+void htlcTokenIds;
+void htlcRevealReplacement;
+void htlcNeedsOperator;
 void htlcAdapter;
 void htlcStore;
 void solanaAdvance;
