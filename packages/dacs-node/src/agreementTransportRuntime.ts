@@ -41,7 +41,11 @@ import type {
 } from "./roleRuntime.js";
 import {
   claimDacsPreAgreementPhaseV1,
+  claimDacsSellerVetOutcomeV1,
+  loadDacsSellerVetOutcomeV1,
+  loadDacsPreAgreementPhaseV1,
   DacsPreAgreementPhaseError,
+  DACS_PRE_AGREEMENT_PHASE_CONFLICT,
 } from "./preAgreementPhase.js";
 import type { DacsLiveRoleSendInputV1 } from "./service.js";
 import type {
@@ -521,7 +525,8 @@ export function loadDacsAgreementTerminalBoundaryForOrderV1(
     throw new DacsAgreementTransportRuntimeError("agreement-response-binding-corrupt");
   }
   return Object.freeze({
-    sellerPassRetained: proposal !== undefined,
+    sellerPassRetained: proposal !== undefined || (context.role === "seller" &&
+      loadDacsSellerVetOutcomeV1(context, order) === "seller-pass"),
     sellerResponseRetained: response !== undefined,
   });
 }
@@ -886,10 +891,12 @@ export function createDacsSellerAgreementTransportRuntimeV1<
           sdkJobs: admitted.order.sdkJobs,
           localBindingHash: retained.record.localBindingHash,
         };
-        // Commit the job to the agreement and retain the authenticated proposal
-        // before the coordinator order exists, so no terminal processing can
-        // observe the order without them.
-        claimDacsPreAgreementPhaseV1(context, scope, "agreement");
+        // Admission excludes seller failure, but the seller's own Vet may still
+        // fail the buyer. Only a signing hand-off claims the agreement phase.
+        if (loadDacsPreAgreementPhaseV1(context, scope) === "vet-terminal") {
+          throw new DacsPreAgreementPhaseError(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
+        }
+        claimDacsSellerVetOutcomeV1(context, scope, "seller-pass");
         retainProposal(context, scope, envelope.payload, authenticated);
         await inboundContext.coordinator.startOrder(admitted.order);
         const order = await loadOrder(context, admitted.order.jobId);

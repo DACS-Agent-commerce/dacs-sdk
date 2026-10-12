@@ -4,6 +4,7 @@ import {
 } from "./agreementTransportRuntime.js";
 import {
   claimDacsPreAgreementPhaseV1,
+  loadDacsPreAgreementPhaseV1,
   DACS_PRE_AGREEMENT_PHASE_CONFLICT,
   DacsPreAgreementPhaseError,
 } from "./preAgreementPhase.js";
@@ -946,6 +947,14 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
   return async (operation) => {
     if (!operationBound(context, operation)) {
       return operator("seller-session-bootstrap-track-mismatch");
+    }
+    // Read the decision directly: readiness callbacks may turn transport
+    // errors into false, but corrupt or unreadable durable state needs an operator.
+    try {
+      loadDacsPreAgreementPhaseV1(context, operation.order);
+    } catch (error) {
+      return operator(error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "pre-agreement-phase-unavailable");
     }
     // Recover a durably signed response before advancing any competing terminal.
     let responseRetained: boolean;

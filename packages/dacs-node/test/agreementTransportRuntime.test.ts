@@ -37,7 +37,7 @@ import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from
 import { produceDacsEmptyRequirementSessionVetV1 } from "../src/sessionIdentityVetRuntime.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from "../src/purchaseDemosBudget.js";
 import { createDacsVetTerminalBundleTransportRuntimeV1 } from "../src/terminalBundleTransportRuntime.js";
-import { claimDacsPreAgreementPhaseV1 } from "../src/preAgreementPhase.js";
+import { claimDacsPreAgreementPhaseV1, claimDacsSellerVetOutcomeV1, loadDacsPreAgreementPhaseV1, loadDacsSellerVetOutcomeV1 } from "../src/preAgreementPhase.js";
 import { advanceDacsVetTerminalTrackV1, createDacsBuyerSessionBootstrapAgreementTrackV1, createDacsSellerSessionBootstrapAgreementTrackV1 } from "../src/sessionBootstrapAgreementRuntime.js";
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "../src/agreementTransportRuntime.js";
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
@@ -793,7 +793,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         expect(await h.publish()).toEqual({ disposition: "submitted" });
     });
 
-    it.each(["x402", "pay-dem"] as const)("does not co-sign a %s seller failure after a crash between the phase decision and the proposal write", async (profile) => {
+    it.each(["x402", "pay-dem"] as const)("does not co-sign a %s seller failure after a crash between the seller-pass decision and the proposal write", async (profile) => {
         const h = await memoryAgreementHarness(profile);
         const database = h.seller.context.database as unknown as { putEffectIntent: (input: { input: unknown }) => unknown };
         const put = database.putEffectIntent;
@@ -808,15 +808,16 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         };
         expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
         expect(crashed).toBe(true);
-        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(false);
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerPassRetained).toBe(true);
 
         const runtime = h.terminalRuntime();
         const terminal = await h.failure();
         expect.soft(await runtime.validatePayload({ type: "terminal-bundle-proposal-buyer", payload: terminal.envelope.payload, jobId: JOB_ID, sender: BUYER, audience: SELLER }))
-            .toEqual({ status: "invalid", reasonCode: "agreement-vet-terminal-phase-conflict" });
-        expect.soft(await runtime.handleMessage(terminal, h.inbound)).toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
+            .toEqual({ status: "invalid", reasonCode: "vet-terminal-not-pre-agreement" });
+        expect.soft(await runtime.handleMessage(terminal, h.inbound)).toEqual({ disposition: "rejected", reasonCode: "vet-terminal-not-pre-agreement" });
         await expect.soft(runtime.advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject({ reasonCode: "vet-terminal-material-unavailable" });
         expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        expect(await h.publish()).toEqual({ disposition: "submitted" });
     });
 
     it.each([
@@ -914,4 +915,164 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         expect(sentTypes(h)).toContain("terminal-bundle-contribution-seller");
         await expect(advanceDacsVetTerminalTrackV1(runtime, h.seller.context, 1_000, JOB_ID)).resolves.toMatchObject({ status: "pending-retry", reasonCode: "vet-terminal-finalization-pending" });
     });
+});
+
+function phaseDecisionKey(role: "buyer" | "seller") {
+    return `session:${sha256Hex(`dacs-live-pre-agreement-phase:v1:${canonicalize({ role, jobId: JOB_ID })}`)}`;
+}
+
+describe("round 4 admission and phase regressions", () => {
+    for (const profile of ["x402", "pay-dem"] as const) {
+        it.each([false, true])(`A0/A1 ${profile}: buyer failure is co-signed with early proposal=%s`, async (earlyProposal) => {
+            const h = await memoryAgreementHarness(profile);
+            if (earlyProposal) expect(await h.publish()).toEqual({ disposition: "submitted" });
+            const failure = await h.failure("buyer");
+            const terminalInput = (failure.envelope.payload as unknown as { terminalInput: never }).terminalInput;
+            const { init, challenge, presentation } = bootstrapTranscript(h);
+            const agreement = vi.fn();
+            const production = (terminalInput as { production: unknown }).production;
+            const runtime = h.terminalRuntime();
+            const track = createDacsSellerSessionBootstrapAgreementTrackV1({
+                context: h.seller.context,
+                sessionBootstrap: { resolveInit: () => init, resolveChallenge: () => challenge,
+                    resolvePresentation: () => presentation, resolveAdmission: () => undefined,
+                    publishAdmission: async () => "submitted", publishChallenge: async () => "submitted" },
+                resolveBuyerRequirement: async () => ({ requirementVersion: "1", required: [] }),
+                agreementProposalReady: async () => true, agreement,
+                vet: { produce: async () => ({ status: "ready", production }), authenticate: async () => "valid" },
+                terminalBundle: { runtime, createInput: () => terminalInput },
+            } as never);
+            for (let tick = 0; tick < 2; tick += 1) {
+                expect(await track(h.seller.operation as never)).toMatchObject({ status: "pending-retry", reasonCode: "vet-terminal-finalization-pending" });
+            }
+            expect(agreement).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).toHaveBeenCalledTimes(2);
+            expect(sentTypes(h)).toContain("terminal-bundle-proposal-seller");
+            expect(sentTypes(h)).toContain("terminal-bundle-contribution-seller");
+            expect(sentTypes(h)).not.toContain("agreement-response");
+            if (earlyProposal) {
+                await expect(h.sellerRuntime.resolveProposal({ operation: h.seller.operation as never }))
+                    .rejects.toMatchObject({ reasonCode: "agreement-vet-terminal-phase-conflict" });
+                // Transport refuses the losing proposal cleanly, without changing the terminal track.
+                expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+            }
+        });
+
+        it.each([
+            ["corrupt", (h: MemoryHarness) => ({ nonsense: true })],
+            ["stale-binding", (h: MemoryHarness) => ({ decisionVersion: "1", localBindingHash: "e".repeat(64), phase: "agreement" })],
+            ["unknown-phase", (h: MemoryHarness) => ({ decisionVersion: "1", localBindingHash: h.seller.record.localBindingHash, phase: "both" })],
+        ] as const)(`${profile}: a %s phase row requires operator action and fails closed`, async (_label, value) => {
+            const h = await memoryAgreementHarness(profile);
+            expect(await h.publish()).toEqual({ disposition: "submitted" });
+            h.seller.effects.set(phaseDecisionKey("seller"), value(h));
+            const agreement = vi.fn();
+            expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never))
+                .toEqual({ status: "operator-action", reasonCode: "pre-agreement-phase-corrupt" });
+            expect(agreement).not.toHaveBeenCalled();
+            const terminal = await h.failure("buyer");
+            expect(await h.terminalRuntime().validatePayload({ type: "terminal-bundle-proposal-buyer", payload: terminal.envelope.payload,
+                jobId: JOB_ID, sender: BUYER, audience: SELLER }))
+                .toEqual({ status: "invalid", reasonCode: "vet-terminal-binding-corrupt" });
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        });
+
+        it(`${profile}: an unreadable terminal decision cannot be treated as no decision`, async () => {
+            const h = await memoryAgreementHarness(profile);
+            const database = h.seller.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };
+            const load = database.loadEffectInput;
+            database.loadEffectInput = (kind, id) => {
+                if (`${kind}:${id}` === phaseDecisionKey("seller")) throw new Error("unreadable decision row");
+                return load(kind, id);
+            };
+            const terminal = await h.failure("buyer");
+            expect(await h.terminalRuntime().validatePayload({ type: "terminal-bundle-proposal-buyer", payload: terminal.envelope.payload,
+                jobId: JOB_ID, sender: BUYER, audience: SELLER }))
+                .toEqual({ status: "invalid", reasonCode: "vet-terminal-binding-corrupt" });
+            const agreement = vi.fn();
+            expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never))
+                .toEqual({ status: "operator-action", reasonCode: "pre-agreement-phase-unavailable" });
+            expect(agreement).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+            expect(sentTypes(h)).toEqual([]);
+        });
+    }
+});
+
+
+describe("seller-pass admission outcome", () => {
+    it.each(["x402", "pay-dem"] as const)("lets genuine %s agreement signing claim its phase after admission", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        expect(await h.publish()).toEqual({ disposition: "submitted" });
+        expect(loadDacsPreAgreementPhaseV1(h.seller.context, h.seller.record)).toBeUndefined();
+        expect(loadDacsSellerVetOutcomeV1(h.seller.context, h.seller.record)).toBe("seller-pass");
+        await h.sellerRuntime.resolveProposal({ operation: h.seller.operation as never });
+        expect(loadDacsPreAgreementPhaseV1(h.seller.context, h.seller.record)).toBe("agreement");
+        await h.signResponse();
+        expect(loadDacsAgreementTerminalBoundaryForOrderV1(h.seller.context, h.seller.record as never).sellerResponseRetained).toBe(true);
+    });
+    it.each(["x402", "pay-dem"] as const)("keeps %s admission and seller failure mutually exclusive at their insert-once outcome", async (profile) => {
+        const h = await memoryAgreementHarness(profile);
+        claimDacsSellerVetOutcomeV1(h.seller.context, h.seller.record, "seller-failure");
+        expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+        expect(h.startOrder).not.toHaveBeenCalled();
+        expect(() => claimDacsSellerVetOutcomeV1(h.seller.context, h.seller.record, "seller-pass"))
+            .toThrow("agreement-vet-terminal-phase-conflict");
+        const admitted = await memoryAgreementHarness(profile);
+        claimDacsSellerVetOutcomeV1(admitted.seller.context, admitted.seller.record, "seller-pass");
+        expect(() => claimDacsSellerVetOutcomeV1(admitted.seller.context, admitted.seller.record, "seller-failure"))
+            .toThrow("agreement-vet-terminal-phase-conflict");
+    });
+    it.each(["x402", "pay-dem"] as const)("rejects corrupt and stale %s seller outcome rows before admission", async (profile) => {
+        for (const row of [ { nonsense: true }, { decisionVersion: "1", localBindingHash: "e".repeat(64), outcome: "seller-pass" },
+            { decisionVersion: "1", localBindingHash: "e".repeat(64), outcome: "both" } ]) {
+            const h = await memoryAgreementHarness(profile);
+            const id = sha256Hex(`dacs-live-seller-vet-outcome:v1:${canonicalize({ role: "seller", jobId: JOB_ID })}`);
+            h.seller.effects.set(`session:${id}`, row);
+            expect(() => loadDacsSellerVetOutcomeV1(h.seller.context, h.seller.record)).toThrow("pre-agreement-phase-corrupt");
+            expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+            expect(h.startOrder).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+        }
+    });
+});
+
+it.each(["x402", "pay-dem"] as const)("the %s terminal outcome CAS rejects a stale admission-boundary snapshot", async (profile) => {
+    const h = await memoryAgreementHarness(profile);
+    // Authenticated admission crashes after its outcome decision, before its proposal.
+    const database = h.seller.context.database as unknown as {
+        putEffectIntent: (input: { input: unknown }) => unknown;
+        loadEffectInput: (kind: string, id: string) => unknown;
+    };
+    const put = database.putEffectIntent;
+    database.putEffectIntent = (input) => {
+        if ((input.input as { payload?: { proposal?: unknown } }).payload?.proposal !== undefined)
+            throw new Error("admission crashed before proposal retention");
+        return put(input);
+    };
+    expect(await h.publish()).toEqual({ disposition: "rejected", reason: "peer-rejected-proposal" });
+    expect(loadDacsSellerVetOutcomeV1(h.seller.context, h.seller.record)).toBe("seller-pass");
+    const load = database.loadEffectInput;
+    const outcomeId = sha256Hex(`dacs-live-seller-vet-outcome:v1:${canonicalize({ role: "seller", jobId: JOB_ID })}`);
+    let outcomeWriteAttempted = false;
+    // Model a terminal's pre-CAS checks that read before admission claimed.
+    // The insert-once write and its readback see the actual retained decision.
+    database.loadEffectInput = (kind, id) => id === outcomeId && !outcomeWriteAttempted ? undefined : load(kind, id);
+    database.putEffectIntent = (input) => {
+        if ((input.input as { outcome?: unknown }).outcome === "seller-failure") outcomeWriteAttempted = true;
+        return put(input);
+    };
+    expect(await h.terminalRuntime().handleMessage(await h.failure(), h.inbound))
+        .toEqual({ disposition: "rejected", reasonCode: "agreement-vet-terminal-phase-conflict" });
+    expect(outcomeWriteAttempted).toBe(true);
+    expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+});
+
+
+it.each(["x402", "pay-dem"] as const)("C2 %s: an agreement decision resumes the same proposal after a crash before retention", async (profile) => {
+    const h = await memoryAgreementHarness(profile);
+    claimDacsPreAgreementPhaseV1(h.seller.context, h.seller.record, "agreement");
+    expect(await h.publish()).toEqual({ disposition: "submitted" });
+    await expect(h.sellerRuntime.resolveProposal({ operation: h.seller.operation as never })).resolves.toBeDefined();
+    expect(loadDacsPreAgreementPhaseV1(h.seller.context, h.seller.record)).toBe("agreement");
 });

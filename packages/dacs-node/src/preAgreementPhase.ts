@@ -65,8 +65,8 @@ export function loadDacsPreAgreementPhaseV1(
 }
 
 /**
- * Commit the job to `phase` for this role before it retains or signs anything
- * on that path. The write is an insert-once compare-and-swap: the first phase
+ * Commit the job to `phase` before an agreement signing hand-off or
+ * terminal material retention. The write is an insert-once compare-and-swap: the first phase
  * written wins, and a later claim for the other phase throws
  * `agreement-vet-terminal-phase-conflict`, which needs an operator.
  */
@@ -93,4 +93,46 @@ export function claimDacsPreAgreementPhaseV1(
   if (retained.phase !== phase) {
     throw new DacsPreAgreementPhaseError(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
   }
+}
+
+// Admission authenticates the buyer's seller-pass evidence; it is not an
+// agreement signing decision. This separate insert-once outcome excludes only
+// seller-failure terminals and survives a crash before proposal retention.
+const SELLER_VET_OUTCOME_DOMAIN = "dacs-live-seller-vet-outcome:v1:";
+type SellerVetOutcome = "seller-pass" | "seller-failure";
+
+function sellerVetOutcomeId(context: Readonly<DacsLiveRoleOperationContextV1>, scope: PhaseScope): string {
+  return sha256Hex(`${SELLER_VET_OUTCOME_DOMAIN}${canonicalize({ role: context.role, jobId: scope.jobId })}`);
+}
+
+function captureSellerVetOutcome(value: unknown, scope: PhaseScope): SellerVetOutcome {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DacsPreAgreementPhaseError("pre-agreement-phase-corrupt");
+  }
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).length !== 3 || row.decisionVersion !== PHASE_DECISION_VERSION ||
+      row.localBindingHash !== scope.localBindingHash ||
+      (row.outcome !== "seller-pass" && row.outcome !== "seller-failure")) {
+    throw new DacsPreAgreementPhaseError("pre-agreement-phase-corrupt");
+  }
+  return row.outcome;
+}
+
+export function loadDacsSellerVetOutcomeV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>, scope: PhaseScope,
+): SellerVetOutcome | undefined {
+  const value = context.database.loadEffectInput("session", sellerVetOutcomeId(context, scope));
+  return value === undefined ? undefined : captureSellerVetOutcome(value, scope);
+}
+
+export function claimDacsSellerVetOutcomeV1(
+  context: Readonly<DacsLiveRoleOperationContextV1>, scope: PhaseScope, outcome: SellerVetOutcome,
+): void {
+  const id = sellerVetOutcomeId(context, scope);
+  context.database.putEffectIntent({ kind: "session", effectId: id,
+    bindingHash: scope.localBindingHash, jobId: scope.jobId, idempotencyKey: id,
+    input: { decisionVersion: PHASE_DECISION_VERSION, localBindingHash: scope.localBindingHash, outcome },
+  });
+  const retained = captureSellerVetOutcome(context.database.loadEffectInput("session", id), scope);
+  if (retained !== outcome) throw new DacsPreAgreementPhaseError(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
 }

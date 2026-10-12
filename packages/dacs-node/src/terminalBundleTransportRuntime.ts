@@ -31,6 +31,7 @@ import { canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity } from
 import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "./agreementTransportRuntime.js";
 import {
   claimDacsPreAgreementPhaseV1,
+  claimDacsSellerVetOutcomeV1,
   DACS_PRE_AGREEMENT_PHASE_CONFLICT,
   DacsPreAgreementPhaseError,
   loadDacsPreAgreementPhaseV1,
@@ -736,6 +737,15 @@ async function putBinding(
     order.localBindingHash,
   ) !== undefined) {
     throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-conflict");
+  }
+  if (kind !== "contribution" &&
+      (payload as DacsVetTerminalBundleProposalV1).terminalInput.evaluatedRole === "seller") {
+    try {
+      claimDacsSellerVetOutcomeV1(context, order, "seller-failure");
+    } catch (error) {
+      throw new DacsVetTerminalBundleTransportError(error instanceof DacsPreAgreementPhaseError
+        ? error.reasonCode : "vet-terminal-binding-corrupt");
+    }
   }
   claimTerminalPhase(context, order);
   const signerRole = kind === "contribution"
