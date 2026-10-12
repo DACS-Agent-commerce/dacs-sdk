@@ -51,6 +51,13 @@ and readers must use `ComponentSignedArtifact`,
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `advanceCrossChainHtlc` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
+`advanceCrossChainHtlc` ([docs/pay-cross-chain-htlc.md](docs/pay-cross-chain-htlc.md))
+is restart-safe only over a durable, atomic, encrypted host store that you
+supply. The package ships only `createInMemoryCrossChainHtlcStore`, which loses
+every secret and signed action on restart (the core would then lock the source
+a second time), so it requires `{ acknowledgeVolatile: true }` and is for tests
+and development only.
+
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
 authenticated commitment timestamp to re-check the complete fixed-price
 agreement/listing binding. RFQ or other negotiable-pattern implementations can
