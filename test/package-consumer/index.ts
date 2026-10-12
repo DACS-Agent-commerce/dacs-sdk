@@ -49,8 +49,13 @@ import {
   createInMemoryLiquidityTankStore,
   createLiquidityTankIntent,
   runLiquidityTankStoreConformance,
+  type AdvanceLiquidityTankInput,
   type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAdapter,
+  type LiquidityTankAuthority,
+  type LiquidityTankObservation,
+  type LiquidityTankPreparedSubmission,
+  type LiquidityTankSettlement,
   type LiquidityTankStore,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
@@ -102,8 +107,24 @@ const tankVerifier: LiquidityTankVerifier = {
 };
 const tankConformanceOptions: LiquidityTankStoreConformanceOptions = {
   createStore: () => tankStore,
-  reopenStore: (store) => store,
+  reopenStore: reopenTankStore,
 };
+// The core refuses to run without the host's verifier.
+// @ts-expect-error verifier is required
+const unverifiedTankInput: AdvanceLiquidityTankInput = {
+  authority: tankAuthority,
+  owner: "consumer-worker",
+  store: tankStore,
+  adapter: tankAdapter,
+};
+// Every ordinary store write carries the core's clock reading.
+const tankWriteLease = { settlementKey: "key", bindingHash: "binding", owner: "consumer-worker", generation: 1 };
+// @ts-expect-error now is required
+void tankStore.recordSubmission({ ...tankWriteLease, submission: tankSubmission });
+// @ts-expect-error now is required
+void tankStore.recordObservation({ ...tankWriteLease, observation: tankObservation });
+// @ts-expect-error now is required
+void tankStore.recordSettlement({ ...tankWriteLease, settlement: tankSettlement });
 const tankConformance: (
   options: LiquidityTankStoreConformanceOptions,
 ) => Promise<readonly LiquidityTankStoreConformanceResult[]> = runLiquidityTankStoreConformance;
@@ -161,6 +182,11 @@ declare const journal: DemosWriteJournal;
 declare const result: BundleVerification;
 declare const tankAdapter: LiquidityTankAdapter;
 declare const tankStore: LiquidityTankStore;
+declare const reopenTankStore: (store: LiquidityTankStore) => Promise<LiquidityTankStore>;
+declare const tankAuthority: LiquidityTankAuthority;
+declare const tankSubmission: LiquidityTankPreparedSubmission;
+declare const tankObservation: Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
+declare const tankSettlement: LiquidityTankSettlement;
 declare const qualificationInput: ClaimQualificationInput;
 declare const qualificationDeps: ClaimQualificationDeps;
 declare const qualificationMember: ClaimQualificationRequirement;
@@ -221,6 +247,7 @@ void unacknowledgedTankStore;
 void tankVerifier;
 void tankConformanceOptions;
 void tankConformance;
+void unverifiedTankInput;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;
