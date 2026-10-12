@@ -63,6 +63,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
+import { IndeterminateSubstrateError } from "../../src/errors.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 
@@ -857,9 +858,9 @@ async function gateWithAudit(
     sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
   }
   const input = { ...fx.input, buyer: buyerStatus, seller: sellerStatus };
-  const verify = () => rail === "pay-x402"
-    ? verifyFixedPriceX402AuditCompletion(input as never, fx.deps)
-    : verifyFixedPricePayDemAuditCompletion(input as never, fx.deps);
+  const verify = (deps: FixedPriceX402AuditCompletionDeps = fx.deps) => rail === "pay-x402"
+    ? verifyFixedPriceX402AuditCompletion(input as never, deps)
+    : verifyFixedPricePayDemAuditCompletion(input as never, deps);
   return { fx, buyerStatus, sellerStatus, verify };
 }
 
@@ -903,6 +904,38 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
     await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
     expect(verifySellerClosure).not.toHaveBeenCalled();
   });
+
+  // One copy's read cannot be answered; the substrate answers `invalid` for
+  // the other copy's anchor 25 ms after it, or 25 ms before it. The verifier
+  // settles both copies and reports the answer, whichever arrives first.
+  for (const answerArrives of ["last", "first"] as const) {
+    it.each(["buyer", "seller"] as const)(
+      `reports an answer against the %s copy that arrives ${answerArrives}, not the other copy's unavailable read`,
+      async (answered) => {
+        const gate = await gateWithAudit(rail, (fx) => ({
+          buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+        }));
+        const pause = () => new Promise((resolve) => setTimeout(resolve, 25));
+        const settled: string[] = [];
+        const rejection = gate.verify({
+          ...gate.fx.deps,
+          readBundleCopy: async (nativeAddress, role) => {
+            if (role === answered) return gate.fx.deps.readBundleCopy(nativeAddress, role);
+            if (answerArrives === "first") await pause();
+            settled.push(`${role}:unavailable`);
+            throw new IndeterminateSubstrateError(`${role} bundle read unavailable`);
+          },
+          verifyBundleAnchor: async (copy) => {
+            if (answerArrives === "last") await pause();
+            settled.push(`${copy.role}:answered`);
+            return { disposition: "invalid", reason: `${copy.role}-anchor-invalid` };
+          },
+        });
+        await expect(rejection).rejects.toThrow(`completed ${answered} bundle anchor verification is invalid`);
+        expect(settled).toHaveLength(2);
+      },
+    );
+  }
 
   it.each(["buyer", "seller"] as const)("refuses contradicting final audit outcomes (%s failed)", async (failed) => {
     const gate = await gateWithAudit(rail, (fx) => ({

@@ -282,7 +282,8 @@ that was read and failed authentication needs operator action. A seller bundle
 or BundleBinding that Demos returns with invalid content, an invalid receipt or
 a failed authentication is immutable, so it also goes to operator action
 instead of being retried. Demos's answer against one copy goes to operator
-action even when a read of the other copy went unanswered in the same check.
+action even when a read of the other copy went unanswered in the same check,
+whichever arrives first: both copies settle before the check decides.
 For receipt reads, a connection error, a timeout or HTTP 408, 429, 502, 503
 or 504 is unanswered; any other HTTP status is Demos's answer.
 
