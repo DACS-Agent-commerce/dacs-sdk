@@ -238,6 +238,20 @@ unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer
 request ID and timestamp. Byte identity refers to the message payload, not
 those RPC metadata fields.
 
+Peer keys are compared in the node's canonical form. Demos node `61b8e75`
+stores, queries and delivers `from`/`to` keys lower-cased with any `0x`
+removed (`src/features/l2ps-messaging/keys.ts:13-16`), and registers only hex
+keys of at least 64 digits. The transport captures `localPeerKey`, every key
+returned by `peerForClaim`, and every inbound and history key in that form, and
+calls `claimForPeer` only with canonical keys. A key that is not hex once `0x`
+is removed is refused. The route in the AES-GCM authenticated data and in the
+send outbox entry also uses the canonical keys. No signed bytes change, because
+packets carry claims, not peer keys. A caller who passed `0x` or upper-case
+keys to an earlier build of this unreleased transport sealed frames under the
+raw keys; those frames and outbox entries no longer bind and stay
+`indeterminate`. A receiver on the node could not open them anyway, because it
+sees the canonical sender key.
+
 After an ambiguous response, `resumeOutbox()` searches authenticated Demos
 conversation history, decrypts the stored frame, and compares the complete
 canonical packet and route. It returns `absent` only when one unpaginated

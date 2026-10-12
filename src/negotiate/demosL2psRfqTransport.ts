@@ -38,6 +38,7 @@ const MAX_LIVE_EVENTS = 100;
 const MAX_LIVE_BYTES = 64 * 1024 * 1024;
 const WIRE_DOMAIN = "dacs-rfq-l2ps-wire:v1";
 const HASH = /^[0-9a-f]{64}$/;
+const PEER_KEY = /^[0-9a-f]{64,}$/;
 const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFAULT_HISTORY_MAX_PAGES = 100;
 const DEFAULT_OPERATION_TIMEOUT_MS = 20_000;
@@ -197,8 +198,14 @@ export interface DemosL2psRfqTransportOptions {
   codec: DemosL2psRfqWireCodec;
   l2psUid: string;
   localClaim: string;
+  /**
+   * Hex public key, with or without 0x, in any case. The transport keeps every
+   * peer key in the node's canonical form: lower-case hex without 0x.
+   */
   localPeerKey: string;
+  /** May return any accepted key form; the result is canonicalized. */
   peerForClaim(claim: string): string | undefined;
+  /** Always called with a canonical key (lower-case hex, no 0x). */
   claimForPeer(peerKey: string): string | undefined;
   onError(error: Error): void;
   /**
@@ -584,8 +591,26 @@ function errorFrom(cause: unknown, fallback: string): Error {
   return cause instanceof Error ? cause : new DacsError(fallback);
 }
 
+/**
+ * Demos node 61b8e75 stores and returns peer keys as lower-case hex without a
+ * 0x prefix (features/l2ps-messaging/keys.ts:13-16, L2PSMessagingService.ts:
+ * 125-126) and registers only hex keys of at least 64 digits
+ * (L2PSMessagingServer.ts:141-145). Every key is captured in that form, so
+ * history, mapping and outbox comparisons match the node's rows.
+ */
 function capturePeerKey(value: unknown, label: string): string {
-  return canonicalString(value, label);
+  const raw = canonicalString(value, label);
+  const key = (raw.startsWith("0x") || raw.startsWith("0X") ? raw.slice(2) : raw).toLowerCase();
+  if (!PEER_KEY.test(key)) throw new DacsError(`${label} must be a hex public key`);
+  return key;
+}
+
+function isPeerKey(value: unknown, peerKey: string): boolean {
+  try {
+    return capturePeerKey(value, "peer key") === peerKey;
+  } catch {
+    return false;
+  }
 }
 
 function encodePacket<TSignature>(
@@ -1269,7 +1294,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       captured.claimForPeer(payload.from),
       "resolved sender claim",
     );
-    if (captured.peerForClaim(senderClaim) !== payload.from) {
+    if (!isPeerKey(captured.peerForClaim(senderClaim), payload.from)) {
       throw new DacsError("Demos L2PS RFQ peer/claim mapping is not reciprocal");
     }
     const plaintext = await bounded(

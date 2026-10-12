@@ -641,6 +641,95 @@ describe("Demos L2PS durable RFQ transport", () => {
     } finally { await fixture.cleanup(); }
   });
 
+  test("round 6: a 0x mixed-case local key matches the node's canonical history rows", async () => {
+    // Node 61b8e75 strips 0x and lower-cases keys before it stores, queries
+    // or delivers them (features/l2ps-messaging/keys.ts:13-16).
+    const nodeKey = (key: string) => key.replace(/^0x/i, "").toLowerCase();
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    let ticks = 0;
+    const make = (localClaim: string, localPeerKey: string) => {
+      const base = hub.peer(nodeKey(localPeerKey));
+      return createDemosL2psRfqTransport<string>({
+        peer: {
+          ...base,
+          send: (to, encrypted, messageHash) => base.send(nodeKey(to), encrypted, messageHash),
+          history: (peerKey, options) => base.history(nodeKey(peerKey), options),
+        },
+        codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+        l2psUid: L2PS_UID,
+        outboxStore: memorySendOutbox(),
+        monotonicNowMs: () => ticks,
+        localClaim,
+        localPeerKey,
+        peerForClaim,
+        claimForPeer,
+        onError: vi.fn(),
+      });
+    };
+    const buyerTransport = make(BUYER, `0x${"Aa".repeat(32)}`);
+    const sellerTransport = make(SELLER, `0X${"bB".repeat(32)}`);
+    const reservation = durableReservation();
+    const buyerClient = createDurableRfqLifecycleClient(clientOptions("buyer", buyerTransport, reservation));
+    const sellerClient = createDurableRfqLifecycleClient(clientOptions("seller", sellerTransport, reservation));
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    hub.loseNextResponse = true;
+    await expect(buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    expect(hub.messages[0]).toMatchObject({ from: BUYER_PEER, to: SELLER_PEER });
+    // Past the grace: only a history match keeps this from a resend.
+    ticks = 60_000;
+    await expect(buyerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(hub.sends).toBe(1);
+    sellerTransport.start((packet) => sellerClient.receive(packet));
+    await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete",
+      delivered: 1,
+    });
+    sellerTransport.stop();
+  });
+
+  test("round 6: mapped 0x or mixed-case peer keys route and receive in canonical form", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const mixedPeerForClaim = (claim: string) =>
+      claim === BUYER ? `0x${"AA".repeat(32)}` : claim === SELLER ? `0X${"Bb".repeat(32)}` : undefined;
+    const errors: Error[] = [];
+    const make = (localClaim: string, localPeerKey: string) => createDemosL2psRfqTransport<string>({
+      peer: hub.peer(localPeerKey),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+      l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      localClaim,
+      localPeerKey,
+      peerForClaim: mixedPeerForClaim,
+      // Accepts only the canonical form, as inbound `from` always is.
+      claimForPeer,
+      onError: (error) => errors.push(error),
+    });
+    const buyerTransport = make(BUYER, BUYER_PEER);
+    const sellerTransport = make(SELLER, SELLER_PEER);
+    const reservation = durableReservation();
+    const buyerClient = createDurableRfqLifecycleClient(clientOptions("buyer", buyerTransport, reservation));
+    const sellerClient = createDurableRfqLifecycleClient(clientOptions("seller", sellerTransport, reservation));
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    const received = vi.fn((packet: unknown) => sellerClient.receive(packet));
+    sellerTransport.start(received);
+    await expect(buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "ready" });
+    await sellerTransport.drain();
+    expect(hub.messages[0]).toMatchObject({ from: BUYER_PEER, to: SELLER_PEER });
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([]);
+    sellerTransport.stop();
+  });
+
   test("round 4: a stuck consumer from a retired generation does not hold back the next one", async () => {
     const fixture = await inboundReceiver();
     // Never advanced: neither the consumer nor any operation timeout can fire.
