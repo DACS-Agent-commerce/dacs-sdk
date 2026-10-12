@@ -9,11 +9,20 @@
 //   4  the release security gate is blocked only by transitive audit findings
 //      within the recorded #191 baseline. Production publication stays blocked,
 //      but this is not a regression introduced by the change under test.
+//
+// A summary without the expected schema, or that does not record a functional
+// pass and passing generated tests, is a functional failure (1). The workflow
+// re-runs this check before it waives status 4.
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
+
 export function registryContainerDisposition(summary) {
-  if (summary?.functionalPassed !== true) {
+  if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) {
+    return { exitCode: 1, message: "registry/container acceptance summary has an unexpected schema" };
+  }
+  if (summary.functionalPassed !== true || summary.generatedTestsPassed !== true) {
     return { exitCode: 1, message: "functional registry/container rehearsal failed" };
   }
   const gate = summary.securityGate;

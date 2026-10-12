@@ -219,11 +219,18 @@ for package_name in @kynesyslabs/dacs @kynesyslabs/dacs-node create-dacs-agent; 
   test "$observed" = "$version"
 done
 
+# The generator arguments are recorded in the summary from these values.
+generated_mode=live-demos
+generated_role=seller
+generated_rails=both
 docker run --rm \
   "${consumer_network_args[@]}" \
   --volume "$consumer_root:/work" \
   --workdir /work \
   --env DACS_PACKAGE_VERSION="$version" \
+  --env DACS_GENERATED_MODE="$generated_mode" \
+  --env DACS_GENERATED_ROLE="$generated_role" \
+  --env DACS_GENERATED_RAILS="$generated_rails" \
   --env DACS_HOST_UID="$host_uid" \
   --env DACS_HOST_GID="$host_gid" \
   --env npm_config_registry="$consumer_registry" \
@@ -238,16 +245,19 @@ docker run --rm \
     npm install --global --ignore-scripts npm@11.19.0
     npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
       --yes \
-      --mode live-demos \
+      --mode "$DACS_GENERATED_MODE" \
       --profile dacs-sdk:fixed-price-x402:v1 \
-      --rails both \
-      --role seller \
+      --rails "$DACS_GENERATED_RAILS" \
+      --role "$DACS_GENERATED_ROLE" \
       --deploy docker
     cd one-click-agent
-    npm run build
-    npm test
+    tests_status=0
+    { npm run build && npm test; } || tests_status=$?
+    printf "%s\n" "$tests_status" > /work/generated-tests.exit-code
+    test "$tests_status" -eq 0
     doctor_status=0
     npm run dacs:doctor > /work/doctor.log 2>&1 || doctor_status=$?
+    printf "%s\n" "$doctor_status" > /work/doctor.exit-code
     test "$doctor_status" -eq 5
     audit_status=0
     npm audit --registry https://registry.npmjs.org --omit=dev --json > /work/npm-audit.json || audit_status=$?
@@ -429,7 +439,9 @@ cp "$release_set/release-provenance.json" "$artifact_stage/"
 cp "$release_set/SHA256SUMS" "$artifact_stage/"
 cp "$project/package.json" "$artifact_stage/generated-package.json"
 cp "$project/package-lock.json" "$artifact_stage/generated-package-lock.json"
+cp "$consumer_root/generated-tests.exit-code" "$artifact_stage/"
 cp "$consumer_root/doctor.log" "$artifact_stage/"
+cp "$consumer_root/doctor.exit-code" "$artifact_stage/"
 cp "$consumer_root/npm-audit.json" "$artifact_stage/"
 cp "$consumer_root/npm-audit.exit-code" "$artifact_stage/"
 cp "$consumer_root/consumer-lock.cdx.json" "$artifact_stage/"
@@ -441,12 +453,14 @@ cp "$consumer_root/consumer-physical-sbom.exit-code" "$artifact_stage/"
 cp "$consumer_root/engine-strict.log" "$artifact_stage/"
 cp "$consumer_root/engine-strict.exit-code" "$artifact_stage/"
 
-node - "$artifact_stage" "$version" "$runtime_image" <<'NODE'
+node - "$artifact_stage" "$version" "$runtime_image" \
+  "$generated_mode" "$generated_role" "$generated_rails" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const root = process.argv[2];
 const version = process.argv[3];
 const image = process.argv[4];
+const [generatedMode, generatedRole, generatedRails] = process.argv.slice(5);
 const inspect = JSON.parse(fs.readFileSync(path.join(root, "docker-image.json"), "utf8"))[0];
 const audit = JSON.parse(fs.readFileSync(path.join(root, "npm-audit.json"), "utf8"));
 const dependencyPolicy = JSON.parse(
@@ -470,18 +484,29 @@ const lockSbomExitCode = Number(
 const physicalSbomExitCode = Number(
   fs.readFileSync(path.join(root, "consumer-physical-sbom.exit-code"), "utf8").trim(),
 );
+const generatedTestsExitCode = Number(
+  fs.readFileSync(path.join(root, "generated-tests.exit-code"), "utf8").trim(),
+);
+const doctorExitCode = Number(
+  fs.readFileSync(path.join(root, "doctor.exit-code"), "utf8").trim(),
+);
+const generatedTestsPassed = generatedTestsExitCode === 0;
+const doctorBlockedWithoutCredentials = doctorExitCode === 5;
 const summary = {
   schema: "dacs-registry-container-acceptance/v1",
   packageVersion: version,
-  generatedMode: "live-demos",
-  generatedRole: "seller",
-  generatedRails: ["x402", "pay-dem"],
-  registryDependencyOnly: true,
-  generatedTestsPassed: true,
-  functionalPassed: runtimeImagePolicy.functionalPassed,
+  generatedMode,
+  generatedRole,
+  generatedRails: generatedRails === "both" ? ["x402", "pay-dem"] : [generatedRails],
+  registryDependencyOnly: dependencyPolicy.passed === true &&
+    Array.isArray(dependencyPolicy.violations) && dependencyPolicy.violations.length === 0,
+  generatedTestsPassed,
+  functionalPassed: runtimeImagePolicy.functionalPassed === true && generatedTestsPassed &&
+    doctorBlockedWithoutCredentials,
   doctor: {
     expectedExitCode: 5,
-    disposition: "blocked-without-credentials",
+    observedExitCode: doctorExitCode,
+    disposition: doctorBlockedWithoutCredentials ? "blocked-without-credentials" : "unexpected",
   },
   docker: {
     image,
