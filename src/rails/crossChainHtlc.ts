@@ -1062,6 +1062,7 @@ function collectRefs(
   snapshot: Readonly<HtlcLedgerSnapshot>,
   prepared: ReadonlyMap<HtlcAction, Readonly<HtlcPreparedAction>>,
   unreported: readonly HtlcAction[] = [],
+  includeRetained: readonly HtlcAction[] = [],
 ): readonly Readonly<HtlcTxRef>[] {
   const refs: HtlcTxRef[] = [];
   for (const action of [
@@ -1076,7 +1077,7 @@ function collectRefs(
     const retained = prepared.get(action);
     if (item && item.state !== "absent" && retained && sameRef(item.txRef, retained.txRef)) {
       refs.push(Object.freeze({ ...item.txRef }));
-    } else if (!item && retained && unreported.includes(action)) {
+    } else if (retained && ((!item && unreported.includes(action)) || includeRetained.includes(action))) {
       refs.push(Object.freeze({ ...retained.txRef }));
     }
   }
@@ -1489,10 +1490,11 @@ export async function advanceCrossChainHtlc(
   const operatorAlert = (
     reason: HtlcOperatorAlertReason,
     latest: Readonly<HtlcLedgerSnapshot>,
+    includeRetained: readonly HtlcAction[] = [],
   ): CrossChainHtlcProgress => ({
     status: "operator-alert",
     reason,
-    txRefs: collectRefs(latest, prepared),
+    txRefs: collectRefs(latest, prepared, [], includeRetained),
   });
   let destinationClaimCutoffReached = false;
   let destinationClaimReplacementBlocked = false;
@@ -1998,13 +2000,15 @@ export async function advanceCrossChainHtlc(
   }
 
   if (checkpoint) {
+    // Recovery progress and alerts name the retained destination lock even
+    // when its claimed record is omitted or authenticated absent.
     // The reveal is final, so the payer holds the destination funds. Past the
     // source expiry the payee can no longer claim the source, and refunding it
     // would give the payer both legs: the source is never refunded, and a
     // person must settle the payee's leg. A source claim that is pending here
     // and later reaches finality in time still settles on a later call.
     if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
-      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot);
+      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"]);
     }
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
@@ -2019,7 +2023,7 @@ export async function advanceCrossChainHtlc(
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
-          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot)
+          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"])
           : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
       }
       snapshot = advanced;
@@ -2069,7 +2073,7 @@ export async function advanceCrossChainHtlc(
       status: "settle-asymmetric",
       reason: "dest-revealed-source-unclaimed",
       recoveryDeadline: checkpoint.sourceExpiry,
-      txRefs: collectRefs(snapshot, prepared),
+      txRefs: collectRefs(snapshot, prepared, [], ["destination-lock"]),
       finalityObservedAt: checkpoint.finalityObservedAt,
     };
   }
