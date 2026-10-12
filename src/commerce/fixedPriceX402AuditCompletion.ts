@@ -194,6 +194,25 @@ export interface CompletedTwoSidedSessionDeps {
   ) =>
     | Promise<FixedPriceX402AuditVerificationDisposition>
     | FixedPriceX402AuditVerificationDisposition;
+  /** Bounds the wait for both copies; see `CompletedTwoSidedSessionDeadline`. */
+  deadline?: Readonly<CompletedTwoSidedSessionDeadline>;
+}
+
+/** Default bound on the wait for both copies of a completed session. */
+export const COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS = 60_000;
+
+/**
+ * How long the gate waits for both copies' verification. At the deadline an
+ * authoritative rejection already observed is reported; without one the gate
+ * throws `IndeterminateSubstrateError`, which is retryable. Whatever settles
+ * later changes nothing. `start` arms the deadline, calls `expire` when it
+ * passes and returns a function that disarms it; inject it to drive the
+ * clock. The default is an unreferenced `setTimeout`.
+ */
+export interface CompletedTwoSidedSessionDeadline {
+  /** Defaults to `COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS`. */
+  timeoutMs?: number;
+  start?(expire: () => void, timeoutMs: number): () => void;
 }
 
 /** Backwards-compatible profile name retained for existing x402 callers. */
@@ -205,6 +224,7 @@ export interface FixedPricePayDemAuditCompletionDeps
   extends CompletedTwoSidedSessionDeps {}
 
 interface CapturedAuditCompletionDeps {
+  deadline: Readonly<Required<CompletedTwoSidedSessionDeadline>>;
   sellerFinalizationProvider: SellerBundleFinalizationReadProvider;
   sellerMapping: "pure" | "write-input";
   bundleCopyVerifier: BundleCopyDeps;
@@ -416,8 +436,68 @@ function captureCompletedInput(value: unknown): CompletedTwoSidedSessionInput {
   return retained as unknown as CompletedTwoSidedSessionInput;
 }
 
+function startDeadlineTimer(expire: () => void, timeoutMs: number): () => void {
+  const timer = setTimeout(expire, timeoutMs);
+  (timer as { unref?: () => unknown }).unref?.();
+  return () => clearTimeout(timer);
+}
+
+function captureDeadline(source: object): Readonly<Required<CompletedTwoSidedSessionDeadline>> {
+  const label = "completed two-sided session dependencies.deadline";
+  if (!("deadline" in source)) {
+    return Object.freeze({
+      timeoutMs: COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
+      start: startDeadlineTimer,
+    });
+  }
+  const deadline = objectBoundary(
+    dataProperty<unknown>(source, "deadline", "completed two-sided session dependencies"),
+    label,
+  );
+  const timeoutMs = "timeoutMs" in deadline
+    ? dataProperty<unknown>(deadline, "timeoutMs", label)
+    : COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS;
+  if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new DacsError(`${label}.timeoutMs is malformed`);
+  }
+  return Object.freeze({
+    timeoutMs,
+    start: method<NonNullable<CompletedTwoSidedSessionDeadline["start"]>>(
+      deadline,
+      "start",
+      label,
+      true,
+    ) ?? startDeadlineTimer,
+  });
+}
+
+// Settles both verifications, or stops at the deadline. A verification still
+// pending then is reported as undefined; whatever it does later is ignored.
+async function settleWithin<T>(
+  verifications: readonly [Promise<T>, Promise<T>],
+  deadline: Readonly<Required<CompletedTwoSidedSessionDeadline>>,
+): Promise<[PromiseSettledResult<T> | undefined, PromiseSettledResult<T> | undefined]> {
+  const settled: [PromiseSettledResult<T> | undefined, PromiseSettledResult<T> | undefined] =
+    [undefined, undefined];
+  const tracked = verifications.map((verification, index) => verification.then(
+    (value) => { settled[index] = { status: "fulfilled", value }; },
+    (reason: unknown) => { settled[index] = { status: "rejected", reason }; },
+  ));
+  let disarm = (): void => undefined;
+  const expired = new Promise<void>((resolve) => {
+    disarm = deadline.start(() => resolve(), deadline.timeoutMs);
+  });
+  try {
+    await Promise.race([Promise.all(tracked), expired]);
+  } finally {
+    disarm();
+  }
+  return [settled[0], settled[1]];
+}
+
 function captureDeps(value: unknown): CapturedAuditCompletionDeps {
   const source = objectBoundary(value, "completed two-sided session dependencies");
+  const deadline = captureDeadline(source);
   const readBundleCopy = method<CompletedTwoSidedSessionDeps["readBundleCopy"]>(
     source,
     "readBundleCopy",
@@ -467,6 +547,7 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
     "seller finalization provider",
   ));
   return Object.freeze({
+    deadline,
     sellerFinalizationProvider: provider,
     sellerMapping,
     bundleCopyVerifier,
@@ -722,8 +803,10 @@ export async function verifyCompletedTwoSidedSession(
   // Both copies settle before either rejection is reported: an unavailable
   // read of one copy must not hide an answer about the other that arrives
   // later. Any other rejection is reported before an unavailable read, then
-  // the buyer copy's before the seller's.
-  const [buyerResult, sellerResult] = await Promise.allSettled([
+  // the buyer copy's before the seller's. A read that never settles is cut
+  // off at the deadline: a rejection already observed is reported as above,
+  // and without one the result is indeterminate.
+  const [buyerResult, sellerResult] = await settleWithin([
     verifyCopy(retained.copies.buyer, {
       role: "buyer",
       jobId: retained.jobId,
@@ -736,11 +819,17 @@ export async function verifyCompletedTwoSidedSession(
       buyer: retained.buyer,
       seller: retained.seller,
     }, capturedDeps),
-  ]);
-  if (buyerResult.status === "rejected" || sellerResult.status === "rejected") {
+  ], capturedDeps.deadline);
+  if (buyerResult?.status === "rejected" || sellerResult?.status === "rejected") {
     const reasons = [buyerResult, sellerResult]
-      .flatMap((result): unknown[] => result.status === "rejected" ? [result.reason] : []);
+      .flatMap((result): unknown[] => result?.status === "rejected" ? [result.reason] : []);
     throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
+  }
+  if (buyerResult === undefined || sellerResult === undefined) {
+    throw new IndeterminateSubstrateError(
+      `completed ${buyerResult === undefined ? "buyer" : "seller"} bundle copy verification ` +
+        `did not settle within ${capturedDeps.deadline.timeoutMs} ms`,
+    );
   }
   const buyerCopy = buyerResult.value;
   const sellerCopy = sellerResult.value;

@@ -400,10 +400,20 @@ or BundleBinding that Demos returns with invalid content, an invalid receipt or
 a failed authentication is immutable, so it also goes to operator action
 instead of being retried. Demos's answer against one copy goes to operator
 action even when a read of the other copy went unanswered in the same check,
-whichever arrives first: both copies settle before the check decides.
+whichever arrives first: both copies settle before the check decides. A read
+that never settles is cut off at a deadline (`completionDeadline` on the buyer
+audit options, 60 seconds by default): Demos's answer already seen still goes
+to operator action, otherwise the track stays `indeterminate` and is retried,
+and an answer that arrives later changes nothing.
 For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
 request. A connection error, a timeout or any other HTTP status (a 5xx, a
 CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
+
+Known operational risk, not yet tested against a live node: a plain HTTP 404
+from a proxy, a CDN or a Demos node without the requested handler cannot be
+told apart from Demos's own answer. It is taken as answered, so the audit
+fails permanently (operator action) instead of being retried. Put nothing in
+front of the Demos RPC endpoint that answers 404 on its own.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
