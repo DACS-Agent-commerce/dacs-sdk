@@ -3,7 +3,8 @@
   "source": {
     "commit": "35e6ce0aac99f4d053d14c8d0d1e68264f50c285",
     "job": "114652354976",
-    "evidence": "ci-228-35e6ce0/audit-policy.json"
+    "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/runs/114652354976",
+    "evidence": "artifact dacs-registry-container-9dd394cb7d3a6db6bf767bf9c35fb24f6aae5d27, audit-policy.json"
   },
   "advisoryIds": [
     "GHSA-23hp-3jrh-7fpw",
@@ -95,12 +96,14 @@
     "GHSA-xq7p-g2vc-g82p",
     "GHSA-xx6v-rp6x-q39c"
   ],
+  "assessedAdvisories": [],
   "policyFindings": {
     "source": {
       "commit": "b7b180f98f27933e0a9153e93161981f2ce2b58a",
       "run": "38214792229/1",
       "job": "clean registry consumer (Node 20 / Docker)",
-      "evidence": "ci-b7b180f/clean-registry-artifact"
+      "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38214792229/attempts/1",
+      "evidence": "artifact dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1"
     },
     "gitDependencies": [
       {

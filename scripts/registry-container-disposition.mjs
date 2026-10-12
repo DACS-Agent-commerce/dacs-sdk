@@ -1,10 +1,16 @@
 #!/usr/bin/env node
-// Required acceptance fails (exit 3) on any advisory ID missing from the #191
-// baseline; observing only listed IDs, or a subset of them, is baseline-only
-// (exit 4). The scheduled/manual drift workflow reports unlisted IDs daily.
-// Neither classification permits production publication while #191 remains
-// blocked.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// Observing only advisory IDs listed in the #191 baseline, or a subset of
+// them, is baseline-only (exit 4). An ID missing from the baseline fails closed
+// (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
+// acceptance job sets: there it is a warning, so an advisory newly published
+// against an unchanged tree cannot turn every PR red. The scheduled drift job,
+// manual runs and release paths fail. An observed ID recorded in
+// `assessedAdvisories` (a transitive advisory assessed for reachability, as
+// SECURITY.md's audit policy allows) does not block the gate; one on a direct
+// dependency at high or critical severity always does. Nothing here permits
+// production publication while #191 remains blocked.
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -17,20 +23,33 @@ function validIds(ids) {
     new Set(ids).size === ids.length;
 }
 
-export function classifyRegistryAudit(observedAdvisories, baseline) {
+// Each assessment names where its reachability assessment is recorded.
+const validAssessments = entries => Array.isArray(entries) && entries.every(entry => typeof entry === "object" &&
+  entry !== null && typeof entry.id === "string" && advisoryId.test(entry.id) && typeof entry.assessment === "string" &&
+  entry.assessment.trim() !== "") && new Set(entries.map(entry => entry.id)).size === entries.length;
+
+// `directAdvisories` are the observed IDs that npm reports at high or critical
+// severity on a direct dependency of the consumer.
+export function classifyRegistryAudit(observedAdvisories, baseline, directAdvisories = []) {
+  const assessments = baseline?.assessedAdvisories ?? [];
   if (baseline?.schema !== "dacs-registry-audit-baseline/v1" ||
       typeof baseline.source?.commit !== "string" || !/^[a-f0-9]{40}$/.test(baseline.source.commit) ||
       typeof baseline.source?.job !== "string" || !baseline.source.job ||
-      !validIds(baseline.advisoryIds) || baseline.advisoryIds.length === 0 || !validIds(observedAdvisories)) {
+      !validIds(baseline.advisoryIds) || !validAssessments(assessments) ||
+      assessments.some(({ id }) => baseline.advisoryIds.includes(id)) || !validIds(observedAdvisories) ||
+      !validIds(directAdvisories) || directAdvisories.some(id => !observedAdvisories.includes(id))) {
     throw new Error("malformed registry audit baseline or observed advisory IDs");
   }
   const known = new Set(baseline.advisoryIds);
+  const assessed = new Set(assessments.map(({ id }) => id));
   return { observedAdvisories: [...observedAdvisories].sort(),
-    unlistedAdvisories: observedAdvisories.filter(id => !known.has(id)).sort() };
+    unlistedAdvisories: observedAdvisories.filter(id => !known.has(id) && !assessed.has(id)).sort(),
+    assessedAdvisories: observedAdvisories.filter(id => assessed.has(id)).sort(),
+    directAdvisories: [...directAdvisories].sort() };
 }
 
 function summaryAudit(summary, baseline) {
-  const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline);
+  const policy = classifyRegistryAudit(summary.audit?.observedAdvisories, baseline, summary.audit?.directAdvisories ?? []);
   if (JSON.stringify(policy.unlistedAdvisories) !== JSON.stringify(summary.audit?.unlistedAdvisories)) {
     throw new Error("summary advisory classification does not match baseline");
   }
@@ -38,6 +57,13 @@ function summaryAudit(summary, baseline) {
 }
 
 export function registryAuditDriftDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+  // A run that stopped before its audit was classified has no advisory IDs to
+  // compare: report where and why it stopped, not a malformed baseline.
+  if (summary?.schema === ACCEPTANCE_SUMMARY_SCHEMA && summary.complete === false) {
+    const failureClass = FAILURE_CLASSES.includes(summary.failureClass) ? summary.failureClass : "functional";
+    return { exitCode: 1, evaluated: false, failureClass, message: "Advisory-ID drift was not evaluated: acceptance stopped " +
+      `at stage ${String(summary.failedStage)} (${failureClass} failure${failureClass === "network" ? "; rerun the workflow" : ""})` };
+  }
   try {
     const policy = summaryAudit(summary, baseline);
     return { exitCode: policy.unlistedAdvisories.length ? 3 : 0,
@@ -45,10 +71,114 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
   } catch (error) { return { exitCode: 3, message: String(error) }; }
 }
 
-// Why a run failed: an unreachable registry or audit endpoint (or 5xx after
-// retries), a security-policy result, or the rehearsal itself.
+// The consumer installs registry packages only. This is an allowlist: every
+// installed (non-root) lock entry resolves to a tarball under the configured
+// registry's origin and path and carries an integrity, and every dependency
+// spec in the manifest and the lock is a registry spec (a version, range or
+// tag, or an npm: alias of one). Anything else is a violation: Git URLs and
+// GitHub/GitLab shorthands with or without a ref, tarballs on any other host
+// (codeload.github.com included), file:, link:, paths, entries without
+// `resolved` or `integrity`, and `overrides`.
+const registryRange = "[\\w.*^~<>=|+ -]*";
+const registrySpec = new RegExp(`^(?:${registryRange}|npm:(?:@[\\w.-]+/)?[\\w.-]+(?:@${registryRange})?)$`);
+const tarballFile = /\.(?:tgz|tar|tar\.gz)$/i;
+const sri = /^(?:sha512|sha384|sha256|sha1)-[A-Za-z0-9+/]+={0,2}$/;
+const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
+const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
+
+// The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
+// script starts (reached as host.docker.internal from a non-Linux container).
+export function consumerRegistry(value) {
+  const registry = new URL(value);
+  if (!(registry.protocol === "https:" || (registry.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "host.docker.internal"].includes(registry.hostname)))) {
+    throw new Error(`registry dependency policy needs an HTTPS or loopback registry, not ${value}`);
+  }
+  return { origin: registry.origin, path: registry.pathname.endsWith("/") ? registry.pathname : registry.pathname + "/" };
+}
+
+export function registryDependencyViolations({ manifest, lock, registry }) {
+  const { origin, path } = consumerRegistry(registry);
+  const violations = [];
+  const specs = (location, owner) => {
+    for (const field of specFields) {
+      for (const [name, value] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+        if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
+          violations.push({ location, field: `${field}.${name}`, value });
+        }
+      }
+    }
+  };
+  specs("package.json", manifest);
+  for (const [location, owner] of [["package.json", manifest], ["", lock?.packages?.[""]]]) {
+    if (owner?.overrides !== undefined) violations.push({ location, field: "overrides", value: JSON.stringify(owner.overrides) });
+  }
+  if (!isPlainObject(lock?.packages)) return [...violations, { location: "package-lock.json", field: "packages", value: null }];
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) { violations.push({ location, field: "entry", value: JSON.stringify(entry) }); continue; }
+    specs(location, entry);
+    if (location === "") continue;
+    let url = null;
+    try { url = typeof entry.resolved === "string" ? new URL(entry.resolved) : null; } catch { /* not a URL */ }
+    if (entry.link === true || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+      violations.push({ location, field: entry.link === true ? "link" : "resolved", value: entry.resolved ?? null });
+    }
+    if (typeof entry.integrity !== "string" || !sri.test(entry.integrity)) {
+      violations.push({ location, field: "integrity", value: entry.integrity ?? null });
+    }
+  }
+  return violations;
+}
+
+// Every installed copy of a candidate package, top-level, nested or aliased,
+// must be the packed release-set tarball that release-provenance.json records.
+export function candidateIntegrityErrors({ lock, registry, candidates }) {
+  const { origin, path } = consumerRegistry(registry);
+  const packages = isPlainObject(lock?.packages) ? lock.packages : {};
+  const errors = [];
+  for (const { name, integrity } of candidates) {
+    const locations = Object.keys(packages).filter(location => location === "node_modules/" + name ||
+      location.endsWith("/node_modules/" + name) || packages[location]?.name === name);
+    if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
+    for (const location of locations) {
+      const entry = packages[location];
+      let url = null;
+      try { url = new URL(entry?.resolved); } catch { /* not a URL */ }
+      if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+        errors.push("candidate package did not resolve through the isolated registry: " + location);
+      } else if (entry.integrity !== integrity) {
+        errors.push("candidate package integrity does not match the packed tarball: " + location +
+          " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+      }
+    }
+  }
+  return errors;
+}
+
+// Why a run failed: an unreachable registry or audit endpoint (a timeout, or
+// 5xx/408/429 after retries), a security-policy result, or the rehearsal itself.
 export const FAILURE_CLASSES = ["network", "policy", "functional"];
-const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234])\b|socket hang up|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
+// npm prints `network timeout at:` (code FETCH_ERROR) for a request timeout and
+// `Response timeout while trying to fetch` for a body timeout.
+const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
+
+// When the audit endpoint fails, `npm audit --json` writes npm's audit error
+// object (lib/utils/audit-error.js) instead of a report: the HTTP answer's
+// `statusCode` and message, or a fetch error's message with no status. A
+// timeout, an unreachable endpoint and 5xx/408/429 are transient (network);
+// any other answer means the audit could not be run (functional). Neither is a
+// policy result. Returns null for anything else.
+export function auditEndpointError(text) {
+  let value;
+  try { value = JSON.parse(text ?? ""); } catch { return null; }
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" ||
+      "auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value) return null;
+  const status = Number.isInteger(value.statusCode) ? value.statusCode : null;
+  if (status === null && !/^(?:network timeout at: |request to \S+ failed, reason: )/.test(value.message)) return null;
+  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429;
+  return { transient, statusCode: status, message: value.message.replace(/\s+/g, " ").slice(0, 300) };
+}
+
 // The evidence each network-dependent stage leaves behind. Consumer output
 // also holds generated-test logs, so only npm and Docker errors count there.
 const stageEvidence = {
@@ -62,6 +192,13 @@ const stageEvidence = {
 const policyStages = new Set(["dependency-policy", "audit-policy"]);
 
 export function classifyAcceptanceFailure({ stage, read }) {
+  if (stage === "audit-policy") {
+    const endpoint = auditEndpointError(read("npm-audit.json"));
+    if (endpoint) {
+      return { failureClass: endpoint.transient ? "network" : "functional",
+        evidence: [`npm-audit.json: audit endpoint error: ${endpoint.message}`] };
+    }
+  }
   const evidence = [];
   for (const [name, relevant] of stageEvidence[stage] ?? []) {
     for (const line of (read(name) ?? "").split("\n")) {
@@ -181,7 +318,7 @@ export function scanLockEngines(lock, versions) {
   const violations = [];
   let evaluatedPackages = 0;
   for (const [location, entry] of errors.length ? [] : Object.entries(packages)) {
-    if (typeof entry !== "object" || entry === null) { errors.push(`${location}: unreadable lock entry`); continue; }
+    if (!isPlainObject(entry)) { errors.push(`${location}: unreadable lock entry`); continue; }
     // npm checks only packages that are not optional.
     if (entry.optional === true) continue;
     const engines = entry.engines;
@@ -269,7 +406,14 @@ export function classifyPolicyChecks(summary, baseline) {
   };
 }
 
-export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+// "fail" (the default) or "warn": what an advisory ID outside the baseline does.
+export const UNLISTED_ADVISORY_POLICIES = ["fail", "warn"];
+
+export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8")),
+  { unlistedAdvisories = "fail" } = {}) {
+  if (!UNLISTED_ADVISORY_POLICIES.includes(unlistedAdvisories)) {
+    throw new Error(`unknown unlisted-advisory policy ${JSON.stringify(unlistedAdvisories)}`);
+  }
   if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) {
     return { exitCode: 1, failureClass: "functional", message: "registry/container acceptance summary has an unexpected schema" };
   }
@@ -286,11 +430,19 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   catch (error) { return { exitCode: 3, failureClass: "policy", message: String(error) }; }
   const gate = summary.securityGate;
   const checks = classifyPolicyChecks(summary, baseline);
-  // An advisory ID outside the baseline blocks, even one newly published
-  // against a dependency the tree already had.
-  const audit = gate?.auditExitCode === 0 && policy.observedAdvisories.length === 0 ? "passed"
-    : policy.observedAdvisories.length > 0 && policy.unlistedAdvisories.length === 0 &&
-      [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
+  const observed = policy.observedAdvisories.length;
+  // SECURITY.md's audit policy: a transitive advisory assessed for reachability
+  // does not block; a high/critical advisory on a direct dependency always does
+  // (an older summary that does not record directness cannot show otherwise).
+  const directKnown = Array.isArray(summary.audit?.directAdvisories);
+  const assessedDirect = policy.assessedAdvisories.filter(id => !directKnown || policy.directAdvisories.includes(id));
+  // An ID outside the baseline, even one newly published against a dependency
+  // the tree already had, is "unlisted" under the pull-request warn policy and
+  // blocks otherwise.
+  const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode === 1 && observed === 0) ||
+      assessedDirect.length > 0 ? "blocked"
+    : policy.unlistedAdvisories.length > 0 ? (unlistedAdvisories === "warn" ? "unlisted" : "blocked")
+    : observed > policy.assessedAdvisories.length ? "baseline" : "passed";
   const states = { ...checks, audit };
   const named = state => Object.keys(states).filter(name => states[name] === state);
   if (named("passed").length === Object.keys(states).length && gate.passed === true) {
@@ -298,12 +450,17 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   }
   if (named("blocked").length === 0) {
     return { exitCode: 4, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed; " +
-      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})`, ...policy };
+      "production publication remains blocked" +
+      (named("baseline").length ? ` by #191 baseline findings (${named("baseline").join(", ")})` : "") +
+      (audit === "unlisted" ? `; advisory IDs not in the #191 baseline (a pull-request warning; the scheduled drift job ` +
+        `and release paths fail on them): ${policy.unlistedAdvisories.join(", ")}` : ""), ...policy };
   }
   return { exitCode: 3, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed, " +
     `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
     (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
-      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : ""),
+      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : "") +
+    (assessedDirect.length ? `; assessed advisories that are high or critical on a direct dependency (or of unrecorded ` +
+      `directness), which an assessment cannot accept: ${assessedDirect.join(", ")}` : ""),
     ...policy };
 }
 
@@ -322,17 +479,56 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       throw new Error("npm audit did not produce vulnerability metadata");
     }
     const ids = new Set();
+    const direct = new Set();
     for (const vulnerability of Object.values(audit.vulnerabilities)) {
       for (const via of Array.isArray(vulnerability?.via) ? vulnerability.via : []) {
         if (typeof via === "object" && via !== null) {
           if (typeof via.url !== "string") throw new Error("npm audit advisory URL missing");
-          ids.add(via.url.replace(/^https:\/\/github\.com\/advisories\//, ""));
+          const id = via.url.replace(/^https:\/\/github\.com\/advisories\//, "");
+          ids.add(id);
+          // The advisory is the direct dependency's own (a `via` object), not
+          // one inherited from its dependencies (a `via` name).
+          if (vulnerability.isDirect === true && ["high", "critical"].includes(via.severity)) direct.add(id);
         }
       }
     }
-    const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")));
-    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy }, null, 2) + "\n");
+    const policy = classifyRegistryAudit([...ids], JSON.parse(readFileSync(baselinePath, "utf8")), [...direct]);
+    // Passed only if every observed advisory is an assessed transitive one; the
+    // summary also requires npm audit's exit status to be 0 or 1.
+    const passed = policy.assessedAdvisories.length === policy.observedAdvisories.length &&
+      policy.assessedAdvisories.every(id => !direct.has(id));
+    writeFileSync(output, JSON.stringify({ schema: "dacs-registry-audit-policy/v1", observed: counts, ...policy, passed },
+      null, 2) + "\n");
     process.stdout.write(JSON.stringify(counts) + "\n");
+  } else if (mode === "--dependency-policy") {
+    const [project, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (!project || !registry || !report || !releaseSet || !version) {
+      throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
+    }
+    const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
+    for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm",
+      "@x402/fetch", "better-sqlite3", "viem"]) {
+      if (typeof manifest.dependencies?.[name] !== "string") throw new Error("dual-rail consumer is missing " + name);
+    }
+    // The packed tarball and its release-provenance.json record must agree
+    // before either is compared with the consumer's lock.
+    const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+    if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
+    const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"].map(name => {
+      const archive = join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
+      const integrity = "sha512-" + createHash("sha512").update(readFileSync(archive)).digest("base64");
+      const recorded = provenance.packages?.[name]?.integrity;
+      if (recorded !== integrity) {
+        throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
+      }
+      return { name, integrity };
+    });
+    const errors = candidateIntegrityErrors({ lock, registry, candidates });
+    if (errors.length) throw new Error(errors.join("\n"));
+    const violations = registryDependencyViolations({ manifest, lock, registry });
+    writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
+      violations }, null, 2) + "\n");
   } else if (mode === "--policy-findings" && input && output) {
     const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
     writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
@@ -350,15 +546,32 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const record = mode === "--record";
     const summaryPath = drift || record ? input : mode;
     const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
-    const result = drift ? registryAuditDriftDisposition(summary) : registryContainerDisposition(summary);
+    // Unset means fail closed; only the pull_request acceptance job sets warn.
+    const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
+    const result = drift ? registryAuditDriftDisposition(summary)
+      : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
     if (record) {
       const { exitCode, failureClass, message, checks } = result;
       writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
-        disposition: { exitCode, failureClass, message, checks } }, null, 2) + "\n");
+        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } }, null, 2) + "\n");
     }
-    // Required acceptance names unlisted IDs in its error; drift warns.
+    // The pull-request re-check of exit 4 turns unlisted IDs into a warning and
+    // a step-summary line; failing acceptance names them in its error.
+    if (!drift && !record && result.exitCode === 4 && result.unlistedAdvisories?.length) {
+      const ids = result.unlistedAdvisories.join(", ");
+      process.stdout.write(`::warning title=Advisory IDs outside the #191 baseline::${ids}. Pull requests only warn; ` +
+        "the scheduled drift job and release paths fail until they are reviewed and recorded in " +
+        "scripts/registry-container-audit-baseline.json and .md.\n");
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Advisory IDs outside the #191 baseline (warning on this ` +
+          `pull request; the scheduled drift job and release paths fail on them): ${ids}\n`);
+      }
+    }
     if (drift && result.unlistedAdvisories?.length) {
       process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
+    }
+    if (drift && result.evaluated === false) {
+      process.stdout.write(`::warning title=Registry audit advisory drift::${result.message}\n`);
     }
     if (!drift) annotate(result);
     (result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.message}\n`);

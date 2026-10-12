@@ -46,14 +46,18 @@ jobs:
       - name: Run registry-shaped Linux and Docker acceptance
         # Exit 4 means the functional rehearsal passed and the release security
         # gate is blocked only by findings recorded exactly in the #191
-        # baseline, including every observed advisory ID. Production
-        # publication stays blocked without failing every pull request; any
-        # other failure, including exit 3 for an unlisted advisory, still fails.
-        # Any command can exit 4 under set -e, so status 4 is waived only when
-        # the written summary independently re-checks as baseline-only.
-        # acceptance-summary.json records failureClass: network, policy or
-        # functional.
+        # baseline. Production publication stays blocked without failing every
+        # pull request; any other failure still fails. An advisory ID outside
+        # the baseline, even one newly published against an unchanged tree, is
+        # a warning and a step-summary line on pull_request only; every other
+        # event (the scheduled drift job, manual and release runs) fails closed
+        # on it with exit 3. Any command can exit 4 under set -e, so status 4
+        # is waived only when the written summary independently re-checks as 4
+        # under the same policy. acceptance-summary.json records failureClass:
+        # network, policy or functional.
         run: |
+          export DACS_UNLISTED_ADVISORIES=fail
+          if [ "${GITHUB_EVENT_NAME-}" = pull_request ]; then DACS_UNLISTED_ADVISORIES=warn; fi
           status=0
           npm run acceptance:registry-container -- --output-dir registry-container-artifacts || status=$?
           if [ "$status" -eq 4 ]; then
@@ -74,8 +78,8 @@ jobs:
 
       - name: Check advisory-ID drift
         # Runs whenever a summary exists, so a non-audit failure above cannot
-        # mask drift. Acceptance above already fails on an unlisted ID; this
-        # step fails only in the scheduled/manual drift workflow.
+        # mask drift. On pull_request both acceptance and this step only warn
+        # on an unlisted ID; in the scheduled/manual drift workflow both fail.
         if: always()
         env:
           ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}

@@ -1,0 +1,3 @@
+npm error code FETCH_ERROR
+npm error errno FETCH_ERROR
+npm error network timeout at: http://127.0.0.1:38287/left-pad
