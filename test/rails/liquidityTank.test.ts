@@ -159,6 +159,26 @@ function completed(
   };
 }
 
+/** The committed expiry of `completed(…, finalityObservedAt, recoveryDeadline)`: late, with its evidence. */
+function releasedLate(finalityObservedAt: number, recoveryDeadline = RECOVERY_DEADLINE_MS) {
+  return {
+    status: "failed",
+    errorClass: "failed-substrate",
+    reason: "tank-released-after-recovery-deadline",
+    reputationNeutral: true,
+    txRef: {
+      kind: "liquidity-tank",
+      bridgeId: BRIDGE_ID,
+      sourceChainId: 11_155_111,
+      destChainId: 80_002,
+      lockTxHash: "source-lock-tx",
+      releaseTxHash: "destination-release-tx",
+      recoveryDeadline,
+    },
+    finalityObservedAt,
+  };
+}
+
 function harness(initial?: LiquidityTankObservation) {
   const intent = createLiquidityTankIntent(authority());
   let observation: LiquidityTankObservation = initial ?? empty(intent.operationHash);
@@ -1057,12 +1077,7 @@ describe("advanceLiquidityTankSettlement", () => {
       await expect(advanceLiquidityTankSettlement({
         ...run.shared,
         owner: `direct-expiry-${_label}`,
-      })).resolves.toEqual({
-        status: "failed",
-        errorClass: "failed-substrate",
-        reason: "tank-locked-unreleased-recovery-expired",
-        reputationNeutral: true,
-      });
+      })).resolves.toEqual(releasedLate(finalityObservedAt));
       expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
       expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
         expectedObservation: expect.objectContaining({ status: "empty" }),
@@ -1081,10 +1096,7 @@ describe("advanceLiquidityTankSettlement", () => {
       await expect(advanceLiquidityTankSettlement({
         ...run.shared,
         owner: `direct-expiry-retry-${_label}`,
-      })).resolves.toMatchObject({
-        status: "failed",
-        reason: "tank-locked-unreleased-recovery-expired",
-      });
+      })).resolves.toEqual(releasedLate(finalityObservedAt));
       expect(recordRecoveryExpired).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
       expect(h.observe).not.toHaveBeenCalled();
@@ -1540,12 +1552,7 @@ describe("advanceLiquidityTankSettlement", () => {
     h.setObservation(completed(h.operationHash, finalityObservedAt));
 
     await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late-release-worker" }))
-      .resolves.toEqual({
-        status: "failed",
-        errorClass: "failed-substrate",
-        reason: "tank-locked-unreleased-recovery-expired",
-        reputationNeutral: true,
-      });
+      .resolves.toEqual(releasedLate(finalityObservedAt));
     expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
     expect(recordSettlement).not.toHaveBeenCalled();
   });
@@ -5017,12 +5024,7 @@ describe("round 10", () => {
       };
       run.setClock(D + 1_000);
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late", store }))
-        .resolves.toEqual({
-          status: "failed",
-          errorClass: "failed-substrate",
-          reason: "tank-locked-unreleased-recovery-expired",
-          reputationNeutral: true,
-        });
+        .resolves.toEqual(releasedLate(D, D));
       expect(recordSettlement).not.toHaveBeenCalled();
       expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
         observation: late, expectedObservation: late,
@@ -6108,5 +6110,68 @@ describe("final review, round 1", () => {
           status: "indeterminate", reason: "liquidity-tank-verifier-unavailable",
         });
       });
+  });
+  describe("finding 3: a late release is reported apart, with its evidence", () => {
+    test("a release finalized after the deadline commits failed-substrate and returns its txRef, now and on replay", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      const run = await lockDurably(store, h);
+      h.observe.mockClear();
+      h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS + 500));
+      run.setClock(RECOVERY_DEADLINE_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late-release" }))
+        .resolves.toEqual(releasedLate(RECOVERY_DEADLINE_MS + 500));
+      // The committed expiry is replayed from the store with the same evidence.
+      h.observe.mockClear();
+      run.setClock(RECOVERY_DEADLINE_MS + 5_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "after-restart" }))
+        .resolves.toEqual(releasedLate(RECOVERY_DEADLINE_MS + 500));
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      const claimed = await store.claim({
+        intent: createLiquidityTankIntent(authority()), owner: "inspector",
+        now: RECOVERY_DEADLINE_MS + 6_000, leaseDurationMs: 1,
+      });
+      expect(claimed).toMatchObject({
+        status: "recovery-expired",
+        observation: { status: "completed", finalityObservedAt: RECOVERY_DEADLINE_MS + 500 },
+      });
+    });
+
+    test("a late release is reported only once its expiry commits", async () => {
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      const run = await lockDurably(inner, h);
+      h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS + 500));
+      let refuse = true;
+      const store: LiquidityTankStore = {
+        ...inner,
+        recordRecoveryExpired: async (input) =>
+          refuse ? { status: "stale", reason: "stale-lease" } : inner.recordRecoveryExpired(input),
+      };
+      run.setClock(RECOVERY_DEADLINE_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "refused-write", store }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-recovery-expiry-persistence-uncertain" });
+      refuse = false;
+      run.setClock(RECOVERY_DEADLINE_MS + 2_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "committed", store }))
+        .resolves.toEqual(releasedLate(RECOVERY_DEADLINE_MS + 500));
+    });
+
+    test("an expiry without a release keeps the plain reason and carries no release evidence", async () => {
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const h = harness();
+      const run = await lockDurably(store, h);
+      h.setObservation(lockedPendingAt(h.operationHash, RECOVERY_DEADLINE_MS));
+      run.setClock(RECOVERY_DEADLINE_MS + 1);
+      const expired = {
+        status: "failed",
+        errorClass: "failed-substrate",
+        reason: "tank-locked-unreleased-recovery-expired",
+        reputationNeutral: true,
+      };
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expiry" })).resolves.toEqual(expired);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay" })).resolves.toEqual(expired);
+    });
   });
 });

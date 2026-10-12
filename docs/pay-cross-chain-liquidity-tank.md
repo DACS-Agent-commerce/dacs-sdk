@@ -134,6 +134,21 @@ wins; a failed completion write never triggers expiry in that call.
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
 
+**A late release is reported apart.** When the expiry evidence is a
+completion with `finalityObservedAt >= recoveryDeadline`, the core still
+commits reputation-neutral `failed-substrate`, as §9.5.5 requires, but returns
+the reason `tank-released-after-recovery-deadline` instead of
+`tank-locked-unreleased-recovery-expired`. That result carries `txRef`
+(bridge ID, chains, `lockTxHash`, `releaseTxHash`, `recoveryDeadline`) and
+`finalityObservedAt` from the authenticated completion, and every later claim
+on the committed expiry returns the same. The release reached the payee, so
+the buyer has paid: do not authorize another payment for the phase, and
+reconcile from that evidence. Once an expiry has committed from other
+evidence (a stale pending snapshot or a terminal failure), the core no longer
+reads the bridge for the phase, so a release that lands afterwards is not
+reported; read the bridge's record for the retained `bridgeId` before paying
+again.
+
 ## Timestamp units
 
 `preparedAt`, `observedAt`, `recoveryDeadline` and `finalityObservedAt` are

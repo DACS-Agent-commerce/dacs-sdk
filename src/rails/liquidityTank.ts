@@ -502,6 +502,24 @@ export type LiquidityTankProgress =
       errorClass: "permanent" | "failed-substrate";
       reason: string;
       reputationNeutral?: true;
+      /**
+       * Set exactly when `reason` is `tank-released-after-recovery-deadline`:
+       * the authenticated completion that finalized at or after
+       * `recoveryDeadline`. The phase is `failed-substrate`, but the release
+       * reached the payee, so the buyer has paid: do not authorize another
+       * payment for the phase, and reconcile from this evidence.
+       */
+      txRef?: Readonly<{
+        kind: "liquidity-tank";
+        bridgeId: string;
+        sourceChainId: number;
+        destChainId: number;
+        lockTxHash: string;
+        releaseTxHash: string;
+        recoveryDeadline: number;
+      }>;
+      /** Unix milliseconds; set exactly with `txRef`. */
+      finalityObservedAt?: number;
     }
   | {
       status: "settle-asymmetric";
@@ -1432,7 +1450,34 @@ function retainedStateRefusal(error: unknown): LiquidityTankProgress {
   };
 }
 
-function recoveryExpiredProgress(): LiquidityTankProgress {
+/**
+ * The committed expiry, from the authenticated evidence it committed. A
+ * completion finalized at or after the deadline is still `failed-substrate`,
+ * as DACS-4 §9.5.5 requires, but the release did reach the payee: it is
+ * reported apart, with the transaction evidence to reconcile from.
+ */
+function recoveryExpiredProgress(
+  intent: Readonly<LiquidityTankIntent>,
+  evidence: LiquidityTankRecoveryEvidence,
+): LiquidityTankProgress {
+  if (evidence.status === "completed") {
+    return {
+      status: "failed",
+      errorClass: "failed-substrate",
+      reason: "tank-released-after-recovery-deadline",
+      reputationNeutral: true,
+      txRef: Object.freeze({
+        kind: "liquidity-tank",
+        bridgeId: evidence.bridgeId,
+        sourceChainId: intent.sourceChainId,
+        destChainId: intent.destinationChainId,
+        lockTxHash: evidence.lockTxHash,
+        releaseTxHash: evidence.releaseTxHash,
+        recoveryDeadline: evidence.recoveryDeadline,
+      }),
+      finalityObservedAt: evidence.finalityObservedAt,
+    };
+  }
   return {
     status: "failed",
     errorClass: "failed-substrate",
@@ -1794,7 +1839,7 @@ export async function advanceLiquidityTankSettlement(
         claimNow < recoveryEvidenceDeadline(evidence)) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
     }
-    return recoveryExpiredProgress();
+    return recoveryExpiredProgress(intent, evidence);
   }
   if (claimStatus === "waiting") {
     const waitingClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "waiting" }>;
@@ -2067,7 +2112,7 @@ export async function advanceLiquidityTankSettlement(
       };
     }
     return stored
-      ? recoveryExpiredProgress()
+      ? recoveryExpiredProgress(intent, observation)
       : {
           status: "indeterminate",
           reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
