@@ -367,6 +367,8 @@ export function createScanningArtifactRepository(
   deps: ScanningArtifactRepositoryDeps,
 ): ScanningArtifactRepository {
   const { adapter, index, fetchPage, verifyArtifact } = deps;
+  // A missing verifier is a configuration fault, never a row verdict.
+  if (typeof verifyArtifact !== "function") throw new Error("verifyArtifact must be a function");
   const owner = normalizedBindingOwner(deps.expectedOwner);
   if (owner.length === 0) throw new Error("expectedOwner must not be empty");
   const maxRowAttempts = deps.maxRowAttempts ?? DEFAULT_MAX_ROW_ATTEMPTS;
@@ -480,11 +482,11 @@ export function createScanningArtifactRepository(
       },
       contentHashOf: contentHash,
       verifySignature: async (record, binding) => {
-        if (anchor.kind === "unknown" || typeof verifyArtifact !== "function") {
-          row.unsupported = true;
-          throw new Error("no artifact verifier for this anchor kind");
-        }
         try {
+          // An unclassified kind is final through the same class as a verifier's.
+          if (anchor.kind === "unknown") {
+            throw new UnsupportedArtifactKindError("no artifact verifier for this anchor kind");
+          }
           return await verifyArtifact(record, binding, { ...anchor });
         } catch (e) {
           if (isUnsupportedKind(e)) row.unsupported = true;

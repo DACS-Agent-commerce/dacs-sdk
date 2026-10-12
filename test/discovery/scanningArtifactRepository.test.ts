@@ -474,16 +474,27 @@ describe("createScanningArtifactRepository (#54)", () => {
   });
 
   test.each([
-    ["throw", "indeterminate"], ["missing", "unverifiable"], ["truthy", "signature-invalid"],
+    ["throw", "indeterminate"], ["truthy", "signature-invalid"],
   ])("fails closed when verifier is %s", async (mode, status) => {
-    const verifyArtifact = mode === "missing" ? undefined
-      : mode === "truthy" ? () => ({})
+    const verifyArtifact = mode === "truthy" ? () => ({})
       : () => { throw new Error("verification unavailable"); };
     const fixture = setup(["a"], { verifyArtifact: verifyArtifact as unknown as ScanningArtifactRepositoryDeps["verifyArtifact"] });
     const result = await fixture.repo.scanPage();
     expect(result.results[0]?.outcome.status).toBe(status);
     expect(result.state.seen.has("stor-a")).toBe(status !== "indeterminate");
   });
+
+  // A configuration fault must not become a final unsupported-kind for every row.
+  test.each([undefined, null, true, "verify", {}])(
+    "refuses a non-function verifier (%j) at construction, before any fetch",
+    (verifyArtifact) => {
+      const fetchPage = vi.fn(async () => ({ entries: [row("a")], nextCursor: null }));
+      expect(() => setup(["a"], {
+        fetchPage, verifyArtifact: verifyArtifact as unknown as ScanningArtifactRepositoryDeps["verifyArtifact"],
+      })).toThrow("verifyArtifact must be a function");
+      expect(fetchPage).not.toHaveBeenCalled();
+    },
+  );
 
   test("documents thrown unavailable verification separately from completed false results", () => {
     const source = readFileSync(new URL("../../src/discovery/scanningArtifactRepository.ts", import.meta.url), "utf8");
@@ -526,6 +537,10 @@ describe("createScanningArtifactRepository (#54)", () => {
       throw Object.assign(new Error("503"), { code: "unsupported-kind" });
     }],
     ["a plain object carrying the unsupported-kind code", () => { throw { code: "unsupported-kind" }; }],
+    // Nor is the class name: only an instance from this package copy is final.
+    ["an error merely named UnsupportedArtifactKindError", () => {
+      throw Object.assign(new Error("v9"), { name: "UnsupportedArtifactKindError", code: "unsupported-kind" });
+    }],
   ])("unavailable verification (%s) stays retryable at the same row", async (_name, verify) => {
     const verifier = vi.fn(verify);
     const fixture = setup(["a", "b"], { verifyArtifact: verifier });
@@ -757,12 +772,16 @@ describe("createScanningArtifactRepository (#54)", () => {
   });
 
   test("unknown candidates remain unverifiable even with an accepting verifier", async () => {
+    const verifyArtifact = vi.fn(() => true);
     const fixture = setup(["a"], { index: createInMemoryBindingIndex([{ ...binding("a"), logicalAddress: "dacs9:unknown" }]),
-      verifyArtifact: () => true });
+      verifyArtifact });
     fixture.fetchPage.mockResolvedValue({ entries: [{ ...row("a"), logicalAddress: "dacs9:unknown" }], nextCursor: null });
-    expect((await fixture.repo.scanPage(undefined, { includeUnknown: true })).results[0]?.outcome).toMatchObject({
-      status: "unverifiable", code: "unsupported-kind",
+    const result = await fixture.repo.scanPage(undefined, { includeUnknown: true });
+    expect(result.results[0]?.outcome).toMatchObject({
+      status: "unverifiable", code: "unsupported-kind", reason: expect.stringContaining("no artifact verifier"),
     });
+    expect(result.state.seen.has("stor-a")).toBe(true);
+    expect(verifyArtifact).not.toHaveBeenCalled();
   });
 
   test("reads an overlapping filtered row when includeUnknown is later enabled", async () => {
