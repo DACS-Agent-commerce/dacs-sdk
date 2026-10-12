@@ -379,6 +379,8 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
     expect(readFileSync(join(output, "generated-package.json"), "utf8")).toBe('{"name":"one-click-agent"}\n');
     expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
+    // The runner's tool versions are evidence too; the stubs print nothing.
+    expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
   });
 
   it("finishes cleanup and keeps the original status when an evidence write fails", () => {

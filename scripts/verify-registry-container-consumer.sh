@@ -130,6 +130,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The runner supplies bash, curl, Docker and Compose; record their versions
+# with the evidence. A query that fails records its error and does not stop
+# the run.
+{
+  printf 'bash %s\n' "$BASH_VERSION"
+  curl --version
+  docker version --format 'docker client {{.Client.Version}}, server {{.Server.Version}}'
+  docker compose version
+} > "$artifact_stage/runner-tools.txt" 2>&1 || true
+
 cat > "$registry_config" <<'YAML'
 storage: /verdaccio/storage
 web:
