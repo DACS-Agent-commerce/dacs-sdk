@@ -56,6 +56,48 @@ const result = await advanceSolanaSplSettlement({
 });
 ```
 
+## Results
+
+`advanceSolanaSplSettlement` never rejects. Every refusal, store or adapter
+failure and out-of-contract value (an unknown status or disposition, a
+missing field, a throwing getter) is classified, and `reason` is always one of
+the fixed codes below. Adapter, RPC, store and caller text never appears in a
+result.
+
+- `settled`: the exact transfer reached the intent's commitment level and the
+  store recorded it.
+- `waiting`: resume the same authority later.
+- `indeterminate`: the phase may be paid, or a retained transfer may still
+  land. Resume the same authority, or resolve the store or adapter problem out
+  of band. A transfer that landed but does not match the intent
+  (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
+  is reported here, because funds may have moved.
+- `failed`: nothing under this settlement key can land **now**. The store
+  shows no retained attempt, or every retained attempt with complete, durably
+  acknowledged expiry evidence, and no new transfer was signed.
+
+`failed` is not terminal in the store. The record stays open, so a later call
+with the same authority (another worker, or a scheduled resume after the
+balance is topped up) can still sign and settle the phase. A caller must stop
+advancing this settlement key before it pays the phase by any other route.
+
+| Status | Reason codes |
+|---|---|
+| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-preflight-invalid` |
+| `failed` / `counterparty` | `solana-spl-payee-ata-missing`, `solana-spl-payee-ata-binding-mismatch` |
+| `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
+| `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
+| `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
+| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
+| `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
+| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+
+A store `conflict` (another binding already holds the same job, rail and
+phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
+hold a broadcast this call cannot inspect, so it must be resolved out of band.
+
+## Store and adapter contract
+
 `waiting` and `indeterminate` never authorize a fresh payment. Resume the same
 authority after the lease expires. A production store must atomically retain
 the signed wire bytes, lease generation, complete `SolanaSplExpiryEvidence` and

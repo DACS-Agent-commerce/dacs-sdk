@@ -1295,6 +1295,35 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
   });
 });
 
+describe("advanceSolanaSplSettlement failed is not terminal in the store", () => {
+  // Documented contract: `failed` means nothing can land now. The key stays
+  // open, so a caller must stop advancing it before paying another way.
+  test("a later call with the same authority can still sign and settle", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    await expect(advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        preflight: async () => preflight({ payerTokenBalanceBaseUnits: "0" }),
+        prepareSignedTransfer,
+      }),
+    }))).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "solana-spl-insufficient-token-balance",
+    });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    await expect(advanceSolanaSplSettlement(input({
+      store, owner: "worker-b", now: () => 2_000,
+      adapter: adapter({ prepareSignedTransfer }),
+    }))).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRef: { signature: SIGNATURE_1 } },
+    });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("advanceSolanaSplSettlement reason codes", () => {
   const SECRET = "secret=abc";
   const leaks = (result: unknown) => JSON.stringify(result).includes(SECRET);

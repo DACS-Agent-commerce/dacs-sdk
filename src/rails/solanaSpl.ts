@@ -261,6 +261,24 @@ export interface SolanaSplSettlementStore {
   }): Promise<SolanaSplStoreWrite>;
 }
 
+/**
+ * The result of one `advanceSolanaSplSettlement` call. `reason` is always a
+ * fixed `solana-spl-*` code; it never carries adapter, RPC, store or caller
+ * text.
+ *
+ * - `settled`: the exact transfer reached the intent's commitment and the
+ *   store recorded it.
+ * - `waiting`: try the same authority again later. It never authorizes a
+ *   fresh payment.
+ * - `indeterminate`: the phase may or may not be paid. A transfer may have
+ *   landed or may still land. It never authorizes a fresh payment; resolve it
+ *   by resuming the same authority or out of band.
+ * - `failed`: nothing under this settlement key can land *now*. Every
+ *   retained attempt has durable expiry evidence, and no new transfer was
+ *   signed. The store record stays open, so a later call with the same
+ *   authority can still sign and settle. Stop advancing this key before
+ *   paying the phase any other way.
+ */
 export type SolanaSplProgress =
   | { status: "waiting" | "indeterminate"; reason: string }
   | {
@@ -808,6 +826,20 @@ function readReconciliation(
   }
 }
 
+/**
+ * Advances one `pay-solana-spl` phase by at most one signed transfer.
+ *
+ * Never rejects: every refusal, store or adapter failure, and out-of-contract
+ * result is classified as a `SolanaSplProgress`. It reports `failed` only after
+ * the store has proved that nothing earlier under this key can land, and a
+ * landed transfer is never `failed`. A new transfer is signed only after the
+ * latest retained attempt has authenticated, durably acknowledged expiry
+ * evidence; a retained attempt is otherwise only rebroadcast byte-identically.
+ *
+ * `failed` is not terminal in the store. A caller that pays the phase another
+ * way must first stop advancing this settlement key. See `SolanaSplProgress`
+ * and `docs/pay-solana-spl.md` for the reason codes.
+ */
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
 ): Promise<SolanaSplProgress> {
