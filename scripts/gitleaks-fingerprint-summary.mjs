@@ -1,96 +1,151 @@
 #!/usr/bin/env node
 
-import { appendFile, readFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, open } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const SCAN_OUTCOMES = ["success", "failure", "cancelled", "skipped"];
-// GitHub drops a step summary over 1 MiB; the job log still lists every fingerprint.
-const MAX_SUMMARY_FINGERPRINTS = 1_000;
+// A larger report is not read, so the step fails and the scan is reproduced locally.
+const MAX_REPORT_BYTES = 64 * 1024 * 1024;
+// GitHub doesn't display a step summary over 1 MiB. The summary and the job log get
+// the same text, whose list of findings stops at this size.
+const MAX_OUTPUT_BYTES = 900 * 1024;
+// Shown in place of a commit, rule or line that fails its check.
+const INVALID = "(invalid)";
+const COMMIT = /^[0-9a-f]{40}$/;
+const RULE = /^[A-Za-z0-9._-]{1,64}$/;
+const LINE = /^(?:0|[1-9][0-9]*)$/;
 
-// Read only each finding's fingerprint (`commit:file:rule:line`). The report's
-// Secret, Match and Line fields, and its commit metadata, are never read.
-export function fingerprintsFromReport(text) {
+// The report's text, or why there is none. Nothing over MAX_REPORT_BYTES is read.
+export async function readGitleaksReport(path) {
+  let handle;
+  try {
+    handle = await open(path, "r");
+  } catch {
+    return { problem: "the report is missing" };
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) return { problem: "the report is not a file" };
+    if (stats.size > MAX_REPORT_BYTES) return { problem: "the report is over 64 MiB, so it was not read" };
+    const bytes = await handle.readFile();
+    if (bytes.length > MAX_REPORT_BYTES) return { problem: "the report is over 64 MiB, so it was not read" };
+    return { text: bytes.toString("utf8") };
+  } catch {
+    return { problem: "the report could not be read" };
+  } finally {
+    await handle.close();
+  }
+}
+
+// An opaque, fixed-length ID for a fingerprint, which can contain a file name.
+export function findingId(fingerprint) {
+  return createHash("sha256").update(fingerprint, "utf8").digest("hex").slice(0, 16);
+}
+
+// A Gitleaks git fingerprint is `commit:file:rule:line`, and the file can contain
+// colons, so the commit is read from the left and the rule and line from the right.
+// Each field is shown only if it passes its check; the file is never shown.
+function checkedFields(fingerprint) {
+  const first = fingerprint.indexOf(":");
+  const last = fingerprint.lastIndexOf(":");
+  const beforeLast = last > 0 ? fingerprint.lastIndexOf(":", last - 1) : -1;
+  const shaped = first >= 0 && beforeLast > first;
+  const commit = shaped ? fingerprint.slice(0, first) : "";
+  const rule = shaped ? fingerprint.slice(beforeLast + 1, last) : "";
+  const line = shaped ? fingerprint.slice(last + 1) : "";
+  const fields = {
+    commit: COMMIT.test(commit) ? commit : INVALID,
+    rule: RULE.test(rule) ? rule : INVALID,
+    line: LINE.test(line) && Number.isSafeInteger(Number(line)) ? line : INVALID,
+  };
+  return { ...fields, malformed: Object.values(fields).includes(INVALID) };
+}
+
+// Only a JSON array is a report; Gitleaks writes [] when there are no findings.
+// Each finding's fingerprint is read. Its Secret, Match and Line fields, and its
+// commit metadata, are never read.
+export function findingsFromReport(text) {
   let report;
   try {
     report = JSON.parse(text);
   } catch {
-    throw new Error("the Gitleaks report is not valid JSON");
+    throw new Error("the report is not valid JSON");
   }
-  // Gitleaks writes [] when there are no findings; treat a JSON null the same way.
-  if (report === null) return { findings: 0, fingerprints: [] };
-  if (!Array.isArray(report)) throw new Error("the Gitleaks report is not a JSON array");
-  const fingerprints = new Set();
+  if (!Array.isArray(report)) throw new Error("the report is not a JSON array");
+  const counts = new Map();
   report.forEach((finding, index) => {
     const fingerprint =
-      finding !== null && typeof finding === "object" ? finding.Fingerprint : undefined;
+      finding !== null && typeof finding === "object" && Object.hasOwn(finding, "Fingerprint")
+        ? finding.Fingerprint
+        : undefined;
     if (typeof fingerprint !== "string" || fingerprint === "") {
-      throw new Error(`Gitleaks finding ${index + 1} has no fingerprint`);
+      throw new Error(`finding ${index + 1} has no fingerprint`);
     }
-    fingerprints.add(fingerprint);
+    counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + 1);
   });
-  return { findings: report.length, fingerprints: [...fingerprints].sort() };
-}
-
-// Escape control characters so that each fingerprint stays on one line.
-function renderFingerprint(fingerprint) {
-  return /[\u0000-\u001f\u007f]/.test(fingerprint) ? JSON.stringify(fingerprint) : fingerprint;
-}
-
-// A fence longer than any backtick run in the list, so no fingerprint can close it.
-function fencedBlock(lines) {
-  const longestRun = lines
-    .flatMap((line) => line.match(/`+/g) ?? [])
-    .reduce((longest, run) => Math.max(longest, run.length), 0);
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
-  return [`${fence}text`, ...lines, fence];
-}
-
-function fingerprintList(fingerprints, limit) {
-  const shown = fingerprints.slice(0, limit).map(renderFingerprint);
-  const hidden = fingerprints.length - shown.length;
-  return [
-    ...fencedBlock(shown),
-    ...(hidden > 0 ? ["", `${hidden} more not shown here; the job log lists every fingerprint.`] : []),
-  ];
+  const entries = [...counts]
+    .map(([fingerprint, findings]) => ({
+      id: findingId(fingerprint),
+      fingerprint,
+      findings,
+      ...checkedFields(fingerprint),
+    }))
+    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const malformed = entries.reduce((total, entry) => total + (entry.malformed ? entry.findings : 0), 0);
+  return { findings: report.length, entries, malformed };
 }
 
 function plural(count, noun) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+function unreadable(problem) {
+  return [
+    "### Gitleaks findings",
+    "",
+    `**Unreadable Gitleaks report:** ${problem}. See the scan step's log.`,
+    "",
+  ].join("\n");
+}
+
+function findingsMarkdown(report, scanPassed, lines, omitted) {
+  return [
+    "### Gitleaks findings",
+    "",
+    `**${plural(report.findings, "finding")}** under ${plural(report.entries.length, "ID")}: ${
+      report.malformed
+    } malformed, ${omitted} omitted from the list below${
+      scanPassed ? ", although the scan step passed" : ""
+    }. Secret values, file names and fingerprints are not shown.`,
+    "",
+    "Each line is `id commit rule line findings`. The ID is the first 16 hex digits of the SHA-256 of the Gitleaks fingerprint (`commit:file:rule:line`), and `findings` counts the findings that share it. A commit, rule or line that fails its check shows as `(invalid)`. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
+    "",
+    "```text",
+    ...lines,
+    "```",
+    "",
+  ].join("\n");
+}
+
 // Clean only for a scan step that passed with an empty report. A missing,
-// unreadable or possibly partial report is never summarized as clean.
-export function summarizeGitleaksReport(reportText, scanOutcome, limit = MAX_SUMMARY_FINGERPRINTS) {
-  const heading = ["### Gitleaks fingerprints", ""];
+// unreadable or possibly partial report is never summarized as clean. The text
+// is built only from fixed wording, counts, IDs and checked fields.
+export function summarizeGitleaksReport(report, scanOutcome, maxBytes = MAX_OUTPUT_BYTES) {
   const scanPassed = scanOutcome === "success";
-  if (reportText === undefined) {
-    return {
-      clean: false,
-      markdown: [
-        ...heading,
-        "**No readable Gitleaks report**, so no fingerprints are available. See the scan step's log.",
-        "",
-      ].join("\n"),
-    };
-  }
-  let report;
+  if (report.problem !== undefined) return { clean: false, markdown: unreadable(report.problem) };
+  let parsed;
   try {
-    report = fingerprintsFromReport(reportText);
+    parsed = findingsFromReport(report.text);
   } catch (error) {
-    return {
-      clean: false,
-      markdown: [
-        ...heading,
-        `**Unreadable Gitleaks report:** ${error instanceof Error ? error.message : String(error)}. See the scan step's log.`,
-        "",
-      ].join("\n"),
-    };
+    return { clean: false, markdown: unreadable(error.message) };
   }
-  if (report.findings === 0) {
+  if (parsed.findings === 0) {
     return {
       clean: scanPassed,
       markdown: [
-        ...heading,
+        "### Gitleaks findings",
+        "",
         scanPassed
           ? "No findings."
           : "**The scan step did not pass.** Gitleaks reported no findings, but the scan may be partial. See the scan step's log.",
@@ -98,38 +153,75 @@ export function summarizeGitleaksReport(reportText, scanOutcome, limit = MAX_SUM
       ].join("\n"),
     };
   }
+  // Reserve room for the widest counts, then list IDs while they fit.
+  let room = maxBytes - Buffer.byteLength(findingsMarkdown(parsed, scanPassed, [], parsed.entries.length));
+  const lines = [];
+  for (const { id, commit, rule, line, findings } of parsed.entries) {
+    const text = `${id} ${commit} ${rule} ${line} ${findings}`;
+    room -= Buffer.byteLength(text) + 1;
+    if (room < 0) break;
+    lines.push(text);
+  }
   return {
     clean: false,
-    markdown: [
-      ...heading,
-      `**${plural(report.findings, "finding")}** under ${plural(report.fingerprints.length, "fingerprint")}${
-        scanPassed ? ", although the scan step passed" : ""
-      }. Secret values are not shown.`,
-      "",
-      "Each line is `commit:file:rule:line`. Fingerprints already in `.gitleaksignore` are not reported. A fingerprint missing from the previous run's list is a new finding.",
-      "",
-      ...fingerprintList(report.fingerprints, limit),
+    markdown: findingsMarkdown(parsed, scanPassed, lines, parsed.entries.length - lines.length),
+  };
+}
+
+// Printable ASCII as is; anything else as a JSON string escaped to printable
+// ASCII, so that no file name can drive the terminal.
+function printableFingerprint(fingerprint) {
+  if (/^[\x20-\x7e]*$/.test(fingerprint) && !fingerprint.startsWith('"')) return fingerprint;
+  const escaped = fingerprint.replace(
+    /[^\x20-\x21\x23-\x5b\x5d-\x7e]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  return `"${escaped}"`;
+}
+
+// For a local reproduction only: each distinct fingerprint, as `.gitleaksignore`
+// needs it, after the ID that the workflow's summary shows for it.
+export function listFingerprintsLocally(report) {
+  if (report.problem !== undefined) return { ok: false, text: `Unreadable Gitleaks report: ${report.problem}.\n` };
+  let parsed;
+  try {
+    parsed = findingsFromReport(report.text);
+  } catch (error) {
+    return { ok: false, text: `Unreadable Gitleaks report: ${error.message}.\n` };
+  }
+  return {
+    ok: true,
+    text: [
+      `${plural(parsed.findings, "finding")} under ${plural(parsed.entries.length, "ID")}, ${parsed.malformed} malformed. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.`,
+      ...parsed.entries.map(({ id, fingerprint }) => `${id} ${printableFingerprint(fingerprint)}`),
       "",
     ].join("\n"),
   };
 }
 
 function parseArguments(argumentsList) {
-  const options = { report: undefined, scanOutcome: undefined };
+  const options = { report: undefined, scanOutcome: undefined, local: false };
   const supported = new Map([
     ["--report", "report"],
     ["--scan-outcome", "scanOutcome"],
   ]);
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
+    if (argument === "--local") {
+      options.local = true;
+      continue;
+    }
     const key = supported.get(argument);
-    if (!key) throw new Error(`unknown argument: ${argument}`);
+    // Never echo an argument: everything this step prints goes to the job log.
+    if (!key) throw new Error(`unknown argument ${index + 1}; expected --report, --scan-outcome or --local`);
     const value = argumentsList[++index];
     if (!value) throw new Error(`${argument} requires a value`);
     options[key] = value;
   }
   if (!options.report) throw new Error("--report is required");
-  if (!SCAN_OUTCOMES.includes(options.scanOutcome)) {
+  if (options.local) {
+    if (options.scanOutcome !== undefined) throw new Error("--local takes no --scan-outcome");
+  } else if (!SCAN_OUTCOMES.includes(options.scanOutcome)) {
     throw new Error(`--scan-outcome must be one of ${SCAN_OUTCOMES.join(", ")}`);
   }
   return options;
@@ -137,15 +229,25 @@ function parseArguments(argumentsList) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  let reportText;
-  try {
-    reportText = await readFile(options.report, "utf8");
-  } catch {
-    reportText = undefined;
+  if (options.local && process.env.GITHUB_ACTIONS === "true") {
+    throw new Error("--local prints raw fingerprints, which can contain secrets; it does not run in GitHub Actions");
   }
-  const summary = summarizeGitleaksReport(reportText, options.scanOutcome);
-  const log = summarizeGitleaksReport(reportText, options.scanOutcome, Infinity);
-  process.stdout.write(log.markdown);
+  const report = await readGitleaksReport(options.report);
+  if (options.local) {
+    const listing = listFingerprintsLocally(report);
+    process.stdout.write(listing.text);
+    if (!listing.ok) process.exitCode = 1;
+    return;
+  }
+  const summary = summarizeGitleaksReport(report, options.scanOutcome);
+  // The runner ignores workflow commands until it sees the random token again.
+  const token = randomUUID();
+  process.stdout.write(`::stop-commands::${token}\n`);
+  try {
+    process.stdout.write(summary.markdown);
+  } finally {
+    process.stdout.write(`::${token}::\n`);
+  }
   if (process.env.GITHUB_STEP_SUMMARY) {
     await appendFile(process.env.GITHUB_STEP_SUMMARY, summary.markdown, "utf8");
   }
@@ -154,9 +256,14 @@ async function main() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
-    process.stderr.write(
-      `fingerprint summary failed closed: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    // A system error's message names a path, so print only its code.
+    const reason =
+      typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+        ? error.code
+        : error instanceof Error
+          ? error.message
+          : "unexpected error";
+    process.stderr.write(`fingerprint summary failed closed: ${reason}\n`);
     process.exitCode = 1;
   });
 }
