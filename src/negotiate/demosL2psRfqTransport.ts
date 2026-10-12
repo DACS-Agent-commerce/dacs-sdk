@@ -950,6 +950,28 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
   // A peer without removeMessageHandler keeps old handlers installed, so each
   // start() binds its handler to a generation that stop() retires.
   let generation = 0;
+  // Tail of each packet's in-process outbox queue; removed once idle.
+  const packetLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Run outbox work for one packet after earlier work on it has settled. This
+   * only orders callers in this process; the host still serializes drivers
+   * across processes. Every step inside is bounded, so the queue cannot stall.
+   */
+  async function withPacketLock<T>(packetId: string, task: () => Promise<T>): Promise<T> {
+    const prior = packetLocks.get(packetId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prior.then(() => current);
+    packetLocks.set(packetId, tail);
+    await prior;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (packetLocks.get(packetId) === tail) packetLocks.delete(packetId);
+    }
+  }
 
   async function bounded<T>(
     operation: () => Promise<T> | T,
@@ -1169,10 +1191,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
     let absence: RfqLifecycleTransportResult;
     try {
-      const sendEntry = await loadSendEntry(prepared);
       // Decide BEFORE the history snapshot is requested. A read started
       // inside the grace cannot prove absence merely by finishing after it.
-      absence = await absenceAfterSend(prepared.packet.packetId, sendEntry);
+      absence = await withPacketLock(prepared.packet.packetId, async () =>
+        absenceAfterSend(prepared.packet.packetId, await loadSendEntry(prepared)));
     } catch {
       return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
@@ -1558,6 +1580,101 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       : { status: "indeterminate", delivered, reason: uncertainReason };
   }
 
+  async function publishRouted(
+    routed: ReturnType<typeof routePacket>,
+  ): Promise<Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>> {
+    let entry: SendOutboxEntry | undefined;
+    try {
+      entry = await loadSendEntry(routed);
+    } catch {
+      return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+    }
+    try {
+      if (entry !== undefined) {
+        const absence = await absenceAfterSend(routed.packet.packetId, entry);
+        // An acknowledged entry is neither resent nor overwritten.
+        if (absence.disposition === "acknowledged" ||
+            absence.disposition === "indeterminate") return absence;
+        // Resend only a stored frame that still opens to this exact packet
+        // (a custom codec, or a key rotated under the same codecId, may not).
+        const opened = await openStored(entry.encrypted, routed.packet, routed.recipientPeer,
+          { deadline: performance.now() + captured.operationTimeoutMs, spent: false });
+        if (opened !== "match") {
+          return { disposition: "indeterminate", reason: STORED_FRAME_REASON };
+        }
+      } else {
+        const prepared = await sealPacket(routed);
+        entry = {
+          packetId: routed.packet.packetId,
+          fromPeer: captured.localPeerKey,
+          toPeer: prepared.recipientPeer,
+          l2psUid: captured.l2psUid,
+          codecId: captured.codecId,
+          encrypted: prepared.encrypted,
+          state: "sending",
+          // Not stored yet: the first save commits only if no entry exists.
+          generation: 0,
+        };
+      }
+    } catch (cause) {
+      return {
+        disposition: cause instanceof TransientTransportCapabilityError
+          ? "indeterminate" as const : "rejected" as const,
+        reason: errorFrom(cause, "Demos L2PS RFQ packet encryption or outbox failed").message,
+      };
+    }
+    // Persist the exact submitted payload and a crash marker BEFORE calling
+    // the peer. Retries reuse ciphertext, nonce and optional ephemeral key.
+    // A new frame commits only where no entry exists, and every later save
+    // is fenced by generation, so the stored frame never changes once any
+    // peer call could have used it.
+    entry.state = "sending";
+    delete entry.attemptEndedAtMs;
+    try {
+      monotonicNow();
+      await saveSendEntry(routed.packet.packetId, entry);
+    } catch {
+      return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+    }
+    let result: Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>;
+    let duplicate = false;
+    try {
+      const ack = captureSendResult(
+        await bounded(() => captured.send(routed.recipientPeer,
+          structuredClone(entry.encrypted), routed.packet.packetId), "Demos L2PS RFQ send"),
+        routed.packet.packetId,
+      );
+      result = ack === "acknowledged"
+        ? { disposition: "acknowledged" }
+        : { disposition: "indeterminate", reason: "Demos L2PS RFQ send acknowledgement is missing or failed" };
+    } catch (cause) {
+      duplicate = cause instanceof Error && cause.message === NODE_DUPLICATE_MESSAGE;
+      result = { disposition: "indeterminate", reason: "Demos L2PS RFQ send outcome is unknown" };
+    }
+    if (duplicate) {
+      // The node already holds this hash and did not deliver it again. Only
+      // our own frame in history proves the acknowledgement.
+      const found = await historyDisposition(
+        routed,
+        { disposition: "indeterminate", reason: DUPLICATE_REASON },
+      );
+      result = found.disposition === "absent"
+        ? { disposition: "indeterminate", reason: DUPLICATE_REASON }
+        : found;
+    }
+    try {
+      entry.attemptEndedAtMs = monotonicNow();
+      entry.state = result.disposition === "acknowledged"
+        ? "acknowledged"
+        : duplicate ? "duplicate" : "indeterminate";
+      await saveSendEntry(routed.packet.packetId, entry);
+    } catch {
+      // The durable sending marker remains; recovery starts a full grace.
+      return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
+    }
+    return result;
+  }
+
   return {
     async publish(candidate) {
       let routed: ReturnType<typeof routePacket>;
@@ -1572,96 +1689,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           reason: errorFrom(cause, "Demos L2PS RFQ packet preparation failed").message,
         };
       }
-      let entry: SendOutboxEntry | undefined;
-      try {
-        entry = await loadSendEntry(routed);
-      } catch {
-        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
-      }
-      try {
-        if (entry !== undefined) {
-          const absence = await absenceAfterSend(routed.packet.packetId, entry);
-          // An acknowledged entry is neither resent nor overwritten.
-          if (absence.disposition === "acknowledged" ||
-              absence.disposition === "indeterminate") return absence;
-          // Resend only a stored frame that still opens to this exact packet
-          // (a custom codec, or a key rotated under the same codecId, may not).
-          const opened = await openStored(entry.encrypted, routed.packet, routed.recipientPeer,
-            { deadline: performance.now() + captured.operationTimeoutMs, spent: false });
-          if (opened !== "match") {
-            return { disposition: "indeterminate", reason: STORED_FRAME_REASON };
-          }
-        } else {
-          const prepared = await sealPacket(routed);
-          entry = {
-            packetId: routed.packet.packetId,
-            fromPeer: captured.localPeerKey,
-            toPeer: prepared.recipientPeer,
-            l2psUid: captured.l2psUid,
-            codecId: captured.codecId,
-            encrypted: prepared.encrypted,
-            state: "sending",
-            // Not stored yet: the first save commits only if no entry exists.
-            generation: 0,
-          };
-        }
-      } catch (cause) {
-        return {
-          disposition: cause instanceof TransientTransportCapabilityError
-            ? "indeterminate" as const : "rejected" as const,
-          reason: errorFrom(cause, "Demos L2PS RFQ packet encryption or outbox failed").message,
-        };
-      }
-      // Persist the exact submitted payload and a crash marker BEFORE calling
-      // the peer. Retries reuse ciphertext, nonce and optional ephemeral key.
-      // A new frame commits only where no entry exists, and every later save
-      // is fenced by generation, so the stored frame never changes once any
-      // peer call could have used it.
-      entry.state = "sending";
-      delete entry.attemptEndedAtMs;
-      try {
-        monotonicNow();
-        await saveSendEntry(routed.packet.packetId, entry);
-      } catch {
-        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
-      }
-      let result: Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>;
-      let duplicate = false;
-      try {
-        const ack = captureSendResult(
-          await bounded(() => captured.send(routed.recipientPeer,
-            structuredClone(entry.encrypted), routed.packet.packetId), "Demos L2PS RFQ send"),
-          routed.packet.packetId,
-        );
-        result = ack === "acknowledged"
-          ? { disposition: "acknowledged" }
-          : { disposition: "indeterminate", reason: "Demos L2PS RFQ send acknowledgement is missing or failed" };
-      } catch (cause) {
-        duplicate = cause instanceof Error && cause.message === NODE_DUPLICATE_MESSAGE;
-        result = { disposition: "indeterminate", reason: "Demos L2PS RFQ send outcome is unknown" };
-      }
-      if (duplicate) {
-        // The node already holds this hash and did not deliver it again. Only
-        // our own frame in history proves the acknowledgement.
-        const found = await historyDisposition(
-          routed,
-          { disposition: "indeterminate", reason: DUPLICATE_REASON },
-        );
-        result = found.disposition === "absent"
-          ? { disposition: "indeterminate", reason: DUPLICATE_REASON }
-          : found;
-      }
-      try {
-        entry.attemptEndedAtMs = monotonicNow();
-        entry.state = result.disposition === "acknowledged"
-          ? "acknowledged"
-          : duplicate ? "duplicate" : "indeterminate";
-        await saveSendEntry(routed.packet.packetId, entry);
-      } catch {
-        // The durable sending marker remains; recovery starts a full grace.
-        return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
-      }
-      return result;
+      // One publish per packet at a time in this process, so a concurrent
+      // enqueueTurn publish and resumeOutbox cannot both seal a frame.
+      return withPacketLock(routed.packet.packetId, () => publishRouted(routed));
     },
     reconcile: reconcilePacket,
     resumeInbound,

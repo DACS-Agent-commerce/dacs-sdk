@@ -761,6 +761,35 @@ describe("Demos L2PS durable RFQ transport", () => {
     } finally { await fixture.cleanup(); }
   });
 
+  test("round 6: concurrent publishes of one packet seal and send once", async () => {
+    const { hub, sharedKey, packet } = await buyerWithSentOffer();
+    const base = createDemosL2psRfqAesGcmCodec({ sharedKey });
+    let seals = 0;
+    // A fresh outbox, so neither publish finds a stored frame.
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: {
+        codecId: base.codecId,
+        seal(plaintext, context) { seals += 1; return base.seal(plaintext, context); },
+        open: (encrypted, context) => base.open(encrypted, context),
+      },
+      l2psUid: L2PS_UID,
+      outboxStore: memorySendOutbox(),
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const sendsBefore = hub.sends;
+    await expect(Promise.all([transport.publish(packet), transport.publish(packet)])).resolves.toEqual([
+      { disposition: "acknowledged" },
+      { disposition: "acknowledged" },
+    ]);
+    expect(seals).toBe(1);
+    expect(hub.sends - sendsBefore).toBe(1);
+  });
+
   test("round 6: a node duplicate refusal acknowledges when history shows our frame", async () => {
     let ticks = 0;
     let lagging = true;
