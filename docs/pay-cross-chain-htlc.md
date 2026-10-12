@@ -85,11 +85,14 @@ the payee can no longer claim the source leg, and the adapter authenticates the
 retained claim as `absent` or `failed`, the core refunds both legs with reason
 `destination-claim-unlanded`. A claim the adapter does not report at all is
 not authenticated and keeps blocking refunds. Adapters must therefore report
-`pending`, never `absent`, while a reveal can still land. A retained reveal
-that is still `pending` or unreported once both expiries have passed stays
-blocking but returns `waiting` with reason
-`htlc-destination-claim-unresolved-after-expiry`, which hosts should alert on.
-A destination claim that is already final is still authenticated,
+`pending`, never `absent`, while a reveal can still land. Past the claim
+cutoff nothing more is sent for a retained reveal, but one that is still
+`pending` or unreported may still land and its preimage may be in a mempool:
+until both expiries have passed it returns `waiting` with reason
+`htlc-destination-claim-unresolved-after-cutoff`, so that a person can still
+help it land before the destination expiry, and afterwards it stays blocking
+with reason `htlc-destination-claim-unresolved-after-expiry`. Hosts page on
+both. A destination claim that is already final is still authenticated,
 checkpointed, and recovered after the cutoff.
 
 A reveal is only ever prepared against a final destination lock. If the
@@ -127,9 +130,11 @@ safe-integer range when converted to milliseconds, or lies at or before the
 lock's own `includedAt`, is unusable: the payer never reveals against it, and
 the result is `refund-pending` with reason `destination-lock-expiry-invalid`.
 The source leg is refunded at the source expiry. The payee's destination leg
-is refunded at its expiry when that expiry is in range; an out-of-range
-expiry never arrives for the core, so that leg stays `waiting` and the session
-stays `refund-pending` after the payer's own refund is final.
+is refunded at its expiry when that expiry is in range. An expiry beyond the
+top of the range never arrives for the core, so that leg stays `waiting` and
+the session stays `refund-pending` after the payer's own refund is final; one
+below the bottom of the range has long passed, so that leg is refunded at
+once.
 
 The core never returns `failed` while a locked leg still needs a refund or
 claim that it will drive later. Before the destination lock exists, a failed
@@ -161,8 +166,8 @@ the adapter authenticates as `absent` (for example a Solana transaction whose
 recent blockhash expired, or an EVM transaction whose nonce was reused) never
 reached the chain, but it was broadcast, so the mempool may have seen the
 preimage; its bytes can never land, so rebroadcasting them cannot help. When
-the adapter authenticates the active reveal as `failed` or `absent`, the core
-therefore replaces it while the destination-claim window is still open (the
+the adapter authenticates the active reveal as `failed`, or as `absent` naming
+it, the core therefore replaces it while the destination-claim window is still open (the
 same cutoff as a first reveal) and the absolute margin holds: it asks the
 adapter for a fresh signed reveal of the same preimage into the same
 destination lock, persists it with the store's
@@ -188,8 +193,10 @@ Every refund result carries `refunds`, the state of each locked leg's refund
 retained destination lock may still land): `waiting` (its lock has not
 expired, a retained reveal still blocks it, or its lock is not final yet),
 `uncertain` (due, but this call could not prepare, persist, broadcast or
-observe it; the next call reuses the retained bytes), or the adapter's
-authenticated `pending`, `final` or `failed`. A payer whose own refund is final can see it
+observe it; the next call reuses the retained bytes), the adapter's
+authenticated `pending`, `final` or `failed`, or `absent` (below). A refund
+broadcast in this call reads `pending` until a later call observes it, even if
+this call's observation still reports it `absent`. A payer whose own refund is final can see it
 even while the payee's leg is still uncertain. The core never re-sends a
 refund the adapter reports `failed`, so such a session returns the distinct
 status `refund-stalled`, naming the failed leg in `refunds`; it still drives
@@ -202,7 +209,9 @@ chain and can no longer, so its bytes are not re-sent either, and the core
 does not yet replace refunds. That leg is reported as `absent` in `refunds`,
 and the result is `operator-alert` with reason `htlc-refund-absent`, which
 carries the same `refunds` map. The other leg is still driven in the same
-call.
+call. The same holds while a checkpointed source lock has regressed (see
+below): a retained refund authenticated `absent` or `failed` is never re-sent
+there either, and the result is `htlc-refund-absent` or `refund-stalled`.
 
 ## Operator alerts
 
@@ -252,7 +261,9 @@ or authority are invalid; the store is corrupt, conflicting or lacks a
 required method; retained evidence and a new observation contradict each
 other (a changed source-lock checkpoint fact, a reveal checkpoint for another
 transaction, a final reveal of another or a malformed preimage, a final source
-claim without a final source lock or without a final or checkpointed reveal);
+claim without a final source lock or without a final or checkpointed reveal,
+or a final source claim while the checkpointed reveal is reported `pending`,
+`failed` or `absent`, `htlc-reveal-checkpoint-contradicted`);
 the source lock itself failed, so
 nothing was locked; or the source claim is final but reached finality after
 the source expiry (`settlement-atomicity`). These need an operator to
@@ -367,7 +378,9 @@ cutoff of the retained source-finality checkpoint, or once three replacements
 are recorded. It appends the failed attempt to
 `destinationClaimAttemptHistory`, which `claim` must return, keeps all old
 reservations, and exposes only the replacement as the active `prepared`
-reveal. The core fails closed with
+reveal. An earlier attempt can still land, so the checkpoint passed to
+`recordRevealFinal` may name the active reveal or any attempt in that history,
+and the store must accept either. The core fails closed with
 `htlc-destination-claim-replacement-store-unsupported` before any effect when
 a runtime store lacks the method. `recordPrepared` remains immutable for every
 ordinary action. The exported in-memory store is for tests and development
@@ -416,12 +429,22 @@ rebroadcast or refunded until the adapter reports correctly. When a claim has
 replacement history, `observe` reports the active attempt, the one `claim`
 returns in `prepared`: `pending` while it can still land, its final or failed
 state once it has one, and `absent` only once it never reached the chain and
-can no longer. A failed earlier attempt says nothing about the active one, so
-only the active attempt's `failed` or `absent` allows a replacement or, after
-both expiries, refunds. An `absent` names no transaction, so the core binds it
-to the active attempt it was reported for; an adapter that keeps
-reporting the earlier failure holds the session at `operator-alert` and
-refunds nothing.
+can no longer. The one exception is an earlier attempt that landed after all,
+for example one reported `absent` too early: every attempt of a claim carries
+the same preimage, so `observe` must then report that attempt `final`, and the
+core accepts it exactly as the active one. For a reveal it checkpoints that
+attempt and drives the payee's source claim; for a source claim it settles. A
+failed earlier attempt says nothing about the active one, so only the active
+attempt's `failed` or `absent` allows a replacement or, after both expiries,
+refunds. A claim's `absent` must therefore name the attempt it is about in
+`txRef`. One that names an earlier attempt, or none, is refused: nothing is
+replaced, rebroadcast or refunded on it, the result is `indeterminate` with
+reason `htlc-destination-claim-absent-unbound` or
+`htlc-source-claim-absent-unbound`, and past the claim cutoff a retained
+reveal reported that way pages like one that is unreported. An `absent` that
+names a transaction the core did not prepare makes the whole snapshot
+unavailable. An adapter that keeps reporting the earlier failure holds the
+session at `operator-alert` and refunds nothing.
 
 Once a lock is final, and in particular once the core has checkpointed the
 source lock, the adapter must keep reporting it `final`, with its inclusion
@@ -440,7 +463,11 @@ payee's source claim proceed from the retained source-finality checkpoint and
 destination-lock reference, as described above, and nothing is refunded.
 While the source lock has regressed and no reveal was ever
 prepared, the preimage is still private, so the payee cannot claim the source
-and the core still drives the payee's destination refund after its expiry. A
+and the core still drives the payee's destination refund after its expiry,
+exactly as on the refund path: it prepares one only when none is retained, and
+it never re-sends a retained refund authenticated `absent` or `failed`. Such a
+refund returns `operator-alert` `htlc-refund-absent` or `refund-stalled` on
+this path too, instead of the regression's `indeterminate`. A
 final lock observation that is malformed (missing or invalid inclusion or
 expiry, or malformed terms) returns `indeterminate` with reason
 `htlc-adapter-lock-observation-invalid` until the adapter reports it
@@ -521,13 +548,24 @@ also accepting byte-equivalent uppercase and prefixed values.
     reasons are `htlc-source-claim-missed-after-reveal`,
     `htlc-source-claim-replacement-limit-reached` and `htlc-refund-absent`;
   - `refund-stalled`: a refund reverted and is not re-sent;
+  - `waiting` with reason `htlc-destination-claim-unresolved-after-cutoff`: a
+    broadcast reveal is still unresolved after the claim cutoff, so nothing
+    more is sent for it, and the payee may learn the preimage; before the
+    destination expiry a person can still help it land;
   - `waiting` with reason `htlc-destination-claim-unresolved-after-expiry`: a
     reveal is still unresolved after both expiries and blocks both refunds;
   - `failed`: there is nothing left to drive and the record needs
     reconciling.
 - Every other `waiting` and `indeterminate` result is retried by advancing
   the session again. A host may also page when one persists, for example an
-  adapter that keeps reporting `htlc-adapter-lock-observation-invalid`.
+  adapter that keeps reporting `htlc-adapter-lock-observation-invalid` or an
+  `absent` that does not name the active claim (`…-absent-unbound`).
+- Two kinds of session never reach a terminal state on their own: one whose
+  destination lock has an expiry beyond the safe-integer range, which stays
+  `refund-pending` after the payer's refund is final, and one whose
+  `htlc-refund-absent` leg an operator refunded by hand. Once an operator has
+  reconciled both legs on chain, the host closes the session in its own
+  records; only then may it discard the buyer salt.
 
 ## Adapter audit checklist
 
@@ -542,13 +580,22 @@ the core cannot check them itself.
 - `pending`, never `absent`, while a lock, reveal, claim or refund can still
   land; `absent` only once it is authenticated that it cannot. A retained
   reveal or source claim reported `absent` is replaced, so a premature
-  `absent` puts a second claim on the wire; a retained refund reported
-  `absent` raises `htlc-refund-absent`.
+  `absent` puts a second claim on the wire, and the earlier attempt may still
+  land. For a reveal that means the payer already holds the destination funds:
+  unless the adapter then reports the earlier attempt `final`, the core treats
+  the replacement's revert as an unlanded reveal, alerts, and once both
+  expiries pass refunds the payer's source as well, so the payer ends with
+  both legs and the payee with neither, unless the payee claimed the source
+  outside the core first. A retained refund reported `absent` raises
+  `htlc-refund-absent`.
+- A claim's `absent` names the attempt it is about in `txRef`; one that
+  names an earlier attempt, or none, is refused.
 - `failed` only once the failure itself is final.
 - `observe` reports each action only for the core's own retained
   transaction, never a counterparty's, such as a payee's own source claim.
 - With replacement history, `observe` reports the active attempt, and
-  `absent` once that attempt never reached the chain and can no longer.
+  `absent` once that attempt never reached the chain and can no longer; but
+  an earlier attempt that landed after all is reported `final` instead.
 - `lockTerms` are read from the contract's lock record in the canonical form
   above, never copied from the intent.
 - A final source claim carries a chain-derived `finalityReachedAt`, and a
