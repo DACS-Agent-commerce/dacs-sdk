@@ -49,6 +49,7 @@ import {
   createLiquidityTankIntent,
   type LiquidityTankAdapter,
   type LiquidityTankStore,
+  type LiquidityTankVerifier,
   advanceSolanaSplSettlement,
   createSolanaSplSettlementIntent,
   type SolanaSplAdapter,
@@ -84,6 +85,10 @@ const canonical: string = canonicalize({ b: 2, a: 1 });
 const fulfilment: typeof runFulfilmentCore = runFulfilmentCore;
 const tankAdvance: typeof advanceLiquidityTankSettlement = advanceLiquidityTankSettlement;
 const tankIntent: typeof createLiquidityTankIntent = createLiquidityTankIntent;
+const tankVerifier: LiquidityTankVerifier = {
+  authenticateObservation: async ({ observation }) => observation.authenticationHash.length === 64,
+  verifySignedSubmission: ({ submission }) => submission.substrateTxHash.length > 0,
+};
 const qualify: typeof evaluateClaimRequirementQualification =
   evaluateClaimRequirementQualification;
 const selectRail: typeof evaluateRailAvailabilitySelection =
@@ -192,6 +197,7 @@ void tankAdvance;
 void tankIntent;
 void tankAdapter;
 void tankStore;
+void tankVerifier;
 void solanaAdvance;
 void solanaIntent;
 void solanaAdapter;

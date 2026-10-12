@@ -20,6 +20,7 @@ import {
   type LiquidityTankObservation,
   type LiquidityTankRecoveryEvidence,
   type LiquidityTankStore,
+  type LiquidityTankVerifier,
 } from "../../src/rails/liquidityTank.js";
 
 const AUTH_HASH = "a".repeat(64);
@@ -31,6 +32,11 @@ const JOB_ID = "01JZ0000000000000000000001";
 const SECOND_JOB_ID = "01JZ0000000000000000000002";
 const DIFFERENT_JOB_ID = "01JZ0000000000000000000003";
 const RECOVERY_DEADLINE_MS = 1_785_436_800_000;
+/** Approves every observation and submission: the flows below test the core, not the host's checks. */
+const APPROVING_VERIFIER: LiquidityTankVerifier = {
+  authenticateObservation: async () => true,
+  verifySignedSubmission: async () => true,
+};
 
 function unreadableProxy<T extends object>(value: T, touched: () => void): T {
   const reject = () => {
@@ -201,6 +207,7 @@ function runner(overrides: Partial<AdvanceLiquidityTankInput> = {}) {
     adapter: harness().adapter,
     now: () => clock,
     leaseDurationMs: 100,
+    verifier: APPROVING_VERIFIER,
     ...overrides,
   };
   return {
@@ -4612,4 +4619,319 @@ describe("advanceLiquidityTankSettlement", () => {
     });
     expect(h.prepareSubmission).not.toHaveBeenCalled();
   });
+});
+
+describe("round 10", () => {
+  const D = RECOVERY_DEADLINE_MS;
+
+  /** Toy signed bytes a host decoder can read back: what the adapter actually signed. */
+  function signedTransfer(
+    bound: Readonly<ReturnType<typeof createLiquidityTankIntent>>,
+    overrides: Partial<{ amountBaseUnits: string; destinationAddress: string; nonce: number }> = {},
+  ) {
+    const bytes = Buffer.from(JSON.stringify({
+      bridgeId: BRIDGE_ID,
+      amountBaseUnits: bound.sourceAmountBaseUnits,
+      destinationAddress: bound.destinationAddress,
+      asset: bound.sourceAsset,
+      nonce: 1,
+      ...overrides,
+    }), "utf8");
+    return {
+      signedSubmissionBase64: bytes.toString("base64"),
+      substrateTxHash: createHash("sha256").update(bytes).digest("hex"),
+    };
+  }
+
+  /** A host verifier that decodes the toy bytes and compares them with the intent. */
+  const decodingVerifier: LiquidityTankVerifier = {
+    authenticateObservation: async () => true,
+    verifySignedSubmission: async ({ intent: bound, submission }) => {
+      const bytes = Buffer.from(submission.signedSubmissionBase64, "base64");
+      if (createHash("sha256").update(bytes).digest("hex") !== submission.substrateTxHash) return false;
+      const signed = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+      return signed["bridgeId"] === submission.bridgeId &&
+        signed["amountBaseUnits"] === bound.sourceAmountBaseUnits &&
+        signed["destinationAddress"] === bound.destinationAddress &&
+        signed["asset"] === bound.sourceAsset;
+    },
+  };
+
+  function signingHarness(
+    overrides: Parameters<typeof signedTransfer>[1] = {},
+    preparedAt = 900,
+  ) {
+    const h = harness();
+    h.adapter.prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound) => ({
+      submissionVersion: "1",
+      authorityHash: bound.bindingHash,
+      operationHash: bound.operationHash,
+      bridgeId: BRIDGE_ID,
+      preparedAt,
+      ...signedTransfer(bound, overrides),
+    }));
+    return h;
+  }
+
+  describe("finding 2: observations are used only when the host authenticates them", () => {
+    test.each([
+      ["no verifier", undefined],
+      ["a verifier without authenticateObservation", { verifySignedSubmission: APPROVING_VERIFIER.verifySignedSubmission }],
+      ["a non-function authenticateObservation", {
+        authenticateObservation: true, verifySignedSubmission: APPROVING_VERIFIER.verifySignedSubmission,
+      }],
+    ])("with %s, a completed observation with arbitrary hashes is refused before any claim",
+      async (_label, verifier) => {
+        const h = harness(completed(createLiquidityTankIntent(authority()).operationHash));
+        const store = createInMemoryLiquidityTankStore();
+        const claim = vi.spyOn(store, "claim");
+        const run = runner({ store, adapter: h.adapter, verifier: verifier as never });
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-observation-authenticator-unavailable",
+        });
+        expect(claim).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).not.toHaveBeenCalled();
+        expect(h.observe).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      });
+
+    test.each([
+      ["false", async () => false],
+      ["the string true", async () => "true"],
+      ["1", () => 1],
+      ["an object", async () => ({ authenticated: true })],
+      ["a throw", async () => { throw new Error("attestation key unavailable"); }],
+    ])("a completed observation with arbitrary hashes is refused when the hook answers %s",
+      async (_label, answer) => {
+        const h = harness();
+        h.setAfterBroadcast({
+          ...completed(h.operationHash),
+          lockTxHash: "x",
+          releaseTxHash: "y",
+          authenticationHash: "f".repeat(64),
+        });
+        const store = createInMemoryLiquidityTankStore();
+        const recordSettlement = vi.spyOn(store, "recordSettlement");
+        const recordObservation = vi.spyOn(store, "recordObservation");
+        const verifier: LiquidityTankVerifier = {
+          ...APPROVING_VERIFIER,
+          authenticateObservation: vi.fn(async ({ observation }) =>
+            observation.status === "completed" ? answer() as never : true),
+        };
+        const run = runner({ store, adapter: h.adapter, verifier });
+        await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-observation-unauthenticated",
+        });
+        expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+        expect(recordSettlement).not.toHaveBeenCalled();
+        expect(recordObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+          observation: expect.objectContaining({ status: "completed" }),
+        }));
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-observation-unauthenticated",
+        });
+        expect(recordSettlement).not.toHaveBeenCalled();
+      });
+
+    test("an unauthenticated empty status is never followed by a broadcast", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      await expect(advanceLiquidityTankSettlement(runner({
+        store, adapter: h.adapter, verifier: { ...APPROVING_VERIFIER, authenticateObservation: async () => false },
+      }).shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-observation-unauthenticated",
+      });
+      expect(h.observe).toHaveBeenCalledTimes(1);
+      expect(recordObservation).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("the hook sees the exact intent, retained submission and observation", async () => {
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      const authenticateObservation = vi.fn<LiquidityTankVerifier["authenticateObservation"]>(async () => true);
+      await expect(advanceLiquidityTankSettlement(runner({
+        adapter: h.adapter, verifier: { ...APPROVING_VERIFIER, authenticateObservation },
+      }).shared)).resolves.toMatchObject({ status: "settled" });
+      const intent = createLiquidityTankIntent(authority());
+      expect(authenticateObservation.mock.calls.map(([input]) => input.observation.status))
+        .toEqual(["empty", "completed"]);
+      for (const [input] of authenticateObservation.mock.calls) {
+        expect(canonicalize(input.intent)).toBe(canonicalize(intent));
+        expect(input.submission).toMatchObject({ bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx" });
+      }
+      expect(authenticateObservation.mock.calls[1]?.[0].observation)
+        .toEqual(completed(h.operationHash));
+    });
+
+    test("a retained completion that no longer authenticates is not settled from", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      store.recordSettlement = vi.fn(async () => { throw new Error("crash before settlement write"); });
+      const run = runner({ store, adapter: h.adapter });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "indeterminate",
+      });
+      const recordSettlement = vi.fn<LiquidityTankStore["recordSettlement"]>(async () => ({ status: "recorded" }));
+      store.recordSettlement = recordSettlement;
+      h.observe.mockClear();
+      await expect(advanceLiquidityTankSettlement({
+        ...run.nextOwner(),
+        verifier: { ...APPROVING_VERIFIER, authenticateObservation: async () => false },
+      })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-retained-observation-unauthenticated",
+      });
+      expect(recordSettlement).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+    });
+
+    test("an unauthenticated bound failure past the deadline never commits failed-substrate", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const h = harness();
+      const run = await lockDurably(store, h);
+      const recordRecoveryFailure = vi.spyOn(store, "recordRecoveryFailure");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      run.setClock(D + 1_000);
+      h.setObservation(failedAfterLock(h.operationHash, D + 1_000));
+      const rejectFailures: LiquidityTankVerifier = {
+        ...APPROVING_VERIFIER,
+        authenticateObservation: async ({ observation }) => observation.status !== "failed",
+      };
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "f", verifier: rejectFailures }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" });
+      expect(recordRecoveryFailure).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("retained failure evidence and a committed expiry are re-authenticated before use", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const h = harness();
+      const run = await lockDurably(store, h);
+      run.setClock(D - 200);
+      h.setObservation(failedAfterLock(h.operationHash, D - 200));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "retain" }))
+        .resolves.toMatchObject({ status: "settle-asymmetric", bridgeStatus: "failed" });
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      const rejectFailures: LiquidityTankVerifier = {
+        ...APPROVING_VERIFIER,
+        authenticateObservation: async ({ observation }) => observation.status !== "failed",
+      };
+      run.setClock(D + 1_000);
+      h.setObservation({ status: "indeterminate", reason: "status API unavailable" });
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expire", verifier: rejectFailures }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" });
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      run.setClock(D + 1_500);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expire-2" }))
+        .resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
+      run.setClock(D + 2_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay", verifier: rejectFailures }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" });
+    });
+  });
+
+  describe("finding 3: signed bytes must sign exactly the intent", () => {
+    test.each([
+      ["a verifier without verifySignedSubmission", { authenticateObservation: APPROVING_VERIFIER.authenticateObservation }],
+      ["a non-function verifySignedSubmission", {
+        authenticateObservation: APPROVING_VERIFIER.authenticateObservation, verifySignedSubmission: "yes",
+      }],
+    ])("with %s, the core refuses before any claim", async (_label, verifier) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const claim = vi.spyOn(store, "claim");
+      await expect(advanceLiquidityTankSettlement(runner({
+        store, adapter: h.adapter, verifier: verifier as never,
+      }).shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-submission-verifier-unavailable",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ["10x the amount", { amountBaseUnits: "12500000" }],
+      ["another destination", { destinationAddress: "attacker-address" }],
+    ])("an adapter that signs %s is refused: nothing is stored or broadcast", async (_label, signed) => {
+      const h = signingHarness(signed);
+      h.setAfterBroadcast(completed(h.operationHash));
+      const store = createInMemoryLiquidityTankStore();
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      const run = runner({ store, adapter: h.adapter, verifier: decodingVerifier });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-signed-submission-unverified",
+      });
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      const later = await store.claim({
+        intent: createLiquidityTankIntent(authority()), owner: "inspector", now: 5_000, leaseDurationMs: 100,
+      });
+      expect(later).toMatchObject({ status: "acquired" });
+      expect(later).not.toHaveProperty("submission");
+    });
+
+    test("an adapter that signs exactly the intent passes the decoding verifier and settles", async () => {
+      const h = signingHarness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      await expect(advanceLiquidityTankSettlement(runner({
+        adapter: h.adapter, verifier: decodingVerifier,
+      }).shared)).resolves.toMatchObject({ status: "settled" });
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      ["false", async () => false],
+      ["the string true", async () => "true"],
+      ["1", () => 1],
+      ["a throw", async () => { throw new Error("decoder unavailable"); }],
+    ])("a hook answering %s stores and broadcasts nothing", async (_label, answer) => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore();
+      const recordSubmission = vi.spyOn(store, "recordSubmission");
+      await expect(advanceLiquidityTankSettlement(runner({
+        store, adapter: h.adapter,
+        verifier: { ...APPROVING_VERIFIER, verifySignedSubmission: answer as never },
+      }).shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-signed-submission-unverified",
+      });
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("a retained submission that fails verification is never observed against or rebroadcast", async () => {
+      const store = createInMemoryLiquidityTankStore();
+      const h = harness();
+      const run = runner({ store, adapter: h.adapter });
+      h.failNextBroadcast();
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "indeterminate", reason: "liquidity-tank-broadcast-outcome-uncertain",
+      });
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+      await expect(advanceLiquidityTankSettlement({
+        ...run.nextOwner(),
+        verifier: { ...APPROVING_VERIFIER, verifySignedSubmission: async () => false },
+      })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-signed-submission-unverified",
+      });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+  });
+
 });

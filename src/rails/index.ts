@@ -152,6 +152,7 @@ export {
   type LiquidityTankObservation,
   type LiquidityTankEffectFence,
   type LiquidityTankAdapter,
+  type LiquidityTankVerifier,
   type LiquidityTankLease,
   type LiquidityTankSettlement,
   type LiquidityTankRecoveryCheckpoint,

@@ -217,6 +217,36 @@ export interface LiquidityTankAdapter {
   ): Promise<Readonly<LiquidityTankObservation>>;
 }
 
+/**
+ * Host checks the core cannot make itself. Both are required: when one is
+ * missing the core refuses before any claim, and when one answers anything
+ * but literal `true` (or throws) the core does not use the value it checked.
+ */
+export interface LiquidityTankVerifier {
+  /**
+   * Authenticates one bridge observation, whether the adapter just returned it
+   * or the store retained it: status, history, bridge ID, operation hash, lock
+   * and release hashes, timestamps and `recoveryDeadline`, against the bridge's
+   * own authenticated record (for example a pinned bridge key or attestation).
+   */
+  authenticateObservation(input: Readonly<{
+    intent: Readonly<LiquidityTankIntent>;
+    submission: Readonly<LiquidityTankPreparedSubmission>;
+    observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
+  }>): Promise<boolean> | boolean;
+  /**
+   * Decodes `signedSubmissionBase64` and confirms it signs exactly this
+   * intent: source amount in base units, origin and destination addresses,
+   * asset, tank pair and the submission's `bridgeId`, and that
+   * `substrateTxHash` is recomputed from those bytes. Called before a prepared
+   * submission is stored and before a retained one is used.
+   */
+  verifySignedSubmission(input: Readonly<{
+    intent: Readonly<LiquidityTankIntent>;
+    submission: Readonly<LiquidityTankPreparedSubmission>;
+  }>): Promise<boolean> | boolean;
+}
+
 export interface LiquidityTankLease {
   owner: string;
   generation: number;
@@ -429,6 +459,7 @@ export interface AdvanceLiquidityTankInput {
   owner: string;
   store: LiquidityTankStore;
   adapter: LiquidityTankAdapter;
+  verifier: LiquidityTankVerifier;
   now?: () => number;
   leaseDurationMs?: number;
 }
@@ -1392,6 +1423,59 @@ export async function advanceLiquidityTankSettlement(
       reason: "liquidity-tank-store-recovery-capability-unavailable",
     };
   }
+  // Without the host's checks the core cannot tell a forged observation or a
+  // submission signing another amount from a genuine one, so it refuses
+  // before any claim rather than trusting the adapter.
+  let verifier: unknown;
+  try {
+    verifier = stableDataProperty(input, "verifier", "verifier");
+  } catch {
+    verifier = undefined;
+  }
+  let authenticateObservation: LiquidityTankVerifier["authenticateObservation"];
+  try {
+    authenticateObservation = stableBoundMethod<LiquidityTankVerifier["authenticateObservation"]>(
+      verifier,
+      "authenticateObservation",
+      "verifier.authenticateObservation",
+    );
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-observation-authenticator-unavailable" };
+  }
+  let verifySignedSubmission: LiquidityTankVerifier["verifySignedSubmission"];
+  try {
+    verifySignedSubmission = stableBoundMethod<LiquidityTankVerifier["verifySignedSubmission"]>(
+      verifier,
+      "verifySignedSubmission",
+      "verifier.verifySignedSubmission",
+    );
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-submission-verifier-unavailable" };
+  }
+  /** Only a literal `true` counts; a throw or any other answer does not. */
+  const authenticated = async (
+    submissionValue: Readonly<LiquidityTankPreparedSubmission>,
+    observationValue: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
+  ): Promise<boolean> => {
+    try {
+      return (await authenticateObservation(freeze({
+        intent,
+        submission: submissionValue,
+        observation: observationValue,
+      }))) === true;
+    } catch {
+      return false;
+    }
+  };
+  const verified = async (
+    submissionValue: Readonly<LiquidityTankPreparedSubmission>,
+  ): Promise<boolean> => {
+    try {
+      return (await verifySignedSubmission(freeze({ intent, submission: submissionValue }))) === true;
+    } catch {
+      return false;
+    }
+  };
   // The latest valid host clock reading; locked progress reports `pastDeadline`
   // against it.
   let latestNow = 0;
@@ -1454,18 +1538,32 @@ export async function advanceLiquidityTankSettlement(
       { status: "recovery-expired" }
     >;
     let evidence: LiquidityTankRecoveryEvidence;
+    let expiredSubmission: Readonly<LiquidityTankPreparedSubmission>;
     try {
-      const submission = validateRetainedSubmission(expiredClaim.submission, intent);
+      expiredSubmission = validateRetainedSubmission(expiredClaim.submission, intent);
       evidence = validateRecoveryEvidence(
         expiredClaim.observation,
         intent,
-        submission,
+        expiredSubmission,
       );
       if (!provesRecoveryExpiry(evidence)) {
         throw new DacsError("pay-cross-chain-liquidity-tank: recovery expiry evidence missing");
       }
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+    }
+    const evidenceObservations: readonly Readonly<
+      Exclude<LiquidityTankObservation, { status: "indeterminate" }>
+    >[] = evidence.status === "failed-after-lock"
+      ? [evidence.checkpoint, evidence.failure]
+      : [evidence];
+    for (let index = 0; index < evidenceObservations.length; index += 1) {
+      if (!await authenticated(
+        expiredSubmission,
+        evidenceObservations[index] as Exclude<LiquidityTankObservation, { status: "indeterminate" }>,
+      )) {
+        return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
+      }
     }
     // A terminal failure carries no time of its own: this host's clock must
     // also have reached the deadline before the expiry is reported.
@@ -1560,6 +1658,11 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
+    // Retained bytes are re-verified before they are observed against,
+    // settled from or rebroadcast.
+    if (!await verified(submission)) {
+      return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
+    }
   } else {
     try {
       await fence.assertCurrent();
@@ -1567,6 +1670,10 @@ export async function advanceLiquidityTankSettlement(
       await fence.assertCurrent();
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-submission-preparation-unavailable" };
+    }
+    // Bytes that do not sign exactly this intent are neither stored nor broadcast.
+    if (!await verified(submission)) {
+      return { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
     }
     let stored: boolean;
     try {
@@ -1599,6 +1706,9 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
     }
+    if (!await authenticated(submission, durableObservation)) {
+      return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
+    }
   }
 
   let durableFailure: Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }> | undefined;
@@ -1614,6 +1724,10 @@ export async function advanceLiquidityTankSettlement(
       durableFailure = evidence;
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+    }
+    if (!await authenticated(submission, durableFailure.checkpoint) ||
+        !await authenticated(submission, durableFailure.failure)) {
+      return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
     }
   }
 
@@ -1716,19 +1830,38 @@ export async function advanceLiquidityTankSettlement(
     ? persistRecoveryExpired(durableFailure, durableObservation)
     : progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
 
+  // Set when this call's observation must not be used at all, not even to
+  // fall back on durable progress: the host's authenticator refused it.
+  let observationRefusal: LiquidityTankProgress | undefined;
   const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
+    const unavailable = {
+      status: "indeterminate" as const,
+      reason: "liquidity-tank-status-unavailable",
+    };
+    let observed: Readonly<LiquidityTankObservation>;
     try {
       await fence.assertCurrent();
-      const observed = validateObservation(
+      observed = validateObservation(
         await observeSettlement(intent, submission, fence),
         intent,
         submission,
       );
-      await fence.assertCurrent();
-      return observed;
     } catch {
-      return { status: "indeterminate", reason: "liquidity-tank-status-unavailable" };
+      return unavailable;
     }
+    if (observed.status !== "indeterminate" && !await authenticated(submission, observed)) {
+      observationRefusal = {
+        status: "indeterminate",
+        reason: "liquidity-tank-observation-unauthenticated",
+      };
+      return unavailable;
+    }
+    try {
+      await fence.assertCurrent();
+    } catch {
+      return unavailable;
+    }
+    return observed;
   };
   const persistObservation = async (
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
@@ -1823,6 +1956,7 @@ export async function advanceLiquidityTankSettlement(
   };
 
   let observation = await observe();
+  if (observationRefusal) return observationRefusal;
   const terminal = await finalize(observation);
   if (terminal) return terminal;
   try {
@@ -1836,6 +1970,7 @@ export async function advanceLiquidityTankSettlement(
     };
   }
   observation = await observe();
+  if (observationRefusal) return observationRefusal;
   return await finalize(observation) ?? {
     status: "indeterminate",
     reason: "liquidity-tank-status-transition-unresolved",
