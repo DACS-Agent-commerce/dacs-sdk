@@ -1,5 +1,6 @@
 import {
   AnchorHistoryRestartRequiredError,
+  historyMetadataConflictError,
   type AnchorHistoryPageFetcher,
   type RawAnchorEntry,
 } from "../discovery/scanner.js";
@@ -117,7 +118,7 @@ function logicalAddressFromMetadata(
     throw new Error(`Demos history row ${index} has invalid logical_address metadata`);
   }
   if (camel !== undefined && snake !== undefined && camel !== snake) {
-    throw new Error(`Demos history row ${index} has conflicting logical metadata`);
+    throw historyMetadataConflictError(`Demos history row ${index} has conflicting logical metadata`);
   }
   return (camel ?? snake) as string;
 }
@@ -287,7 +288,8 @@ export function createDemosHistoryPageFetcher(
       if (!entry?.logicalAddress) continue;
       const previous = logicalByNativeAddress.get(entry.nativeAddress);
       if (previous !== undefined && previous !== entry.logicalAddress) {
-        throw new Error(
+        // This fetcher remembers the first assignment, so no retry clears it.
+        throw historyMetadataConflictError(
           `Demos history assigns conflicting logical metadata to ${entry.nativeAddress}`,
         );
       }

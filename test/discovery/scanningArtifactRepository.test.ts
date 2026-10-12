@@ -1182,6 +1182,46 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(client.getTransactionHistory).not.toHaveBeenCalled();
   });
 
+  test("conflicting logical metadata from the Demos fetcher is a conflict, not a retryable outage", async () => {
+    const ownerHex = "ab".repeat(32);
+    const native = `stor-${"1".repeat(40)}`;
+    const listing = `dacs1:${ownerHex}:listing:v1`;
+    const create = (hash: string, logicalAddress: string) => ({
+      hash, status: "confirmed", blockNumber: 1,
+      content: {
+        type: "storageProgram", from: `0x${ownerHex}`, to: native,
+        data: ["storageProgram", { operation: "CREATE_STORAGE_PROGRAM", storageAddress: native, metadata: { logicalAddress } }],
+      },
+    });
+    // Newest first: an older create assigns another logical address to the same program.
+    const history = [create("tx-2", listing), create("tx-1", `dacs1:${ownerHex}:other:v1`)];
+    const client = {
+      getTransactionHistory: vi.fn(async (_owner: string, _type: string, { start, limit }: { start: number; limit: number }) =>
+        history.slice(start, start + limit)),
+    };
+    const value = { listing: 1 };
+    const store = createInMemoryBindingStore([{
+      logicalAddress: listing, nativeAddress: native, owner: `0x${ownerHex}`, contentHash: contentHash(value), version: 1,
+    }]);
+    const repo = createScanningArtifactRepository({
+      expectedOwner: ownerHex, index: store, publisher: store,
+      adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+        readAnchor: async () => value },
+      fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
+      verifyArtifact: () => true,
+    });
+    const first = await repo.scanPage(undefined, { limit: 1 });
+    expect(first.results.map(({ outcome }) => outcome.status)).toEqual(["verified"]);
+    // The fetcher remembers the first assignment, so every retry gets the same conflict.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(repo.scanPage(first.state, { limit: 1 })).resolves.toEqual({
+        status: "conflict", code: "metadata-conflict",
+        reason: `page fetch failed: Demos history assigns conflicting logical metadata to ${native}`,
+        results: [], deferred: [], state: first.state,
+      });
+    }
+  });
+
   test("the README example returns unverifiable, then an empty exhausted page", async () => {
     const expectedOwner = "offline-seller";
     const logicalAddress = "dacs1:offline-seller:example:v1";

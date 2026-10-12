@@ -356,6 +356,50 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     );
   });
 
+  test("conflicting logical metadata is coded metadata-conflict, which no retry clears", async () => {
+    const rows = [
+      row({ hash: "tx-first", nativeAddress: NATIVE_1, logicalAddress: "dacs1:s:svc:v1" }),
+      row({ hash: "tx-conflict", nativeAddress: NATIVE_1, logicalAddress: "dacs1:s:other:v1" }),
+    ];
+    const fetchPage = createDemosHistoryPageFetcher(
+      clientWith(async (_owner, _type, { start, limit }) => rows.slice(start, start + limit)),
+      OWNER,
+    );
+    const first = await fetchPage(null, 1);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(scanAnchorPage(fetchPage, first.nextCursor, { limit: 1 })).resolves.toEqual({
+        status: "indeterminate",
+        code: "metadata-conflict",
+        reason: `page fetch failed: Demos history assigns conflicting logical metadata to ${NATIVE_1}`,
+        cursor: first.nextCursor,
+      });
+    }
+
+    const inOneRow = createDemosHistoryPageFetcher(
+      clientWith(async () => [row({
+        hash: "tx-conflict",
+        metadata: { logicalAddress: "dacs1:s:svc:v1", logical_address: "dacs1:s:svc:v2" },
+      })]),
+      OWNER,
+    );
+    await expect(scanAnchorPage(inOneRow, null, { limit: 1 })).resolves.toEqual({
+      status: "indeterminate",
+      code: "metadata-conflict",
+      reason: "page fetch failed: Demos history row 0 has conflicting logical metadata",
+      cursor: null,
+    });
+
+    // Only the fetcher's own error is coded: the same message from elsewhere stays retryable.
+    const lookalike = await scanAnchorPage(async () => {
+      throw new Error(`Demos history assigns conflicting logical metadata to ${NATIVE_1}`);
+    }, null);
+    expect(lookalike).toEqual({
+      status: "indeterminate",
+      reason: `page fetch failed: Demos history assigns conflicting logical metadata to ${NATIVE_1}`,
+      cursor: null,
+    });
+  });
+
   test("an exact-full terminal page completes via one explicit empty page", async () => {
     const rows = [row({ hash: "tx-only", logicalAddress: "dacs1:s:svc:v1" })];
     const client = clientWith(async (_owner, _type, { start, limit }) =>

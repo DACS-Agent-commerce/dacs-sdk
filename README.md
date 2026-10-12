@@ -750,9 +750,7 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   the page and re-reads the failed row. Row codes are `index-indeterminate`,
   `binding-not-yet-visible`, `read-indeterminate` and `verifier-unavailable`;
   `history-unavailable` is a page that could not be fetched. The rows after a
-  failed row are not read until it succeeds or is deferred. The Demos fetcher's
-  `history-unavailable` for history that "assigns conflicting logical metadata"
-  does not clear on retry with the same fetcher; treat it like `conflict`.
+  failed row are not read until it succeeds or is deferred.
 - `indeterminate` with `invalid-limit` or `page-limit-exceeded` (a fetcher
   returned more entries than `limit`) is a caller or fetcher fault, not a reason
   to retry later: retrying cannot clear it. Fix the `limit` option or the
@@ -786,7 +784,9 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   key: deduplicate on it if you need each row exactly once. Alert on repeated
   restarts; they do not stop by themselves.
 - `conflict` (`metadata-conflict`): history assigns two logical addresses to one
-  native address. The page stops with the unchanged cursor.
+  native address, across pages or, from the Demos fetcher, in the two metadata
+  fields of one row. The page stops with the unchanged cursor. Retrying cannot
+  clear it; alert on it.
 
 State size is bounded only by the page bound: `seen` and `metadata` hold up to
 10,000 × `limit` entries (one million at the default limit of 100), and each page

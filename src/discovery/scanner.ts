@@ -125,9 +125,10 @@ export class AnchorHistoryRestartRequiredError extends Error {
 
 /**
  * Machine-readable causes of an indeterminate page. An uncoded result is an
- * unavailable or malformed fetch that may succeed on retry. `cursor-cycle` and
- * `history-restart-required` cannot succeed on retry of the same cursor;
- * `page-limit-exceeded` and `invalid-limit` are fetcher or caller faults.
+ * unavailable or malformed fetch that may succeed on retry. `metadata-conflict`,
+ * `cursor-cycle` and `history-restart-required` cannot succeed on retry of the
+ * same cursor; `page-limit-exceeded` and `invalid-limit` are fetcher or caller
+ * faults.
  */
 export type ScanPageCode =
   | "metadata-conflict"
@@ -193,6 +194,25 @@ function requiresRestart(e: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+// Marked by identity, never by a message or code a forwarded error could carry.
+const historyMetadataConflicts = new WeakSet<object>();
+
+/**
+ * For the bundled history fetchers; not exported by the package. An `Error` for
+ * history that assigns two logical addresses to one native address, which no
+ * retry clears: {@link scanAnchorPage} codes it `metadata-conflict`, like the
+ * conflicts it detects itself.
+ */
+export function historyMetadataConflictError(message: string): Error {
+  const error = new Error(message);
+  historyMetadataConflicts.add(error);
+  return error;
+}
+
+function isHistoryMetadataConflict(e: unknown): boolean {
+  return typeof e === "object" && e !== null && historyMetadataConflicts.has(e);
 }
 
 function validateRawPage(value: unknown): RawScanPage {
@@ -281,7 +301,9 @@ export async function scanAnchorPage(
       status: "indeterminate",
       reason: `page fetch failed: ${describeError(e)}`,
       cursor,
-      ...(requiresRestart(e) ? { code: "history-restart-required" as const } : {}),
+      ...(requiresRestart(e)
+        ? { code: "history-restart-required" as const }
+        : isHistoryMetadataConflict(e) ? { code: "metadata-conflict" as const } : {}),
     };
   }
   if (cursor !== null && page.nextCursor === cursor) {
