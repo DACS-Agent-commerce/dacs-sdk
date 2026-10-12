@@ -560,7 +560,8 @@ export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): b
     case "failed":
       return true;
     case "waiting":
-      return progress.reason === "htlc-destination-claim-unresolved-after-expiry";
+      return progress.reason === "htlc-destination-claim-unresolved-after-cutoff" ||
+        progress.reason === "htlc-destination-claim-unresolved-after-expiry";
     default:
       return false;
   }
@@ -2510,13 +2511,14 @@ export async function advanceCrossChainHtlc(
             pendingClaim?.state === "absent" ? ["destination-claim"] : [],
           );
         }
-        // Still safe to wait, but past both expiries a reveal that never
-        // resolves needs an operator, so it gets a reason a host can alert on.
+        // Past the claim cutoff nothing more is sent for this reveal, but it
+        // may still land, so it waits with a reason a host pages on: before
+        // the destination expiry a person can still help it land.
         return {
           status: "waiting",
           reason: sourceExpired && destinationExpired
             ? "htlc-destination-claim-unresolved-after-expiry"
-            : "htlc-destination-claim-finality-pending",
+            : "htlc-destination-claim-unresolved-after-cutoff",
         };
       }
       refundReason = "destination-claim-unlanded";
@@ -2571,9 +2573,23 @@ export async function advanceCrossChainHtlc(
   if (!activeClaim && !authorizeDestinationClaim) {
     return { status: "waiting", reason: "htlc-destination-claim-not-authorized" };
   }
+  // A retained reveal that is neither final nor authenticated unlanded may
+  // still land, and its preimage may be in a mempool. Past the claim cutoff
+  // nothing more is sent for it, so a host pages while a person can still
+  // help it land before the destination expiry.
+  const unresolvedAfterCutoff = (): CrossChainHtlcProgress =>
+    claimState?.state !== "pending" && destinationClaimAttemptHistory.length > 0
+      ? operatorAlert(
+        revealExposedReason(false),
+        snapshot,
+        claimState?.state === "absent" ? ["destination-claim"] : [],
+      )
+      : { status: "waiting", reason: "htlc-destination-claim-unresolved-after-cutoff" };
   // An `absent` that does not name the active reveal says nothing about it.
   if (unboundAbsentClaim("destination-claim", snapshot)) {
-    return { status: "indeterminate", reason: "htlc-destination-claim-absent-unbound" };
+    return destinationClaimWindowIsOpen(expiries)
+      ? { status: "indeterminate", reason: "htlc-destination-claim-absent-unbound" }
+      : unresolvedAfterCutoff();
   }
   // Unreported, absent before any reveal, or only a replaced reveal is
   // reported failed: send the active reveal, rebroadcasting its exact retained
@@ -2583,12 +2599,15 @@ export async function advanceCrossChainHtlc(
     return advanced
       ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
       : destinationClaimCutoffReached
-        ? destinationClaimAttemptHistory.length > 0
-          ? operatorAlert(revealExposedReason(false), snapshot)
+        ? activeClaim
+          ? unresolvedAfterCutoff()
           : { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" }
         : { status: "indeterminate", reason: "htlc-destination-claim-effect-uncertain" };
   }
-  return { status: "waiting", reason: "htlc-destination-claim-finality-pending" };
+  // The active reveal is pending.
+  return destinationClaimWindowIsOpen(expiries)
+    ? { status: "waiting", reason: "htlc-destination-claim-finality-pending" }
+    : unresolvedAfterCutoff();
 }
 
 interface MemoryHtlcRecord {

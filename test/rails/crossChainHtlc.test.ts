@@ -1718,7 +1718,7 @@ describe("advanceCrossChainHtlc", () => {
     run.setClock(1_200_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-reconciler" })).resolves.toEqual({
       status: "waiting",
-      reason: "htlc-destination-claim-finality-pending",
+      reason: "htlc-destination-claim-unresolved-after-cutoff",
     });
     // The broadcast reveal can no longer land, but the preimage was broadcast
     // and the payee may still claim the source: a person must act.
@@ -2549,7 +2549,7 @@ describe("advanceCrossChainHtlc", () => {
     expect(reveals[1]).toEqual(reveals[0]);
   });
 
-  test("keeps waiting, without an alert, while a replacement reveal is pending past the destination expiry", async () => {
+  test("keeps waiting, paged but without an alert, while a replacement reveal is pending past the destination expiry", async () => {
     const { h, run } = await toFailedReveal({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
       status: "waiting",
@@ -2562,7 +2562,7 @@ describe("advanceCrossChainHtlc", () => {
     run.setClock(1_200_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "replacement-pending" })).resolves.toEqual({
       status: "waiting",
-      reason: "htlc-destination-claim-finality-pending",
+      reason: "htlc-destination-claim-unresolved-after-cutoff",
     });
     run.setClock(1_700_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "replacement-unresolved" })).resolves.toEqual({
@@ -3993,6 +3993,29 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     },
   );
 
+  test.each(["pending", "unreported", "reported absent without naming it"] as const)(
+    "pages on a retained reveal still %s after the claim cutoff, before both expiries pass",
+    async (variant) => {
+      const { h, run } = await toPendingReveal({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+      if (variant === "unreported") delete h.actions["destination-claim"];
+      if (variant === "reported absent without naming it") {
+        h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+      }
+      const preparations = h.prepareAction.mock.calls.length;
+      const broadcasts = h.broadcastRetained.mock.calls.length;
+      // The claim cutoff is the destination expiry less its 15 s finality budget.
+      for (const now of [1_185_000, 1_199_999, 1_200_000, 1_699_999]) {
+        const progress = await advanceCrossChainHtlc({ ...run.shared, owner: `at-${now}`, leaseDurationMs: 1, now: () => now });
+        expect(progress).toEqual({ status: "waiting", reason: "htlc-destination-claim-unresolved-after-cutoff" });
+        expect(htlcNeedsOperator(progress)).toBe(true);
+      }
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "both-expired", leaseDurationMs: 1, now: () => 1_700_000 }))
+        .resolves.toEqual({ status: "waiting", reason: "htlc-destination-claim-unresolved-after-expiry" });
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    },
+  );
+
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
     for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
       expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);
@@ -4010,6 +4033,7 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     { status: "operator-alert", reason: "htlc-destination-claim-absent-preimage-broadcast", txRefs: refs },
     { status: "operator-alert", reason: "htlc-refund-absent", txRefs: refs, refunds: { "source-refund": "absent" } },
     { status: "refund-stalled", reason: "destination-timeout", txRefs: refs, refunds: { "source-refund": "failed" } },
+    { status: "waiting", reason: "htlc-destination-claim-unresolved-after-cutoff" },
     { status: "waiting", reason: "htlc-destination-claim-unresolved-after-expiry" },
     { status: "failed", errorClass: "permanent", reason: "htlc-final-claim-chain-incomplete" },
   ] satisfies CrossChainHtlcProgress[])("pages an operator on $status $reason", (progress) => {
