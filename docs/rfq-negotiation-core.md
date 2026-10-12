@@ -185,6 +185,7 @@ ClaimReference/peer-key mapping are checked during history recovery.
 
 ```ts
 const transport = createDemosL2psRfqTransport({
+  // A demosdk peer whose serverUrl is wss:// (or ws:// to 127.0.0.1 or [::1]).
   peer: connectedAndRegisteredL2psMessagingPeer,
   codec: createDemosL2psRfqAesGcmCodec({ sharedKey: subnetKey }),
   l2psUid,
@@ -240,11 +241,46 @@ certificate checks) to a node it trusts: its own, or one the operator pins.
 It MUST use that same node for history and reconcile. Node `61b8e75` itself
 serves plain WebSocket (`Bun.serve` with no TLS options,
 `L2PSMessagingServer.ts:51-69`), so a remote node needs a TLS-terminating
-proxy in front of it; plain `ws://` is acceptable only to a node on the same
-host. The SDK cannot enforce this. It never constructs the peer, and demosdk
-4.0.16 keeps the server URL in a private field
-(`L2PSMessagingPeer.d.ts:28-29`), so the transport cannot see which URL a
-peer uses.
+proxy in front of it. Plain `ws://` is acceptable only to a loopback IP
+literal: `127.0.0.0/8` or `[::1]`.
+
+The transport checks this when it is constructed. demosdk 4.0.16 declares the
+peer's configuration `private` (`L2PSMessagingPeer.d.ts:28-29`), but that only
+binds the compiler: at runtime `config` is an own data property, and
+`config.serverUrl` is the URL the peer dials on every connect and reconnect
+(`L2PSMessagingPeer.js:37,223`). It is not public API, so the transport reads
+it defensively, through own data properties only: no getter or proxy trap
+runs, and no prototype is consulted. It then applies one rule:
+
+- `wss://` is accepted.
+- `ws://` is accepted only to a loopback IP literal, `127.0.0.0/8` or `[::1]`,
+  as parsed by the WHATWG URL parser that WebSocket clients also use.
+  `localhost` is refused, whether exact, with a trailing dot or as a suffix:
+  it is a name that `/etc/hosts` or DNS maps, so the URL alone does not show
+  where the socket goes. Write `ws://127.0.0.1:3006` or `ws://[::1]:3006`
+  instead of demosdk's `ws://localhost:3006` example.
+- Anything else is refused: another scheme, a string that does not parse, or
+  a `serverUrl` that is readable but is not a string.
+
+A peer that does not expose a readable `config.serverUrl`, such as a host
+wrapper, must state its channel with `peerChannel: "wss"` or
+`peerChannel: "loopback"`. `"loopback"` means plain `ws://` to `127.0.0.0/8`
+or `[::1]`, and it is the only way to allow plain WebSocket for such a peer.
+Without a readable URL or `peerChannel`, construction fails. When the URL is
+readable, it decides, and a `peerChannel` that does not match it is refused.
+If a later demosdk 4.x moves the field, a demosdk peer counts as hiding its
+URL, and construction fails until the host sets `peerChannel`.
+
+Every refusal throws `DemosL2psRfqPeerChannelError`, whose `code` is
+`unstated`, `malformed`, `insecure` or `mismatch`. Its message never repeats
+the URL, which may carry credentials.
+
+The check has limits. It runs once, at construction, so a URL changed later is
+not rechecked. It cannot see whether TLS certificate checks were turned off,
+and `peerChannel` is only the host's statement. Above all, TLS authenticates
+the channel to the node, not what the node says: an acknowledgement stays the
+node's unsigned statement. A node-signed receipt that the transport could
+verify is the longer-term fix.
 
 `outboxStore` is a required plain object with `load`/`save` data methods. It is
 an authenticated, durable, role-local
