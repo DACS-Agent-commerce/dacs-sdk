@@ -694,6 +694,7 @@ import {
   contentHash,
   createInMemoryBindingStore,
   createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
 } from "@kynesyslabs/dacs";
 
 const expectedOwner = "offline-seller";
@@ -718,7 +719,7 @@ const repository = createScanningArtifactRepository({
         nextCursor: "second-page" }
     : { entries: [], nextCursor: null },
   verifyArtifact: () => {
-    throw new Error("no offline signature and authorization provider");
+    throw new UnsupportedArtifactKindError("no offline signature and authorization provider");
   },
 });
 const first = await repository.scanPage(); // outcome.status: "unverifiable"
@@ -726,33 +727,66 @@ const second = await repository.scanPage(first.state); // Empty, exhausted page.
 ```
 
 Keep the returned `state` with its owner, cursor, `seen` and `metadata` maps,
-`consumedCursors` set, `pagesConsumed` count and `exhausted` flag. Persist maps as
-entries and reconstruct them with `new Map(entries)`; persist the set as values
-and reconstruct it with `new Set(values)`. Only fully handled rows enter `seen`;
-filtered rows remain in `metadata` for conflict detection and can be read on an
-overlapping page when `includeUnknown` is enabled. Cursor cycles stop with
-`indeterminate` without advancing or reading that page. Traversals stop before
-fetching after 10,000 consumed pages. A transient
-`indeterminate` outcome retains the page's starting cursor and only remembers its
-handled prefix: pass that state back to re-fetch and re-read the failed row. The
-remaining rows are not read until the retry succeeds. Input state is unchanged.
-Other diagnostics advance after handling; start a fresh traversal to revisit
-repaired candidates. Overlapping pages deduplicate by native address while
-rejecting conflicting logical metadata, including a row whose persisted `seen`
-and `metadata` entries disagree.
+`consumedCursors` set, `pagesConsumed` count, `exhausted` flag, `pendingRow` and
+`deferred` rows. Persist maps as entries and reconstruct them with
+`new Map(entries)`; persist the set as values and reconstruct it with
+`new Set(values)`; `pendingRow` and `deferred` are plain JSON. A state that is
+not in this shape, such as a Map persisted with plain `JSON.stringify`, is never
+read. Only fully handled rows enter `seen`; filtered rows remain in `metadata`
+for conflict detection and can be read on an overlapping page when
+`includeUnknown` is enabled. Input state is unchanged. Overlapping pages
+deduplicate by native address while rejecting conflicting logical metadata,
+including a row whose persisted `seen` and `metadata` entries disagree.
 
-Each result retains its classified `anchor` and discriminated `outcome`: `absent`
-(unresolved), `conflict`, `binding-mismatch`, `unreadable`, `hash-mismatch`,
-`signature-invalid`, `unverifiable`, `indeterminate` or `verified`. Known binding
-conflicts carry `code: "binding-conflict"` in the underlying resolver/read API;
-an untagged indeterminate index result stays retryable. History metadata conflicts
-stop the page with `status: "conflict"` and the unchanged cursor. Only an exact
-binding hash plus literal `true` from the artifact-specific signature and
+Every non-`page` result carries a machine-readable `code`. Act on its `status`:
+
+- `indeterminate`: retry later with the returned state. It keeps the page's
+  starting cursor and remembers only the handled prefix, so the retry re-fetches
+  the page and re-reads the failed row. Row codes are `index-indeterminate`,
+  `binding-not-yet-visible`, `read-indeterminate` and `verifier-unavailable`;
+  page codes are `history-unavailable`, `page-limit-exceeded` (a fetcher returned
+  more entries than `limit`) and `invalid-limit`. The rows after a failed row are
+  not read until it succeeds or is deferred.
+- Deferral: after `maxRowAttempts` (default 5) consecutive `indeterminate`
+  attempts on the same row, counted in `state.pendingRow`, the row is deferred
+  with its code, reason and attempt count, and the page continues. The call
+  returns the rows it deferred in `deferred`; `state.deferred` keeps all of them,
+  and they never enter `seen`. Alert on deferred rows. The traversal does not
+  retry them: start a new traversal from null (`scanPage()` without state), which
+  re-reads every row, or check one row with `repository.read(anchor.logicalAddress,
+  expectedOwner, verifier)` and compare its `nativeAddress` with the deferred
+  `anchor.nativeAddress`.
+- `restart-required`: retrying the same state cannot succeed. The codes are
+  `cursor-cycle`, `page-bound` (10,000 consumed pages), `foreign-owner-state`,
+  `invalid-state` and `history-restart-required` (the fetcher threw
+  `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
+  boundary is missing or duplicated). The returned `state` is a fresh traversal
+  from a null cursor; nothing is read or advanced. Alert if restarts repeat.
+- `conflict` (`metadata-conflict`): history assigns two logical addresses to one
+  native address. The page stops with the unchanged cursor.
+
+State size is bounded only by the page bound: `seen` and `metadata` hold up to
+10,000 × `limit` entries (one million at the default limit of 100), and each page
+copies them. Reducing this state is a follow-up.
+
+Each result retains its classified `anchor` and discriminated `outcome`:
+`conflict`, `binding-mismatch`, `unreadable`, `hash-mismatch`,
+`signature-invalid`, `unverifiable`, `indeterminate` or `verified`. A history row
+whose binding is not yet in the index is `indeterminate` with
+`code: "binding-not-yet-visible"`, as in `write`, which anchors before it
+publishes. Known binding conflicts carry `code: "binding-conflict"` in the
+underlying resolver/read API and are `conflict` here. A row whose history `owner`
+differs from `expectedOwner` is `binding-mismatch`; this check depends on the
+fetcher returning `owner` (the Demos fetcher does). Without it, only the binding
+owner check, the native-address check and the verifier constrain the row. Only an
+exact binding hash plus literal `true` from the artifact-specific signature and
 authorization verifier yields `verified`. The verifier must check signed scope,
 domain, supported version, expected owner/role and logical slot for each kind.
-Unsupported kinds or unavailable verification must throw. Throws produce
-`unverifiable`. Return `false` only for a completed negative signature or
-authorization check, which produces `signature-invalid`.
+Return `false` only for a completed negative signature or authorization check,
+which produces `signature-invalid`. Throw `UnsupportedArtifactKindError` for an
+unsupported kind or version, which produces a final `unverifiable` with
+`code: "unsupported-kind"`. Any other throw means verification is unavailable
+and produces a retryable `indeterminate` with `code: "verifier-unavailable"`.
 Neither classification, a verified artifact nor `exhausted: true` proves complete
 enumeration, freshness, or non-revocation; perform the artifact's protocol-specific
 admission and revocation checks before using it.

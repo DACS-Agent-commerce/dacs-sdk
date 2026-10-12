@@ -25,9 +25,15 @@ export {
 } from "./boundArtifactRepository.js";
 export {
   createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
   type ScanningArtifactRepository,
   type ScanningArtifactRepositoryDeps,
   type ArtifactScanState,
+  type ArtifactScanDeferredRow,
+  type ArtifactRowIndeterminateCode,
+  type ArtifactScanIndeterminateCode,
+  type ArtifactScanRestartCode,
+  type ScannedArtifactOutcome,
   type ScannedArtifactRead,
   type ArtifactScanPage,
 } from "./scanningArtifactRepository.js";

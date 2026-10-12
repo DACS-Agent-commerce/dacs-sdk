@@ -6,6 +6,7 @@ import {
   createInMemoryBindingIndex,
   createInMemoryBindingStore,
   createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
   type AnchorBinding,
   type ArtifactScanState,
   type BoundArtifactAdapter,
@@ -13,7 +14,13 @@ import {
   type RawScanPage,
   type ScanningArtifactRepositoryDeps,
 } from "../../src/discovery/index.js";
-import { createScanningArtifactRepository as fromRoot } from "../../src/index.js";
+import {
+  AnchorHistoryRestartRequiredError as restartErrorFromRoot,
+  createScanningArtifactRepository as fromRoot,
+  UnsupportedArtifactKindError as unsupportedErrorFromRoot,
+} from "../../src/index.js";
+import { AnchorHistoryRestartRequiredError } from "../../src/discovery/index.js";
+import { createDemosHistoryPageFetcher } from "../../src/substrate/demosHistory.js";
 
 const OWNER = "seller";
 const logical = (id: string) => `dacs1:${OWNER}:${id}:v1`;
@@ -45,6 +52,11 @@ const state = (cursor: string | null): ArtifactScanState => ({
   consumedCursors: new Set(),
   pagesConsumed: 0,
   exhausted: false,
+  pendingRow: null,
+  deferred: [],
+});
+const retrying = (input: ArtifactScanState, id: string, attempts = 1): ArtifactScanState => ({
+  ...input, pendingRow: { nativeAddress: `stor-${id}`, attempts },
 });
 
 function setup(ids: string[], over: Partial<ScanningArtifactRepositoryDeps> = {}) {
@@ -85,9 +97,10 @@ describe("createScanningArtifactRepository (#54)", () => {
       });
       const input = state("retry");
       const result = await fixture.repo.scanPage(input);
-      expect(result).toMatchObject({ status: "indeterminate", state: input });
+      expect(result).toMatchObject({ status: "indeterminate", code: "index-indeterminate", state: retrying(input, "a") });
       expect(result.results.map(({ outcome }) => outcome)).toEqual([{
         status: "indeterminate",
+        code: "index-indeterminate",
         reason: "binding resolution failed: binding index returned an invalid reason",
       }]);
       expect(fixture.readAnchor).not.toHaveBeenCalled();
@@ -105,17 +118,18 @@ describe("createScanningArtifactRepository (#54)", () => {
     const statusTrap = new Proxy({}, {
       get(_target, key) { if (key === "status") throw make(); return undefined; },
     });
-    const sources: Partial<ScanningArtifactRepositoryDeps>[] = [
-      { index: { resolve: async () => { throw make(); } } },
-      { index: { resolve: async () => statusTrap as never } },
-      { fetchPage: async () => { throw make(); } },
+    const sources: [Partial<ScanningArtifactRepositoryDeps>, string, boolean][] = [
+      [{ index: { resolve: async () => { throw make(); } } }, "index-indeterminate", true],
+      [{ index: { resolve: async () => statusTrap as never } }, "index-indeterminate", true],
+      [{ fetchPage: async () => { throw make(); } }, "history-unavailable", false],
     ];
-    for (const over of sources) {
+    for (const [over, code, rowFailed] of sources) {
       const fixture = setup(["a"], over);
       const input = state("retry");
       const result = await fixture.repo.scanPage(input);
       expect(result).toMatchObject({
-        status: "indeterminate", reason: expect.stringMatching(/: unknown error$/), state: input,
+        status: "indeterminate", code, reason: expect.stringMatching(/: unknown error$/),
+        state: rowFailed ? retrying(input, "a") : input,
       });
       expect(result.state.seen.size).toBe(0);
       expect(fixture.readAnchor).not.toHaveBeenCalled();
@@ -131,9 +145,10 @@ describe("createScanningArtifactRepository (#54)", () => {
       });
       const input = state("retry");
       const result = await fixture.repo.scanPage(input);
-      expect(result).toMatchObject({ status: "indeterminate", state: input });
+      expect(result).toMatchObject({ status: "indeterminate", state: retrying(input, "a") });
       expect(result.results.map(({ outcome }) => outcome)).toEqual([{
         status: "indeterminate",
+        code: "index-indeterminate",
         reason: "binding resolution failed: binding index returned a malformed binding",
       }]);
       expect(result.state.seen.size).toBe(0);
@@ -155,14 +170,17 @@ describe("createScanningArtifactRepository (#54)", () => {
     ["infinite pagesConsumed", { pagesConsumed: Number.POSITIVE_INFINITY }],
     ["missing exhausted", { exhausted: undefined }],
     ["string exhausted", { exhausted: "false" }],
-  ])("invalid scalar scan state (%s) is indeterminate without fetching", async (_name, bad) => {
+  ])("invalid scalar scan state (%s) requires a restart without fetching", async (_name, bad) => {
     const fixture = setup(["a"]);
     const input = { ...state("next"), ...bad } as unknown as ArtifactScanState;
     const result = await fixture.repo.scanPage(input);
-    expect(result).toMatchObject({
-      status: "indeterminate",
-      reason: "scan state has an invalid owner, cursor, page count or exhaustion flag",
+    expect(result).toEqual({
+      status: "restart-required",
+      code: "invalid-state",
+      reason: "scan state has an invalid owner, cursor, collection, page count, row or exhaustion flag",
       results: [],
+      deferred: [],
+      state: state(null),
     });
     expect(fixture.fetchPage).not.toHaveBeenCalled();
     expect(fixture.readAnchor).not.toHaveBeenCalled();
@@ -174,6 +192,8 @@ describe("createScanningArtifactRepository (#54)", () => {
       seen = new Map<string, string>();
       metadata = new Map<string, string>();
       consumedCursors = new Set<string>(["earlier"]);
+      pendingRow = null;
+      deferred = [];
       get owner() { reads.owner++; return OWNER; }
       get cursor() { reads.cursor++; return "next"; }
       get pagesConsumed() { reads.pagesConsumed++; return 9_999; }
@@ -223,6 +243,8 @@ describe("createScanningArtifactRepository (#54)", () => {
 
   test("is exported through discovery and the package root", () => {
     expect(fromRoot).toBe(createScanningArtifactRepository);
+    expect(unsupportedErrorFromRoot).toBe(UnsupportedArtifactKindError);
+    expect(restartErrorFromRoot).toBe(AnchorHistoryRestartRequiredError);
   });
 
   test("composes independent publication and verified reads across two pages", async () => {
@@ -364,7 +386,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const result = await fixture.repo.scanPage();
     expect(result).toMatchObject({ status: "indeterminate", state: { cursor: null, exhausted: false } });
     expect(result.results.map(({ outcome }) => outcome)).toEqual([
-      { status: "indeterminate", reason: "index unavailable" },
+      { status: "indeterminate", code: "index-indeterminate", reason: "index unavailable" },
     ]);
     expect(result.state.seen.size).toBe(0);
     expect(fixture.readAnchor).not.toHaveBeenCalled();
@@ -399,7 +421,12 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup(["a"], { index: { resolve: async () => flipping as never } });
     fixture.records.set("stor-other", record("a"));
     const result = await fixture.repo.scanPage();
-    expect(result.results.map(({ outcome }) => outcome)).toEqual([{ status: "absent" }]);
+    expect(result.results.map(({ outcome }) => outcome)).toEqual([{
+      status: "indeterminate",
+      code: "binding-not-yet-visible",
+      reason: "history row has no binding visible in the configured index yet",
+    }]);
+    expect(result.state.seen.size).toBe(0);
     expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(fixture.verifyArtifact).not.toHaveBeenCalled();
   });
@@ -419,8 +446,8 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.verifyArtifact).toHaveBeenCalledOnce();
   });
 
-  test("preserves absent, unreadable, unverifiable and conflict diagnostics", async () => {
-    const ids = ["absent", "unreadable", "hashless", "conflict", "different-native", "good"];
+  test("preserves unreadable, unverifiable and conflict diagnostics", async () => {
+    const ids = ["unreadable", "hashless", "conflict", "different-native", "good"];
     const fixture = setup(ids, { index: createInMemoryBindingIndex([
       binding("unreadable"), { ...binding("hashless"), contentHash: undefined },
       binding("conflict"), { ...binding("conflict"), nativeAddress: "stor-other" },
@@ -430,18 +457,22 @@ describe("createScanningArtifactRepository (#54)", () => {
     const result = await fixture.repo.scanPage();
     expect(result.status).toBe("page");
     expect(result.results.map(({ outcome }) => outcome.status)).toEqual([
-      "absent", "unreadable", "unverifiable", "conflict", "conflict", "verified",
+      "unreadable", "unverifiable", "conflict", "conflict", "verified",
     ]);
     expect(result.state.seen.size).toBe(ids.length);
     expect(fixture.verifyArtifact).toHaveBeenCalledOnce();
   });
 
-  test.each(["throw", "missing", "truthy"])("fails closed when verifier is %s", async (mode) => {
+  test.each([
+    ["throw", "indeterminate"], ["missing", "unverifiable"], ["truthy", "signature-invalid"],
+  ])("fails closed when verifier is %s", async (mode, status) => {
     const verifyArtifact = mode === "missing" ? undefined
       : mode === "truthy" ? () => ({})
       : () => { throw new Error("verification unavailable"); };
     const fixture = setup(["a"], { verifyArtifact: verifyArtifact as unknown as ScanningArtifactRepositoryDeps["verifyArtifact"] });
-    expect((await fixture.repo.scanPage()).results[0]?.outcome.status).toBe(mode === "truthy" ? "signature-invalid" : "unverifiable");
+    const result = await fixture.repo.scanPage();
+    expect(result.results[0]?.outcome.status).toBe(status);
+    expect(result.state.seen.has("stor-a")).toBe(status !== "indeterminate");
   });
 
   test("documents thrown unavailable verification separately from completed false results", () => {
@@ -449,24 +480,52 @@ describe("createScanningArtifactRepository (#54)", () => {
     const tsdoc = source.split("verifyArtifact:")[0]!.replace(/\s*\*\s*/g, " ").replace(/\s+/g, " ");
     const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
     for (const documentation of [tsdoc, readme]) {
-      expect(documentation).toMatch(/Unsupported kinds or unavailable verification must throw\./);
+      expect(documentation).toMatch(/Throw `UnsupportedArtifactKindError` for an unsupported kind or version/);
+      expect(documentation).toMatch(/unverifiable` with `code: "unsupported-kind"`/);
+      expect(documentation).toMatch(/Any other throw means verification is unavailable/);
+      expect(documentation).toMatch(/`indeterminate` with `code: "verifier-unavailable"`/);
       expect(documentation).toMatch(/false`? only for a completed.*signature-invalid/);
-      expect(documentation).toContain("unverifiable");
     }
   });
 
   test.each([
-    { mode: "completed negative", verify: () => false, status: "signature-invalid" },
-    { mode: "unsupported", verify: () => { throw new Error("unsupported version"); }, status: "unverifiable" },
-    { mode: "unavailable", verify: async () => { throw new Error("verification service unavailable"); }, status: "unverifiable" },
-  ])("keeps $mode verification distinct", async ({ verify, status }) => {
+    { mode: "completed negative", verify: () => false, outcome: { status: "signature-invalid", nativeAddress: "stor-a" } },
+    { mode: "unsupported", verify: () => { throw new UnsupportedArtifactKindError("unsupported version"); },
+      outcome: { status: "unverifiable", code: "unsupported-kind", nativeAddress: "stor-a" } },
+    { mode: "coded unsupported", verify: () => { throw Object.assign(new Error("unsupported"), { code: "unsupported-kind" }); },
+      outcome: { status: "unverifiable", code: "unsupported-kind", nativeAddress: "stor-a" } },
+  ])("keeps $mode verification distinct and handled", async ({ verify, outcome }) => {
     const verifier = vi.fn(verify);
     const fixture = setup(["a"], { verifyArtifact: verifier });
     const result = await fixture.repo.scanPage();
-    expect(result.results[0]?.outcome).toMatchObject({ status, nativeAddress: "stor-a" });
+    expect(result.results[0]?.outcome).toMatchObject(outcome);
     expect(result.status).toBe("page");
     expect(result.state.seen.has("stor-a")).toBe(true);
     expect(verifier).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ["an async throw", async () => { throw new Error("verification service unavailable"); }],
+    ["a sync throw", () => { throw new Error("registry 503"); }],
+    ["a hostile code getter", () => {
+      throw Object.defineProperty(new Error("registry 503"), "code", { get() { throw new Error("trap"); } });
+    }],
+  ])("unavailable verification (%s) stays retryable at the same row", async (_name, verify) => {
+    const verifier = vi.fn(verify);
+    const fixture = setup(["a", "b"], { verifyArtifact: verifier });
+    fixture.fetchPage.mockResolvedValue({ entries: [row("a"), row("b")], nextCursor: "later" });
+    const result = await fixture.repo.scanPage(state("page"));
+    expect(result).toMatchObject({
+      status: "indeterminate", code: "verifier-unavailable",
+      reason: expect.stringContaining("signature verification threw"),
+      state: { cursor: "page", pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    expect(result.results.map(({ outcome }) => outcome)).toEqual([{
+      status: "indeterminate", code: "verifier-unavailable", reason: expect.any(String),
+    }]);
+    expect(result.state.seen.size).toBe(0);
+    expect(verifier).toHaveBeenCalledOnce();
+    expect(fixture.readAnchor.mock.calls).toEqual([["stor-a"]]);
   });
 
   test("an indeterminate index leaves the row retryable even on the last page", async () => {
@@ -510,9 +569,9 @@ describe("createScanningArtifactRepository (#54)", () => {
       }
       const before = structuredClone(input);
       const cycle = await fixture.repo.scanPage(input);
-      expect(cycle).toMatchObject({ status: "indeterminate", results: [] });
-      if (cycle.status === "indeterminate") expect(cycle.reason).toContain("cursor cycle");
-      expect(cycle.state).toEqual(before);
+      expect(cycle).toMatchObject({ status: "restart-required", code: "cursor-cycle", results: [] });
+      if (cycle.status === "restart-required") expect(cycle.reason).toContain("cursor cycle");
+      expect(cycle.state).toEqual(state(null));
       expect(input).toEqual(before);
       expect(fixture.readAnchor).not.toHaveBeenCalled();
     },
@@ -522,7 +581,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup([]);
     const input = { ...state("A"), consumedCursors: new Set(["A"]) };
     const result = await fixture.repo.scanPage(input);
-    expect(result).toMatchObject({ status: "indeterminate", results: [], state: input });
+    expect(result).toMatchObject({ status: "restart-required", code: "cursor-cycle", results: [], state: state(null) });
     expect(fixture.fetchPage).not.toHaveBeenCalled();
   });
 
@@ -537,11 +596,11 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fetchFailure.status).toBe("indeterminate");
     expect(fetchFailure.state).toEqual(first.state);
     const readFailure = await fixture.repo.scanPage(fetchFailure.state);
-    expect(readFailure.status).toBe("indeterminate");
-    expect(readFailure.state).toEqual(first.state);
+    expect(readFailure).toMatchObject({ status: "indeterminate", code: "read-indeterminate" });
+    expect(readFailure.state).toEqual(retrying(first.state, "a"));
     fixture.fetchPage.mockResolvedValue({ entries: [row("a")], nextCursor: "B" });
     const retry = await fixture.repo.scanPage(readFailure.state);
-    expect(retry).toMatchObject({ status: "page", state: { cursor: "B", pagesConsumed: 2 } });
+    expect(retry).toMatchObject({ status: "page", state: { cursor: "B", pagesConsumed: 2, pendingRow: null } });
     expect(retry.results[0]?.outcome.status).toBe("verified");
   });
 
@@ -549,8 +608,8 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup([]);
     const input = Object.assign(state("next"), { pagesConsumed: 10_000 });
     const result = await fixture.repo.scanPage(input);
-    expect(result).toMatchObject({ status: "indeterminate", results: [], state: input });
-    if (result.status === "indeterminate") expect(result.reason).toContain("10000 pages");
+    expect(result).toMatchObject({ status: "restart-required", code: "page-bound", results: [], state: state(null) });
+    if (result.status === "restart-required") expect(result.reason).toContain("10000 pages");
     expect(fixture.fetchPage).not.toHaveBeenCalled();
   });
 
@@ -559,7 +618,9 @@ describe("createScanningArtifactRepository (#54)", () => {
     const first = await fixture.repo.scanPage();
     fixture.fetchPage.mockResolvedValue({ entries: [{ ...row("a"), logicalAddress: logical("other") }], nextCursor: null });
     const result = await fixture.repo.scanPage({ ...first.state, cursor: "second", exhausted: false });
-    expect(result).toMatchObject({ status: "conflict", results: [], state: { cursor: "second", exhausted: false } });
+    expect(result).toMatchObject({
+      status: "conflict", code: "metadata-conflict", results: [], state: { cursor: "second", exhausted: false },
+    });
     expect(fixture.readAnchor).toHaveBeenCalledOnce();
   });
 
@@ -567,7 +628,9 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup(["a"], { index: createInMemoryBindingIndex([{ ...binding("a"), logicalAddress: "dacs9:unknown" }]),
       verifyArtifact: () => true });
     fixture.fetchPage.mockResolvedValue({ entries: [{ ...row("a"), logicalAddress: "dacs9:unknown" }], nextCursor: null });
-    expect((await fixture.repo.scanPage(undefined, { includeUnknown: true })).results[0]?.outcome.status).toBe("unverifiable");
+    expect((await fixture.repo.scanPage(undefined, { includeUnknown: true })).results[0]?.outcome).toMatchObject({
+      status: "unverifiable", code: "unsupported-kind",
+    });
   });
 
   test("reads an overlapping filtered row when includeUnknown is later enabled", async () => {
@@ -627,12 +690,318 @@ describe("createScanningArtifactRepository (#54)", () => {
   test("rejects reuse of another owner's state before fetching", async () => {
     const fixture = setup([]);
     const result = await fixture.repo.scanPage({ ...state("foreign"), owner: "other" });
-    expect(result).toMatchObject({ status: "indeterminate", results: [], state: { cursor: "foreign" } });
+    expect(result).toMatchObject({
+      status: "restart-required", code: "foreign-owner-state", results: [], state: state(null),
+    });
     expect(fixture.fetchPage).not.toHaveBeenCalled();
   });
 
   test("requires a nonempty expected owner", () => {
     const fixture = setup([]);
     expect(() => createScanningArtifactRepository({ ...fixture.deps, expectedOwner: "  " })).toThrow("expectedOwner");
+  });
+
+  test.each([0, -1, 1.5, Number.NaN, "5"])("rejects maxRowAttempts %j", (maxRowAttempts) => {
+    const fixture = setup([]);
+    expect(() => createScanningArtifactRepository({
+      ...fixture.deps, maxRowAttempts: maxRowAttempts as number,
+    })).toThrow("maxRowAttempts");
+  });
+
+  test("E1: a verifier outage is retried at the same row once the service recovers", async () => {
+    let available = false;
+    const verifier = vi.fn(() => { if (!available) throw new Error("registry 503"); return true; });
+    const fixture = setup(["a", "b"], { verifyArtifact: verifier });
+    fixture.fetchPage.mockImplementation(async (cursor) => cursor === null
+      ? { entries: [row("a"), row("b")], nextCursor: "p2" }
+      : { entries: [row("a")], nextCursor: null });
+    const first = await fixture.repo.scanPage();
+    expect(first).toMatchObject({
+      status: "indeterminate", code: "verifier-unavailable", deferred: [],
+      state: { cursor: null, pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    expect(first.state.seen.size).toBe(0);
+    available = true;
+    const retry = await fixture.repo.scanPage(first.state);
+    expect(retry.status).toBe("page");
+    expect(retry.results.map(({ anchor, outcome }) => [anchor.nativeAddress, outcome.status])).toEqual([
+      ["stor-a", "verified"], ["stor-b", "verified"],
+    ]);
+    expect(retry.state).toMatchObject({ cursor: "p2", pendingRow: null });
+    expect(verifier).toHaveBeenCalledTimes(3);
+  });
+
+  test("E2: a binding published after its history row is retried, not recorded as absent", async () => {
+    const fixture = setup([]);
+    const store = createInMemoryBindingStore();
+    fixture.records.set("stor-a", record("a"));
+    const repo = createScanningArtifactRepository({ ...fixture.deps, index: store, publisher: store });
+    fixture.fetchPage.mockImplementation(async (cursor) => cursor === null
+      ? { entries: [row("a")], nextCursor: "p2" }
+      : { entries: [row("a")], nextCursor: null });
+    const first = await repo.scanPage();
+    expect(first).toMatchObject({
+      status: "indeterminate", code: "binding-not-yet-visible",
+      state: { cursor: null, pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    expect(first.results.map(({ outcome }) => outcome.status)).toEqual(["indeterminate"]);
+    expect(first.state.seen.size).toBe(0);
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+    await store.publish(binding("a")); // write anchors first and publishes afterwards
+    const retry = await repo.scanPage(first.state);
+    expect(retry).toMatchObject({ status: "page", state: { cursor: "p2" } });
+    expect(retry.results.map(({ outcome }) => outcome.status)).toEqual(["verified"]);
+  });
+
+  test("L1: a persistently indeterminate row is deferred and later rows and pages are read", async () => {
+    const fixture = setup(["a", "b", "c", "d"]);
+    const store = createInMemoryBindingStore(["a", "b", "c", "d"].map(binding));
+    const resolve = vi.fn(async (logicalAddress: string, owner: string) => logicalAddress === logical("b")
+      ? { status: "indeterminate" as const, reason: "catalog candidate uses unsupported anchor kind x" }
+      : store.resolve(logicalAddress, owner));
+    const repo = createScanningArtifactRepository({ ...fixture.deps, index: { resolve } });
+    fixture.fetchPage.mockImplementation(async (cursor) => cursor === null
+      ? { entries: [row("a"), row("b"), row("c")], nextCursor: "p2" }
+      : { entries: [row("b"), row("d")], nextCursor: null });
+    let page = await repo.scanPage();
+    const statuses: string[] = [page.status];
+    for (let attempt = 2; attempt <= 4; attempt++) {
+      expect(page).toMatchObject({
+        status: "indeterminate", code: "index-indeterminate", deferred: [],
+        state: { cursor: null, pendingRow: { nativeAddress: "stor-b", attempts: attempt - 1 } },
+      });
+      page = await repo.scanPage(page.state);
+      statuses.push(page.status);
+    }
+    page = await repo.scanPage(page.state);
+    statuses.push(page.status);
+    expect(statuses).toEqual(["indeterminate", "indeterminate", "indeterminate", "indeterminate", "page"]);
+    const deferredRow = {
+      anchor: { ...row("b"), kind: "listing" }, code: "index-indeterminate",
+      reason: "catalog candidate uses unsupported anchor kind x", attempts: 5,
+    };
+    expect(page.deferred).toEqual([deferredRow]);
+    expect(page.results.map(({ anchor, outcome }) => [anchor.nativeAddress, outcome.status])).toEqual([
+      ["stor-b", "indeterminate"], ["stor-c", "verified"],
+    ]);
+    expect(page.state).toMatchObject({ cursor: "p2", pendingRow: null, deferred: [deferredRow] });
+    expect([...page.state.seen.keys()]).toEqual(["stor-a", "stor-c"]);
+    // The deferred row is skipped on an overlapping later page, never re-read.
+    const later = await repo.scanPage(page.state);
+    expect(later).toMatchObject({ status: "page", deferred: [], state: { exhausted: true, deferred: [deferredRow] } });
+    expect(later.results.map(({ anchor }) => anchor.nativeAddress)).toEqual(["stor-d"]);
+    expect(later.state.seen.has("stor-b")).toBe(false);
+    expect(resolve.mock.calls.filter(([address]) => address === logical("b"))).toHaveLength(5);
+    // Restarting from null retries it.
+    resolve.mockImplementation((logicalAddress, owner) => store.resolve(logicalAddress, owner));
+    const restarted = await repo.scanPage();
+    expect(restarted.results.map(({ anchor, outcome }) => [anchor.nativeAddress, outcome.status])).toEqual([
+      ["stor-a", "verified"], ["stor-b", "verified"], ["stor-c", "verified"],
+    ]);
+  });
+
+  test("counts only consecutive indeterminate attempts on the same row, with a configurable bound", async () => {
+    const fixture = setup(["a", "b"]);
+    const outcomes: Record<string, string[]> = { a: ["fail", "ok"], b: ["fail", "fail"] };
+    fixture.readAnchor.mockImplementation(async (address) => {
+      const id = address.slice("stor-".length);
+      if (outcomes[id]?.shift() === "fail") throw new Error(`read ${id} unavailable`);
+      return fixture.records.get(address) ?? null;
+    });
+    const repo = createScanningArtifactRepository({ ...fixture.deps, maxRowAttempts: 2 });
+    fixture.fetchPage.mockResolvedValueOnce({ entries: [row("a"), row("b")], nextCursor: null })
+      .mockRejectedValueOnce(new Error("history unavailable"))
+      .mockResolvedValue({ entries: [row("a"), row("b")], nextCursor: null });
+    const first = await repo.scanPage();
+    expect(first.state.pendingRow).toEqual({ nativeAddress: "stor-a", attempts: 1 });
+    // An unavailable page is not an attempt on the row and does not reset it.
+    const fetchFailure = await repo.scanPage(first.state);
+    expect(fetchFailure).toMatchObject({ status: "indeterminate", code: "history-unavailable" });
+    expect(fetchFailure.state.pendingRow).toEqual({ nativeAddress: "stor-a", attempts: 1 });
+    // stor-a recovers; stor-b's first failure starts its own count.
+    const second = await repo.scanPage(fetchFailure.state);
+    expect(second).toMatchObject({ status: "indeterminate", code: "read-indeterminate" });
+    expect(second.state.pendingRow).toEqual({ nativeAddress: "stor-b", attempts: 1 });
+    const third = await repo.scanPage(second.state);
+    expect(third).toMatchObject({ status: "page", state: { exhausted: true, pendingRow: null } });
+    expect(third.deferred).toMatchObject([{ anchor: { nativeAddress: "stor-b" }, code: "read-indeterminate", attempts: 2 }]);
+    expect([...third.state.seen.keys()]).toEqual(["stor-a"]);
+  });
+
+  test("S1: JSON-persisted Maps return a restart diagnostic instead of rejecting", async () => {
+    const fixture = setup(["a"]);
+    const first = await fixture.repo.scanPage();
+    const naive = JSON.parse(JSON.stringify({ ...first.state, exhausted: false, cursor: "c" })) as ArtifactScanState;
+    const result = await fixture.repo.scanPage(naive);
+    expect(result).toMatchObject({ status: "restart-required", code: "invalid-state", results: [], state: state(null) });
+    expect(fixture.fetchPage).toHaveBeenCalledOnce();
+  });
+
+  test.each<[string, Record<string, unknown>]>([
+    ["missing seen", { seen: undefined }],
+    ["object seen", { seen: {} }],
+    ["string seen", { seen: "stor-a" }],
+    ["non-pair seen entry", { seen: [["stor-a"]] }],
+    ["non-string seen value", { seen: new Map([["stor-a", 7]]) }],
+    ["null metadata", { metadata: null }],
+    ["non-string consumed cursor", { consumedCursors: new Set([7]) }],
+    ["throwing iterator", { consumedCursors: { [Symbol.iterator]() { throw new Error("trap"); } } }],
+    ["missing pendingRow", { pendingRow: undefined }],
+    ["zero pendingRow attempts", { pendingRow: { nativeAddress: "stor-a", attempts: 0 } }],
+    ["missing deferred", { deferred: undefined }],
+    ["unknown deferred code", { deferred: [{ anchor: row("a"), code: "absent", reason: "", attempts: 1 }] }],
+    ["deferred without anchor", { deferred: [{ code: "read-indeterminate", reason: "", attempts: 1 }] }],
+  ])("malformed persisted state (%s) requires a restart without fetching", async (_name, bad) => {
+    const fixture = setup(["a"]);
+    const input = { ...state("next"), ...bad } as unknown as ArtifactScanState;
+    await expect(fixture.repo.scanPage(input)).resolves.toMatchObject({
+      status: "restart-required", code: "invalid-state", results: [], state: state(null),
+    });
+    expect(fixture.fetchPage).not.toHaveBeenCalled();
+  });
+
+  test("accepts state persisted as entries, values and plain JSON rows", async () => {
+    const fixture = setup(["a", "b"]);
+    fixture.fetchPage.mockResolvedValue({ entries: [row("a"), row("b")], nextCursor: null });
+    const persisted = JSON.parse(JSON.stringify({
+      ...state("next"),
+      seen: [["stor-x", logical("x")]],
+      metadata: [["stor-x", logical("x")]],
+      consumedCursors: ["earlier"],
+      pendingRow: { nativeAddress: "stor-a", attempts: 1 },
+      deferred: [{ anchor: { ...row("b"), kind: "rating" }, code: "read-indeterminate", reason: "r", attempts: 5 }],
+    })) as Omit<ArtifactScanState, "seen" | "metadata" | "consumedCursors"> & {
+      seen: [string, string][]; metadata: [string, string][]; consumedCursors: string[];
+    };
+    const result = await fixture.repo.scanPage({
+      ...persisted,
+      seen: new Map(persisted.seen),
+      metadata: new Map(persisted.metadata),
+      consumedCursors: new Set(persisted.consumedCursors),
+    });
+    expect(result.status).toBe("page");
+    expect(result.results.map(({ anchor }) => anchor.nativeAddress)).toEqual(["stor-a"]);
+    // A persisted kind is reclassified, never trusted.
+    expect(result.state.deferred).toEqual([{
+      anchor: { ...row("b"), kind: "listing" }, code: "read-indeterminate", reason: "r", attempts: 5,
+    }]);
+  });
+
+  test("refuses a custom fetcher page larger than the limit without reading it", async () => {
+    const fixture = setup(["a", "b", "c"]);
+    fixture.fetchPage.mockResolvedValue({ entries: [row("a"), row("b"), row("c")], nextCursor: "later" });
+    const input = state("page");
+    const result = await fixture.repo.scanPage(input, { limit: 2 });
+    expect(result).toEqual({
+      status: "indeterminate", code: "page-limit-exceeded",
+      reason: "page fetch failed: history page returned 3 entries for limit 2",
+      results: [], deferred: [], state: input,
+    });
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+  });
+
+  test("an invalid page limit is coded and never fetches", async () => {
+    const fixture = setup(["a"]);
+    await expect(fixture.repo.scanPage(undefined, { limit: 0 })).resolves.toMatchObject({
+      status: "indeterminate", code: "invalid-limit",
+    });
+    expect(fixture.fetchPage).not.toHaveBeenCalled();
+  });
+
+  test("D1: composes with the Demos history fetcher and restarts when its boundary is lost", async () => {
+    const ownerHex = "ab".repeat(32);
+    const address = (n: number) => `stor-${n.toString(16).padStart(40, "0")}`;
+    const logicalOf = (n: number) => `dacs1:${ownerHex}:l${n}:v1`;
+    const tx = (n: number) => ({
+      hash: `tx-${n}`, status: "confirmed", blockNumber: n,
+      content: {
+        type: "storageProgram", from: `0x${ownerHex}`, to: address(n),
+        data: ["storageProgram", {
+          operation: "CREATE_STORAGE_PROGRAM", storageAddress: address(n),
+          metadata: { logicalAddress: logicalOf(n) },
+        }],
+      },
+    });
+    let history = [tx(1), tx(2), tx(3)];
+    const client = {
+      getTransactionHistory: vi.fn(async (_owner: string, _type: string, { start, limit }: { start: number; limit: number }) =>
+        history.slice(start, start + limit)),
+    };
+    const records = new Map<string, Record<string, unknown>>();
+    const store = createInMemoryBindingStore();
+    const publishAll = async (ids: number[]) => {
+      for (const n of ids) {
+        const value = { n };
+        records.set(address(n), value);
+        await store.publish({
+          logicalAddress: logicalOf(n), nativeAddress: address(n),
+          owner: `0x${ownerHex.toUpperCase()}`, contentHash: contentHash(value),
+        });
+      }
+    };
+    await publishAll([1, 2, 3]);
+    const repo = createScanningArtifactRepository({
+      expectedOwner: ownerHex, index: store, publisher: store,
+      adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+        readAnchor: async (native) => records.get(native) ?? null },
+      fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
+      verifyArtifact: () => true,
+    });
+    const first = await repo.scanPage(undefined, { limit: 2 });
+    expect(first.status).toBe("page");
+    expect(first.results.map(({ outcome }) => outcome.status)).toEqual(["verified", "verified"]);
+    // More than one overlap window of rows is prepended between pages.
+    const prepended = Array.from({ length: 150 }, (_, i) => 1000 + i);
+    history = [...prepended.map(tx).reverse(), ...history];
+    await publishAll(prepended);
+    const lost = await repo.scanPage(first.state, { limit: 2 });
+    expect(lost).toMatchObject({
+      status: "restart-required", code: "history-restart-required", results: [],
+      state: { cursor: null, seen: new Map(), pagesConsumed: 0, pendingRow: null, deferred: [] },
+    });
+    if (lost.status === "restart-required") expect(lost.reason).toContain("restart from null");
+    // Following the returned state restarts from null and completes the traversal.
+    let page = await repo.scanPage(lost.state, { limit: 100 });
+    const statuses = new Set<string>();
+    let verified = 0;
+    while (page.status === "page") {
+      verified += page.results.filter(({ outcome }) => outcome.status === "verified").length;
+      if (page.state.exhausted) break;
+      page = await repo.scanPage(page.state, { limit: 100 });
+      statuses.add(page.status);
+    }
+    expect(page.status).toBe("page");
+    expect([...statuses]).toEqual(["page"]);
+    expect(verified).toBe(153);
+  });
+
+  test("the README example returns unverifiable, then an empty exhausted page", async () => {
+    const expectedOwner = "offline-seller";
+    const logicalAddress = "dacs1:offline-seller:example:v1";
+    const nativeAddress = "stor-offline-example";
+    const artifact = { listingVersion: 1 };
+    const bindings = createInMemoryBindingStore([{
+      logicalAddress, nativeAddress, owner: expectedOwner,
+      contentHash: contentHash(artifact), version: 1,
+    }]);
+    const repository = createScanningArtifactRepository({
+      expectedOwner, index: bindings, publisher: bindings,
+      adapter: {
+        getAddress: () => "offline-reader",
+        anchorWriteOnce: async () => { throw new Error("read-only demo"); },
+        readAnchor: async (address) => address === nativeAddress ? artifact : null,
+      },
+      fetchPage: async (cursor) => cursor === null
+        ? { entries: [{ logicalAddress, nativeAddress, owner: expectedOwner }], nextCursor: "second-page" }
+        : { entries: [], nextCursor: null },
+      verifyArtifact: () => {
+        throw new UnsupportedArtifactKindError("no offline signature and authorization provider");
+      },
+    });
+    const first = await repository.scanPage();
+    expect(first.status).toBe("page");
+    expect(first.results[0]?.outcome).toMatchObject({ status: "unverifiable", code: "unsupported-kind" });
+    const second = await repository.scanPage(first.state);
+    expect(second).toMatchObject({ status: "page", results: [], state: { exhausted: true } });
   });
 });
