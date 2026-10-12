@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { expect, it } from "vitest";
 import { liveProjectTemplates } from "../../packages/create-dacs-agent/src/liveTemplates.js";
 
@@ -16,17 +16,29 @@ it("supplies every required generated Compose variable with inert run-local inpu
   const root = mkdtempSync(join(tmpdir(), "dacs-compose-inputs-"));
   try {
     const setup = source.slice(source.indexOf("# Inert Compose inputs"), source.indexOf("\nenv \\\n"));
-    const render = block.replace(/docker compose[\s\S]*/, 'node -e \'process.stdout.write(JSON.stringify(process.env))\'');
-    const result = spawnSync("bash", ["-eu", "-c", setup + "\n" + render], {
-      encoding: "utf8", env: { acceptance_root: root },
+    // Run this Node by absolute path; a `node` found through PATH would be the host's.
+    const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+    const render = block.replace(/docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+    // A poisoned `node` first on PATH proves no step resolves node through PATH.
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "node"), "#!/bin/sh\necho 'host node resolved through PATH' >&2\nexit 97\n", { mode: 0o700 });
+    // No rc files: Debian bash sources /etc/bash.bashrc when stdin is a socket.
+    const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], {
+      encoding: "utf8",
+      env: { acceptance_root: root, PATH: [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter) },
     });
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
     const values = JSON.parse(result.stdout) as Record<string, string>;
     for (const name of required) expect(values[name]).toBeTruthy();
     for (const name of required.filter(n => n.endsWith("_FILE") || n.endsWith("_DIRECTORY"))) {
       expect(values[name]!.startsWith(root + "/")).toBe(true);
       expect(statSync(values[name]!).isDirectory()).toBe(name.endsWith("_DIRECTORY"));
-      if (name.endsWith("_FILE")) expect(readFileSync(values[name]!, "utf8")).toContain("acceptance-placeholder");
+      if (name.endsWith("_FILE")) {
+        expect(readFileSync(values[name]!, "utf8")).toContain("acceptance-placeholder");
+        expect((statSync(values[name]!).mode & 0o777).toString(8), name).toBe("600");
+      }
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
