@@ -2335,6 +2335,39 @@ describe("authenticated peer plans on the Vet terminal", () => {
     expect(row(actor, "disagreement")).toBeUndefined();
   });
 
+  // Both roles hold the same plan: either arrival order selects it once and
+  // the job finalizes it, with no disagreement, equivocation or seal.
+  for (const rail of ["x402", "pay-dem"] as const) {
+    it.each(["local failure", "peer proposal"] as const)(
+      `${rail}: continues the one plan both roles hold (%s first)`,
+      async (first) => {
+        const actor = memoryRoleDatabase("buyer", undefined, rail);
+        const own = await terminalProposal(terminalInput("fail", phaseOf(rail)));
+        const register = (runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>) =>
+          expect(runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+            .resolves.toMatchObject({ proposal: { plan: { planHash: own.plan.planHash } } });
+        const receive = (runtime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>) =>
+          expect(runtime.handleMessage(fromSeller(own), inbound))
+            .resolves.toEqual({ disposition: "accepted" });
+        if (first === "local failure") {
+          await register(actor.runtime);
+          await receive(restart(actor));
+        } else {
+          await receive(actor.runtime);
+          await register(restart(actor));
+        }
+        expect(row(actor, "selection")).toMatchObject({ planHash: own.plan.planHash,
+          source: first === "local failure" ? "material" : "peer" });
+        expect(row(actor, "disagreement")).toBeUndefined();
+        expect(sealed(actor)).toBeUndefined();
+        await expect(actor.runtime.loadPeerEquivocationEvidence!(JOB_ID)).resolves.toEqual({});
+        const progress = await advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID);
+        expect(progress).toBeDefined();
+        expect(progress?.status).not.toBe("operator-action");
+      },
+    );
+  }
+
   // The SDK only checks the shape of the host's recursive DACS-2 verifier.
   // Anything but a well-formed `valid` must fail closed with nothing signed.
   it.each<[string, () => Promise<unknown>]>([
@@ -2440,13 +2473,18 @@ describe("two honest, different Vet failures", () => {
       await runtimes.buyer.registerLocalTerminal(terminalInput("fail", phase, "seller"))
         .then(() => { throw new Error("registered"); }, (error: { reasonCode?: string }) =>
           expect(error.reasonCode).toBe("vet-terminal-plan-disagreement"));
+      // The seller contributed its own signature to its plan while that plan
+      // was the only one; the buyer never co-signs it.
+      const sellerSignatures = vi.mocked(actors.seller.signComponent).mock.calls.length;
       const last: Record<string, unknown> = {};
       for (let round = 0; round < 3; round += 1) {
         for (const role of ["buyer", "seller"] as const) last[role] = await tick(role);
       }
       expect(last).toEqual({ buyer: stop, seller: stop });
-      // The buyer signs nothing; neither role finalizes a bundle.
+      // The buyer signs nothing, nothing more is signed after the
+      // disagreement, and neither role finalizes a bundle.
       expect(actors.buyer.signComponent).not.toHaveBeenCalled();
+      expect(actors.seller.signComponent).toHaveBeenCalledTimes(sellerSignatures);
       await expect(runtimes.buyer.loadPlanDisagreementEvidence!(JOB_ID))
         .resolves.toMatchObject({ selected: "peer" });
       await expect(runtimes.seller.loadPlanDisagreementEvidence!(JOB_ID))

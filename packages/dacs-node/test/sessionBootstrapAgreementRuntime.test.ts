@@ -33,8 +33,11 @@ import {
   createDacsBuyerSessionBootstrapTransportRuntimeV1,
   createDacsSellerSessionBootstrapTransportRuntimeV1,
 } from "../src/sessionBootstrapTransportRuntime.js";
-import { DacsVetTerminalBundleTransportError } from
-  "../src/terminalBundleTransportRuntime.js";
+import {
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT,
+  DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING,
+  DacsVetTerminalBundleTransportError,
+} from "../src/terminalBundleTransportRuntime.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -585,6 +588,108 @@ describe("session bootstrap agreement tracks", () => {
       reference: "stor-terminal-buyer-copy",
       authenticationHash: "a".repeat(64),
     });
+    expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
+    expect(vet.produce).toHaveBeenCalledTimes(1);
+    expect(agreement).not.toHaveBeenCalled();
+  });
+
+  // Registration finds that the peer's first plan differs from this role's
+  // own Vet failure, records the disagreement and throws. Operator action is
+  // terminal, so the same tick sends this role's plan first; without it the
+  // peer would wait for a signature that never comes.
+  it("sends this role's plan before stopping on a disagreement found at registration", async () => {
+    const value = await fixture();
+    const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
+      context: value.sellerContext,
+      sessionBootstrap: value.sellerTransport,
+      resolveBuyerRequirement: () => EMPTY_REQUIREMENT,
+      agreementProposalReady: () => false,
+      agreement: vi.fn(),
+    });
+    const vet = {
+      produce: vi.fn(async () => Object.freeze({
+        status: "ready" as const,
+        production: Object.freeze({
+          record: Object.freeze({ overallDecision: "fail" as const }),
+        }) as never,
+      })),
+      authenticate: vi.fn(async () => "valid" as const),
+    };
+    let registered = false;
+    const registerLocalTerminal = vi.fn(async () => {
+      // The runtime records the disagreement before it throws.
+      registered = true;
+      throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+    });
+    // Each advance after registration is one attempt to send this role's
+    // plan: the first finds the peer unreachable, the second is acknowledged.
+    const notices: string[] = [];
+    const advanceRegisteredTerminal = vi.fn(async () => {
+      if (!registered) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+      }
+      notices.push(notices.length === 0 ? "unreachable" : "acknowledged");
+      throw new DacsVetTerminalBundleTransportError(notices.length === 1
+        ? DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING
+        : DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+    });
+    const agreement = vi.fn();
+    const buyerTrack = createDacsBuyerSessionBootstrapAgreementTrackV1({
+      context: value.buyerContext,
+      sessionBootstrap: value.buyerTransport,
+      resolveRequirements: () => ({
+        buyer: EMPTY_REQUIREMENT,
+        seller: {
+          requirementVersion: "1",
+          required: [{ scheme: "did", verificationRequired: true }],
+        },
+      }),
+      vet,
+      terminalBundle: {
+        runtime: { registerLocalTerminal, advanceRegisteredTerminal } as never,
+        createInput: vi.fn(() => ({ terminalInputVersion: "test" }) as never),
+      },
+      agreement,
+    });
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
+      reasonCode: "buyer-session-challenge-pending",
+    });
+    const init = lastMessage(value.buyerSend);
+    await value.sellerTransport.handleMessage(await authenticated({
+      type: "session-init",
+      payload: init.payload as DacsHttpPayloadByType["session-init"],
+      sender: value.buyer,
+      audience: value.seller,
+      privateKey: value.buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 11,
+    }), { role: "seller", coordinator: { startOrder: value.startOrder } } as never);
+    const sellerLoaded = await value.sellerStore.load("seller", JOB_ID);
+    if (sellerLoaded.status !== "ok") throw new Error("seller order missing");
+    await sellerTrack(operation(sellerLoaded.record));
+    const challenge = lastMessage(value.sellerSend);
+    await value.buyerTransport.handleMessage(await authenticated({
+      type: "session-challenge",
+      payload: challenge.payload as DacsHttpPayloadByType["session-challenge"],
+      sender: value.seller,
+      audience: value.buyer,
+      privateKey: value.sellerKeys.privateKey,
+      role: "seller",
+      nonceByte: 12,
+    }), { role: "buyer" } as never);
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
+      status: "pending-retry",
+      reasonCode: "vet-terminal-plan-disagreement-notice-pending",
+      retryAt: expect.any(Number),
+    });
+    expect(notices).toEqual(["unreachable"]);
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "vet-terminal-plan-disagreement",
+    });
+    expect(notices).toEqual(["unreachable", "acknowledged"]);
     expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
     expect(vet.produce).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
