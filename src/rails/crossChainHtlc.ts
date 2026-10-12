@@ -461,9 +461,20 @@ export type CrossChainHtlcProgress =
        */
       refunds: Readonly<Partial<Record<"source-refund" | "destination-refund", HtlcRefundLegState>>>;
     }
+  | {
+      /**
+       * The core cannot safely drive the session further on its own and a
+       * person must act. Resumable: a later call re-observes the chain and
+       * returns to normal progress if it has changed.
+       */
+      status: "operator-alert";
+      reason: "htlc-source-claim-missed-after-reveal";
+      txRefs: readonly Readonly<HtlcTxRef>[];
+    }
   | { status: "settled"; settlement: Readonly<CrossChainHtlcSettlement> };
 
 type HtlcRefundReason = Extract<CrossChainHtlcProgress, { refunds: unknown }>["reason"];
+type HtlcOperatorAlertReason = Extract<CrossChainHtlcProgress, { status: "operator-alert" }>["reason"];
 
 export interface AdvanceCrossChainHtlcInput {
   authority: Readonly<CrossChainHtlcAuthority>;
@@ -1405,6 +1416,14 @@ export async function advanceCrossChainHtlc(
       refunds: Object.freeze(refunds),
     };
   };
+  const operatorAlert = (
+    reason: HtlcOperatorAlertReason,
+    latest: Readonly<HtlcLedgerSnapshot>,
+  ): CrossChainHtlcProgress => ({
+    status: "operator-alert",
+    reason,
+    txRefs: collectRefs(latest, prepared),
+  });
   let destinationClaimCutoffReached = false;
   let sourceClaimExpiryReached = false;
   const destinationClaimWindowIsOpen = (expiries: {
@@ -1783,12 +1802,13 @@ export async function advanceCrossChainHtlc(
   }
 
   if (checkpoint) {
+    // The reveal is final, so the payer holds the destination funds. Past the
+    // source expiry the payee can no longer claim the source, and refunding it
+    // would give the payer both legs: the source is never refunded, and a
+    // person must settle the payee's leg. A source claim that is pending here
+    // and later reaches finality in time still settles on a later call.
     if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
-      return {
-        status: "failed",
-        errorClass: "settlement-atomicity",
-        reason: "dest-revealed-source-unclaimed-expired",
-      };
+      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot);
     }
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
@@ -1803,11 +1823,7 @@ export async function advanceCrossChainHtlc(
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
-          ? {
-            status: "failed",
-            errorClass: "settlement-atomicity",
-            reason: "dest-revealed-source-unclaimed-expired",
-          }
+          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot)
           : { status: "indeterminate", reason: "htlc-source-claim-effect-uncertain" };
       }
       snapshot = advanced;

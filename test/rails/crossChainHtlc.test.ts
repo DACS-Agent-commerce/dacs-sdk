@@ -1147,13 +1147,45 @@ describe("advanceCrossChainHtlc", () => {
       reason: "dest-revealed-source-unclaimed",
       recoveryDeadline: 5_000,
     });
-    run.setClock(5_000_000);
-    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "after-expiry" })).resolves.toEqual({
-      status: "failed",
-      errorClass: "settlement-atomicity",
-      reason: "dest-revealed-source-unclaimed-expired",
-    });
+    // The payee's source claim missed the source expiry. Refunding the source
+    // would give the payer both legs, so a person must act, on every call.
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    for (const tick of [0, 1, 2]) {
+      await expect(advanceCrossChainHtlc({
+        ...run.shared,
+        owner: `after-expiry-${tick}`,
+        now: () => 5_000_000 + tick * 101,
+      })).resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-source-claim-missed-after-reveal",
+        txRefs: [
+          refFor("source-lock"),
+          refFor("destination-lock"),
+          refFor("destination-claim"),
+          refFor("source-claim"),
+        ],
+      });
+    }
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
+  });
+
+  test("returns to normal progress when a source claim pending at expiry reaches finality in time", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(5_000_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-pending-at-expiry" }))
+      .resolves.toMatchObject({ status: "operator-alert", reason: "htlc-source-claim-missed-after-reveal" });
+    h.setObservedAt(5_000_100);
+    await h.markFinal("source-claim", { finalityReachedAt: 4_999_000 });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-final", now: () => 5_000_101 }))
+      .resolves.toMatchObject({ status: "settled" });
   });
 
   test("accepts fresh reveal evidence metadata without replacing the checkpoint", async () => {
@@ -1307,9 +1339,9 @@ describe("advanceCrossChainHtlc", () => {
     await advanceCrossChainHtlc(run.nextOwner());
     await advanceCrossChainHtlc(run.nextOwner());
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
-      status: "failed",
-      errorClass: "settlement-atomicity",
-      reason: "dest-revealed-source-unclaimed-expired",
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim")],
     });
     expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
       .not.toContain("source-claim");
@@ -1348,9 +1380,9 @@ describe("advanceCrossChainHtlc", () => {
     };
     h.setMode("source-claim", "final");
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
-      status: "failed",
-      errorClass: "settlement-atomicity",
-      reason: "dest-revealed-source-unclaimed-expired",
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim")],
     });
     const replacementBroadcasts = h.broadcastRetained.mock.calls
       .map((call) => call[0])
@@ -1499,9 +1531,14 @@ describe("advanceCrossChainHtlc", () => {
     run.setClock(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "expired-source-claim" }))
       .resolves.toEqual({
-        status: "failed",
-        errorClass: "settlement-atomicity",
-        reason: "dest-revealed-source-unclaimed-expired",
+        status: "operator-alert",
+        reason: "htlc-source-claim-missed-after-reveal",
+        txRefs: [
+          refFor("source-lock"),
+          refFor("destination-lock"),
+          refFor("destination-claim"),
+          refFor("source-claim"),
+        ],
       });
     expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-claim"))
       .toHaveLength(1);

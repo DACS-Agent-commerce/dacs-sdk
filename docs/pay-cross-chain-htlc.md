@@ -53,7 +53,9 @@ const result = await advanceCrossChainHtlc({
 does not reveal merely because both locks exist. Once the destination claim is
 final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
-refund or terminal ordinary failure.
+refund or terminal ordinary failure. If the source expiry passes without that
+claim, the result is `operator-alert` with reason
+`htlc-source-claim-missed-after-reveal` (see Operator alerts).
 
 The selected authority must provide a positive safe-integer
 `destinationFinalitySec`. For actual lock expiries, the last permissible reveal
@@ -127,9 +129,8 @@ Every refund result carries `refunds`, the state of each locked leg's refund
 (`destination-refund` appears once the destination lock is final, or while a
 retained destination lock may still land): `waiting` (its lock has not
 expired, a retained reveal still blocks it, or its lock is not final yet),
-`uncertain`
-(due, but this call could not prepare, persist, broadcast or observe it; the
-next call reuses the retained bytes), or the adapter's authenticated
+`uncertain` (due, but this call could not prepare, persist, broadcast or
+observe it; the next call reuses the retained bytes), or the adapter's authenticated
 `pending`, `final` or `failed`. A payer whose own refund is final can see it
 even while the payee's leg is still uncertain. The core never re-sends a
 refund the adapter reports `failed`, so such a session returns the distinct
@@ -137,6 +138,31 @@ status `refund-stalled`, naming the failed leg in `refunds`; it still drives
 the other leg. A host must alert an operator on `refund-stalled`, for example
 when a refund broadcast against a clock running ahead of the chain reverted as
 not yet expired, and keep advancing the session.
+
+## Operator alerts
+
+`operator-alert` means the core cannot safely drive the session further on
+its own and a person must act. It carries a `reason` and the session's
+current `txRefs`. It is resumable, not terminal: a host pages an operator and
+keeps advancing the session, and a later call re-observes the chain and
+returns to normal progress if the chain has changed. The reasons are:
+
+- `htlc-source-claim-missed-after-reveal`: the payer's reveal is final, so
+  the payer holds the destination funds, but the payee's source claim did not
+  reach the chain before the source expiry. The source lock stays in the
+  contract; the core never refunds it, because a refund would give the payer
+  both legs. The operator checks whether a source claim is still pending (if
+  it reaches finality before the expiry the next call settles), and otherwise
+  arranges the payee's payment outside the core, for example by having the
+  payer refund the source and pay the payee under the agreement.
+
+`failed` is returned only when the core has nothing it can drive: the inputs
+or authority are invalid, the store is corrupt, conflicting or lacks a
+required method, retained evidence and a new observation contradict each
+other (a changed source-lock checkpoint fact, a final reveal of another
+preimage), the source lock itself failed so nothing was locked, or the source
+claim is final but reached finality after the source expiry. These need an
+operator to reconcile the record, not a retry.
 
 The authority binds each leg's token by its chain-native identifier,
 `sourceTokenId` and `destinationTokenId` (the token contract address, or the
