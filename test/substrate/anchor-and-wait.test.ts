@@ -1176,6 +1176,30 @@ describe("DemosAdapter.anchorAndWait", () => {
     accountNonce = 2;
   });
 
+  it.each(["transaction", "block", "storage"] as const)("retries an unanswered %s receipt read and still rejects an invalid receipt", async (observation) => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const name = "receipt-error-envelope";
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" }).mockResolvedValue({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, storageAddress: address,
+      owner: wallet, programName: name, data: value });
+    const anchored = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1000, pollMs: 1 });
+    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress: name,
+      contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence! });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    const errorEnvelope = { result: 500, response: new Error("unanswered read"), require_reply: false, extra: null };
+    if (observation === "transaction") raw.getTxByHash.mockResolvedValueOnce(errorEnvelope);
+    if (observation === "block") raw.getBlockByNumber.mockResolvedValueOnce(errorEnvelope);
+    if (observation === "storage") raw.storagePrograms.read.mockResolvedValueOnce(errorEnvelope);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toMatchObject({
+      name: "SubstrateError", message: "Demos anchor receipt observation unavailable" });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt({ ...receipt, contentHash: "f".repeat(64) })).resolves.toBe(false);
+  });
+
   it("binds an immutable create to the nonce used to derive its address", async () => {
     const { adapter, raw, wallet } = await makeAdapter();
     const name = "immutable-nonce-bound";

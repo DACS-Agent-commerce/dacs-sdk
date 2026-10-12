@@ -116,7 +116,7 @@ web:
   enable: false
 auth:
   htpasswd:
-    file: /verdaccio/conf/htpasswd
+    file: /verdaccio/storage/htpasswd
     max_users: 2
 uplinks:
   npmjs:
@@ -339,7 +339,7 @@ for (const name of ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"]) {
   const archive = path.join(releaseSet, name.slice(1).replace("/", "-") + "-" + version + ".tgz");
   const integrity = "sha512-" + createHash("sha512").update(fs.readFileSync(archive)).digest("base64");
   const locations = Object.keys(lock.packages ?? {}).filter((location) =>
-    location === "node_modules/" + name || location.endsWith("/node_modules/" + name));
+    location === "node_modules/" + name || location.endsWith("/node_modules/" + name) || lock.packages[location]?.name === name);
   if (!locations.includes("node_modules/" + name)) {
     throw new Error("candidate package is not installed at the top level: " + name);
   }
@@ -362,44 +362,34 @@ fs.writeFileSync(reportPath, JSON.stringify({
 }, null, 2) + "\n");
 NODE
 
-node - "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json" <<'NODE'
-const fs = require("node:fs");
-const audit = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const counts = audit.metadata?.vulnerabilities;
-if (!counts || !Number.isInteger(counts.total) || !Number.isInteger(counts.critical)) {
-  throw new Error("npm audit did not produce vulnerability metadata");
-}
-const baselineExceeded = counts.total > 66 || counts.critical > 3;
-// Recorded so the count baseline can be replaced by a checked-in advisory list.
-const advisories = new Set();
-for (const vulnerability of Object.values(audit.vulnerabilities ?? {})) {
-  for (const via of Array.isArray(vulnerability?.via) ? vulnerability.via : []) {
-    if (typeof via?.url === "string") {
-      advisories.add(via.url.replace(/^https:\/\/github\.com\/advisories\//, ""));
-    }
-  }
-}
-fs.writeFileSync(process.argv[3], JSON.stringify({
-  schema: "dacs-registry-audit-policy/v1",
-  baseline: { total: 66, critical: 3 },
-  observed: counts,
-  observedAdvisories: [...advisories].sort(),
-  baselineExceeded,
-}, null, 2) + "\n");
-process.stdout.write(JSON.stringify(counts) + "\n");
-NODE
+node scripts/registry-container-disposition.mjs --audit-policy \
+  "$consumer_root/npm-audit.json" "$artifact_stage/audit-policy.json"
+
+# Inert Compose inputs: these are deliberately invalid credentials and drafts,
+# used only for config rendering. No live services or compose up are invoked.
+compose_inputs="$acceptance_root/compose-inputs"
+mkdir -p "$compose_inputs/buyer-data" "$compose_inputs/seller-data"
+for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x402.json listing-pay-dem.json; do
+  printf '%s\n' 'acceptance-placeholder' > "$compose_inputs/$name"
+  chmod 0600 "$compose_inputs/$name"
+done
 
 env \
+  DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
+  DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
+  DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \
+  DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY=acceptance-placeholder \
+  DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE="$compose_inputs/wallet-token" \
   DACS_RUNTIME_UID=10001 \
   DACS_RUNTIME_GID=10001 \
-  DACS_BUYER_DATA_DIRECTORY=/var/lib/dacs-acceptance/buyer \
-  DACS_SELLER_DATA_DIRECTORY=/var/lib/dacs-acceptance/seller \
-  DACS_BUYER_DEMOS_SECRET_FILE=/run/dacs-acceptance/buyer-demos \
-  DACS_SELLER_DEMOS_SECRET_FILE=/run/dacs-acceptance/seller-demos \
-  DACS_BUYER_EVM_SECRET_FILE=/run/dacs-acceptance/buyer-evm \
-  DACS_SELLER_EVM_SECRET_FILE=/run/dacs-acceptance/seller-evm \
-  DACS_X402_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-x402.json \
-  DACS_PAY_DEM_LISTING_DRAFT_FILE=/run/dacs-acceptance/listing-pay-dem.json \
+  DACS_BUYER_DATA_DIRECTORY="$compose_inputs/buyer-data" \
+  DACS_SELLER_DATA_DIRECTORY="$compose_inputs/seller-data" \
+  DACS_BUYER_DEMOS_SECRET_FILE="$compose_inputs/buyer-demos" \
+  DACS_SELLER_DEMOS_SECRET_FILE="$compose_inputs/seller-demos" \
+  DACS_BUYER_EVM_SECRET_FILE="$compose_inputs/buyer-evm" \
+  DACS_SELLER_EVM_SECRET_FILE="$compose_inputs/seller-evm" \
+  DACS_X402_LISTING_DRAFT_FILE="$compose_inputs/listing-x402.json" \
+  DACS_PAY_DEM_LISTING_DRAFT_FILE="$compose_inputs/listing-pay-dem.json" \
   docker compose --file "$project/compose.yaml" config \
     > "$artifact_stage/compose.rendered.yaml"
 
@@ -541,21 +531,22 @@ const summary = {
     user: inspect.Config.User,
     policy: runtimeImagePolicy,
   },
-  audit: audit.metadata.vulnerabilities,
+  audit: { ...audit.metadata.vulnerabilities,
+    observedAdvisories: auditPolicy.observedAdvisories,
+    unlistedAdvisories: auditPolicy.unlistedAdvisories,
+  },
   securityGate: {
     productionPublicationBlockedBy: "DACS-Agent-commerce/dacs-sdk#191",
     passed: dependencyPolicy.passed &&
       runtimeImagePolicy.productionDependencyPolicyPassed &&
       engineStrictExitCode === 0 &&
     auditExitCode === 0 && audit.metadata.vulnerabilities.total === 0 &&
-      auditPolicy.baselineExceeded === false &&
       lockSbomExitCode === 0 && physicalSbomExitCode === 0,
     registryDependencyPolicyPassed: dependencyPolicy.passed,
     productionImageDependencyPolicyPassed:
       runtimeImagePolicy.productionDependencyPolicyPassed,
     engineStrictExitCode,
     auditExitCode,
-    auditBaselineExceeded: auditPolicy.baselineExceeded,
     lockSbomExitCode,
     physicalSbomExitCode,
   },

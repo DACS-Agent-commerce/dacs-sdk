@@ -45,7 +45,7 @@ const { publish } = require(
 
 await publish(manifest, tarball, {
   registry: registry.href,
-  tag: "acceptance",
+  defaultTag: "acceptance",
   access: "public",
   provenance: false,
   [`//${registry.host}/:_authToken`]: token,
