@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Required acceptance reports advisory drift without failing every PR together.
-// The scheduled/manual drift workflow fails on unlisted advisory IDs. Neither
-// classification permits production publication while #191 remains blocked.
+// Required acceptance fails (exit 3) on any advisory ID missing from the #191
+// baseline; observing only listed IDs, or a subset of them, is baseline-only
+// (exit 4). The scheduled/manual drift workflow reports unlisted IDs daily.
+// Neither classification permits production publication while #191 remains
+// blocked.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -80,26 +82,136 @@ export function failureSummary({ stage, exitCode, read }) {
 
 const npmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
 
+// npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
+// engines.node and engines.npm with semver.satisfies(current, range,
+// { includePrerelease: true }). This is that range grammar for a release
+// version. Anything else throws, so a range it cannot read never passes.
+const versionId = "0|[1-9]\\d{0,14}";
+const rangeId = `${versionId}|x|X|\\*`;
+const prereleaseId = "(?:0|[1-9]\\d*|\\d*[a-zA-Z-][a-zA-Z0-9-]*)";
+const partialVersion = `v?(${rangeId})(?:\\.(${rangeId})(?:\\.(${rangeId})(?:-(${prereleaseId}(?:\\.${prereleaseId})*))?` +
+  "(?:\\+[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*)?)?)?";
+const rangeToken = new RegExp(`^(<=|>=|<|>|=|~>|~|\\^)?${partialVersion}$`);
+const hyphenRange = new RegExp(`^${partialVersion} - ${partialVersion}$`);
+const isX = id => id === undefined || id === "x" || id === "X" || id === "*";
+
+// One token's comparators, [operator, [major, minor, patch], prerelease?], as
+// semver desugars carets, tildes and X-ranges. [] is any version.
+function tokenComparators(token) {
+  const match = rangeToken.exec(token);
+  if (!match) throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
+  const [, operator = "", M, m, p, prerelease] = match;
+  const [major, minor, patch] = [M, m, p].map(Number);
+  if (isX(M)) return operator === ">" || operator === "<" ? [["none"]] : [];
+  if (operator === "^" || operator === "~" || operator === "~>") {
+    if (isX(m)) return [[">=", [major, 0, 0]], ["<", [major + 1, 0, 0]]];
+    const upper = operator !== "^" ? [major, minor + 1, 0] : major > 0 ? [major + 1, 0, 0]
+      : isX(p) || minor > 0 ? [0, minor + 1, 0] : [0, 0, patch + 1];
+    return [[">=", [major, minor, isX(p) ? 0 : patch]], ["<", upper]];
+  }
+  if (isX(m) || isX(p)) {
+    const bound = isX(m) ? [major, 0, 0] : [major, minor, 0];
+    const next = isX(m) ? [major + 1, 0, 0] : [major, minor + 1, 0];
+    // semver: >1 is >=2.0.0, <=1.2 is <1.3.0, and =1.2 is 1.2.x.
+    if (operator === ">") return [[">=", next]];
+    if (operator === "<=") return [["<", next]];
+    if (operator === ">=" || operator === "<") return [[operator, bound]];
+    return [[">=", bound], ["<", next]];
+  }
+  return [[operator || "=", [major, minor, patch], prerelease !== undefined]];
+}
+
+// A hyphen range, `a - b`, includes every version of a partial upper bound.
+function hyphenComparators([, fM, fm, fp, , tM, tm, tp, tpr]) {
+  const from = isX(fM) ? [] : [[">=", [Number(fM), isX(fm) ? 0 : Number(fm), isX(fm) || isX(fp) ? 0 : Number(fp)]]];
+  const to = isX(tM) ? [] : isX(tm) ? [["<", [Number(tM) + 1, 0, 0]]] : isX(tp) ? [["<", [Number(tM), Number(tm) + 1, 0]]]
+    : [[tpr === undefined ? "<=" : "<", [Number(tM), Number(tm), Number(tp)]]];
+  return [...from, ...to];
+}
+
+const compareVersions = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+function testComparator(version, [operator, bound, prerelease = false]) {
+  if (operator === "none") return false;
+  const order = compareVersions(version, bound);
+  // A release is above every prerelease of its own version and equal to none.
+  if (prerelease) return operator === ">" || operator === ">=" ? order >= 0 : operator === "<" || operator === "<=" ? order < 0 : false;
+  return operator === "<" ? order < 0 : operator === "<=" ? order <= 0 : operator === ">" ? order > 0
+    : operator === ">=" ? order >= 0 : order === 0;
+}
+
+const releaseVersion = value => {
+  const match = typeof value === "string" ? new RegExp(`^v?(${versionId})\\.(${versionId})\\.(${versionId})$`).exec(value) : null;
+  return match ? match.slice(1).map(Number) : null;
+};
+
+// semver.satisfies for a release version; throws for a range it cannot read.
+export function satisfiesEngineRange(current, range) {
+  const version = releaseVersion(current);
+  if (version === null || typeof range !== "string") {
+    throw new Error(`unsupported engine check ${JSON.stringify(current)} against ${JSON.stringify(range)}`);
+  }
+  // Every set is parsed before any is tested: semver rejects the whole range.
+  const sets = range.trim().replace(/\s+/g, " ").split("||").map(part => {
+    const set = part.trim();
+    const hyphen = hyphenRange.exec(set);
+    if (hyphen) return hyphenComparators(hyphen);
+    // `>= 1.2` is `>=1.2`, as semver trims an operator's trailing space.
+    const tokens = [];
+    for (const token of set === "" ? [] : set.split(" ")) {
+      if (/^(?:<=|>=|<|>|=|~>|~|\^)$/.test(tokens.at(-1) ?? "") && /^v?[0-9xX*]/.test(token)) tokens.push(tokens.pop() + token);
+      else tokens.push(token);
+    }
+    return tokens.flatMap(tokenComparators);
+  });
+  return sets.some(set => set.every(comparator => testComparator(version, comparator)));
+}
+
+// Lists every engine violation in the generated lock, as npm's EBADENGINE
+// check would for the consumer container's Node and npm, without npm ci's
+// package.json/lock sync check (which a nested Git dependency fails). The scan
+// is complete only when every non-optional entry was evaluated.
+export function scanLockEngines(lock, versions) {
+  const packages = lock?.packages;
+  const current = { node: versions?.node, npm: versions?.npm };
+  const errors = [];
+  if (typeof packages !== "object" || packages === null || Array.isArray(packages)) errors.push("lock has no packages map");
+  for (const key of ["node", "npm"]) {
+    if (releaseVersion(current[key]) === null) errors.push(`no recorded ${key} release version`);
+  }
+  const violations = [];
+  let evaluatedPackages = 0;
+  for (const [location, entry] of errors.length ? [] : Object.entries(packages)) {
+    if (typeof entry !== "object" || entry === null) { errors.push(`${location}: unreadable lock entry`); continue; }
+    // npm checks only packages that are not optional.
+    if (entry.optional === true) continue;
+    const engines = entry.engines;
+    try {
+      const failed = engines ? ["node", "npm"].filter(key => engines[key] && !satisfiesEngineRange(current[key], engines[key])) : [];
+      evaluatedPackages += 1;
+      if (failed.length) {
+        const name = entry.name ?? (location === "" ? lock.name : location.slice(location.lastIndexOf("node_modules/") + 13));
+        violations.push({ package: `${name}@${entry.version}`, location, integrity: entry.integrity ?? null, required: engines });
+      }
+    } catch (error) { errors.push(`${location}: ${error.message}`); }
+  }
+  return { scanComplete: errors.length === 0, node: current.node ?? null, npm: current.npm ?? null,
+    evaluatedPackages, errors, violations };
+}
+
 // Records each security-gate finding by exact identity (lock path, version,
 // integrity, engine range, npm problem line) for comparison with the baseline.
 export function extractPolicyFindings(read) {
   const json = name => JSON.parse(read(name) ?? "null");
   const exitCode = name => { const text = read(name); return text === undefined ? null : Number(text.trim()); };
-  const packages = json("generated-package-lock.json")?.packages ?? {};
-  const nameAt = location => packages[location]?.name ?? location.slice(location.lastIndexOf("node_modules/") + 13);
+  const lock = json("generated-package-lock.json");
+  const packages = lock?.packages ?? {};
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
   const gitDependencies = (json("dependency-policy.json")?.violations ?? []).map(violation =>
     ({ location: violation.location, field: violation.field ?? null, value: violation.value, ...identity(violation.location) }));
   const strictLog = read("engine-strict.log") ?? "";
-  const scanLog = read("engine-scan.log");
-  const engineIds = [...new Set([...(scanLog ?? "").matchAll(/EBADENGINE\s+package: '([^']+)'/g)].map(match => match[1]))];
-  const violations = engineIds.flatMap(id => {
-    const locations = Object.keys(packages).filter(location => location !== "" && packages[location].optional !== true &&
-      `${nameAt(location)}@${packages[location].version}` === id);
-    return locations.length ? locations.map(location => ({ package: id, location,
-      integrity: packages[location].integrity ?? null, required: packages[location].engines ?? null }))
-      : [{ package: id, location: null, integrity: null, required: null }];
-  });
+  let versions = null;
+  try { versions = json("engine-versions.json"); } catch { /* unreadable: the scan is incomplete */ }
+  const { scanComplete, violations, ...scan } = scanLockEngines(lock, versions);
   const sbom = name => {
     const errors = read(`${name}.err`) ?? "";
     return { exitCode: exitCode(`${name}.exit-code`), code: npmErrorCode(errors),
@@ -116,7 +228,7 @@ export function extractPolicyFindings(read) {
     gitDependencies,
     engine: { exitCode: exitCode("engine-strict.exit-code"), code: npmErrorCode(strictLog),
       reportedPackage: /Not compatible with your version of node\/npm: (\S+)/.exec(strictLog)?.[1] ?? null,
-      scanComplete: scanLog !== undefined && exitCode("engine-scan.exit-code") === 0, violations },
+      scan, scanComplete, violations },
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),
     productionImageDependencies,
@@ -174,8 +286,11 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   catch (error) { return { exitCode: 3, failureClass: "policy", message: String(error) }; }
   const gate = summary.securityGate;
   const checks = classifyPolicyChecks(summary, baseline);
+  // An advisory ID outside the baseline blocks, even one newly published
+  // against a dependency the tree already had.
   const audit = gate?.auditExitCode === 0 && policy.observedAdvisories.length === 0 ? "passed"
-    : policy.observedAdvisories.length > 0 && [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
+    : policy.observedAdvisories.length > 0 && policy.unlistedAdvisories.length === 0 &&
+      [0, 1].includes(gate?.auditExitCode) ? "baseline" : "blocked";
   const states = { ...checks, audit };
   const named = state => Object.keys(states).filter(name => states[name] === state);
   if (named("passed").length === Object.keys(states).length && gate.passed === true) {
@@ -183,11 +298,13 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   }
   if (named("blocked").length === 0) {
     return { exitCode: 4, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed; " +
-      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})` +
-      (policy.unlistedAdvisories.length ? `; unlisted advisory IDs: ${policy.unlistedAdvisories.join(", ")}` : ""), ...policy };
+      `production publication remains blocked by #191 baseline findings (${named("baseline").join(", ")})`, ...policy };
   }
   return { exitCode: 3, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed, " +
-    `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})`, ...policy };
+    `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
+    (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
+      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : ""),
+    ...policy };
 }
 
 function annotate(result) {
@@ -239,7 +356,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       writeFileSync(summaryPath, JSON.stringify({ ...summary, failureClass,
         disposition: { exitCode, failureClass, message, checks } }, null, 2) + "\n");
     }
-    if (result.unlistedAdvisories?.length) {
+    // Required acceptance names unlisted IDs in its error; drift warns.
+    if (drift && result.unlistedAdvisories?.length) {
       process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
     }
     if (!drift) annotate(result);

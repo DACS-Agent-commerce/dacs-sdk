@@ -1291,16 +1291,15 @@ async function driveStrictVerifier(input: CompletionInput, deps: CompletionDeps)
   return { state: "audit-complete" };
 }
 
-// The real verifier checks both copies concurrently and rejects with whichever
-// fails first; here both copies' reads finish before the first rejection.
-async function driveBothCopies(input: CompletionInput, deps: CompletionDeps) {
-  const settled = await Promise.allSettled(
-    (["buyer", "seller"] as const).map((role) => driveCopy(role, input, deps)),
-  );
-  const rejected = settled.find((result) => result.status === "rejected");
-  if (rejected) throw (rejected as PromiseRejectedResult).reason;
+// The strictest order a verifier can use: both copies checked concurrently,
+// rejecting as soon as either fails, while the other copy's reads continue.
+// The real verifier settles both copies first; the audit must not rely on it.
+async function driveCopiesFailFast(input: CompletionInput, deps: CompletionDeps) {
+  await Promise.all((["buyer", "seller"] as const).map((role) => driveCopy(role, input, deps)));
   return { state: "audit-complete" };
 }
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function capturedCompletionDeps(harness: CompletionHarness): Promise<CompletionDeps> {
   let deps: CompletionDeps | undefined;
@@ -1481,35 +1480,42 @@ describe("buyer two-copy completion adapter", () => {
   });
 
   // Receipt verification answers `false` for one role's copy and goes
-  // unanswered for the other's.
-  const splitReceiptAnswers = (h: CompletionHarness, answered: "buyer" | "seller") => {
+  // unanswered for the other's; the answer arrives 25 ms after the unanswered
+  // read fails, or 25 ms before it.
+  const splitReceiptAnswers = (h: CompletionHarness, answered: "buyer" | "seller", answerArrives: "last" | "first") => {
     h.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
-      if (receipt.nativeAddress === h.copies[answered].nativeAddress) return false;
+      const isAnswered = receipt.nativeAddress === h.copies[answered].nativeAddress;
+      if (isAnswered === (answerArrives === "last")) await pause(25);
+      if (isAnswered) return false;
       throw new SubstrateError("Demos anchor receipt observation unavailable");
     });
   };
 
   for (const paymentProfile of ["x402", "pay-dem"] as const) {
-    it.each(["buyer", "seller"] as const)(
-      `reports Demos's answer against the ${paymentProfile} %s copy although the other copy's read went unanswered`,
-      async (answered) => {
-        const harness = await completionHarness(paymentProfile);
-        mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
-        splitReceiptAnswers(harness, answered);
-        await expect(harness.authorize()).resolves.toBe(false);
-      },
-    );
+    for (const answerArrives of ["last", "first"] as const) {
+      it.each(["buyer", "seller"] as const)(
+        `reports Demos's answer against the ${paymentProfile} %s copy, arriving ${answerArrives}, although the other copy's read went unanswered`,
+        async (answered) => {
+          const harness = await completionHarness(paymentProfile);
+          mocks.verifyCompleted.mockImplementationOnce(driveCopiesFailFast);
+          splitReceiptAnswers(harness, answered, answerArrives);
+          await expect(harness.authorize()).resolves.toBe(false);
+        },
+      );
+    }
 
     it(`reports a ${paymentProfile} anchor answer that arrives after an authentic readback`, async () => {
-      // The answered copy's readback authenticates; only its anchor check gets `false`.
+      // The answered copy's readback authenticates; only its anchor check gets
+      // `false`, 25 ms after the other copy's read went unanswered.
       const harness = await completionHarness(paymentProfile);
-      mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
+      mocks.verifyCompleted.mockImplementationOnce(driveCopiesFailFast);
       let answeredCalls = 0;
       harness.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
         if (receipt.nativeAddress !== harness.copies.buyer.nativeAddress) {
           throw new SubstrateError("Demos anchor receipt observation unavailable");
         }
         answeredCalls += 1;
+        if (answeredCalls === 2) await pause(25);
         return answeredCalls === 1;
       });
       await expect(harness.authorize()).resolves.toBe(false);
@@ -1518,10 +1524,13 @@ describe("buyer two-copy completion adapter", () => {
 
     it(`keeps ${paymentProfile} retryable when the only answered result is valid`, async () => {
       const harness = await completionHarness(paymentProfile);
-      mocks.verifyCompleted.mockImplementationOnce(driveBothCopies);
+      mocks.verifyCompleted.mockImplementationOnce(driveCopiesFailFast);
       harness.adapter.verifyDemosAnchorReceipt.mockImplementation(async (receipt: { nativeAddress: string }) => {
-        if (receipt.nativeAddress === harness.copies.buyer.nativeAddress) return true;
-        throw new SubstrateError("Demos anchor receipt observation unavailable");
+        if (receipt.nativeAddress !== harness.copies.buyer.nativeAddress) {
+          throw new SubstrateError("Demos anchor receipt observation unavailable");
+        }
+        await pause(25);
+        return true;
       });
       await expect(harness.authorize()).resolves.toBe("indeterminate");
     });
@@ -1531,7 +1540,7 @@ describe("buyer two-copy completion adapter", () => {
       // name a copy, so they cannot be shown independent of the unanswered read.
       const harness = await completionHarness(paymentProfile);
       mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
-        await driveBothCopies(input, deps).catch(() => undefined);
+        await driveCopiesFailFast(input, deps).catch(() => undefined);
         throw new DacsError("completed buyer bundle signature verification failed: forged");
       });
       harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(

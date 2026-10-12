@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 // import lets this TypeScript suite exercise it without a declaration file.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
-  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary } = await import(dispositionModulePath);
+  classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines } =
+  await import(dispositionModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
@@ -34,12 +35,27 @@ function baselineOnlySummary() {
   };
 }
 
-// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
-function workflowStepScript(stepName: string): string {
+// The lines of one workflow step, from its `- name:` line to the next step.
+function workflowStepLines(stepName: string) {
   const lines = readFileSync(workflowPath, "utf8").split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
   expect(start).toBeGreaterThanOrEqual(0);
   const stepIndent = (lines[start] ?? "").indexOf("-");
+  let end = start + 1;
+  while (end < lines.length && ((lines[end] ?? "").trim() === "" || (lines[end] ?? "").search(/\S/) > stepIndent)) end += 1;
+  return { lines, start, end, stepIndent };
+}
+
+// A step's own `if:` condition; Actions' default is success().
+function workflowStepCondition(stepName: string): string | undefined {
+  const { lines, start, end, stepIndent } = workflowStepLines(stepName);
+  const keyIndent = " ".repeat(stepIndent + 2);
+  return lines.slice(start + 1, end).find((line) => line.startsWith(`${keyIndent}if:`))?.slice(keyIndent.length + 3).trim();
+}
+
+// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
+function workflowStepScript(stepName: string): string {
+  const { lines, start, stepIndent } = workflowStepLines(stepName);
   let index = start + 1;
   while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
   const runLine = lines[index] ?? "";
@@ -221,6 +237,46 @@ describe("registry/container pull_request job", () => {
   it("passes when acceptance passes", () => {
     expect(runWorkflowStep(0).status).toBe(0);
   });
+
+  it("checks drift, publishes the summary and uploads evidence even after acceptance fails", () => {
+    // Without always(), Actions' default success() would skip drift whenever
+    // acceptance exits 3, which masked drift in round 4.
+    for (const step of ["Check advisory-ID drift", "Publish acceptance summary", "Upload registry/container evidence"]) {
+      expect(workflowStepCondition(step)).toBe("always()");
+    }
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+  });
+});
+
+describe("registry/container workflow wiring", () => {
+  const acceptance = readFileSync(workflowPath, "utf8");
+  const drift = readFileSync(join(repoRoot, ".github/workflows/registry-container-audit-drift.yml"), "utf8");
+
+  it("runs pull-request acceptance when either workflow or the gate's scripts change", () => {
+    const paths = /\n  pull_request:\n    paths:\n((?: {6}- .+\n)+)/.exec(acceptance)?.[1]?.split("\n")
+      .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
+    expect(paths).toEqual(expect.arrayContaining([".github/workflows/registry-container-acceptance.yml",
+      ".github/workflows/registry-container-audit-drift.yml", "scripts/registry-container-disposition.mjs",
+      "scripts/registry-container-audit-baseline.json", "scripts/verify-registry-container-consumer.sh"]));
+  });
+
+  it("has the scheduled drift workflow call acceptance with drift enforced", () => {
+    expect(drift).toMatch(/\non:\n  schedule:\n    - cron: "[^"]+"\n  workflow_dispatch:\n/);
+    expect(drift).toMatch(/\n    uses: \.\/\.github\/workflows\/registry-container-acceptance\.yml\n    with:\n      enforce-audit-drift: true\n/);
+    expect(acceptance).toMatch(/\n  workflow_call:\n    inputs:\n      enforce-audit-drift:\n        type: boolean\n        default: false\n/);
+    expect(workflowStepLines("Check advisory-ID drift").lines.join("\n"))
+      .toContain("ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}");
+  });
+
+  it("requires code-owner review of the baseline, the scripts that decide it, and both workflows", () => {
+    const owners = readFileSync(join(repoRoot, ".github/CODEOWNERS"), "utf8").split("\n");
+    for (const file of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
+      "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
+      ".github/workflows/registry-container-acceptance.yml", ".github/workflows/registry-container-audit-drift.yml",
+      ".github/CODEOWNERS"]) {
+      expect(owners).toContain(`/${file} @randomblocker`);
+    }
+  });
 });
 
 // Runs the acceptance script up to its first npm command, with stubs that
@@ -323,6 +379,8 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
     expect(readFileSync(join(output, "generated-package.json"), "utf8")).toBe('{"name":"one-click-agent"}\n');
     expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
+    // The runner's tool versions are evidence too; the stubs print nothing.
+    expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
   });
 
   it("finishes cleanup and keeps the original status when an evidence write fails", () => {
@@ -406,19 +464,52 @@ describe("registry/container evidence", () => {
 
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
-  it("reports an unlisted advisory without failing required acceptance, and fails the drift check", () => {
+  // An unlisted ID fails the required job: exit 3, and a claimed exit 4 is
+  // refused by the step's re-check.
+  const expectRequiredFailure = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
+    const result = registryContainerDisposition(summary);
+    expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "blocked" } });
+    expect(result.message).toContain(`advisory IDs not in the #191 baseline: ${unlisted.join(", ")}`);
+    expect(result.message).toContain("registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review");
+    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: unlisted });
+    expect(runWorkflowStep(3, summary).status).toBe(3);
+    const claimed = runWorkflowStep(4, summary);
+    expect(claimed.status).toBe(4);
+    expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
+    expect(claimed.stdout).toContain(unlisted[0]);
+    expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    expect(runDriftStep(summary, false).status).toBe(0);
+    expect(runDriftStep(summary, true).status).toBe(3);
+  };
+  it("fails required acceptance on an appended unlisted advisory, and fails the drift check", () => {
     const summary = baselineOnlySummary();
     const unknown = "GHSA-2222-3333-4444";
     summary.audit.observedAdvisories.push(unknown);
     summary.audit.unlistedAdvisories.push(unknown);
-    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [unknown] });
-    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: [unknown] });
+    expectRequiredFailure(summary, [unknown]);
+  });
+  it("fails required acceptance on a same-count substitution", () => {
+    const summary = baselineOnlySummary();
+    const unknown = "GHSA-2222-3333-4444";
+    summary.audit.observedAdvisories = [unknown];
+    summary.audit.unlistedAdvisories = [unknown];
+    expectRequiredFailure(summary, [unknown]);
+    const full = baselineOnlySummary();
+    full.audit.observedAdvisories = [...baseline.advisoryIds.slice(1), unknown];
+    full.audit.unlistedAdvisories = [unknown];
+    expect(full.audit.observedAdvisories).toHaveLength(baseline.advisoryIds.length);
+    expectRequiredFailure(full, [unknown]);
+  });
+  it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [],
+      checks: { audit: "baseline" } });
     const result = runWorkflowStep(4, summary);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain(`Unlisted advisory IDs: ${unknown}`);
-    expect(runWorkflowStep(4, summary, true).status).toBe(0);
-    expect(runDriftStep(summary, false).status).toBe(0);
-    expect(runDriftStep(summary, true).status).toBe(3);
+    expect(result.stdout).toContain("::warning title=#191 security gate blocked::");
+    expect(runDriftStep(summary, true).status).toBe(0);
   });
   it("reports drift even when a non-audit failure fails the acceptance step", () => {
     // P3-4: a blocked dependency policy (exit 3) must not mask the drift result.
@@ -486,7 +577,7 @@ describe("#191 policy-finding baseline", () => {
   const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
   const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
     value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
-  const scan = readFileSync(join(b7b180f, "engine-scan.log"), "utf8");
+  const strictLog = readFileSync(join(b7b180f, "engine-strict.log"), "utf8");
   const sbomErr = (name: string) => readFileSync(join(b7b180f, name), "utf8");
   it.each([
     ["a different Git dependency", "registryDependency", { "dependency-policy.json": dependencyPolicy([avsc,
@@ -497,12 +588,19 @@ describe("#191 policy-finding baseline", () => {
       p["node_modules/@bundlr-network/client/node_modules/arbundles"]!.integrity = "sha512-other"; }) }],
     ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
-    ["a new engine violation", "engineStrict", { "engine-scan.log": scan + "npm warn EBADENGINE   package: 'new-pkg@1.0.0',\n" }],
+    ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/new-pkg"] = { version: "1.0.0", integrity: "sha512-new", engines: { node: ">=22" } }; }) }],
+    ["a new violation of a package's npm engine", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: ">=16", npm: ">=12" }; }) }],
     ["a baselined package with a changed range", "engineStrict", { "generated-package-lock.json": withLock(p => {
       p["node_modules/@npmcli/agent"]!.engines = { node: ">=24" }; }) }],
-    ["a strict failure not explained by the scan", "engineStrict", { "engine-scan.log": scan.replace(/.*@npmcli\/agent@5\.0\.2.*\n/, "") }],
-    ["an incomplete engine scan", "engineStrict", { "engine-scan.exit-code": "1\n" }],
-    ["a missing engine scan", "engineStrict", { "engine-scan.log": undefined }],
+    ["a strict failure not explained by the scan", "engineStrict", { "engine-strict.log":
+      strictLog.replaceAll("@npmcli/agent@5.0.2", "other@1.0.0") }],
+    ["an engine range the scan cannot read", "engineStrict", { "generated-package-lock.json": withLock(p => {
+      p["node_modules/minipass"]!.engines = { node: "please-use-yarn" }; }) }],
+    ["an engine scan without the container's versions", "engineStrict", { "engine-versions.json": undefined }],
+    ["an engine scan without the container's npm version", "engineStrict", { "engine-versions.json":
+      JSON.stringify({ node: "v20.19.1" }) }],
     ["an engine-strict failure other than EBADENGINE", "engineStrict", { "engine-strict.log": "npm error code EBADPLATFORM\n" }],
     ["a new lock SBOM problem", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err") +
       "npm error invalid: viem@2.0.0, ^2.55.19 required by x@1.0.0\n" }],
@@ -527,6 +625,112 @@ describe("#191 policy-finding baseline", () => {
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
     summary.securityGate.findings.gitDependencies = [];
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
+  });
+});
+
+// The 206adc1 run stopped here: `npm ci --no-engine-strict` printed every
+// EBADENGINE and then failed npm's lock sync check on the nested Git `avsc`
+// (EUSAGE), so the scan never completed and the job exited 3.
+describe("lock engine scan", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const lock = () => JSON.parse(readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8"));
+  const container = { node: "v20.19.1", npm: "11.19.0" };
+  const byLocation = (items: { location: string }[]) => [...items].sort((a, b) => a.location.localeCompare(b.location));
+
+  it("lists every violation of a tree with a nested Git dependency, exactly the #191 baseline", () => {
+    const value = lock();
+    expect(value.packages["node_modules/@bundlr-network/client/node_modules/arbundles"].dependencies.avsc)
+      .toBe("https://github.com/Irys-xyz/avsc#csp-fixes");
+    const scan = scanLockEngines(value, container);
+    expect(scan).toMatchObject({ scanComplete: true, errors: [], node: "v20.19.1", npm: "11.19.0" });
+    expect(scan.evaluatedPackages).toBe(Object.values(value.packages)
+      .filter((entry) => (entry as { optional?: boolean }).optional !== true).length);
+    expect(byLocation(scan.violations)).toEqual(byLocation(baseline.policyFindings.engineViolations));
+    expect(scan.violations).toHaveLength(16);
+    expect(b7b180fEvidence().securityGate.findings.engine).toMatchObject({ scanComplete: true,
+      scan: { node: "v20.19.1", npm: "11.19.0", errors: [] }, reportedPackage: "@npmcli/agent@5.0.2" });
+  });
+
+  it("skips optional packages and non-object engines, as npm's check does", () => {
+    // @arbitrum/sdk (optional) declares engines.npm "please-use-yarn"; verror
+    // (optional) declares the legacy array form.
+    const value = lock();
+    expect(value.packages["node_modules/@arbitrum/sdk"]).toMatchObject({ optional: true,
+      engines: { npm: "please-use-yarn" } });
+    value.packages["node_modules/verror"].optional = false;
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: true, errors: [] });
+    value.packages["node_modules/@arbitrum/sdk"].optional = false;
+    expect(scanLockEngines(value, container)).toMatchObject({ scanComplete: false,
+      errors: [expect.stringContaining("node_modules/@arbitrum/sdk")] });
+  });
+
+  it("checks engines.npm against the container's npm", () => {
+    const value = lock();
+    value.packages["node_modules/semver"].engines = { node: ">=10", npm: ">=12" };
+    expect(scanLockEngines(value, container).violations).toContainEqual({ package: "semver@7.8.5",
+      location: "node_modules/semver", integrity: value.packages["node_modules/semver"].integrity,
+      required: { node: ">=10", npm: ">=12" } });
+    expect(scanLockEngines(value, { ...container, npm: "12.0.0" }).violations).toHaveLength(16);
+  });
+
+  it.each([
+    ["no lock", undefined, container],
+    ["no packages map", { lockfileVersion: 1, dependencies: {} }, container],
+    ["no recorded versions", "fixture", null],
+    ["a prerelease Node", "fixture", { ...container, node: "v20.19.1-nightly" }],
+    ["no recorded npm", "fixture", { node: "v20.19.1" }],
+  ])("is incomplete with %s", (_label, value, versions) => {
+    const scan = scanLockEngines(value === "fixture" ? lock() : value, versions);
+    expect(scan).toMatchObject({ scanComplete: false, evaluatedPackages: 0 });
+    expect(scan.errors.length).toBeGreaterThan(0);
+  });
+
+  // Expectations from semver.satisfies(version, range, { includePrerelease: true }),
+  // which npm's EBADENGINE check uses; the first rows are ranges in the generated lock.
+  it.each([
+    ["^22.22.2 || ^24.15.0 || >=26.0.0", "20.19.1", false], ["^22.22.2 || ^24.15.0 || >=26.0.0", "22.22.2", true],
+    ["^22.22.2 || ^24.15.0 || >=26.0.0", "24.14.9", false], ["^22.22.2 || ^24.15.0 || >=26.0.0", "26.0.0", true],
+    ["^20.19.0 || >=22.12.0", "20.19.1", true], ["^20.19.0 || >=22.12.0", "22.11.0", false],
+    [">= 0.4", "20.19.1", true], [">= 0.4", "0.3.9", false], [">=v11", "20.19.1", true], [">=v11", "10.9.9", false],
+    [">=16 || 14 >=14.17", "14.17.0", true], [">=16 || 14 >=14.17", "14.16.9", false], [">=16 || 14 >=14.17", "15.0.0", false],
+    ["4.x || >=6.0.0", "4.9.0", true], ["4.x || >=6.0.0", "5.1.0", false],
+    ["6.* || 8.* || >= 10.*", "9.0.0", false], ["6.* || 8.* || >= 10.*", "20.19.1", true],
+    ["20.x || 22.x || 23.x || 24.x || 25.x", "20.19.1", true], ["20.x || 22.x || 23.x || 24.x || 25.x", "21.0.0", false],
+    ["18 || 20 || >=22", "20.19.1", true], ["18 || 20 || >=22", "21.1.0", false],
+    ["> 0.1.90", "0.1.90", false], ["> 0.1.90", "0.1.91", true], ["^14.0 || >=16.0", "15.0.0", false],
+    ["^14.0 || >=16.0", "16.0.0", true], ["*", "20.19.1", true], ["<*", "20.19.1", false],
+    ["^0.2.3", "0.2.9", true], ["^0.2.3", "0.3.0", false], ["^0.0.3", "0.0.3", true], ["^0.0.3", "0.0.4", false],
+    ["^1.2", "1.9.9", true], ["^1.2", "2.0.0", false], ["~1.2.3", "1.2.9", true], ["~1.2.3", "1.3.0", false],
+    ["~1", "1.9.0", true], ["~1", "2.0.0", false], ["~> 1.2", "1.2.0", true], ["~> 1.2", "1.3.0", false],
+    [">1.2", "1.2.9", false], [">1.2", "1.3.0", true], ["<=1.2", "1.2.9", true], ["<=1.2", "1.3.0", false],
+    ["<1", "0.9.9", true], ["<1", "1.0.0", false], ["=1.2", "1.2.5", true], ["=1.2", "1.3.0", false],
+    ["1.2.3 - 2.3", "2.3.9", true], ["1.2.3 - 2.3", "2.4.0", false], ["1.2.3 - 2.3.4", "2.3.4", true],
+    ["1.2.3 - 2.3.4", "2.3.5", false], ["1.2.3-beta - 2.3.4-rc.1", "1.2.3", true], ["1.2.3-beta - 2.3.4-rc.1", "2.3.4", false],
+    [">1.2.3-beta", "1.2.3", true], ["<=1.2.3-beta", "1.2.3", false], ["1.2.3-beta", "1.2.3", false],
+    [">=1.2.3+build", "1.2.3", true], ["11.19.0", "11.19.0", true], ["11.19.0", "11.19.1", false],
+  ])("evaluates %j at %s as semver does (%s)", (range, version, expected) => {
+    expect(satisfiesEngineRange(version, range)).toBe(expected);
+    expect(satisfiesEngineRange(`v${version}`, range)).toBe(expected);
+  });
+
+  // semver rejects each of these, so npm would not pass them either.
+  it.each(["please-use-yarn", "01.2.3", ">=1.2.3.4", "^", "1 -2", "> = 1", "1.2-beta", ">=1 || foo", "V1.2.3"])(
+    "fails closed on the range %j", (range) => {
+      expect(() => satisfiesEngineRange("20.19.1", range)).toThrow(/unsupported engine range/);
+    });
+
+  it("records the container's Node and npm with the script's own command, not a second npm ci", () => {
+    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8");
+    expect(script).not.toContain("--no-engine-strict");
+    const command = script.split("\n").find((line) => line.includes("> /work/engine-versions.json"))!.trim()
+      .replace("/work/engine-versions.json", "engine-versions.json");
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-versions-"));
+    scratch.push(directory);
+    const result = runBash(["-ceu", command], { cwd: directory,
+      env: { PATH: stubBin(directory, { npm: "echo 11.19.0" }) } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(directory, "engine-versions.json"), "utf8")))
+      .toEqual({ node: process.version, npm: "11.19.0" });
   });
 });
 

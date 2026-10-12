@@ -1223,14 +1223,17 @@ describe("DemosAdapter.anchorAndWait", () => {
       contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
       evidence: anchored.demosEvidence! });
     const unavailable = { name: "SubstrateError", message: "Demos anchor receipt observation unavailable" };
-    // Unanswered: connection errors, timeouts and gateway/throttling statuses retry.
+    // Unanswered: connection errors, timeouts, and every status that says
+    // nothing about the receipt (a server error during a node restart, a CDN's
+    // 52x, a gateway's 401/403/407, throttling) retry.
     for (const envelope of [transportEnvelope({ code: "ECONNRESET" }), transportEnvelope({ code: "ECONNABORTED" }),
-      httpStatus(502), httpStatus(503), httpStatus(504), httpStatus(408), httpStatus(429)]) {
+      ...[500, 501, 502, 503, 504, 505, 507, 520, 522, 524, 530, 401, 403, 407, 408, 429].map(httpStatus)]) {
       raw.getTxByHash.mockResolvedValueOnce(envelope);
       await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toMatchObject(unavailable);
     }
-    // Answered: any other HTTP status is the node's final answer about the receipt.
-    for (const status of [400, 404, 410, 500]) {
+    // Answered: only a malformed, unknown or gone request is the node's final
+    // answer about the receipt.
+    for (const status of [400, 404, 410, 422]) {
       raw.getTxByHash.mockResolvedValueOnce(httpStatus(status));
       await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
     }

@@ -1582,6 +1582,16 @@ export function createDacsFixedPriceBuyerAuditV1(
       // Other rejections stay retryable: the strict verifier does not say
       // which copy they came from.
       let answeredRejection = false;
+      // Demos reads still in flight. The verifier settles both copies before
+      // it rejects; a read still running when a rejection arrives anyway is
+      // awaited, so the decision never depends on which answer came first.
+      const reads = new Set<Promise<unknown>>();
+      const tracked = <T>(read: Promise<T>): Promise<T> => {
+        reads.add(read);
+        const settle = () => { reads.delete(read); };
+        read.then(settle, settle);
+        return read;
+      };
       try {
         await verifyCompletedTwoSidedSession({
           jobId: operation.order.jobId,
@@ -1611,7 +1621,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           async readBundleCopy(nativeAddress, role) {
             let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
             try {
-              anchored = await publication.resolveRoleBundle(role);
+              anchored = await tracked(publication.resolveRoleBundle(role));
             } catch (error) {
               if (!(error instanceof DacsDemosBundlePublicationError) ||
                   error.reasonCode === "bundle-resolution-indeterminate") {
@@ -1628,11 +1638,11 @@ export function createDacsFixedPriceBuyerAuditV1(
             return copy(anchored.bundle) as unknown as Record<string, unknown>;
           },
           async verifyBundleAnchor(candidate) {
-            const disposition = await publication.verifyBundleAnchorReceipt({
+            const disposition = await tracked(publication.verifyBundleAnchorReceipt({
               bundle: candidate.bundle,
               nativeAddress: candidate.nativeAddress,
               anchorReceipt: candidate.anchorReceipt,
-            });
+            }));
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             if (disposition === "invalid") answeredRejection = true;
             return disposition === "valid"
@@ -1640,7 +1650,7 @@ export function createDacsFixedPriceBuyerAuditV1(
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
           },
           async resolveBundleBinding(logicalAddress, signer) {
-            const resolved = await publication.resolveBundleBinding(logicalAddress, signer);
+            const resolved = await tracked(publication.resolveBundleBinding(logicalAddress, signer));
             if (resolved.disposition === "indeterminate" &&
                 TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
               unavailable = true;
@@ -1650,7 +1660,7 @@ export function createDacsFixedPriceBuyerAuditV1(
             return resolved;
           },
           async verifyBundleBinding(binding) {
-            const disposition = await publication.verifyBundleBinding(binding);
+            const disposition = await tracked(publication.verifyBundleBinding(binding));
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;
             if (disposition === "invalid") answeredRejection = true;
             return disposition === "valid"
@@ -1660,6 +1670,7 @@ export function createDacsFixedPriceBuyerAuditV1(
         });
         return true;
       } catch (error) {
+        while (reads.size > 0) await Promise.allSettled([...reads]);
         // Retry only unanswered reads. Authoritative absence and malformed
         // provider output need operator action, even when classified as substrate faults.
         if (answeredRejection) return false;

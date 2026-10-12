@@ -15,7 +15,7 @@ import {
 import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
-import { DacsError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError } from "../errors.js";
 import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,
@@ -719,7 +719,11 @@ export async function verifyCompletedTwoSidedSession(
     );
   }
 
-  const [buyerCopy, sellerCopy] = await Promise.all([
+  // Both copies settle before either rejection is reported: an unavailable
+  // read of one copy must not hide an answer about the other that arrives
+  // later. Any other rejection is reported before an unavailable read, then
+  // the buyer copy's before the seller's.
+  const [buyerResult, sellerResult] = await Promise.allSettled([
     verifyCopy(retained.copies.buyer, {
       role: "buyer",
       jobId: retained.jobId,
@@ -733,6 +737,13 @@ export async function verifyCompletedTwoSidedSession(
       seller: retained.seller,
     }, capturedDeps),
   ]);
+  if (buyerResult.status === "rejected" || sellerResult.status === "rejected") {
+    const reasons = [buyerResult, sellerResult]
+      .flatMap((result): unknown[] => result.status === "rejected" ? [result.reason] : []);
+    throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
+  }
+  const buyerCopy = buyerResult.value;
+  const sellerCopy = sellerResult.value;
   if (!exact(
     bundleSignedScope(retained.copies.buyer.bundle),
     bundleSignedScope(retained.copies.seller.bundle),
