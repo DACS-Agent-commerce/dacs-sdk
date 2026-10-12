@@ -735,7 +735,7 @@ function readClaim(
 /** A reconciliation result after validation; nothing else leaves `reconcile`. */
 type ReconciledState =
   | { disposition: "settled-same"; settlement: Readonly<SolanaSplSettlementResult> | null }
-  | { disposition: "settled-different"; reason: string }
+  | { disposition: "settled-different" }
   | { disposition: "pending"; reason: string }
   | { disposition: "absent-valid" }
   | { disposition: "absent-expired"; evidence: Readonly<SolanaSplExpiryEvidence> }
@@ -801,6 +801,7 @@ function readReconciliation(
         return { disposition: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
       }
     case "settled-different":
+      return { disposition };
     case "pending":
     case "indeterminate":
       try {
@@ -944,10 +945,12 @@ export async function advanceSolanaSplSettlement(
     attempt: Readonly<SolanaSplSignedAttempt>,
     result: ReconciledState,
   ): Promise<SolanaSplProgress | null> => {
+    // A retained signature landed in both settled dispositions: funds may have
+    // moved, so neither is ever a failure a caller could pay again after.
     if (result.disposition === "settled-same") {
       const settlement = result.settlement;
       if (!settlement) {
-        return { status: "failed", errorClass: "permanent", reason: "solana-spl-settled-instruction-mismatch" };
+        return { status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" };
       }
       let write: SolanaSplStoreWrite;
       try {
@@ -967,7 +970,7 @@ export async function advanceSolanaSplSettlement(
         : { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
     }
     if (result.disposition === "settled-different") {
-      return { status: "failed", errorClass: "permanent", reason: result.reason };
+      return { status: "indeterminate", reason: "solana-spl-settled-different" };
     }
     if (result.disposition === "pending") return { status: "waiting", reason: result.reason };
     if (result.disposition === "indeterminate") return { status: "indeterminate", reason: result.reason };

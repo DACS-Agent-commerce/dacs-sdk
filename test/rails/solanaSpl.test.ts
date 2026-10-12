@@ -770,22 +770,77 @@ describe("advanceSolanaSplSettlement", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
+  // The retained signature landed, so funds may have moved: never a failure
+  // a caller could pay the phase again after.
   test.each([
     ["instruction index", observed({ instructionIndex: 2 })],
     ["mint", observed({ mint: PAYEE_ATA })],
     ["amount", observed({ amountBaseUnits: "1250001" })],
     ["commitment", observed({ commitmentLevel: "processed" })],
     ["authentication", observed({ authenticationHash: "not-a-hash" })],
+    ["stronger commitment", observed({ commitmentLevel: "finalized" })],
+    ["upper-case authentication", observed({ authenticationHash: "C".repeat(64) })],
+    ["missing transfer", undefined],
+    ["transfer getter", Object.defineProperty(observed(), "mint", {
+      get() { throw new Error("rpc secret=abc"); },
+    })],
   ])("rejects a settled transfer with wrong %s", async (_name, transfer) => {
+    const recordSettlement = vi.fn();
     await expect(advanceSolanaSplSettlement(input({
+      store: { ...createInMemorySolanaSplSettlementStore(), recordSettlement },
       adapter: adapter({
-        reconcile: async () => ({ disposition: "settled-same", transfer }),
+        reconcile: async () => ({ disposition: "settled-same", transfer }) as never,
       }),
     }))).resolves.toEqual({
-      status: "failed",
-      errorClass: "permanent",
+      status: "indeterminate",
       reason: "solana-spl-settled-instruction-mismatch",
     });
+    expect(recordSettlement).not.toHaveBeenCalled();
+  });
+
+  test("a different landed transfer is indeterminate without adapter text", async () => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    await expect(advanceSolanaSplSettlement(input({
+      adapter: adapter({
+        prepareSignedTransfer,
+        reconcile: async () => ({
+          disposition: "settled-different",
+          reason: "rpc said: token=sk_live_123",
+          authenticationHash: "d".repeat(64),
+        }),
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settled-different" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test("a landed mismatch over a retained broadcast never signs a replacement", async () => {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (): Promise<SolanaSplReconciliation> => {
+      reconciliations += 1;
+      if (reconciliations === 1) return { disposition: "indeterminate", reason: "lost" };
+      if (reconciliations === 2) {
+        return { disposition: "settled-same", transfer: observed({ commitmentLevel: "finalized" }) };
+      }
+      return { disposition: "settled-different", reason: "other", authenticationHash: HASH };
+    });
+    const shared = input({
+      adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
+      now: () => clock,
+    });
+    await advanceSolanaSplSettlement(shared);
+    for (const reason of [
+      "solana-spl-settled-instruction-mismatch",
+      "solana-spl-settled-different",
+    ]) {
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: `worker-${clock}` }))
+        .resolves.toEqual({ status: "indeterminate", reason });
+    }
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
 
   test("a live lease prevents concurrent signing and broadcast", async () => {
