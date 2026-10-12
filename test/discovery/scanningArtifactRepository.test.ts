@@ -945,6 +945,28 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect([...third.state.seen.keys()]).toEqual(["stor-a"]);
   });
 
+  test("a row deferred earlier on a page survives a second failing row on the same page", async () => {
+    const fixture = setup(["a", "b", "c", "d"]);
+    const store = createInMemoryBindingStore(["a", "b", "c", "d"].map(binding));
+    const repo = createScanningArtifactRepository({
+      ...fixture.deps, maxRowAttempts: 2,
+      index: { resolve: async (logicalAddress, owner) => logicalAddress === logical("b") || logicalAddress === logical("c")
+        ? { status: "indeterminate", reason: "index down" } : store.resolve(logicalAddress, owner) },
+    });
+    fixture.fetchPage.mockResolvedValue({ entries: ["a", "b", "c", "d"].map(row), nextCursor: null });
+    const first = await repo.scanPage();
+    expect(first).toMatchObject({ status: "indeterminate", state: { pendingRow: { nativeAddress: "stor-b", attempts: 1 } } });
+    // b is deferred on its second attempt, then c fails on the same page.
+    const second = await repo.scanPage(first.state);
+    expect(second).toMatchObject({ status: "indeterminate", state: { pendingRow: { nativeAddress: "stor-c", attempts: 1 } } });
+    expect(second.deferred.map(({ anchor }) => anchor.nativeAddress)).toEqual(["stor-b"]);
+    expect(second.state.deferred.map(({ anchor }) => anchor.nativeAddress)).toEqual(["stor-b"]);
+    const third = await repo.scanPage(second.state);
+    expect(third).toMatchObject({ status: "page", state: { exhausted: true, pendingRow: null } });
+    expect(third.state.deferred.map(({ anchor }) => anchor.nativeAddress)).toEqual(["stor-b", "stor-c"]);
+    expect([...third.state.seen.keys()]).toEqual(["stor-a", "stor-d"]);
+  });
+
   test("S1: JSON-persisted Maps return a restart diagnostic instead of rejecting", async () => {
     const fixture = setup(["a"]);
     const first = await fixture.repo.scanPage();
