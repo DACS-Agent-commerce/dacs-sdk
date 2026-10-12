@@ -1624,6 +1624,40 @@ export async function advanceCrossChainHtlc(
       ? observed as Readonly<HtlcFailedObservation>
       : undefined;
   };
+  // A final destination lock's expiry and terms are immutable. If either rules
+  // out a safe reveal, the payer never reveals and each leg is refunded at its
+  // own expiry instead of the session stopping with both legs locked. No reveal
+  // checkpoint exists where this is asked, so the terms still decide a first
+  // reveal. Once the destination has expired no reveal is possible and terms
+  // the adapter can no longer read (for example after the destination refund)
+  // change nothing. A retained reveal was prepared against matching terms and
+  // may already have exposed the preimage, so terms read later never hold back
+  // its rebroadcast.
+  const revealForbiddenBy = (
+    lock: Readonly<FinalHtlcObservation>,
+    lockExpiresAt: number,
+    sourceExpiry: number,
+    destinationExpired: boolean,
+  ): HtlcRefundReason | undefined => {
+    // An unusable expiry is checked first: the margin cannot be computed for it.
+    if (destinationLockExpiryUnusable(lock)) return "destination-lock-expiry-invalid";
+    const sourceRecoveryBudgetSec = safeAdd(
+      intent.sourceFinalitySec,
+      intent.safetyWindowSec,
+      "source finality and safety budget",
+    );
+    if (sourceExpiry <= safeAdd(lockExpiresAt, sourceRecoveryBudgetSec, "absolute expiry margin")) {
+      return "destination-expiry-margin-insufficient";
+    }
+    const termsVerdict = prepared.has("destination-claim")
+      ? undefined
+      : lockTermsVerdict(lock, expectedDestinationLockTerms(intent));
+    return termsVerdict === "mismatch"
+      ? "destination-lock-terms-mismatch"
+      : termsVerdict === "missing" && !destinationExpired
+        ? "destination-lock-terms-missing"
+        : undefined;
+  };
   let destinationClaimCutoffReached = false;
   let destinationClaimReplacementBlocked = false;
   let sourceClaimExpiryReached = false;
@@ -1952,15 +1986,52 @@ export async function advanceCrossChainHtlc(
     // (an adapter fault, or a contract that deleted its record). Nothing moves
     // the source leg on it, but the session stays resumable. Without a retained
     // reveal the preimage is private, so the payee cannot claim the source and
-    // the payee's own destination refund after its expiry is still safe.
-    if (destinationLock?.expiresAt !== undefined && !prepared.has("destination-claim") &&
-        readNow() >= lockExpiryMillis(destinationLock.expiresAt)) {
+    // the payee's own destination refund after its expiry is still safe. It is
+    // sent as on the refund path: prepared only when none is retained, and a
+    // retained refund authenticated `absent` or `failed` is never re-sent.
+    // Such a refund needs a person here too, so the result is the refund
+    // path's `htlc-refund-absent` or `refund-stalled`.
+    const destinationLockState = snapshot.actions["destination-lock"];
+    const destinationLockMayLand = prepared.has("destination-lock") &&
+      destinationLockState?.state !== "failed" && destinationLockState?.state !== "absent";
+    const attempts: Partial<Record<"source-refund" | "destination-refund", "none" | "sent" | "uncertain">> = {
+      "source-refund": "none",
+      ...(destinationLock || destinationLockMayLand || prepared.has("destination-refund")
+        ? { "destination-refund": "none" as const }
+        : {}),
+    };
+    let latest = snapshot;
+    const destinationExpired = destinationLock?.expiresAt !== undefined &&
+      readNow() >= lockExpiryMillis(destinationLock.expiresAt);
+    if (destinationLock?.expiresAt !== undefined && destinationExpired && !prepared.has("destination-claim")) {
       const refund = snapshot.actions["destination-refund"];
-      if (!refund || refund.state === "absent") {
-        await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
+      if (!refund || (refund.state === "absent" && !refundAbsent("destination-refund", snapshot))) {
+        const advanced = await execute("destination-refund", { destinationExpiry: destinationLock.expiresAt });
+        if (advanced) latest = advanced;
+        attempts["destination-refund"] = advanced ? "sent" : "uncertain";
       }
     }
-    return { status: "indeterminate", reason: "htlc-source-finality-checkpoint-without-final-lock" };
+    // The source lock's own terms cannot be read here, so the reason is the
+    // one the destination leg gives on the refund path.
+    const refunds = refundProgress(
+      prepared.has("destination-claim")
+        ? "destination-claim-unlanded"
+        : destinationLock?.expiresAt !== undefined
+          ? revealForbiddenBy(
+            destinationLock,
+            destinationLock.expiresAt,
+            sourceFinalityCheckpoint.sourceExpiry,
+            destinationExpired,
+          ) ?? "destination-timeout"
+          : destinationLockState?.state === "failed"
+            ? "destination-lock-failed"
+            : destinationLockMayLand ? "destination-lock-unresolved" : "destination-lock-missing",
+      latest,
+      attempts,
+    );
+    return refunds.status === "operator-alert" || refunds.status === "refund-stalled"
+      ? refunds
+      : { status: "indeterminate", reason: "htlc-source-finality-checkpoint-without-final-lock" };
   }
   if (sourceLock) {
     // Unreachable for a validated snapshot; kept resumable for type safety.
@@ -2337,40 +2408,16 @@ export async function advanceCrossChainHtlc(
   if (destinationLock.expiresAt === undefined || destinationLock.includedAt === undefined) {
     return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
   }
-  const sourceRecoveryBudgetSec = safeAdd(
-    intent.sourceFinalitySec,
-    intent.safetyWindowSec,
-    "source finality and safety budget",
-  );
   const sourceExpired =
     readNow() >= secondsToMilliseconds(sourceLock.expiresAt, "source refund expiry");
   // An expiry beyond the safe-integer range never arrives for the core.
   const destinationExpired = readNow() >= lockExpiryMillis(destinationLock.expiresAt);
-  // A final destination lock's expiry and terms are immutable. If either rules
-  // out a safe reveal, the payer never reveals and each leg is refunded at its
-  // own expiry instead of the session stopping with both legs locked. No reveal
-  // checkpoint exists here, so the terms still decide a first reveal. Once the
-  // destination has expired no reveal is possible and terms the adapter can no
-  // longer read (for example after the destination refund) change nothing.
-  // A retained reveal was prepared against matching terms and may already have
-  // exposed the preimage, so terms read later never hold back its rebroadcast.
-  const destinationTermsVerdict = prepared.has("destination-claim")
-    ? undefined
-    : lockTermsVerdict(destinationLock, expectedDestinationLockTerms(intent));
-  // An unusable expiry is checked first: the margin cannot be computed for it.
-  const revealForbidden = destinationLockExpiryUnusable(destinationLock)
-    ? "destination-lock-expiry-invalid" as const
-    : sourceLock.expiresAt <= safeAdd(
-      destinationLock.expiresAt,
-      sourceRecoveryBudgetSec,
-      "absolute expiry margin",
-    )
-      ? "destination-expiry-margin-insufficient" as const
-      : destinationTermsVerdict === "mismatch"
-        ? "destination-lock-terms-mismatch" as const
-        : destinationTermsVerdict === "missing" && !destinationExpired
-          ? "destination-lock-terms-missing" as const
-          : undefined;
+  const revealForbidden = revealForbiddenBy(
+    destinationLock,
+    destinationLock.expiresAt,
+    sourceLock.expiresAt,
+    destinationExpired,
+  );
 
   if (revealForbidden !== undefined || destinationExpired) {
     let refundReason: HtlcRefundReason = revealForbidden ?? "destination-timeout";

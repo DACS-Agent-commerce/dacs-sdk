@@ -3709,6 +3709,46 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject(settled);
   });
 
+  test.each([
+    ["absent", 1_200, "operator-alert", "htlc-refund-absent"],
+    ["failed", 1_200, "refund-stalled", "destination-timeout"],
+    ["failed", 1_680, "refund-stalled", "destination-expiry-margin-insufficient"],
+  ] as const)(
+    "with a regressed source lock, never re-sends a destination refund authenticated %s and pages (expiry %i)",
+    async (refundState, destinationExpiry, status, reason) => {
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry, mode: { "destination-refund": "pending" } });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      run.setClock(destinationExpiry * 1_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "destination-refund-sent" }))
+        .resolves.toMatchObject({ status: "refund-pending", refunds: { "destination-refund": "pending" } });
+      const [refund] = broadcastsOf(h, "destination-refund");
+      if (!refund) throw new Error("expected a destination refund");
+      h.actions["destination-refund"] = refundState === "absent"
+        ? { state: "absent", authenticationHash: AUTH_HASH }
+        : { state: "failed", txRef: refund.txRef, authenticationHash: AUTH_HASH };
+      // The checkpointed source lock is no longer reported final.
+      delete h.actions["source-lock"];
+      for (const tick of [1, 2]) {
+        const progress = await advanceCrossChainHtlc({
+          ...run.shared,
+          owner: `source-regressed-${tick}`,
+          now: () => destinationExpiry * 1_000 + tick * 101,
+        });
+        expect(progress).toMatchObject({
+          status,
+          reason,
+          refunds: { "destination-refund": refundState, "source-refund": "waiting" },
+        });
+        expect(htlcNeedsOperator(progress)).toBe(true);
+      }
+      expect(broadcastsOf(h, "destination-refund")).toHaveLength(1);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "destination-refund"]);
+    },
+  );
+
   test("refuses to create the volatile in-memory store without an explicit acknowledgement", () => {
     for (const options of [undefined, {}, { acknowledgeVolatile: false }, { acknowledgeVolatile: "true" }]) {
       expect(() => createInMemoryCrossChainHtlcStore(options as never)).toThrow(TypeError);
