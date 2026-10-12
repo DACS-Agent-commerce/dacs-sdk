@@ -4623,6 +4623,9 @@ describe("advanceLiquidityTankSettlement", () => {
 
 describe("round 10", () => {
   const D = RECOVERY_DEADLINE_MS;
+  /** A realistic Unix-millisecond preparation time, five days before the deadline. */
+  const PREPARED_AT_MS = D - 5 * 86_400_000;
+  const DEADLINE_SECONDS = D / 1_000;
 
   /** Toy signed bytes a host decoder can read back: what the adapter actually signed. */
   function signedTransfer(
@@ -4931,6 +4934,100 @@ describe("round 10", () => {
       expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
       expect(h.observe).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("finding 5: a recovery deadline before the submission was prepared is refused", () => {
+    test("a seconds-scale deadline on a fresh lock never expires it (probe R2)", async () => {
+      const h = signingHarness({}, PREPARED_AT_MS);
+      const lockedAt = PREPARED_AT_MS + 1_000;
+      h.setAfterBroadcast({
+        ...pending(h.operationHash, true, DEADLINE_SECONDS, lockedAt),
+      });
+      const store = createInMemoryLiquidityTankStore();
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      const run = runner({ store, adapter: h.adapter });
+      run.setClock(lockedAt + 1);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-recovery-deadline-before-preparation",
+      });
+      expect(recordObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        observation: expect.objectContaining({ status: "pending" }),
+      }));
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      // A later read in milliseconds still settles the same submission.
+      h.setObservation(completed(h.operationHash, lockedAt + 2_000));
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+        status: "settled",
+      });
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test("a completion carrying a seconds-scale deadline is neither expired nor settled", async () => {
+      const h = signingHarness({}, PREPARED_AT_MS);
+      h.setAfterBroadcast(completed(h.operationHash, PREPARED_AT_MS + 2_000, DEADLINE_SECONDS));
+      const store = createInMemoryLiquidityTankStore();
+      const recordRecoveryExpired = vi.spyOn(store, "recordRecoveryExpired");
+      const recordSettlement = vi.spyOn(store, "recordSettlement");
+      const run = runner({ store, adapter: h.adapter });
+      run.setClock(PREPARED_AT_MS + 3_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-recovery-deadline-before-preparation",
+      });
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
+      expect(recordSettlement).not.toHaveBeenCalled();
+    });
+
+    test("legacy seconds-scale rows fail closed with the same reason and no effects", async () => {
+      const inner = createInMemoryLiquidityTankStore();
+      const h = signingHarness({}, PREPARED_AT_MS);
+      h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 1_000));
+      const run = runner({ store: inner, adapter: h.adapter, leaseDurationMs: 1 });
+      run.setClock(PREPARED_AT_MS + 1_000);
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toMatchObject({
+        status: "settle-asymmetric",
+      });
+      h.observe.mockClear();
+      h.broadcastRetained.mockClear();
+      const legacy = (observation: Record<string, unknown>) => ({
+        ...observation, recoveryDeadline: DEADLINE_SECONDS,
+      });
+      const recordRecoveryExpired = vi.spyOn(inner, "recordRecoveryExpired");
+      const acquired: LiquidityTankStore = {
+        ...inner,
+        claim: async (input) => {
+          const claimed = await inner.claim(input);
+          return claimed.status === "acquired" && claimed.observation
+            ? { ...claimed, observation: legacy(claimed.observation) as never }
+            : claimed;
+        },
+      };
+      run.setClock(PREPARED_AT_MS + 5_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "legacy", store: acquired }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-recovery-deadline-before-preparation" });
+      const expired: LiquidityTankStore = {
+        ...inner,
+        claim: async (input) => {
+          const claimed = await inner.claim(input);
+          if (claimed.status !== "acquired" || !claimed.submission || !claimed.observation) return claimed;
+          return {
+            status: "recovery-expired",
+            intent: claimed.intent,
+            submission: claimed.submission,
+            observation: legacy(claimed.observation) as never,
+          };
+        },
+      };
+      run.setClock(PREPARED_AT_MS + 10_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "legacy-expired", store: expired }))
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-recovery-deadline-before-preparation" });
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      expect(recordRecoveryExpired).not.toHaveBeenCalled();
     });
   });
 

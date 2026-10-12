@@ -640,6 +640,29 @@ function recoveryDeadlineUnixMs(value: unknown): number {
   return requireUInt(value, "recoveryDeadline", true);
 }
 
+/** A recovery deadline earlier than the submission it recovers, such as one sent in seconds. */
+class RecoveryDeadlineBeforePreparationError extends DacsError {}
+
+const RECOVERY_DEADLINE_BEFORE_PREPARATION = "liquidity-tank-recovery-deadline-before-preparation";
+
+/**
+ * The deadline of a lock on `submission`, which cannot fall before the
+ * submission was prepared. No unit heuristic: a seconds-scale deadline is
+ * refused, not converted.
+ */
+function recoveryDeadlineAfterPreparation(
+  value: unknown,
+  submission: Readonly<LiquidityTankPreparedSubmission>,
+): number {
+  const recoveryDeadline = recoveryDeadlineUnixMs(value);
+  if (recoveryDeadline < submission.preparedAt) {
+    throw new RecoveryDeadlineBeforePreparationError(
+      "pay-cross-chain-liquidity-tank: recoveryDeadline is before the submission was prepared",
+    );
+  }
+  return recoveryDeadline;
+}
+
 function stableDataProperty(
   source: unknown,
   key: PropertyKey,
@@ -1126,13 +1149,13 @@ function validateCapturedObservation(
     }
     if (value.lockTxHash !== undefined) {
       requireString(value.lockTxHash, "lockTxHash");
-      recoveryDeadlineUnixMs(value.recoveryDeadline);
+      recoveryDeadlineAfterPreparation(value.recoveryDeadline, submission);
     }
   }
   if (value.status === "completed") {
     requireString(value.lockTxHash, "lockTxHash");
     requireString(value.releaseTxHash, "releaseTxHash");
-    recoveryDeadlineUnixMs(value.recoveryDeadline);
+    recoveryDeadlineAfterPreparation(value.recoveryDeadline, submission);
     requireUInt(value.finalityObservedAt, "finalityObservedAt");
   }
   if (value.status === "failed" || value.status === "capacity-unavailable") {
@@ -1242,6 +1265,16 @@ function validateRecoveryEvidence(
     throw new DacsError("pay-cross-chain-liquidity-tank: recovery evidence is invalid");
   }
   return checkpoint;
+}
+
+/** A retained row the core refuses to act on; both reasons need an operator. */
+function retainedStateRefusal(error: unknown): LiquidityTankProgress {
+  return {
+    status: "indeterminate",
+    reason: error instanceof RecoveryDeadlineBeforePreparationError
+      ? RECOVERY_DEADLINE_BEFORE_PREPARATION
+      : "liquidity-tank-retained-state-corrupt",
+  };
 }
 
 function recoveryExpiredProgress(): LiquidityTankProgress {
@@ -1549,8 +1582,8 @@ export async function advanceLiquidityTankSettlement(
       if (!provesRecoveryExpiry(evidence)) {
         throw new DacsError("pay-cross-chain-liquidity-tank: recovery expiry evidence missing");
       }
-    } catch {
-      return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+    } catch (error) {
+      return retainedStateRefusal(error);
     }
     const evidenceObservations: readonly Readonly<
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
@@ -1703,8 +1736,8 @@ export async function advanceLiquidityTankSettlement(
         intent,
         submission,
       );
-    } catch {
-      return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+    } catch (error) {
+      return retainedStateRefusal(error);
     }
     if (!await authenticated(submission, durableObservation)) {
       return { status: "indeterminate", reason: "liquidity-tank-retained-observation-unauthenticated" };
@@ -1722,8 +1755,8 @@ export async function advanceLiquidityTankSettlement(
         throw new DacsError("pay-cross-chain-liquidity-tank: retained failure checkpoint mismatch");
       }
       durableFailure = evidence;
-    } catch {
-      return { status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" };
+    } catch (error) {
+      return retainedStateRefusal(error);
     }
     if (!await authenticated(submission, durableFailure.checkpoint) ||
         !await authenticated(submission, durableFailure.failure)) {
@@ -1831,7 +1864,8 @@ export async function advanceLiquidityTankSettlement(
     : progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
 
   // Set when this call's observation must not be used at all, not even to
-  // fall back on durable progress: the host's authenticator refused it.
+  // fall back on durable progress: the host's authenticator refused it, or
+  // its deadline cannot belong to this submission.
   let observationRefusal: LiquidityTankProgress | undefined;
   const observe = async (): Promise<Readonly<LiquidityTankObservation>> => {
     const unavailable = {
@@ -1846,7 +1880,10 @@ export async function advanceLiquidityTankSettlement(
         intent,
         submission,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof RecoveryDeadlineBeforePreparationError) {
+        observationRefusal = { status: "indeterminate", reason: RECOVERY_DEADLINE_BEFORE_PREPARATION };
+      }
       return unavailable;
     }
     if (observed.status !== "indeterminate" && !await authenticated(submission, observed)) {
