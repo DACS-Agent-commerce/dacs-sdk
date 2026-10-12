@@ -396,13 +396,16 @@ const failed = results.filter((result) => !result.passed);
 if (failed.length > 0) throw new Error(JSON.stringify(failed));
 ```
 
-The in-memory reference store cannot pass: a second instance starts empty, so
-it fails the restart and race cases. That failure is the reason it requires
-`acknowledgeVolatile`. Handing it back as its own reopened handle
-(`reopenStore: (store) => store`) is refused, as above. The SDK's own tests
-run the reference store's rules behind new handle objects on one shared
-instance, which stands in for a database; that shows the cases accept a store
-that keeps the contract, not that the reference store is durable.
+Passing does not show that a store is durable; `reopenStore` has to open it
+the way a restarted process would. The suite refuses only a `reopenStore`
+that returns the very handle it was given (`(store) => store`). It cannot
+tell whether a new handle reaches durable state: the in-memory reference store
+fails the restart and race cases when reopened as a second instance, which
+starts empty (the reason it requires `acknowledgeVolatile`), but passes every
+case behind a new object sharing its memory, such as
+`(store) => ({ ...store })`. The SDK's own tests do that on purpose, standing
+in for a database; it shows the cases accept a store that keeps the contract,
+not that the reference store survives a restart.
 
 ## Refusals before any claim
 
