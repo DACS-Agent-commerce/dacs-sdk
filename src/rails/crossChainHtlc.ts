@@ -1864,6 +1864,12 @@ export async function advanceCrossChainHtlc(
   }
 
   if (!destinationLock) {
+    // A reveal is only ever prepared against a final destination lock, so a
+    // retained reveal means this observation regressed. The reveal may still
+    // land, so nothing is refunded, prepared or broadcast until it recovers.
+    if (prepared.has("destination-claim")) {
+      return { status: "indeterminate", reason: "htlc-destination-lock-finality-regressed" };
+    }
     const state = snapshot.actions["destination-lock"];
     // The payer's source leg stays locked until its own refund is final, so
     // nothing on this path is terminal: a failed or impossible destination

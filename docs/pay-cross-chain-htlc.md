@@ -79,6 +79,13 @@ blocking but returns `waiting` with reason
 A destination claim that is already final is still authenticated,
 checkpointed, and recovered after the cutoff.
 
+A reveal is only ever prepared against a final destination lock. If the
+destination-lock observation later regresses while a reveal is retained
+(omitted, `pending` or `absent`), the core returns `indeterminate` with reason
+`htlc-destination-lock-finality-regressed` and prepares, broadcasts and refunds
+nothing until the adapter reports the lock final again: the reveal may still
+land, and refunding the source then would give the payer both legs.
+
 Refunds are per leg. After the destination expiry the payee's destination
 refund is driven; after the source expiry the payer's source refund is driven
 in the same call, even if the destination refund cannot be prepared, broadcast

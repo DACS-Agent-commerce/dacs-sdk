@@ -1575,6 +1575,43 @@ describe("advanceCrossChainHtlc", () => {
       .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
   });
 
+  test.each(["deleted", "pending", "absent"] as const)(
+    "never refunds after a reveal when the destination-lock observation is %s",
+    async (variant) => {
+      const h = harness({
+        sourceExpiry: 1_700,
+        destinationExpiry: 1_200,
+        mode: { "destination-claim": "pending" },
+      });
+      const run = runner({ adapter: h.adapter });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      await advanceCrossChainHtlc(run.nextOwner());
+      const lock = h.actions["destination-lock"];
+      if (!lock || lock.state !== "final") throw new Error("expected final destination lock");
+      if (variant === "deleted") delete h.actions["destination-lock"];
+      else if (variant === "pending") {
+        h.actions["destination-lock"] = { state: "pending", txRef: lock.txRef, authenticationHash: AUTH_HASH };
+      } else h.actions["destination-lock"] = { state: "absent", authenticationHash: AUTH_HASH };
+      const preparations = h.prepareAction.mock.calls.length;
+      const broadcasts = h.broadcastRetained.mock.calls.length;
+      for (const tick of [0, 1]) {
+        await expect(advanceCrossChainHtlc({
+          ...run.shared,
+          owner: `regressed-${variant}-${tick}`,
+          now: () => 1_700_000 + tick * 101,
+        })).resolves.toEqual({
+          status: "indeterminate",
+          reason: "htlc-destination-lock-finality-regressed",
+        });
+      }
+      expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).not.toContain("source-refund");
+      expect(h.actions["destination-claim"]).toMatchObject({ state: "pending" });
+    },
+  );
+
   test("refunds both legs after source expiry when a retained destination claim failed", async () => {
     const h = harness({
       sourceExpiry: 1_700,
