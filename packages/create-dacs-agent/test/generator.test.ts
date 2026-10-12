@@ -6,12 +6,13 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -62,8 +63,17 @@ const GENERATED_ROLE_CHECK_REPORT = JSON.stringify({
   reasonCode: "role-runtime-unavailable",
 });
 
+interface FakeContainer {
+  Id: string;
+  Image: string;
+  project: string;
+  service: string;
+  running: boolean;
+}
+
 interface FakeDockerScenario {
-  // Successive answers to `docker image inspect --format {{.Id}}`; the last repeats.
+  // Successive resolutions of an image tag, by `docker image inspect --format
+  // {{.Id}}` or by compose creating a container from a tag; the last repeats.
   imageIds: string[];
   daemonDown?: boolean;
   config: Readonly<Record<string, unknown>>;
@@ -71,6 +81,12 @@ interface FakeDockerScenario {
   service: Readonly<{ status: number; stderr: string }>;
   // That container never exits by itself.
   hang?: "probe" | "service";
+  composeUpStatus?: number;
+  // A compose that creates every container from this image instead.
+  composeCreatesImage?: string;
+  // A compose that does not create these services.
+  composeSkips?: string[];
+  containers?: FakeContainer[];
 }
 
 function passingDockerScenario(
@@ -90,11 +106,19 @@ function passingDockerScenario(
   };
 }
 
+// Compose is modelled only as far as dacs:up depends on it: which files it
+// reads (--file, else COMPOSE_FILE, else compose.yaml plus compose.override.yaml),
+// the project name (--project-name, else COMPOSE_PROJECT_NAME, else the
+// directory name), each service's image (an override's per-service image:,
+// else DACS_IMAGE from the environment, else .env) and the services started
+// (those named, else every service in the files).
 const TEST_ONLY_FAKE_DOCKER_SOURCE = `const {
   appendFileSync, existsSync, readFileSync, writeFileSync,
 } = require("node:fs");
+const { basename, join, resolve } = require("node:path");
 const args = process.argv.slice(2);
 const log = process.env.CREATE_DACS_AGENT_TEST_DOCKER_LOG;
+const containersPath = log + ".containers.json";
 const scenario = JSON.parse(readFileSync(
   process.env.CREATE_DACS_AGENT_TEST_DOCKER_SCENARIO, "utf8"));
 appendFileSync(log, JSON.stringify(args) + "\\n");
@@ -102,15 +126,109 @@ if (scenario.daemonDown) {
   process.stderr.write("Cannot connect to the test-only Docker daemon\\n");
   process.exit(1);
 }
-function hang() {
-  setTimeout(() => {}, 60_000);
-}
-if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
+function resolveTag() {
   const counter = log + ".resolutions";
   const count = existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;
   writeFileSync(counter, String(count + 1));
   const ids = scenario.imageIds;
-  process.stdout.write(ids[Math.min(count, ids.length - 1)] + "\\n");
+  return ids[Math.min(count, ids.length - 1)];
+}
+function containers() {
+  return existsSync(containersPath)
+    ? JSON.parse(readFileSync(containersPath, "utf8")) : scenario.containers ?? [];
+}
+function saveContainers(value) {
+  writeFileSync(containersPath, JSON.stringify(value));
+}
+function hang() {
+  setTimeout(() => {}, 60_000);
+}
+function composeServices(files, defaultImage) {
+  const services = new Map();
+  for (const file of files) {
+    let inServices = false;
+    let current;
+    for (const line of readFileSync(file, "utf8").split("\\n")) {
+      if (/^\\S/.test(line)) inServices = line.trim() === "services:";
+      const service = inServices && /^  ([A-Za-z0-9_-]+):\\s*$/.exec(line);
+      const image = inServices && /^    image:\\s*(\\S+)\\s*$/.exec(line);
+      if (service) {
+        current = service[1];
+        if (!services.has(current)) services.set(current, defaultImage);
+      } else if (image && current !== undefined) {
+        services.set(current, image[1]);
+      }
+    }
+  }
+  return services;
+}
+function compose(rest) {
+  let files = [];
+  let directory;
+  let project;
+  let index = 0;
+  for (; index < rest.length; index += 1) {
+    if (rest[index] === "--file") files.push(rest[++index]);
+    else if (rest[index] === "--project-directory") directory = rest[++index];
+    else if (rest[index] === "--project-name") project = rest[++index];
+    else break;
+  }
+  const [subcommand, ...options] = rest.slice(index);
+  appendFileSync(log + ".compose-env", JSON.stringify({
+    subcommand,
+    DACS_IMAGE: process.env.DACS_IMAGE,
+    DACS_RUNTIME_UID: process.env.DACS_RUNTIME_UID,
+    DACS_RUNTIME_GID: process.env.DACS_RUNTIME_GID,
+    composeVariables: Object.keys(process.env).filter((name) => name.startsWith("COMPOSE_")),
+  }) + "\\n");
+  directory ??= process.cwd();
+  project ??= process.env.COMPOSE_PROJECT_NAME ?? basename(directory);
+  if (files.length === 0 && process.env.COMPOSE_FILE !== undefined) {
+    files = process.env.COMPOSE_FILE.split(":").map((file) => resolve(file));
+  } else if (files.length === 0) {
+    files = [join(directory, "compose.yaml")];
+    if (existsSync(join(directory, "compose.override.yaml"))) {
+      files.push(join(directory, "compose.override.yaml"));
+    }
+  }
+  const persisted = existsSync(join(directory, ".env"))
+    ? /^DACS_IMAGE=(.*)$/m.exec(readFileSync(join(directory, ".env"), "utf8"))?.[1]
+    : undefined;
+  const models = composeServices(files, process.env.DACS_IMAGE ?? persisted);
+  const named = [];
+  for (let position = 0; position < options.length; position += 1) {
+    if (options[position] === "--pull") position += 1;
+    else if (!options[position].startsWith("-")) named.push(options[position]);
+  }
+  const selected = named.length === 0 ? [...models.keys()] : named;
+  const state = containers();
+  if (subcommand === "up") {
+    if (scenario.composeUpStatus !== undefined) process.exit(scenario.composeUpStatus);
+    for (const service of selected) {
+      if (!models.has(service)) process.exit(15);
+      if ((scenario.composeSkips ?? []).includes(service)) continue;
+      const reference = models.get(service);
+      const Image = scenario.composeCreatesImage ??
+        (reference.startsWith("sha256:") ? reference : resolveTag());
+      const Id = "container-" + project + "-" + service;
+      const kept = state.filter((container) => container.Id !== Id);
+      state.length = 0;
+      state.push(...kept, { Id, Image, project, service, running: true });
+    }
+    saveContainers(state);
+  } else if (subcommand === "stop") {
+    for (const container of state) {
+      if (container.project === project && selected.includes(container.service)) {
+        container.running = false;
+      }
+    }
+    saveContainers(state);
+  } else if (subcommand === "down") {
+    saveContainers(state.filter((container) => container.project !== project));
+  }
+}
+if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
+  process.stdout.write(resolveTag() + "\\n");
 } else if (args[0] === "image" && args[1] === "inspect" &&
     args[3] === "{{json .Config}}") {
   process.stdout.write(JSON.stringify(scenario.config) + "\\n");
@@ -125,6 +243,30 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
   }
 } else if (args[0] === "rm" && args[1] === "--force") {
   // Removing the named smoke container succeeds.
+} else if (args[0] === "compose") {
+  compose(args.slice(1));
+} else if (args[0] === "ps" && args.includes("--all") && args.includes("--quiet")) {
+  const label = args[args.indexOf("--filter") + 1];
+  for (const container of containers()) {
+    if (label === "label=com.docker.compose.project=" + container.project) {
+      process.stdout.write(container.Id + "\\n");
+    }
+  }
+} else if (args[0] === "container" && args[1] === "inspect") {
+  const state = containers();
+  process.stdout.write(JSON.stringify(args.slice(2).map((id) => {
+    const container = state.find((candidate) => candidate.Id === id);
+    return {
+      Id: id,
+      Image: container.Image,
+      Config: { Labels: {
+        "com.docker.compose.project": container.project,
+        "com.docker.compose.service": container.service,
+        "com.docker.compose.oneoff": "False",
+      } },
+      State: { Running: container.running },
+    };
+  })) + "\\n");
 } else {
   process.stderr.write("unexpected test-only fake docker invocation\\n");
   process.exitCode = 64;
@@ -196,15 +338,39 @@ async function runGeneratedDockerSmoke(
       },
     },
   );
-  const invocations = (await readFile(dockerLog, "utf8").catch(() => ""))
+  const lines = async (path: string) => (await readFile(path, "utf8").catch(() => ""))
     .trim().split("\n").filter(Boolean)
-    .map((line) => JSON.parse(line) as string[]);
+    .map((line) => JSON.parse(line) as unknown);
+  const invocations = await lines(dockerLog) as string[][];
+  // What each compose invocation saw in its environment.
+  const composeEnvironments = await lines(`${dockerLog}.compose-env`) as {
+    subcommand: string;
+    DACS_IMAGE?: string;
+    DACS_RUNTIME_UID?: string;
+    DACS_RUNTIME_GID?: string;
+    composeVariables: string[];
+  }[];
+  const containers = await readFile(`${dockerLog}.containers.json`, "utf8")
+    .then((source) => JSON.parse(source) as FakeContainer[], () => undefined);
   const receipt = await readFile(
     join(target, ".dacs-runtime", "docker-image-smoke.json"),
     "utf8",
   ).then((source) => JSON.parse(source) as unknown, () => undefined);
-  return { ...result, invocations, receipt };
+  return { ...result, invocations, composeEnvironments, containers, receipt };
 }
+
+// The compose invocation prefix every Docker lifecycle command uses.
+async function generatedComposeArguments(target: string): Promise<string[]> {
+  const directory = await realpath(target);
+  return [
+    "compose",
+    "--file", join(directory, "compose.yaml"),
+    "--project-directory", directory,
+    "--project-name", basename(directory),
+  ];
+}
+
+const isComposeInvocation = (args: readonly string[]) => args[0] === "compose";
 
 function localImageReferenceOf(environment: string): string {
   const match = /^DACS_IMAGE=(.+)$/m.exec(environment);
@@ -433,12 +599,19 @@ describe("create-dacs-agent", () => {
     expect(readme).not.toContain("my-dacs-agent:local");
     expect(readme).not.toContain("must pass before an installer reports success");
     expect(readme).toContain("the image's configured service command");
-    const verify = cli.indexOf(
-      '["scripts/docker-runtime-smoke.mjs", "--verify-smoked"]',
+    expect(readme).toContain("with `DACS_IMAGE` set to that image ID rather\nthan the tag");
+    expect(readme).toContain("including `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`");
+    // The script's --up, --stop and --down modes are exercised directly below; the
+    // CLI only dispatches to them, after the pre-start doctor for dacs:up.
+    expect(cli).not.toContain('command("docker"');
+    expect(cli).toContain(
+      'command(process.execPath, ["scripts/docker-runtime-smoke.mjs", ...args])',
     );
-    expect(verify).toBeGreaterThan(cli.indexOf("await startGate()"));
-    expect(verify).toBeLessThan(cli.indexOf('["compose", "up", "-d"]'));
-    expect(cli).toContain("process.exitCode = smoked !== 0");
+    const up = cli.indexOf('process.exitCode = await dockerRuntime(["--up"]);');
+    expect(up).toBeGreaterThan(cli.indexOf("if (gate !== 0) { process.exitCode = gate; return; }"));
+    expect(cli).toContain(': await dockerRuntime(["--down"]);');
+    expect(cli).toContain(': dockerRuntime(["--stop"]);');
+    expect(cli).toContain('await dockerRuntime(["--down", "--remove-orphans"]) !== 0) return 5;');
 
     const local = join(await temporaryDirectory(), "local-image-agent");
     await createDacsAgentProject({
@@ -547,31 +720,46 @@ describe("create-dacs-agent", () => {
   );
 
   test.runIf(process.platform !== "win32")(
-    "lets dacs:up start only the image ID and user that last passed the smoke",
+    "lets dacs:up start compose only for the image ID and user that last passed the smoke",
     async () => {
       const target = await generatedDockerProject("verified-image-agent");
-      const verify = { args: ["--verify-smoked"] };
-      const unsmoked = await runGeneratedDockerSmoke(target, passingDockerScenario(), verify);
+      const up = { args: ["--up"] };
+      const unsmoked = await runGeneratedDockerSmoke(target, passingDockerScenario(), up);
       expect(unsmoked.status).toBe(5);
       expect(unsmoked.stderr).toContain("last passed dacs:image:smoke");
+      expect(unsmoked.invocations.filter(isComposeInvocation)).toEqual([]);
 
       expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
-      const verified = await runGeneratedDockerSmoke(target, passingDockerScenario(), verify);
-      expect(verified.status).toBe(0);
-      expect(JSON.parse(verified.stdout)).toMatchObject({
-        status: "verified",
+      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), up);
+      expect(started.stderr).toBe("");
+      expect(started.status).toBe(0);
+      expect(JSON.parse(started.stdout)).toMatchObject({
+        status: "started",
         imageId: TEST_ONLY_FAKE_IMAGE_ID,
+        services: ["buyer", "seller"],
       });
-      expect(verified.invocations).toHaveLength(1);
+      expect(started.invocations.filter(isComposeInvocation)).toEqual([[
+        ...await generatedComposeArguments(target),
+        "up", "--detach", "--no-build", "--pull", "never", "buyer", "seller",
+      ]]);
+      expect(started.composeEnvironments).toEqual([{
+        subcommand: "up",
+        DACS_IMAGE: TEST_ONLY_FAKE_IMAGE_ID,
+        DACS_RUNTIME_UID: String(TEST_ONLY_RUNTIME_UID),
+        DACS_RUNTIME_GID: String(TEST_ONLY_RUNTIME_GID),
+        composeVariables: [],
+      }]);
 
+      // A non-zero check never reaches compose.
       for (const [scenario, env] of [
         [passingDockerScenario({ imageIds: [TEST_ONLY_REPLACEMENT_IMAGE_ID] }), {}],
         [passingDockerScenario(), { DACS_RUNTIME_UID: "5151" }],
         [passingDockerScenario(), { DACS_IMAGE: "another-agent:local" }],
       ] as const) {
-        const refused = await runGeneratedDockerSmoke(target, scenario, { ...verify, env });
+        const refused = await runGeneratedDockerSmoke(target, scenario, { ...up, env });
         expect(refused.status).toBe(5);
         expect(refused.stderr).toContain("rerun npm run dacs:image:smoke");
+        expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
       }
 
       // A failed smoke withdraws the earlier pass before checking anything.
@@ -580,8 +768,148 @@ describe("create-dacs-agent", () => {
       }));
       expect(failed.status).not.toBe(0);
       expect(failed.receipt).toBeUndefined();
-      const withdrawn = await runGeneratedDockerSmoke(target, passingDockerScenario(), verify);
+      const withdrawn = await runGeneratedDockerSmoke(target, passingDockerScenario(), up);
       expect(withdrawn.status).toBe(5);
+      expect(withdrawn.invocations.filter(isComposeInvocation)).toEqual([]);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "dacs:up starts the smoked image ID even when the tag moves after the check",
+    async () => {
+      const target = await generatedDockerProject("moved-tag-agent");
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      // The check resolves the tag to the smoked ID; every later resolution of
+      // the tag, including compose creating a container from it, gives another.
+      const moved = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        imageIds: [TEST_ONLY_FAKE_IMAGE_ID, TEST_ONLY_REPLACEMENT_IMAGE_ID],
+      }), { args: ["--up"] });
+      expect(moved.stderr).toBe("");
+      expect(moved.status).toBe(0);
+      expect(moved.composeEnvironments[0]?.DACS_IMAGE).toBe(TEST_ONLY_FAKE_IMAGE_ID);
+      expect(moved.containers?.map(({ service, Image }) => [service, Image])).toEqual([
+        ["buyer", TEST_ONLY_FAKE_IMAGE_ID],
+        ["seller", TEST_ONLY_FAKE_IMAGE_ID],
+      ]);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "dacs:up ignores COMPOSE_FILE, COMPOSE_PROJECT_NAME and compose override files",
+    async () => {
+      const target = await generatedDockerProject("override-agent");
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      // Each file replaces the buyer's image with an unsmoked tag and adds a service.
+      const override = [
+        "services:",
+        "  buyer:",
+        "    image: unsmoked-agent:latest",
+        "  extra:",
+        "    image: unsmoked-agent:latest",
+        "",
+      ].join("\n");
+      await writeFile(join(target, "compose.override.yaml"), override, "utf8");
+      await writeFile(join(target, "extra.yaml"), override, "utf8");
+      const scenario = passingDockerScenario({
+        imageIds: [TEST_ONLY_FAKE_IMAGE_ID, TEST_ONLY_REPLACEMENT_IMAGE_ID],
+      });
+      const environments: Record<string, string>[] = [
+        {},
+        { COMPOSE_FILE: "compose.yaml:extra.yaml" },
+        { COMPOSE_PROJECT_NAME: "another-project", COMPOSE_PROFILES: "extra" },
+      ];
+      for (const env of environments) {
+        const started = await runGeneratedDockerSmoke(target, scenario, { args: ["--up"], env });
+        expect(started.stderr, JSON.stringify(env)).toBe("");
+        expect(started.status).toBe(0);
+        expect(started.composeEnvironments[0]?.composeVariables).toEqual([]);
+        expect(started.containers).toEqual([
+          ["buyer", TEST_ONLY_FAKE_IMAGE_ID],
+          ["seller", TEST_ONLY_FAKE_IMAGE_ID],
+        ].map(([service, Image]) => ({
+          Id: `container-override-agent-${service}`,
+          Image,
+          project: "override-agent",
+          service,
+          running: true,
+        })));
+      }
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "dacs:up stops both roles unless compose created them from the smoked image ID",
+    async () => {
+      const target = await generatedDockerProject("checked-start-agent");
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      const up = { args: ["--up"] };
+      const stop = [...await generatedComposeArguments(target), "stop", "buyer", "seller"];
+      const strayContainer: FakeContainer = {
+        Id: "container-checked-start-agent-extra",
+        Image: TEST_ONLY_REPLACEMENT_IMAGE_ID,
+        project: "checked-start-agent",
+        service: "extra",
+        running: true,
+      };
+      const refused: [Partial<FakeDockerScenario>, string][] = [
+        [{ composeCreatesImage: TEST_ONLY_REPLACEMENT_IMAGE_ID },
+          `the buyer container runs ${TEST_ONLY_REPLACEMENT_IMAGE_ID}`],
+        [{ composeSkips: ["seller"] }, "compose created 0 seller containers"],
+        [{ containers: [strayContainer] },
+          "service extra is also running in compose project checked-start-agent"],
+      ];
+      for (const [overrides, message] of refused) {
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario(overrides), up);
+        expect(result.status, message).toBe(5);
+        expect(result.stderr).toContain(`dacs:up stopped buyer and seller: ${message}`);
+        expect(result.stdout).toBe("");
+        expect(result.invocations.filter(isComposeInvocation).at(-1)).toEqual(stop);
+        expect(result.containers?.filter((container) => container.service !== "extra")
+          .every((container) => !container.running)).toBe(true);
+      }
+      // An earlier, stopped container of another service does not block a start.
+      const stopped = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        containers: [{ ...strayContainer, running: false }],
+      }), up);
+      expect(stopped.status).toBe(0);
+
+      const failedCompose = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        composeUpStatus: 17,
+      }), up);
+      expect(failedCompose.status).toBe(17);
+      expect(failedCompose.invocations.filter(isComposeInvocation)).toHaveLength(1);
+      expect(failedCompose.invocations.some((args) => args[0] === "ps")).toBe(false);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "dacs:down and maintenance stops use the same compose file and project",
+    async () => {
+      const target = await generatedDockerProject("lifecycle-agent");
+      const prefix = await generatedComposeArguments(target);
+      const env = { COMPOSE_FILE: "extra.yaml", COMPOSE_PROJECT_NAME: "another-project" };
+      const modes: [string[], string[]][] = [
+        [["--stop"], ["stop"]],
+        [["--down"], ["down"]],
+        [["--down", "--remove-orphans"], ["down", "--remove-orphans"]],
+      ];
+      for (const [args, compose] of modes) {
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
+          args,
+          env,
+        });
+        expect(result.status, args.join(" ")).toBe(0);
+        expect(result.invocations).toEqual([[...prefix, ...compose]]);
+        expect(result.composeEnvironments[0]?.composeVariables).toEqual([]);
+      }
+      const failed = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        daemonDown: true,
+      }), { args: ["--down"] });
+      expect(failed.status).toBe(1);
     },
     SPAWNING_TEST_TIMEOUT_MS,
   );
@@ -691,11 +1019,11 @@ describe("create-dacs-agent", () => {
       expect(missing.status).toBe(1);
       expect(missing.stderr).toContain("ENOENT");
       expect(missing.receipt).toBeUndefined();
-      const verifyMissing = await runGeneratedDockerSmoke(target, undefined, {
-        args: ["--verify-smoked"],
+      const upMissing = await runGeneratedDockerSmoke(target, undefined, {
+        args: ["--up"],
       });
-      expect(verifyMissing.status).toBe(1);
-      expect(verifyMissing.stderr).toContain("ENOENT");
+      expect(upMissing.status).toBe(1);
+      expect(upMissing.stderr).toContain("ENOENT");
     },
     SPAWNING_TEST_TIMEOUT_MS,
   );
@@ -704,17 +1032,20 @@ describe("create-dacs-agent", () => {
     "requires DACS_IMAGE and a non-root compose user before calling docker",
     async () => {
       const target = await generatedDockerProject("smoke-usage-agent");
-      const usageErrors: SmokeOptions[] = [
-        { args: ["my-agent:local"] },
-        { env: { DACS_IMAGE: "" } },
-        { env: { DACS_RUNTIME_UID: "0" } },
-        { env: { DACS_RUNTIME_GID: "root" } },
-        { env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "0" } },
+      const usageErrors: [SmokeOptions, string][] = [
+        [{ args: ["my-agent:local"] }, "usage: node scripts/docker-runtime-smoke.mjs"],
+        [{ args: ["--verify-smoked"] }, "usage: node scripts/docker-runtime-smoke.mjs"],
+        [{ args: ["--up", "--down"] }, "usage: node scripts/docker-runtime-smoke.mjs"],
+        [{ env: { DACS_IMAGE: "" } }, "usage: set DACS_IMAGE and non-root"],
+        [{ args: ["--up"], env: { DACS_IMAGE: "" } }, "usage: set DACS_IMAGE and non-root"],
+        [{ env: { DACS_RUNTIME_UID: "0" } }, "usage: set DACS_IMAGE and non-root"],
+        [{ env: { DACS_RUNTIME_GID: "root" } }, "usage: set DACS_IMAGE and non-root"],
+        [{ env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "0" } }, "is 1-9999"],
       ];
-      for (const options of usageErrors) {
+      for (const [options, message] of usageErrors) {
         const result = await runGeneratedDockerSmoke(target, passingDockerScenario(), options);
         expect(result.status).toBe(2);
-        expect(result.stderr).toContain("usage: set DACS_IMAGE and non-root");
+        expect(result.stderr).toContain(message);
         expect(result.invocations).toEqual([]);
       }
       await rm(join(target, ".env"));
