@@ -269,7 +269,11 @@ There is no volatile fallback. An in-memory store, like the test suite's,
 loses the grace and the identical-bytes guarantee on every restart, and the
 SDK cannot detect one; it is unsupported. Read/write failure, a refused compare or a
 timed-out write stays indeterminate, and a pre-send write that is not
-confirmed never calls the peer. The entry binds the packet ID,
+confirmed never calls the peer. Any `save` result other than `true`,
+including the `undefined` of an older `save(): void` store, counts as a
+refused compare. The entry type is not exported; a host store can name it as
+`Parameters<DemosL2psRfqTransportOptions["outboxStore"]["save"]>[1]`.
+The entry binds the packet ID,
 peers, subnet and codec, and contains only the encrypted envelope, send state,
 generation and attempt end time; it stores no shared key. The exact `to`, encrypted
 ciphertext/nonce/optional ephemeral key, and message hash are saved before
@@ -278,14 +282,28 @@ unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer
 request ID and timestamp. Byte identity refers to the message payload, not
 those RPC metadata fields.
 
+This version cannot read any send outbox entry written before generations
+existed, that is, any entry without a positive integer `generation`. This
+applies to every such entry, not only to entries with non-canonical peer keys
+(below). `publish` and `reconcile` return `indeterminate` with "Demos L2PS
+RFQ send outbox is unavailable" and never read history for that packet, even
+when history holds the frame. The transport has never been released, so no
+migration is provided. Settle the pending sends of a job before upgrading, or
+handle a job left with such an entry like one with a failed history entry
+(below).
+
 Peer keys are compared in the node's canonical form. Demos node `61b8e75`
 stores, queries and delivers `from`/`to` keys lower-cased with any `0x`
 removed (`src/features/l2ps-messaging/keys.ts:13-16`), and registers only hex
 keys of at least 64 digits. The transport captures `localPeerKey`, every key
 returned by `peerForClaim`, and every inbound and history key in that form, and
-calls `claimForPeer` only with canonical keys. A key that is not hex once `0x`
-is removed is refused. The route in the AES-GCM authenticated data and in the
-send outbox entry also uses the canonical keys. No signed bytes change, because
+calls `claimForPeer` only with canonical keys. A `claimForPeer` that knows only
+`0x` or upper-case keys fails the reciprocal check, so the first send to that
+claim is `rejected`, a terminal transport failure for the job. The transport
+cannot check the mapping when it is constructed, because it does not know the
+remote claims; check it before going live. A key that is not hex of at least
+64 digits once `0x` is removed is refused. The route in the AES-GCM
+authenticated data and in the send outbox entry also uses the canonical keys. No signed bytes change, because
 packets carry claims, not peer keys. A caller who passed `0x` or upper-case
 keys to an earlier build of this unreleased transport sealed frames under the
 raw keys; those frames and outbox entries no longer bind and stay
@@ -343,11 +361,28 @@ later time. The 60-second default (twice the pinned demosdk's 15-second send
 wait plus its 10-second history wait, rounded up; `L2PSMessagingPeer.js:126,151`)
 only avoids most resends that the node would refuse.
 
-When the node refuses a resend with "Duplicate message", the transport reads
+When the node refuses a send with "Duplicate message", the transport reads
 history. Our own exact frame there acknowledges the packet. Otherwise the send
 outbox entry is marked `duplicate`: the node holds that hash, so absence can
 never be proven, and the entry stays `indeterminate` and is never resent.
-Handle it like a failed history entry (below).
+
+A `duplicate` result can mean zero deliveries:
+
+- The node's check keys on the message hash alone
+  (`L2PSMessagingService.ts:50-51,81-86`; unique column
+  `entities/L2PSMessage.ts:30`), not on sender, recipient or subnet. The
+  hash, our packet ID, may belong to another route or subnet: anyone who sent
+  it first, including the node operator, leaves our send refused.
+- The node inserts the row before it submits the message to the L2PS mempool
+  (`L2PSMessagingService.ts:57-64`). If that submission fails, the row is
+  marked `failed` (`L2PSMessagingService.ts:66-67,155`) and the server
+  returns an error before routing anything (`L2PSMessagingServer.ts:267-270`).
+  Every later send is then refused as a duplicate, although the recipient got
+  nothing.
+
+The SDK has no call that clears a `duplicate` entry. Handle it like a failed
+history entry (below): the host may need to abandon the job and open a new one
+with a new `jobId` and `channelId`.
 
 The limits of this evidence:
 
@@ -398,7 +433,10 @@ opening the stored frame and the pre-send write: at most 160 seconds plus the
 polling interval after a known send end. This transport-only calculation excludes host lifecycle storage, the retry's
 own send/acknowledgement wait and end write.
 There is no finite whole-call bound for paginated history (a follow-up),
-persistence failures, repeated failures or scheduling stalls.
+persistence failures, repeated failures or scheduling stalls. The paginated
+history case also applies to `publish`: after a "Duplicate message" refusal it
+reads history while it holds the packet's in-process lock, so other outbox
+calls for that packet wait for it.
 
 Payloads from Demos are size-checked before they are copied or canonicalized:
 a frame over the 16 MiB plaintext limit, a history page of more than 100
