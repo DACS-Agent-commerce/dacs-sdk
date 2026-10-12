@@ -1029,4 +1029,56 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
       await settlement.resume();
     },
   );
+
+  const methods = [
+    ["store", "claim"],
+    ["store", "isCurrent"],
+    ["store", "recordAttempt"],
+    ["store", "markAttemptExpired"],
+    ["store", "recordSettlement"],
+    ["adapter", "preflight"],
+    ["adapter", "prepareSignedTransfer"],
+    ["adapter", "broadcastRetained"],
+    ["adapter", "reconcile"],
+  ] as const;
+
+  test.each(methods.flatMap(([dependency, method]) =>
+    [undefined, 42].map((value) => [dependency, method, value] as const)))(
+    "%s.%s = %s returns a classified result before any effect",
+    async (dependency, method, value) => {
+      const memory = createInMemorySolanaSplSettlementStore();
+      const claim = vi.fn(memory.claim);
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const broadcastRetained = vi.fn(adapter().broadcastRetained);
+      const store = { ...memory, claim };
+      const chain = adapter({ prepareSignedTransfer, broadcastRetained });
+      await expect(advanceSolanaSplSettlement(input({
+        store: (dependency === "store" ? { ...store, [method]: value } : store) as never,
+        adapter: (dependency === "adapter" ? { ...chain, [method]: value } : chain) as never,
+      }))).resolves.toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-dependencies-invalid",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["store", "adapter"] as const)("a missing %s returns a classified result", async (name) => {
+    await expect(advanceSolanaSplSettlement(input({ [name]: undefined as never })))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-dependencies-invalid" });
+  });
+
+  test("a missing method on resume leaves the retained broadcast to recover", async () => {
+    const settlement = await retained("broadcast");
+    const before = settlement.effects();
+    await expect(advanceSolanaSplSettlement({
+      ...settlement.valid,
+      adapter: { ...adapter(), reconcile: undefined } as never,
+    })).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-dependencies-invalid" });
+    expect(settlement.effects()).toEqual(before);
+    await settlement.resume();
+  });
+
 });

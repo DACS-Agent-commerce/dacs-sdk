@@ -663,15 +663,30 @@ export async function advanceSolanaSplSettlement(
   } catch {
     return { status: "indeterminate", reason: "solana-spl-runtime-policy-invalid" };
   }
-  const claimSettlement = store.claim.bind(store);
-  const isCurrentSettlement = store.isCurrent.bind(store);
-  const recordAttempt = store.recordAttempt.bind(store);
-  const markAttemptExpired = store.markAttemptExpired.bind(store);
-  const recordSettlement = store.recordSettlement.bind(store);
-  const runPreflight = adapter.preflight.bind(adapter);
-  const prepareSignedTransfer = adapter.prepareSignedTransfer.bind(adapter);
-  const broadcastRetained = adapter.broadcastRetained.bind(adapter);
-  const reconcileTransfer = adapter.reconcile.bind(adapter);
+  let claimSettlement: SolanaSplSettlementStore["claim"];
+  let isCurrentSettlement: SolanaSplSettlementStore["isCurrent"];
+  let recordAttempt: SolanaSplSettlementStore["recordAttempt"];
+  let markAttemptExpired: SolanaSplSettlementStore["markAttemptExpired"];
+  let recordSettlement: SolanaSplSettlementStore["recordSettlement"];
+  let runPreflight: SolanaSplAdapter["preflight"];
+  let prepareSignedTransfer: SolanaSplAdapter["prepareSignedTransfer"];
+  let broadcastRetained: SolanaSplAdapter["broadcastRetained"];
+  let reconcileTransfer: SolanaSplAdapter["reconcile"];
+  try {
+    // Bind every method before the claim, so a missing one cannot surface
+    // after a lease is taken or a transfer is broadcast.
+    claimSettlement = store.claim.bind(store);
+    isCurrentSettlement = store.isCurrent.bind(store);
+    recordAttempt = store.recordAttempt.bind(store);
+    markAttemptExpired = store.markAttemptExpired.bind(store);
+    recordSettlement = store.recordSettlement.bind(store);
+    runPreflight = adapter.preflight.bind(adapter);
+    prepareSignedTransfer = adapter.prepareSignedTransfer.bind(adapter);
+    broadcastRetained = adapter.broadcastRetained.bind(adapter);
+    reconcileTransfer = adapter.reconcile.bind(adapter);
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-dependencies-invalid" };
+  }
   const readNow = (): number => clockValue(now());
   let claimed: SolanaSplStoreClaim;
   let claimNow: number;
