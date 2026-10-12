@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -191,62 +191,68 @@ describe("registry/container pull_request job", () => {
   });
 });
 
-describe("registry/container evidence", () => {
-  it("exports partial evidence and preserves the early failure status", () => {
-    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
-    scratch.push(directory);
-    for (const [name, body] of [["docker", "exit 0"], ["npm", 'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do printf "partial doctor diagnostic\\n" > "$directory/consumer/doctor.log"; done\nexit 17']]) {
-      const stub = join(directory, name!);
-      writeFileSync(stub, `#!/bin/sh\n${body}\n`);
-      chmodSync(stub, 0o700);
-    }
-    const output = join(directory, "evidence");
-    const result = spawnSync("bash", ["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
-      cwd: repoRoot, encoding: "utf8",
-      env: { ...process.env, RUNNER_TEMP: directory, PATH: `${directory}:${process.env.PATH ?? ""}` },
-    });
-    expect(result.status).toBe(17);
-    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
-    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+// Runs the acceptance script up to its first npm command, with stubs that
+// leave partial consumer output behind and then fail with status 17.
+function runEarlyFailure(extraStubCommands = "") {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
+  scratch.push(directory);
+  const npmBody = [
+    'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do',
+    '  printf "partial doctor diagnostic\\n" > "$directory/consumer/doctor.log"',
+    '  mkdir -p "$directory/consumer/one-click-agent"',
+    `  printf '{"name":"one-click-agent"}\\n' > "$directory/consumer/one-click-agent/package.json"`,
+    `  printf '{"lockfileVersion":3}\\n' > "$directory/consumer/one-click-agent/package-lock.json"`,
+    extraStubCommands,
+    "done",
+    "exit 17",
+  ].join("\n");
+  for (const [name, body] of [["docker", "exit 0"], ["npm", npmBody]]) {
+    const stub = join(directory, name!);
+    writeFileSync(stub, `#!/bin/sh\n${body}\n`);
+    chmodSync(stub, 0o700);
+  }
+  const output = join(directory, "evidence");
+  const result = spawnSync("bash", ["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
+    cwd: repoRoot, encoding: "utf8",
+    env: { ...process.env, RUNNER_TEMP: directory, PATH: `${directory}:${process.env.PATH ?? ""}` },
   });
-
-  it("rejects a registry lock entry with different tarball bytes", () => {
-    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
-    scratch.push(directory);
-    const version = "0.1.0-test";
-    const registry = "http://host.docker.internal:4873";
-    const packages: Record<string, unknown> = {};
-    for (const name of ["dacs", "dacs-node"]) {
-      const bytes = Buffer.from(name);
-      writeFileSync(join(directory, `kynesyslabs-${name}-${version}.tgz`), bytes);
-      packages[`node_modules/@kynesyslabs/${name}`] = {
-        resolved: `${registry}/${name}.tgz`,
-        integrity: "sha512-" + createHash("sha512").update(bytes).digest("base64"),
-      };
-    }
-    const project = join(directory, "project");
-    mkdirSync(project);
-    writeFileSync(join(project, "package.json"), JSON.stringify({ dependencies: Object.fromEntries([
-      "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
-      "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
-    ].map((name) => [name, version])) }));
-    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
-      .split('"$artifact_stage/dependency-policy.json"')[1]!.split("<<'NODE'\n")[1]!.split("\nNODE")[0]!;
-    const run = () => {
-      writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
-      return spawnSync(process.execPath, ["-", project, registry, join(directory, "report.json"), directory, version], {
-        input: script, encoding: "utf8",
-      });
-    };
-    expect(run().status).toBe(0);
-    (packages["node_modules/@kynesyslabs/dacs-node"] as { integrity: string }).integrity = "sha512-wrong";
-    const result = run();
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("integrity does not match");
-  });
-});
+  return { directory, output, result };
+}
 
 const CANDIDATE_VERSION = "0.1.0-test";
+const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
+const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
+
+// Executes the script's own dependency-policy program against a generated
+// consumer whose lock initially names the exact packed candidate tarballs.
+function dependencyPolicyHarness() {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-integrity-"));
+  scratch.push(directory);
+  const packages: Record<string, { resolved: string; integrity: string }> = {};
+  for (const name of ["dacs", "dacs-node"]) {
+    const bytes = Buffer.from(name);
+    writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
+    packages[`node_modules/@kynesyslabs/${name}`] = {
+      resolved: `${CANDIDATE_REGISTRY}/${name}.tgz`,
+      integrity: sri(bytes),
+    };
+  }
+  const project = join(directory, "project");
+  mkdirSync(project);
+  writeFileSync(join(project, "package.json"), JSON.stringify({ dependencies: Object.fromEntries([
+    "@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core",
+    "@x402/evm", "@x402/fetch", "better-sqlite3", "viem",
+  ].map((name) => [name, CANDIDATE_VERSION])) }));
+  const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
+    .split('"$artifact_stage/dependency-policy.json"')[1]!.split("<<'NODE'\n")[1]!.split("\nNODE")[0]!;
+  const run = () => {
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
+    return spawnSync(process.execPath, [
+      "-", project, CANDIDATE_REGISTRY, join(directory, "report.json"), directory, CANDIDATE_VERSION,
+    ], { input: script, encoding: "utf8" });
+  };
+  return { packages, run };
+}
 
 // Executes the script's own summary program over a stage holding the evidence
 // a complete run collects; `overrides` replaces individual evidence files.
@@ -278,7 +284,61 @@ function writeSummary(overrides: Record<string, string> = {}) {
   return JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
 }
 
-describe("registry/container summary", () => {
+describe("registry/container evidence", () => {
+  it("exports partial evidence and preserves the early failure status", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(readFileSync(join(output, "generated-package.json"), "utf8")).toBe('{"name":"one-click-agent"}\n');
+    expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe('{"lockfileVersion":3}\n');
+  });
+
+  it("finishes cleanup and keeps the original status when an evidence write fails", () => {
+    // A directory where the exit-code file belongs makes that write fail.
+    const { directory, output, result } = runEarlyFailure(
+      '  mkdir -p "$directory/artifacts/acceptance.exit-code"',
+    );
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+  });
+
+  it("rejects a registry lock entry with different tarball bytes and reports both digests", () => {
+    const { packages, run } = dependencyPolicyHarness();
+    expect(run().status).toBe(0);
+    const expected = packages["node_modules/@kynesyslabs/dacs-node"]!.integrity;
+    packages["node_modules/@kynesyslabs/dacs-node"]!.integrity = "sha512-wrong";
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("integrity does not match");
+    expect(result.stderr).toContain(`expected ${expected}, observed sha512-wrong`);
+  });
+
+  it("rejects a core lock entry with different tarball bytes", () => {
+    const { packages, run } = dependencyPolicyHarness();
+    packages["node_modules/@kynesyslabs/dacs"]!.integrity = sri(Buffer.from("other core"));
+    const result = run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("integrity does not match the packed tarball: node_modules/@kynesyslabs/dacs");
+  });
+
+  it.each(["dacs", "dacs-node"])("rejects a nested @kynesyslabs/%s copy that is not the candidate", (name) => {
+    const { packages, run } = dependencyPolicyHarness();
+    const topLevel = packages[`node_modules/@kynesyslabs/${name}`]!;
+    const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
+    packages[nested] = { ...topLevel };
+    expect(run().status).toBe(0);
+    packages[nested] = { resolved: `${CANDIDATE_REGISTRY}/${name}-old.tgz`, integrity: sri(Buffer.from("old")) };
+    const substituted = run();
+    expect(substituted.status).not.toBe(0);
+    expect(substituted.stderr).toContain(`integrity does not match the packed tarball: ${nested}`);
+    packages[nested] = { resolved: `https://registry.npmjs.org/${name}.tgz`, integrity: topLevel.integrity };
+    const outside = run();
+    expect(outside.status).not.toBe(0);
+    expect(outside.stderr).toContain(`did not resolve through the isolated registry: ${nested}`);
+  });
+
   it("derives the summary fields from the checks that ran", () => {
     const passing = writeSummary();
     expect(passing).toMatchObject({
