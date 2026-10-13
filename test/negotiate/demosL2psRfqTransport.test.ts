@@ -3462,4 +3462,82 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     expect(calls).not.toContain(middle.packetId);
     fixture.transport.stop();
   });
+
+  test("re-review 2: a seller signer using a stale key keeps recovery indeterminate until it signs right", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const transportFor = (localClaim: string, localPeerKey: string) =>
+      createDemosL2psRfqTransport<string>({
+        peer: hub.peer(localPeerKey),
+        codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+        l2psUid: L2PS_UID,
+        peerChannel: "loopback",
+        outboxStore: memorySendOutbox(),
+        localClaim,
+        localPeerKey,
+        peerForClaim,
+        claimForPeer,
+        onError: vi.fn(),
+      });
+    const buyerTransport = transportFor(BUYER, BUYER_PEER);
+    const sellerTransport = transportFor(SELLER, SELLER_PEER);
+    // The verifier knows each role's key: the buyer signs 1s and the seller 2s.
+    // The seller's stale key signs 3s, a well-formed signature that does not verify.
+    const signature = (fill: number) => Buffer.from(new Uint8Array(64).fill(fill)).toString("base64url");
+    const verifyAgreementContribution = (input: { role: string; value: string }) =>
+      input.value === signature(input.role === "buyer" ? 1 : 2) ? "valid" as const : "invalid" as const;
+    let stale = false;
+    const reservation = durableReservation();
+    const buyerClient = createDurableRfqLifecycleClient({
+      ...clientOptions("buyer", buyerTransport, reservation),
+      verifyAgreementContribution,
+    });
+    const sellerOptions = clientOptions("seller", sellerTransport, reservation);
+    const sellerClient = createDurableRfqLifecycleClient({
+      ...sellerOptions,
+      agreementSigner: {
+        ...sellerOptions.agreementSigner,
+        sign: () => new Uint8Array(64).fill(stale ? 3 : 2),
+      },
+      verifyAgreementContribution,
+    });
+    buyerTransport.start((packet) => buyerClient.receive(packet));
+    sellerTransport.start((packet) => sellerClient.receive(packet));
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    await sellerTransport.drain();
+    await expect(sellerClient.sendAccept(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await buyerTransport.drain();
+    stale = true;
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await sellerTransport.drain();
+    const proposed = await buyerClient.getStatus(JOB_ID);
+    if (proposed.status !== "ok") throw new Error("record did not load");
+    const proposalId = proposed.record.outbox.at(-1)!.packet.packetId;
+    const reason = "seller agreement contribution is not cryptographically valid (invalid)";
+    await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "indeterminate",
+      delivered: 1,
+      skipped: [{ jobId: JOB_ID, channelId: CHANNEL_ID, packetId: proposalId, packets: 1, reason }],
+      reason: `Demos L2PS recovered packet was not accepted: ${reason}`,
+    });
+    const held = await sellerClient.getStatus(JOB_ID);
+    expect(held.status === "ok" && held.record.agreement).toBeUndefined();
+    stale = false;
+    await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete", delivered: 2, skipped: [],
+    });
+    await buyerTransport.drain();
+    const buyerStatus = await buyerClient.getStatus(JOB_ID);
+    const sellerStatus = await sellerClient.getStatus(JOB_ID);
+    if (buyerStatus.status !== "ok" || sellerStatus.status !== "ok") throw new Error("record did not load");
+    expect(sellerStatus.record.agreement?.finalized?.signatures).toHaveLength(2);
+    expect(buyerStatus.record.agreement?.finalized).toEqual(sellerStatus.record.agreement?.finalized);
+    buyerTransport.stop();
+    sellerTransport.stop();
+  });
 });

@@ -110,10 +110,12 @@ or trusted-clock timeout is retained as a terminal lifecycle failure.
 
 `receive()` returns `rejected` only as its answer about the packet: it is
 malformed or misrouted, its job does not exist, has failed or cannot be read
-from the store, or the turn, plan or contribution is refused. When the trusted
-clock, the channel signature verifier, the agreement signer or the contribution
-verifier throws or cannot decide, `receive()` returns `indeterminate`, stores
-nothing, and the same packet can be received again.
+from the store, or the turn, plan or counterparty contribution is refused.
+When the trusted clock, the channel signature verifier, the agreement signer
+or the contribution verifier throws or cannot decide, or the role's own
+agreement contribution does not verify (its signer used a stale or wrong
+key), `receive()` returns `indeterminate`, stores nothing, and the same
+packet can be received again.
 
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({
@@ -566,9 +568,10 @@ back), and the consumer's reason. A rejection is the consumer's answer about
 the packet, not a transport uncertainty, so it does not make the call
 `indeterminate`. The lifecycle rejects, for example, a packet whose job is
 retired, not open yet, or carries a failure; when its clock, a verifier or its
-signer fails, it answers `indeterminate` instead. Check `skipped`, and
-run `resumeInbound()` again after opening a job whose first packets may
-already be in history. An `indeterminate` or
+signer fails, or its own agreement contribution does not verify, it answers
+`indeterminate` instead (see "Running a durable buyer or seller"). Check
+`skipped`, and run `resumeInbound()` again after opening a job whose first
+packets may already be in history. An `indeterminate` or
 `conflict` result, or a consumer that throws, makes the call `indeterminate`.
 A consumer timeout or a retired generation still stops recovery, because every
 later job would wait on it too.

@@ -823,6 +823,7 @@ describe("durable two-agent RFQ lifecycle", () => {
 
 describe("durable RFQ receive keeps local failures retryable", () => {
   type Fault = "throw" | "error" | "indeterminate" | "fail" | "invalid" | undefined;
+  const staleKeys = generateKeyPairSync("ed25519");
 
   /** A client whose clock, verifiers and agreement signer can be made to fail. */
   function flakyClient(
@@ -834,8 +835,12 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     const faults = {
       clock: false,
       sign: false,
+      // The agreement signer returns a well-formed signature made by another key.
+      staleKey: false,
       channel: undefined as Fault,
       agreement: undefined as Fault,
+      // When set, the agreement fault answers only for this role's contribution.
+      agreementRole: undefined as "buyer" | "seller" | undefined,
     };
     const client = createDurableRfqLifecycleClient({
       role,
@@ -854,14 +859,17 @@ describe("durable RFQ receive keeps local failures retryable", () => {
         algorithm: "ed25519" as const,
         sign: (bytes: Uint8Array) => {
           if (faults.sign) throw new Error("remote agreement signer offline");
-          return ed25519Sign(null, bytes, keys.privateKey);
+          return ed25519Sign(null, bytes, faults.staleKey ? staleKeys.privateKey : keys.privateKey);
         },
       },
       verifyAgreementContribution: (input) => {
-        if (faults.agreement === "throw") throw new Error("agreement verifier offline");
-        return faults.agreement === undefined
+        const fault = faults.agreementRole === undefined || faults.agreementRole === input.role
+          ? faults.agreement
+          : undefined;
+        if (fault === "throw") throw new Error("agreement verifier offline");
+        return fault === undefined
           ? verifyAgreement(input)
-          : (faults.agreement as "error" | "indeterminate" | "invalid");
+          : (fault as "error" | "indeterminate" | "invalid");
       },
       nowMs: () => (faults.clock ? Number.NaN : NOW),
     });
@@ -942,6 +950,47 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     expect(network.pending(BUYER)).toBe(1);
   });
 
+  test("an agreement signer using a stale key leaves a proposal indeterminate, and it is received later", async () => {
+    const { network, seller, proposal } = await proposed();
+    const before = await seller.client.getStatus(JOB_ID);
+    seller.faults.staleKey = true;
+    // The signature is well formed; only verifying our own contribution finds the wrong key.
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: "seller agreement contribution is not cryptographically valid (invalid)",
+    });
+    await expect(seller.client.getStatus(JOB_ID)).resolves.toEqual(before);
+    expect(network.pending(BUYER)).toBe(0);
+    seller.faults.staleKey = false;
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+    const after = await seller.client.getStatus(JOB_ID);
+    expect(after.status === "ok" && after.record.agreement?.finalized?.signatures).toHaveLength(2);
+    expect(network.pending(BUYER)).toBe(1);
+  });
+
+  test("a buyer contribution made with a stale key is still rejected by the seller", async () => {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { sellerClient } = clients(network.transport);
+    const buyer = flakyClient("buyer", network.transport);
+    await buyer.client.open(openInput());
+    await sellerClient.open(openInput());
+    await buyer.client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyer.client);
+    buyer.faults.staleKey = true;
+    await buyer.client.startAgreement(JOB_ID);
+    const proposal = network.take(SELLER);
+    if (proposal === undefined) throw new Error("no agreement proposal");
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "rejected",
+      reason: "buyer agreement contribution is not cryptographically valid (invalid)",
+    });
+  });
+
   test.each([
     { fault: "throw", status: "indeterminate" },
     { fault: "error", status: "indeterminate" },
@@ -962,9 +1011,10 @@ describe("durable RFQ receive keeps local failures retryable", () => {
   });
 
   test.each([
-    { fault: "throw", status: "indeterminate" },
-    { fault: "invalid", status: "rejected" },
-  ] as const)("a buyer's contribution verifier answering $fault leaves the seller contribution $status", async ({ fault, status }) => {
+    { fault: "throw", whose: "every", role: undefined, status: "indeterminate" },
+    { fault: "invalid", whose: "the seller's", role: "seller", status: "rejected" },
+    { fault: "invalid", whose: "its own", role: "buyer", status: "indeterminate" },
+  ] as const)("a buyer's contribution verifier answering $fault for $whose contribution leaves the seller contribution $status", async ({ fault, role, status }) => {
     const network = createInMemoryRfqLifecycleNetwork<string>();
     const { sellerClient } = clients(network.transport);
     const buyer = flakyClient("buyer", network.transport);
@@ -982,6 +1032,7 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     const contribution = network.take(BUYER);
     if (contribution === undefined) throw new Error("no seller contribution");
     buyer.faults.agreement = fault;
+    buyer.faults.agreementRole = role;
     await expect(buyer.client.receive(contribution)).resolves.toMatchObject({ status });
     const loaded = await buyer.client.getStatus(JOB_ID);
     expect(loaded.status === "ok" && loaded.record.agreement?.finalized).toBeUndefined();

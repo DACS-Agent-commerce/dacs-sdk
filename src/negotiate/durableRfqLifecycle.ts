@@ -271,10 +271,11 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
   /**
    * Apply one counterparty packet. "rejected" is the lifecycle's answer about
    * the packet: it is malformed or misrouted, its job does not exist, has
-   * failed or is unreadable in the store, or the turn, plan or contribution is
-   * refused. A clock, verifier or signer that fails or cannot decide gives
-   * "indeterminate" instead; nothing is stored, and the same packet may be
-   * received again.
+   * failed or is unreadable in the store, or the turn, plan or counterparty
+   * contribution is refused. A clock, verifier or signer that fails or cannot
+   * decide, or our own agreement contribution failing verification (a stale
+   * or wrong signer key), gives "indeterminate" instead; nothing is stored,
+   * and the same packet may be received again.
    */
   receive(packet: unknown): Promise<DurableRfqLifecycleResult<TSignature>>;
   resumeOutbox(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
@@ -1751,10 +1752,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
   }
 
   /**
-   * Finalize a received agreement. A contribution the verifier calls invalid
-   * rejects the packet. A verifier that throws or answers neither "valid" nor
-   * "invalid" leaves it indeterminate, so the same packet may be received
-   * again.
+   * Finalize a received agreement. A counterparty contribution the verifier
+   * calls invalid rejects the packet. Our own contribution called invalid (our
+   * signer used a stale or wrong key), or a verifier that throws or answers
+   * neither "valid" nor "invalid", leaves it indeterminate, so the same packet
+   * may be received again.
    */
   async function finalizeReceived(
     plan: Readonly<FixedPriceAgreementSigningPlan>,
@@ -1768,7 +1770,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     const verify: FixedPriceAgreementContributionVerifier = async (input) => {
       try {
         const disposition = await verifyAgreementContribution(input);
-        if (disposition !== "valid" && disposition !== "invalid") undecided = true;
+        // This client signed the contribution for its own role. Finalizing
+        // refuses a duplicated role before it verifies, so the counterparty's
+        // contribution never reaches here under our role.
+        const own = input.role === role;
+        if (disposition !== "valid" && (disposition !== "invalid" || own)) undecided = true;
         return disposition;
       } catch (cause) {
         undecided = true;

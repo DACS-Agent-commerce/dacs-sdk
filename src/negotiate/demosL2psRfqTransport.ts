@@ -386,7 +386,8 @@ export interface DemosL2psRfqInboundSkip {
  * indeterminate, so "rejected" must be the consumer's answer about the
  * packet. The durable lifecycle rejects, for example, a packet for a job that
  * is retired, not open yet, or failed, and answers "indeterminate" when its
- * clock, a verifier or its signer fails. An "indeterminate" or "conflict"
+ * clock, a verifier or its signer fails, or its own agreement contribution
+ * does not verify. An "indeterminate" or "conflict"
  * answer, a consumer that throws, and any history or decryption uncertainty
  * make the call indeterminate.
  */
@@ -1819,7 +1820,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         // A rejection is the consumer's answer about this packet (for the
         // lifecycle: job retired, not open yet, failed), not a transport
         // uncertainty. The lifecycle reports a clock, verifier or signer
-        // failure as indeterminate instead.
+        // failure, or its own contribution failing verification, as
+        // indeterminate instead.
         if (result.status !== "rejected") {
           uncertainReason = `Demos L2PS recovered packet was not accepted: ${refusal}`;
         }
