@@ -406,7 +406,10 @@ Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
 ST-11 dependency graph. Its audit reference is the authenticated native bundle
 address. Native DEM and x402 use the same two-copy finish boundary. A Demos
 read that cannot be answered leaves the track `indeterminate`
-(`buyer-audit-completion-indeterminate`) and it is retried; only a completion
+(`buyer-audit-completion-indeterminate`) and it is retried. So does a seller
+bundle, bundle copy or BundleBinding that Demos's name index does not show yet:
+the index may lag finality by several blocks, so its absence is not an answer
+(the durable buyer finalizer reports it as `indeterminate` too). Only a completion
 that was read and failed authentication needs operator action. A seller bundle
 or BundleBinding that Demos returns with invalid content, an invalid receipt or
 a failed authentication is immutable, so it also goes to operator action

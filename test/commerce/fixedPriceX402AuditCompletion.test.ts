@@ -658,10 +658,20 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     await expect(verifyFixedPriceX402AuditCompletion(opaque, fx.deps))
       .rejects.toThrow(/exact bundle/);
 
+    // Nothing readable yet is retried; other content is an answer.
     await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
       ...fx.deps,
       readBundleCopy: () => null,
-    })).rejects.toThrow(/not independently readable/);
+    })).rejects.toThrow(IndeterminateSubstrateError);
+    const other = structuredClone(fx.input.copies.buyer.bundle) as unknown as Record<string, unknown>;
+    other.jobId = "another-job";
+    const answered = await verifyFixedPriceX402AuditCompletion(fx.input, {
+      ...fx.deps,
+      readBundleCopy: () => other,
+    }).catch((error: unknown) => error);
+    expect(answered).toBeInstanceOf(DacsError);
+    expect(answered).not.toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(answered)).toMatch(/not independently readable/);
 
     const forged = structuredClone(fx.input);
     forged.copies.buyer.anchorReceipt.writer = "did:example:unauthorized-writer";
@@ -732,6 +742,83 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       }),
       verifyBundleBinding: () => ({ disposition: "valid" }),
     })).resolves.toMatchObject({ milestone: "audit-complete" });
+  });
+
+  // Final r11 review: a host that retries only IndeterminateSubstrateError
+  // treated an unanswered anchor, binding or readback as permanent.
+  it("reports every unanswered read as IndeterminateSubstrateError and only answers as DacsError", async () => {
+    const fx = await fixture();
+    const buyerBinding = binding(fx.buyerBundle, "buyer", fx.buyerNative);
+    const sellerBinding = binding(fx.sellerBundle, "seller", fx.sellerNative);
+    const input = {
+      ...fx.input,
+      sellerClosure: { ...fx.input.sellerClosure, result: { ...fx.closureResult, binding: sellerBinding } },
+      copies: {
+        buyer: { ...fx.input.copies.buyer, binding: buyerBinding },
+        seller: { ...fx.input.copies.seller, binding: sellerBinding },
+      },
+    };
+    const deps: FixedPriceX402AuditCompletionDeps = {
+      ...fx.deps,
+      sellerFinalizationProvider: { ...fx.sellerFinalizationProvider, mapping: "write-input" as const },
+      verifyBundleAnchor: () => ({ disposition: "valid" as const, mapping: "write-input" as const }),
+      resolveBundleBinding: (_logicalAddress, _signer, role) => ({
+        disposition: "present" as const,
+        binding: role === "buyer" ? buyerBinding : sellerBinding,
+      }),
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    };
+    await expect(verifyFixedPriceX402AuditCompletion(input, deps))
+      .resolves.toMatchObject({ milestone: "audit-complete" });
+    // The buyer copy's anchor verifier answers `disposition`; the seller's is valid.
+    const buyerAnchor = (disposition: string, reason: string) => (copy: { role: string }) =>
+      (copy.role === "buyer" ? { disposition, reason } : { disposition: "valid", mapping: "write-input" }) as never;
+    const outcome = (overrides: Partial<FixedPriceX402AuditCompletionDeps>) =>
+      verifyFixedPriceX402AuditCompletion(input, { ...deps, ...overrides }).then(
+        () => "audit-complete", (error: unknown) => error);
+    const fetchFailed = () => { throw new TypeError("fetch failed"); };
+    const unanswered: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>]> = [
+      ["a thrown readback", { readBundleCopy: fetchFailed }],
+      ["an absent readback", { readBundleCopy: () => null }],
+      ["an indeterminate anchor", { verifyBundleAnchor: buyerAnchor("indeterminate", "rpc") }],
+      ["an errored anchor", { verifyBundleAnchor: buyerAnchor("error", "rpc") }],
+      ["a thrown anchor verifier", { verifyBundleAnchor: fetchFailed }],
+      ["a binding the name index does not show yet", { resolveBundleBinding: () => ({ disposition: "absent" as const }) }],
+      ["an indeterminate binding lookup", { resolveBundleBinding: () => ({
+        disposition: "indeterminate" as const, reason: "index unavailable" }) }],
+      ["a thrown binding lookup", { resolveBundleBinding: fetchFailed }],
+      ["an indeterminate binding verifier", { verifyBundleBinding: () => ({ disposition: "indeterminate", reason: "rpc" }) }],
+      ["an errored binding verifier", { verifyBundleBinding: () => ({ disposition: "error", reason: "rpc" }) }],
+      ["a thrown binding verifier", { verifyBundleBinding: fetchFailed }],
+    ];
+    for (const [label, overrides] of unanswered) {
+      expect(await outcome(overrides), label).toBeInstanceOf(IndeterminateSubstrateError);
+    }
+    const answers: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>, RegExp]> = [
+      ["an invalid anchor", { verifyBundleAnchor: buyerAnchor("invalid", "forged") },
+      /anchor verification is invalid/],
+      ["a thrown answer", { readBundleCopy: () => { throw new DacsError("Demos returned another bundle"); } },
+        /Demos returned another bundle/],
+      ["another binding", { resolveBundleBinding: () => ({ disposition: "present" as const,
+        binding: { ...buyerBinding, nativeAddress: "native:substituted" } }) }, /not independently resolvable/],
+      ["an invalid binding", { verifyBundleBinding: () => ({ disposition: "invalid", reason: "forged" }) },
+        /BundleBinding verification is invalid/],
+    ];
+    for (const [label, overrides, message] of answers) {
+      const error = await outcome(overrides);
+      expect(error, label).toBeInstanceOf(DacsError);
+      expect(error, label).not.toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error), label).toMatch(message);
+    }
+    // At the deadline, an unanswered anchor on one copy is not an "answer
+    // already observed" while the other copy's read is still pending.
+    const error = await outcome({
+      deadline: { timeoutMs: 1_000, start: (expire) => { const timer = setTimeout(expire, 20); return () => clearTimeout(timer); } },
+      verifyBundleAnchor: buyerAnchor("indeterminate", "rpc"),
+      readBundleCopy: (nativeAddress, role) => role === "seller"
+        ? new Promise(() => undefined) : fx.deps.readBundleCopy(nativeAddress, role),
+    });
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
   });
 
   it("never accepts caller-selected pure mapping for Demos", async () => {

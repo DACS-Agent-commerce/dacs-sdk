@@ -44,8 +44,8 @@ The job runs only for pull requests that change a path in its
 branch protection: a pull request outside the filter would wait for it forever.
 
 `policyFindings` records the non-audit security-gate failures that the
-dependency tree of `main`'s published packages already carries, by exact
-identity. They come from `@kynesyslabs/demosdk@4.0.16` and the generator's
+dependency tree of `main`'s published packages already carries, by rule. They
+come from `@kynesyslabs/demosdk@4.0.16` and the generator's
 template, not from the acceptance tooling. The source, recorded in the JSON's
 `policyFindings.source`, is the `clean registry consumer (Node 20 / Docker)` job
 of run 38214792229, attempt 1, for b7b180f
@@ -76,8 +76,15 @@ artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
   is not marked dev in the lock.
 
 A run whose failing checks match only these entries is baseline-only (exit 4).
-Any other non-registry dependency, engine violation, SBOM problem or production
-dependency, or a changed version, integrity or range, still exits 3.
+Each entry keeps the version and integrity its source run observed, as
+evidence, but matches by rule: the lock location, the dependency field and
+spec, the package name and required engine range, and the `npm sbom` line with
+installed versions elided. The generated consumer installs without a lockfile,
+so a patch release of a listed package that keeps the same rule (for example
+`@npmcli/agent@5.0.3` under make-fetch-happen's `^5.0.0`) stays baseline-only
+instead of failing every pull request, the drift job and prereleases. Any other
+non-registry dependency, engine violation, SBOM problem or production
+dependency, or a listed one at another location, spec or range, still exits 3.
 
 Update the baseline only through a reviewed PR adding the observed IDs or
 findings and citing the workflow run/job and commit that produced

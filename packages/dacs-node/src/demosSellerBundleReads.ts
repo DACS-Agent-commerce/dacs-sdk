@@ -37,8 +37,10 @@ export function createClassifiedDemosSellerBundleReads(
 ): Pick<SellerBundleFinalizationReadProvider, "resolveSellerBundle" | "resolveBundleBinding"> {
   return {
     async resolveSellerBundle(logicalAddress: string) {
+      // Absence is retried as not yet visible, so another job's address is
+      // refused outright.
       if (logicalAddress !== bundleAddress(jobId, "seller")) {
-        return { disposition: "absent" as const };
+        throw new DacsError("seller bundle reads serve only this job's seller bundle");
       }
       let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
       try {
