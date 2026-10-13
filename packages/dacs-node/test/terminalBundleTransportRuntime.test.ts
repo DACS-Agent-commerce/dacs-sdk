@@ -2611,6 +2611,31 @@ describe("authenticated peer plans on the Vet terminal", () => {
       expect(actor.signComponent).not.toHaveBeenCalled();
       expect(actor.context.sendMessage).not.toHaveBeenCalled();
     });
+
+    // Daybreak r9 P3 (code r8 mutant R5): a recorded failure whose plan is not
+    // the plan retained as this role's material, or selected from it, is
+    // corrupt state. Neither plan stands, and nothing is sent or signed.
+    it.each(["material", "selection"] as const)(
+      `${rail}: stops as corrupt, sending and signing nothing, when the recorded failure's plan is not the retained %s's`,
+      async (retained) => {
+        const actor = memoryRoleDatabase("buyer", undefined, rail);
+        const own = await actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail)));
+        // Only the selection is left after a crash before the material binding.
+        if (retained === "selection") actor.effects.delete(`session:${terminalTransportEffectId("buyer", "material")}`);
+        expect(row(actor, "selection")).toMatchObject({ source: "material", planHash: own.proposal.plan.planHash });
+        const localVet = `session:${terminalTransportEffectId("buyer", "local-vet")}`;
+        expect(actor.effects.get(localVet)).toMatchObject({ kind: "local-vet-failure", planHash: own.proposal.plan.planHash });
+        actor.effects.set(localVet, { ...actor.effects.get(localVet) as object, planHash: "e".repeat(64) });
+        const corrupt = { reasonCode: "vet-terminal-binding-corrupt" };
+        await expect(restart(actor).advanceRegisteredTerminal(JOB_ID)).rejects.toMatchObject(corrupt);
+        await expect(restart(actor).registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+          .rejects.toMatchObject(corrupt);
+        await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+          .resolves.toEqual({ status: "operator-action", reasonCode: "vet-terminal-finalization-unavailable" });
+        expect(actor.signComponent).not.toHaveBeenCalled();
+        expect(actor.context.sendMessage).not.toHaveBeenCalled();
+      },
+    );
   }
 
   // A pass recorded for another binding of the job is not this order's pass.
