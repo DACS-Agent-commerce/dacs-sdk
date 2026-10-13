@@ -1743,7 +1743,8 @@ export async function advanceCrossChainHtlc(
   // same call, it is `pending`, so only a later call can find it `absent`.
   // A tracked destination leg keeps its retained lock's reference even while
   // the adapter does not report that lock, or reports it `absent` naming
-  // nothing; the retained actions in `unreported` keep theirs while the
+  // nothing, and a refund sent in this call keeps its own, so that a host can
+  // follow it; the retained actions in `unreported` keep theirs while the
   // adapter does not report them.
   const refundProgress = (
     reason: HtlcRefundReason,
@@ -1765,7 +1766,10 @@ export async function advanceCrossChainHtlc(
             : refundAbsent(leg, latest) ? "absent" : "waiting";
     }
     const states = Object.values(refunds);
-    const trackedLock: HtlcAction[] = attempts["destination-refund"] === undefined ? [] : ["destination-lock"];
+    const named: HtlcAction[] = [
+      ...attempts["destination-refund"] === undefined ? [] : ["destination-lock" as const],
+      ...(["destination-refund", "source-refund"] as const).filter((leg) => attempts[leg] === "sent"),
+    ];
     if (states.includes("absent")) {
       return {
         status: "operator-alert",
@@ -1775,7 +1779,7 @@ export async function advanceCrossChainHtlc(
           prepared,
           unreported,
           [
-            ...trackedLock,
+            ...named,
             ...(["destination-refund", "source-refund"] as const).filter((leg) => refunds[leg] === "absent"),
           ],
         ),
@@ -1789,7 +1793,7 @@ export async function advanceCrossChainHtlc(
           ? "refunded"
           : "refund-pending",
       reason,
-      txRefs: collectRefs(latest, prepared, unreported, trackedLock),
+      txRefs: collectRefs(latest, prepared, unreported, named),
       refunds: Object.freeze(refunds),
     };
   };

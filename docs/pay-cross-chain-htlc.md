@@ -307,7 +307,8 @@ expired, a retained reveal still blocks it, or its lock is not final yet),
 observe it; the next call reuses the retained bytes), the adapter's
 authenticated `pending`, `final` or `failed`, or `absent` (below). A refund
 broadcast in this call reads `pending` until a later call observes it, even if
-this call's observation still reports it `absent`. A payer whose own refund is final can see it
+this call's observation still reports it `absent` or none was available, and
+its reference is in `txRefs`. A payer whose own refund is final can see it
 even while the payee's leg is still uncertain. The core never re-sends a
 refund the adapter reports `failed`, so such a session returns the distinct
 status `refund-stalled`, naming the failed leg in `refunds`; it still drives
