@@ -1802,8 +1802,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           continue;
         }
         refusal = "reason" in result ? result.reason : "unknown result";
-        // A rejection is the lifecycle's answer for this job (retired, not
-        // open, failed); only a result that may change is uncertain.
+        // A rejection is the lifecycle's own answer for this job (retired,
+        // not open yet, failed), not a transport uncertainty.
         if (result.status !== "rejected") {
           uncertainReason = `Demos L2PS recovered packet was not accepted: ${refusal}`;
         }
