@@ -2387,6 +2387,7 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
   });
 
   test.each([
+    "dacs4:payment",
     paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0),
     `dacs4:payment:${JOB_ID}:x402%3adefault:0`,
     `dacs4:payment:${JOB_ID}:x402%3Adefault:00`,
@@ -2402,6 +2403,42 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
     expect(f.resolveReceipt).not.toHaveBeenCalled();
     expect(f.evidenceReads()).toEqual([]);
     expect(f.evidenceLookups()).toEqual([]);
+  });
+
+  test("a bundle without a buyer has no authorized writer, so the receipt store is not consulted", async () => {
+    const f = await logicalAgentFixture();
+    f.fx.bundle.parties = (f.fx.bundle.parties as Array<{ role: string }>)
+      .filter((party) => party.role !== "buyer");
+    await resignFixture(f.fx, [{ party: sellerDid, sign: signSeller }]);
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+    expect(f.resolveReceipt).not.toHaveBeenCalled();
+    expect(f.evidenceReads()).toEqual([]);
+  });
+
+  test.each([true, false])(
+    "a receipt for the interim or :resolved address never maps the other (:resolved ref: %s)", async (resolved) => {
+      const f = await logicalAgentFixture(paymentEvidenceAddress(JOB_ID, "x402:default", 0, resolved));
+      f.setReceipt(() => ({
+        ...evidenceReceipt(f.evidenceRef),
+        logicalAddress: paymentEvidenceAddress(JOB_ID, "x402:default", 0, !resolved),
+      }));
+      const result = await f.agent().verifyBundle("stor-bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+      expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+      expect(f.evidenceReads()).toEqual([]);
+    },
+  );
+
+  test("other dacs4 logical locators keep their direct read and never invoke the callback", async () => {
+    const locator = `dacs4:payment-disposition:${JOB_ID}:0:refund-1`;
+    const f = await logicalAgentFixture(locator);
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "invalid-evidence" });
+    expect(f.evidenceReads()).toEqual([locator]);
+    expect(f.resolveReceipt).not.toHaveBeenCalled();
   });
 
   test("resolves a canonical :resolved locator through its receipt before content integrity checks", async () => {
