@@ -14,6 +14,7 @@ export interface WorkerOptions {
   reconcile?: "landed" | "absent" | "throws" | "replay";
   race?: boolean;
   amount?: string;
+  owner?: string;
 }
 
 export interface WorkerResult {

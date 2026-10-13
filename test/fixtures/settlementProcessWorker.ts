@@ -1,5 +1,5 @@
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
@@ -39,7 +39,10 @@ const success = (): SettleResult => ({
 });
 
 async function marker(name: string, value: unknown = { pid: process.pid }) {
-  await writeFile(join(root!, name), JSON.stringify(value));
+  // Publish complete content: the parent may read a marker as soon as it exists.
+  const temporary = join(root!, `.${name}.${process.pid}.tmp`);
+  await writeFile(temporary, JSON.stringify(value));
+  await rename(temporary, join(root!, name));
 }
 
 async function stopAt(name: string) {
@@ -72,7 +75,9 @@ const log: SettlementLog = {
     return grant;
   },
 };
-const store = createIdempotencyStore(log, { owner: id, now: () => now, leaseDurationMs: 100 });
+// A deployment may fix one owner ID for every process it restarts.
+const owner = options.owner ?? id;
+const store = createIdempotencyStore(log, { owner, now: () => now, leaseDurationMs: 100 });
 const reconcile: SettlementReconcile = async (_key, fence) => {
   append("reconciles", { pid: process.pid, key: _key, generation: fence?.generation });
   if (options.race) {
@@ -190,28 +195,29 @@ async function run() {
   const key = settlementKey(req.rail, req.jobId, 0);
   const bindingHash = settlementBindingHash(binding(req));
   if (options.action === "stale") {
-    const claim = await log.claimIntent({ key, bindingHash, owner: id!, now, leaseDurationMs: 100 });
+    const claim = await log.claimIntent({ key, bindingHash, owner, now, leaseDurationMs: 100 });
     if (claim.status !== "acquired") throw new Error("stale worker failed to claim");
     await marker(`claimed-${id}`, claim);
     await waitForFiles(root!, ["try-stale"]);
     // Even a paused process's old clock still inside its original lease must
     // fail by generation, independently of expiry at the replacement's clock.
-    const input = { key, bindingHash, lease: claim.lease, now: 150 };
+    // With one fixed owner, the generation is the only thing that differs.
+    const input = { key, bindingHash, lease: claim.lease, now: now + 50 };
     return {
       current: await log.isCurrent(input),
+      grant: await log.grantRecovery({ ...input, owner, leaseDurationMs: 100 }),
       put: await log.putOutcome({ ...input, result: success() }),
       release: await log.releaseIntent(input),
-      grant: await log.grantRecovery({ ...input, owner: id!, leaseDurationMs: 100 }),
     };
   }
   if (options.action === "takeover") {
-    return log.claimIntent({ key, bindingHash, owner: id!, now, leaseDurationMs: 100 });
+    return log.claimIntent({ key, bindingHash, owner, now, leaseDurationMs: 100 });
   }
   if (options.action === "grant") {
     const claim = JSON.parse(await readFile(join(root!, "recovery-claim"), "utf8")) as {
       lease: { owner: string; generation: number };
     };
-    return log.grantRecovery({ key, bindingHash, lease: claim.lease, owner: id!, now, leaseDurationMs: 100 });
+    return log.grantRecovery({ key, bindingHash, lease: claim.lease, owner, now, leaseDurationMs: 100 });
   }
   return settle(req);
 }

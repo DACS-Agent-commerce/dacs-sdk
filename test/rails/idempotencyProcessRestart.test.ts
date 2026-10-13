@@ -124,13 +124,16 @@ describe("atomic recovery across processes (#43)", () => {
     expect(await h.count()).toBe(0);
   }, 30_000);
 
-  test("a superseded live process cannot write, release, or grant through its old generation", async () => {
+  test.each([
+    { owners: "distinct owners", stale: "stale", replacement: "replacement" },
+    { owners: "one fixed owner, so only the generation differs", stale: "node", replacement: "node" },
+  ])("a superseded live process cannot write, release, or grant through its old generation: $owners", async (owners) => {
     const h = await harness();
-    const stale = h.start("stale", { action: "stale" });
+    const stale = h.start("stale", { action: "stale", owner: owners.stale });
     await stale.wait(["claimed-stale"]);
-    const replacement = await h.start("replacement", { action: "takeover", now: 200 }).result();
+    const replacement = await h.start("replacement", { action: "takeover", now: 200, owner: owners.replacement }).result();
     expect(replacement).toMatchObject({ ok: true, value: {
-      status: "acquired", lease: { generation: 2, owner: "replacement", stage: "reconcile", expiresAt: 300 },
+      status: "acquired", lease: { generation: 2, owner: owners.replacement, stage: "reconcile", expiresAt: 300 },
     } });
     await h.barrier("try-stale");
     expect(await stale.result()).toMatchObject({ ok: true, value: {
@@ -138,8 +141,37 @@ describe("atomic recovery across processes (#43)", () => {
     } });
     // Stale release did not erase the new owner's lease or retained binding.
     expect(await h.start("observer", { action: "takeover", now: 250 }).result()).toMatchObject({
-      ok: true, value: { status: "held", lease: { generation: 2, owner: "replacement" } },
+      ok: true, value: { status: "held", lease: { generation: 2, owner: owners.replacement } },
     });
+    expect(await h.count()).toBe(0);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+
+  test("one fixed owner: a paused reconcile process is fenced by generation after its recovery grant", async () => {
+    const h = await harness();
+    const first = h.start("first", { crash: "before-effect", owner: "node" });
+    await first.wait(["before-effect-first"]);
+    expect(first.child.kill("SIGKILL")).toBe(true);
+    expect(await first.exit).toMatchObject({ code: null, signal: "SIGKILL" });
+    // The restarted process takes the reconcile generation, then pauses.
+    const paused = h.start("paused", { action: "stale", now: 200, owner: "node" });
+    await paused.wait(["claimed-paused"]);
+    const claim = await h.read<{ lease: { generation: number; stage: string } }>("claimed-paused");
+    expect(claim.lease).toMatchObject({ generation: 2, stage: "reconcile" });
+    await writeFile(join(h.root, "recovery-claim"), JSON.stringify(claim));
+    const granted = await h.start("replay", { action: "grant", now: 200, owner: "node" }).result();
+    expect(granted).toMatchObject({ ok: true, value: {
+      status: "granted", lease: { generation: 3, owner: "node", stage: "replay", expiresAt: 300 },
+    } });
+    // At 250 the reconcile lease would still be unexpired; only its generation is old.
+    await h.barrier("try-stale");
+    expect(await paused.result()).toMatchObject({ ok: true, value: {
+      current: false, put: { status: "stale" }, release: "stale", grant: { status: "stale" },
+    } });
+    expect(await h.start("observer", { action: "takeover", now: 250, owner: "node" }).result()).toMatchObject({
+      ok: true, value: { status: "held", lease: { generation: 3, owner: "node", stage: "replay" } },
+    });
+    expect(await h.count("grants")).toBe(1);
     expect(await h.count()).toBe(0);
   }, 30_000);
 
