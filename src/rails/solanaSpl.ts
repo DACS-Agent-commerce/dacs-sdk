@@ -494,8 +494,10 @@ function validatePreflight(
       instruction: "TransferChecked" as const,
     });
   } catch {
-    // The adapter's message may carry RPC or account detail; never echo it.
-    return { status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid" };
+    // A malformed answer is an adapter or RPC fault, not a chain refusal, so
+    // it is never a failure that closes the key. The adapter's message may
+    // carry RPC or account detail; never echo it.
+    return { status: "indeterminate", reason: "solana-spl-preflight-invalid" };
   }
 }
 

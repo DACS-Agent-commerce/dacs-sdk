@@ -1408,9 +1408,7 @@ describe("advanceSolanaSplSettlement reason codes", () => {
     const result = await advanceSolanaSplSettlement(input({
       adapter: adapter({ preflight: async () => value() as never, prepareSignedTransfer }),
     }));
-    expect(result).toEqual({
-      status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid",
-    });
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
     expect(leaks(result)).toBe(false);
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
   });
@@ -1436,10 +1434,38 @@ describe("advanceSolanaSplSettlement reason codes", () => {
         prepareSignedTransfer,
       }),
     }));
-    expect(result).toEqual({
-      status: "failed", errorClass: "permanent", reason: "solana-spl-preflight-invalid",
-    });
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+
+  // An adapter bug is not a chain refusal: it is never `failed`, so it never
+  // tells a caller to pay another way, and it leaves the key open.
+  test("numeric preflight balances are an adapter fault: unsigned, never failed, key left open", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        preflight: async () => ({
+          ...preflight(),
+          payerTokenBalanceBaseUnits: 5_000_000,
+          payerNativeBalanceLamports: 10_000_000,
+        }) as never,
+        prepareSignedTransfer,
+        broadcastRetained,
+      }),
+    }));
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
+    expect(result.status).not.toBe("failed");
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    // The fixed adapter can still settle the same key once the lease expires.
+    await expect(advanceSolanaSplSettlement(input({
+      store, owner: "worker-b", now: () => 2_000,
+      adapter: adapter({ prepareSignedTransfer }),
+    }))).resolves.toMatchObject({ status: "settled" });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
   });
 
   test.each([
