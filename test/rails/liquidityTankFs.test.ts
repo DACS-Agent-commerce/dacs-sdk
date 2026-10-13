@@ -355,21 +355,61 @@ describe("createFsLiquidityTankStore", () => {
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
     });
 
-    test("a read after the checkpoint expires the lock, and a restarted store replays the expiry", async () => {
+    test("a read after the checkpoint but before the deadline leaves the lock open across a restart, so its timely completion settles", async () => {
+      // Round 5: this host's clock reads the deadline while the bridge's is
+      // two minutes behind it, and the lock releases thirty seconds before it.
+      const dir = await freshDir();
+      const { phase, run, prepareSubmission, broadcastRetained } = await locked(dir);
+      phase.now = DEADLINE;
+      for (const stamp of [T0 + 11, DEADLINE - 120_000, DEADLINE - 1]) {
+        phase.observation = emptyAt(stamp);
+        await expect(run(`early-${stamp}`)).resolves.toMatchObject({
+          status: "settle-asymmetric", reason: "lock-contradicted", bridgeStatus: "conflicting", pastDeadline: true,
+        });
+        phase.now += 1_000;
+      }
+      // A restarted store still holds the open lock, and refuses the same evidence written directly.
+      const { claimed, write } = await acquire(await createFsLiquidityTankStore({ dir }), "direct", phase.now);
+      expect(claimed.observation).toEqual(lockedPending());
+      await expect((await createFsLiquidityTankStore({ dir })).recordRecoveryExpired({
+        ...write, expectedObservation: lockedPending(),
+        observation: { status: "contradicted-after-lock", checkpoint: lockedPending(), contradiction: emptyAt(DEADLINE - 1) } as never,
+      })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" });
+      const completion: LiquidityTankObservation = {
+        status: "completed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty", "pending", "completed"], observedAt: DEADLINE - 30_000, finalityObservedAt: DEADLINE - 30_000,
+        recoveryDeadline: DEADLINE, authenticationHash: "a".repeat(64),
+        lockTxHash: "fs-source-lock-tx", releaseTxHash: "fs-release-tx",
+      };
+      phase.observation = completion;
+      phase.now += 2_000;
+      const settled = {
+        status: "settled", settlement: { txRef: { lockTxHash: "fs-source-lock-tx", releaseTxHash: "fs-release-tx" } },
+      };
+      await expect(run("settler")).resolves.toMatchObject(settled);
+      // A restarted store replays the settlement without reading the bridge.
+      phase.observation = emptyAt(DEADLINE - 1);
+      phase.now += 5_000;
+      await expect(run("replayer")).resolves.toMatchObject(settled);
+      expect(prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test("a read after the checkpoint and at the deadline expires the lock, and a restarted store replays the expiry", async () => {
       const dir = await freshDir();
       const { phase, run, broadcastRetained } = await locked(dir);
       const expired = {
         status: "failed", errorClass: "failed-substrate", reason: "tank-lock-contradicted-recovery-expired",
         reputationNeutral: true,
       };
-      phase.observation = emptyAt(T0 + 11);
+      phase.observation = emptyAt(DEADLINE);
       phase.now = DEADLINE;
       await expect(run("expirer")).resolves.toEqual(expired);
       await expect((await createFsLiquidityTankStore({ dir })).claim({
         intent, owner: "inspector", now: DEADLINE + 2_000, leaseDurationMs: 1_000,
       })).resolves.toMatchObject({
         status: "recovery-expired",
-        observation: { status: "contradicted-after-lock", checkpoint: lockedPending(), contradiction: emptyAt(T0 + 11) },
+        observation: { status: "contradicted-after-lock", checkpoint: lockedPending(), contradiction: emptyAt(DEADLINE) },
       });
       phase.now = DEADLINE + 5_000;
       await expect(run("replayer")).resolves.toEqual(expired);
