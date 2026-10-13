@@ -246,6 +246,12 @@ deliverable.
 - **Stores** must implement `recordFailure` and the `failed` claim. A store
   without `recordFailure` is refused as `solana-spl-dependencies-invalid`
   before its claim is read, so nothing is signed.
+- **Keys that returned `failed` before this version are still open.**
+  Earlier versions did not close a key on `failed`, so resuming such a key,
+  for example after a top-up, can still sign and settle a phase that was
+  already paid another way. For each such key, write its failure in the
+  store, so that `claim` returns the `failed` claim, or make sure nothing
+  resumes it.
 - **Records with extra attempt fields.** Earlier versions retained, and
   hashed, every field an adapter returned for a prepared attempt. A record
   whose attempts carry keys beyond the nine `SolanaSplSignedAttempt` keys is
