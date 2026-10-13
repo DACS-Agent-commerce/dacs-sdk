@@ -157,7 +157,10 @@ an optional input that defaults to 10 minutes. `pastDeadline` is `true` once
 this call's host clock reaches it. The core does not expire such an operation,
 since the bridge may still lock it, but a bridge that accepts an operation and
 never locks it now shows up as overdue instead of parking the phase
-silently.
+silently. Once that pending is durable, a later read the store refuses (such
+as an authenticated `empty`, a regression it does not commit) or a failed
+observation write returns the same `waiting` `liquidity-tank-pending` with its
+`pendingDeadline` and `pastDeadline`, not a transient reason.
 
 ## Timestamp units
 

@@ -2179,6 +2179,19 @@ export async function advanceLiquidityTankSettlement(
     ? persistRecoveryExpired(durableFailure, durableObservation)
     : progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
 
+  // An operation the bridge accepted without a lock: bounded from the durable
+  // receipt, so a bridge that accepts an operation and never locks it is
+  // overdue, not parked.
+  const unlockedPendingProgress = (): LiquidityTankProgress => {
+    const pendingDeadline = Math.min(submissionReceipt + pendingLockDeadlineMs, Number.MAX_SAFE_INTEGER);
+    return {
+      status: "waiting",
+      reason: "liquidity-tank-pending",
+      pendingDeadline,
+      pastDeadline: latestNow >= pendingDeadline,
+    };
+  };
+
   // Set when this call's observation must not be used at all, not even to
   // fall back on durable progress: the host's authenticator refused it, or
   // one of its times falls before this submission was prepared.
@@ -2292,10 +2305,13 @@ export async function advanceLiquidityTankSettlement(
     }
     if (!await persistObservation(observation)) {
       // A timely completion has been seen; never expire it on a failed write.
-      return progressFromDurableObservation(intent, durableObservation, latestNow) ?? {
-        status: "indeterminate",
-        reason: "liquidity-tank-observation-persistence-uncertain",
-      };
+      // The durable progress stands, with its deadline: a lock's, or an
+      // unlocked pending's, including when the store refused a regression.
+      return progressFromDurableObservation(intent, durableObservation, latestNow) ??
+        (durableObservation?.status === "pending" ? unlockedPendingProgress() : {
+          status: "indeterminate",
+          reason: "liquidity-tank-observation-persistence-uncertain",
+        });
     }
     // The core keeps no tank balance: the bridge enforces its capacity across
     // concurrent phases, and its authenticated refusal is trusted here.
@@ -2308,15 +2324,7 @@ export async function advanceLiquidityTankSettlement(
     if (observation.status === "pending") {
       const durablePending = await resolveRecoveryProgress(observation);
       if (durablePending) return durablePending;
-      // No lock yet: bounded from the durable receipt, so a bridge that
-      // accepts an operation and never locks it is overdue, not parked.
-      const pendingDeadline = Math.min(submissionReceipt + pendingLockDeadlineMs, Number.MAX_SAFE_INTEGER);
-      return {
-        status: "waiting",
-        reason: "liquidity-tank-pending",
-        pendingDeadline,
-        pastDeadline: latestNow >= pendingDeadline,
-      };
+      return unlockedPendingProgress();
     }
     if (observation.status === "completed") {
       return await persistSettlement(observation);

@@ -6243,3 +6243,73 @@ describe("final review, round 1", () => {
       });
   });
 });
+
+/** The bridge's authenticated `empty`, observed at `observedAt`. */
+function emptyAt(operationHash: string, observedAt: number): LiquidityTankObservation {
+  return { ...empty(operationHash) as Extract<LiquidityTankObservation, { status: "empty" }>, observedAt };
+}
+
+describe("final review, round 3", () => {
+  describe("an unlocked pending keeps its deadline when a later read is refused", () => {
+    test("an authenticated empty after a durable unlocked pending keeps the pending deadline and its alert", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash));
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const recordObservation = vi.spyOn(store, "recordObservation");
+      const run = runner({ adapter: h.adapter, store, pendingLockDeadlineMs: 5_000 });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 6_000, pastDeadline: false,
+      });
+      h.broadcastRetained.mockClear();
+      recordObservation.mockClear();
+
+      h.setObservation(emptyAt(h.operationHash, 50_000));
+      for (const at of [50_000, 60_000]) {
+        run.setClock(at);
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: `worker-${at}` })).resolves.toEqual({
+          status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 6_000, pastDeadline: true,
+        });
+      }
+      // The regression was refused, not committed, and nothing was rebroadcast.
+      expect(await recordObservation.mock.results[0]!.value).toEqual({
+        status: "conflict", reason: "liquidity-tank-status-regression",
+      });
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+      const claim = await store.claim({
+        intent: createLiquidityTankIntent(authority()), owner: "inspector", now: 70_000, leaseDurationMs: 1,
+      });
+      expect(claim).toMatchObject({ status: "acquired", observation: { status: "pending" } });
+    });
+
+    test("a failed observation write after a durable unlocked pending keeps the pending deadline", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash));
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const run = runner({ adapter: h.adapter, store, pendingLockDeadlineMs: 5_000 });
+      await advanceLiquidityTankSettlement(run.shared);
+      store.recordObservation = vi.fn<LiquidityTankStore["recordObservation"]>(async () => {
+        throw new Error("simulated observation write failure");
+      });
+      h.setObservation(pending(h.operationHash, false, RECOVERY_DEADLINE_MS, 7_000));
+      run.setClock(7_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "write-loss-worker" })).resolves.toEqual({
+        status: "waiting", reason: "liquidity-tank-pending", pendingDeadline: 6_000, pastDeadline: true,
+      });
+    });
+
+    test("a failed observation write after a durable empty stays transient, with no deadline", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const run = runner({ adapter: h.adapter, store, pendingLockDeadlineMs: 5_000 });
+      await advanceLiquidityTankSettlement(run.shared);
+      store.recordObservation = vi.fn<LiquidityTankStore["recordObservation"]>(async () => {
+        throw new Error("simulated observation write failure");
+      });
+      h.setObservation(pending(h.operationHash, false, RECOVERY_DEADLINE_MS, 7_000));
+      run.setClock(7_000);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "write-loss-worker" })).resolves.toEqual({
+        status: "indeterminate", reason: "liquidity-tank-observation-persistence-uncertain",
+      });
+    });
+  });
+});
