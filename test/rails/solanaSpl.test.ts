@@ -320,8 +320,10 @@ describe("advanceSolanaSplSettlement", () => {
     ["bytes that hold fewer signatures than they count", Buffer.concat([
       Buffer.from([2]), signatureBytes(SIGNATURE_1),
     ]).toString("base64")],
-    ["bytes whose count never ends", Buffer.concat([
-      Buffer.from([0x81, 0x80, 0x80]), signatureBytes(SIGNATURE_1),
+    // A compact-u16 count is at most three bytes; read as a fourth-byte
+    // varint, this one would be 1 and be followed by the signature.
+    ["bytes whose count runs past three bytes", Buffer.concat([
+      Buffer.from([0x81, 0x80, 0x80, 0x00]), signatureBytes(SIGNATURE_1),
     ]).toString("base64")],
     ["plain text", Buffer.from("signed-wire-1", "utf8").toString("base64")],
   ])("a prepared attempt with %s is refused before persistence", async (_name, wire) => {
