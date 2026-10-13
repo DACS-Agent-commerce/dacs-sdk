@@ -314,8 +314,10 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
 /**
  * Authenticated evidence that the release missed `recoveryDeadline`: the
  * locked pending checkpoint observed at or after it, a completion finalized at
- * or after it, or a terminal bridge failure bound to the exact lock (retained
- * beside the checkpoint, or, without one, the durable observation itself).
+ * or after it, a terminal bridge failure bound to the exact lock (retained
+ * beside the checkpoint, or, without one, the durable observation itself), or
+ * a read that contradicts the durable checkpoint without a release: a terminal
+ * failure, or a snapshot observed at or after the deadline.
  * A terminal failure need not refresh its transition timestamp.
  * `observedAt` is the bridge's authenticated time of the status snapshot.
  */
@@ -333,6 +335,11 @@ export type LiquidityTankRecoveryEvidence =
         lockTxHash: string;
         recoveryDeadline: number;
       };
+    }>
+  | Readonly<{
+      status: "contradicted-after-lock";
+      checkpoint: LiquidityTankRecoveryCheckpoint;
+      contradiction: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" | "completed" }>>;
     }>;
 
 export type LiquidityTankStoreClaim =
@@ -557,12 +564,13 @@ export type LiquidityTankProgress =
       /**
        * Set when this call's authenticated bridge status could not move the
        * lock: `failed` is retained terminal evidence, expiring when the host
-       * clock reaches `recoveryDeadline`; `conflicting` contradicts the checkpoint
-       * and needs an operator. Past the deadline its reason is `lock-contradicted`
-       * and the lock does not expire while its bridge reads contradict it. That
-       * does not conform to DACS-4 §9.5.5, which resolves an expired window to
-       * `failed-substrate`: expiring cannot tell whether the release landed, so
-       * it could let the buyer pay twice.
+       * clock reaches `recoveryDeadline`; `conflicting` contradicts the
+       * checkpoint. Once the host clock reaches the deadline, a contradiction
+       * that shows no release (a terminal failure, or a snapshot observed at or
+       * after the deadline) expires the lock as
+       * `tank-lock-contradicted-recovery-expired`. Past the deadline any other
+       * contradiction (an earlier snapshot, or a completion of another lock)
+       * reports `lock-contradicted` and needs an operator.
        */
       bridgeStatus?: "failed" | "conflicting";
       txRef: Readonly<{
@@ -1414,6 +1422,19 @@ function lockBearingFailure(
     : undefined;
 }
 
+/**
+ * A read that contradicts the checkpoint and shows no release of it: anything
+ * but a completion that does not carry its lock and deadline, or a failure
+ * bound to them.
+ */
+function contradictsCheckpoint(
+  observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
+  checkpoint: LiquidityTankRecoveryCheckpoint,
+): boolean {
+  return observation.status !== "completed" && !preservesRecoveryCheckpoint(checkpoint, observation) &&
+    !failedAfterLock(observation, checkpoint);
+}
+
 function failedAfterLock(
   observation: Readonly<LiquidityTankObservation>,
   checkpoint: LiquidityTankRecoveryCheckpoint,
@@ -1423,14 +1444,16 @@ function failedAfterLock(
 }
 
 function recoveryEvidenceDeadline(evidence: LiquidityTankRecoveryEvidence): number {
-  return evidence.status === "failed-after-lock"
+  return evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock"
     ? evidence.checkpoint.recoveryDeadline
     : evidence.recoveryDeadline;
 }
 
 /**
  * Pending snapshots must describe the bridge at/after the deadline; a
- * terminal non-completion bound to the exact lock remains valid evidence.
+ * terminal non-completion bound to the exact lock remains valid evidence, and
+ * so does a terminal failure that contradicts the lock. Any other contradiction
+ * must also describe the bridge at/after the deadline.
  * The host-clock deadline is checked separately by the core and store CAS.
  */
 function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean {
@@ -1438,6 +1461,11 @@ function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean 
     return evidence.finalityObservedAt >= evidence.recoveryDeadline;
   }
   if (evidence.status === "failed") return lockBearingFailure(evidence) !== undefined;
+  if (evidence.status === "contradicted-after-lock") {
+    return contradictsCheckpoint(evidence.contradiction, evidence.checkpoint) &&
+      (evidence.contradiction.status === "failed" ||
+        evidence.contradiction.observedAt >= evidence.checkpoint.recoveryDeadline);
+  }
   return evidence.status === "pending"
     ? evidence.observedAt >= evidence.recoveryDeadline
     : failedAfterLock(evidence.failure, evidence.checkpoint);
@@ -1464,6 +1492,23 @@ function validateRecoveryEvidence(
       status: "failed-after-lock" as const,
       checkpoint: checkpoint as LiquidityTankRecoveryCheckpoint,
       failure,
+    });
+  }
+  if (captured.status === "contradicted-after-lock") {
+    const checkpoint = validateCapturedObservation(captured.checkpoint, intent, submission);
+    const contradiction = validateCapturedObservation(captured.contradiction, intent, submission);
+    if (checkpoint.status === "indeterminate" || !recoveryCheckpoint(checkpoint) ||
+        contradiction.status === "indeterminate" ||
+        !contradictsCheckpoint(contradiction, checkpoint as LiquidityTankRecoveryCheckpoint)) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: recovery evidence is invalid");
+    }
+    return Object.freeze({
+      status: "contradicted-after-lock" as const,
+      checkpoint: checkpoint as LiquidityTankRecoveryCheckpoint,
+      contradiction: contradiction as Extract<
+        LiquidityTankRecoveryEvidence,
+        { status: "contradicted-after-lock" }
+      >["contradiction"],
     });
   }
   const observation = validateCapturedObservation(captured, intent, submission);
@@ -1528,7 +1573,11 @@ function recoveryExpiredProgress(
   return {
     status: "failed",
     errorClass: "failed-substrate",
-    reason: "tank-locked-unreleased-recovery-expired",
+    // A lock expired on a read that contradicted it is reported apart: the
+    // bridge disagreed with itself, so read its record before paying again.
+    reason: evidence.status === "contradicted-after-lock"
+      ? "tank-lock-contradicted-recovery-expired"
+      : "tank-locked-unreleased-recovery-expired",
     reputationNeutral: true,
   };
 }
@@ -1873,7 +1922,9 @@ export async function advanceLiquidityTankSettlement(
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
     >[] = evidence.status === "failed-after-lock"
       ? [evidence.checkpoint, evidence.failure]
-      : [evidence];
+      : evidence.status === "contradicted-after-lock"
+        ? [evidence.checkpoint, evidence.contradiction]
+        : [evidence];
     // A refusal of any leg outranks an outage on another.
     let expiryUnchecked = false;
     for (let index = 0; index < evidenceObservations.length; index += 1) {
@@ -1887,9 +1938,11 @@ export async function advanceLiquidityTankSettlement(
       if (answer === "unavailable") expiryUnchecked = true;
     }
     if (expiryUnchecked) return verifierUnavailable();
-    // A terminal failure carries no time of its own: this host's clock must
-    // also have reached the deadline before the expiry is reported.
-    if ((evidence.status === "failed-after-lock" || evidence.status === "failed") &&
+    // A terminal failure carries no time of its own, and a contradiction may
+    // be one: this host's clock must also have reached the deadline before the
+    // expiry is reported.
+    if ((evidence.status === "failed-after-lock" || evidence.status === "failed" ||
+        evidence.status === "contradicted-after-lock") &&
         claimNow < recoveryEvidenceDeadline(evidence)) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
     }
@@ -2150,7 +2203,9 @@ export async function advanceLiquidityTankSettlement(
       }
       return observation.status === "failed-after-lock"
         ? progressFromDurableObservation(intent, observation.checkpoint, recoveryNow, "failed")
-        : progressFromDurableObservation(intent, observation, recoveryNow);
+        : observation.status === "contradicted-after-lock"
+          ? progressFromDurableObservation(intent, observation.checkpoint, recoveryNow, "conflicting")
+          : progressFromDurableObservation(intent, observation, recoveryNow);
     }
     let stored: boolean;
     try {
@@ -2316,6 +2371,24 @@ export async function advanceLiquidityTankSettlement(
           }
         }
         return await persistRecoveryExpired(durableFailure, durableObservation);
+      }
+      // A contradiction that shows no release, read at or after the deadline
+      // (or a terminal failure), expires the lock once this host's clock has
+      // reached the deadline too; it is reported apart. An earlier snapshot or
+      // a completion of another lock does not, and stays `lock-contradicted`.
+      if (checkpoint && !durableFailure && contradictsCheckpoint(observation, checkpoint)) {
+        type Contradicted = Extract<LiquidityTankRecoveryEvidence, { status: "contradicted-after-lock" }>;
+        const contradicted = validateRecoveryEvidence({
+          status: "contradicted-after-lock",
+          checkpoint,
+          contradiction: observation as Contradicted["contradiction"],
+        }, intent, submission) as Contradicted;
+        if (provesRecoveryExpiry(contradicted)) {
+          return await persistRecoveryExpired(contradicted, durableObservation) ?? {
+            status: "indeterminate",
+            reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
+          };
+        }
       }
       return await resolveDurableProgress("conflicting") ?? {
         status: "indeterminate",
@@ -2699,6 +2772,12 @@ function recordRecoveryExpiredTransition(
     // A failure that carries its lock is evidence only as the durable
     // observation itself; beside a checkpoint it is retained as failed-after-lock.
     if (canonicalize(record.observation) !== canonicalize(evidence) || record.recoveryFailure) {
+      return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+    }
+  } else if (evidence.status === "contradicted-after-lock") {
+    // Retained failure evidence, when there is any, is the lock's evidence.
+    if (!priorCheckpoint || canonicalize(priorCheckpoint) !== canonicalize(evidence.checkpoint) ||
+        record.recoveryFailure) {
       return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
     }
   } else if (!priorCheckpoint ||
