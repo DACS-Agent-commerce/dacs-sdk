@@ -1,9 +1,11 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
+import { buildAgent, createAgent, type AgentConfig } from "../../src/agent/Agent.js";
 import { SubstrateError, TransientError } from "../../src/errors.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import type { AnchorResolution } from "../../src/substrate/anchorResolution.js";
+// DemosAdapter lives on the substrate subpath; the root barrel stays demosdk-free.
+import { DemosAdapter } from "../../src/substrate/index.js";
 
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -2027,6 +2029,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
 });
 
 const EVIDENCE_NATIVE = `stor-${"ab".repeat(20)}`;
+const DEMOS_RPC = "https://demos.invalid";
 const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
 const NON_EVIDENCE_READS = new Set(["stor-bundle", "agreement-j1", LISTING_ADDR]);
 
@@ -2134,6 +2137,11 @@ function evidenceCheck(result: Awaited<ReturnType<ReturnType<typeof buildAgent>[
 }
 
 describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   test("reads only the retained finalized receipt's native address, whoever signed or anchored", async () => {
     const f = await logicalAgentFixture();
     const result = await f.agent().verifyBundle("stor-bundle");
@@ -2347,6 +2355,62 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
       job: "invalid-binding", phase: "invalid-evidence",
     }[tamper];
     expect(evidenceCheck(result)).toMatchObject({ verdict });
+    expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
+  });
+
+  test.each(["present", "transport timeout", "not found"])(
+    "resolves through a real DemosAdapter with a stubbed transport: %s", async (mode) => {
+      const f = await logicalAgentFixture();
+      const adapter = new DemosAdapter({ rpc: DEMOS_RPC });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue(`0x${"11".repeat(32)}`);
+      const searched: string[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+        const query = String(JSON.parse(String(init?.body)).params[0].data.query);
+        searched.push(query);
+        // Any other name has an unreadable squatter, which would make its lookup indeterminate.
+        const storageAddress = query === f.listingName ? LISTING_ADDR : "stor-squatter";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ result: 200, response: [{ storageAddress, programName: query }] }),
+        };
+      }));
+      const read = vi.spyOn(adapter.raw.storagePrograms, "read").mockImplementation(async (address: string) => {
+        if (address === EVIDENCE_NATIVE && mode === "transport timeout") {
+          throw Object.assign(new Error("timeout of 30000ms exceeded"), { code: "ECONNABORTED" });
+        }
+        if (address === EVIDENCE_NATIVE && mode === "not found") {
+          throw Object.assign(new Error("Request failed with status code 404"), { response: { status: 404 } });
+        }
+        if (address === "stor-squatter") throw new Error("storage program ACL denies this reader");
+        const data = f.store.get(address);
+        return data === undefined
+          ? { success: false, errorCode: "NOT_FOUND", error: "not found" }
+          : { success: true, owner: sellerOwner, data };
+      });
+      const agent = buildAgent(adapter, f.config);
+      if (mode === "transport timeout") {
+        await expect(agent.verifyBundle("stor-bundle")).rejects.toThrow(`read anchor ${EVIDENCE_NATIVE} failed`);
+      } else {
+        const result = await agent.verifyBundle("stor-bundle");
+        expect(result.ok, result.reason).toBe(mode === "present");
+        expect(evidenceCheck(result)).toMatchObject({ verdict: mode === "present" ? "ok" : "missing" });
+      }
+      expect(read).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+      expect(read).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
+      expect(searched).toEqual([f.listingName]);
+    },
+  );
+
+  test("createAgent keeps the receipt callback through construction-time capture", async () => {
+    const f = await logicalAgentFixture();
+    vi.spyOn(DemosAdapter.prototype, "connect").mockResolvedValue(undefined);
+    vi.spyOn(DemosAdapter.prototype, "readAnchor").mockImplementation(f.readAnchor);
+    vi.spyOn(DemosAdapter.prototype, "resolveAnchorByName").mockImplementation(f.resolveAnchorByName);
+    const agent = await createAgent({ ...f.config, demosRpc: DEMOS_RPC });
+    const result = await agent.verifyBundle("stor-bundle");
+    expect(result, result.reason).toMatchObject({ ok: true, fullyVerified: true });
     expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
     expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
   });
