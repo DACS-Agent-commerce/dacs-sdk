@@ -59,6 +59,11 @@ import {
   type VerifyFinalizedSellerBundleInput,
 } from "../../src/seller/bundleFinalization.js";
 import { isBundleBinding } from "../../src/artifacts/validators.js";
+import {
+  verifyCompletedTwoSidedSession,
+  type CompletedTwoSidedSessionDeps,
+  type CompletedTwoSidedSessionInput,
+} from "../../src/commerce/index.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -3118,6 +3123,123 @@ describe("read-only authentication of retained finalized seller bundles", () => 
     ).then(() => undefined, (error: unknown) => error);
     expect(error).toBeInstanceOf(Error);
     expect(error instanceof IndeterminateSubstrateError).toBe(retryable);
+  });
+});
+
+// Final r11 review: the completed-session gate had only run with a mocked
+// seller verifier. Here the real gate re-verifies a real, cryptographically
+// finalized write-input seller closure through the read provider that closure
+// was authenticated with (what dacs-node passes as `material.provider`),
+// beside the buyer's own anchored copy, under the gate's one deadline.
+describe("completed two-sided session gate over a real seller closure", () => {
+  async function composition() {
+    const retained = await finalizedForReadVerification("write-input");
+    const result = retained.result;
+    const buyerBundle = result.buyerBundle;
+    const buyerHash = attestationBundleHash(buyerBundle);
+    const buyerNative = `stor-${"8".repeat(40)}`;
+    const buyerBinding = signTestComponent({
+      bindingVersion: "1",
+      jobId: JOB_ID,
+      role: "buyer",
+      logicalAddress: bundleAddress(JOB_ID, "buyer"),
+      nativeAddress: buyerNative,
+      bundleContentHash: buyerHash,
+      signer: BUYER,
+    }, BUNDLE_BINDING_SEPARATOR, BUYER) as unknown as BundleBinding;
+    const natives = new Map<string, unknown>([
+      [buyerNative, buyerBundle],
+      [result.nativeAddress, result.sellerBundle],
+    ]);
+    const bindings = { buyer: buyerBinding, seller: result.binding! };
+    const input: CompletedTwoSidedSessionInput = {
+      jobId: JOB_ID,
+      buyer: BUYER,
+      seller: SELLER,
+      sellerClosure: { verificationInput: retained.input, result },
+      copies: {
+        buyer: {
+          role: "buyer",
+          nativeAddress: buyerNative,
+          bundle: buyerBundle,
+          anchorReceipt: receipt(buyerHash, bundleAddress(JOB_ID, "buyer"), buyerNative, BUYER),
+          binding: buyerBinding,
+        },
+        seller: {
+          role: "seller",
+          nativeAddress: result.nativeAddress,
+          bundle: result.sellerBundle,
+          anchorReceipt: result.anchorReceipt,
+          binding: result.binding!,
+        },
+      },
+    };
+    const deps: CompletedTwoSidedSessionDeps = {
+      sellerFinalizationProvider: retained.provider,
+      deadline: { timeoutMs: 5_000 },
+      readBundleCopy: (nativeAddress) =>
+        structuredClone((natives.get(nativeAddress) ?? null) as Record<string, unknown> | null),
+      verifyBundleAnchor: () => ({ disposition: "valid", mapping: "write-input" }),
+      resolveBundleBinding: (_logicalAddress, _signer, role) =>
+        ({ disposition: "present", binding: structuredClone(bindings[role]) }),
+      verifyBundleBinding: (binding) => ed25519Verify(
+        signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(binding as unknown as Record<string, unknown>)),
+        Buffer.from(binding.signature.value, "base64url"),
+        publicKeyFromSeed(binding.signer === BUYER ? BUYER_SEED : SELLER_SEED),
+      ) ? { disposition: "valid" } : { disposition: "invalid", reason: "signature" },
+    };
+    return { retained, input, deps };
+  }
+
+  test("completes the session after re-verifying the real seller closure with its own provider", async () => {
+    const { retained, input, deps } = await composition();
+    await expect(verifyCompletedTwoSidedSession(input, deps)).resolves.toMatchObject({
+      state: "audit-complete",
+      jobId: JOB_ID,
+      seller: { nativeAddress: retained.result.nativeAddress },
+    });
+    // The closure was re-verified through the captured provider's own reads,
+    // with nothing written.
+    expect(retained.provider.resolveSellerBundle).toHaveBeenCalledWith(bundleAddress(JOB_ID, "seller"));
+    expect(retained.provider.resolveBundleBinding).toHaveBeenCalled();
+    expect(retained.provider.resolveDependency).toHaveBeenCalled();
+    expect(providerWriteCounts(retained.fixture)).toEqual({ submit: 1, publish: 1 });
+  });
+
+  test.each([
+    ["the seller bundle", "resolveSellerBundle"],
+    ["the seller BundleBinding", "resolveBundleBinding"],
+  ] as const)("retries while Demos's name index does not show %s yet", async (_label, read) => {
+    const { retained, input, deps } = await composition();
+    vi.mocked(retained.provider[read]!).mockImplementation((() => ({ disposition: "absent" })) as never);
+    const error = await verifyCompletedTwoSidedSession(input, deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(error)).toMatch(/not yet visible/);
+  });
+
+  test("reports a closure that does not match the copies as an answer", async () => {
+    const { input, deps } = await composition();
+    const tampered = structuredClone(input);
+    (tampered.sellerClosure.result as { nativeAddress: string }).nativeAddress = `stor-${"9".repeat(40)}`;
+    const error = await verifyCompletedTwoSidedSession(tampered, deps).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+  });
+
+  test("bounds the seller closure re-verification by the gate's one deadline", async () => {
+    const { retained, input, deps } = await composition();
+    vi.mocked(retained.provider.resolveSellerBundle).mockImplementation((() => new Promise(() => undefined)) as never);
+    let disarmed = 0;
+    const error = await verifyCompletedTwoSidedSession(input, {
+      ...deps,
+      deadline: { timeoutMs: 7, start: (expire) => {
+        const timer = setTimeout(expire, 5);
+        return () => { disarmed += 1; clearTimeout(timer); };
+      } },
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(error)).toMatch(/completed seller closure re-verification did not settle within 7 ms/);
+    expect(disarmed).toBe(1);
   });
 });
 
