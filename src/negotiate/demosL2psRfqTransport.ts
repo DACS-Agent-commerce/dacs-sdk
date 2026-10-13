@@ -380,10 +380,15 @@ export interface DemosL2psRfqInboundSkip {
 }
 
 /**
- * "complete": history was read to its end and every recovered packet was
- * handed to the consumer. A packet the lifecycle rejected (for example for a
- * job that is retired, not open yet, or failed) is listed in `skipped` and
- * does not make the call indeterminate. Any other uncertainty does.
+ * "complete": history was read to its end, and every recovered packet was
+ * either accepted by the consumer or is counted in `skipped`. A packet the
+ * consumer rejects is listed in `skipped` and does not make the call
+ * indeterminate, so "rejected" must be the consumer's answer about the
+ * packet. The durable lifecycle rejects, for example, a packet for a job that
+ * is retired, not open yet, or failed, and answers "indeterminate" when its
+ * clock, a verifier or its signer fails. An "indeterminate" or "conflict"
+ * answer, a consumer that throws, and any history or decryption uncertainty
+ * make the call indeterminate.
  */
 export type DemosL2psRfqInboundRecoveryResult =
   | { status: "complete"; delivered: number; skipped: DemosL2psRfqInboundSkip[] }
@@ -1802,8 +1807,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           continue;
         }
         refusal = "reason" in result ? result.reason : "unknown result";
-        // A rejection is the lifecycle's own answer for this job (retired,
-        // not open yet, failed), not a transport uncertainty.
+        // A rejection is the consumer's answer about this packet (for the
+        // lifecycle: job retired, not open yet, failed), not a transport
+        // uncertainty. The lifecycle reports a clock, verifier or signer
+        // failure as indeterminate instead.
         if (result.status !== "rejected") {
           uncertainReason = `Demos L2PS recovered packet was not accepted: ${refusal}`;
         }

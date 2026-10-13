@@ -3304,3 +3304,38 @@ describe("Demos L2PS RFQ final review fixes", () => {
     }
   });
 });
+
+describe("Demos L2PS RFQ final re-review fixes", () => {
+  test.each([
+    { fault: "clock", reason: "durable RFQ clock returned an invalid unix-ms value" },
+    { fault: "channel verifier", reason: "channel signature verifier failed" },
+  ] as const)("re-review: a failing lifecycle $fault keeps recovery indeterminate until it works", async ({ fault, reason }) => {
+    const fixture = await inboundReceiver();
+    fixture.transport.stop();
+    let failing = false;
+    const client = createDurableRfqLifecycleClient({
+      ...clientOptions("seller", fixture.transport, durableReservation()),
+      nowMs: () => (failing && fault === "clock" ? Number.NaN : NOW),
+      verifyChannelMessage: () => {
+        if (failing && fault === "channel verifier") throw new Error("verifier offline");
+        return "pass" as const;
+      },
+    });
+    await client.open(openInput());
+    fixture.transport.start((packet) => client.receive(packet));
+    failing = true;
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "indeterminate",
+      delivered: 0,
+      skipped: [{
+        jobId: JOB_ID, channelId: CHANNEL_ID, packetId: fixture.packet.packetId, packets: 1, reason,
+      }],
+      reason: `Demos L2PS recovered packet was not accepted: ${reason}`,
+    });
+    failing = false;
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete", delivered: 1, skipped: [],
+    });
+    fixture.transport.stop();
+  });
+});

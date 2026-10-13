@@ -108,6 +108,13 @@ ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
 redrive only an authenticated `absent` result. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
+`receive()` returns `rejected` only as its answer about the packet: it is
+malformed or misrouted, its job does not exist, has failed or cannot be read
+from the store, or the turn, plan or contribution is refused. When the trusted
+clock, the channel signature verifier, the agreement signer or the contribution
+verifier throws or cannot decide, `receive()` returns `indeterminate`, stores
+nothing, and the same packet can be received again.
+
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({
   role: "buyer",
@@ -552,10 +559,12 @@ therefore sorts the packets it finds by job and channel and delivers each job's
 packets in turn order. When the consumer does not accept a packet, recovery
 holds back the rest of that job only and goes on with the other jobs. The
 result lists each such job in `skipped`, with the first packet that was not
-accepted, how many packets were held back, and the consumer's reason. A
-rejection is the lifecycle's own answer for that job, not a transport
-uncertainty (for example, the job is retired, not open yet, or carries a
-failure), so it does not make the call `indeterminate`. Check `skipped`, and
+accepted, how many packets that covers (it and the ones held back), and the
+consumer's reason. A rejection is the consumer's answer about
+the packet, not a transport uncertainty, so it does not make the call
+`indeterminate`. The lifecycle rejects, for example, a packet whose job is
+retired, not open yet, or carries a failure; when its clock, a verifier or its
+signer fails, it answers `indeterminate` instead. Check `skipped`, and
 run `resumeInbound()` again after opening a job whose first packets may
 already be in history. An `indeterminate` or
 `conflict` result, or a consumer that throws, makes the call `indeterminate`.

@@ -268,6 +268,14 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
     jobId: string,
     policy: RfqLifecyclePolicy,
   ): Promise<DurableRfqLifecycleResult<TSignature>>;
+  /**
+   * Apply one counterparty packet. "rejected" is the lifecycle's answer about
+   * the packet: it is malformed or misrouted, its job does not exist, has
+   * failed or is unreadable in the store, or the turn, plan or contribution is
+   * refused. A clock, verifier or signer that fails or cannot decide gives
+   * "indeterminate" instead; nothing is stored, and the same packet may be
+   * received again.
+   */
   receive(packet: unknown): Promise<DurableRfqLifecycleResult<TSignature>>;
   resumeOutbox(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
   startAgreement(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
@@ -1742,6 +1750,46 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     return publishPacket(packet);
   }
 
+  /**
+   * Finalize a received agreement. A contribution the verifier calls invalid
+   * rejects the packet. A verifier that throws or answers neither "valid" nor
+   * "invalid" leaves it indeterminate, so the same packet may be received
+   * again.
+   */
+  async function finalizeReceived(
+    plan: Readonly<FixedPriceAgreementSigningPlan>,
+    contributions: readonly Readonly<FixedPriceAgreementSignatureContribution>[],
+    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+    fallbackReason: string,
+  ): Promise<
+    { finalized: AgreementArtifact } | { failed: DurableRfqLifecycleResult<TSignature> }
+  > {
+    let undecided = false;
+    const verify: FixedPriceAgreementContributionVerifier = async (input) => {
+      try {
+        const disposition = await verifyAgreementContribution(input);
+        if (disposition !== "valid" && disposition !== "invalid") undecided = true;
+        return disposition;
+      } catch (cause) {
+        undecided = true;
+        throw cause;
+      }
+    };
+    try {
+      return {
+        finalized: await finalizeFixedPriceAgreementContributions(plan, contributions, verify),
+      };
+    } catch (cause) {
+      return {
+        failed: {
+          status: undecided ? "indeterminate" : "rejected",
+          reason: cause instanceof Error ? cause.message : fallbackReason,
+          record,
+        },
+      };
+    }
+  }
+
   async function receiveTurn(
     record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
     packet: RfqLifecycleTurnPacket<TSignature>,
@@ -1754,7 +1802,12 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       verifyChannelMessage,
     );
     if (advanced.decision !== "pass") {
-      return admissionFailure(advanced, record);
+      // "error" means the verifier or local state could not decide (a
+      // verifier that throws, a clock behind the stored state), not that the
+      // turn is invalid, so the same packet may be received again.
+      return advanced.decision === "error"
+        ? { status: "indeterminate", reason: advanced.reason, record }
+        : admissionFailure(advanced, record);
     }
     if (
       advanced.state.status === "timed-out" &&
@@ -1800,7 +1853,6 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     }
     let expectedPlan: Readonly<FixedPriceAgreementSigningPlan>;
     let sellerContribution: Readonly<FixedPriceAgreementSignatureContribution>;
-    let finalized: AgreementArtifact;
     try {
       const expectedDraft = deriveRfqAgreement({
         ...record.authority,
@@ -1811,16 +1863,6 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       if (canonicalize(expectedPlan) !== canonicalize(packet.plan)) {
         throw new DacsError("buyer substituted the RFQ agreement signing plan");
       }
-      sellerContribution = await createFixedPriceAgreementSignatureContribution(
-        expectedPlan,
-        "seller",
-        agreementSigner,
-      );
-      finalized = await finalizeFixedPriceAgreementContributions(
-        expectedPlan,
-        [packet.buyerContribution, sellerContribution],
-        verifyAgreementContribution,
-      );
     } catch (cause) {
       return {
         status: "rejected",
@@ -1828,6 +1870,28 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         record,
       };
     }
+    try {
+      sellerContribution = await createFixedPriceAgreementSignatureContribution(
+        expectedPlan,
+        "seller",
+        agreementSigner,
+      );
+    } catch (cause) {
+      // Our own signer failing says nothing about the buyer's proposal.
+      return {
+        status: "indeterminate",
+        reason: cause instanceof Error ? cause.message : "agreement signing failed",
+        record,
+      };
+    }
+    const finalizing = await finalizeReceived(
+      expectedPlan,
+      [packet.buyerContribution, sellerContribution],
+      record,
+      "agreement proposal is invalid",
+    );
+    if ("failed" in finalizing) return finalizing.failed;
+    const { finalized } = finalizing;
     const response = makePacket(record, {
       kind: "agreement-contribution",
       sellerContribution,
@@ -1865,20 +1929,14 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     ) {
       return { status: "rejected", reason: "seller contribution is not expected", record };
     }
-    let finalized: AgreementArtifact;
-    try {
-      finalized = await finalizeFixedPriceAgreementContributions(
-        record.agreement.plan,
-        [record.agreement.contributions[0]!, packet.sellerContribution],
-        verifyAgreementContribution,
-      );
-    } catch (cause) {
-      return {
-        status: "rejected",
-        reason: cause instanceof Error ? cause.message : "seller contribution is invalid",
-        record,
-      };
-    }
+    const finalizing = await finalizeReceived(
+      record.agreement.plan,
+      [record.agreement.contributions[0]!, packet.sellerContribution],
+      record,
+      "seller contribution is invalid",
+    );
+    if ("failed" in finalizing) return finalizing.failed;
+    const { finalized } = finalizing;
     return write(
       record,
       nextRecord(record, receivedAt, {
@@ -2089,8 +2147,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       try {
         receivedAt = trustedNow();
       } catch (cause) {
+        // A clock failure says nothing about the packet; it may be received again.
         return {
-          status: "rejected",
+          status: "indeterminate",
           reason: cause instanceof Error ? cause.message : "RFQ clock failed",
         };
       }

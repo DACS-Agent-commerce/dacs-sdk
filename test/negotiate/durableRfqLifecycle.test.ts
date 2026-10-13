@@ -820,3 +820,172 @@ describe("durable two-agent RFQ lifecycle", () => {
     });
   });
 });
+
+describe("durable RFQ receive keeps local failures retryable", () => {
+  type Fault = "throw" | "error" | "indeterminate" | "fail" | "invalid" | undefined;
+
+  /** A client whose clock, verifiers and agreement signer can be made to fail. */
+  function flakyClient(
+    role: "buyer" | "seller",
+    transport: DurableRfqLifecycleTransport<string>,
+  ) {
+    const claim = role === "buyer" ? BUYER : SELLER;
+    const keys = role === "buyer" ? buyerKeys : sellerKeys;
+    const faults = {
+      clock: false,
+      sign: false,
+      channel: undefined as Fault,
+      agreement: undefined as Fault,
+    };
+    const client = createDurableRfqLifecycleClient({
+      role,
+      store: createInMemoryDurableRfqLifecycleStore<string>(),
+      transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(keys.privateKey),
+      verifyChannelMessage: (input) => {
+        if (faults.channel === "throw") throw new Error("channel verifier offline");
+        return faults.channel === undefined
+          ? verifyChannel(input)
+          : (faults.channel as "error" | "indeterminate" | "fail");
+      },
+      agreementSigner: {
+        party: claim,
+        algorithm: "ed25519" as const,
+        sign: (bytes: Uint8Array) => {
+          if (faults.sign) throw new Error("remote agreement signer offline");
+          return ed25519Sign(null, bytes, keys.privateKey);
+        },
+      },
+      verifyAgreementContribution: (input) => {
+        if (faults.agreement === "throw") throw new Error("agreement verifier offline");
+        return faults.agreement === undefined
+          ? verifyAgreement(input)
+          : (faults.agreement as "error" | "indeterminate" | "invalid");
+      },
+      nowMs: () => (faults.clock ? Number.NaN : NOW),
+    });
+    return { client, faults };
+  }
+
+  /** A normal buyer and a flaky seller, both open, with the buyer's offer sent. */
+  async function offered() {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient } = clients(network.transport);
+    const seller = flakyClient("seller", network.transport);
+    await buyerClient.open(openInput());
+    await seller.client.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    const offer = network.take(SELLER);
+    if (offer === undefined) throw new Error("no offer");
+    return { network, buyerClient, seller, offer };
+  }
+
+  test("a failing clock leaves a turn indeterminate, and the same packet is received later", async () => {
+    const { seller, offer } = await offered();
+    seller.faults.clock = true;
+    await expect(seller.client.receive(offer)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "durable RFQ clock returned an invalid unix-ms value",
+    });
+    seller.faults.clock = false;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  test.each([
+    { fault: "throw", status: "indeterminate", reason: "channel signature verifier failed" },
+    { fault: "error", status: "indeterminate", reason: "channel signature verification returned error" },
+    { fault: "indeterminate", status: "indeterminate", reason: "channel signature verification returned indeterminate" },
+    { fault: "fail", status: "rejected", reason: "channel signature verification returned fail" },
+  ] as const)("a channel verifier answering $fault leaves a turn $status", async ({ fault, status, reason }) => {
+    const { seller, offer } = await offered();
+    seller.faults.channel = fault;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({
+      status,
+      reason,
+      record: { inboxPacketIds: [] },
+    });
+    // Neither answer stores the packet, so it is received once the verifier passes.
+    seller.faults.channel = undefined;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  /** Negotiate to acceptance and return the buyer's agreement proposal. */
+  async function proposed() {
+    const fixture = await offered();
+    await expect(fixture.seller.client.receive(fixture.offer)).resolves.toMatchObject({
+      status: "ready",
+    });
+    await fixture.seller.client.sendAccept(JOB_ID);
+    await deliver(fixture.network, BUYER, fixture.buyerClient);
+    await fixture.buyerClient.startAgreement(JOB_ID);
+    const proposal = fixture.network.take(SELLER);
+    if (proposal?.kind !== "agreement-proposal") throw new Error("expected agreement proposal");
+    return { ...fixture, proposal };
+  }
+
+  test("a failing agreement signer leaves a proposal indeterminate, and it is received later", async () => {
+    const { network, seller, proposal } = await proposed();
+    seller.faults.sign = true;
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: "remote agreement signer offline",
+    });
+    const status = await seller.client.getStatus(JOB_ID);
+    expect(status.status === "ok" && status.record.agreement).toBeUndefined();
+    expect(network.pending(BUYER)).toBe(0);
+    seller.faults.sign = false;
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+    expect(network.pending(BUYER)).toBe(1);
+  });
+
+  test.each([
+    { fault: "throw", status: "indeterminate" },
+    { fault: "error", status: "indeterminate" },
+    { fault: "indeterminate", status: "indeterminate" },
+    { fault: "invalid", status: "rejected" },
+  ] as const)("a contribution verifier answering $fault leaves a proposal $status", async ({ fault, status }) => {
+    const { network, seller, proposal } = await proposed();
+    seller.faults.agreement = fault;
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({
+      status,
+      reason: `buyer agreement contribution is not cryptographically valid (${fault === "throw" ? "error" : fault})`,
+    });
+    const loaded = await seller.client.getStatus(JOB_ID);
+    expect(loaded.status === "ok" && loaded.record.agreement).toBeUndefined();
+    expect(network.pending(BUYER)).toBe(0);
+    seller.faults.agreement = undefined;
+    await expect(seller.client.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  test.each([
+    { fault: "throw", status: "indeterminate" },
+    { fault: "invalid", status: "rejected" },
+  ] as const)("a buyer's contribution verifier answering $fault leaves the seller contribution $status", async ({ fault, status }) => {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { sellerClient } = clients(network.transport);
+    const buyer = flakyClient("buyer", network.transport);
+    await buyer.client.open(openInput());
+    await sellerClient.open(openInput());
+    await buyer.client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyer.client);
+    await buyer.client.startAgreement(JOB_ID);
+    await deliver(network, SELLER, sellerClient);
+    const contribution = network.take(BUYER);
+    if (contribution === undefined) throw new Error("no seller contribution");
+    buyer.faults.agreement = fault;
+    await expect(buyer.client.receive(contribution)).resolves.toMatchObject({ status });
+    const loaded = await buyer.client.getStatus(JOB_ID);
+    expect(loaded.status === "ok" && loaded.record.agreement?.finalized).toBeUndefined();
+    buyer.faults.agreement = undefined;
+    await expect(buyer.client.receive(contribution)).resolves.toMatchObject({ status: "ready" });
+  });
+});
