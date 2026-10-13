@@ -64,6 +64,8 @@ const DUPLICATE_REASON =
   "Demos L2PS refused the packet hash as a duplicate that history does not show";
 const STORED_FRAME_REASON =
   "Demos L2PS RFQ stored send frame does not open to this packet";
+const SEND_UNKNOWN_REASON = "Demos L2PS RFQ send outcome is unknown";
+const MAX_SEND_ERROR_CHARS = 200;
 const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
   "delivered",
@@ -715,6 +717,32 @@ export function createDemosL2psRfqAesGcmCodec(
 
 function errorFrom(cause: unknown, fallback: string): Error {
   return cause instanceof Error ? cause : new DacsError(fallback);
+}
+
+/** An error's own data `message`; no getter or proxy trap runs. */
+function ownMessage(cause: unknown): unknown {
+  return typeof cause === "object" && cause !== null
+    ? ownData(cause, "message")?.value
+    : undefined;
+}
+
+/**
+ * A rejected send stays indeterminate, but the operator should see what the
+ * peer or node said. URLs are replaced because one may carry credentials, and
+ * the text is reduced to printable ASCII and bounded.
+ */
+function sendFailureReason(message: unknown): string {
+  if (typeof message !== "string") return SEND_UNKNOWN_REASON;
+  const text = message
+    .slice(0, 4 * MAX_SEND_ERROR_CHARS)
+    .replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, "<url>")
+    .replace(/[^\x20-\x7e]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text === "") return SEND_UNKNOWN_REASON;
+  return `${SEND_UNKNOWN_REASON}: ${
+    text.length > MAX_SEND_ERROR_CHARS ? `${text.slice(0, MAX_SEND_ERROR_CHARS)}...` : text
+  }`;
 }
 
 /**
@@ -1902,8 +1930,9 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         ? { disposition: "acknowledged" }
         : { disposition: "indeterminate", reason: "Demos L2PS RFQ send acknowledgement is missing or failed" };
     } catch (cause) {
-      duplicate = cause instanceof Error && cause.message === NODE_DUPLICATE_MESSAGE;
-      result = { disposition: "indeterminate", reason: "Demos L2PS RFQ send outcome is unknown" };
+      const message = ownMessage(cause);
+      duplicate = message === NODE_DUPLICATE_MESSAGE && cause instanceof Error;
+      result = { disposition: "indeterminate", reason: sendFailureReason(message) };
     }
     if (duplicate) {
       // The node already holds this hash and did not deliver it again. Only

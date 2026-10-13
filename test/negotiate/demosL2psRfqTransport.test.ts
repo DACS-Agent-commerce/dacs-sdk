@@ -2594,7 +2594,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       }),
     ).resolves.toMatchObject({
       status: "indeterminate",
-      reason: "Demos L2PS RFQ send outcome is unknown",
+      reason: "Demos L2PS RFQ send outcome is unknown: Demos L2PS RFQ send timed out",
     });
     const status = await client.getStatus(JOB_ID);
     expect(status.status).toBe("ok");
@@ -3262,5 +3262,39 @@ describe("Demos L2PS RFQ final review fixes", () => {
       save: () => false,
     }).publish(packet)).resolves.toEqual({ disposition: "indeterminate", reason });
     expect(hub.sends).toBe(1);
+  });
+
+  test("final: a refused send keeps the peer's error text, bounded and without URLs", async () => {
+    const { hub, packet } = await buyerWithSentOffer();
+    const withGetter = new Error("hidden");
+    Object.defineProperty(withGetter, "message", {
+      get() { throw new Error("the getter ran"); },
+    });
+    const unknown = "Demos L2PS RFQ send outcome is unknown";
+    for (const [refusal, reason] of [
+      [
+        new Error("Recipient not registered\n\tvia wss://user:secret@node.example:3006/l2ps?token=t1"),
+        `${unknown}: Recipient not registered via <url>`,
+      ],
+      [new Error(`é\u0000${"x".repeat(300)}`), `${unknown}: ${"x".repeat(200)}...`],
+      [new Error(" \n "), unknown],
+      [withGetter, unknown],
+      ["a bare string", unknown],
+    ] as const) {
+      const base = hub.peer(BUYER_PEER);
+      const transport = createDemosL2psRfqTransport<string>({
+        peer: { ...base, async send() { throw refusal; } },
+        codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+        l2psUid: L2PS_UID,
+        peerChannel: "loopback",
+        outboxStore: memorySendOutbox(),
+        localClaim: BUYER,
+        localPeerKey: BUYER_PEER,
+        peerForClaim,
+        claimForPeer,
+        onError: vi.fn(),
+      });
+      await expect(transport.publish(packet)).resolves.toEqual({ disposition: "indeterminate", reason });
+    }
   });
 });

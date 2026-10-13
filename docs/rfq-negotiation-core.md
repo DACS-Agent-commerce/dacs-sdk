@@ -377,6 +377,18 @@ history request, so a request begun during the grace cannot authorize redrive
 by finishing after it. A refusal before the peer call (for example, a transient
 seal failure) has no send marker and remains immediately retryable.
 
+When `peer.send()` rejects with anything but the node's "Duplicate message"
+refusal (below), `publish` returns `indeterminate` with the reason "Demos L2PS
+RFQ send outcome is unknown: " followed by the error's own `message`, so an
+operator can read what the peer or node said. The text is read without running
+a getter, any URL in it is replaced with `<url>` because a URL may carry
+credentials, and it is reduced to printable ASCII and cut at 200 characters.
+Without a readable message the reason is "Demos L2PS RFQ send outcome is
+unknown". The transport cannot tell a permanent refusal (for example, an
+unregistered recipient) from a lost reply, so such a packet is resent after
+each grace like any ambiguous send; stopping after repeated identical refusals
+is a follow-up.
+
 The default grace is 60,000 ms; configure a positive integer up to 600,000 ms.
 The grace only reduces noise; it is not what makes a resend safe. The evidence
 is the Demos node source at commit `61b8e75` (paths under
