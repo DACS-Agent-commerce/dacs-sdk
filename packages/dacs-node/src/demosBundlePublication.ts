@@ -80,6 +80,17 @@ export class DacsDemosBundlePublicationError extends Error {
   }
 }
 
+/**
+ * True when a role-bundle read failed in a way retry cannot repair: the
+ * resolved anchor holds invalid content or an invalid receipt, or the
+ * publication authority is invalid. `bundle-resolution-indeterminate` and any
+ * other thrown error are unanswered reads.
+ */
+function isPermanentDacsDemosBundleReadError(error: unknown): boolean {
+  return error instanceof DacsDemosBundlePublicationError &&
+    error.reasonCode !== "bundle-resolution-indeterminate";
+}
+
 function copy<T>(value: T): T {
   return JSON.parse(canonicalize(value)) as T;
 }
@@ -216,8 +227,9 @@ export function createDacsDemosBundlePublicationV1(
             attestationBundleHash(anchored.bundle) === binding.bundleContentHash &&
             (binding.anchorTx === undefined || anchored.anchorTx === binding.anchorTx)
           ? "valid" : "invalid";
-      } catch {
-        return "indeterminate";
+      } catch (error) {
+        // An invalid anchored bundle or receipt can never authenticate a binding.
+        return isPermanentDacsDemosBundleReadError(error) ? "invalid" : "indeterminate";
       }
     };
 
@@ -245,8 +257,17 @@ export function createDacsDemosBundlePublicationV1(
           writer: signer,
         });
         if (receipt === null ||
-            await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true ||
-            await verifyBundleBinding(binding) !== "valid") {
+            await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
+          return { disposition: "indeterminate",
+            reason: "bundle-binding-authentication-failed" };
+        }
+        const verified = await verifyBundleBinding(binding);
+        if (verified === "indeterminate") {
+          // The bundle the binding names could not be read; retry may answer it.
+          return { disposition: "indeterminate",
+            reason: "bundle-binding-resolution-unavailable" };
+        }
+        if (verified !== "valid") {
           return { disposition: "indeterminate",
             reason: "bundle-binding-authentication-failed" };
         }

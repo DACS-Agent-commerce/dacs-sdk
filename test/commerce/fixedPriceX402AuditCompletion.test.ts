@@ -28,15 +28,27 @@ import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { bundlesDiverge } from "../../src/agent/bundleConsistency.js";
 import { bundleAddress, contentHash } from "../../src/canonical/index.js";
 import {
+  COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
+  FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+  FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  combineFixedPricePayDemOrderStatus,
   combineFixedPriceX402OrderStatus,
+  createFixedPricePayDemBuyerCoordinator,
+  createFixedPricePayDemSellerCoordinator,
   createFixedPriceX402BuyerCoordinator,
   createFixedPriceX402SellerCoordinator,
+  createInMemoryFixedPricePayDemCoordinatorStore,
   createInMemoryFixedPriceX402CoordinatorStore,
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
   verifyCompletedTwoSidedSession,
+  verifyFixedPricePayDemAuditCompletion,
   verifyFixedPriceX402AuditCompletion,
+  type FixedPricePayDemOrderInput,
+  type FixedPricePayDemProtocolBinding,
+  type FixedPricePayDemTrackOperation,
   type FixedPriceX402AuditCompletionDeps,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
@@ -52,6 +64,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
+import { DacsError, IndeterminateSubstrateError } from "../../src/errors.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 
@@ -90,6 +103,26 @@ const PROTOCOL: FixedPriceX402ProtocolBinding = {
   },
 };
 
+const PAY_DEM_PROTOCOL: FixedPricePayDemProtocolBinding = {
+  commerceProfile: FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
+  standardRevision: FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
+  phase: "pay-dem",
+  orchestratorTopology: "seller-as-phase-orchestrator-v1",
+  orchestrator: SELLER.did,
+  rail: {
+    registryIndexRef: FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
+    registryIndexHash: h("3"),
+    railDefinitionRef: "dacs4:rail:demos-native%3ADEM:1",
+    railDefinitionHash: h("4"),
+    railId: "demos-native:DEM",
+    railVersion: 1,
+    railType: "demos-native",
+    phaseHandler: "pay-dem",
+    network: "demos",
+    availability: "live",
+  },
+};
+
 function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
   return {
     jobId: JOB_ID,
@@ -114,6 +147,13 @@ function order(role: FixedPriceX402CoordinatorRole): FixedPriceX402OrderInput {
           deliveryEvidence: "seller:delivery-evidence",
           audit: "seller:audit",
         },
+  };
+}
+
+function payDemOrder(role: FixedPriceX402CoordinatorRole): FixedPricePayDemOrderInput {
+  return {
+    ...order(role),
+    protocol: PAY_DEM_PROTOCOL,
   };
 }
 
@@ -307,7 +347,7 @@ function binding(
   };
 }
 
-async function fixture() {
+async function fixture(phaseKind: "pay-x402" | "pay-dem" = "pay-x402") {
   const { listing, agreement, evidence } = artifacts();
   const agreementRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "agreement-j1" },
@@ -334,7 +374,7 @@ async function fixture() {
     ],
     phaseSummary: [{
       index: 0,
-      kind: "pay-x402",
+      kind: phaseKind,
       outcome: "ok",
       attestationRef: evidenceRef,
     }],
@@ -554,6 +594,63 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     );
   });
 
+  it("projects the same strict audit-complete boundary for native DEM", async () => {
+    const fx = await fixture("pay-dem");
+    const operation = (
+      role: FixedPriceX402CoordinatorRole,
+      track: string,
+    ): FixedPricePayDemTrackOperation => async () => ({
+      status: "final",
+      outcome: "success",
+      reference: track === "audit"
+        ? (role === "buyer" ? fx.buyerNative : fx.sellerNative)
+        : `${role}:${track}`,
+    });
+    const store = createInMemoryFixedPricePayDemCoordinatorStore({
+      now: () => 1780000000000,
+    });
+    const buyer = createFixedPricePayDemBuyerCoordinator({
+      store,
+      workerId: "buyer-dem-worker",
+      operations: Object.fromEntries([
+        "agreement",
+        "payment",
+        "payment-evidence",
+        "buyer-received",
+        "audit",
+      ].map((track) => [track, operation("buyer", track)])),
+    });
+    const seller = createFixedPricePayDemSellerCoordinator({
+      store,
+      workerId: "seller-dem-worker",
+      operations: Object.fromEntries([
+        "agreement",
+        "payment",
+        "payment-evidence",
+        "delivery",
+        "delivery-evidence",
+        "audit",
+      ].map((track) => [track, operation("seller", track)])),
+    });
+    await buyer.startOrder(payDemOrder("buyer"));
+    await seller.startOrder(payDemOrder("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    const buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+    expect(combineFixedPricePayDemOrderStatus({ buyer: buyerStatus, seller: sellerStatus })
+      .milestone).toBe("actor-audit-final");
+    await expect(verifyFixedPricePayDemAuditCompletion({
+      buyer: buyerStatus,
+      seller: sellerStatus,
+      sellerClosure: fx.input.sellerClosure,
+      copies: fx.input.copies,
+    }, fx.deps)).resolves.toMatchObject({
+      protocol: { phase: "pay-dem" },
+      milestone: "audit-complete",
+    });
+  });
+
   it("rejects opaque audit references, missing readback, and a forged receipt writer", async () => {
     const fx = await fixture();
     const opaque = structuredClone(fx.input);
@@ -561,10 +658,20 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     await expect(verifyFixedPriceX402AuditCompletion(opaque, fx.deps))
       .rejects.toThrow(/exact bundle/);
 
+    // Nothing readable yet is retried; other content is an answer.
     await expect(verifyFixedPriceX402AuditCompletion(fx.input, {
       ...fx.deps,
       readBundleCopy: () => null,
-    })).rejects.toThrow(/not independently readable/);
+    })).rejects.toThrow(IndeterminateSubstrateError);
+    const other = structuredClone(fx.input.copies.buyer.bundle) as unknown as Record<string, unknown>;
+    other.jobId = "another-job";
+    const answered = await verifyFixedPriceX402AuditCompletion(fx.input, {
+      ...fx.deps,
+      readBundleCopy: () => other,
+    }).catch((error: unknown) => error);
+    expect(answered).toBeInstanceOf(DacsError);
+    expect(answered).not.toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(answered)).toMatch(/not independently readable/);
 
     const forged = structuredClone(fx.input);
     forged.copies.buyer.anchorReceipt.writer = "did:example:unauthorized-writer";
@@ -637,6 +744,83 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     })).resolves.toMatchObject({ milestone: "audit-complete" });
   });
 
+  // Final r11 review: a host that retries only IndeterminateSubstrateError
+  // treated an unanswered anchor, binding or readback as permanent.
+  it("reports every unanswered read as IndeterminateSubstrateError and only answers as DacsError", async () => {
+    const fx = await fixture();
+    const buyerBinding = binding(fx.buyerBundle, "buyer", fx.buyerNative);
+    const sellerBinding = binding(fx.sellerBundle, "seller", fx.sellerNative);
+    const input = {
+      ...fx.input,
+      sellerClosure: { ...fx.input.sellerClosure, result: { ...fx.closureResult, binding: sellerBinding } },
+      copies: {
+        buyer: { ...fx.input.copies.buyer, binding: buyerBinding },
+        seller: { ...fx.input.copies.seller, binding: sellerBinding },
+      },
+    };
+    const deps: FixedPriceX402AuditCompletionDeps = {
+      ...fx.deps,
+      sellerFinalizationProvider: { ...fx.sellerFinalizationProvider, mapping: "write-input" as const },
+      verifyBundleAnchor: () => ({ disposition: "valid" as const, mapping: "write-input" as const }),
+      resolveBundleBinding: (_logicalAddress, _signer, role) => ({
+        disposition: "present" as const,
+        binding: role === "buyer" ? buyerBinding : sellerBinding,
+      }),
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    };
+    await expect(verifyFixedPriceX402AuditCompletion(input, deps))
+      .resolves.toMatchObject({ milestone: "audit-complete" });
+    // The buyer copy's anchor verifier answers `disposition`; the seller's is valid.
+    const buyerAnchor = (disposition: string, reason: string) => (copy: { role: string }) =>
+      (copy.role === "buyer" ? { disposition, reason } : { disposition: "valid", mapping: "write-input" }) as never;
+    const outcome = (overrides: Partial<FixedPriceX402AuditCompletionDeps>) =>
+      verifyFixedPriceX402AuditCompletion(input, { ...deps, ...overrides }).then(
+        () => "audit-complete", (error: unknown) => error);
+    const fetchFailed = () => { throw new TypeError("fetch failed"); };
+    const unanswered: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>]> = [
+      ["a thrown readback", { readBundleCopy: fetchFailed }],
+      ["an absent readback", { readBundleCopy: () => null }],
+      ["an indeterminate anchor", { verifyBundleAnchor: buyerAnchor("indeterminate", "rpc") }],
+      ["an errored anchor", { verifyBundleAnchor: buyerAnchor("error", "rpc") }],
+      ["a thrown anchor verifier", { verifyBundleAnchor: fetchFailed }],
+      ["a binding the name index does not show yet", { resolveBundleBinding: () => ({ disposition: "absent" as const }) }],
+      ["an indeterminate binding lookup", { resolveBundleBinding: () => ({
+        disposition: "indeterminate" as const, reason: "index unavailable" }) }],
+      ["a thrown binding lookup", { resolveBundleBinding: fetchFailed }],
+      ["an indeterminate binding verifier", { verifyBundleBinding: () => ({ disposition: "indeterminate", reason: "rpc" }) }],
+      ["an errored binding verifier", { verifyBundleBinding: () => ({ disposition: "error", reason: "rpc" }) }],
+      ["a thrown binding verifier", { verifyBundleBinding: fetchFailed }],
+    ];
+    for (const [label, overrides] of unanswered) {
+      expect(await outcome(overrides), label).toBeInstanceOf(IndeterminateSubstrateError);
+    }
+    const answers: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>, RegExp]> = [
+      ["an invalid anchor", { verifyBundleAnchor: buyerAnchor("invalid", "forged") },
+      /anchor verification is invalid/],
+      ["a thrown answer", { readBundleCopy: () => { throw new DacsError("Demos returned another bundle"); } },
+        /Demos returned another bundle/],
+      ["another binding", { resolveBundleBinding: () => ({ disposition: "present" as const,
+        binding: { ...buyerBinding, nativeAddress: "native:substituted" } }) }, /not independently resolvable/],
+      ["an invalid binding", { verifyBundleBinding: () => ({ disposition: "invalid", reason: "forged" }) },
+        /BundleBinding verification is invalid/],
+    ];
+    for (const [label, overrides, message] of answers) {
+      const error = await outcome(overrides);
+      expect(error, label).toBeInstanceOf(DacsError);
+      expect(error, label).not.toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error), label).toMatch(message);
+    }
+    // At the deadline, an unanswered anchor on one copy is not an "answer
+    // already observed" while the other copy's read is still pending.
+    const error = await outcome({
+      deadline: { timeoutMs: 1_000, start: (expire) => { const timer = setTimeout(expire, 20); return () => clearTimeout(timer); } },
+      verifyBundleAnchor: buyerAnchor("indeterminate", "rpc"),
+      readBundleCopy: (nativeAddress, role) => role === "seller"
+        ? new Promise(() => undefined) : fx.deps.readBundleCopy(nativeAddress, role),
+    });
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+  });
+
   it("never accepts caller-selected pure mapping for Demos", async () => {
     const fx = await fixture();
     const input = structuredClone(fx.input);
@@ -702,5 +886,402 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
           : fx.sellerBundle as unknown as Record<string, unknown>,
     }))
       .rejects.toThrow(/authenticated durable session closure|seller-as-orchestrator topology/);
+  });
+});
+
+// Coordinator statuses for one rail whose audit tracks end as given; every
+// other track succeeds. The bundles and closure stay authentic, so only the
+// operational audit tracks can stop the gate.
+type AuditTrackResult = Awaited<ReturnType<FixedPriceX402TrackOperation>>;
+const auditSuccess = (reference: string): AuditTrackResult => ({ status: "final", outcome: "success", reference });
+const auditFailure = (reference: string): AuditTrackResult => ({
+  status: "final", outcome: "failure", errorClass: "counterparty", faultedParty: "seller", reference,
+});
+const auditPending: AuditTrackResult = { status: "pending-retry", reasonCode: "audit-read-unanswered", retryAt: 1780000060000 };
+
+// A deadline the test expires itself: no real waiting.
+function manualDeadline() {
+  const armed = new Map<number, Readonly<{ timeoutMs: number; expire: () => void }>>();
+  let next = 0;
+  return {
+    start(expire: () => void, timeoutMs: number) {
+      const id = next++;
+      armed.set(id, { timeoutMs, expire });
+      return () => { armed.delete(id); };
+    },
+    armed: () => [...armed.values()].map((timer) => timer.timeoutMs),
+    expire() {
+      for (const [id, timer] of [...armed]) {
+        armed.delete(id);
+        timer.expire();
+      }
+    },
+  };
+}
+
+// Lets every promise that can settle without a timer settle.
+async function flush() {
+  for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+// A failed payment is the failing terminal path an audit failure must match.
+const paymentFailure = (role: FixedPriceX402CoordinatorRole): AuditTrackResult => auditFailure(`${role}:payment`);
+type TrackResults = Partial<Record<string, AuditTrackResult>>;
+
+async function gateWithAudit(
+  rail: "pay-x402" | "pay-dem",
+  audit: (fx: Awaited<ReturnType<typeof fixture>>) => Record<FixedPriceX402CoordinatorRole, AuditTrackResult | TrackResults>,
+) {
+  const fx = await fixture(rail);
+  const results = audit(fx);
+  const trackResult = (role: FixedPriceX402CoordinatorRole, track: string): AuditTrackResult | undefined => {
+    const value = results[role];
+    return "status" in value ? (track === "audit" ? value as AuditTrackResult : undefined) : (value as TrackResults)[track];
+  };
+  const operation = (role: FixedPriceX402CoordinatorRole, track: string) => async () =>
+    trackResult(role, track) ?? { status: "final" as const, outcome: "success" as const, reference: `${role}:${track}` };
+  const tracks = {
+    buyer: ["agreement", "payment", "payment-evidence", "buyer-received", "audit"],
+    seller: ["agreement", "payment", "payment-evidence", "delivery", "delivery-evidence", "audit"],
+  };
+  const operations = (role: FixedPriceX402CoordinatorRole) =>
+    Object.fromEntries(tracks[role].map((track) => [track, operation(role, track)]));
+  const now = () => 1780000000000;
+  let buyerStatus;
+  let sellerStatus;
+  if (rail === "pay-x402") {
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now });
+    const buyer = createFixedPriceX402BuyerCoordinator({ store, workerId: "buyer-gate", operations: operations("buyer") });
+    const seller = createFixedPriceX402SellerCoordinator({ store, workerId: "seller-gate", operations: operations("seller") });
+    await buyer.startOrder(order("buyer"));
+    await seller.startOrder(order("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+  } else {
+    const store = createInMemoryFixedPricePayDemCoordinatorStore({ now });
+    const buyer = createFixedPricePayDemBuyerCoordinator({ store, workerId: "buyer-gate", operations: operations("buyer") });
+    const seller = createFixedPricePayDemSellerCoordinator({ store, workerId: "seller-gate", operations: operations("seller") });
+    await buyer.startOrder(payDemOrder("buyer"));
+    await seller.startOrder(payDemOrder("seller"));
+    await buyer.runPending({ limit: 10 });
+    await seller.runPending({ limit: 10 });
+    buyerStatus = (await buyer.getOrderStatus(JOB_ID))!;
+    sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
+  }
+  const input = { ...fx.input, buyer: buyerStatus, seller: sellerStatus };
+  const verify = (deps: FixedPriceX402AuditCompletionDeps = fx.deps) => rail === "pay-x402"
+    ? verifyFixedPriceX402AuditCompletion(input as never, deps)
+    : verifyFixedPricePayDemAuditCompletion(input as never, deps);
+  return { fx, buyerStatus, sellerStatus, verify };
+}
+
+describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over operational audit tracks", (rail) => {
+  it("grants audit-complete when both audit tracks are final successes on the exact bundles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({ buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative) }));
+    await expect(gate.verify()).resolves.toMatchObject({ milestone: "audit-complete" });
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses while only the other side is final (%s audit pending)", async (pending) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: pending === "buyer" ? auditPending : auditSuccess(fx.buyerNative),
+      seller: pending === "seller" ? auditPending : auditSuccess(fx.sellerNative),
+    }));
+    const status = pending === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    expect(status.tracks.audit?.state).not.toBe("final");
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it("refuses when both audit tracks are final failures on the exact bundles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) },
+      seller: { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) },
+    }));
+    expect(gate.buyerStatus.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    expect(gate.sellerStatus.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses one failed audit track while the other is pending (%s failed)", async (failed) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: failed === "buyer" ? { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) }
+        : { payment: paymentFailure("buyer"), audit: auditPending },
+      seller: failed === "seller" ? { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) }
+        : { payment: paymentFailure("seller"), audit: auditPending },
+    }));
+    const status = failed === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    expect(status.tracks.audit).toMatchObject({ state: "final", outcome: "failure" });
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  // One copy's read cannot be answered; the substrate answers `invalid` for
+  // the other copy's anchor 25 ms after it, or 25 ms before it. The verifier
+  // settles both copies and reports the answer, whichever arrives first.
+  for (const answerArrives of ["last", "first"] as const) {
+    it.each(["buyer", "seller"] as const)(
+      `reports an answer against the %s copy that arrives ${answerArrives}, not the other copy's unavailable read`,
+      async (answered) => {
+        const gate = await gateWithAudit(rail, (fx) => ({
+          buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+        }));
+        const pause = () => new Promise((resolve) => setTimeout(resolve, 25));
+        const settled: string[] = [];
+        const rejection = gate.verify({
+          ...gate.fx.deps,
+          readBundleCopy: async (nativeAddress, role) => {
+            if (role === answered) return gate.fx.deps.readBundleCopy(nativeAddress, role);
+            if (answerArrives === "first") await pause();
+            settled.push(`${role}:unavailable`);
+            throw new IndeterminateSubstrateError(`${role} bundle read unavailable`);
+          },
+          verifyBundleAnchor: async (copy) => {
+            if (answerArrives === "last") await pause();
+            settled.push(`${copy.role}:answered`);
+            return { disposition: "invalid", reason: `${copy.role}-anchor-invalid` };
+          },
+        });
+        await expect(rejection).rejects.toThrow(`completed ${answered} bundle anchor verification is invalid`);
+        expect(settled).toHaveLength(2);
+      },
+    );
+  }
+
+  // One copy's read never settles. The other copy's answer, a rejection, or
+  // its unanswered read decides at the deadline; a late read changes nothing.
+  for (const hanging of ["buyer", "seller"] as const) {
+    const other = hanging === "buyer" ? "seller" : "buyer";
+    it.each(["rejects", "goes unanswered"] as const)(
+      `decides at the deadline when the ${hanging} copy's read never settles and the other copy %s`,
+      async (otherOutcome) => {
+        const gate = await gateWithAudit(rail, (fx) => ({
+          buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+        }));
+        const clock = manualDeadline();
+        let lateRead = (_error: Error): void => undefined;
+        let reached = false;
+        const outcome = gate.verify({
+          ...gate.fx.deps,
+          deadline: { timeoutMs: 5_000, start: clock.start },
+          readBundleCopy: async (nativeAddress, role) => {
+            if (role === hanging) {
+              reached = true;
+              return await new Promise<never>((_resolve, reject) => { lateRead = reject; });
+            }
+            if (otherOutcome === "goes unanswered") {
+              throw new IndeterminateSubstrateError(`${role} bundle read unavailable`);
+            }
+            return gate.fx.deps.readBundleCopy(nativeAddress, role);
+          },
+          verifyBundleAnchor: async (copy) => ({ disposition: "invalid", reason: `${copy.role}-anchor-invalid` }),
+        }).then(() => "verified", (error: unknown) => error);
+        let decided = false;
+        void outcome.then(() => { decided = true; });
+        await flush();
+        expect(reached).toBe(true);
+        expect(clock.armed()).toEqual([5_000]);
+        expect(decided).toBe(false);
+
+        clock.expire();
+        const error = await outcome;
+        if (otherOutcome === "rejects") {
+          expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+          expect(error).toMatchObject({ message: `completed ${other} bundle anchor verification is invalid` });
+        } else {
+          expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+          expect(error).toMatchObject({ message: `${other} bundle read unavailable` });
+        }
+        // The read answers authoritatively after the deadline: nothing changes.
+        lateRead(new DacsError(`late ${hanging} answer`));
+        await flush();
+        await expect(outcome).resolves.toBe(error);
+        expect(clock.armed()).toEqual([]);
+      },
+    );
+  }
+
+  it("reports an indeterminate result when neither copy's read settles by the deadline", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      deadline: { timeoutMs: 5_000, start: clock.start },
+      readBundleCopy: () => new Promise<never>(() => undefined),
+    }).then(() => "verified", (error: unknown) => error);
+    await flush();
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({ message: "completed buyer bundle copy verification did not settle within 5000 ms" });
+  });
+
+  it("disarms the deadline once both copies settle", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    await expect(gate.verify({ ...gate.fx.deps, deadline: { start: clock.start } }))
+      .resolves.toMatchObject({ milestone: "audit-complete" });
+    expect(clock.armed()).toEqual([]);
+  });
+
+  // The one deadline is armed when the gate starts. It already runs while the
+  // seller closure is re-verified, before either copy is read.
+  it("decides at the deadline when the seller closure's re-verification never settles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    let lateClosure = (_error: Error): void => undefined;
+    verifySellerClosure.mockImplementationOnce(() =>
+      new Promise<never>((_resolve, reject) => { lateClosure = reject; }));
+    const readBundleCopy = vi.fn(gate.fx.deps.readBundleCopy);
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      readBundleCopy,
+      deadline: { timeoutMs: 5_000, start: clock.start },
+    }).then(() => "verified", (error: unknown) => error);
+    let decided = false;
+    void outcome.then(() => { decided = true; });
+    await flush();
+    expect(verifySellerClosure).toHaveBeenCalledOnce();
+    expect(clock.armed()).toEqual([5_000]);
+    expect(decided).toBe(false);
+
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({
+      message: "completed seller closure re-verification did not settle within 5000 ms",
+    });
+    expect(readBundleCopy).not.toHaveBeenCalled();
+    lateClosure(new DacsError("late closure answer"));
+    await flush();
+    await expect(outcome).resolves.toBe(error);
+  });
+
+  // Daybreak's round-7 probe: both copies verify and both anchors answer, then
+  // a key resolution of the final pair check never settles. The same deadline,
+  // still armed, decides; no fresh one is started for that check.
+  it("decides at the same deadline when the final pair check's key resolution never settles", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    const start = vi.fn(clock.start);
+    const verifier = (gate.fx.sellerFinalizationProvider as unknown as {
+      bundleCopyVerifier: {
+        resolvePublicKey(did: string): Promise<Uint8Array | null>;
+        verify(bytes: Uint8Array, signature: Uint8Array, key: Uint8Array): boolean;
+      };
+    }).bundleCopyVerifier;
+    const anchors: string[] = [];
+    let lateKey = (_key: Uint8Array | null): void => undefined;
+    const outcome = gate.verify({
+      ...gate.fx.deps,
+      deadline: { timeoutMs: 5_000, start },
+      sellerFinalizationProvider: {
+        mapping: "pure",
+        bundleCopyVerifier: {
+          // Once both anchors answered, only the final pair check resolves keys.
+          resolvePublicKey: (did: string) => anchors.length < 2
+            ? verifier.resolvePublicKey(did)
+            : new Promise<Uint8Array | null>((resolve) => { lateKey = resolve; }),
+          verify: verifier.verify,
+        },
+      } as never,
+      verifyBundleAnchor: (copy) => {
+        anchors.push(copy.role);
+        return { disposition: "valid", mapping: "pure" };
+      },
+    }).then(() => "verified", (error: unknown) => error);
+    let decided = false;
+    void outcome.then(() => { decided = true; });
+    await flush();
+    expect([...anchors].sort()).toEqual(["buyer", "seller"]);
+    expect(clock.armed()).toEqual([5_000]);
+    expect(decided).toBe(false);
+
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(error).toMatchObject({
+      message: "completed bundle pair consistency check did not settle within 5000 ms",
+    });
+    lateKey(null);
+    await flush();
+    await expect(outcome).resolves.toBe(error);
+    expect(start).toHaveBeenCalledOnce();
+    expect(clock.armed()).toEqual([]);
+  });
+
+  // The default deadline is a real timer that cannot keep a host process
+  // alive, and the gate clears it when it returns.
+  it("runs its default deadline on an unreferenced timer and clears it", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const clears = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const deadlineTimer = () => timers.mock.results[timers.mock.calls.findIndex(
+        ([, timeoutMs]) => timeoutMs === COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
+      )]?.value as ReturnType<typeof setTimeout> | undefined;
+      let referenced: boolean | undefined;
+      await expect(gate.verify({
+        ...gate.fx.deps,
+        verifyBundleAnchor: (copy) => {
+          referenced = deadlineTimer()?.hasRef();
+          return gate.fx.deps.verifyBundleAnchor(copy);
+        },
+      })).resolves.toMatchObject({ milestone: "audit-complete" });
+      expect(referenced).toBe(false);
+      expect(clears).toHaveBeenCalledWith(deadlineTimer());
+    } finally {
+      timers.mockRestore();
+      clears.mockRestore();
+    }
+  });
+
+  it("reports an observed closure rejection unchanged, not as indeterminate, and disarms the deadline", async () => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    verifySellerClosure.mockImplementationOnce(async () => { throw new DacsError("closure says no"); });
+    const error = await gate.verify({ ...gate.fx.deps, deadline: { timeoutMs: 5_000, start: clock.start } })
+      .then(() => "verified", (e: unknown) => e);
+    expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+    expect((error as Error).message).toBe("closure says no");
+    expect(clock.armed()).toEqual([]);
+  });
+
+  it.each([0, -1, 1.5, "5000"])("refuses a malformed deadline (%s ms) before reading either copy", async (timeoutMs) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const readBundleCopy = vi.fn(gate.fx.deps.readBundleCopy);
+    await expect(gate.verify({ ...gate.fx.deps, readBundleCopy, deadline: { timeoutMs } as never }))
+      .rejects.toThrow("deadline.timeoutMs is malformed");
+    expect(readBundleCopy).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses contradicting final audit outcomes (%s failed)", async (failed) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: failed === "buyer" ? { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) }
+        : auditSuccess(fx.buyerNative),
+      seller: failed === "seller" ? { payment: paymentFailure("seller"), audit: auditFailure(fx.sellerNative) }
+        : auditSuccess(fx.sellerNative),
+    }));
+    expect(gate.buyerStatus.tracks.audit?.state).toBe("final");
+    expect(gate.sellerStatus.tracks.audit?.state).toBe("final");
+    expect(gate.buyerStatus.tracks.audit?.outcome).not.toBe(gate.sellerStatus.tracks.audit?.outcome);
+    await expect(gate.verify()).rejects.toThrow(/outcomes contradict|both operational audit tracks/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
   });
 });

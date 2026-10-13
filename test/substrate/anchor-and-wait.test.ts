@@ -1176,6 +1176,76 @@ describe("DemosAdapter.anchorAndWait", () => {
     accountNonce = 2;
   });
 
+  it.each(["transaction", "block", "storage"] as const)("retries an unanswered %s receipt read and still rejects an invalid receipt", async (observation) => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const name = "receipt-error-envelope";
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" }).mockResolvedValue({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, storageAddress: address,
+      owner: wallet, programName: name, data: value });
+    const anchored = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1000, pollMs: 1 });
+    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress: name,
+      contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence! });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    const errorEnvelope = { result: 500, response: new Error("unanswered read"), require_reply: false, extra: null };
+    if (observation === "transaction") raw.getTxByHash.mockResolvedValueOnce(errorEnvelope);
+    if (observation === "block") raw.getBlockByNumber.mockResolvedValueOnce(errorEnvelope);
+    if (observation === "storage") raw.storagePrograms.read.mockResolvedValueOnce(errorEnvelope);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toMatchObject({
+      name: "SubstrateError", message: "Demos anchor receipt observation unavailable" });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt({ ...receipt, contentHash: "f".repeat(64) })).resolves.toBe(false);
+  });
+
+  // demosdk's call: { result: 500, response: TransportError(cause: HTTP client error) }.
+  const transportEnvelope = (cause: Record<string, unknown>) => ({
+    result: 500,
+    response: Object.assign(new Error("Demos RPC POST failed"), { name: "TransportError", attempts: 5, cause }),
+    require_reply: false,
+    extra: null,
+  });
+  const httpStatus = (status: number) => transportEnvelope({ response: { status } });
+
+  it("classifies a Demos receipt read by the transport error's cause", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const name = "receipt-transport-cause";
+    const value = { value: 2 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" }).mockResolvedValue({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, storageAddress: address,
+      owner: wallet, programName: name, data: value });
+    const anchored = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1000, pollMs: 1 });
+    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress: name,
+      contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence! });
+    const unavailable = { name: "SubstrateError", message: "Demos anchor receipt observation unavailable" };
+    // Unanswered: connection errors, timeouts, and every status that says
+    // nothing about the receipt (a server error during a node restart, a CDN's
+    // 52x, a gateway's 401/403/407, throttling) retry.
+    for (const envelope of [transportEnvelope({ code: "ECONNRESET" }), transportEnvelope({ code: "ECONNABORTED" }),
+      ...[500, 501, 502, 503, 504, 505, 507, 520, 522, 524, 530, 401, 403, 407, 408, 429].map(httpStatus)]) {
+      raw.getTxByHash.mockResolvedValueOnce(envelope);
+      await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toMatchObject(unavailable);
+    }
+    // Answered: only a malformed, unknown or gone request is the node's final
+    // answer about the receipt.
+    for (const status of [400, 404, 410, 422]) {
+      raw.getTxByHash.mockResolvedValueOnce(httpStatus(status));
+      await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    }
+    raw.getBlockByNumber.mockResolvedValueOnce({ result: 404, response: "block not found" });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    // An answer is final even when another read of the same receipt went unanswered.
+    raw.getBlockByNumber.mockResolvedValueOnce(httpStatus(404));
+    raw.storagePrograms.read.mockResolvedValueOnce(httpStatus(503));
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+  });
+
   it("binds an immutable create to the nonce used to derive its address", async () => {
     const { adapter, raw, wallet } = await makeAdapter();
     const name = "immutable-nonce-bound";

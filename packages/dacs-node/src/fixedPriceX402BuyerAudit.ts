@@ -1,17 +1,22 @@
 import {
   ARTIFACT_SEPARATORS,
+  COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
   FINALITY_COMMITMENT_SEPARATOR,
   baseUnits,
   bundleAddress,
   canonicalSellerSettlementId,
+  DacsError,
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
+  IndeterminateSubstrateError,
+  verifyCompletedTwoSidedSession,
   validateFixedPriceAgreementBinding,
   x402Eip3009Nonce,
   type AuthenticatedRailDefinition,
   type AuditPendingSellerSessionRecord,
   type CompletedSellerPhaseEntry,
+  type CompletedTwoSidedSessionDeadline,
   type DurableBuyerBundleFinalizationProvider,
   type FinalizedSellerBundle,
   type FinalizedSessionSettlement,
@@ -66,6 +71,7 @@ import {
 } from "./bundleTransportRuntime.js";
 import {
   createDacsDemosBundlePublicationV1,
+  DacsDemosBundlePublicationError,
   type DacsDemosBundlePublicationV1,
 } from "./demosBundlePublication.js";
 import {
@@ -90,8 +96,19 @@ import {
 } from
   "./sessionBootstrapAgreementRuntime.js";
 import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
+import {
+  createClassifiedDemosSellerBundleReads,
+  permanentDemosBundleReadReason,
+  TRANSIENT_BINDING_RESOLUTION_REASONS,
+} from "./demosSellerBundleReads.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
+// The coordinator records the audit's result only while the audit track's
+// lease is current, and nothing renews that lease during the completion check.
+// The check ends this long before the lease does, so that what it decides can
+// still be recorded: the SQLite store's default busy timeout, which bounds how
+// long that write waits for another writer.
+const COMPLETION_LEASE_MARGIN_MS = 5_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 
 type BuyerAuditOptions = DacsBuyerLiveCommerceAssemblyOptionsV1["audit"];
@@ -114,6 +131,15 @@ export interface DacsFixedPriceX402BuyerAuditOptionsV1 {
   logPageSize?: number;
   fetchImpl?: typeof fetch;
   leaseTtlMs?: number;
+  /**
+   * Bounds the audit's completion check and its wait for Demos reads still in
+   * flight. The check ends 5 seconds before the audit track's coordinator
+   * lease expires, or after `timeoutMs` if that is sooner. At that deadline
+   * Demos's answer against a copy, if already seen, fails the audit; otherwise
+   * it stays retryable. `timeoutMs` defaults as for
+   * `verifyCompletedTwoSidedSession`.
+   */
+  completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
 }
 
 export interface DacsFixedPriceX402BuyerAuditV1 {
@@ -127,6 +153,8 @@ export interface DacsFixedPricePayDemBuyerAuditOptionsV1 {
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
   recipeRegistryVersion: number;
   leaseTtlMs?: number;
+  /** As for the x402 buyer audit. */
+  completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
 }
 
 export interface DacsFixedPricePayDemBuyerAuditV1 {
@@ -197,6 +225,50 @@ function owner(claim: string): string {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-authority-invalid");
   }
   return claim.slice(prefix.length);
+}
+
+function completionDeadline(
+  value: unknown,
+): Readonly<Required<CompletedTwoSidedSessionDeadline>> {
+  if (value === undefined) {
+    return Object.freeze({ timeoutMs: COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS, start: startTimer });
+  }
+  if (!plainObject(value) || Object.keys(value).some((key) => key !== "timeoutMs" && key !== "start") ||
+      (value.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(value.timeoutMs) || Number(value.timeoutMs) <= 0)) ||
+      (value.start !== undefined && typeof value.start !== "function")) {
+    throw new TypeError("fixed-price buyer audit completion deadline is invalid");
+  }
+  return Object.freeze({
+    timeoutMs: value.timeoutMs === undefined
+      ? COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS : Number(value.timeoutMs),
+    start: (value.start as CompletedTwoSidedSessionDeadline["start"]) ?? startTimer,
+  });
+}
+
+function startTimer(expire: () => void, timeoutMs: number): () => void {
+  const timer = setTimeout(expire, timeoutMs);
+  timer.unref();
+  return () => clearTimeout(timer);
+}
+
+// When the audit track's coordinator lease expires. The coordinator hands the
+// operation its claimed order, whose audit track carries the fence's lease.
+function auditLeaseExpiry(
+  operation: Readonly<{
+    order: Readonly<{ tracks?: Readonly<{ audit?: Readonly<{ lease?: Readonly<{
+      owner: string; generation: number; expiresAt: number;
+    }> }> }> }>;
+    fence: Readonly<{ owner: string; generation: number }>;
+  }>,
+): number {
+  const lease = operation.order.tracks?.audit?.lease;
+  if (lease === undefined || lease.owner !== operation.fence.owner ||
+      lease.generation !== operation.fence.generation ||
+      !Number.isSafeInteger(lease.expiresAt)) {
+    throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-lease-invalid");
+  }
+  return lease.expiresAt;
 }
 
 function timing(value: unknown): number {
@@ -421,6 +493,7 @@ export function createDacsFixedPriceBuyerAuditV1(
   }
   const context = options.context;
   const leaseTtlMs = timing(options.leaseTtlMs);
+  const deadline = completionDeadline(options.completionDeadline);
   const rail = options.rail;
   const provenance = getAuthenticatedRailProvenance(rail)!;
   const payDem = options.paymentProfile === "pay-dem";
@@ -1265,14 +1338,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           : { disposition: "invalid" as const,
               reason: "buyer-audit-payment-binding-invalid" };
       },
-      async resolveSellerBundle(logicalAddress: string) {
-        if (logicalAddress !== bundleAddress(order.jobId, "seller")) {
-          return { disposition: "absent" as const };
-        }
-        const anchored = await publication.resolveRoleBundle("seller");
-        return anchored === null ? { disposition: "absent" as const }
-          : { disposition: "present" as const, anchored };
-      },
+      ...createClassifiedDemosSellerBundleReads(publication, order.jobId),
       verifyBundleAnchorReceipt: async (anchored) => {
         if (!isFaultAttestationBundle(anchored.bundle)) return "invalid" as const;
         return publication.verifyBundleAnchorReceipt({
@@ -1280,7 +1346,6 @@ export function createDacsFixedPriceBuyerAuditV1(
           bundle: anchored.bundle,
         });
       },
-      resolveBundleBinding: publication.resolveBundleBinding,
       verifyBundleBinding: publication.verifyBundleBinding,
     } satisfies SellerBundleFinalizationReadProvider;
 
@@ -1427,7 +1492,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         if (binding.disposition !== "present") {
           return binding.disposition === "absent"
             ? { disposition: "absent" as const, reason: "seller-binding-pending" }
-            : { disposition: "indeterminate" as const, reason: binding.reason };
+            : TRANSIENT_BINDING_RESOLUTION_REASONS.has(binding.reason)
+              ? { disposition: "indeterminate" as const, reason: binding.reason }
+              : { disposition: "rejected" as const, reason: binding.reason };
         }
         const sellerBundle = copy(anchored.bundle);
         const buyerBundle = copy({ ...sellerBundle, anchoredByRole: "buyer" as const });
@@ -1445,9 +1512,12 @@ export function createDacsFixedPriceBuyerAuditV1(
           resumedBinding: true,
         };
         return { disposition: "present" as const, value: result };
-      } catch {
-        return { disposition: "indeterminate" as const,
-          reason: "seller-finalization-unavailable" };
+      } catch (error) {
+        const reason = permanentDemosBundleReadReason(error);
+        return reason !== undefined
+          ? { disposition: "rejected" as const, reason }
+          : { disposition: "indeterminate" as const,
+              reason: "seller-finalization-unavailable" };
       }
     },
   };
@@ -1551,7 +1621,7 @@ export function createDacsFixedPriceBuyerAuditV1(
       };
       return result;
     },
-    async authorizeFinalized({ operation, result }) {
+    async authorizeFinalized({ operation, material, completion, result }) {
       if (result.logicalAddress !== bundleAddress(operation.order.jobId, "buyer") ||
           result.buyerBundle.jobId !== operation.order.jobId) return false;
       const publication = createDacsDemosBundlePublicationV1({
@@ -1560,11 +1630,168 @@ export function createDacsFixedPriceBuyerAuditV1(
         buyer: operation.order.buyer,
         seller: operation.order.seller,
       });
-      const anchored = await publication.resolveRoleBundle("buyer");
-      return anchored !== null && anchored.nativeAddress === result.nativeAddress &&
-        anchored.anchorReceipt.contentHash === result.bundleContentHash &&
-        canonicalize(anchored.bundle) === canonicalize(result.buyerBundle) &&
-        await publication.verifyBundleAnchorReceipt(anchored) === "valid";
+      const buyerPublication = result.publications.buyer;
+      const sellerPublication = result.publications.seller;
+      if (buyerPublication.nativeAddress !== result.nativeAddress ||
+          buyerPublication.bundleContentHash !== result.bundleContentHash ||
+          completion.sellerClosure.result.nativeAddress !==
+            sellerPublication.nativeAddress) return false;
+      // The lease left, less the margin, measured on the role database's
+      // clock, which is the coordinator store's.
+      const timeoutMs = Math.min(
+        deadline.timeoutMs,
+        auditLeaseExpiry(operation) - context.database.readTime() - COMPLETION_LEASE_MARGIN_MS,
+      );
+      // Too little lease is left to decide and still record the result: the
+      // track retries under a fresh lease.
+      if (timeoutMs <= 0) return "indeterminate";
+      // A Demos read that could not be answered is not evidence against the
+      // session. Remember it so a rejection caused by it stays retryable
+      // instead of being reported as an authentication failure.
+      let unavailable = false;
+      // Demos's definitive answer against one copy is final even when a read
+      // of the other copy went unanswered: the two copies are read separately
+      // and verified concurrently, and each copy's checks stop at its first
+      // non-valid read, so that answer cannot depend on the unanswered read.
+      // Other rejections stay retryable: the strict verifier does not say
+      // which copy they came from.
+      let answeredRejection = false;
+      // Demos reads still in flight. The verifier settles both copies before
+      // it rejects, which is what keeps the decision independent of which
+      // answer arrives first. A read still running when a rejection arrives
+      // anyway is awaited before the flags are read.
+      const reads = new Set<Promise<unknown>>();
+      const tracked = <T>(read: Promise<T>): Promise<T> => {
+        reads.add(read);
+        const settle = () => { reads.delete(read); };
+        read.then(settle, settle);
+        return read;
+      };
+      // One deadline bounds the verification and that wait, so a read that
+      // never settles cannot hold the audit. At the deadline Demos's answer
+      // already seen still fails the audit; without one it stays retryable,
+      // and whatever settles later is ignored. It is armed once, here: the
+      // strict verifier is handed the same expiry instead of arming its own.
+      const verifierExpiries = new Set<() => void>();
+      let passed = false;
+      let expire = (_expired: "expired"): void => undefined;
+      const expired = new Promise<"expired">((resolve) => { expire = resolve; });
+      const disarm = deadline.start(() => {
+        passed = true;
+        expire("expired");
+        for (const verifierExpiry of [...verifierExpiries]) verifierExpiry();
+      }, timeoutMs);
+      const verifierDeadline: CompletedTwoSidedSessionDeadline = {
+        timeoutMs,
+        start: (verifierExpiry) => {
+          if (passed) verifierExpiry();
+          else verifierExpiries.add(verifierExpiry);
+          return () => { verifierExpiries.delete(verifierExpiry); };
+        },
+      };
+      const drained = async (): Promise<"drained"> => {
+        while (reads.size > 0) await Promise.allSettled([...reads]);
+        return "drained";
+      };
+      try {
+        const verification = verifyCompletedTwoSidedSession({
+          jobId: operation.order.jobId,
+          buyer: operation.order.buyer,
+          seller: operation.order.seller,
+          sellerClosure: completion.sellerClosure,
+          copies: {
+            buyer: {
+              role: "buyer",
+              nativeAddress: buyerPublication.nativeAddress,
+              bundle: result.buyerBundle,
+              anchorReceipt: buyerPublication.anchorReceipt,
+              ...(buyerPublication.binding === undefined
+                ? {} : { binding: buyerPublication.binding }),
+            },
+            seller: {
+              role: "seller",
+              nativeAddress: sellerPublication.nativeAddress,
+              bundle: completion.sellerClosure.result.sellerBundle,
+              anchorReceipt: sellerPublication.anchorReceipt,
+              ...(sellerPublication.binding === undefined
+                ? {} : { binding: sellerPublication.binding }),
+            },
+          },
+        }, {
+          deadline: verifierDeadline,
+          sellerFinalizationProvider: material.provider,
+          async readBundleCopy(nativeAddress, role) {
+            let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
+            try {
+              anchored = await tracked(publication.resolveRoleBundle(role));
+            } catch (error) {
+              if (!(error instanceof DacsDemosBundlePublicationError) ||
+                  error.reasonCode === "bundle-resolution-indeterminate") {
+                unavailable = true;
+              } else {
+                answeredRejection = true;
+              }
+              throw error;
+            }
+            // Not in Demos's name index yet: it may lag finality, so retry.
+            if (anchored === null) {
+              unavailable = true;
+              return null;
+            }
+            if (anchored.nativeAddress !== nativeAddress) {
+              answeredRejection = true;
+              throw new DacsError(`Demos resolves the ${role} bundle to another native address`);
+            }
+            return copy(anchored.bundle) as unknown as Record<string, unknown>;
+          },
+          async verifyBundleAnchor(candidate) {
+            const disposition = await tracked(publication.verifyBundleAnchorReceipt({
+              bundle: candidate.bundle,
+              nativeAddress: candidate.nativeAddress,
+              anchorReceipt: candidate.anchorReceipt,
+            }));
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
+            if (disposition === "invalid") answeredRejection = true;
+            return disposition === "valid"
+              ? { disposition: "valid" as const, mapping: "write-input" as const }
+              : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
+          },
+          async resolveBundleBinding(logicalAddress, signer) {
+            const resolved = await tracked(publication.resolveBundleBinding(logicalAddress, signer));
+            if ((resolved.disposition === "indeterminate" &&
+                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) ||
+                resolved.disposition === "absent") {
+              unavailable = true;
+            } else if (resolved.disposition !== "present") {
+              answeredRejection = true;
+            }
+            return resolved;
+          },
+          async verifyBundleBinding(binding) {
+            const disposition = await tracked(publication.verifyBundleBinding(binding));
+            if (disposition === "indeterminate" || disposition === "error") unavailable = true;
+            if (disposition === "invalid") answeredRejection = true;
+            return disposition === "valid"
+              ? { disposition: "valid" as const }
+              : { disposition, reason: `demos-bundle-binding-${disposition}` };
+          },
+        });
+        verification.catch(() => undefined);
+        try {
+          if (await Promise.race([verification.then(() => "verified" as const), expired]) ===
+              "verified") return true;
+          return answeredRejection ? false : "indeterminate";
+        } catch (error) {
+          const settled = await Promise.race([drained(), expired]) === "drained";
+          // Retry only unanswered reads. Authoritative absence and malformed
+          // provider output need operator action, even when classified as substrate faults.
+          if (answeredRejection) return false;
+          if (!settled) return "indeterminate";
+          return unavailable || error instanceof IndeterminateSubstrateError ? "indeterminate" : false;
+        }
+      } finally {
+        disarm();
+      }
     },
   };
 

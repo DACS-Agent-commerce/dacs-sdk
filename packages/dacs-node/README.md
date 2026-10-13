@@ -269,6 +269,46 @@ cannot accept the peer direction. A validator outage fails authentication
 closed; a handler exception remains indeterminate so the durable inbox can
 resume it rather than acknowledging work that may not have been retained.
 
+The buyer audit track does not finish merely because both local workers have
+published something. The durable buyer finalizer returns the exact data-only
+seller closure it already authenticated (never a seller signer), and the host
+then runs `verifyCompletedTwoSidedSession()` against fresh buyer and seller
+Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
+ST-11 dependency graph. Its audit reference is the authenticated native bundle
+address. Native DEM and x402 use the same two-copy finish boundary. A Demos
+read that cannot be answered leaves the track `indeterminate`
+(`buyer-audit-completion-indeterminate`) and it is retried. So does a seller
+bundle, bundle copy or BundleBinding that Demos's name index does not show yet:
+the index may lag finality by several blocks, so its absence is not an answer
+(the durable buyer finalizer reports it as `indeterminate` too). Only a completion
+that was read and failed authentication needs operator action. A seller bundle
+or BundleBinding that Demos returns with invalid content, an invalid receipt or
+a failed authentication is immutable, so it also goes to operator action
+instead of being retried. Demos's answer against one copy goes to operator
+action even when a read of the other copy went unanswered in the same check,
+whichever arrives first: both copies settle before the check decides. A read
+that never settles is cut off at one deadline for the whole check (the seller
+closure, both copies and the final pair check): Demos's answer already seen
+still goes to operator action, otherwise the track stays `indeterminate` and is
+retried, and an answer that arrives later changes nothing. The coordinator
+records the audit's result only while the audit track's lease is current, and
+nothing renews that lease during the check. So the deadline is 5 seconds before
+that lease expires, on the role database's clock, or `completionDeadline.timeoutMs`
+on the buyer audit options (60 seconds by default) if that is sooner. With 5
+seconds or less of the lease left, the check stays `indeterminate` without
+reading. The service's coordinator lease (`coordinatorLeaseDurationMs`) is 300
+seconds by default; the core coordinator's own default is 30 seconds. A lease
+too short for the audit's Demos reads keeps it `indeterminate` on every retry.
+For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
+request. A connection error, a timeout or any other HTTP status (a 5xx, a
+CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
+
+Known operational risk, not yet tested against a live node: a plain HTTP 404
+from a proxy, a CDN or a Demos node without the requested handler cannot be
+told apart from Demos's own answer. It is taken as answered, so the audit
+fails permanently (operator action) instead of being retried. Put nothing in
+front of the Demos RPC endpoint that answers 404 on its own.
+
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange
 and responder to the role-owned fenced-session store and Demos signer. Every
@@ -471,3 +511,9 @@ identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
 may trust the HTTP body as identity or authorization evidence.
+
+
+Upgrade note: `DacsBuyerAuditAuthorizationV1` callbacks may now return
+`"indeterminate"` as well as a boolean. Existing boolean callbacks still work;
+callers consuming the result must handle `"indeterminate"` as pending verification
+and must check `result === true` before treating it as authorization.

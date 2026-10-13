@@ -38,7 +38,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
-import { DacsError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 import { createInMemoryFencedSessionStore } from "../../src/agent/fencedSessionStore.js";
 import {
   advanceCompletedBuyerBundleDurable,
@@ -578,6 +578,9 @@ describe("durable buyer bundle finalization", () => {
       if (progress.disposition !== "finalised") return;
       expect(progress.recovered).toBe(false);
       expect(progress.result.binding !== undefined).toBe(mapping === "write-input");
+      expect(progress.completion.sellerClosure.result).toEqual(f.sellerFinalization);
+      expect(progress.completion.sellerClosure.verificationInput)
+        .toMatchObject({ counterSignatures: [f.state.counterSignature] });
       expect(f.state.counterSignature).toEqual(
         progress.result.buyerBundle.signatures.find(({ party }) => party === BUYER),
       );
@@ -1283,6 +1286,101 @@ describe("durable buyer bundle finalization", () => {
     ).toBe(false);
   });
 
+  test.each([
+    "retained seller bundle differs from its authenticated readback",
+    "seller bundle lookup returned an invalid disposition",
+  ])("reports a permanent seller-finalisation failure (%s) instead of retrying it", async (message) => {
+    const f = await fixture("write-input");
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(new SubstrateError(message));
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).rejects.toThrow(message);
+    expect(f.state.anchored).toBeUndefined();
+  });
+
+  test("retries a seller-finalisation read that could not be answered", async () => {
+    const f = await fixture("write-input");
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new IndeterminateSubstrateError("retained seller bundle readback is indeterminate: rpc"),
+    );
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: "retained seller bundle readback is indeterminate: rpc",
+    });
+  });
+
+  test("classifies terminal recovery failures by whether retry can answer them", async () => {
+    const f = await fixture("write-input");
+    expect((await advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability))
+      .disposition).toBe("finalised");
+
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new IndeterminateSubstrateError("seller bundle lookup errored and is indeterminate"),
+    );
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).resolves.toMatchObject({ disposition: "indeterminate", stage: "terminal-recovery" });
+
+    protocolMocks.verifySellerFinalization.mockRejectedValueOnce(
+      new SubstrateError("retained seller bundle is authoritatively absent"),
+    );
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability),
+    ).rejects.toThrow("retained seller bundle is authoritatively absent");
+  });
+
+  test("keeps a lease lost to another worker during an effect retryable", async () => {
+    const f = await fixture();
+    let now = NOW + 1;
+    const durability = { ...f.durability, leaseNowMs: () => now++ };
+    const submit = vi.mocked(f.provider.submitBuyerBundle).getMockImplementation()!;
+    vi.mocked(f.provider.submitBuyerBundle).mockImplementationOnce(async (...args) => {
+      // This worker's lease expires and another worker takes it over.
+      now += 120_000;
+      const stolen = await f.store.acquireLease({
+        jobId: JOB_ID, owner: "buyer-worker-b", ttlMs: 60_000, now,
+      });
+      expect(stolen.ok).toBe(true);
+      return submit(...args);
+    });
+
+    await expect(
+      advanceCompletedBuyerBundleDurable(f.input, f.provider, durability),
+    ).resolves.toMatchObject({
+      disposition: "indeterminate",
+      reason: expect.stringContaining("lease is stale"),
+    });
+  });
+
+  test.each([
+    ["a thrown substrate read failure", () => {
+      throw new SubstrateError("Demos receipt native read failed");
+    }, "indeterminate"],
+    ["a thrown network error", () => {
+      throw new TypeError("fetch failed");
+    }, "indeterminate"],
+    ["an unanswered lookup", () => ({ disposition: "indeterminate", reason: "rpc" }), "indeterminate"],
+    ["a permanent provider DacsError", () => {
+      throw new DacsError("buyer bundle readback is invalid: bundle-readback-invalid");
+    }, "permanent"],
+    ["an invalid lookup disposition", () => ({ disposition: "unknown" }), "permanent"],
+  ] as const)("classifies a buyer bundle lookup with %s", async (_label, lookup, kind) => {
+    const f = await fixture();
+    vi.mocked(f.provider.resolveBuyerBundle).mockImplementation(lookup as never);
+
+    const progress = advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability);
+    if (kind === "indeterminate") {
+      await expect(progress).resolves.toMatchObject({ disposition: "indeterminate" });
+    } else {
+      await expect(progress).rejects.toThrow(/invalid/);
+    }
+    expect(f.state.anchored).toBeUndefined();
+  });
+
   test.each(["rejected", "indeterminate"] as const)(
     "surfaces a %s settlement verdict before any retained state is trusted",
     async (disposition) => {
@@ -1348,7 +1446,10 @@ describe("durable buyer bundle finalization", () => {
     );
 
     expect(replay.disposition).toBe("finalised");
-    if (replay.disposition === "finalised") expect(replay.recovered).toBe(true);
+    if (replay.disposition === "finalised") {
+      expect(replay.recovered).toBe(true);
+      expect(replay.completion.sellerClosure.result).toEqual(f.sellerFinalization);
+    }
     expect(protocolMocks.verifySettlement).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -1669,4 +1770,15 @@ describe("durable buyer bundle finalization", () => {
       Object.keys(buyerBundleFinalizationCheckpointKey).sort(),
     );
   });
+});
+
+
+test("retries missing settled session state and completes when it becomes readable", async () => {
+  const f = await fixture();
+  const store = { ...f.store, load: vi.fn(f.store.load).mockResolvedValueOnce({ status: "missing" }) };
+  const durability = { ...f.durability, store };
+  await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, durability)).resolves.toMatchObject({
+    disposition: "indeterminate", reason: "buyer bundle finalization requires existing settled session state" });
+  expect(f.state.fences).toHaveLength(0);
+  await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, durability)).resolves.toMatchObject({ disposition: "finalised" });
 });
