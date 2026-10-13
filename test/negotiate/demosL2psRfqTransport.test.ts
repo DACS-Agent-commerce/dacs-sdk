@@ -373,6 +373,7 @@ async function inboundReceiver(options: {
   open?: (base: DemosL2psRfqWireCodec) => DemosL2psRfqWireCodec["open"];
   operationTimeoutMs?: number;
   consumerTimeoutMs?: number;
+  inboundRecoveryMaxBytes?: number;
 } = {}) {
   const sent = await buyerWithSentOffer();
   const errors: Error[] = [];
@@ -393,6 +394,9 @@ async function inboundReceiver(options: {
     onError: (error) => errors.push(error),
     ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
     ...(options.consumerTimeoutMs === undefined ? {} : { consumerTimeoutMs: options.consumerTimeoutMs }),
+    ...(options.inboundRecoveryMaxBytes === undefined
+      ? {}
+      : { inboundRecoveryMaxBytes: options.inboundRecoveryMaxBytes }),
   });
   const client = createDurableRfqLifecycleClient(clientOptions("seller", transport, durableReservation()));
   await client.open(openInput());
@@ -3099,5 +3103,75 @@ describe("Demos L2PS RFQ final review fixes", () => {
     });
     expect(calls).toEqual([early.packetId]);
     fixture.transport.stop();
+  });
+
+  /** Recover two more jobs and the offer under `cap`, accepting every packet. */
+  async function recoverUnderCap(cap?: number, repeatOffer = false) {
+    const fixture = await inboundReceiver(cap === undefined ? {} : { inboundRecoveryMaxBytes: cap });
+    // History is newest first: second, first, then the offer.
+    const first = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { jobId: OTHER_JOB_ID }), 1);
+    const second = await storeBuyerPacket(fixture, offerVariant(fixture.packet, {
+      jobId: OTHER_JOB_ID, channelId: "demos-l2ps-rfq-channel-02",
+    }), 2);
+    if (repeatOffer) {
+      fixture.hub.messages.push({
+        ...structuredClone(fixture.own), id: "offer-repeat", timestamp: fixture.own.timestamp + 3,
+      });
+    }
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return { status: "ready", record: {} as never };
+    });
+    const result = await fixture.transport.resumeInbound(BUYER);
+    fixture.transport.stop();
+    return { result, calls, first, second, offer: fixture.packet };
+  }
+
+  const decodedBytes = (packet: BuyerPacket) =>
+    new TextEncoder().encode(canonicalize(packet as unknown as Record<string, unknown>)).byteLength;
+
+  test("final: inbound recovery holds at most inboundRecoveryMaxBytes, then stays indeterminate", async () => {
+    const all = await recoverUnderCap();
+    const newestTwo = decodedBytes(all.first) + decodedBytes(all.second);
+    const total = newestTwo + decodedBytes(all.offer);
+    // Only the newest two fit, so the oldest packet (the offer) is never held.
+    for (const cap of [newestTwo, total - 1]) {
+      const capped = await recoverUnderCap(cap);
+      expect(capped.calls).toEqual([capped.first.packetId, capped.second.packetId]);
+      expect(capped.result).toEqual({
+        status: "indeterminate",
+        delivered: 2,
+        skipped: [],
+        reason: "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended",
+      });
+    }
+    await expect(recoverUnderCap(total)).resolves.toMatchObject({
+      result: { status: "complete", delivered: 3, skipped: [] },
+    });
+    // A repeated frame of a packet already held is not charged twice.
+    await expect(recoverUnderCap(total, true)).resolves.toMatchObject({
+      result: { status: "complete", delivered: 3, skipped: [] },
+    });
+    const none = await recoverUnderCap(decodedBytes(all.second) - 1);
+    expect(none.calls).toEqual([]);
+    expect(none.result).toMatchObject({ status: "indeterminate", delivered: 0 });
+    // The default cap holds all three.
+    expect(all.result).toEqual({ status: "complete", delivered: 3, skipped: [] });
+  });
+
+  test("final: inboundRecoveryMaxBytes must be a positive safe integer of at most 1 GiB", () => {
+    const base = channelOptions(new FakeL2psHub().peer(BUYER_PEER), "loopback");
+    for (const inboundRecoveryMaxBytes of [1, 64 * 1024 * 1024, 1024 * 1024 * 1024]) {
+      expect(constructionError({ ...base, inboundRecoveryMaxBytes })).toBeUndefined();
+    }
+    for (const inboundRecoveryMaxBytes of [0, -1, 1.5, 1024 * 1024 * 1024 + 1, Number.NaN, "64"]) {
+      expect(constructionError({ ...base, inboundRecoveryMaxBytes: inboundRecoveryMaxBytes as number }))
+        .toMatchObject({
+          message: "inboundRecoveryMaxBytes must be a positive safe integer at most 1073741824",
+        });
+    }
   });
 });

@@ -36,6 +36,11 @@ const MAX_HISTORY_PAGE_CHARS = 32 * 1024 * 1024;
 // unit plus 1 KiB per event for the bounded record/queue metadata.
 const MAX_LIVE_EVENTS = 100;
 const MAX_LIVE_BYTES = 64 * 1024 * 1024;
+// Decoded packet bytes one resumeInbound() call may hold before delivering.
+const DEFAULT_INBOUND_RECOVERY_MAX_BYTES = 64 * 1024 * 1024;
+const MAX_INBOUND_RECOVERY_MAX_BYTES = 1024 * 1024 * 1024;
+const RECOVERY_BYTES_REASON =
+  "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended";
 const WIRE_DOMAIN = "dacs-rfq-l2ps-wire:v1";
 const HASH = /^[0-9a-f]{64}$/;
 const PEER_KEY = /^[0-9a-f]{64,}$/;
@@ -304,6 +309,14 @@ export interface DemosL2psRfqTransportOptions {
   monotonicNowMs?: () => number;
   historyPageSize?: number;
   historyMaxPages?: number;
+  /**
+   * Decoded packet bytes one resumeInbound() call may hold (default 64 MiB,
+   * at most 1 GiB). History arrives newest first, so recovered packets are
+   * delivered after the scan, each job in order. Reaching the cap stops the
+   * scan: the packets already held are delivered and the call returns
+   * indeterminate.
+   */
+  inboundRecoveryMaxBytes?: number;
   operationTimeoutMs?: number;
   /**
    * Time limit for each inbound consumer call, live or recovered (default
@@ -916,7 +929,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "onError",
         "outboxStore",
       ],
-      ["peerChannel", "historyPageSize", "historyMaxPages", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
+      ["peerChannel", "historyPageSize", "historyMaxPages", "inboundRecoveryMaxBytes", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
     )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
@@ -1047,6 +1060,12 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
       DEFAULT_HISTORY_MAX_PAGES,
       "historyMaxPages",
       1_000,
+    ),
+    inboundRecoveryMaxBytes: positiveInteger(
+      descriptors.inboundRecoveryMaxBytes?.value,
+      DEFAULT_INBOUND_RECOVERY_MAX_BYTES,
+      "inboundRecoveryMaxBytes",
+      MAX_INBOUND_RECOVERY_MAX_BYTES,
     ),
     operationTimeoutMs: positiveInteger(
       descriptors.operationTimeoutMs?.value,
@@ -1590,6 +1609,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     let paginated = false;
     let uncertainReason: string | undefined;
     const packets = new Map<string, Readonly<RfqLifecyclePacket<TSignature>>>();
+    // Node history is newest first, so a job's earlier packets may still be
+    // on a later page: nothing is delivered until the scan ends. The cap
+    // bounds what the scan holds until then.
+    let heldBytes = 0;
     // As in reconcile, start one shared decryption deadline at the first open.
     let openDeadline: number | undefined;
     recoveryPages: for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
@@ -1658,7 +1681,14 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           ) {
             throw new DacsError("recovered RFQ packetId has conflicting bytes");
           }
-          packets.set(packet.packetId, packet);
+          if (prior === undefined) {
+            if (heldBytes + plaintext.byteLength > captured.inboundRecoveryMaxBytes) {
+              uncertainReason = RECOVERY_BYTES_REASON;
+              break recoveryPages;
+            }
+            heldBytes += plaintext.byteLength;
+            packets.set(packet.packetId, packet);
+          }
           if (message.status === "failed") {
             uncertainReason =
               "Demos L2PS inbound history includes failed submission status";

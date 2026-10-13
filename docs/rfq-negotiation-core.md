@@ -557,6 +557,21 @@ is spent, recovery stops opening frames and returns `indeterminate`; valid
 packets already recovered may still be delivered. Retry recovery when the
 codec is available. Recovery never authorizes an outbox resend.
 
+`resumeInbound()` also caps the decoded packet bytes it holds at
+`inboundRecoveryMaxBytes` (64 MiB by default, at most 1 GiB). Demos returns
+history newest first, so a job's earlier packets may still be on a later page;
+recovery therefore delivers nothing until it has read every page, and the cap
+bounds what it holds until then. Each distinct packet is charged its decoded
+size once. When the next packet would exceed the cap, recovery stops reading,
+delivers the packets it already holds, each job in order, and returns
+`indeterminate` with "Demos L2PS inbound recovery reached
+inboundRecoveryMaxBytes before history ended". The older packets it did not
+reach are not delivered. The counterparty holds the subnet key and can fill the
+pair's history with large valid frames, so this bound keeps a restart from
+running out of memory; such a pair stays `indeterminate` until the cap is
+raised. `resumeInbound()` has no cursor yet: every call reads the pair's whole
+history again (a follow-up).
+
 The AES-GCM codec cannot tell a tampered frame from a frame sealed under a
 different key. If a process restarts with a wrong or rotated `sharedKey`, our
 own frames fail authentication and every job whose outbox still needs
