@@ -929,6 +929,23 @@ describe("createFsLiquidityTankStore locks of other threads and module copies", 
       60_000,
     );
 
+  test.skipIf(typeof (nodeModule as { registerHooks?: unknown }).registerHooks !== "function")(
+    "a thread whose process carries something else under the lock registry's key refuses to open a store",
+    async () => {
+      const worker = new Worker(resolve("test/fixtures/liquidity-tank-fs-worker.mjs"), {
+        execArgv: ["--experimental-transform-types"],
+        workerData: { repo: process.cwd(), dir: await freshDir(), stopIn: "corrupt registry", intent,
+          submission: submission(), now: T0 },
+      });
+      const exited = new Promise((done) => worker.once("exit", done));
+      await expect(once(worker, "message")).rejects.toThrow(
+        "liquidity-tank filesystem store found an unreadable lock registry on this thread",
+      );
+      await exited;
+    },
+    60_000,
+  );
+
   test("module copies on one thread share their locks: a copy reclaims another's failed release, and never takes its live lock", async () => {
     vi.resetModules();
     const copy = await import("../../src/rails/liquidityTankFs.js");

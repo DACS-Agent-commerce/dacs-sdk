@@ -1,7 +1,8 @@
 // Worker-thread fixture for test/rails/liquidityTankFs.test.ts: opens the
 // filesystem liquidity-tank store from src/ in this thread and stops for good
 // inside one lock window, holding that lock as a worker terminated there would
-// leave it. Needs Node's `module.registerHooks` and `--experimental-transform-types`.
+// leave it; or, with `stopIn: "corrupt registry"`, fails to open it. Needs
+// Node's `module.registerHooks` and `--experimental-transform-types`.
 import fsPromises from "node:fs/promises";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -51,6 +52,12 @@ if (stopIn === "phase lock") {
     await link(from, to);
     if (String(to) === join(dir, "locks", ".reclaim")) await hold();
   };
+} else if (stopIn === "corrupt registry") {
+  // Something else left on this thread's `process` under the registry's key:
+  // opening the store must throw, so this thread fails with that error.
+  Object.defineProperty(process, Symbol.for("@kynesyslabs/dacs/liquidity-tank-fs/lock-registry/v1"), {
+    value: { threadToken: "planted", held: [], tid: null, pidScope: null },
+  });
 }
 syncBuiltinESMExports();
 
