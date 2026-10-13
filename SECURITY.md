@@ -188,9 +188,11 @@ WebSocket transport — an app already running a full chain stack with these dep
   `docs/npm-prerelease-release.md`). Following the transitive
   rule above, an ID recorded in the baseline's `assessedAdvisories` with its
   reachability assessment does not block that gate; a high or critical
-  advisory on a direct dependency of the consumer always does.
-  Production publication stays blocked by #191 until its baseline findings are
-  resolved.
+  advisory on a direct dependency of the consumer always does, even when the
+  #191 baseline lists it. A run whose only findings are recorded in the #191
+  baseline (exit 4) passes that prerequisite, so baseline-only findings do not
+  stop a prerelease. Production publication stays blocked by #191 until its
+  baseline findings are resolved.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.

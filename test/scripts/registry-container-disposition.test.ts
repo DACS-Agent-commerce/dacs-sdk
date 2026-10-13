@@ -925,6 +925,40 @@ describe("advisory-ID baseline", () => {
       .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" } });
     expect(runWorkflowStep(4, summary).status).toBe(0);
   });
+  // Code r10 P3-2: a baseline-only exit 4 lets a prerelease publish, so the
+  // #191 baseline may waive transitive findings only.
+  it("never lets the #191 baseline waive an advisory that is high or critical on a direct dependency", () => {
+    const listed = "GHSA-23hp-3jrh-7fpw";
+    expect(baseline.advisoryIds).toContain(listed);
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.directAdvisories = [listed];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: [],
+        checks: { audit: "blocked" } });
+      expect(result.message).toContain("#191 baseline advisories that are high or critical on a direct dependency, " +
+        `which the baseline cannot waive: ${listed}`);
+    }
+    // Prerelease publication's enforced call, and a pull request, refuse a claimed 4.
+    for (const [enforce, event] of [[true, "workflow_dispatch"], [false, "pull_request"]] as const) {
+      const claimed = runWorkflowStep(4, summary, enforce, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    }
+    // The same baselined ID, transitive, stays baseline-only and does not stop a prerelease.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+    expect(runWorkflowStep(4, summary, true, undefined, "workflow_dispatch").status).toBe(0);
+    // SECURITY.md and the runbook say so.
+    const prose = (path: string) => readFileSync(join(repoRoot, path), "utf8").replace(/\s+/g, " ");
+    expect(prose("SECURITY.md")).toContain("baseline (exit 4) passes that prerequisite, so baseline-only findings do " +
+      "not stop a prerelease");
+    expect(prose("SECURITY.md")).toContain("always does, even when the #191 baseline lists it");
+    expect(prose("docs/npm-prerelease-release.md")).toContain("so baseline-only findings do not stop a prerelease. " +
+      "The baseline waives transitive findings only");
+  });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
     summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);

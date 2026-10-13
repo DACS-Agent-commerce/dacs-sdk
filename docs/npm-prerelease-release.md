@@ -30,7 +30,10 @@ publish job needs that job, so an advisory ID outside the #191 audit baseline,
 or any other acceptance failure, stops publication before the publish job
 starts; the acceptance job gets no secrets and no OIDC token. A run whose only
 findings are recorded exactly in the #191 baseline (exit 4) passes that job, as
-it does on every other acceptance run. The publish job installs a pinned
+it does on every other acceptance run, so baseline-only findings do not stop a
+prerelease. The baseline waives transitive findings only: an advisory that is
+high or critical on a direct dependency of the consumer fails the job even when
+the baseline lists it. The publish job installs a pinned
 release toolchain without a dependency cache, runs conformance, types and all
 three test suites, and creates the release set twice. It uploads the three
 exact tarballs, SHA-256 receipts, combined source provenance and one CycloneDX
