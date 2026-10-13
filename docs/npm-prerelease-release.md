@@ -29,7 +29,7 @@ The workflow first runs the registry-shaped Linux and Docker acceptance
 publish job needs that job, so an advisory ID outside the #191 audit baseline,
 or any other acceptance failure, stops publication before the publish job
 starts; the acceptance job gets no secrets and no OIDC token. A run whose only
-findings are recorded exactly in the #191 baseline (exit 4) passes that job, as
+findings are recorded in the #191 baseline (exit 4) passes that job, as
 it does on every other acceptance run, so baseline-only findings do not stop a
 prerelease. The baseline waives transitive findings only: an advisory that is
 high or critical on a direct dependency of the consumer fails the job even when

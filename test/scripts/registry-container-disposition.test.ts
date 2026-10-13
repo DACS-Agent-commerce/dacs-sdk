@@ -1145,8 +1145,8 @@ describe("#191 policy-finding baseline", () => {
       { location: "node_modules/other", field: "dependencies.x", value: "git+https://github.com/x/y.git" }]) }],
     ["the same Git dependency from another ref", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }]) }],
-    ["the Git dependency under a different arbundles", "registryDependency", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/@bundlr-network/client/node_modules/arbundles"]!.integrity = "sha512-other"; }) }],
+    ["the Git dependency at another lock location", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ ...avsc, location: "node_modules/arbundles" }]) }],
     ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
     ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
@@ -1170,14 +1170,42 @@ describe("#191 policy-finding baseline", () => {
       sbomErr("consumer-physical-sbom.err").replace("ESBOMPROBLEMS", "EINVALIDTREE") }],
     ["a new physical SBOM problem", "physicalSbom", { "consumer-physical-sbom.err": sbomErr("consumer-physical-sbom.err") +
       "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
-    ["a different typescript in the image", "productionImage", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/typescript"]!.version = "5.9.3"; }) }],
+    ["a lock SBOM problem against a changed range", "lockSbom", { "consumer-lock-sbom.err":
+      sbomErr("consumer-lock-sbom.err").replace(">=0.62.0 <1.0.0", ">=0.63.0 <1.0.0") }],
+    ["typescript in the image but not at the lock's top level", "productionImage", {
+      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }) }],
     ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
       ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
   ])("still exits 3 for %s", (_label, check, overrides) => {
     const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
     expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  // Final r11 review: the consumer installs without a lockfile, so a patch
+  // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
+  // must not turn every PR, the drift job and prereleases red.
+  const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
+    p[location]!.version = version; p[location]!.integrity = `sha512-${version}-next-release`;
+  };
+  it.each([
+    ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
+      "generated-package-lock.json": withLock(release("node_modules/@npmcli/agent", "5.0.3")),
+      "engine-strict.log": strictLog.replaceAll("@npmcli/agent@5.0.2", "@npmcli/agent@5.0.3") }],
+    ["arbundles 0.6.24 with the same Git avsc spec", "registryDependency", {
+      "generated-package-lock.json": withLock(release("node_modules/@bundlr-network/client/node_modules/arbundles", "0.6.24")) }],
+    ["typescript 5.9.3 in the image", "productionImage", {
+      "generated-package-lock.json": withLock(release("node_modules/typescript", "5.9.3")) }],
+    ["lock SBOM problems with other installed versions", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err")
+      .replace("arbundles@0.6.23", "arbundles@0.6.24").replace("@ton/core@0.59.1", "@ton/core@0.59.2")
+      .replace("@ton/ton@15.4.0", "@ton/ton@15.4.1").replace("@solana/spl-token@0.4.15", "@solana/spl-token@0.4.16") }],
+    ["a physical SBOM problem with other installed versions", "physicalSbom", { "consumer-physical-sbom.err":
+      sbomErr("consumer-physical-sbom.err").replace("node-fetch@2.7.0", "node-fetch@2.7.1")
+        .replace("@near-js/providers@0.2.3", "@near-js/providers@0.2.4") }],
+  ])("stays baseline-only (exit 4) for %s", (_label, check, overrides) => {
+    const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("baseline");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
   });
 
   it("passes a check with no findings and blocks a passing flag that carries findings", () => {
