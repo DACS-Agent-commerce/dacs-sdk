@@ -18,6 +18,7 @@ import { sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import {
   atomicWritePrivateFile,
+  completeExclusivePublication,
   exclusiveWritePrivateFile,
   preparePrivateStoreDirectory,
   readPrivateFile,
@@ -157,6 +158,8 @@ export async function createFsLiquidityTankStore(
     join(bridgesDir, `${sha256Hex(bridgeId)}.json`);
   const lockPath = (settlementKey: string): string =>
     join(locksDir, `${sha256Hex(settlementKey)}.lock`);
+  const bridgeLockPath = (bridgeId: string): string =>
+    join(locksDir, `bridge.${sha256Hex(bridgeId)}.lock`);
 
   async function syncDirectory(path: string): Promise<void> {
     let handle;
@@ -411,9 +414,8 @@ export async function createFsLiquidityTankStore(
     }
   }
 
-  /** Runs `operation` while this process holds the phase's lock. */
-  async function withLock<T>(settlementKey: string, operation: () => Promise<T>): Promise<T> {
-    const path = lockPath(settlementKey);
+  /** Runs `operation` while this process holds the lock at `path`. */
+  async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
     const deadline = Date.now() + options.lockTimeoutMs;
     for (;;) {
@@ -498,8 +500,14 @@ export async function createFsLiquidityTankStore(
     await atomicWritePrivateFile(recordPath(settlementKey), JSON.stringify(stored), LABEL);
   }
 
-  /** The settlement key holding `bridgeId`, `undefined` if none, or `null` if unreadable. */
+  /**
+   * The settlement key holding `bridgeId`, `undefined` if none, or `null` if
+   * unreadable. Called under the bridge ID's lock, which every publisher of
+   * its reservation holds, so a staging link found here was left by a
+   * publication that stopped after its link, and is finished first.
+   */
   async function readBridgeOwner(bridgeId: string): Promise<string | undefined | null> {
+    await completeExclusivePublication(bridgePath(bridgeId), LABEL);
     const read = await readJson(bridgePath(bridgeId));
     if (read.status === "absent") return undefined;
     const value = read.value;
@@ -518,7 +526,7 @@ export async function createFsLiquidityTankStore(
     transition: (record: LiquidityTankRecord | undefined) => LiquidityTankRecordTransition<T>,
     onCorrupt: T,
   ): Promise<T> {
-    return withLock(settlementKey, async () => {
+    return withLock(lockPath(settlementKey), async () => {
       const read = await readRecord(settlementKey);
       if (read.status === "corrupt") return onCorrupt;
       const applied = transition(read.status === "ok" ? read.record : undefined);
@@ -533,7 +541,7 @@ export async function createFsLiquidityTankStore(
       return transact(input.intent.settlementKey, (record) => transitions.claim(record, input), corrupt);
     },
     isCurrent(input) {
-      return withLock(input.settlementKey, async () => {
+      return withLock(lockPath(input.settlementKey), async () => {
         const read = await readRecord(input.settlementKey);
         return read.status === "ok" && transitions.isCurrent(read.record, input);
       });
@@ -541,7 +549,9 @@ export async function createFsLiquidityTankStore(
     recordSubmission(input) {
       const { settlementKey } = input;
       const { bridgeId } = input.submission;
-      return withLock(settlementKey, async () => {
+      // The phase's lock, then the bridge ID's, in that order only: every
+      // reservation of the bridge ID is read and published under the second.
+      return withLock(lockPath(settlementKey), () => withLock(bridgeLockPath(bridgeId), async () => {
         const read = await readRecord(settlementKey);
         if (read.status === "corrupt") return corrupt;
         const bridgeOwner = await readBridgeOwner(bridgeId);
@@ -572,7 +582,7 @@ export async function createFsLiquidityTankStore(
         }
         await writeRecord(settlementKey, applied.next);
         return applied.result;
-      });
+      }));
     },
     recordObservation(input) {
       return transact(input.settlementKey, (record) => transitions.recordObservation(record, input), corrupt);

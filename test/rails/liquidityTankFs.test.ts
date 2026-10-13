@@ -1,6 +1,18 @@
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -16,6 +28,7 @@ import {
 } from "../../src/rails/liquidityTank.js";
 import { createFsLiquidityTankStore } from "../../src/rails/liquidityTankFs.js";
 import { runLiquidityTankStoreConformance } from "../../src/rails/liquidityTankStoreConformance.js";
+import { CRASH_BRIDGE_ID, CRASH_T0, crashAuthority, crashSubmission } from "../fixtures/liquidityTankFsCrash.js";
 
 /** Every fsync, rename and link under a traced root, in order. */
 const trace = vi.hoisted(() => ({
@@ -366,5 +379,231 @@ describe("createFsLiquidityTankStore", () => {
     await expect(createFsLiquidityTankStore({ dir, lockTimeoutMs: 0 })).rejects.toThrow(/positive safe integer/);
     await expect(createFsLiquidityTankStore({ dir, extra: true } as never)).rejects.toThrow(/exact data properties/);
     await expect(createFsLiquidityTankStore({ dir: "" })).rejects.toThrow(/non-empty string/);
+  });
+});
+
+/** Every step of a reservation's publication and of the row write after it, in order. */
+const CRASH_STEPS = [
+  "staging-created",
+  "staging-written",
+  "staging-synced",
+  "linked",
+  "staging-unlinked",
+  "reservation-directory-synced",
+  "row-renamed",
+  "row-directory-synced",
+] as const;
+
+/** Runs the child store until it reaches `step`, then kills its process group with SIGKILL. */
+async function killChildAt(dir: string, step: string): Promise<string> {
+  const ready = join(dirname(dir), `reached-${step}`);
+  const child = spawn(
+    process.execPath,
+    [
+      "./node_modules/vitest/vitest.mjs",
+      "run",
+      "test/fixtures/liquidity-tank-fs-child.test.ts",
+      "--pool=forks",
+      "--maxWorkers=1",
+      "--reporter=dot",
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        DACS_TANK_FS_CHILD: "1",
+        DACS_TANK_FS_DIR: dir,
+        DACS_TANK_FS_READY: ready,
+        DACS_TANK_FS_STOP: step,
+      },
+    },
+  );
+  if (child.pid === undefined) throw new Error("child process has no pid");
+  let exited = false;
+  const exit = new Promise<void>((resolve) => child.once("exit", () => {
+    exited = true;
+    resolve();
+  }));
+  try {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const reached = await readFile(ready, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+      });
+      if (reached !== "") return reached;
+      if (exited || Date.now() >= deadline) throw new Error(`child store never reached ${step}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  } finally {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+    await exit;
+  }
+}
+
+async function outcome(call: () => Promise<{ status: string; reason?: string }>): Promise<string> {
+  try {
+    const result = await call();
+    return result.reason === undefined ? result.status : `${result.status} ${result.reason}`;
+  } catch (error) {
+    return `threw: ${(error as Error).message}`;
+  }
+}
+
+describe("createFsLiquidityTankStore after a crash while reserving a bridge ID", () => {
+  test("a store reopened after a SIGKILL at any reservation step finishes recordSubmission with the bytes signed before the kill", async () => {
+    const crashIntent = createLiquidityTankIntent(crashAuthority());
+    const other = createLiquidityTankIntent(crashAuthority(1));
+    const reservationName = `${sha256Hex(CRASH_BRIDGE_ID)}.json`;
+    const rows = [];
+    for (const step of CRASH_STEPS) {
+      const dir = await freshDir();
+      const reached = await killChildAt(dir, step);
+      // The child's locks name a dead PID, so a short stale age reclaims them.
+      const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 1 });
+      const now = CRASH_T0 + 2_000;
+      const claimed = await store.claim({ intent: crashIntent, owner: "worker-2", now, leaseDurationMs: 1_000 });
+      if (claimed.status !== "acquired") throw new Error(`expected acquired, got ${claimed.status}`);
+      const recorded = await outcome(() => store.recordSubmission({
+        settlementKey: crashIntent.settlementKey,
+        bindingHash: crashIntent.bindingHash,
+        owner: "worker-2",
+        generation: claimed.lease.generation,
+        now,
+        submission: crashSubmission(),
+      }));
+      const otherClaim = await store.claim({ intent: other, owner: "worker-3", now, leaseDurationMs: 1_000 });
+      if (otherClaim.status !== "acquired") throw new Error(`expected acquired, got ${otherClaim.status}`);
+      const reused = await outcome(() => store.recordSubmission({
+        settlementKey: other.settlementKey,
+        bindingHash: other.bindingHash,
+        owner: "worker-3",
+        generation: otherClaim.lease.generation,
+        now,
+        submission: { ...crashSubmission(), authorityHash: other.bindingHash },
+      }));
+      rows.push({
+        step,
+        reached,
+        retained: claimed.submission?.submissionHash === crashSubmission().submissionHash,
+        recorded,
+        links: (await lstat(join(dir, "bridges", reservationName))).nlink,
+        bridges: await readdir(join(dir, "bridges")),
+        reused,
+      });
+    }
+    const committed = CRASH_STEPS.indexOf("row-renamed");
+    expect(rows).toEqual(CRASH_STEPS.map((step, index) => ({
+      step,
+      reached: step,
+      // Once the row holds the submission, a restarted core reuses it.
+      retained: index >= committed,
+      recorded: index >= committed ? "existing" : "recorded",
+      links: 1,
+      bridges: [reservationName],
+      reused: "conflict liquidity-tank-bridge-cross-settlement-reuse",
+    })));
+  }, 600_000);
+
+  test("a restarted core finishes a phase whose reservation a killed worker left linked twice, and signs once", async () => {
+    const dir = await freshDir();
+    const seeded = await createFsLiquidityTankStore({ dir });
+    await acquire(seeded, "worker-0", T0);
+    // What a SIGKILL right after the reservation's link leaves: its staging
+    // name, as the store makes it, still linked to the reservation.
+    const bridges = join(dir, "bridges");
+    const reservation = join(bridges, `${sha256Hex(BRIDGE_ID)}.json`);
+    const staging = join(bridges, `.${sha256Hex(BRIDGE_ID)}.json.${"5a".repeat(24)}.tmp`);
+    await writeFile(staging, JSON.stringify({ storeVersion: 1, bridgeId: BRIDGE_ID, settlementKey: intent.settlementKey }), {
+      flag: "wx", mode: 0o600,
+    });
+    await link(staging, reservation);
+
+    let now = T0 + 2_000;
+    let observation: LiquidityTankObservation = {
+      status: "empty",
+      bridgeId: BRIDGE_ID,
+      operationHash: intent.operationHash,
+      history: ["empty"],
+      observedAt: now,
+      authenticationHash: "a".repeat(64),
+    };
+    const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
+      const { submissionHash: _hash, ...unsigned } = submission();
+      return { ...unsigned, preparedAt: now };
+    });
+    const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async () => {
+      observation = lockedPending(now);
+    });
+    const run = async (owner: string) => advanceLiquidityTankSettlement({
+      authority: authority(),
+      owner,
+      store: await createFsLiquidityTankStore({ dir }),
+      adapter: { prepareSubmission, broadcastRetained, observe: async () => observation },
+      verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+      now: () => now,
+      leaseDurationMs: 1_000,
+    });
+    await expect(run("worker-1")).resolves.toMatchObject({ status: "settle-asymmetric" });
+    now += 2_000;
+    await expect(run("worker-2")).resolves.toMatchObject({ status: "settle-asymmetric" });
+    expect(prepareSubmission).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalled();
+    expect(new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash)).size).toBe(1);
+    expect(await readdir(bridges)).toEqual([`${sha256Hex(BRIDGE_ID)}.json`]);
+    expect((await lstat(reservation)).nlink).toBe(1);
+  });
+
+  test("a reservation's second link is removed only when it is the store's own staging name", async () => {
+    const base = `${sha256Hex(BRIDGE_ID)}.json`;
+    const ownStaging = `.${base}.${"0f".repeat(24)}.tmp`;
+    const shapes = [
+      { shape: "the store's staging name", extra: [ownStaging] },
+      { shape: "a name the store does not make", extra: [`${base}.crash.tmp`] },
+      { shape: "a staging name with a random part too short", extra: [`.${base}.${"0f".repeat(23)}.tmp`] },
+      { shape: "the store's staging name and a third link", extra: [ownStaging, `${base}.copy`] },
+    ];
+    const rows = [];
+    for (const { shape, extra } of shapes) {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir });
+      const { write } = await acquire(store, "worker-1", T0);
+      const bridges = join(dir, "bridges");
+      const reservation = join(bridges, base);
+      await writeFile(reservation, JSON.stringify({ storeVersion: 1, bridgeId: BRIDGE_ID, settlementKey: intent.settlementKey }), {
+        flag: "wx", mode: 0o600,
+      });
+      for (const name of extra) await link(reservation, join(bridges, name));
+      rows.push({
+        shape,
+        recorded: (await outcome(() => store.recordSubmission({ ...write, submission: submission() })))
+          .replace(/: \/.*$/u, ""),
+        bridges: (await readdir(bridges)).sort(),
+      });
+    }
+    expect(rows).toEqual([
+      { shape: shapes[0]!.shape, recorded: "recorded", bridges: [base] },
+      {
+        shape: shapes[1]!.shape,
+        recorded: "threw: liquidity-tank filesystem store regular file has 2 hard links; exactly one is required",
+        bridges: [base, `${base}.crash.tmp`].sort(),
+      },
+      {
+        shape: shapes[2]!.shape,
+        recorded: "threw: liquidity-tank filesystem store regular file has 2 hard links; exactly one is required",
+        bridges: [base, `.${base}.${"0f".repeat(23)}.tmp`].sort(),
+      },
+      {
+        shape: shapes[3]!.shape,
+        recorded: "threw: liquidity-tank filesystem store regular file has 3 hard links; exactly one is required",
+        bridges: [base, ownStaging, `${base}.copy`].sort(),
+      },
+    ]);
   });
 });

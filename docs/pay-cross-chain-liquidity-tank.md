@@ -516,7 +516,17 @@ same fields, and runs each one under a per-phase filesystem lock:
 - **Bridge IDs.** A bridge ID is reserved for one phase by a file published
   with a hard link, which never replaces an existing reservation, and before
   the row that holds the submission. A crash in between leaves the ID reserved
-  for that phase and its row unchanged.
+  for that phase and its row unchanged. Every reservation of one bridge ID is
+  read and published under that bridge ID's own lock. A process killed right
+  after the link leaves the reservation with a second link, its staging name;
+  the next reader under that lock removes it, fsyncs the directory and accepts
+  the reservation. It does so only when the second link is the store's own
+  staging name for that reservation, on the same inode, and the file has
+  exactly two links. Any other extra link is refused and left in place. A
+  staging file that was never linked is removed. The SDK's tests kill a child
+  process with SIGKILL at each step of the reservation and of the row write
+  after it, then finish `recordSubmission` with the same signed bytes from a
+  reopened store.
 - **Directory admission.** The SDK's private-store checks (see
   [Durable filesystem safety](filesystem-store-safety.md)) refuse a directory
   that is group- or world-writable, owned by another user, reached through a
