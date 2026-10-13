@@ -35,7 +35,9 @@ const HASH = "a".repeat(64);
 
 // The 64 bytes a fixed-width Base58 signature decodes to.
 function signatureBytes(signature: string): Buffer {
-  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  // Base58: digits and letters without 0, O, I and l, in code-point order.
+  const alphabet = Array.from({ length: 75 }, (_, index) => String.fromCharCode(49 + index))
+    .filter((character) => /[1-9A-HJ-NP-Za-km-z]/.test(character)).join("");
   let value = 0n;
   for (const character of signature) value = value * 58n + BigInt(alphabet.indexOf(character));
   const bytes = Buffer.alloc(64);
