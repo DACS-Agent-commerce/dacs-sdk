@@ -278,7 +278,9 @@ verifier or adapter call, so a hook that never settles hangs that
 once the lease expires, and the stalled call, if it resumes, stores and
 broadcasts nothing without a current lease. A hook that runs out of time
 should return `"unavailable"` or throw; the core treats either as an outage.
-Return `false` only for a value the hook checked and refused. Keep each
+Return `false` only for a value the hook checked and refused. A value the hook
+cannot decode is such a refusal: return `false` for it rather than throwing,
+or the phase stays parked under `liquidity-tank-verifier-unavailable`. Keep each
 deadline well under a minute: fresh bytes whose check outlasts the one-minute
 preparation window are not stored (see [Timestamp units](#timestamp-units)).
 
