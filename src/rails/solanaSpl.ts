@@ -353,10 +353,7 @@ function requireBase58Bytes(
   // Solana public keys need at most 44 digits and 64-byte signatures at most 88.
   const maxLength = expectedBytes === 32 ? 44 : expectedBytes === 64 ? 88 : 128;
   const parsed = requireBase58(value, label, expectedBytes, maxLength);
-  let decoded = 0n;
-  for (const character of parsed) {
-    decoded = decoded * 58n + BigInt(BASE58_ALPHABET.indexOf(character));
-  }
+  const decoded = base58Value(parsed);
   let nonZeroBytes = 0;
   for (let cursor = decoded; cursor > 0n; cursor >>= 8n) nonZeroBytes += 1;
   let leadingZeroBytes = 0;
@@ -369,6 +366,43 @@ function requireBase58Bytes(
     );
   }
   return parsed;
+}
+
+function base58Value(parsed: string): bigint {
+  let decoded = 0n;
+  for (const character of parsed) {
+    decoded = decoded * 58n + BigInt(BASE58_ALPHABET.indexOf(character));
+  }
+  return decoded;
+}
+
+/** The bytes of a Base58 value already checked to decode to `expectedBytes`. */
+function base58Bytes(parsed: string, expectedBytes: number): Uint8Array {
+  const bytes = new Uint8Array(expectedBytes);
+  let cursor = base58Value(parsed);
+  for (let index = expectedBytes - 1; cursor > 0n; index -= 1) {
+    bytes[index] = Number(cursor & 0xffn);
+    cursor >>= 8n;
+  }
+  return bytes;
+}
+
+/**
+ * The first signature of a wire transaction: a compact-u16 signature count,
+ * then that many 64-byte signatures. Null when the bytes cannot hold them.
+ */
+function firstSignature(transaction: Uint8Array): Uint8Array | null {
+  let count = 0;
+  let offset = 0;
+  for (let shift = 0; ; shift += 7) {
+    if (offset >= 3 || offset >= transaction.length) return null;
+    const byte = transaction[offset] as number;
+    offset += 1;
+    count |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) break;
+  }
+  if (count < 1 || offset + 64 * count > transaction.length) return null;
+  return transaction.subarray(offset, offset + 64);
 }
 
 function uint(value: unknown, label: string): bigint {
@@ -543,7 +577,7 @@ function createAttempt(
       value.authorityHash !== intent.bindingHash) {
     throw new DacsError("pay-solana-spl: prepared transaction authority mismatch");
   }
-  requireBase58Bytes(value.signature, "signature", 64);
+  const signature = requireBase58Bytes(value.signature, "signature", 64);
   if (typeof value.signedTransactionBase64 !== "string" ||
       value.signedTransactionBase64.length === 0) {
     throw new DacsError("pay-solana-spl: signed transaction bytes are required");
@@ -553,6 +587,12 @@ function createAttempt(
   if (decoded.length === 0 ||
       decoded.toString("base64").replace(/=+$/, "") !== encoded.replace(/=+$/, "")) {
     throw new DacsError("pay-solana-spl: signed transaction must be base64");
+  }
+  // The bytes broadcast must be the transaction tracked: proof that another
+  // signature expired must never authorize a replacement while these can land.
+  const carried = firstSignature(decoded);
+  if (carried === null || !Buffer.from(carried).equals(base58Bytes(signature, 64))) {
+    throw new DacsError("pay-solana-spl: signed transaction does not carry the signature");
   }
   for (const [label, number] of [
     ["lastValidBlockHeight", value.lastValidBlockHeight],

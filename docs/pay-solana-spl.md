@@ -190,6 +190,12 @@ Every attempt the core signs is retained with exactly its nine
 attempt are dropped. They are not hashed or retained, and they are not passed
 back to `broadcastRetained` or `reconcile`.
 
+The first signature in `signedTransactionBase64` (after its compact-u16
+signature count) must be the attempt's `signature`, so the bytes broadcast are
+always the transaction tracked and proven expired. Otherwise a prepared
+attempt is `solana-spl-prepared-transaction-invalid`, with nothing recorded or
+broadcast, and a retained one is `solana-spl-retained-state-corrupt`.
+
 A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be real,
 dense arrays. Element n is an own, enumerable data property at index n, so
 attempt n is at index n − 1, and the array has no other own keys. A proxy is

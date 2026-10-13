@@ -33,6 +33,28 @@ const SIGNATURE_1 = "1".repeat(64);
 const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
 
+// The 64 bytes a fixed-width Base58 signature decodes to.
+function signatureBytes(signature: string): Buffer {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let value = 0n;
+  for (const character of signature) value = value * 58n + BigInt(alphabet.indexOf(character));
+  const bytes = Buffer.alloc(64);
+  for (let index = 63; value > 0n; index -= 1) {
+    bytes[index] = Number(value & 0xffn);
+    value >>= 8n;
+  }
+  return bytes;
+}
+// Solana wire bytes: a compact-u16 signature count, the signatures, then a
+// stand-in for the message.
+function signedWire(signatures: readonly string[], message: string): string {
+  return Buffer.concat([
+    Buffer.from([signatures.length]),
+    ...signatures.map(signatureBytes),
+    Buffer.from(message, "utf8"),
+  ]).toString("base64");
+}
+
 function authority(
   overrides: Partial<SolanaSplSettlementAuthority> = {},
 ): SolanaSplSettlementAuthority {
@@ -181,12 +203,13 @@ function adapter(overrides: Partial<SolanaSplAdapter> = {}): SolanaSplAdapter {
     },
     async prepareSignedTransfer(plan, attempt, fence) {
       await fence.assertCurrent();
+      const signature = attempt === 1 ? SIGNATURE_1 : SIGNATURE_2;
       return {
         attemptVersion: "1",
         attempt,
         authorityHash: plan.intent.bindingHash,
-        signature: attempt === 1 ? SIGNATURE_1 : SIGNATURE_2,
-        signedTransactionBase64: Buffer.from(`signed-wire-${attempt}`, "utf8").toString("base64"),
+        signature,
+        signedTransactionBase64: signedWire([signature], `signed-wire-${attempt}`),
         lastValidBlockHeight: 10_000 + attempt,
         transferInstructionIndex: 1,
         preparedAt: 1_788_000_000_000 + attempt,
@@ -282,6 +305,93 @@ describe("advanceSolanaSplSettlement", () => {
     expect(result).toMatchObject({ status: "indeterminate" });
     expect(recordAttempt).not.toHaveBeenCalled();
     expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  // The core would otherwise broadcast one transaction and track another, so
+  // proof that the tracked signature expired could authorize attempt 2 while
+  // the broadcast bytes can still land.
+  test.each([
+    ["bytes that carry another signature", signedWire([SIGNATURE_2], "signed-wire-1")],
+    ["bytes that carry the signature second", signedWire([SIGNATURE_2, SIGNATURE_1], "signed-wire-1")],
+    ["bytes with no signature", signedWire([], "signed-wire-1")],
+    ["bytes that end inside the signature", Buffer.concat([
+      Buffer.from([1]), signatureBytes(SIGNATURE_1).subarray(0, 63),
+    ]).toString("base64")],
+    ["bytes that hold fewer signatures than they count", Buffer.concat([
+      Buffer.from([2]), signatureBytes(SIGNATURE_1),
+    ]).toString("base64")],
+    ["bytes whose count never ends", Buffer.concat([
+      Buffer.from([0x81, 0x80, 0x80]), signatureBytes(SIGNATURE_1),
+    ]).toString("base64")],
+    ["plain text", Buffer.from("signed-wire-1", "utf8").toString("base64")],
+  ])("a prepared attempt with %s is refused before persistence", async (_name, wire) => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          return {
+            ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+            signedTransactionBase64: wire,
+          };
+        },
+        broadcastRetained,
+      }),
+    }));
+    expect(result).toEqual({
+      status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid",
+    });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("a prepared attempt whose bytes carry its signature first, then a co-signer's, settles", async () => {
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    await expect(advanceSolanaSplSettlement(input({
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          return {
+            ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+            signedTransactionBase64: signedWire([SIGNATURE_1, SIGNATURE_2], "signed-wire-1"),
+          };
+        },
+        broadcastRetained,
+      }),
+    }))).resolves.toMatchObject({ status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } });
+    expect(broadcastRetained.mock.calls[0]?.[0].signedTransactionBase64)
+      .toBe(signedWire([SIGNATURE_1, SIGNATURE_2], "signed-wire-1"));
+  });
+
+  test("a retained attempt whose bytes carry another signature is corrupt, never reconciled", async () => {
+    let clock = 1_000;
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length === 0) return claim;
+        return {
+          ...claim,
+          attempts: claim.attempts.map((attempt) => {
+            const { attemptHash: _ignored, ...unsigned } = attempt;
+            const swapped = { ...unsigned, signedTransactionBase64: signedWire([SIGNATURE_2], "signed-wire-1") };
+            return { ...swapped, attemptHash: sha256Hex(canonicalize(swapped)) };
+          }),
+        };
+      },
+    };
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async () => ({ disposition: "indeterminate" as const, reason: "lost" }));
+    const shared = input({ store, adapter: adapter({ broadcastRetained, reconcile }), now: () => clock });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({ status: "indeterminate" });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+      status: "indeterminate", reason: "solana-spl-retained-state-corrupt",
+    });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
   test("returns current solana-instruction coordinates only after exact commitment", async () => {
@@ -2060,6 +2170,7 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
     const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => ({
       ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
       signature: signatureFor(attempt),
+      signedTransactionBase64: signedWire([signatureFor(attempt)], `signed-wire-${attempt}`),
     }));
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
     const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> =>
@@ -2542,6 +2653,7 @@ describe("advanceSolanaSplSettlement captures each store object as plain data", 
     const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => ({
       ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
       signature: signatureFor(attempt),
+      signedTransactionBase64: signedWire([signatureFor(attempt)], `signed-wire-${attempt}`),
     }));
     const recordAttempt = vi.spyOn(store, "recordAttempt");
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
