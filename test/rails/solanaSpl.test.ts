@@ -1521,6 +1521,12 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
   const insufficient = {
     status: "failed", errorClass: "permanent", reason: "solana-spl-insufficient-token-balance",
   } as const;
+  const networkFee = {
+    status: "failed", errorClass: "permanent", reason: "solana-spl-insufficient-network-fee-balance",
+  } as const;
+  const ataRent = {
+    status: "failed", errorClass: "permanent", reason: "solana-spl-insufficient-ata-rent-and-fee-balance",
+  } as const;
   const ataMissing = {
     status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-missing",
   } as const;
@@ -1530,7 +1536,10 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
 
   // A resume by another worker once the first lease has expired, with an
   // adapter that would now settle; returns its result and every effect count.
-  async function resume(store: SolanaSplSettlementStore) {
+  async function resume(
+    store: SolanaSplSettlementStore,
+    overrides: Partial<SolanaSplSettlementAuthority> = {},
+  ) {
     const effects = {
       preflight: vi.fn(adapter().preflight),
       prepareSignedTransfer: vi.fn(adapter().prepareSignedTransfer),
@@ -1539,12 +1548,18 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
     };
     const result = await advanceSolanaSplSettlement(input({
       store, owner: "worker-b", now: () => 2_000, adapter: adapter(effects),
+      authority: authority(overrides),
     }));
     return { result, calls: Object.values(effects).map((spy) => spy.mock.calls.length) };
   }
 
+  // Every `failed` code, so each failure the core reports is one a closed
+  // key's claim is read back as.
   test.each([
     ["a permanent", preflight({ payerTokenBalanceBaseUnits: "0" }), {}, insufficient],
+    ["a network-fee", preflight({ payerNativeBalanceLamports: "4999" }), {}, networkFee],
+    ["an ATA-rent", preflight({ payeeAtaExists: false, payerNativeBalanceLamports: "2040000" }),
+      { createPayeeAtaIfMissing: true }, ataRent],
     ["a counterparty", preflight({ payeeAtaExists: false }), {}, ataMissing],
     // The chain's answer, not an adapter fault: the existing account's owner
     // or mint is a well-formed key that is not the intent's.
@@ -1562,15 +1577,38 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
       }))).resolves.toEqual(expected);
       expect(prepareSignedTransfer).not.toHaveBeenCalled();
       expect(recordFailure).toHaveBeenCalledTimes(1);
-      expect(recordFailure.mock.calls[0]?.[0]).toMatchObject({
-        owner: "worker-a", generation: 1,
-        failure: { errorClass: expected.errorClass, reason: expected.reason },
+      expect(recordFailure.mock.calls[0]?.[0]).toMatchObject({ owner: "worker-a", generation: 1 });
+      // Exactly `{ errorClass, reason }`: a store that keeps what it is given
+      // must hold a failure its next claim can return.
+      expect(recordFailure.mock.calls[0]?.[0]?.failure).toEqual({
+        errorClass: expected.errorClass, reason: expected.reason,
       });
       // Twice, so the closed key also stays closed for the next caller.
       for (let round = 0; round < 2; round += 1) {
-        await expect(resume(store)).resolves.toEqual({ result: expected, calls: [0, 0, 0, 0] });
+        await expect(resume(store, overrides)).resolves.toEqual({ result: expected, calls: [0, 0, 0, 0] });
       }
     });
+
+  test("a close the store already holds is acknowledged as existing and reported failed", async () => {
+    const base = createInMemorySolanaSplSettlementStore();
+    const answers: unknown[] = [];
+    // A store that retries a write it has already applied answers `existing`.
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async recordFailure(request) {
+        await base.recordFailure(request);
+        const answer = await base.recordFailure(request);
+        answers.push(answer);
+        return answer;
+      },
+    };
+    await expect(advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({ preflight: async () => preflight({ payerTokenBalanceBaseUnits: "0" }) }),
+    }))).resolves.toEqual(insufficient);
+    expect(answers).toEqual([{ status: "existing" }]);
+    await expect(resume(store)).resolves.toEqual({ result: insufficient, calls: [0, 0, 0, 0] });
+  });
 
   test("a failure after an expired attempt closes the key: the expired attempt is never replaced", async () => {
     let clock = 1_000;
@@ -1679,12 +1717,17 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
     const failure = { errorClass: "permanent", reason: "solana-spl-insufficient-token-balance" } as const;
     // Attempt 1 has no expiry evidence yet, so it may still land.
     await expect(store.recordFailure({ ...fence, failure })).resolves.toMatchObject({ status: "conflict" });
-    await expect(store.markAttemptExpired({
-      ...fence, signature: SIGNATURE_1, observedBlockHeight: 10_002,
+    const expiry = {
+      signature: SIGNATURE_1, observedBlockHeight: 10_002,
       commitmentLevel: "confirmed", authenticationHash: "e".repeat(64),
-    })).resolves.toMatchObject({ status: "recorded" });
+    } as const;
+    await expect(store.markAttemptExpired({ ...fence, ...expiry }))
+      .resolves.toMatchObject({ status: "recorded" });
     await expect(store.recordFailure({ ...fence, failure })).resolves.toEqual({ status: "recorded" });
     await expect(store.recordFailure({ ...fence, failure })).resolves.toEqual({ status: "existing" });
+    // The same evidence again, so only the closed key refuses it.
+    await expect(store.markAttemptExpired({ ...fence, ...expiry }))
+      .resolves.toMatchObject({ status: "conflict" });
     await expect(store.recordFailure({
       ...fence, failure: { errorClass: "counterparty", reason: "solana-spl-payee-ata-missing" },
     })).resolves.toMatchObject({ status: "conflict" });
@@ -1696,6 +1739,33 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
     })).resolves.toMatchObject({ status: "conflict" });
     await expect(store.claim({ intent, owner: "worker-b", now: 1_001, leaseDurationMs: 100 }))
       .resolves.toEqual({ status: "failed", intent, failure });
+  });
+
+  test("the in-memory store never closes a settled key", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const intent = createSolanaSplSettlementIntent(authority());
+    await store.claim({ intent, owner: "worker-a", now: 1_000, leaseDurationMs: 100 });
+    const fence = {
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "worker-a", generation: 1,
+    };
+    const prepared = await adapter().prepareSignedTransfer(
+      { intent } as never, 1, { assertCurrent: async () => undefined } as never);
+    const attempt = { ...prepared, attemptHash: sha256Hex(canonicalize({ ...prepared })) };
+    await expect(store.recordAttempt({ ...fence, attempt })).resolves.toEqual({ status: "recorded" });
+    // Expired, then seen settled: only the settlement can refuse the close.
+    await expect(store.markAttemptExpired({
+      ...fence, signature: SIGNATURE_1, observedBlockHeight: 10_002,
+      commitmentLevel: "confirmed", authenticationHash: "e".repeat(64),
+    })).resolves.toMatchObject({ status: "recorded" });
+    await expect(store.recordSettlement({
+      ...fence, signature: SIGNATURE_1, settlement: {} as never,
+    })).resolves.toEqual({ status: "recorded" });
+    await expect(store.recordFailure({
+      ...fence, failure: { errorClass: "permanent", reason: "solana-spl-insufficient-token-balance" },
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.claim({ intent, owner: "worker-b", now: 1_001, leaseDurationMs: 100 }))
+      .resolves.toMatchObject({ status: "settled" });
   });
 });
 
