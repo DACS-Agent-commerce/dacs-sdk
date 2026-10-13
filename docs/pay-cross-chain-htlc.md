@@ -742,6 +742,11 @@ refund is not isolated from the payee's side for such an adapter.
   adapter call still running when the lease lapses, and a source-leg
   observation once half the lease time left at its start has passed, but the
   adapter should still time out each call within that.
+- Keep the clock behind `now` synchronized, and never ahead of the chains'
+  block time. The core decides that a refund is due from `now()`, not from
+  chain time; a refund sent early reverts on chain, reads `refund-stalled`
+  and is not re-sent until refund replacement with a skew margin exists (a
+  launch gate).
 - Page an operator on each of these results, and keep advancing the session
   (except after `failed`). `htlcNeedsOperator(progress)` returns `true` for
   exactly this list:
