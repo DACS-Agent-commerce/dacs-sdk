@@ -16,8 +16,11 @@ dependency the tree already had, is treated by where the run comes from:
   requests too (exit 3), as CI fails on any direct high/critical advisory.
 - Everywhere else it fails closed (exit 3), and the error names it: the
   scheduled drift workflow, manual runs, and any release or publication path
-  that runs this acceptance or its disposition. Failing closed is the default;
-  only the pull-request job sets `DACS_UNLISTED_ADVISORIES=warn`.
+  that runs this acceptance or its disposition. `Publish npm prerelease` runs
+  this acceptance with drift enforced as a job its publish job needs, so an
+  unlisted ID stops publication. Failing closed is the default; only the
+  pull-request job sets `DACS_UNLISTED_ADVISORIES=warn`, and never when a
+  caller enforces drift.
 
 `Registry consumer advisory-ID drift` runs the same consumer audit daily and on
 manual dispatch, so a newly published advisory is reported without waiting for

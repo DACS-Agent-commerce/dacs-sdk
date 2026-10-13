@@ -178,10 +178,12 @@ WebSocket transport — an app already running a full chain stack with these dep
   it at high or critical severity on a direct dependency of the consumer: that
   fails pull requests too. The scheduled `Registry consumer advisory-ID drift`
   job, manual runs and any release or publication path fail closed on it until
-  it is reviewed. Following the transitive rule above, an ID recorded in the
-  baseline's `assessedAdvisories` with its reachability assessment does not
-  block that gate; a high or critical advisory on a direct dependency of the
-  consumer always does.
+  it is reviewed. `Publish npm prerelease` runs this acceptance with drift
+  enforced as a prerequisite job, so its publish job does not start unless the
+  acceptance passed under the fail-closed policy. Following the transitive
+  rule above, an ID recorded in the baseline's `assessedAdvisories` with its
+  reachability assessment does not block that gate; a high or critical
+  advisory on a direct dependency of the consumer always does.
   Production publication stays blocked by #191 until its baseline findings are
   resolved.
 - **Refresh cadence:** re-run the snapshot command and update this file on a

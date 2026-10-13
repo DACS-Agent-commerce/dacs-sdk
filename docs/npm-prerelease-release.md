@@ -14,11 +14,18 @@ Before approving the workflow:
 4. create the matching tag on that exact `main` commit; and
 5. enter the exact version in the workflow dispatch form.
 
-The workflow installs a pinned release toolchain without a dependency cache,
-runs conformance, types and all three test suites, and creates the release set
-twice. It uploads the three exact tarballs, SHA-256 receipts, combined source
-provenance and one CycloneDX SBOM per package before its publish step. It then
-publishes the reviewed tarballs under the npm `next` tag in this order:
+The workflow first runs the registry-shaped Linux and Docker acceptance
+(`registry-container-acceptance.yml`) with advisory-ID drift enforced. The
+publish job needs that job, so an advisory ID outside the #191 audit baseline,
+or any other acceptance failure, stops publication before the publish job
+starts; the acceptance job gets no secrets and no OIDC token. A run whose only
+findings are recorded exactly in the #191 baseline (exit 4) passes that job, as
+it does on every other acceptance run. The publish job installs a pinned
+release toolchain without a dependency cache, runs conformance, types and all
+three test suites, and creates the release set twice. It uploads the three
+exact tarballs, SHA-256 receipts, combined source provenance and one CycloneDX
+SBOM per package before its publish step. It then publishes the reviewed
+tarballs under the npm `next` tag in this order:
 
 1. `@kynesyslabs/dacs`;
 2. `@kynesyslabs/dacs-node`; and
@@ -34,10 +41,10 @@ For the first release, configure the protected environment's `NPM_TOKEN` secret
 with the minimum npm permission required to create all three public packages.
 After package creation, configure each npm package's trusted publisher for this
 repository, `publish-prerelease.yml`, and the `npm-prerelease` environment, then
-remove the long-lived publish token. The workflow grants only `contents: read`
-and `id-token: write`; npm trusted publishing uses that short-lived OIDC identity
-and automatically attaches provenance. See npm's official
-[trusted publishing](https://docs.npmjs.com/trusted-publishers/) and
+remove the long-lived publish token. Only the publish job is granted
+`contents: read` and `id-token: write`; npm trusted publishing uses that
+short-lived OIDC identity and automatically attaches provenance. See npm's
+official [trusted publishing](https://docs.npmjs.com/trusted-publishers/) and
 [provenance](https://docs.npmjs.com/generating-provenance-statements/)
 documentation.
 

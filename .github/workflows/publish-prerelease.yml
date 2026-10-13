@@ -10,16 +10,30 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: dacs-npm-prerelease
   cancel-in-progress: false
 
 jobs:
+  # The registry/container acceptance with advisory-ID drift enforced: an
+  # advisory ID outside the #191 baseline fails it (exit 3), as on the
+  # scheduled drift job, and never only warns. It gets no secrets and no OIDC
+  # token; only the publish job, which needs it, can request one.
+  registry-container-acceptance:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/registry-container-acceptance.yml
+    with:
+      enforce-audit-drift: true
+
   publish:
+    needs: registry-container-acceptance
     runs-on: ubuntu-latest
     environment: npm-prerelease
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

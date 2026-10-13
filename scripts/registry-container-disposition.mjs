@@ -4,12 +4,13 @@
 // (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
 // acceptance job sets: there it is a warning, so an advisory newly published
 // against an unchanged tree cannot turn every PR red. The scheduled drift job,
-// manual runs and release paths fail, and an unlisted ID that is high or
-// critical on a direct dependency fails pull requests too. An observed ID
-// recorded in `assessedAdvisories` (a transitive advisory assessed for
-// reachability, as SECURITY.md's audit policy allows) does not block the gate;
-// one on a direct dependency at high or critical severity always does. Nothing
-// here permits production publication while #191 remains blocked.
+// manual runs, prerelease publication and release paths fail, and an unlisted
+// ID that is high or critical on a direct dependency fails pull requests too.
+// An observed ID recorded in `assessedAdvisories` (a transitive advisory
+// assessed for reachability, as SECURITY.md's audit policy allows) does not
+// block the gate; one on a direct dependency at high or critical severity
+// always does. Nothing here permits production publication while #191 remains
+// blocked.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
