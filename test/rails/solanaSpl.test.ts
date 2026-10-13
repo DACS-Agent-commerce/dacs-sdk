@@ -1362,32 +1362,251 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
   });
 });
 
-describe("advanceSolanaSplSettlement failed is not terminal in the store", () => {
-  // Documented contract: `failed` means nothing can land now. The key stays
-  // open, so a caller must stop advancing it before paying another way.
-  test("a later call with the same authority can still sign and settle", async () => {
+describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
+  // A `failed` result lets the orchestrator pay the phase another way, so the
+  // same key must never sign later, even after the payer tops up.
+  const insufficient = {
+    status: "failed", errorClass: "permanent", reason: "solana-spl-insufficient-token-balance",
+  } as const;
+  const ataMissing = {
+    status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-missing",
+  } as const;
+
+  // A resume by another worker once the first lease has expired, with an
+  // adapter that would now settle; returns its result and every effect count.
+  async function resume(store: SolanaSplSettlementStore) {
+    const effects = {
+      preflight: vi.fn(adapter().preflight),
+      prepareSignedTransfer: vi.fn(adapter().prepareSignedTransfer),
+      broadcastRetained: vi.fn(adapter().broadcastRetained),
+      reconcile: vi.fn(adapter().reconcile),
+    };
+    const result = await advanceSolanaSplSettlement(input({
+      store, owner: "worker-b", now: () => 2_000, adapter: adapter(effects),
+    }));
+    return { result, calls: Object.values(effects).map((spy) => spy.mock.calls.length) };
+  }
+
+  test.each([
+    ["a permanent", preflight({ payerTokenBalanceBaseUnits: "0" }), {}, insufficient],
+    ["a counterparty", preflight({ payeeAtaExists: false }), {}, ataMissing],
+  ] as const)("%s failure is recorded, and a topped-up resume returns it unsigned",
+    async (_name, failing, overrides, expected) => {
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      await expect(advanceSolanaSplSettlement(input({
+        store,
+        authority: authority(overrides),
+        adapter: adapter({ preflight: async () => failing, prepareSignedTransfer }),
+      }))).resolves.toEqual(expected);
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(recordFailure).toHaveBeenCalledTimes(1);
+      expect(recordFailure.mock.calls[0]?.[0]).toMatchObject({
+        owner: "worker-a", generation: 1,
+        failure: { errorClass: expected.errorClass, reason: expected.reason },
+      });
+      // Twice, so the closed key also stays closed for the next caller.
+      for (let round = 0; round < 2; round += 1) {
+        await expect(resume(store)).resolves.toEqual({ result: expected, calls: [0, 0, 0, 0] });
+      }
+    });
+
+  test("a failure after an expired attempt closes the key: the expired attempt is never replaced", async () => {
+    let clock = 1_000;
+    let balance = "5000000";
     const store = createInMemorySolanaSplSettlementStore();
     const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
-    await expect(advanceSolanaSplSettlement(input({
+    const broadcastRetained = vi.fn(async () => ({ disposition: "indeterminate" as const, reason: "lost" }));
+    const reconcile = vi.fn(async (_intent: unknown, attempt: SolanaSplSignedAttempt) =>
+      clock < 2_000
+        ? { disposition: "indeterminate" as const, reason: "rpc-unavailable" }
+        : expired(attempt));
+    const shared = input({
       store,
+      adapter: adapter({
+        preflight: async () => preflight({ payerTokenBalanceBaseUnits: balance }),
+        prepareSignedTransfer, broadcastRetained, reconcile,
+      }),
+      now: () => clock,
+    });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({ status: "indeterminate" });
+    clock = 2_000;
+    balance = "0";
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual(insufficient);
+    clock = 3_000;
+    balance = "5000000";
+    const reconciled = reconcile.mock.calls.length;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" })).resolves.toEqual(insufficient);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(reconciled);
+  });
+
+  // Without the store's acknowledgement the key may still be open, so the
+  // result must not tell the caller to pay another way.
+  test.each<[string, (base: SolanaSplSettlementStore) => SolanaSplSettlementStore["recordFailure"]]>([
+    ["unavailable", () => async () => { throw new Error("store down"); }],
+    ["stale", () => async () => ({ status: "stale", reason: "stale-lease" })],
+    ["a conflict", () => async () => ({ status: "conflict", reason: "other" })],
+    ["a status-only result with an extra key", () => async () => ({ status: "recorded", note: 1 }) as never],
+    ["an unknown status", () => async () => ({ status: "closed" }) as never],
+    ["a proxy", (base) => async (request) => new Proxy(await base.recordFailure(request), {})],
+  ])("a recordFailure that is %s is indeterminate, never failed", async (_name, write) => {
+    const base = createInMemorySolanaSplSettlementStore();
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const result = await advanceSolanaSplSettlement(input({
+      store: { ...base, recordFailure: write(base) },
       adapter: adapter({
         preflight: async () => preflight({ payerTokenBalanceBaseUnits: "0" }),
         prepareSignedTransfer,
       }),
-    }))).resolves.toEqual({
-      status: "failed",
-      errorClass: "permanent",
-      reason: "solana-spl-insufficient-token-balance",
+    }));
+    expect(result).toEqual({
+      status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain",
     });
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
-    await expect(advanceSolanaSplSettlement(input({
-      store, owner: "worker-b", now: () => 2_000,
-      adapter: adapter({ prepareSignedTransfer }),
-    }))).resolves.toMatchObject({
-      status: "settled",
-      settlement: { txRef: { signature: SIGNATURE_1 } },
+  });
+
+  test("a failure whose lease was taken over before the close is never reported, and the key stays open", async () => {
+    const base = createInMemorySolanaSplSettlementStore();
+    // Worker B takes the expired lease between A's last fence check and A's close.
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async recordFailure(request) {
+        await expect(base.claim({ intent: createSolanaSplSettlementIntent(authority()),
+          owner: "worker-b", now: 2_000, leaseDurationMs: 100 })).resolves.toMatchObject({
+          status: "acquired", lease: { generation: 2 },
+        });
+        return base.recordFailure(request);
+      },
+    };
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({ preflight: async () => preflight({ payerTokenBalanceBaseUnits: "0" }) }),
+    }));
+    expect(result).toEqual({
+      status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain",
     });
-    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    await expect(advanceSolanaSplSettlement(input({
+      store: base, owner: "worker-c", now: () => 3_000,
+    }))).resolves.toMatchObject({ status: "settled" });
+  });
+
+  test("a store without recordFailure is refused before any claim", async () => {
+    const { recordFailure: _omitted, ...base } = createInMemorySolanaSplSettlementStore();
+    const claim = vi.spyOn(base, "claim");
+    await expect(advanceSolanaSplSettlement(input({ store: base as never }))).resolves.toEqual({
+      status: "indeterminate", reason: "solana-spl-dependencies-invalid",
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  test("the in-memory store refuses every later write on a closed key, and closes only expired keys", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const intent = createSolanaSplSettlementIntent(authority());
+    const claimed = await store.claim({ intent, owner: "worker-a", now: 1_000, leaseDurationMs: 100 });
+    expect(claimed.status).toBe("acquired");
+    const fence = {
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "worker-a", generation: 1,
+    };
+    const prepared = await adapter().prepareSignedTransfer(
+      { intent } as never, 1, { assertCurrent: async () => undefined } as never);
+    const unsigned = { ...prepared };
+    const attempt = { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) };
+    await expect(store.recordAttempt({ ...fence, attempt })).resolves.toEqual({ status: "recorded" });
+    const failure = { errorClass: "permanent", reason: "solana-spl-insufficient-token-balance" } as const;
+    // Attempt 1 has no expiry evidence yet, so it may still land.
+    await expect(store.recordFailure({ ...fence, failure })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.markAttemptExpired({
+      ...fence, signature: SIGNATURE_1, observedBlockHeight: 10_002,
+      commitmentLevel: "confirmed", authenticationHash: "e".repeat(64),
+    })).resolves.toMatchObject({ status: "recorded" });
+    await expect(store.recordFailure({ ...fence, failure })).resolves.toEqual({ status: "recorded" });
+    await expect(store.recordFailure({ ...fence, failure })).resolves.toEqual({ status: "existing" });
+    await expect(store.recordFailure({
+      ...fence, failure: { errorClass: "counterparty", reason: "solana-spl-payee-ata-missing" },
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.isCurrent({ ...fence, now: 1_001 })).resolves.toBe(false);
+    await expect(store.recordAttempt({ ...fence, attempt: { ...attempt, attempt: 2 } }))
+      .resolves.toMatchObject({ status: "conflict" });
+    await expect(store.recordSettlement({
+      ...fence, signature: SIGNATURE_1, settlement: {} as never,
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.claim({ intent, owner: "worker-b", now: 1_001, leaseDurationMs: 100 }))
+      .resolves.toEqual({ status: "failed", intent, failure });
+  });
+});
+
+describe("advanceSolanaSplSettlement with a stored failed claim", () => {
+  const failure = { errorClass: "permanent", reason: "solana-spl-insufficient-network-fee-balance" };
+  const invalid = { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
+
+  // Resumes against a store whose claim is `claim(intent)`; nothing else may run.
+  async function failedWith(claim: (intent: unknown) => unknown) {
+    const effects = {
+      preflight: vi.fn(adapter().preflight),
+      prepareSignedTransfer: vi.fn(adapter().prepareSignedTransfer),
+      broadcastRetained: vi.fn(adapter().broadcastRetained),
+      reconcile: vi.fn(adapter().reconcile),
+    };
+    const base = createInMemorySolanaSplSettlementStore();
+    const writes = [
+      vi.spyOn(base, "recordAttempt"), vi.spyOn(base, "markAttemptExpired"),
+      vi.spyOn(base, "recordSettlement"), vi.spyOn(base, "recordFailure"),
+    ];
+    const result = await advanceSolanaSplSettlement(input({
+      store: { ...base, claim: async (request) => claim(request.intent) as never },
+      adapter: adapter(effects),
+    }));
+    expect([...Object.values(effects), ...writes].map((spy) => spy.mock.calls.length))
+      .toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+    return result;
+  }
+
+  test.each([
+    ["plain", (value: object) => ({ ...value })],
+    ["null-prototype", (value: object) => Object.assign(Object.create(null) as object, value)],
+  ])("a %s failed claim returns its failure without any effect", async (_name, make) => {
+    await expect(failedWith((intent) => make({ status: "failed", intent, failure: make(failure) })))
+      .resolves.toEqual({ status: "failed", ...failure });
+  });
+
+  test.each<[string, (intent: unknown) => unknown, unknown]>([
+    ["an extra claim key", (intent) => ({ status: "failed", intent, failure, attempts: [] }), invalid],
+    ["no failure", (intent) => ({ status: "failed", intent }), invalid],
+    ["no intent", () => ({ status: "failed", failure }), invalid],
+    ["a failure with an extra key", (intent) => ({
+      status: "failed", intent, failure: { ...failure, detail: "rpc" },
+    }), invalid],
+    ["a failure without errorClass", (intent) => ({
+      status: "failed", intent, failure: { reason: failure.reason },
+    }), invalid],
+    ["a failure accessor", (intent) => Object.defineProperty({ status: "failed", intent }, "failure", {
+      enumerable: true, get: () => failure,
+    }), invalid],
+    ["a proxy failure", (intent) => ({ status: "failed", intent, failure: new Proxy(failure, {}) }), invalid],
+    ["a failure with a class prototype", (intent) => ({
+      status: "failed", intent, failure: Object.assign(Object.create({ extra: 1 }) as object, failure),
+    }), invalid],
+    ["an unknown reason", (intent) => ({
+      status: "failed", intent, failure: { errorClass: "permanent", reason: "solana-spl-preflight-invalid" },
+    }), invalid],
+    ["a reason of the other class", (intent) => ({
+      status: "failed", intent, failure: { errorClass: "counterparty", reason: failure.reason },
+    }), invalid],
+    ["a reason that is not a string", (intent) => ({
+      status: "failed", intent, failure: { errorClass: "permanent", reason: ["solana-spl-insufficient-token-balance"] },
+    }), invalid],
+    ["an inherited reason", (intent) => ({
+      status: "failed", intent, failure: { errorClass: "permanent", reason: "constructor" },
+    }), invalid],
+    ["another binding's intent", (intent) => ({
+      status: "failed", intent: { ...(intent as object), amount: "2" }, failure,
+    }), { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" }],
+  ])("a failed claim with %s is refused without any effect", async (_name, claim, expected) => {
+    await expect(failedWith(claim)).resolves.toEqual(expected);
   });
 });
 

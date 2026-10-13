@@ -211,6 +211,12 @@ export type SolanaSplStoreClaim =
       intent: Readonly<SolanaSplSettlementIntent>;
       settlement: Readonly<SolanaSplSettlementResult>;
     }
+  | {
+      /** The key was closed by `recordFailure`; nothing under it is ever signed again. */
+      status: "failed";
+      intent: Readonly<SolanaSplSettlementIntent>;
+      failure: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
+    }
   | { status: "conflict" | "corrupt"; reason: string };
 
 export type SolanaSplStoreWrite =
@@ -265,6 +271,19 @@ export interface SolanaSplSettlementStore {
     signature: string;
     settlement: Readonly<SolanaSplSettlementResult>;
   }): Promise<SolanaSplStoreWrite>;
+  /**
+   * Closes the key with a terminal failure, in one atomic write that succeeds
+   * only for the current lease generation. From then on `claim` returns the
+   * `failed` claim with exactly this failure, and every other write for the
+   * key is refused.
+   */
+  recordFailure(input: {
+    settlementKey: string;
+    bindingHash: string;
+    owner: string;
+    generation: number;
+    failure: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
+  }): Promise<SolanaSplStoreWrite>;
 }
 
 /**
@@ -279,11 +298,12 @@ export interface SolanaSplSettlementStore {
  * - `indeterminate`: the phase may or may not be paid. A transfer may have
  *   landed or may still land. It never authorizes a fresh payment; resolve it
  *   by resuming the same authority or out of band.
- * - `failed`: nothing under this settlement key can land *now*. Every
- *   retained attempt has durable expiry evidence, and no new transfer was
- *   signed. The store record stays open, so a later call with the same
- *   authority can still sign and settle. Stop advancing this key before
- *   paying the phase any other way.
+ * - `failed`: nothing under this settlement key can land, and nothing ever
+ *   will. Every retained attempt has durable expiry evidence, no new transfer
+ *   was signed, and the store closed the key before this was reported. Every
+ *   later call with the same authority returns the same result without
+ *   signing or broadcasting, so the phase may be paid another way. A retry
+ *   after a top-up needs a new phase, and so a new key.
  */
 export type SolanaSplProgress =
   | { status: "waiting" | "indeterminate"; reason: string }
@@ -581,6 +601,14 @@ const EVIDENCE_KEYS = [
   "signature", "observedBlockHeight", "commitmentLevel", "authenticationHash",
 ] as const;
 const LEASE_KEYS = ["owner", "generation", "expiresAt"] as const;
+/** Each `failed` reason and its class: the only failures a store may hold. */
+const FAILURES: ReadonlyMap<string, "permanent" | "counterparty"> = new Map([
+  ["solana-spl-insufficient-token-balance", "permanent"],
+  ["solana-spl-insufficient-network-fee-balance", "permanent"],
+  ["solana-spl-insufficient-ata-rent-and-fee-balance", "permanent"],
+  ["solana-spl-payee-ata-missing", "counterparty"],
+  ["solana-spl-payee-ata-binding-mismatch", "counterparty"],
+]);
 
 /**
  * Captures a store object as plain data: the one meaning of "plain data" for
@@ -887,8 +915,9 @@ type ClaimView =
  * Parses a store claim as the complete discriminated union before anything
  * acts on it. A partial, malformed or unreadable claim is never trusted: it
  * could belong to another binding or hide a retained broadcast. The claim, its
- * intent and its lease are captured by `plainData` with exactly their
- * variant's keys before any field is used.
+ * intent, its lease and its failure are captured by `plainData` with exactly
+ * their variant's keys before any field is used. A `failed` claim is returned
+ * as the fixed failure it names, and only for a reason the core can report.
  */
 function readClaim(
   value: unknown,
@@ -901,6 +930,7 @@ function readClaim(
   try {
     const claim = plainData(value, "claim", ["status"], [
       "reason", "intent", "lease", "attempts", "expiredSignatures", "expiryEvidence", "settlement",
+      "failure",
     ]);
     const status = claim.status;
     // A conflicting binding for the same phase, or a corrupt record, may hold
@@ -916,6 +946,8 @@ function readClaim(
     }
     if (status === "settled") {
       exactKeys(claim, "claim", ["status", "intent", "settlement"]);
+    } else if (status === "failed") {
+      exactKeys(claim, "claim", ["status", "intent", "failure"]);
     } else if (status === "acquired" || status === "waiting") {
       exactKeys(claim, "claim",
         ["status", "intent", "lease", "attempts", "expiredSignatures"], ["expiryEvidence"]);
@@ -943,6 +975,15 @@ function readClaim(
       return captured
         ? { status, settlement: captured }
         : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
+    }
+    if (status === "failed") {
+      // A closed key stays closed: the store's failure is returned without
+      // touching the adapter, but only as a fixed failure the core reports.
+      const failure = plainData(claim.failure, "stored failure", ["errorClass", "reason"]);
+      const reason = failure.reason;
+      const errorClass = typeof reason === "string" ? FAILURES.get(reason) : undefined;
+      if (errorClass === undefined || failure.errorClass !== errorClass) return invalid;
+      return { status: "failed", errorClass, reason: reason as string };
     }
     const lease = plainData(claim.lease, "lease", LEASE_KEYS);
     const attempts = claim.attempts;
@@ -1054,9 +1095,10 @@ function readReconciliation(
  * latest retained attempt has authenticated, durably acknowledged expiry
  * evidence; a retained attempt is otherwise only rebroadcast byte-identically.
  *
- * `failed` is not terminal in the store. A caller that pays the phase another
- * way must first stop advancing this settlement key. See `SolanaSplProgress`
- * and `docs/pay-solana-spl.md` for the reason codes.
+ * `failed` is terminal: it is reported only after the store has closed the
+ * key with `recordFailure`, and every later call on the key returns it again
+ * without signing. See `SolanaSplProgress` and `docs/pay-solana-spl.md` for
+ * the reason codes.
  */
 export async function advanceSolanaSplSettlement(
   input: Readonly<AdvanceSolanaSplSettlementInput>,
@@ -1095,6 +1137,7 @@ export async function advanceSolanaSplSettlement(
   let recordAttempt: SolanaSplSettlementStore["recordAttempt"];
   let markAttemptExpired: SolanaSplSettlementStore["markAttemptExpired"];
   let recordSettlement: SolanaSplSettlementStore["recordSettlement"];
+  let recordFailure: SolanaSplSettlementStore["recordFailure"];
   let runPreflight: SolanaSplAdapter["preflight"];
   let prepareSignedTransfer: SolanaSplAdapter["prepareSignedTransfer"];
   let broadcastRetained: SolanaSplAdapter["broadcastRetained"];
@@ -1107,6 +1150,7 @@ export async function advanceSolanaSplSettlement(
     recordAttempt = store.recordAttempt.bind(store);
     markAttemptExpired = store.markAttemptExpired.bind(store);
     recordSettlement = store.recordSettlement.bind(store);
+    recordFailure = store.recordFailure.bind(store);
     runPreflight = adapter.preflight.bind(adapter);
     prepareSignedTransfer = adapter.prepareSignedTransfer.bind(adapter);
     broadcastRetained = adapter.broadcastRetained.bind(adapter);
@@ -1308,7 +1352,26 @@ export async function advanceSolanaSplSettlement(
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
   const plan = validatePreflight(intent, preflight);
-  if ("status" in plan) return plan;
+  if ("status" in plan) {
+    if (plan.status !== "failed") return plan;
+    // A failure lets the caller pay the phase another way, so it is reported
+    // only once the store has closed the key under this lease: no later call
+    // can then sign under it.
+    try {
+      const closed = storeWrite(await recordFailure({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        failure: Object.freeze({ errorClass: plan.errorClass, reason: plan.reason }),
+      }));
+      const status = closed.status;
+      if (status === "recorded" || status === "existing") return plan;
+    } catch {
+      // Falls through to the uncertain result.
+    }
+    return { status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain" };
+  }
 
   const attemptNumber = attempts.length + 1;
   // The signer's errors may carry key or wallet detail; only fixed codes leave.
@@ -1368,6 +1431,7 @@ interface MemoryRecord {
   attempts: SolanaSplSignedAttempt[];
   expired: Map<string, Readonly<SolanaSplExpiryEvidence>>;
   settlement?: Readonly<SolanaSplSettlementResult>;
+  failure?: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
 }
 
 /** Test/development store. Production callers must persist encrypted signed bytes. */
@@ -1380,6 +1444,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
   ): record is MemoryRecord => record !== undefined &&
     record.intent.bindingHash === input.bindingHash &&
     record.lease.owner === input.owner && record.lease.generation === input.generation;
+  const closed = { status: "conflict", reason: "solana-settlement-closed" } as const;
   return {
     async claim(input) {
       const existing = records.get(input.intent.settlementKey);
@@ -1389,6 +1454,9 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
         }
         if (existing.settlement) {
           return { status: "settled", intent: existing.intent, settlement: existing.settlement };
+        }
+        if (existing.failure) {
+          return { status: "failed", intent: existing.intent, failure: { ...existing.failure } };
         }
         if (existing.lease.expiresAt > input.now) {
           return {
@@ -1434,11 +1502,13 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
     },
     async isCurrent(input) {
       const record = records.get(input.settlementKey);
-      return current(record, input) && record.lease.expiresAt > input.now && !record.settlement;
+      return current(record, input) && record.lease.expiresAt > input.now &&
+        !record.settlement && !record.failure;
     },
     async recordAttempt(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (record.failure) return closed;
       const owner = signatures.get(input.attempt.signature);
       if (owner && owner !== input.settlementKey) {
         return { status: "conflict", reason: "solana-signature-cross-settlement-reuse" };
@@ -1459,6 +1529,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
     async markAttemptExpired(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (record.failure) return closed;
       const attempt = record.attempts.find(
         (retained) => retained.signature === input.signature,
       );
@@ -1481,6 +1552,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
     async recordSettlement(input) {
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (record.failure) return closed;
       if (!record.attempts.some((attempt) => attempt.signature === input.signature)) {
         return { status: "conflict", reason: "solana-settlement-attempt-not-live" };
       }
@@ -1490,6 +1562,26 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           : { status: "conflict", reason: "solana-settlement-conflict" };
       }
       record.settlement = Object.freeze({ ...input.settlement });
+      return { status: "recorded" };
+    },
+    async recordFailure(input) {
+      const record = records.get(input.settlementKey);
+      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
+      if (record.settlement) return { status: "conflict", reason: "solana-settlement-already-settled" };
+      // Only a key with no attempt that can still land may be closed.
+      if (record.attempts.some((attempt) => !record.expired.has(attempt.signature))) {
+        return { status: "conflict", reason: "solana-failure-attempt-live" };
+      }
+      const failure = Object.freeze({
+        errorClass: input.failure.errorClass,
+        reason: input.failure.reason,
+      });
+      if (record.failure) {
+        return canonicalize(record.failure) === canonicalize(failure)
+          ? { status: "existing" }
+          : { status: "conflict", reason: "solana-failure-conflict" };
+      }
+      record.failure = failure;
       return { status: "recorded" };
     },
   };

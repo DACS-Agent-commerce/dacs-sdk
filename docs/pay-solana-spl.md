@@ -72,14 +72,21 @@ result.
   of band. A transfer that landed but does not match the intent
   (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
   is reported here, because funds may have moved.
-- `failed`: nothing under this settlement key can land **now**. The store
-  shows no retained attempt, or every retained attempt with complete, durably
-  acknowledged expiry evidence, and no new transfer was signed.
+- `failed`: nothing under this settlement key can land, and nothing ever
+  will. The store shows no retained attempt, or every retained attempt with
+  complete, durably acknowledged expiry evidence, no new transfer was signed,
+  and the store has closed the key.
 
-`failed` is not terminal in the store. The record stays open, so a later call
-with the same authority (another worker, or a scheduled resume after the
-balance is topped up) can still sign and settle the phase. A caller must stop
-advancing this settlement key before it pays the phase by any other route.
+`failed` is terminal, and the phase may be paid by another route. The core
+reports it only after the store has acknowledged `recordFailure`, one atomic
+write under the current lease generation that closes the key. Every later
+call for the same key, from any worker, returns the same `failed` result from
+the store's `failed` claim without calling the adapter, signing or
+broadcasting. A payer that tops up its balance or a payee that creates its
+token account cannot resume the closed key: paying the phase again needs a
+new phase, and so a new settlement key. If the close is not acknowledged, the
+result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
+`failed`.
 
 | Status | Reason codes |
 |---|---|
@@ -90,7 +97,7 @@ advancing this settlement key before it pays the phase by any other route.
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
 | `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
-| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
 phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
@@ -101,7 +108,7 @@ hold a broadcast this call cannot inspect, so it must be resolved out of band.
 `waiting` and `indeterminate` never authorize a fresh payment. Resume the same
 authority after the lease expires. A production store must atomically retain
 the signed wire bytes, lease generation, complete `SolanaSplExpiryEvidence` and
-final settlement across process restart. The evidence binds the retained
+final settlement or failure across process restart. The evidence binds the retained
 signature to a non-negative safe-integer `observedBlockHeight` strictly greater
 than its `lastValidBlockHeight`, the literal `confirmed` commitment and an
 authentication hash. `expiredSignatures` remains in the store claim for source
@@ -113,9 +120,15 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
+`recordFailure` must close the key only for the current lease generation and
+only while no retained attempt lacks expiry evidence. Once it has, `claim`
+returns `{ status: "failed", intent, failure }`, `isCurrent` is false, and
+every other write for the key is refused. `failure` is exactly
+`{ errorClass, reason }`, with a reason from the `failed` rows above and its
+class; any other failure is `solana-spl-settlement-store-claim-invalid`.
 Every store object the core relies on must be plain data, and plain data has
 one meaning, enforced the same way for each of them. These objects are the
-claim and its `intent` and `lease`, each retained attempt and expiry-evidence
+claim and its `intent`, `lease` and `failure`, each retained attempt and expiry-evidence
 row, each write result and the `expiryEvidence` it acknowledges, and a stored
 settlement with its `txRef`, `paymentAmount` and `settlementFinality`. Each
 must meet three conditions:
@@ -145,15 +158,16 @@ a field is therefore refused without running any of its code.
 An object that breaks the rule is refused with nothing reconciled, signed or
 broadcast after it:
 
-- the claim, its `intent` or its `lease`:
+- the claim, its `intent`, its `lease` or its `failure`:
   `solana-spl-settlement-store-claim-invalid`;
 - a retained attempt or expiry-evidence row:
   `solana-spl-retained-state-corrupt`;
 - a write result, or the evidence it acknowledges:
   `solana-spl-retained-attempt-persistence-uncertain`,
-  `solana-spl-expiry-persistence-uncertain` or
-  `solana-spl-settlement-persistence-uncertain`, for `recordAttempt`,
-  `markAttemptExpired` and `recordSettlement` respectively;
+  `solana-spl-expiry-persistence-uncertain`,
+  `solana-spl-settlement-persistence-uncertain` or
+  `solana-spl-failure-persistence-uncertain`, for `recordAttempt`,
+  `markAttemptExpired`, `recordSettlement` and `recordFailure` respectively;
 - a stored settlement or any object nested in it:
   `solana-spl-stored-settlement-mismatch`.
 
