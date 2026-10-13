@@ -333,6 +333,15 @@ describe("registry/container workflow wiring", () => {
     expect(/\npermissions:\n((?: {2}.+\n)+)/.exec(workflow)?.[1]).toBe("  contents: read\n");
     expect(workflow).not.toMatch(/secrets: inherit/);
     expect(acceptance).not.toMatch(/continue-on-error|secrets\./);
+    // Code r10 P3-1: nor can the called side skip the acceptance. A skipped
+    // called job, or a skipped acceptance step before the drift step, would
+    // not run the gate at all; only the later steps run always().
+    expect(workflowBlockKeys(workflowPath, "jobs")).toEqual(["registry-container-consumer"]);
+    const called = workflowJob(workflowPath, "registry-container-consumer");
+    expect(Object.keys(called)).toEqual(["name", "runs-on", "timeout-minutes", "steps"]);
+    expect(called).not.toHaveProperty("if");
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+    expect(workflowStepCondition("Check advisory-ID drift")).toBe("always()");
   });
 
   // Daybreak r10 P2: a manual dispatch runs the workflow file at the selected
