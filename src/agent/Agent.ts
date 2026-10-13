@@ -855,7 +855,9 @@ export interface Agent {
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
    * concern, not the substrate's); invalid refs, bundles that fail strict
    * verification (including unverified vet closure), and divergent copies are
-   * excluded from the score and reported in the result.
+   * excluded from the score and reported in the result. If verifying any one
+   * ref rejects, as `verifyBundle` does on a transient failure, the whole call
+   * rejects with that error instead of scoring a partial set; retry it.
    */
   getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }

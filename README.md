@@ -174,23 +174,38 @@ chose does not matter. Only hosts that retained the evidence write's receipt
 can use this path, for example the buyer that published the evidence or the
 seller that verified the buyer's `anchorReceipt` in the payment-evidence
 handshake. Configure `AgentConfig.resolveAttestationAnchorReceipt({ ref, jobId })`
-to return that CORE §5.1 `AnchorReceipt`, synchronously or asynchronously.
-Receipt fields alone are assertions (CORE SR2-4), so authenticate the receipt
-before retaining it, for Demos with `verifyDemosAnchorReceipt`. The callback is
-captured when the Agent is constructed and runs only after the complete PC-2
-tuple has been validated and its job ID matched to the bundle. The SDK then
-requires the receipt's exact `logicalAddress`, the ref's `contentHash`, a
-`stor-` native address with 40 lowercase hex characters, and a `finalized`,
+to return that CORE §5.1 receipt, synchronously or asynchronously. Its type is
+`ProtocolAnchorReceipt` from `@kynesyslabs/dacs`, or `AnchorReceipt` from
+`@kynesyslabs/dacs/artifacts`. Two separate checks apply to the receipt:
+
+- **Proof authentication, by the host.** Receipt fields alone are assertions
+  (CORE SR2-4), so authenticate the receipt before retaining it. For Demos,
+  `DemosAdapter.verifyDemosAnchorReceipt(receipt)` re-checks the finalized
+  write and that `receipt.writer` controls it. This shows who wrote the
+  evidence, not whether that writer was allowed to.
+- **Writer authorization, by the SDK.** The payment-evidence handshake lets
+  only the buyer write the evidence, so the SDK requires `receipt.writer` to be
+  the same canonical claim as the bundle's one buyer. An authenticated receipt
+  from any other writer is not a mapping, even if it holds the same evidence
+  bytes. That includes a phase orchestrator other than the buyer, which is who
+  writes in `publishSellerSessionSettlement`'s default lane.
+
+The callback is captured when the Agent is constructed and runs only after the
+complete PC-2 tuple has been validated, its job ID matched to the bundle, and
+the bundle's one buyer found. The SDK then requires the receipt's exact
+`logicalAddress`, the ref's `contentHash`, a `stor-` native address with 40
+lowercase hex characters, the buyer as `writer`, and a `finalized`,
 `established` state, and reads only that native address. Existing hash,
 signature, and job/phase checks still apply. Native-reference locators keep
 their direct reads and never invoke the callback. No artifact wire format
 changes.
 
-- **No authenticated mapping** (no callback, a `null` return, or a receipt that
-  does not bind the ref or records a `rejected` write): the evidence ref
-  reports `missing` and the bundle is not `ok`. A third-party verifier without
-  retained receipts therefore cannot verify these bundles, and `getReputation`
-  excludes them as `invalid-bundle`.
+- **No authenticated mapping** (no callback, a `null` return, a receipt that
+  does not bind the ref, a receipt from a writer other than the buyer, or a
+  receipt that records a `rejected` write): the evidence ref reports `missing`
+  and the bundle is not `ok`. A third-party verifier without retained receipts
+  therefore cannot verify these bundles, and `getReputation` excludes them as
+  `invalid-bundle`.
 - **Transient failure** (the callback throws, the receipt is not yet
   `finalized`/`established`, which raises `TransientError`, or the read at the
   native address fails): `verifyBundle` and `getReputation` reject exactly as
