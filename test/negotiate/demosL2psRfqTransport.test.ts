@@ -631,6 +631,11 @@ async function delayedSendFixture(options: {
  * that moves config.serverUrl fails these tests. The package has no focused
  * public export for it yet (kynesyslabs/sdks#125). The module has no imports,
  * and constructing a peer opens no socket.
+ *
+ * This path is demosdk's private build layout, not API. package-lock.json pins
+ * @kynesyslabs/demosdk 4.0.16, which has it; package.json allows ^4.0.16, so a
+ * 4.x that moves the file breaks this test helper only, never production code.
+ * Recheck the path when the lockfile moves.
  */
 async function demosPeer(config: object): Promise<DemosL2psRfqPeerLike> {
   const build = dirname(createRequire(import.meta.url).resolve("@kynesyslabs/demosdk"));
@@ -2766,7 +2771,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     let opens = 0;
     let hang = true;
     const { hub, transport, packet, own } = await buyerWithSentOffer({
-      operationTimeoutMs: 100,
+      operationTimeoutMs: 200,
       codec: (base) => ({
         codecId: base.codecId,
         seal: (plaintext, context) => base.seal(plaintext, context),
@@ -2789,8 +2794,9 @@ describe("Demos L2PS durable RFQ transport", () => {
       disposition: "indeterminate",
       reason: "Demos L2PS RFQ history decryption failed",
     });
-    // Five serial per-frame timeouts would take at least 500 ms.
-    expect(performance.now() - startedAt).toBeLessThan(400);
+    // Five serial per-frame timeouts would take at least 1,000 ms; the shared
+    // 200 ms budget leaves 600 ms of headroom for a loaded runner.
+    expect(performance.now() - startedAt).toBeLessThan(800);
     expect(opens).toBe(1);
 
     hang = false;
