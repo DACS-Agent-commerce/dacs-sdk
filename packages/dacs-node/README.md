@@ -305,7 +305,11 @@ validates its typed payload before inbox admission, and emits only a signed
 acknowledgement after the handler disposition is durable. A thrown or malformed
 handler result leaves the reservation pending; call `resumeDacsHttpInboxV1()`
 during startup to resume those items with the same idempotent handler before
-accepting traffic. Plain HTTP is restricted to loopback bindings. Non-loopback
+accepting traffic. Each call resumes one page; pass its `nextCursor` to the
+next call and start again without one when it is absent, so messages that
+stay pending never keep later ones from being resumed.
+`createDacsHttpInboxResumerV1()` does this across calls, and the live service
+uses it every cycle. Plain HTTP is restricted to loopback bindings. Non-loopback
 listeners require TLS key and certificate material.
 
 `createDacsHttpMessageClientV1()` retains the exact self-signed envelope before
