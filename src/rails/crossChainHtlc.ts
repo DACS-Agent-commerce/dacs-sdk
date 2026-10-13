@@ -340,6 +340,15 @@ export interface CrossChainHtlcAdapter {
     intent: Readonly<CrossChainHtlcIntent>,
     fence: Readonly<HtlcEffectFence>,
   ): Promise<Readonly<HtlcLedgerSnapshot>>;
+  /**
+   * Only constructs and signs the action and returns its bytes. It must never
+   * broadcast, submit, enqueue, publish or otherwise disclose the signed
+   * payload or the preimage, also when the core abandons the call or
+   * discards its result. The core records every action durably before it
+   * releases it, and only `broadcastRetained` releases retained bytes; its
+   * refund decisions rely on an action that was never recorded never having
+   * left the adapter.
+   */
   prepareAction(
     input: Readonly<{
       intent: Readonly<CrossChainHtlcIntent>;

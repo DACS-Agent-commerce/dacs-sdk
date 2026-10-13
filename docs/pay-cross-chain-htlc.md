@@ -812,6 +812,14 @@ the core cannot check them itself.
   retained destination lock stays an owed leg, so the session is never
   `refunded` while it may land.
 - `failed` only once the failure itself is final.
+- `prepareAction` only constructs and signs, and returns the bytes. It never
+  broadcasts, submits, enqueues, publishes or otherwise discloses the signed
+  payload or the preimage, also after the core abandoned the call or
+  discarded its result; only `broadcastRetained` releases retained bytes.
+  The core decides the payer's source refund on durable state alone: a reveal
+  or claim it never recorded must never have left the adapter, or a leaked
+  reveal could claim the destination for the payer, who would then also be
+  refunded on the source, leaving the payee with neither leg.
 - `observe` reports each action only for the core's own retained
   transaction, never a counterparty's, such as a payee's own source claim.
 - `observeSourceLeg` reports exactly what `observe` reports for
