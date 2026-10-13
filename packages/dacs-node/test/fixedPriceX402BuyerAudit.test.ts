@@ -1378,9 +1378,42 @@ describe("buyer two-copy completion adapter", () => {
 
     await expect(deps.readBundleCopy(harness.copies.seller.nativeAddress, "seller"))
       .resolves.toEqual(harness.copies.seller.bundle);
+    // Demos naming another native address is its answer, not a missing copy.
     await expect(deps.readBundleCopy("native:other-seller-bundle", "seller"))
-      .resolves.toBeNull();
+      .rejects.toThrow(/another native address/);
   });
+
+  // Final r11 review: Demos's name index may lag finality by several blocks,
+  // so a role copy or BundleBinding it does not show yet keeps the audit
+  // retryable instead of parking it at operator action.
+  it.each([
+    ["the seller bundle", bundleAddress(JOB_ID, "seller")],
+    ["the buyer bundle", bundleAddress(JOB_ID, "buyer")],
+    ["the seller BundleBinding", `dacs5:bundle-binding:${JOB_ID}:seller`],
+    ["the buyer BundleBinding", `dacs5:bundle-binding:${JOB_ID}:buyer`],
+  ])("keeps the audit retryable while Demos's name index does not show %s yet", async (_label, name) => {
+    const harness = await completionHarness("x402");
+    const resolve = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+    harness.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) =>
+      logicalAddress === name ? { status: "absent" as const } : resolve(logicalAddress));
+    await expect(harness.authorize()).resolves.toBe("indeterminate");
+  });
+
+  it.each(["x402", "pay-dem"] as const)(
+    "reports the %s seller's finalization as indeterminate while its bundle or binding is not in the name index yet",
+    async (paymentProfile) => {
+      for (const name of [bundleAddress(JOB_ID, "seller"), `dacs5:bundle-binding:${JOB_ID}:seller`]) {
+        const harness = await completionHarness(paymentProfile);
+        const resolve = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+        harness.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) =>
+          logicalAddress === name ? { status: "absent" as const } : resolve(logicalAddress));
+        const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
+          identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+        } as never);
+        expect(finalization.disposition, name).not.toBe("rejected");
+      }
+    },
+  );
 
   it("returns the strict verifier's exact anchor and binding disposition shapes", async () => {
     const harness = await completionHarness("x402");

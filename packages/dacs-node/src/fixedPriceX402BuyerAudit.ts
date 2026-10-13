@@ -5,6 +5,7 @@ import {
   baseUnits,
   bundleAddress,
   canonicalSellerSettlementId,
+  DacsError,
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
@@ -1732,9 +1733,14 @@ export function createDacsFixedPriceBuyerAuditV1(
               }
               throw error;
             }
-            if (anchored === null || anchored.nativeAddress !== nativeAddress) {
-              answeredRejection = true;
+            // Not in Demos's name index yet: it may lag finality, so retry.
+            if (anchored === null) {
+              unavailable = true;
               return null;
+            }
+            if (anchored.nativeAddress !== nativeAddress) {
+              answeredRejection = true;
+              throw new DacsError(`Demos resolves the ${role} bundle to another native address`);
             }
             return copy(anchored.bundle) as unknown as Record<string, unknown>;
           },
@@ -1752,8 +1758,9 @@ export function createDacsFixedPriceBuyerAuditV1(
           },
           async resolveBundleBinding(logicalAddress, signer) {
             const resolved = await tracked(publication.resolveBundleBinding(logicalAddress, signer));
-            if (resolved.disposition === "indeterminate" &&
-                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
+            if ((resolved.disposition === "indeterminate" &&
+                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) ||
+                resolved.disposition === "absent") {
               unavailable = true;
             } else if (resolved.disposition !== "present") {
               answeredRejection = true;
