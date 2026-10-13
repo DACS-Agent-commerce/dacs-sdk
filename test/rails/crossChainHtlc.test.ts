@@ -3150,6 +3150,31 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
   });
 
+  test("refuses a source-leg observation that adds only an unnamed absent destination claim", async () => {
+    // Snapshot validation accepts an `absent` naming nothing for any action,
+    // so only the source-leg check refuses this view.
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const sourceLeg = h.observeSourceLeg.getMockImplementation()!;
+    h.observeSourceLeg.mockImplementation(async (intent, fence) => {
+      const view = await sourceLeg(intent, fence);
+      return {
+        ...view,
+        actions: { ...view.actions, "destination-claim": { state: "absent", authenticationHash: AUTH_HASH } },
+      };
+    });
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    run.setClock(1_700_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "cross-leg-absent" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
+    expect(h.observeSourceLeg).toHaveBeenCalled();
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+  });
+
   test.each(["throws", "never answers"] as const)(
     "checkpoints the source lock on the source leg and refunds it at its expiry, exactly once, when the whole-session observation %s from the source-lock broadcast on",
     async (failure) => {
