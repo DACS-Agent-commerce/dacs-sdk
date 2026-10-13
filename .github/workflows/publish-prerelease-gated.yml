@@ -1,5 +1,11 @@
-name: Publish npm prerelease
+name: Publish gated npm prerelease
 
+# This file and its `npm-prerelease-gated` environment replace
+# `publish-prerelease.yml` and its `npm-prerelease` environment. A manual
+# dispatch runs the workflow file at the chosen ref, so an older tag still runs
+# that ungated file. Publication credentials (npm trusted publishing and any
+# NPM_TOKEN) therefore belong to this file and environment only, names no older
+# ref contains; see docs/npm-prerelease-release.md.
 on:
   workflow_dispatch:
     inputs:
@@ -30,7 +36,7 @@ jobs:
   publish:
     needs: registry-container-acceptance
     runs-on: ubuntu-latest
-    environment: npm-prerelease
+    environment: npm-prerelease-gated
     permissions:
       contents: read
       id-token: write

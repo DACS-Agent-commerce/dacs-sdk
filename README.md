@@ -1060,8 +1060,11 @@ The acceptance audits the generated consumer's tree by advisory ID against
 ID outside that baseline is a warning, unless it is high or critical on a
 direct dependency of the consumer; the scheduled drift job, manual runs and
 release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
-`Publish npm prerelease` publishes only after that acceptance passes with drift
-enforced. Production publication remains blocked by #191.
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
 
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
