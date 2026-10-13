@@ -1018,6 +1018,29 @@ describe("round 4 admission and phase regressions", () => {
             expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
         });
 
+        // Final r11 review: these reads run at the top of every seller tick, so
+        // SQLite lock contention must be retried, not parked at operator action.
+        it(`${profile}: retries a terminal decision read that meets SQLite lock contention`, async () => {
+            const h = await memoryAgreementHarness(profile);
+            const database = h.seller.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };
+            const load = database.loadEffectInput;
+            database.loadEffectInput = (kind, id) => {
+                if (`${kind}:${id}` === phaseDecisionKey("seller")) {
+                    throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+                }
+                return load(kind, id);
+            };
+            const agreement = vi.fn();
+            expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never)).toMatchObject({
+                status: "indeterminate", reasonCode: "pre-agreement-phase-unavailable-busy",
+            });
+            expect(agreement).not.toHaveBeenCalled();
+            expect(h.seller.context.demos.signComponent).not.toHaveBeenCalled();
+            database.loadEffectInput = load;
+            expect(await sellerBootstrapTrack(h, agreement)(h.seller.operation as never))
+                .not.toMatchObject({ status: "operator-action" });
+        });
+
         it(`${profile}: an unreadable terminal decision cannot be treated as no decision`, async () => {
             const h = await memoryAgreementHarness(profile);
             const database = h.seller.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };

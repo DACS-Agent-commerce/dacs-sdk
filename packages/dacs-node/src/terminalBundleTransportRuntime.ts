@@ -41,6 +41,7 @@ import { createDacsDemosBundlePublicationV1 } from "./demosBundlePublication.js"
 import { captureDacsFixedPriceX402ApplicationV1 } from
   "./fixedPriceX402Profile.js";
 import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
+import { isDacsNodeSqliteBusyError } from "./sqlite.js";
 import type {
   DacsLiveRoleInboundOperationContextV1,
   DacsLiveRoleOperationContextV1,
@@ -561,8 +562,8 @@ async function loadOrder(
             database: context.database,
             order: retainedOrder as FixedPriceX402OrderInput,
           });
-    } catch {
-      throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
+    } catch (error) {
+      throw busyOr(error, "vet-terminal-order-mismatch");
     }
   })();
   if (retained === undefined || retained.localBindingHash !== record.localBindingHash) {
@@ -611,9 +612,15 @@ function loadPhase(
 ): DacsPreAgreementPhaseV1 | undefined {
   try {
     return loadDacsPreAgreementPhaseV1(context, order);
-  } catch {
-    throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+  } catch (error) {
+    throw busyOr(error, "vet-terminal-binding-corrupt");
   }
+}
+
+// A read the database could not serve under lock contention stays a raw
+// SQLite error, which the tracks retry; anything else is `reasonCode`.
+function busyOr(error: unknown, reasonCode: string): unknown {
+  return isDacsNodeSqliteBusyError(error) ? error : new DacsVetTerminalBundleTransportError(reasonCode);
 }
 
 // Commit the job to the terminal for this role before retaining or signing
@@ -625,8 +632,9 @@ function claimTerminalPhase(
   try {
     claimDacsPreAgreementPhaseV1(context, order, "vet-terminal");
   } catch (error) {
-    throw new DacsVetTerminalBundleTransportError(error instanceof DacsPreAgreementPhaseError
-      ? error.reasonCode : "vet-terminal-binding-corrupt");
+    throw error instanceof DacsPreAgreementPhaseError
+      ? new DacsVetTerminalBundleTransportError(error.reasonCode)
+      : busyOr(error, "vet-terminal-binding-corrupt");
   }
 }
 
@@ -896,8 +904,9 @@ async function putBinding(
     try {
       claimDacsSellerVetOutcomeV1(context, order, "seller-failure");
     } catch (error) {
-      throw new DacsVetTerminalBundleTransportError(error instanceof DacsPreAgreementPhaseError
-        ? error.reasonCode : "vet-terminal-binding-corrupt");
+      throw error instanceof DacsPreAgreementPhaseError
+        ? new DacsVetTerminalBundleTransportError(error.reasonCode)
+        : busyOr(error, "vet-terminal-binding-corrupt");
     }
   }
   claimTerminalPhase(context, order);

@@ -42,6 +42,7 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { isDacsNodeSqliteBusyError } from "./sqlite.js";
 import {
   authenticateDacsSessionVetProductionV1,
   createDacsLiveSessionIdentityV1,
@@ -246,6 +247,20 @@ function operator(reasonCode: string): Readonly<FixedPriceX402TrackOperationResu
   return Object.freeze({ status: "operator-action", reasonCode });
 }
 
+// A durable read that failed under SQLite lock contention (another process
+// held the lock past the busy timeout) is retried; any other failure to read
+// durable state still needs an operator, as `reasonCode`.
+function operatorUnlessBusy(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  delay: number,
+  error: unknown,
+  reasonCode: string,
+): Readonly<FixedPriceX402TrackOperationResult> {
+  return isDacsNodeSqliteBusyError(error)
+    ? pending(context, delay, `${reasonCode}-busy`, "indeterminate")
+    : operator(reasonCode);
+}
+
 // Commit the job to the agreement immediately before this role signs on it.
 // Returns the operator result when the role already committed to a terminal.
 function claimAgreementPhase(
@@ -404,7 +419,7 @@ export async function advanceDacsVetTerminalTrackV1(
         error.reasonCode === DACS_VET_TERMINAL_PLAN_DISAGREEMENT_NOTICE_PENDING) {
       return pending(context, delay, error.reasonCode);
     }
-    return operator(error instanceof DacsVetTerminalBundleTransportError &&
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
       ? "vet-terminal-finalization-conflict"
       : "vet-terminal-finalization-unavailable");
@@ -492,7 +507,7 @@ async function finalizeLocalVetFailure(
         input.operation.order.jobId,
       ) ?? operator(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
     }
-    return operator(error instanceof DacsVetTerminalBundleTransportError &&
+    return operatorUnlessBusy(context, delay, error, error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
       ? "vet-terminal-registration-conflict"
       : "vet-terminal-registration-invalid");
@@ -1029,7 +1044,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     try {
       loadDacsPreAgreementPhaseV1(context, operation.order);
     } catch (error) {
-      return operator(error instanceof DacsPreAgreementPhaseError
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
         ? error.reasonCode : "pre-agreement-phase-unavailable");
     }
     // Recover a durably signed response before advancing any competing terminal.
@@ -1040,7 +1055,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         operation.order,
       ).sellerResponseRetained;
     } catch (error) {
-      return operator(error instanceof DacsAgreementTransportRuntimeError ||
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsAgreementTransportRuntimeError ||
           error instanceof DacsPreAgreementPhaseError
         ? error.reasonCode : "seller-agreement-binding-unavailable");
     }
@@ -1072,7 +1087,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         return operator(DACS_PRE_AGREEMENT_PHASE_CONFLICT);
       }
     } catch (error) {
-      return operator(error instanceof DacsPreAgreementPhaseError
+      return operatorUnlessBusy(context, delay, error, error instanceof DacsPreAgreementPhaseError
         ? error.reasonCode : "pre-agreement-phase-unavailable");
     }
     let retained: Readonly<DacsLiveOrderInputV1>;

@@ -2139,6 +2139,63 @@ describe("Vet terminal pre-agreement boundary", () => {
         reasonCode: "vet-terminal-finalization-unavailable",
       });
   });
+
+  // Final r11 review: a durable read that SQLite could not serve under lock
+  // contention parked a healthy job at operator action.
+  it.each([
+    ["better-sqlite3's SQLITE_BUSY", () => Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" })],
+    ["better-sqlite3's SQLITE_LOCKED_SHAREDCACHE", () =>
+      Object.assign(new Error("database table is locked"), { code: "SQLITE_LOCKED_SHAREDCACHE" })],
+    ["node:sqlite's busy result code", () =>
+      Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 })],
+  ])("retries the terminal track when a terminal read meets %s", async (_label, busy) => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
+    await expect(actor.runtime.handleMessage(
+      await peerProposal("buyer"),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+    const database = actor.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };
+    const load = database.loadEffectInput;
+    database.loadEffectInput = () => { throw busy(); };
+    const retried = await advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID);
+    expect(retried).toMatchObject({ status: "indeterminate", reasonCode: "vet-terminal-finalization-unavailable-busy" });
+    expect(actor.signComponent).not.toHaveBeenCalled();
+    // Any other read failure still needs an operator.
+    database.loadEffectInput = () => { throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" }); };
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.toMatchObject({ status: "operator-action" });
+    // Once the lock clears, the same job advances.
+    database.loadEffectInput = load;
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.not.toMatchObject({ status: "operator-action" });
+  });
+
+  // The runtime reads the pre-agreement phase through a wrapper that reports
+  // an unreadable decision as corrupt; lock contention must pass through it.
+  it("retries the terminal track when only its phase decision read meets lock contention", async () => {
+    const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
+    await expect(actor.runtime.handleMessage(
+      await peerProposal("buyer"),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+    const decision = sha256Hex(`dacs-live-pre-agreement-phase:v1:${canonicalize({ role: "buyer", jobId: JOB_ID })}`);
+    const database = actor.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };
+    const load = database.loadEffectInput;
+    let reads = 0;
+    database.loadEffectInput = (kind, id) => {
+      if (kind === "session" && id === decision) {
+        reads += 1;
+        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+      }
+      return load(kind, id);
+    };
+    await expect(advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID))
+      .resolves.toMatchObject({ status: "indeterminate", reasonCode: "vet-terminal-finalization-unavailable-busy" });
+    expect(reads).toBeGreaterThan(0);
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
 });
 
 // Plan A: the buyer's own Vet of the seller failed (local material). Plan B:
