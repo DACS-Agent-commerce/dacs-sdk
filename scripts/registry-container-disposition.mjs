@@ -358,8 +358,9 @@ export function scanLockEngines(lock, versions) {
     evaluatedPackages, errors, violations };
 }
 
-// Records each security-gate finding by exact identity (lock path, version,
-// integrity, engine range, npm problem line) for comparison with the baseline.
+// Records each security-gate finding with its observed identity (lock path,
+// version, integrity, engine range, npm problem line); the baseline compares
+// them by rule (see gitIdentity below).
 export function extractPolicyFindings(read) {
   const json = name => JSON.parse(read(name) ?? "null");
   const exitCode = name => { const text = read(name); return text === undefined ? null : Number(text.trim()); };
@@ -395,10 +396,22 @@ export function extractPolicyFindings(read) {
   };
 }
 
+// The baseline keeps each finding's observed version and integrity as evidence,
+// but matches it by rule: lock location, dependency field and spec, required
+// engine range, and npm's problem line with installed versions elided. The
+// consumer installs without a lockfile, so a patch release of a package that
+// keeps the same rule stays baseline-only; a new package, location, spec or
+// range still blocks.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
-const gitIdentity = sameIdentity(["location", "field", "value", "version", "integrity"]);
-const engineIdentity = sameIdentity(["package", "location", "integrity", "required"]);
-const imageIdentity = sameIdentity(["name", "location", "version", "integrity"]);
+const packageName = (spec) => typeof spec === "string" ? spec.replace(/(?<=.)@[^@]*$/, "") : spec;
+const gitIdentity = sameIdentity(["location", "field", "value"]);
+const engineIdentity = (item, known) => typeof item?.package === "string" &&
+  packageName(item.package) === packageName(known?.package) && sameIdentity(["location", "required"])(item, known);
+const imageIdentity = sameIdentity(["name", "location"]);
+const sbomProblemRule = (line) => typeof line === "string" ? line
+  .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
+  .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;
+const sbomIdentity = (item, known) => typeof item === "string" && sbomProblemRule(item) === sbomProblemRule(known);
 // Non-empty, and every finding is recorded in the baseline exactly.
 const allListed = (items, known, same) => Array.isArray(items) && items.length > 0 && Array.isArray(known) &&
   items.every(item => known.some(entry => same(item, entry)));
@@ -412,7 +425,7 @@ export function classifyPolicyChecks(summary, baseline) {
   const engine = findings.engine;
   const sbom = (exitCode, observed, knownProblems) => exitCode === 0 ? "passed" :
     observed?.exitCode === exitCode && observed.code === "ESBOMPROBLEMS" &&
-      allListed(observed.problems, knownProblems, (a, b) => a === b) ? "baseline" : "blocked";
+      allListed(observed.problems, knownProblems, sbomIdentity) ? "baseline" : "blocked";
   return {
     registryDependency: gate.registryDependencyPolicyPassed === true
       ? ((findings.gitDependencies ?? []).length === 0 ? "passed" : "blocked")

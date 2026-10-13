@@ -180,7 +180,9 @@ WebSocket transport — an app already running a full chain stack with these dep
   job, manual runs and any release or publication path fail closed on it until
   it is reviewed. `Publish gated npm prerelease` runs this acceptance with
   drift enforced as a prerequisite job, so its publish job does not start
-  unless the acceptance passed under the fail-closed policy. That publish job
+  unless the acceptance passed under the fail-closed policy, nor unless a
+  `publish-environment` job finds `npm-prerelease-gated` already protected
+  (GitHub would otherwise create it unprotected on first use). That publish job
   and its `npm-prerelease-gated` environment must be the only holders of
   publication credentials: an older ref's ungated `publish-prerelease.yml` can
   still be dispatched, so the `npm-prerelease` environment must hold no token

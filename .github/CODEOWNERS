@@ -7,6 +7,7 @@
 /scripts/registry-container-disposition.mjs @randomblocker
 /scripts/verify-registry-container-consumer.sh @randomblocker
 /scripts/publish-exact-local-registry.mjs @randomblocker
+/scripts/check-publish-environment.mjs @randomblocker
 /package.json @randomblocker
 /.github/workflows/ @randomblocker
 /.github/CODEOWNERS @randomblocker

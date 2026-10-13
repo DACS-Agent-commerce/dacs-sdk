@@ -56,8 +56,8 @@ function workflowStepCondition(stepName: string): string | undefined {
 }
 
 // Extracts the literal `run: |` block of one workflow step without a YAML dependency.
-function workflowStepScript(stepName: string): string {
-  const { lines, start, stepIndent } = workflowStepLines(stepName);
+function workflowStepScript(stepName: string, path = workflowPath): string {
+  const { lines, start, stepIndent } = workflowStepLines(stepName, path);
   let index = start + 1;
   while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
   const runLine = lines[index] ?? "";
@@ -315,7 +315,7 @@ describe("registry/container workflow wiring", () => {
   it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
     const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
     expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
-    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish"]);
+    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish-environment", "publish"]);
     const gate = workflowJob(publish, "registry-container-acceptance");
     expect(gate).toEqual({ permissions: "\ncontents: read", uses: "./.github/workflows/registry-container-acceptance.yml",
       with: "\nenforce-audit-drift: true" });
@@ -323,8 +323,8 @@ describe("registry/container workflow wiring", () => {
     expect(job.steps).toContain("node scripts/publish-release-set.mjs");
     // No job-level `if:`: always(), failure() or !cancelled() there would run
     // the publish job after the acceptance job failed.
-    expect(job).toMatchObject({ needs: "registry-container-acceptance", environment: "npm-prerelease-gated",
-      permissions: "\ncontents: read\nid-token: write" });
+    expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+      environment: "npm-prerelease-gated", permissions: "\ncontents: read\nid-token: write" });
     expect(job).not.toHaveProperty("if");
     // The OIDC permission is the publish job's alone; the called acceptance
     // gets neither it nor any secret, and nothing in it can continue on error.
@@ -355,7 +355,7 @@ describe("registry/container workflow wiring", () => {
     expect(files).not.toContain("publish-prerelease.yml");
     expect(files).toContain(gatedName);
     const gated = join(directory, gatedName);
-    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "registry-container-acceptance",
+    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
       environment: "npm-prerelease-gated" });
     expect(workflowJob(gated, "registry-container-acceptance"))
       .toMatchObject({ uses: "./.github/workflows/registry-container-acceptance.yml", with: "\nenforce-audit-drift: true" });
@@ -368,6 +368,72 @@ describe("registry/container workflow wiring", () => {
       expect(environments(text), name).not.toContain("npm-prerelease");
       expect(text, name).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
       expect(/id-token: *write/.test(text) && publishes.test(text), `${name} requests OIDC and publishes`).toBe(false);
+    }
+  });
+
+  // Final r11 review: GitHub creates a missing environment, unprotected, the
+  // first time a job names it, so a dispatch before owner step 1 published
+  // with no approval. The publish job now needs a job that names no
+  // environment and fails unless the protected one already exists.
+  it("fails closed until the publish environment exists with its protection", () => {
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
+    const guard = workflowJob(publish, "publish-environment");
+    expect(Object.keys(guard)).toEqual(["runs-on", "permissions", "steps"]);
+    expect(guard.permissions).toBe("\ncontents: read\nactions: read");
+    expect(guard.steps).not.toMatch(/continue-on-error|\bif:/);
+    const run = (environment: unknown, policies: unknown) => {
+      const directory = mkdtempSync(join(tmpdir(), "dacs-publish-environment-"));
+      scratch.push(directory);
+      const checkout = join(directory, "checkout");
+      mkdirSync(join(checkout, "scripts"), { recursive: true });
+      writeFileSync(join(checkout, "scripts/check-publish-environment.mjs"),
+        readFileSync(join(repoRoot, "scripts/check-publish-environment.mjs")));
+      const fixture = (name: string, value: unknown) => {
+        if (value === undefined) return "echo 'gh: Not Found (HTTP 404)' >&2; exit 1";
+        writeFileSync(join(directory, name), JSON.stringify(value));
+        return `cat '${join(directory, name)}'`;
+      };
+      const calls = join(directory, "gh-calls");
+      const PATH = stubBin(directory, { gh: `echo "$*" >> '${calls}'\ncase "$2" in\n` +
+        `  */deployment-branch-policies) ${fixture("policies.json", policies)} ;;\n` +
+        `  *) ${fixture("environment.json", environment)} ;;\nesac` });
+      const runnerTemp = join(directory, "runner-temp");
+      mkdirSync(runnerTemp);
+      const result = runBash(["-e", "-c", workflowStepScript("Require the protected publish environment", publish)], {
+        cwd: checkout, env: { PATH, GITHUB_REPOSITORY: "DACS-Agent-commerce/dacs-sdk", RUNNER_TEMP: runnerTemp,
+          GH_TOKEN: "test-token" } });
+      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "" };
+    };
+    const reviewers = { type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } }] };
+    const protectedEnvironment = { name: "npm-prerelease-gated", protection_rules: [reviewers, { type: "branch_policy" }],
+      deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } };
+    const tagOnly = { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] };
+    const passed = run(protectedEnvironment, tagOnly);
+    expect(passed.status, passed.stdout + passed.stderr).toBe(0);
+    expect(passed.calls).toBe("api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated\n" +
+      "api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies\n");
+    // As GitHub creates it on first use: no rules, every branch may deploy.
+    const created = { name: "npm-prerelease-gated", protection_rules: [], deployment_branch_policy: null };
+    for (const [environment, policies, reason] of [
+      [undefined, tagOnly, undefined],
+      [created, { total_count: 0, branch_policies: [] }, "it has no required reviewers"],
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, reviewers: [] }] }, tagOnly, "it has no required reviewers"],
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, prevent_self_review: false }] }, tagOnly,
+        "it does not prevent self-review"],
+      [{ ...protectedEnvironment, deployment_branch_policy: null }, tagOnly, "not limited to custom tag patterns"],
+      [{ ...protectedEnvironment, deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } },
+        tagOnly, "not limited to custom tag patterns"],
+      [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "main", type: "branch" }] },
+        "other than a tag pattern"],
+      [protectedEnvironment, { total_count: 31, branch_policies: [{ name: "v*", type: "tag" }] }, "could not be read in full"],
+      [protectedEnvironment, undefined, undefined],
+      [{ ...protectedEnvironment, name: "npm-prerelease" }, tagOnly, "does not exist"],
+    ] as const) {
+      const result = run(environment, policies);
+      expect(result.status, JSON.stringify([environment, policies])).not.toBe(0);
+      if (reason) expect(result.stdout).toContain(`::error title=Unprotected publish environment::`);
+      if (reason) expect(result.stdout).toContain(reason);
     }
   });
 
@@ -402,7 +468,8 @@ describe("registry/container workflow wiring", () => {
     // the package script mapping and local publisher the acceptance runs.
     for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
       "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
-      "scripts/publish-exact-local-registry.mjs", "package.json", ".github/workflows/", ".github/CODEOWNERS"]) {
+      "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "package.json",
+      ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
     }
     // A later, more specific pattern would replace the directory's owner.
@@ -1145,8 +1212,8 @@ describe("#191 policy-finding baseline", () => {
       { location: "node_modules/other", field: "dependencies.x", value: "git+https://github.com/x/y.git" }]) }],
     ["the same Git dependency from another ref", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ ...avsc, value: "https://github.com/Irys-xyz/avsc#main" }]) }],
-    ["the Git dependency under a different arbundles", "registryDependency", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/@bundlr-network/client/node_modules/arbundles"]!.integrity = "sha512-other"; }) }],
+    ["the Git dependency at another lock location", "registryDependency", { "dependency-policy.json":
+      dependencyPolicy([{ ...avsc, location: "node_modules/arbundles" }]) }],
     ["a direct file: dependency", "registryDependency", { "dependency-policy.json":
       dependencyPolicy([{ location: "package.json", value: "file:../dacs" }]) }],
     ["a new engine violation", "engineStrict", { "generated-package-lock.json": withLock(p => {
@@ -1170,14 +1237,42 @@ describe("#191 policy-finding baseline", () => {
       sbomErr("consumer-physical-sbom.err").replace("ESBOMPROBLEMS", "EINVALIDTREE") }],
     ["a new physical SBOM problem", "physicalSbom", { "consumer-physical-sbom.err": sbomErr("consumer-physical-sbom.err") +
       "npm error missing: other@1.0.0, required by x@1.0.0\n" }],
-    ["a different typescript in the image", "productionImage", { "generated-package-lock.json": withLock(p => {
-      p["node_modules/typescript"]!.version = "5.9.3"; }) }],
+    ["a lock SBOM problem against a changed range", "lockSbom", { "consumer-lock-sbom.err":
+      sbomErr("consumer-lock-sbom.err").replace(">=0.62.0 <1.0.0", ">=0.63.0 <1.0.0") }],
+    ["typescript in the image but not at the lock's top level", "productionImage", {
+      "generated-package-lock.json": withLock(p => { delete p["node_modules/typescript"]; }) }],
     ["rubic-sdk in the image", "productionImage", { "runtime-image-policy.json": JSON.stringify({
       ...JSON.parse(readFileSync(join(b7b180f, "runtime-image-policy.json"), "utf8")), rubicSdkPresent: true }) }],
   ])("still exits 3 for %s", (_label, check, overrides) => {
     const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
     expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("blocked");
     expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  // Final r11 review: the consumer installs without a lockfile, so a patch
+  // release under the same rule (make-fetch-happen takes @npmcli/agent ^5.0.0)
+  // must not turn every PR, the drift job and prereleases red.
+  const release = (location: string, version: string) => (p: Record<string, Record<string, unknown>>) => {
+    p[location]!.version = version; p[location]!.integrity = `sha512-${version}-next-release`;
+  };
+  it.each([
+    ["@npmcli/agent 5.0.3 with the same engine range", "engineStrict", {
+      "generated-package-lock.json": withLock(release("node_modules/@npmcli/agent", "5.0.3")),
+      "engine-strict.log": strictLog.replaceAll("@npmcli/agent@5.0.2", "@npmcli/agent@5.0.3") }],
+    ["arbundles 0.6.24 with the same Git avsc spec", "registryDependency", {
+      "generated-package-lock.json": withLock(release("node_modules/@bundlr-network/client/node_modules/arbundles", "0.6.24")) }],
+    ["typescript 5.9.3 in the image", "productionImage", {
+      "generated-package-lock.json": withLock(release("node_modules/typescript", "5.9.3")) }],
+    ["lock SBOM problems with other installed versions", "lockSbom", { "consumer-lock-sbom.err": sbomErr("consumer-lock-sbom.err")
+      .replace("arbundles@0.6.23", "arbundles@0.6.24").replace("@ton/core@0.59.1", "@ton/core@0.59.2")
+      .replace("@ton/ton@15.4.0", "@ton/ton@15.4.1").replace("@solana/spl-token@0.4.15", "@solana/spl-token@0.4.16") }],
+    ["a physical SBOM problem with other installed versions", "physicalSbom", { "consumer-physical-sbom.err":
+      sbomErr("consumer-physical-sbom.err").replace("node-fetch@2.7.0", "node-fetch@2.7.1")
+        .replace("@near-js/providers@0.2.3", "@near-js/providers@0.2.4") }],
+  ])("stays baseline-only (exit 4) for %s", (_label, check, overrides) => {
+    const summary = b7b180fEvidence(overrides as Record<string, string | undefined>);
+    expect(classifyPolicyChecks(summary, baseline)[check as string]).toBe("baseline");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, failureClass: "policy" });
   });
 
   it("passes a check with no findings and blocks a passing flag that carries findings", () => {
