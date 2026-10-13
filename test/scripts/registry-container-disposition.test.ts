@@ -56,8 +56,8 @@ function workflowStepCondition(stepName: string): string | undefined {
 }
 
 // Extracts the literal `run: |` block of one workflow step without a YAML dependency.
-function workflowStepScript(stepName: string): string {
-  const { lines, start, stepIndent } = workflowStepLines(stepName);
+function workflowStepScript(stepName: string, path = workflowPath): string {
+  const { lines, start, stepIndent } = workflowStepLines(stepName, path);
   let index = start + 1;
   while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
   const runLine = lines[index] ?? "";
@@ -315,7 +315,7 @@ describe("registry/container workflow wiring", () => {
   it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
     const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
     expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
-    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish"]);
+    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish-environment", "publish"]);
     const gate = workflowJob(publish, "registry-container-acceptance");
     expect(gate).toEqual({ permissions: "\ncontents: read", uses: "./.github/workflows/registry-container-acceptance.yml",
       with: "\nenforce-audit-drift: true" });
@@ -323,8 +323,8 @@ describe("registry/container workflow wiring", () => {
     expect(job.steps).toContain("node scripts/publish-release-set.mjs");
     // No job-level `if:`: always(), failure() or !cancelled() there would run
     // the publish job after the acceptance job failed.
-    expect(job).toMatchObject({ needs: "registry-container-acceptance", environment: "npm-prerelease-gated",
-      permissions: "\ncontents: read\nid-token: write" });
+    expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+      environment: "npm-prerelease-gated", permissions: "\ncontents: read\nid-token: write" });
     expect(job).not.toHaveProperty("if");
     // The OIDC permission is the publish job's alone; the called acceptance
     // gets neither it nor any secret, and nothing in it can continue on error.
@@ -355,7 +355,7 @@ describe("registry/container workflow wiring", () => {
     expect(files).not.toContain("publish-prerelease.yml");
     expect(files).toContain(gatedName);
     const gated = join(directory, gatedName);
-    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "registry-container-acceptance",
+    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
       environment: "npm-prerelease-gated" });
     expect(workflowJob(gated, "registry-container-acceptance"))
       .toMatchObject({ uses: "./.github/workflows/registry-container-acceptance.yml", with: "\nenforce-audit-drift: true" });
@@ -368,6 +368,72 @@ describe("registry/container workflow wiring", () => {
       expect(environments(text), name).not.toContain("npm-prerelease");
       expect(text, name).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
       expect(/id-token: *write/.test(text) && publishes.test(text), `${name} requests OIDC and publishes`).toBe(false);
+    }
+  });
+
+  // Final r11 review: GitHub creates a missing environment, unprotected, the
+  // first time a job names it, so a dispatch before owner step 1 published
+  // with no approval. The publish job now needs a job that names no
+  // environment and fails unless the protected one already exists.
+  it("fails closed until the publish environment exists with its protection", () => {
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
+    const guard = workflowJob(publish, "publish-environment");
+    expect(Object.keys(guard)).toEqual(["runs-on", "permissions", "steps"]);
+    expect(guard.permissions).toBe("\ncontents: read\nactions: read");
+    expect(guard.steps).not.toMatch(/continue-on-error|\bif:/);
+    const run = (environment: unknown, policies: unknown) => {
+      const directory = mkdtempSync(join(tmpdir(), "dacs-publish-environment-"));
+      scratch.push(directory);
+      const checkout = join(directory, "checkout");
+      mkdirSync(join(checkout, "scripts"), { recursive: true });
+      writeFileSync(join(checkout, "scripts/check-publish-environment.mjs"),
+        readFileSync(join(repoRoot, "scripts/check-publish-environment.mjs")));
+      const fixture = (name: string, value: unknown) => {
+        if (value === undefined) return "echo 'gh: Not Found (HTTP 404)' >&2; exit 1";
+        writeFileSync(join(directory, name), JSON.stringify(value));
+        return `cat '${join(directory, name)}'`;
+      };
+      const calls = join(directory, "gh-calls");
+      const PATH = stubBin(directory, { gh: `echo "$*" >> '${calls}'\ncase "$2" in\n` +
+        `  */deployment-branch-policies) ${fixture("policies.json", policies)} ;;\n` +
+        `  *) ${fixture("environment.json", environment)} ;;\nesac` });
+      const runnerTemp = join(directory, "runner-temp");
+      mkdirSync(runnerTemp);
+      const result = runBash(["-e", "-c", workflowStepScript("Require the protected publish environment", publish)], {
+        cwd: checkout, env: { PATH, GITHUB_REPOSITORY: "DACS-Agent-commerce/dacs-sdk", RUNNER_TEMP: runnerTemp,
+          GH_TOKEN: "test-token" } });
+      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "" };
+    };
+    const reviewers = { type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } }] };
+    const protectedEnvironment = { name: "npm-prerelease-gated", protection_rules: [reviewers, { type: "branch_policy" }],
+      deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } };
+    const tagOnly = { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] };
+    const passed = run(protectedEnvironment, tagOnly);
+    expect(passed.status, passed.stdout + passed.stderr).toBe(0);
+    expect(passed.calls).toBe("api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated\n" +
+      "api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies\n");
+    // As GitHub creates it on first use: no rules, every branch may deploy.
+    const created = { name: "npm-prerelease-gated", protection_rules: [], deployment_branch_policy: null };
+    for (const [environment, policies, reason] of [
+      [undefined, tagOnly, undefined],
+      [created, { total_count: 0, branch_policies: [] }, "it has no required reviewers"],
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, reviewers: [] }] }, tagOnly, "it has no required reviewers"],
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, prevent_self_review: false }] }, tagOnly,
+        "it does not prevent self-review"],
+      [{ ...protectedEnvironment, deployment_branch_policy: null }, tagOnly, "not limited to custom tag patterns"],
+      [{ ...protectedEnvironment, deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } },
+        tagOnly, "not limited to custom tag patterns"],
+      [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "main", type: "branch" }] },
+        "other than a tag pattern"],
+      [protectedEnvironment, { total_count: 31, branch_policies: [{ name: "v*", type: "tag" }] }, "could not be read in full"],
+      [protectedEnvironment, undefined, undefined],
+      [{ ...protectedEnvironment, name: "npm-prerelease" }, tagOnly, "does not exist"],
+    ] as const) {
+      const result = run(environment, policies);
+      expect(result.status, JSON.stringify([environment, policies])).not.toBe(0);
+      if (reason) expect(result.stdout).toContain(`::error title=Unprotected publish environment::`);
+      if (reason) expect(result.stdout).toContain(reason);
     }
   });
 
@@ -402,7 +468,8 @@ describe("registry/container workflow wiring", () => {
     // the package script mapping and local publisher the acceptance runs.
     for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
       "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
-      "scripts/publish-exact-local-registry.mjs", "package.json", ".github/workflows/", ".github/CODEOWNERS"]) {
+      "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "package.json",
+      ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
     }
     // A later, more specific pattern would replace the directory's owner.

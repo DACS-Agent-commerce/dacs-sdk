@@ -50,6 +50,15 @@ receipt; any mismatch or registry ambiguity fails closed. This makes a partial
 three-package release safely resumable without rebuilding or trying to replace
 an immutable npm version.
 
+GitHub creates a missing environment the first time a job names it, with no
+reviewers and no deployment rule. So the publish job also needs a
+`publish-environment` job, which names no environment and fails unless
+`npm-prerelease-gated` already exists with a required reviewer, "Prevent
+self-review" on, and deployments limited to tag patterns (owner step 1 below).
+Until step 1 is done, every dispatch fails there; none publishes unapproved.
+It reads the environment through the REST API with the workflow token's
+`actions: read` permission.
+
 For the first release, configure the `npm-prerelease-gated` environment's
 `NPM_TOKEN` secret with the minimum npm permission required to create all three
 public packages. After package creation, configure each npm package's trusted
