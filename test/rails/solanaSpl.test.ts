@@ -1222,6 +1222,7 @@ describe("advanceSolanaSplSettlement without proof from the store", () => {
   test.each([
     ["corrupt", { status: "corrupt", reason: "store detail" }, "solana-spl-settlement-store-corrupt"],
     ["conflict", { status: "conflict", reason: "store detail" }, "solana-spl-settlement-store-conflict"],
+    ["conflict without its reason", { status: "conflict" }, "solana-spl-settlement-store-claim-invalid"],
     ["unknown", { status: "released", reason: "store detail" }, "solana-spl-settlement-store-claim-invalid"],
     ["null", null, "solana-spl-settlement-store-claim-invalid"],
     ["undefined", undefined, "solana-spl-settlement-store-claim-invalid"],
@@ -2444,11 +2445,18 @@ describe("advanceSolanaSplSettlement captures each store object as plain data", 
     ["a claim whose attempts is a getter", invalid,
       (claim) => getter({ ...claim }, "attempts", { count: 0 })],
     ["a claim with an extra key", invalid, (claim) => ({ ...claim, note: "store" })],
+    ["an acquired claim that also carries a settled claim's key", invalid,
+      (claim) => ({ ...claim, settlement: {} })],
     ["a claim with a prototype other than Object.prototype", invalid, withPrototype],
+    // Canonical form skips undefined values, so only the key set tells them apart.
+    ["an intent with an extra key whose value is undefined", invalid,
+      (claim) => ({ ...claim, intent: { ...claim.intent, note: undefined } })],
     ["a lease whose generation is a getter", invalid,
       (claim) => ({ ...claim, lease: getter({ ...claim.lease }, "generation", { count: 0 }) })],
     ["a lease with an extra key", invalid,
       (claim) => ({ ...claim, lease: { ...claim.lease, note: "store" } })],
+    ["a lease with a symbol key", invalid,
+      (claim) => ({ ...claim, lease: { ...claim.lease, [Symbol("note")]: "store" } })],
     ["an attempt row with a non-enumerable attemptHash", corrupt, (claim) => {
       const row: Fields = { ...claim.attempts.at(-1)! };
       Object.defineProperty(row, "attemptHash", { enumerable: false });
@@ -2497,6 +2505,7 @@ describe("advanceSolanaSplSettlement captures each store object as plain data", 
     ["whose status is a getter", (write) => getter({ ...write }, "status", { count: 0 })],
     ["with an extra key", (write) => ({ ...write, note: "store" })],
     ["with a prototype other than Object.prototype", withPrototype],
+    ["that succeeds but also carries a failure's reason", (write) => ({ ...write, reason: "store" })],
   ])("a recordAttempt result %s never broadcasts attempt 3", async (_name, recordAttempt) => {
     await expect(resume({ recordAttempt })).resolves.toEqual({
       result: { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" },
