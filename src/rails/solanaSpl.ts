@@ -515,6 +515,12 @@ function validatePreflight(
     if (typeof preflight.payeeAtaExists !== "boolean") {
       throw new DacsError("pay-solana-spl: payeeAtaExists must be a boolean");
     }
+    // An existing account's owner and mint decide a binding mismatch, which
+    // closes the key, so only well-formed keys may reach that comparison.
+    if (preflight.payeeAtaExists) {
+      requireBase58Bytes(preflight.payeeAtaOwner, "payeeAtaOwner", 32);
+      requireBase58Bytes(preflight.payeeAtaMint, "payeeAtaMint", 32);
+    }
     const tokenBalance = uint(preflight.payerTokenBalanceBaseUnits, "payerTokenBalanceBaseUnits");
     const nativeBalance = uint(preflight.payerNativeBalanceLamports, "payerNativeBalanceLamports");
     const networkFee = uint(preflight.networkFeeLamports, "networkFeeLamports");
@@ -548,9 +554,10 @@ function validatePreflight(
       instruction: "TransferChecked" as const,
     });
   } catch {
-    // A malformed answer is an adapter or RPC fault, not a chain refusal, so
-    // it is never a failure that closes the key. The adapter's message may
-    // carry RPC or account detail; never echo it.
+    // A malformed answer, a payee account's owner or mint included, is an
+    // adapter or RPC fault, not a chain refusal, so it is never a failure that
+    // closes the key. The adapter's message may carry RPC or account detail;
+    // never echo it.
     return { status: "indeterminate", reason: "solana-spl-preflight-invalid" };
   }
 }

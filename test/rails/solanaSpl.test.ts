@@ -1524,6 +1524,9 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
   const ataMissing = {
     status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-missing",
   } as const;
+  const bindingMismatch = {
+    status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-binding-mismatch",
+  } as const;
 
   // A resume by another worker once the first lease has expired, with an
   // adapter that would now settle; returns its result and every effect count.
@@ -1543,6 +1546,10 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
   test.each([
     ["a permanent", preflight({ payerTokenBalanceBaseUnits: "0" }), {}, insufficient],
     ["a counterparty", preflight({ payeeAtaExists: false }), {}, ataMissing],
+    // The chain's answer, not an adapter fault: the existing account's owner
+    // or mint is a well-formed key that is not the intent's.
+    ["a binding-mismatch (another owner)", preflight({ payeeAtaOwner: PAYER }), {}, bindingMismatch],
+    ["a binding-mismatch (another mint)", preflight({ payeeAtaMint: PAYER_TOKEN }), {}, bindingMismatch],
   ] as const)("%s failure is recorded, and a topped-up resume returns it unsigned",
     async (_name, failing, overrides, expected) => {
       const store = createInMemorySolanaSplSettlementStore();
@@ -2053,6 +2060,69 @@ describe("advanceSolanaSplSettlement reason codes", () => {
       adapter: adapter({ prepareSignedTransfer }),
     }))).resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  // `getAccount()` returns an account's owner and mint as `PublicKey` objects.
+  // An adapter that passes them on, or reads a field that is not there, has a
+  // bug; the payee did nothing wrong. Only a well-formed key that is not the
+  // intent's is a binding mismatch, which closes the key (see "failed closes
+  // the settlement key").
+  const publicKey = (key: string, ran: string[]) => ({
+    toBase58: () => { ran.push("toBase58"); return key; },
+    toString: () => { ran.push("toString"); return key; },
+    toJSON: () => { ran.push("toJSON"); return key; },
+  });
+  test.each<[string, (ran: string[]) => Record<string, unknown>]>([
+    ["an owner that is undefined", () => ({ payeeAtaOwner: undefined })],
+    ["an owner that is a PublicKey object", (ran) => ({ payeeAtaOwner: publicKey(PAYEE, ran) })],
+    ["an owner that is a number", () => ({ payeeAtaOwner: 7 })],
+    ["an owner that is empty", () => ({ payeeAtaOwner: "" })],
+    ["an owner one byte too long", () => ({ payeeAtaOwner: `1${PAYEE}` })],
+    ["a mint that is undefined", () => ({ payeeAtaMint: undefined })],
+    ["a mint that is a PublicKey object", (ran) => ({ payeeAtaMint: publicKey(MINT, ran) })],
+    ["a mint that is a String object", () => ({ payeeAtaMint: new String(MINT) })],
+    ["a mint that is not Base58", () => ({ payeeAtaMint: `${MINT}0` })],
+    // Checked before any refusal, so a malformed answer never closes the key.
+    ["an undefined owner and too little balance", () => ({
+      payeeAtaOwner: undefined, payerTokenBalanceBaseUnits: "0",
+    })],
+  ])("an existing payee account with %s is an adapter fault: unsigned, never failed, key left open",
+    async (_name, fields) => {
+      const ran: string[] = [];
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const result = await advanceSolanaSplSettlement(input({
+        store,
+        adapter: adapter({
+          preflight: async () => ({ ...preflight(), ...fields(ran) }) as never,
+          prepareSignedTransfer,
+        }),
+      }));
+      expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(recordFailure).not.toHaveBeenCalled();
+      // Refused by its type, without running any of its code.
+      expect(ran).toEqual([]);
+      await expect(advanceSolanaSplSettlement(input({
+        store, owner: "worker-b", now: () => 2_000,
+        adapter: adapter({ prepareSignedTransfer }),
+      }))).resolves.toMatchObject({ status: "settled" });
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    });
+
+  test("a missing payee account has no owner or mint to check: it is created and paid", async () => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    await expect(advanceSolanaSplSettlement(input({
+      authority: authority({ createPayeeAtaIfMissing: true }),
+      adapter: adapter({
+        preflight: async () => ({
+          ...preflight({ payeeAtaExists: false }), payeeAtaOwner: undefined, payeeAtaMint: "",
+        }) as never,
+        prepareSignedTransfer,
+      }),
+    }))).resolves.toMatchObject({ status: "settled" });
+    expect(prepareSignedTransfer.mock.calls[0]?.[0]).toMatchObject({ createPayeeAta: true });
   });
 
   test.each([

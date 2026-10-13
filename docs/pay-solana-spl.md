@@ -225,11 +225,16 @@ confirmed ledger view. Its `authenticationHash` must bind the cluster,
 signature, retained last-valid bound, observed height and commitment; hash
 format alone is not authentication. Adapters that omit the optional expiry
 fields remain source-compatible but produce an `indeterminate` result at
-runtime. Preflight amounts must be canonical decimal strings and
-`payeeAtaExists` a boolean; anything else, including an object that converts
-to a decimal string, is `indeterminate` with `solana-spl-preflight-invalid`:
+runtime. Preflight amounts must be canonical decimal strings, `payeeAtaExists`
+a boolean, and `payerTokenAccount` and `payeeAta` Base58 public keys. When
+`payeeAtaExists` is true, `payeeAtaOwner` and `payeeAtaMint` must be Base58
+public keys too: strings, so pass `toBase58()` rather than a `PublicKey`
+object. Anything else, including an object that converts to a decimal string
+or prints as a key, is `indeterminate` with `solana-spl-preflight-invalid`:
 nothing is signed, and the key stays open. A malformed answer is an adapter
-or RPC fault, never a chain refusal, so it is never `failed`.
+or RPC fault, never a chain refusal, so it is never `failed`. Only a
+well-formed owner or mint that is not the intent's payee or mint is `failed`
+with `solana-spl-payee-ata-binding-mismatch`.
 The durable store is part of the trusted implementation boundary and
 must return exactly the evidence it accepted. A transport response or an
 unverified signature string is not settlement evidence. A live wallet/RPC
