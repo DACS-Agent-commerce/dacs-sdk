@@ -3028,6 +3028,43 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
   });
 
+  test.each(["throws", "never answers"] as const)(
+    "sends a first source refund from the checkpoint when the source-leg observation %s, under a clock that advances in real time",
+    async (failure) => {
+      // The host's clock advances with real time, as in production, so the
+      // lease really lapses while an adapter call hangs.
+      let clockBase = 1_000_000;
+      let clockStart = performance.now();
+      const now = () => Math.floor(clockBase + performance.now() - clockStart);
+      const setClock = (value: number) => { clockBase = value; clockStart = performance.now(); };
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false, now, leaseDurationMs: 1_000 });
+      await advanceCrossChainHtlc(run.shared);
+      setClock(1_002_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "checkpoints" })).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-lock-finality-pending",
+      });
+      h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+      h.observeSourceLeg.mockImplementation(failure === "throws"
+        ? async () => { throw new Error("source RPC unavailable"); }
+        : () => new Promise(() => {}));
+      setClock(1_700_000);
+      await expect(settlesWithin(advanceCrossChainHtlc({ ...run.shared, owner: "source-leg-down" }), 3_000))
+        .resolves.toEqual({
+          status: "refund-pending",
+          reason: "destination-lock-unresolved",
+          txRefs: [refFor("source-lock"), refFor("destination-lock")],
+          refunds: { "destination-refund": "uncertain", "source-refund": "pending" },
+        });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund"]);
+      expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
+        .toEqual(["source-lock", "destination-lock", "source-refund"]);
+      expect(h.actions["source-refund"]).toMatchObject({ state: "final" });
+    },
+  );
+
   test("abandons an adapter broadcast that outlasts the lease and resends the same bytes next call", async () => {
     const h = harness();
     const broadcast = h.adapter.broadcastRetained;

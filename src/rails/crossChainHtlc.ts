@@ -315,7 +315,8 @@ export interface HtlcEffectFence {
  * adapter also owns authentication: the core takes every observation as
  * authenticated once its fields are well formed. Every call must return or
  * throw well within the host's lease; the core abandons one still running
- * when the lease lapses.
+ * when the lease lapses, and `observeSourceLeg` once half the lease time left
+ * at its start has passed.
  */
 export interface CrossChainHtlcAdapter {
   observe(
@@ -327,7 +328,10 @@ export interface CrossChainHtlcAdapter {
    * `source-refund`), reported exactly as `observe` reports them. It must
    * not depend on the destination chain or on the payee's role service: the
    * payer's source refund is decided on it, before `observe` is called, so
-   * that nothing on the payee's side can hold that refund up.
+   * that nothing on the payee's side can hold that refund up. The core
+   * abandons it once half the lease time left at its start has passed, so
+   * that a first refund decided without it can still be sent in the same
+   * call.
    */
   observeSourceLeg(
     intent: Readonly<CrossChainHtlcIntent>,
@@ -626,8 +630,10 @@ export interface AdvanceCrossChainHtlcInput {
    * and a broadcast that does is reported uncertain; the next owner retries
    * either. Other callers wait (`htlc-settlement-held`) until it lapses. An
    * adapter call still running when it lapses is abandoned with that same
-   * outcome, so a call returns soon after its lease ends even if an adapter
-   * call never does. Set it above the slowest adapter call.
+   * outcome (a source-leg observation sooner, once half the lease time left
+   * at its start has passed), so a call returns soon after its lease ends
+   * even if an adapter call never does. Set it above the slowest adapter
+   * call, and at least twice the slowest source-leg observation.
    */
   leaseDurationMs?: number;
 }
@@ -1559,14 +1565,16 @@ export async function advanceCrossChainHtlc(
   // its outcome is fenced off by then anyway (a preparation is discarded
   // unrecorded, a broadcast is uncertain, an observation unavailable), so
   // waiting for it could only keep this call, and a host that awaits it, from
-  // reaching the next one.
+  // reaching the next one. A call given only a share of the lease time left
+  // is abandoned once that share has passed, so that what follows it in this
+  // call still runs under a live lease.
   const leaseExpiresAt = claimed.lease.expiresAt;
-  const withinLease = async <T>(call: () => Promise<T>): Promise<T> => {
+  const withinLease = async <T>(call: () => Promise<T>, leaseShare = 1): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const lapsed = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(
-        () => reject(new DacsError("pay-cross-chain-htlc: adapter call outlasted the lease")),
-        Math.min(Math.max(0, leaseExpiresAt - readNow()), MAX_TIMER_MS),
+        () => reject(new DacsError("pay-cross-chain-htlc: adapter call outlasted its deadline")),
+        Math.min(Math.floor(Math.max(0, leaseExpiresAt - readNow()) * leaseShare), MAX_TIMER_MS),
       );
     });
     try {
@@ -1670,16 +1678,18 @@ export async function advanceCrossChainHtlc(
     }
   };
   // The source chain alone, through the adapter's source-leg observation: null
-  // when the adapter has none, or it fails or outlasts the lease, and also
-  // when it is invalid or reports another leg's action, which sets
-  // `sourceObservationInvalid`.
+  // when the adapter has none, or it fails or outlasts half the lease time
+  // left, and also when it is invalid or reports another leg's action, which
+  // sets `sourceObservationInvalid`. Half, so that a first refund sent from
+  // the checkpoint without it still has a live lease to be prepared and
+  // broadcast under.
   let sourceObservationInvalid = false;
   const observeSource = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     if (!observeSourceLedger) return null;
     let snapshot: Readonly<HtlcLedgerSnapshot>;
     try {
       await fence.assertCurrent();
-      snapshot = await withinLease(() => observeSourceLedger(intent, fence));
+      snapshot = await withinLease(() => observeSourceLedger(intent, fence), 1 / 2);
       await fence.assertCurrent();
     } catch {
       return null;

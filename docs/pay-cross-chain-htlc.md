@@ -69,11 +69,15 @@ longest a crashed worker holds the session up. The core abandons an adapter
 call (an observation, a preparation or a broadcast) that is still running when
 the lease lapses, with the outcome the fence would give it anyway: the
 observation is unavailable, the preparation is discarded unrecorded, the
-broadcast is uncertain. So an adapter call that never returns cannot keep an
-`advanceCrossChainHtlc` call from returning for longer than its lease, and a
-host that awaits each call before the next still reaches the next one. Store
-calls are not bounded this way. Choose a lease above the slowest adapter call,
-and still have the adapter time out each call well within it, so that it can
+broadcast is uncertain. A source-leg observation (`observeSourceLeg`) is
+abandoned sooner, once half the lease time left at its start has passed, so
+that a first source refund decided without it still has a live lease to be
+prepared and broadcast in. So an adapter call that never returns cannot keep
+an `advanceCrossChainHtlc` call from returning for longer than its lease, and
+a host that awaits each call before the next still reaches the next one.
+Store calls are not bounded this way. Choose a lease above the slowest
+adapter call, and at least twice the slowest source-leg observation, and
+still have the adapter time out each call well within it, so that it can
 release what an abandoned call holds.
 
 `authorizeDestinationClaim` preserves HTLC-10's payer free option: the core
@@ -145,8 +149,9 @@ payee's side, and applies the refund rules below to what it reports: a refund
 is prepared or its retained bytes rebroadcast when none is reported (or an
 `absent` names none), and a refund reported `pending`, `final`, `failed` or
 `absent` naming it is not sent again. If that observation is unavailable (it
-throws or outlasts the lease), the core prepares and broadcasts only a first
-refund, on the strength of the checkpoint; a retained refund is never
+throws, or is still running when half the lease time left at its start has
+passed), the core prepares and broadcasts only a first refund, on the
+strength of the checkpoint, in the remaining half; a retained refund is never
 rebroadcast without a source-leg observation showing it is not dead. If the
 observation is invalid, or does not report the source lock final as
 checkpointed, the whole-session path below decides instead.
@@ -648,9 +653,11 @@ payer's refund is not isolated from the payee's side for such an adapter.
   supply the original salt on the next call.
 - Supply that same salt on every `advanceCrossChainHtlc` call, including after
   a restart. The current store API does not return secrets on takeover.
-- Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call.
-  The core abandons an adapter call still running when the lease lapses, but
-  the adapter should still time out each call within the lease.
+- Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call,
+  and at least twice the slowest `observeSourceLeg`. The core abandons an
+  adapter call still running when the lease lapses, and a source-leg
+  observation once half the lease time left at its start has passed, but the
+  adapter should still time out each call within that.
 - Page an operator on each of these results, and keep advancing the session
   (except after `failed`). `htlcNeedsOperator(progress)` returns `true` for
   exactly this list:
@@ -735,8 +742,10 @@ the core cannot check them itself.
 - A replacement preparation returns a different signed transaction, and a
   retained action is broadcast byte for byte.
 - Every adapter call returns or throws within a timeout shorter than the
-  host's lease, also when a role service never answers. The core abandons a
-  call still running at the lease, but cannot release what it holds.
+  host's lease, and `observeSourceLeg` within half of it, also when a role
+  service never answers. The core abandons a call still running at the lease
+  (a source-leg observation at half the lease time left), but cannot release
+  what it holds.
 
 The package deliberately does not bundle chain SDKs, HTLC contracts, wallets
 or funded routes. Those are deployment-specific integrations and require
