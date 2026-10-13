@@ -1424,6 +1424,8 @@ describe("advanceSolanaSplSettlement reason codes", () => {
       },
     }, { createPayeeAtaIfMissing: true }],
     ["a payee account flag that is the string \"false\"", { payeeAtaExists: "false" }, {}],
+    // What `connection.getBalance()`-style code returns; it used to be coerced.
+    ["a network fee that is a number", { networkFeeLamports: 5000 }, {}],
   ])("%s is never coerced: a fixed preflight code before signing", async (_name, fields, overrides) => {
     const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
     const result = await advanceSolanaSplSettlement(input({
