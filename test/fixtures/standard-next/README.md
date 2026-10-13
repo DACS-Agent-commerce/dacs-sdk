@@ -21,6 +21,13 @@ ahead of the repository-wide conformance pin.
   `ce43b226e358e15cb126b4b7d53b8638648c14ca55250eb57e6db68e451ba13f`.
   Its historical raw-digest/hex signature conflict with current §8.5.1/SIG-6
   and Demos L2PS is tracked upstream in DACS-Standard#349.
+- `canonical-channel-message-v0.6.json` — DACS-3 v0.6 §8.3.3 CH-6..CH-10
+  (`CanonicalChannelMessage` current-read, explicit `legacy-import`, CORE
+  §B.7 SIG-2/SIG-5/SIG-6); commit
+  `6cd3775faf7c20140df53753d9eb4719c0da9627` (Standard PR #367 lineage on
+  `next`), file SHA-256
+  `5e5210845473d892246223475c5cbfcbf16c8de0dba84937fa114635e46501bb`.
+  55 vectors. This targeted corpus does not move the SDK-wide Standard pin.
 - `domain-claim-gcr-v0.4.json` — DACS-1 DCR-1..DCR-8 and DACS-2
   DGCR-1..DGCR-6; commit
   `5c175d148932c8a3635e54a15f1db2f31f67a500` (Standard PR #346),

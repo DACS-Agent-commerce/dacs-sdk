@@ -1863,7 +1863,13 @@ export async function commitFixedPriceAgreement(
   );
 }
 
-/** RFQ commitment gate bound to the exact accepted channel checkpoint. */
+/**
+ * RFQ commitment gate bound to the exact accepted channel checkpoint.
+ *
+ * Profile admission is not checked here. A caller MUST first admit the exact
+ * corrective profile for the session (CORE §11.1.2(3)). The durable RFQ client
+ * performs no commitment publication.
+ */
 export async function commitRfqAgreement(
   callerInput: CommitRfqAgreementInput,
   callerProvider: FinalityCommitmentProvider,

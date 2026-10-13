@@ -23,6 +23,7 @@ import {
   readPrivateFile,
 } from "../filesystem/privateStore.js";
 import {
+  DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION,
   DURABLE_RFQ_LIFECYCLE_STORE_VERSION,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
@@ -89,6 +90,15 @@ function plainRecord(value: unknown): value is DataRecord {
 function exactKeys(value: DataRecord, required: readonly string[]): boolean {
   const keys = Object.keys(value);
   return keys.length === required.length && required.every((key) => keys.includes(key));
+}
+
+/** A record the validator cannot read is `corrupt`, never a rejected store call. */
+function recordViolation<TSignature>(record: unknown): string | null {
+  try {
+    return durableRfqLifecycleRecordViolation<TSignature>(record);
+  } catch {
+    return "RFQ record cannot be validated";
+  }
 }
 
 function positiveInteger(value: unknown, fallback: number, label: string): number {
@@ -375,10 +385,13 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     if (typeof version !== "number") {
       return { status: "corrupt", reason: "RFQ record is missing storeVersion" };
     }
-    if (version !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION) {
+    if (
+      version !== DURABLE_RFQ_LIFECYCLE_STORE_VERSION &&
+      version !== DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION
+    ) {
       return { status: "unsupported", version };
     }
-    const violation = durableRfqLifecycleRecordViolation<TSignature>(parsed.record);
+    const violation = recordViolation<TSignature>(parsed.record);
     if (violation !== null) return { status: "corrupt", reason: violation };
     const record = parsed.record as unknown as DurableRfqLifecycleRecord<TSignature>;
     if (record.role !== role || record.jobId !== jobId) {
@@ -675,10 +688,13 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       } catch {
         return { status: "corrupt", reason: "RFQ create candidate is not canonical JSON" };
       }
+      if (!plainRecord(ownedCandidate)) {
+        return { status: "corrupt", reason: "RFQ create candidate must be an object" };
+      }
       if (ownedCandidate.role !== captured.role) {
         return { status: "corrupt", reason: "RFQ store role isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
+      const violation = recordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
         return await withLock(ownedCandidate.role, ownedCandidate.jobId, async () => {
@@ -721,6 +737,9 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       } catch {
         return { status: "corrupt", reason: "RFQ CAS candidate is not canonical JSON" };
       }
+      if (!plainRecord(ownedCandidate)) {
+        return { status: "corrupt", reason: "RFQ CAS candidate must be an object" };
+      }
       if (
         role !== captured.role ||
         ownedCandidate.role !== role ||
@@ -728,7 +747,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       ) {
         return { status: "corrupt", reason: "RFQ store role/path isolation was violated" };
       }
-      const violation = durableRfqLifecycleRecordViolation<TSignature>(ownedCandidate);
+      const violation = recordViolation<TSignature>(ownedCandidate);
       if (violation !== null) return { status: "corrupt", reason: violation };
       try {
         return await withLock(role, jobId, async () => {

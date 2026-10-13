@@ -241,6 +241,10 @@ function acceptedProposal(session: RfqSessionState): Readonly<RfqProposal> {
 /**
  * DACS-3 §8.4.2 step 4 pure agreement derivation. The price and quantity come
  * only from the authenticated proposal accepted by the session reducer.
+ *
+ * Profile admission is not checked here. A caller MUST first admit the exact
+ * corrective profile for the session (CORE §11.1.2(3)); the durable RFQ client
+ * does so before it acts on an agreement.
  */
 export function deriveRfqAgreement(
   callerInput: RfqAgreementInput,
@@ -356,7 +360,13 @@ export function deriveRfqAgreement(
   return structuredClone(draft);
 }
 
-/** Collect the required buyer + seller signatures for an RFQ-derived draft. */
+/**
+ * Collect the required buyer + seller signatures for an RFQ-derived draft.
+ *
+ * Profile admission is not checked here. A caller MUST first admit the exact
+ * corrective profile for the session (CORE §11.1.2(3)); the durable RFQ client
+ * does so before it acts on an agreement.
+ */
 export async function signRfqAgreement(
   callerDraft: UnsignedAgreementArtifact,
   buyerSigner: AgreementSigner,
