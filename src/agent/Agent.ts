@@ -4,7 +4,6 @@ import type {
   AnyAttestationBundle,
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
-  BundleParty,
   ChainTxRef,
   CompositeVerificationRecord,
   IdentityBundle,
@@ -14,6 +13,7 @@ import type {
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
+  isAnchorReceipt,
   isAnyAttestationBundle,
   isAgreementArtifact,
   isAttestationRef,
@@ -45,7 +45,7 @@ import {
   type BindingPublisher,
   type BoundArtifactWriteResult,
 } from "../discovery/index.js";
-import { DacsError } from "../errors.js";
+import { DacsError, TransientError } from "../errors.js";
 import {
   authenticateDemosCciRecord,
   canonicalDemosAgentPublicKey,
@@ -533,19 +533,25 @@ export interface AgentConfig {
   resolveSettlementEvidenceContext?: AgentSettlementEvidenceContextResolver;
 
   /**
-   * Resolve the single anchor-writer ClaimRef from independently authenticated
-   * retained SR-2 receipt/session state, never from the ref signer, bundle
-   * parties, or anchoredByRole. Required for PC-2 logical storage locators.
-   * Return null when writer authority is missing or ambiguous. Captured once
-   * at construction; native references do not invoke this callback.
+   * Return the retained, independently verified CORE §5.1 write receipt for a
+   * PC-2 logical settlement-evidence locator (CORE SR2-10/SR2-11). Only hosts
+   * that kept the evidence write's receipt can resolve these refs. The SDK
+   * reads only the receipt's `stor-` native address, after checking its exact
+   * logical address, content hash and finality; it never resolves the opaque
+   * program name. Return null when no receipt is held (the ref then reports
+   * `missing`); throw when the receipt store cannot answer, so verification
+   * rejects and can be retried. Captured once at construction; native
+   * references do not invoke this callback.
    */
-  resolveAttestationAnchorWriter?: (
+  resolveAttestationAnchorReceipt?: (
     input: Readonly<{
       ref: Readonly<AttestationRef>;
       jobId: string;
-      parties: readonly BundleParty[];
     }>,
-  ) => Promise<string | null> | string | null;
+  ) =>
+    | Promise<ProtocolAnchorReceipt | null>
+    | ProtocolAnchorReceipt
+    | null;
 
   /**
    * Optional Demos CCI trust capabilities. Authenticated identity resolution
@@ -944,7 +950,7 @@ function captureAgentRuntimeConfig(
     "listingValidationDeps",
     "verifyCompositeRecord",
     "resolveSettlementEvidenceContext",
-    "resolveAttestationAnchorWriter",
+    "resolveAttestationAnchorReceipt",
     "bindings",
   ] as const) {
     const value = capturedCreateConfigValue(config, key);
@@ -1329,12 +1335,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     "AgentConfig.resolveSettlementEvidenceContext",
     true,
   );
-  const resolveAttestationAnchorWriter = stableAgentMethod<
-    AgentConfig["resolveAttestationAnchorWriter"]
+  const resolveAttestationAnchorReceipt = stableAgentMethod<
+    AgentConfig["resolveAttestationAnchorReceipt"]
   >(
     config,
-    "resolveAttestationAnchorWriter",
-    "AgentConfig.resolveAttestationAnchorWriter",
+    "resolveAttestationAnchorReceipt",
+    "AgentConfig.resolveAttestationAnchorReceipt",
     true,
   );
   const demosCci = captureAgentDemosCciConfig(
@@ -1507,50 +1513,76 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       evaluatedAt,
     );
   };
+  // A PC-2 logical locator names no native program. CORE SR2-10/SR2-11 and
+  // DEMOS-MAPPING let only an authenticated, finalized write receipt map it;
+  // the opaque program name and the name index never do. Null means no
+  // authenticated mapping exists. A receipt store or receipt state that
+  // cannot decide yet throws, so it is never reported as absence.
+  const paymentEvidenceNativeAddress = async (
+    artifactRef: Readonly<AttestationRef>,
+    jobId: string,
+  ): Promise<string | null> => {
+    const locator = artifactRef.anchor.locator;
+    // Validate the complete PC-2 tuple before consulting the host.
+    // Round-tripping rejects aliases, escapes and numeric spellings.
+    const tuple = /^dacs4:payment:([^:]+):([^:]+):(0|[1-9][0-9]*)(:resolved)?$/.exec(locator);
+    if (!tuple || tuple[1] !== jobId || !resolveAttestationAnchorReceipt) return null;
+    try {
+      if (paymentEvidenceAddress(
+        tuple[1],
+        decodeAddressSegment(tuple[2]!),
+        Number(tuple[3]),
+        tuple[4] !== undefined,
+      ) !== locator) return null;
+    } catch {
+      return null;
+    }
+    // A failing receipt store propagates like a failed native read.
+    const returned = await resolveAttestationAnchorReceipt({
+      ref: structuredClone(artifactRef),
+      jobId,
+    });
+    if (returned === null) return null;
+    let receipt: unknown;
+    try {
+      receipt = snapshotCanonicalJsonRead(returned, "PC-2 evidence AnchorReceipt");
+    } catch {
+      return null;
+    }
+    if (
+      !isAnchorReceipt(receipt) ||
+      receipt.logicalAddress !== locator ||
+      receipt.contentHash !== artifactRef.contentHash ||
+      !/^stor-[0-9a-f]{40}$/.test(receipt.nativeAddress)
+    ) {
+      return null;
+    }
+    // SR2-11 finality gate. Only a rejected write is terminal; any other
+    // unfinalized or indeterminate receipt may still finalize.
+    if (receipt.observationDisposition === "established") {
+      if (receipt.state === "finalized") return receipt.nativeAddress;
+      if (receipt.state === "rejected") return null;
+    }
+    throw new TransientError(
+      `PC-2 evidence AnchorReceipt for ${locator} is not finalized ` +
+        `(${receipt.state}, ${receipt.observationDisposition})`,
+    );
+  };
   const verifyBundleAtRef = (ref: string): Promise<BundleVerification> =>
     verifyBundleCore(ref, {
       readArtifact: (artifactRef) => publicReads.readAnchor(artifactRef),
       // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
       // This adapter owns storage-program reads; other registered anchor kinds
       // need a transport-specific resolver supplied to verifyBundleCore.
-      resolveAttestationRef: async (artifactRef, jobId, parties) => {
+      resolveAttestationRef: async (artifactRef, jobId) => {
         if (artifactRef.anchor.kind !== "storage-program") return null;
         const locator = artifactRef.anchor.locator;
         if (locator !== "dacs4:payment" && !locator.startsWith("dacs4:payment:")) {
           return publicReads.readAnchor(locator);
         }
-        // Validate the complete PC-2 tuple before consulting any authority or
-        // index. Round-tripping rejects aliases, escapes and numeric spellings.
-        const tuple = /^dacs4:payment:([^:]+):([^:]+):(0|[1-9][0-9]*)(:resolved)?$/.exec(locator);
-        if (!tuple || tuple[1] !== jobId) return null;
-        try {
-          if (paymentEvidenceAddress(
-            tuple[1],
-            decodeAddressSegment(tuple[2]!),
-            Number(tuple[3]),
-            tuple[4] !== undefined,
-          ) !== locator || !resolveAttestationAnchorWriter) return null;
-          const writer = await resolveAttestationAnchorWriter({
-            ref: structuredClone(artifactRef),
-            jobId,
-            parties: structuredClone(parties),
-          });
-          if (typeof writer !== "string") return null;
-          const key = await resolveCanonicalSigningKeyForRead(writer);
-          if (!key) return null;
-          const resolved = await publicReads.resolveAnchorByName(
-            logicalToStorageProgramName(locator),
-            Buffer.from(key).toString("hex"),
-          );
-          if (resolved.status !== "present" ||
-              typeof resolved.address !== "string" ||
-              resolved.address.length === 0 ||
-              resolved.address.trim() !== resolved.address ||
-              /^dacs[0-9]+:/.test(resolved.address)) return null;
-          return await publicReads.readAnchor(resolved.address);
-        } catch {
-          return null;
-        }
+        const nativeAddress = await paymentEvidenceNativeAddress(artifactRef, jobId);
+        // As for native refs, a failed read throws and null proves absence.
+        return nativeAddress === null ? null : publicReads.readAnchor(nativeAddress);
       },
       resolveListingRef: async (listingRef, parties) => {
         const seller = parties.find((party) => party.role === "seller");

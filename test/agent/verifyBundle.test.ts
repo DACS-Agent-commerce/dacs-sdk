@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
+import { SubstrateError, TransientError } from "../../src/errors.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import type { AnchorResolution } from "../../src/substrate/anchorResolution.js";
 
@@ -10,7 +11,10 @@ import {
   type VerifyBundleDeps,
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
+import type {
+  AnchorReceipt,
+  CompositeVerificationRecord,
+} from "../../src/artifacts/types.js";
 import {
   contentHash,
   listingAddress,
@@ -2022,9 +2026,31 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
   });
 });
 
-const EVIDENCE_NATIVE = "stor-evidence-native";
-const buyerOwner = Buffer.from(resolveFromDid(buyerDid)!).toString("hex");
+const EVIDENCE_NATIVE = `stor-${"ab".repeat(20)}`;
 const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
+const NON_EVIDENCE_READS = new Set(["stor-bundle", "agreement-j1", LISTING_ADDR]);
+
+/** The host's retained CORE §5.1 receipt for the evidence write. */
+function evidenceReceipt(
+  ref: { anchor: { locator: string }; contentHash: string },
+): AnchorReceipt {
+  return {
+    receiptVersion: "1",
+    substrate: "demos",
+    finalityProfile: "demos-bft-confirmed-native-read",
+    logicalAddress: ref.anchor.locator,
+    nativeAddress: EVIDENCE_NATIVE,
+    contentHash: ref.contentHash,
+    transactionRef: { kind: "demos-storage-program", value: "tx-evidence" },
+    writer: buyerDid,
+    nonce: "7",
+    state: "finalized",
+    observationDisposition: "established",
+    observedAt: 1780000000000,
+    blockRef: { id: "block-evidence", height: "42", timestamp: 1780000000000 },
+    evidence: { kind: "demos-bft-write-proof-v1", value: "e30" },
+  };
+}
 
 async function logicalAgentFixture(locator = paymentEvidenceAddress(JOB_ID, "x402:default", 0)) {
   const fx = await buildFixture(buyerDid, signBuyer);
@@ -2055,29 +2081,29 @@ async function logicalAgentFixture(locator = paymentEvidenceAddress(JOB_ID, "x40
     { party: buyerDid, sign: signBuyer },
     { party: sellerDid, sign: signSeller },
   ]);
-  const store = new Map([
+  const store = new Map<string, Record<string, unknown>>([
     ["stor-bundle", fx.bundle],
     [LISTING_ADDR, fx.listing],
     ["agreement-j1", fx.agreement],
     [EVIDENCE_NATIVE, fx.evidence],
-    // A logical direct read must never rescue absent writer authority.
+    // A logical direct read must never stand in for the retained receipt.
     [locator, fx.evidence],
   ]);
   const listingName = logicalToStorageProgramName(listingAddress(sellerDid, "svc", 1));
   const evidenceName = logicalToStorageProgramName(locator);
-  let resolution: AnchorResolution = { status: "present", address: EVIDENCE_NATIVE };
   const readAnchor = vi.fn(async (address: string) => store.get(address) ?? null);
-  const resolveAnchorByName = vi.fn(async (name: string, owner: string): Promise<AnchorResolution> => {
-    if (name === listingName && owner === sellerOwner) {
-      return { status: "present", address: LISTING_ADDR };
-    }
-    return name === evidenceName && owner === buyerOwner
-      ? resolution
-      : { status: "absent" };
-  });
+  const resolveAnchorByName = vi.fn(async (name: string, owner: string): Promise<AnchorResolution> =>
+    name === listingName && owner === sellerOwner
+      ? { status: "present", address: LISTING_ADDR }
+      : { status: "absent" });
+  // Built from the shared ref at call time, so tamper cases keep a matching receipt.
+  let receipt: () => unknown = () => evidenceReceipt(evidenceRef);
+  const resolveReceipt = vi.fn<NonNullable<AgentConfig["resolveAttestationAnchorReceipt"]>>(
+    () => receipt() as AnchorReceipt | null,
+  );
   const config: AgentConfig = {
     demosRpc: "mem",
-    resolveAttestationAnchorWriter: () => buyerDid,
+    resolveAttestationAnchorReceipt: resolveReceipt,
     resolveSettlementEvidenceContext: () => ({
       orchestrator: sellerDid,
       rail: {
@@ -2091,8 +2117,15 @@ async function logicalAgentFixture(locator = paymentEvidenceAddress(JOB_ID, "x40
   };
   const agent = () => buildAgent({ readAnchor, resolveAnchorByName } as unknown as SubstrateAdapter, config);
   return {
-    fx, store, evidenceRef, evidenceName, config, agent, readAnchor, resolveAnchorByName,
-    setResolution: (value: AnchorResolution) => { resolution = value; },
+    fx, store, evidenceRef, evidenceName, listingName, config, agent, readAnchor, resolveAnchorByName,
+    resolveReceipt,
+    setReceipt: (value: () => unknown) => { receipt = value; },
+    /** Every read other than the bundle, agreement and Listing. */
+    evidenceReads: () => readAnchor.mock.calls
+      .map(([address]) => address)
+      .filter((address) => !NON_EVIDENCE_READS.has(address)),
+    /** Every name-index lookup other than the Listing's. */
+    evidenceLookups: () => resolveAnchorByName.mock.calls.filter(([name]) => name !== listingName),
   };
 }
 
@@ -2101,43 +2134,120 @@ function evidenceCheck(result: Awaited<ReturnType<ReturnType<typeof buildAgent>[
 }
 
 describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
-  test("resolves encoded name with buyer writer despite seller signer and anchoredByRole", async () => {
+  test("reads only the retained finalized receipt's native address, whoever signed or anchored", async () => {
     const f = await logicalAgentFixture();
-    const writer = vi.fn<NonNullable<AgentConfig["resolveAttestationAnchorWriter"]>>(() => buyerDid);
-    f.config.resolveAttestationAnchorWriter = writer;
     const result = await f.agent().verifyBundle("stor-bundle");
     expect(result, result.reason).toMatchObject({ ok: true, fullyVerified: true });
-    expect(writer).toHaveBeenCalledWith({
-      ref: f.evidenceRef, jobId: JOB_ID, parties: f.fx.bundle.parties,
-    });
-    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
-    expect(f.resolveAnchorByName).not.toHaveBeenCalledWith(f.evidenceName, sellerOwner);
-    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
-    expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
+    expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+    expect(f.resolveReceipt).toHaveBeenCalledWith({ ref: f.evidenceRef, jobId: JOB_ID });
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
+    expect(f.evidenceLookups()).toEqual([]);
   });
 
-  test.each(["missing", "wrong", "indeterminate", "ambiguous", "throws", "noncanonical", "unresolved-key"])(
-    "%s writer authority leaves the reference unresolved", async (mode) => {
+  test.each(["unreadable", "redirecting"])(
+    "a squatted same-name program can neither block nor redirect resolution (%s)", async (mode) => {
       const f = await logicalAgentFixture();
-      if (mode === "missing") delete f.config.resolveAttestationAnchorWriter;
-      else f.config.resolveAttestationAnchorWriter = () => {
-        if (mode === "throws") throw new Error("receipt unavailable");
-        if (mode === "wrong") return sellerDid;
-        if (mode === "ambiguous") return [buyerDid, sellerDid] as unknown as string;
-        if (mode === "noncanonical") return buyerOwner;
-        if (mode === "unresolved-key") return "did:example:writer";
-        return null;
-      };
+      f.store.set("stor-squatter", { ...f.fx.evidence, observedAt: 1780000000001 });
+      const resolve = f.resolveAnchorByName.getMockImplementation()!;
+      f.resolveAnchorByName.mockImplementation(async (name, owner) => {
+        if (name !== f.evidenceName) return resolve(name, owner);
+        return mode === "unreadable"
+          ? { status: "indeterminate", reason: "a candidate program could not be read to confirm ownership" }
+          : { status: "present", address: "stor-squatter" };
+      });
       const result = await f.agent().verifyBundle("stor-bundle");
-      expect(result.ok).toBe(false);
-      // The existing resolver contract represents a null read as `missing`.
-      expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
-      expect(f.readAnchor).not.toHaveBeenCalledWith(EVIDENCE_NATIVE);
-      expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
-      const lookups = f.resolveAnchorByName.mock.calls.filter(([name]) => name === f.evidenceName);
-      expect(lookups).toEqual(mode === "wrong" ? [[f.evidenceName, sellerOwner]] : []);
+      expect(result, result.reason).toMatchObject({ ok: true, fullyVerified: true });
+      expect(f.evidenceLookups()).toEqual([]);
+      expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
     },
   );
+
+  test.each([
+    "no callback", "null", "not a receipt", "extra field", "accessor field", "other logical address",
+    "other content hash", "logical native address", "uppercase native address", "short native address",
+    "padded native address", "rejected write",
+  ])("%s reports missing without reading evidence or consulting the name index", async (mode) => {
+    const f = await logicalAgentFixture();
+    const patched = (patch: Record<string, unknown>) => () => ({ ...evidenceReceipt(f.evidenceRef), ...patch });
+    const nativeAddress = {
+      "logical native address": f.evidenceRef.anchor.locator,
+      "uppercase native address": `stor-${"AB".repeat(20)}`,
+      "short native address": EVIDENCE_NATIVE.slice(0, -1),
+      "padded native address": `${EVIDENCE_NATIVE} `,
+    }[mode];
+    if (mode === "no callback") delete f.config.resolveAttestationAnchorReceipt;
+    else if (mode === "null") f.setReceipt(() => null);
+    else if (mode === "not a receipt") f.setReceipt(() => ({ nativeAddress: EVIDENCE_NATIVE }));
+    else if (mode === "extra field") f.setReceipt(patched({ extra: true }));
+    else if (mode === "accessor field") {
+      f.setReceipt(() => Object.defineProperty(evidenceReceipt(f.evidenceRef), "nativeAddress", {
+        enumerable: true,
+        get: () => EVIDENCE_NATIVE,
+      }));
+    } else if (mode === "other logical address") {
+      f.setReceipt(patched({ logicalAddress: paymentEvidenceAddress(JOB_ID, "x402:default", 1) }));
+    } else if (mode === "other content hash") f.setReceipt(patched({ contentHash: h("f") }));
+    else if (nativeAddress !== undefined) {
+      // The rejected address holds the evidence, so only the gate keeps it unread.
+      f.store.set(nativeAddress, f.fx.evidence);
+      f.setReceipt(patched({ nativeAddress }));
+    } else f.setReceipt(patched({ state: "rejected" }));
+    const result = await f.agent().verifyBundle("stor-bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+    expect(f.evidenceReads()).toEqual([]);
+    expect(f.evidenceLookups()).toEqual([]);
+  });
+
+  test.each([
+    "receipt store throw", "receipt store rejection", "submitted receipt", "accepted receipt",
+    "included receipt", "dropped receipt", "expired receipt", "replaced receipt", "reorged receipt",
+    "indeterminate receipt observation", "native read failure",
+  ])("a transient %s rejects verification and reputation instead of reporting missing", async (mode) => {
+    const f = await logicalAgentFixture();
+    const failure = mode.startsWith("receipt store")
+      ? new Error("receipt store timeout")
+      : mode === "native read failure"
+        ? new SubstrateError(`read anchor ${EVIDENCE_NATIVE} failed`)
+        : null;
+    if (mode === "receipt store throw") f.setReceipt(() => { throw failure; });
+    else if (mode === "receipt store rejection") f.setReceipt(() => Promise.reject(failure));
+    else if (mode === "native read failure") {
+      const read = f.readAnchor.getMockImplementation()!;
+      f.readAnchor.mockImplementation(async (address) => {
+        if (address === EVIDENCE_NATIVE) throw failure;
+        return read(address);
+      });
+    } else if (mode === "indeterminate receipt observation") {
+      f.setReceipt(() => ({
+        ...evidenceReceipt(f.evidenceRef),
+        observationDisposition: "indeterminate",
+        preservedReceiptHash: h("e"),
+      }));
+    } else {
+      f.setReceipt(() => ({ ...evidenceReceipt(f.evidenceRef), state: mode.split(" ")[0] }));
+    }
+    const agent = f.agent();
+    const expected = failure ?? TransientError;
+    await expect(agent.verifyBundle("stor-bundle")).rejects.toThrow(expected);
+    // The caller retries; the honest bundle is never excluded as invalid-bundle.
+    await expect(agent.getReputation(buyerDid, ["stor-bundle"])).rejects.toThrow(expected);
+    expect(f.evidenceLookups()).toEqual([]);
+  });
+
+  test("a proven absence at the receipt's native address reports missing", async () => {
+    const f = await logicalAgentFixture();
+    f.store.delete(EVIDENCE_NATIVE);
+    const agent = f.agent();
+    const result = await agent.verifyBundle("stor-bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+    expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
+    expect((await agent.getReputation(buyerDid, ["stor-bundle"])).exclusions).toEqual([
+      expect.objectContaining({ code: "invalid-bundle", ref: "stor-bundle" }),
+    ]);
+  });
 
   test.each([
     paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0),
@@ -2147,107 +2257,76 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
     `dacs4:payment:${JOB_ID}:x402%3Adefault:0:extra`,
     `dacs4:payment:${JOB_ID}:x402%41default:0`,
     `dacs4:payment:${JOB_ID}:x402%3Adefault:-1`,
-  ])("rejects mismatched job or noncanonical tuple before writer/index lookup: %s", async (locator) => {
+  ])("rejects mismatched job or noncanonical tuple before consulting the receipt store: %s", async (locator) => {
     const f = await logicalAgentFixture(locator);
-    const writer = vi.fn(() => buyerDid);
-    f.config.resolveAttestationAnchorWriter = writer;
     const result = await f.agent().verifyBundle("stor-bundle");
     expect(result.ok).toBe(false);
     expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
-    expect(writer).not.toHaveBeenCalled();
-    expect(f.resolveAnchorByName.mock.calls.filter(([name]) => name === f.evidenceName)).toEqual([]);
-    expect(f.readAnchor).not.toHaveBeenCalledWith(locator);
+    expect(f.resolveReceipt).not.toHaveBeenCalled();
+    expect(f.evidenceReads()).toEqual([]);
+    expect(f.evidenceLookups()).toEqual([]);
   });
 
-  test.each(["absent", "indeterminate", "logical-address", "empty-address", "throws"])(
-    "does not read a native anchor after %s name resolution", async (mode) => {
-      const f = await logicalAgentFixture();
-      if (mode === "throws") {
-        const resolve = f.resolveAnchorByName.getMockImplementation()!;
-        f.resolveAnchorByName.mockImplementation(async (name, owner) => {
-          if (name === f.evidenceName) throw new Error("index unavailable");
-          return resolve(name, owner);
-        });
-      }
-      else f.setResolution(mode === "absent" ? { status: "absent" }
-        : mode === "indeterminate" ? { status: "indeterminate", reason: "multiple matching owners" }
-        : { status: "present", address: mode === "logical-address" ? f.evidenceRef.anchor.locator : "" });
-      const result = await f.agent().verifyBundle("stor-bundle");
-      expect(result.ok).toBe(false);
-      expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
-      expect(f.readAnchor).not.toHaveBeenCalledWith(EVIDENCE_NATIVE);
-      expect(f.readAnchor).not.toHaveBeenCalledWith(f.evidenceRef.anchor.locator);
-    },
-  );
-
-  test("uses the canonical key resolver for an independently authenticated foreign writer claim", async () => {
-    const f = await logicalAgentFixture();
-    f.config.resolveAttestationAnchorWriter = () => "did:example:writer";
-    const key = vi.fn(() => resolveFromDid(buyerDid));
-    f.config.resolveIdentitySigningPublicKey = key;
-    expect(await f.agent().verifyBundle("stor-bundle")).toMatchObject({ ok: true, fullyVerified: true });
-    expect(key).toHaveBeenCalledWith("did:example:writer");
-    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
-  });
-
-  test("resolves a canonical :resolved locator before applying content integrity checks", async () => {
+  test("resolves a canonical :resolved locator through its receipt before content integrity checks", async () => {
     const f = await logicalAgentFixture(paymentEvidenceAddress(JOB_ID, "x402:default", 0, true));
     f.fx.evidence.observedAt = 1780000000001;
     const result = await f.agent().verifyBundle("stor-bundle");
     expect(evidenceCheck(result)).toMatchObject({ verdict: "hash-mismatch" });
-    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
-    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+    expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
   });
 
   test("rejects accessor-backed callback configuration without invoking it", async () => {
     const f = await logicalAgentFixture();
-    const getter = vi.fn(() => () => buyerDid);
-    Object.defineProperty(f.config, "resolveAttestationAnchorWriter", { get: getter });
-    expect(f.agent).toThrow("AgentConfig.resolveAttestationAnchorWriter must be stable data");
+    const getter = vi.fn(() => () => null);
+    Object.defineProperty(f.config, "resolveAttestationAnchorReceipt", { get: getter });
+    expect(f.agent).toThrow("AgentConfig.resolveAttestationAnchorReceipt must be stable data");
     expect(getter).not.toHaveBeenCalled();
   });
 
   test("captures the callback once and isolates mutations of callback input", async () => {
     const f = await logicalAgentFixture();
-    f.config.resolveAttestationAnchorWriter = ({ ref, parties }) => {
+    const retained = evidenceReceipt(f.evidenceRef);
+    const captured = vi.fn<NonNullable<AgentConfig["resolveAttestationAnchorReceipt"]>>(({ ref }) => {
       (ref.anchor as { locator: string }).locator = "tampered";
-      (parties[0] as { primaryClaim: string }).primaryClaim = sellerDid;
-      return buyerDid;
-    };
+      (ref as { contentHash: string }).contentHash = h("f");
+      return retained;
+    });
+    const replacement = vi.fn(() => null);
+    f.config.resolveAttestationAnchorReceipt = captured;
     const agent = f.agent();
-    f.config.resolveAttestationAnchorWriter = () => sellerDid;
+    f.config.resolveAttestationAnchorReceipt = replacement;
     expect(await agent.verifyBundle("stor-bundle")).toMatchObject({ ok: true, fullyVerified: true });
-    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
+    expect(captured).toHaveBeenCalledTimes(1);
+    expect(replacement).not.toHaveBeenCalled();
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
   });
 
-  test("native agreement references preserve direct reads without a writer callback", async () => {
+  test("native agreement references preserve direct reads without a receipt callback", async () => {
     const f = await logicalAgentFixture();
     f.fx.bundle.settlementEvidence = [];
     f.fx.bundle.phaseSummary = [];
     await resignFixture(f.fx, [
       { party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller },
     ]);
-    const writer = vi.fn(() => { throw new Error("must not resolve native writer"); });
-    f.config.resolveAttestationAnchorWriter = writer;
+    f.setReceipt(() => { throw new Error("must not resolve native refs"); });
     const result = await f.agent().verifyBundle("stor-bundle");
     expect(result).toMatchObject({ ok: true, fullyVerified: true });
     expect(result.refs.find((entry) => entry.kind === "dacs-3-agreement")).toMatchObject({ verdict: "ok" });
     expect(f.readAnchor).toHaveBeenCalledWith("agreement-j1");
-    expect(writer).not.toHaveBeenCalled();
-    expect(f.resolveAnchorByName.mock.calls).toHaveLength(1); // Listing only.
+    expect(f.resolveReceipt).not.toHaveBeenCalled();
+    expect(f.evidenceLookups()).toEqual([]);
   });
 
   test("native evidence retains direct reads and existing PC-2 binding rejection", async () => {
     const f = await logicalAgentFixture(EVIDENCE_NATIVE);
-    const writer = vi.fn(() => buyerDid);
-    f.config.resolveAttestationAnchorWriter = writer;
     const result = await f.agent().verifyBundle("stor-bundle");
     expect(evidenceCheck(result)).toMatchObject({ verdict: "invalid-evidence" });
-    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
-    expect(writer).not.toHaveBeenCalled();
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
+    expect(f.resolveReceipt).not.toHaveBeenCalled();
   });
 
-  test.each(["hash", "signature", "job", "phase"])("retains %s rejection after successful logical resolution", async (tamper) => {
+  test.each(["hash", "signature", "job", "phase"])("retains %s rejection after receipt resolution", async (tamper) => {
     const f = await logicalAgentFixture();
     if (tamper === "hash") f.fx.evidence.observedAt = 1780000000001;
     if (tamper === "signature") (f.fx.evidence.signature as { value: string }).value = Buffer.alloc(64).toString("base64url");
@@ -2268,7 +2347,7 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
       job: "invalid-binding", phase: "invalid-evidence",
     }[tamper];
     expect(evidenceCheck(result)).toMatchObject({ verdict });
-    expect(f.resolveAnchorByName).toHaveBeenCalledWith(f.evidenceName, buyerOwner);
-    expect(f.readAnchor).toHaveBeenCalledWith(EVIDENCE_NATIVE);
+    expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+    expect(f.evidenceReads()).toEqual([EVIDENCE_NATIVE]);
   });
 });

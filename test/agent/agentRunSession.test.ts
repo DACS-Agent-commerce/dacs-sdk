@@ -1275,10 +1275,24 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       directEvidenceVerdict.decision,
       directEvidenceVerdict.reasons.join("; "),
     ).toBe("pass");
-    store.set(
-      `stor:${logicalToStorageProgramName(evidenceRef.anchor.locator)}`,
-      evidence as unknown as Record<string, unknown>,
-    );
+    // A PC-2 logical locator resolves only through its retained receipt.
+    const evidenceNative = `stor-${"e".repeat(40)}`;
+    store.set(evidenceNative, evidence as unknown as Record<string, unknown>);
+    const evidenceReceipt = {
+      receiptVersion: "1" as const,
+      substrate: "test",
+      finalityProfile: "instant",
+      logicalAddress: evidenceRef.anchor.locator,
+      nativeAddress: evidenceNative,
+      contentHash: evidenceRef.contentHash,
+      transactionRef: { kind: "test", value: "tx:evidence" },
+      writer: normativeBuyerDid,
+      state: "finalized" as const,
+      observationDisposition: "established" as const,
+      observedAt: 1786363150000,
+      blockRef: { id: "block:evidence" },
+      evidence: { kind: "test-proof", value: "authenticated" },
+    };
 
     const composite: CompositeVerificationRecord = {
       recordVersion: "1",
@@ -1370,7 +1384,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
-      resolveAttestationAnchorWriter: () => normativeBuyerDid,
+      resolveAttestationAnchorReceipt: () => evidenceReceipt,
     });
     const unconfiguredVerdict = await unconfiguredAgent.verifyBundle(
       "stor:bundle",
@@ -1396,7 +1410,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       demosRpc: "mem",
       wallet: "x",
       identity: { agentId: normativeBuyerDid },
-      resolveAttestationAnchorWriter: () => normativeBuyerDid,
+      resolveAttestationAnchorReceipt: () => evidenceReceipt,
       verifyCompositeRecord: async (record, bundle) => {
         verifierCalls += 1;
         expect(bundle.jobId).toBe("01J8ME0SXKQ4T9V2RC5HJ6WX7E");
