@@ -38,8 +38,8 @@ function baselineOnlySummary() {
 }
 
 // The lines of one workflow step, from its `- name:` line to the next step.
-function workflowStepLines(stepName: string) {
-  const lines = readFileSync(workflowPath, "utf8").split("\n");
+function workflowStepLines(stepName: string, path = workflowPath) {
+  const lines = readFileSync(path, "utf8").split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
   expect(start).toBeGreaterThanOrEqual(0);
   const stepIndent = (lines[start] ?? "").indexOf("-");
@@ -71,6 +71,42 @@ function workflowStepScript(stepName: string): string {
     body.push(line.slice(blockIndent));
   }
   return body.join("\n");
+}
+
+// The keys of a workflow's top-level `on:` or `jobs:` block, without a YAML
+// dependency: each is a two-space-indented `key:` line in the block.
+function workflowBlockKeys(path: string, block: "on" | "jobs") {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`${block}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const keys: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const key = /^ {2}([\w-]+):/.exec(line)?.[1];
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+// One job's own keys: each four-space `key: value` line, with the trimmed
+// lines nested under it appended one per line.
+function workflowJob(path: string, jobId: string) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`  ${jobId}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const job: Record<string, string> = {};
+  let key = "";
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/.test(line)) break;
+    const own = /^ {4}([\w-]+):\s*(.*)$/.exec(line);
+    if (own) {
+      key = own[1] ?? "";
+      job[key] = own[2] ?? "";
+    } else if (key && line.trim() !== "") {
+      job[key] += `\n${line.trim()}`;
+    }
+  }
+  return job;
 }
 
 const scratch: string[] = [];
@@ -274,12 +310,62 @@ describe("registry/container workflow wiring", () => {
       .toContain("ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}");
   });
 
-  it("requires code-owner review of the baseline, the scripts that decide it, and both workflows", () => {
+  // Daybreak r9 P2: prerelease publication never ran the advisory gate, so an
+  // advisory published after the baseline could not stop it.
+  it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease.yml");
+    expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
+    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish"]);
+    const gate = workflowJob(publish, "registry-container-acceptance");
+    expect(gate).toEqual({ permissions: "\ncontents: read", uses: "./.github/workflows/registry-container-acceptance.yml",
+      with: "\nenforce-audit-drift: true" });
+    const job = workflowJob(publish, "publish");
+    expect(job.steps).toContain("node scripts/publish-release-set.mjs");
+    // No job-level `if:`: always(), failure() or !cancelled() there would run
+    // the publish job after the acceptance job failed.
+    expect(job).toMatchObject({ needs: "registry-container-acceptance", environment: "npm-prerelease",
+      permissions: "\ncontents: read\nid-token: write" });
+    expect(job).not.toHaveProperty("if");
+    // The OIDC permission is the publish job's alone; the called acceptance
+    // gets neither it nor any secret, and nothing in it can continue on error.
+    const workflow = readFileSync(publish, "utf8");
+    expect(workflow.match(/id-token: write/g)).toHaveLength(1);
+    expect(/\npermissions:\n((?: {2}.+\n)+)/.exec(workflow)?.[1]).toBe("  contents: read\n");
+    expect(workflow).not.toMatch(/secrets: inherit/);
+    expect(acceptance).not.toMatch(/continue-on-error|secrets\./);
+  });
+
+  it("cannot select the warn policy from a caller that enforces drift", () => {
+    // The called workflow's only input is enforce-audit-drift, and the policy
+    // is set nowhere but the acceptance step, which never warns when it is true.
+    expect(/\n  workflow_call:\n((?: {4}.+\n)+)/.exec(acceptance)?.[1])
+      .toBe("    inputs:\n      enforce-audit-drift:\n        type: boolean\n        default: false\n");
+    expect(acceptance.match(/DACS_UNLISTED_ADVISORIES/g)).toHaveLength(2);
+    expect(workflowStepLines("Run registry-shaped Linux and Docker acceptance").lines.join("\n"))
+      .toContain("ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}");
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push("GHSA-2222-3333-4444");
+    summary.audit.unlistedAdvisories.push("GHSA-2222-3333-4444");
+    // The publish workflow's event, and pull_request too, once drift is enforced.
+    for (const event of ["workflow_dispatch", "pull_request"]) {
+      for (const status of [3, 4]) {
+        const result = runWorkflowStep(status, summary, true, undefined, event);
+        expect(result.status).toBe(status);
+        expect(result.stdout).not.toContain("::warning title=#191 security gate blocked::");
+        expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
+      }
+    }
+    expect(runDriftStep(summary, true).status).toBe(3);
+    // Baseline-only findings stay waived (exit 4 re-checks as 4), as on every run.
+    expect(runWorkflowStep(4, baselineOnlySummary(), true, undefined, "workflow_dispatch").status).toBe(0);
+  });
+
+  it("requires code-owner review of the baseline, the scripts that decide it, and the workflows", () => {
     const owners = readFileSync(join(repoRoot, ".github/CODEOWNERS"), "utf8").split("\n");
     for (const file of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
       "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
       ".github/workflows/registry-container-acceptance.yml", ".github/workflows/registry-container-audit-drift.yml",
-      ".github/CODEOWNERS"]) {
+      ".github/workflows/publish-prerelease.yml", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${file} @randomblocker`);
     }
   });
@@ -775,6 +861,30 @@ describe("advisory-ID baseline", () => {
       checks: { audit: "unlisted", registryDependency: "blocked" } });
     expect(runWorkflowStep(4, summary).status).toBe(4);
   });
+  // Code r9 P3-2: SECURITY.md says CI fails on any direct high/critical
+  // advisory, but pull requests only warned on an unlisted direct one.
+  it("fails a pull request on an unlisted advisory that is high or critical on a direct dependency", () => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.unlistedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.directAdvisories = [unknown];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { audit: "blocked" } });
+      expect(result.message).toContain(`of those, high or critical on a direct dependency, which fail pull requests ` +
+        `too: ${unknown}`);
+    }
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(4);
+    expect(pullRequest.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+    expect(runWorkflowStep(3, summary).status).toBe(3);
+    // The same IDs, neither of them direct, only warn.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" }))
+      .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" } });
+    expect(runWorkflowStep(4, summary).status).toBe(0);
+  });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
     summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);
@@ -1128,8 +1238,11 @@ describe("acceptance failure class", () => {
   // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
   // shape), and `npm install`'s error lines when the registry fails.
   const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
+  // invalid-json-body.json is a 200 answer with an HTML page (a captive proxy's
+  // or CDN's error page); aborted-body.json is a connection dropped mid-body.
   it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
-    "econnrefused.json", "socket-hang-up.json"])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
+    "econnrefused.json", "socket-hang-up.json", "invalid-json-body.json", "aborted-body.json",
+  ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
     const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
     const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
     expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
@@ -1146,6 +1259,41 @@ describe("acceptance failure class", () => {
     const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
     expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toMatchObject({ failureClass: "functional",
       evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
+  });
+
+  it.each([
+    ["a fetch error npm has not been seen to write", { message: "request aborted by an unknown cause" }, "network"],
+    ["a transient fetch message beside a status", { message: "invalid json response body at http://r/ reason: x",
+      statusCode: 200 }, "network"],
+    ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
+  ])("classifies every npm audit-error object as an endpoint error: %s", (_label, error, failureClass) => {
+    const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toEqual({ failureClass,
+      evidence: [`npm-audit.json: audit endpoint error: ${error.message}`] });
+  });
+
+  // Daybreak r9 P3: a report the policy rejected, whose advisory title carries
+  // a network phrase, was classed network and invited a pointless rerun.
+  it("classifies a report-shaped audit the policy rejected as policy, whatever text its advisories carry", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-malformed-report-"));
+    scratch.push(stage);
+    const report = { auditReportVersion: 2,
+      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+      vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
+        via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      failedStage: "audit-policy", failureClass: "policy", failureEvidence: [] });
+    // Text that is not an audit document still counts as network evidence.
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read: reader({ "npm-audit.json": "socket hang up\n" }) }))
+      .toMatchObject({ failureClass: "network" });
   });
 
   it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(

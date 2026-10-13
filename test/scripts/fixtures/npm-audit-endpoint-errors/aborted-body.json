@@ -1,0 +1,7 @@
+{
+  "message": "Invalid response body while trying to fetch http://127.0.0.1:35741/-/npm/v1/security/audits/quick: aborted",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}
