@@ -3947,8 +3947,12 @@ export async function verifyFinalizedSellerBundleReadOnly(
       `retained seller bundle readback is indeterminate: ${current.reason}`,
     );
   }
+  // The retained bundle's finalized anchor was verified above; a name index
+  // that does not show it yet (on Demos it may lag finality) is unanswered.
   if (current.disposition === "absent") {
-    throw new SubstrateError("retained seller bundle is authoritatively absent");
+    throw new IndeterminateSubstrateError(
+      "retained seller bundle is not yet visible in the bundle name index",
+    );
   }
   const currentSellerBundle = await verifyAnchoredBundle(
     logicalAddress,
@@ -4022,6 +4026,12 @@ export async function verifyFinalizedSellerBundleReadOnly(
         hasOnlyKeys(bindingLookup, ["disposition", "reason"]) &&
         typeof bindingLookup.reason === "string" && bindingLookup.reason.length > 0) {
       throw new IndeterminateSubstrateError(`retained BundleBinding readback is indeterminate: ${bindingLookup.reason}`);
+    }
+    if (isRecord(bindingLookup) && bindingLookup.disposition === "absent" &&
+        hasOnlyKeys(bindingLookup, ["disposition"])) {
+      throw new IndeterminateSubstrateError(
+        "retained BundleBinding is not yet visible in the BundleBinding name index",
+      );
     }
     if (
       !isRecord(bindingLookup) || bindingLookup.disposition !== "present" ||

@@ -641,6 +641,33 @@ function requireExactReceipt(
   return clone(receipt);
 }
 
+// A read the host could not answer stays retryable: anything it throws other
+// than a DacsError (an answer) becomes IndeterminateSubstrateError.
+async function unanswered<T>(read: () => Promise<T> | T, label: string): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof DacsError) throw error;
+    throw new IndeterminateSubstrateError(`${label} errored`, { cause: error });
+  }
+}
+
+// `indeterminate` and `error` mean the verifier could not decide; only
+// `invalid` is an answer against the copy.
+function requireValid(
+  disposition: Readonly<{ disposition: string; reason?: string }>,
+  label: string,
+): void {
+  if (disposition.disposition === "indeterminate" || disposition.disposition === "error") {
+    throw new IndeterminateSubstrateError(
+      `${label} is ${disposition.disposition}: ${disposition.reason ?? ""}`,
+    );
+  }
+  if (disposition.disposition !== "valid") {
+    throw new DacsError(`${label} is ${disposition.disposition}`);
+  }
+}
+
 async function requireBinding(
   copy: Readonly<CompletedTwoSidedBundleCopy>,
   bundleHash: string,
@@ -678,11 +705,12 @@ async function requireBinding(
   if (!deps.resolveBundleBinding) {
     throw new DacsError("write-input audit requires a BundleBinding resolver");
   }
-  const lookup = await deps.resolveBundleBinding(
+  const resolveBundleBinding = deps.resolveBundleBinding;
+  const lookup = await unanswered(() => resolveBundleBinding(
     binding.logicalAddress,
     binding.signer,
     copy.role,
-  );
+  ), `${copy.role} BundleBinding resolution`);
   if (!isRecord(lookup) || !(
     (lookup.disposition === "present" && exactKeys(lookup, ["disposition", "binding"])) ||
     (lookup.disposition === "absent" && exactKeys(lookup, ["disposition"])) ||
@@ -692,23 +720,25 @@ async function requireBinding(
   )) {
     throw new DacsError(`${copy.role} BundleBinding resolver returned a malformed result`);
   }
-  if (lookup.disposition !== "present" || !isBundleBinding(lookup.binding) ||
-      !exact(lookup.binding, binding)) {
-    throw new DacsError(
+  // An unanswered lookup, or one whose name index does not show the binding
+  // yet (on Demos it may lag finality), is retryable; a different binding is not.
+  if (lookup.disposition === "indeterminate" || lookup.disposition === "absent") {
+    throw new IndeterminateSubstrateError(
       lookup.disposition === "indeterminate"
         ? `completed ${copy.role} BundleBinding resolution is indeterminate`
-        : `completed ${copy.role} BundleBinding is not independently resolvable and exact`,
+        : `completed ${copy.role} BundleBinding is not yet visible in the BundleBinding name index`,
     );
   }
-  const disposition = verificationDisposition(
-    await deps.verifyBundleBinding(clone(binding)),
-    `${copy.role} BundleBinding verifier`,
-  );
-  if (disposition.disposition !== "valid") {
+  if (!isBundleBinding(lookup.binding) || !exact(lookup.binding, binding)) {
     throw new DacsError(
-      `completed ${copy.role} BundleBinding verification is ${disposition.disposition}`,
+      `completed ${copy.role} BundleBinding is not independently resolvable and exact`,
     );
   }
+  const verifyBundleBinding = deps.verifyBundleBinding;
+  requireValid(verificationDisposition(
+    await unanswered(() => verifyBundleBinding(clone(binding)), `${copy.role} BundleBinding verifier`),
+    `${copy.role} BundleBinding verifier`,
+  ), `completed ${copy.role} BundleBinding verification`);
 }
 
 async function verifyCopy(
@@ -753,8 +783,18 @@ async function verifyCopy(
     );
   }
 
-  const readback = await deps.readBundleCopy(copy.nativeAddress, copy.role);
-  if (!readback || !exact(readback, copy.bundle)) {
+  const readback = await unanswered(
+    () => deps.readBundleCopy(copy.nativeAddress, copy.role),
+    `${copy.role} native bundle readback`,
+  );
+  // Nothing readable yet is unanswered (a Demos name index may lag finality);
+  // different content is an answer against the copy.
+  if (readback === null) {
+    throw new IndeterminateSubstrateError(
+      `completed ${copy.role} bundle is not yet readable at its native address`,
+    );
+  }
+  if (!exact(readback, copy.bundle)) {
     throw new DacsError(
       `completed ${copy.role} bundle is not independently readable at its exact native address`,
     );
@@ -763,13 +803,12 @@ async function verifyCopy(
   const bundleHash = attestationBundleHash(copy.bundle);
   const receipt = requireExactReceipt(copy, bundleHash);
   const anchorDisposition = anchorVerificationDisposition(
-    await deps.verifyBundleAnchor(clone(copy)),
+    await unanswered(() => deps.verifyBundleAnchor(clone(copy)), `${copy.role} bundle anchor verifier`),
     `${copy.role} bundle anchor verifier`,
   );
+  requireValid(anchorDisposition, `completed ${copy.role} bundle anchor verification`);
   if (anchorDisposition.disposition !== "valid") {
-    throw new DacsError(
-      `completed ${copy.role} bundle anchor verification is ${anchorDisposition.disposition}`,
-    );
+    throw new DacsError(`completed ${copy.role} bundle anchor verification is not valid`);
   }
   const mapping = anchorDisposition.mapping;
   if (receipt.substrate === "demos" && mapping !== "write-input") {
@@ -796,6 +835,12 @@ async function verifyCopy(
  * verifies both role-owned bundle copies, enforces finalized receipt/mapping
  * and BB-1 binding rules, and requires a unified fully signed pair. Only this
  * stronger boundary returns `audit-complete`.
+ *
+ * A read nobody answered is `IndeterminateSubstrateError`, so retry it: a
+ * host read that throws anything but a `DacsError`, an `indeterminate` or
+ * `error` verifier disposition, and a bundle copy, seller bundle or
+ * BundleBinding that its name index does not show yet. A `DacsError` is an
+ * answer against the session and needs an operator.
  */
 export async function verifyCompletedTwoSidedSession(
   input: Readonly<CompletedTwoSidedSessionInput>,

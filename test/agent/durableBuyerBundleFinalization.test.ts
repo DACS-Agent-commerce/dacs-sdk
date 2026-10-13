@@ -1287,7 +1287,7 @@ describe("durable buyer bundle finalization", () => {
   });
 
   test.each([
-    "retained seller bundle is authoritatively absent",
+    "retained seller bundle differs from its authenticated readback",
     "seller bundle lookup returned an invalid disposition",
   ])("reports a permanent seller-finalisation failure (%s) instead of retrying it", async (message) => {
     const f = await fixture("write-input");

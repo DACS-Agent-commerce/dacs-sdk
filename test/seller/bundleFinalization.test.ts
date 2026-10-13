@@ -2978,7 +2978,9 @@ describe("read-only authentication of retained finalized seller bundles", () => 
   );
 
   test.each([
-    ["authoritative absence", { disposition: "absent" }, false],
+    // Final r11 review: Demos's name index may lag finality, so absence of a
+    // bundle whose finalized anchor verified is not yet visible, not an answer.
+    ["name-index absence", { disposition: "absent" }, true],
     ["invalid resolver disposition", { disposition: "unknown" }, false],
     ["invalid indeterminate shape", { disposition: "indeterminate", reason: "" }, false],
     ["null resolver output", null, false],
@@ -3024,7 +3026,7 @@ describe("read-only authentication of retained finalized seller bundles", () => 
           retained.result,
           provider,
         ),
-      ).rejects.toThrow(/absent|indeterminate|differs|readback|anchor/i);
+      ).rejects.toThrow(/not yet visible|indeterminate|differs|readback|anchor/i);
     },
   );
 
@@ -3089,7 +3091,8 @@ describe("read-only authentication of retained finalized seller bundles", () => 
   });
 
   test.each([
-    ["authoritative absence", () => ({ disposition: "absent" }), false],
+    ["name-index absence", () => ({ disposition: "absent" }), true],
+    ["absence with extra keys", () => ({ disposition: "absent", reason: "x" }), false],
     ["an invalid disposition", () => ({ disposition: "unknown" }), false],
     ["an invalid indeterminate shape", () => ({ disposition: "indeterminate", reason: "" }), false],
     ["null output", () => null, false],
