@@ -237,6 +237,57 @@ describe("authenticated HTTP listener and durable client", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("returns the retained envelope identity for a semantic outbox replay", async () => {
+    const buyerDatabase = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const outbox = buyerDatabase.createHttpOutboxStore();
+    const client = createDacsHttpMessageClientV1({
+      endpoint: "http://127.0.0.1:1/dacs-transport/v1/messages",
+      authority: BUYER,
+      outbox,
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-semantic-replay-worker",
+      fetch: vi.fn<typeof fetch>(),
+    });
+    const now = await outbox.readTime();
+    const first = await proposal(now, 32);
+    const replay = await proposal(now, 33);
+    expect(first.envelopeId).not.toBe(replay.envelopeId);
+
+    await expect(client.queue(first)).resolves.toEqual({
+      status: "created",
+      envelopeId: first.envelopeId,
+    });
+    await expect(client.queue(replay)).resolves.toEqual({
+      status: "existing",
+      envelopeId: first.envelopeId,
+    });
+    await expect(outbox.load(replay.envelopeId)).resolves.toBeUndefined();
+  });
+
+  it("refuses to report an envelope identity the outbox did not return", async () => {
+    const buyerDatabase = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const outbox = buyerDatabase.createHttpOutboxStore();
+    const client = createDacsHttpMessageClientV1({
+      endpoint: "http://127.0.0.1:1/dacs-transport/v1/messages",
+      authority: BUYER,
+      outbox: {
+        ...outbox,
+        put: async (input) => ({ status: (await outbox.put(input)).status }),
+      },
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-recordless-store-worker",
+      fetch: vi.fn<typeof fetch>(),
+    });
+    const signed = await proposal(await outbox.readTime(), 34);
+
+    await expect(client.queue(signed)).rejects.toMatchObject({
+      reasonCode: "outbox-envelope-conflict",
+    });
+    await expect(client.queue(signed)).rejects.toMatchObject({
+      reasonCode: "outbox-envelope-conflict",
+    });
+  });
+
   it("recovers a pending inbox reservation after restart before acknowledging replay", async () => {
     const databasePath = join(root(), "seller.sqlite");
     let sellerDatabase = await open(databasePath, SELLER, "seller");
