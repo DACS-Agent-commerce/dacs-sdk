@@ -5,7 +5,11 @@ import { SubstrateError, TransientError } from "../../src/errors.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import type { AnchorResolution } from "../../src/substrate/anchorResolution.js";
 // DemosAdapter lives on the substrate subpath; the root barrel stays demosdk-free.
-import { DemosAdapter } from "../../src/substrate/index.js";
+import {
+  DemosAdapter,
+  createInMemoryDemosWriteJournal,
+  demosWriteEvidenceToAnchorReceipt,
+} from "../../src/substrate/index.js";
 
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -18,10 +22,12 @@ import type {
   CompositeVerificationRecord,
 } from "../../src/artifacts/types.js";
 import {
+  canonicalize,
   contentHash,
   listingAddress,
   logicalToStorageProgramName,
   paymentEvidenceAddress,
+  sha256Hex,
 } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -2031,6 +2037,8 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
 const EVIDENCE_NATIVE = `stor-${"ab".repeat(20)}`;
 const DEMOS_RPC = "https://demos.invalid";
 const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
+/** A canonical claim that is not a party to the fixture bundle. */
+const unrelatedDid = didFor(Uint8Array.from(Buffer.alloc(32, 11)));
 const NON_EVIDENCE_READS = new Set(["stor-bundle", "agreement-j1", LISTING_ADDR]);
 
 /** The host's retained CORE §5.1 receipt for the evidence write. */
@@ -2136,6 +2144,82 @@ function evidenceCheck(result: Awaited<ReturnType<ReturnType<typeof buildAgent>[
   return result.refs.find((entry) => entry.kind === "dacs-4-evidence");
 }
 
+/**
+ * A real DemosAdapter for `wallet` whose stubbed transport signs, includes and
+ * serves its own writes, so `verifyDemosAnchorReceipt` authenticates them.
+ */
+async function stubbedDemosWriter(wallet: string) {
+  const adapter = new DemosAdapter({
+    rpc: DEMOS_RPC,
+    chainIdentity: "test-chain",
+    writeJournal: createInMemoryDemosWriteJournal(),
+  });
+  const raw = adapter.raw;
+  const signed = new Map<string, { payload: Record<string, unknown>; nonce: number }>();
+  let lastTxRef = "";
+  const transaction = (txRef: string, payload: Record<string, unknown>, nonce: number) => ({
+    hash: txRef,
+    content: { type: "storageProgram", from: wallet, to: payload.storageAddress, nonce, data: ["storageProgram", payload] },
+  });
+  raw.connect = vi.fn(async () => true);
+  raw.getAddress = vi.fn(() => wallet);
+  vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({ status: "absent" });
+  raw.getAddressNonce = vi.fn(async () => signed.size);
+  raw.storagePrograms.read = vi.fn(async (address: string) => {
+    const entry = [...signed].reverse().find(([, item]) => item.payload.storageAddress === address);
+    if (!entry) throw Object.assign(new Error("not found"), { response: { status: 404 } });
+    const [txRef, { payload }] = entry;
+    return {
+      success: true,
+      storageAddress: address,
+      owner: wallet,
+      programName: payload.programName,
+      data: payload.data,
+      metadata: payload.metadata,
+      createdByTx: txRef,
+      lastModifiedByTx: txRef,
+      interactionTxs: [txRef],
+    };
+  });
+  raw.storagePrograms.sign = vi.fn(async (payload: Record<string, unknown>, options?: { nonce?: number }) => {
+    const nonce = options?.nonce ?? signed.size + 1;
+    const txRef = `tx-evidence-${signed.size + 1}`;
+    signed.set(txRef, { payload, nonce });
+    return transaction(txRef, payload, nonce);
+  });
+  raw.tx.confirm = vi.fn(async (tx: { hash: string }) => ({
+    response: { data: { transaction: { hash: tx.hash } } },
+  }));
+  raw.tx.broadcast = vi.fn(async (validity: { response: { data: { transaction: { hash: string } } } }) => ({
+    result: 200,
+    response: { hash: validity.response.data.transaction.hash },
+  }));
+  raw.nodeCall = vi.fn(async () => ({ state: "included", blockNumber: 42 }));
+  raw.getTxByHash = vi.fn(async (txRef: string) => {
+    lastTxRef = txRef;
+    const tx = signed.get(txRef);
+    return {
+      status: "confirmed",
+      blockNumber: 42,
+      ...(tx ? transaction(txRef, tx.payload, tx.nonce) : { hash: txRef }),
+    };
+  });
+  raw.getBlockByNumber = vi.fn(async (blockNumber: number) => ({
+    number: blockNumber,
+    hash: `block-${blockNumber}`,
+    status: "confirmed",
+    content: {
+      timestamp: 120,
+      ordered_transactions: [
+        (adapter as unknown as { activeWriteRecord?: { txRef?: string } }).activeWriteRecord?.txRef ?? lastTxRef,
+      ],
+    },
+    validation_data: { signatures: ["validator-test-signature"] },
+  }));
+  await adapter.connect();
+  return adapter;
+}
+
 describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -2173,7 +2257,7 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
   test.each([
     "no callback", "null", "not a receipt", "extra field", "accessor field", "other logical address",
     "other content hash", "logical native address", "uppercase native address", "short native address",
-    "padded native address", "rejected write",
+    "padded native address", "unrelated writer", "seller writer", "unfinalized unrelated writer", "rejected write",
   ])("%s reports missing without reading evidence or consulting the name index", async (mode) => {
     const f = await logicalAgentFixture();
     const patched = (patch: Record<string, unknown>) => () => ({ ...evidenceReceipt(f.evidenceRef), ...patch });
@@ -2195,6 +2279,11 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
     } else if (mode === "other logical address") {
       f.setReceipt(patched({ logicalAddress: paymentEvidenceAddress(JOB_ID, "x402:default", 1) }));
     } else if (mode === "other content hash") f.setReceipt(patched({ contentHash: h("f") }));
+    // Only the bundle's buyer may write the evidence, whoever signed it.
+    else if (mode === "unrelated writer") f.setReceipt(patched({ writer: unrelatedDid }));
+    else if (mode === "seller writer") f.setReceipt(patched({ writer: sellerDid }));
+    // A wrong writer never becomes valid, so finality does not matter.
+    else if (mode === "unfinalized unrelated writer") f.setReceipt(patched({ writer: unrelatedDid, state: "included" }));
     else if (nativeAddress !== undefined) {
       // The rejected address holds the evidence, so only the gate keeps it unread.
       f.store.set(nativeAddress, f.fx.evidence);
@@ -2206,6 +2295,46 @@ describe("Agent.verifyBundle PC-2 logical locators (#316)", () => {
     expect(f.evidenceReads()).toEqual([]);
     expect(f.evidenceLookups()).toEqual([]);
   });
+
+  test.each(["buyer", "unrelated writer"])(
+    "an authenticated Demos receipt maps the evidence only if the bundle's buyer wrote it: %s", async (writer) => {
+      const f = await logicalAgentFixture();
+      const did = writer === "buyer" ? buyerDid : unrelatedDid;
+      const demos = await stubbedDemosWriter(`0x${did.slice("did:demos:agent:".length)}`);
+      const locator = f.evidenceRef.anchor.locator;
+      // The writer anchors the exact signed evidence bytes at the PC-2 address.
+      const anchored = await demos.anchorWriteOnce(logicalToStorageProgramName(locator), f.fx.evidence, {
+        timeoutMs: 1_000,
+        pollMs: 1,
+        metadata: {
+          logicalAddress: locator,
+          contentHash: f.evidenceRef.contentHash,
+          envelopeHash: sha256Hex(canonicalize(f.fx.evidence)),
+        },
+      });
+      const receipt = demosWriteEvidenceToAnchorReceipt({
+        logicalAddress: locator,
+        contentHash: f.evidenceRef.contentHash,
+        writer: did,
+        evidence: anchored.demosEvidence!,
+      });
+      await expect(demos.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+      f.store.set(receipt.nativeAddress, f.fx.evidence);
+      // The documented host recipe: authenticate the proof before returning it.
+      f.setReceipt(async () => (await demos.verifyDemosAnchorReceipt(receipt) ? receipt : null));
+      const result = await f.agent().verifyBundle("stor-bundle");
+      if (writer === "buyer") {
+        expect(result, result.reason).toMatchObject({ ok: true, fullyVerified: true });
+        expect(f.evidenceReads()).toEqual([receipt.nativeAddress]);
+      } else {
+        expect(result.ok).toBe(false);
+        expect(evidenceCheck(result)).toMatchObject({ verdict: "missing" });
+        expect(f.evidenceReads()).toEqual([]);
+      }
+      expect(f.resolveReceipt).toHaveBeenCalledTimes(1);
+      expect(f.evidenceLookups()).toEqual([]);
+    },
+  );
 
   test.each([
     "receipt store throw", "receipt store rejection", "submitted receipt", "accepted receipt",

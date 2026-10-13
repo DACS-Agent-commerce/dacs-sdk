@@ -4,6 +4,7 @@ import type {
   AnyAttestationBundle,
   AnchorReceipt as ProtocolAnchorReceipt,
   AttestationRef,
+  BundleParty,
   ChainTxRef,
   CompositeVerificationRecord,
   IdentityBundle,
@@ -535,13 +536,17 @@ export interface AgentConfig {
   /**
    * Return the retained, independently verified CORE §5.1 write receipt for a
    * PC-2 logical settlement-evidence locator (CORE SR2-10/SR2-11). Only hosts
-   * that kept the evidence write's receipt can resolve these refs. The SDK
-   * reads only the receipt's `stor-` native address, after checking its exact
-   * logical address, content hash and finality; it never resolves the opaque
-   * program name. Return null when no receipt is held (the ref then reports
-   * `missing`); throw when the receipt store cannot answer, so verification
-   * rejects and can be retried. Captured once at construction; native
-   * references do not invoke this callback.
+   * that kept the evidence write's receipt can resolve these refs. Verifying
+   * the receipt's proof (for Demos, `DemosAdapter.verifyDemosAnchorReceipt`)
+   * establishes who wrote it; the SDK separately requires that writer to be
+   * the bundle's buyer, the writer the payment-evidence handshake authorizes.
+   * The SDK reads only the receipt's `stor-` native address, after checking
+   * its exact logical address, content hash, writer and finality; it never
+   * resolves the opaque program name. Return null when no receipt is held (the
+   * ref then reports `missing`, as it does for a receipt from another writer);
+   * throw when the receipt store cannot answer, so verification rejects and
+   * can be retried. Captured once at construction; native references do not
+   * invoke this callback.
    */
   resolveAttestationAnchorReceipt?: (
     input: Readonly<{
@@ -819,11 +824,11 @@ export interface Agent {
    * evidence likewise require `AgentConfig.resolveSettlementEvidenceContext`.
    * Evidence at a PC-2 logical locator resolves only through the retained
    * receipt from `AgentConfig.resolveAttestationAnchorReceipt`. With no
-   * callback, no receipt, or a receipt that does not bind the ref, it reports
-   * `missing`, as does a proven absence at the receipt's native address. A
-   * transient failure (a throwing receipt store, a receipt not yet finalized,
-   * or a failed read) rejects instead, exactly like a failed native-ref read,
-   * so the caller can retry.
+   * callback, no receipt, or a receipt that does not bind the ref or was not
+   * written by the bundle's buyer, it reports `missing`, as does a proven
+   * absence at the receipt's native address. A transient failure (a throwing
+   * receipt store, a receipt not yet finalized, or a failed read) rejects
+   * instead, exactly like a failed native-ref read, so the caller can retry.
    */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
@@ -1528,12 +1533,19 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const paymentEvidenceNativeAddress = async (
     artifactRef: Readonly<AttestationRef>,
     jobId: string,
+    parties: readonly BundleParty[],
   ): Promise<string | null> => {
     const locator = artifactRef.anchor.locator;
     // Validate the complete PC-2 tuple before consulting the host.
     // Round-tripping rejects aliases, escapes and numeric spellings.
     const tuple = /^dacs4:payment:([^:]+):([^:]+):(0|[1-9][0-9]*)(:resolved)?$/.exec(locator);
-    if (!tuple || tuple[1] !== jobId || !resolveAttestationAnchorReceipt) return null;
+    // The payment-evidence handshake authorizes only the buyer to write the
+    // evidence, so a bundle without exactly one buyer has no authorized writer.
+    const buyers = parties.filter((party) => party.role === "buyer");
+    if (
+      !tuple || tuple[1] !== jobId || buyers.length !== 1 ||
+      !resolveAttestationAnchorReceipt
+    ) return null;
     try {
       if (paymentEvidenceAddress(
         tuple[1],
@@ -1560,7 +1572,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       !isAnchorReceipt(receipt) ||
       receipt.logicalAddress !== locator ||
       receipt.contentHash !== artifactRef.contentHash ||
-      !/^stor-[0-9a-f]{40}$/.test(receipt.nativeAddress)
+      !/^stor-[0-9a-f]{40}$/.test(receipt.nativeAddress) ||
+      // Authenticating the receipt proves who wrote it; this checks that the
+      // writer is the one the handshake authorizes (paymentEvidenceHandshake).
+      !sameCanonicalClaimIdentity(receipt.writer, buyers[0]!.primaryClaim)
     ) {
       return null;
     }
@@ -1581,13 +1596,13 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       // DACS-2 §7.5.2: normative refs carry their own anchor coordinates.
       // This adapter owns storage-program reads; other registered anchor kinds
       // need a transport-specific resolver supplied to verifyBundleCore.
-      resolveAttestationRef: async (artifactRef, jobId) => {
+      resolveAttestationRef: async (artifactRef, jobId, parties) => {
         if (artifactRef.anchor.kind !== "storage-program") return null;
         const locator = artifactRef.anchor.locator;
         if (locator !== "dacs4:payment" && !locator.startsWith("dacs4:payment:")) {
           return publicReads.readAnchor(locator);
         }
-        const nativeAddress = await paymentEvidenceNativeAddress(artifactRef, jobId);
+        const nativeAddress = await paymentEvidenceNativeAddress(artifactRef, jobId, parties);
         // As for native refs, a failed read throws and null proves absence.
         return nativeAddress === null ? null : publicReads.readAnchor(nativeAddress);
       },
