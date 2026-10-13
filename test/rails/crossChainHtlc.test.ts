@@ -3029,6 +3029,143 @@ describe("advanceCrossChainHtlc", () => {
   });
 
   test.each(["throws", "never answers"] as const)(
+    "checkpoints the source lock on the source leg and refunds it at its expiry, exactly once, when the whole-session observation %s from the source-lock broadcast on",
+    async (failure) => {
+      const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+      const recordSourceFinality = vi.fn(base.recordSourceFinality.bind(base));
+      const store: CrossChainHtlcStore = { ...base, recordSourceFinality };
+      const h = harness({ sourceExpiry: 1_700 });
+      const observeLedger = h.observe.getMockImplementation()!;
+      const broadcast = h.adapter.broadcastRetained;
+      h.adapter.broadcastRetained = vi.fn<CrossChainHtlcAdapter["broadcastRetained"]>(async (prepared, fence) => {
+        await broadcast(prepared, fence);
+        // From here `observe` depends on a payee-side service that is down.
+        if (prepared.action === "source-lock") {
+          h.observe.mockImplementation(failure === "throws"
+            ? async () => { throw new Error("payee observation unavailable"); }
+            : () => new Promise(() => {}));
+        }
+      });
+      const run = runner({ adapter: h.adapter, store, authorizeDestinationClaim: false });
+      const advance = (owner: string, now: number) =>
+        settlesWithin(advanceCrossChainHtlc({ ...run.shared, owner, now: () => now }), 2_000);
+      await expect(advance("locks-source", 1_000_000)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-source-lock-effect-uncertain",
+      });
+      // Before the expiry the source leg alone checkpoints the lock, as the
+      // whole-session path would, and nothing is refunded.
+      await expect(advance("before-expiry", 1_699_899)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-ledger-observation-unavailable",
+      });
+      expect(recordSourceFinality).toHaveBeenCalledTimes(1);
+      expect(recordSourceFinality.mock.calls[0]![0].checkpoint).toEqual({
+        sourceLockEffectHash: h.broadcastRetained.mock.calls[0]![0].effectHash,
+        sourceLockTxRef: refFor("source-lock"),
+        includedAt: 1_000_000,
+        sourceExpiry: 1_700,
+        finalityObservedAt: 1_000_000,
+        authenticationHash: AUTH_HASH,
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+      const payerRefund = {
+        reason: "destination-lock-missing",
+        txRefs: [refFor("source-lock"), refFor("source-refund")],
+        refunds: { "source-refund": "final" },
+      };
+      await expect(advance("at-expiry", 1_700_000)).resolves.toEqual({ status: "refund-pending", ...payerRefund });
+      await expect(advance("payee-still-down", 1_700_101)).resolves.toEqual({ status: "refunded", ...payerRefund });
+      // Once the payee's side is back, `observe` agrees with that checkpoint.
+      h.observe.mockImplementation(observeLedger);
+      await expect(advance("payee-back", 1_700_202)).resolves.toEqual({ status: "refunded", ...payerRefund });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "source-refund"]);
+      expect(h.broadcastRetained.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "source-refund"]);
+      expect(recordSourceFinality).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
+    [
+      "names another transaction",
+      (lock: Extract<HtlcObservedAction, { state: "final" }>): HtlcObservedAction =>
+        ({ ...lock, txRef: refFor("source-lock", "-other") as Extract<HtlcTxRef, { kind: "htlc-lock" }> }),
+    ],
+    [
+      "reports an expiry not after its inclusion",
+      (lock: Extract<HtlcObservedAction, { state: "final" }>): HtlcObservedAction => ({ ...lock, expiresAt: 1_000 }),
+    ],
+    [
+      "omits its inclusion",
+      ({ includedAt: _omitted, ...lock }: Extract<HtlcObservedAction, { state: "final" }>): HtlcObservedAction => lock,
+    ],
+    [
+      "reports it pending",
+      (lock: Extract<HtlcObservedAction, { state: "final" }>): HtlcObservedAction =>
+        ({ state: "pending", txRef: lock.txRef, authenticationHash: AUTH_HASH }),
+    ],
+  ] as const)(
+    "records no checkpoint and sends no refund from a source-leg view that %s, until it reports the retained lock final",
+    async (_variant, viewOf) => {
+      const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+      const recordSourceFinality = vi.fn(base.recordSourceFinality.bind(base));
+      const store: CrossChainHtlcStore = { ...base, recordSourceFinality };
+      const h = harness({ sourceExpiry: 1_700 });
+      const run = runner({ adapter: h.adapter, store, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      const lock = h.actions["source-lock"];
+      if (!lock || lock.state !== "final") throw new Error("expected final source lock");
+      const sourceLeg = h.observeSourceLeg.getMockImplementation()!;
+      h.observeSourceLeg.mockImplementation(async () => ({
+        observedAt: 1_000_000,
+        authenticationHash: AUTH_HASH,
+        actions: { "source-lock": viewOf(lock) },
+      }));
+      h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "view-disagrees", now: () => 1_700_000 }))
+        .resolves.toEqual({ status: "indeterminate", reason: "htlc-ledger-observation-unavailable" });
+      expect(h.observeSourceLeg).toHaveBeenCalledTimes(1);
+      expect(recordSourceFinality).not.toHaveBeenCalled();
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+      // A source leg that reports the retained lock final checkpoints it, and the refund follows.
+      h.observeSourceLeg.mockImplementation(sourceLeg);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: "view-agrees", now: () => 1_700_101 }))
+        .resolves.toEqual({
+          status: "refund-pending",
+          reason: "destination-lock-missing",
+          txRefs: [refFor("source-lock"), refFor("source-refund")],
+          refunds: { "source-refund": "final" },
+        });
+      expect(recordSourceFinality).toHaveBeenCalledTimes(1);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "source-refund"]);
+    },
+  );
+
+  test("sends no refund from a source-leg checkpoint the store fails to record, then refunds once it records", async () => {
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    let storeDown = true;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async recordSourceFinality(input) {
+        if (storeDown) throw new Error("store write timed out");
+        return base.recordSourceFinality(input);
+      },
+    };
+    const h = harness({ sourceExpiry: 1_700 });
+    const run = runner({ adapter: h.adapter, store, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "store-down", now: () => 1_700_000 }))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-source-finality-persistence-uncertain" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+    storeDown = false;
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "store-back", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refund-pending", refunds: { "source-refund": "final" } });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "source-refund"]);
+  });
+
+  test.each(["throws", "never answers"] as const)(
     "sends a first source refund from the checkpoint when the source-leg observation %s, under a clock that advances in real time",
     async (failure) => {
       // The host's clock advances with real time, as in production, so the

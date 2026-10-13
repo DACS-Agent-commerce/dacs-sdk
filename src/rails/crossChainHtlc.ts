@@ -327,11 +327,11 @@ export interface CrossChainHtlcAdapter {
    * The source chain's actions only (`source-lock`, `source-claim` and
    * `source-refund`), reported exactly as `observe` reports them. It must
    * not depend on the destination chain or on the payee's role service: the
-   * payer's source refund is decided on it, before `observe` is called, so
-   * that nothing on the payee's side can hold that refund up. The core
-   * abandons it once half the lease time left at its start has passed, so
-   * that a first refund decided without it can still be sent in the same
-   * call.
+   * source-finality checkpoint may be recorded from it, and the payer's
+   * source refund is decided on it, before `observe` is called, so that
+   * nothing on the payee's side can hold that refund up. The core abandons
+   * it once half the lease time left at its start has passed, so that a
+   * first refund decided without it can still be sent in the same call.
    */
   observeSourceLeg(
     intent: Readonly<CrossChainHtlcIntent>,
@@ -2157,6 +2157,37 @@ export async function advanceCrossChainHtlc(
     }
     return observe();
   };
+  // The source-finality checkpoint of a final source-lock observation, whether
+  // the whole session or the source leg alone reported it.
+  const sourceFinalityCheckpointOf = (
+    lock: Readonly<FinalHtlcObservation>,
+    includedAt: number,
+    sourceExpiry: number,
+  ): Readonly<HtlcSourceFinalityCheckpoint> => Object.freeze({
+    sourceLockEffectHash: prepared.get("source-lock")!.effectHash,
+    sourceLockTxRef: lock.txRef as Extract<HtlcTxRef, { kind: "htlc-lock" }>,
+    includedAt,
+    sourceExpiry,
+    finalityObservedAt: lock.finalityObservedAt,
+    authenticationHash: lock.authenticationHash,
+  });
+  const persistSourceFinality = async (
+    checkpoint: Readonly<HtlcSourceFinalityCheckpoint>,
+  ): Promise<boolean> => {
+    let checkpointed: HtlcStoreWrite;
+    try {
+      checkpointed = await recordSourceFinality({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        checkpoint,
+      });
+    } catch {
+      return false;
+    }
+    return checkpointed.status === "recorded" || checkpointed.status === "existing";
+  };
 
   // The payer's source refund is decided on the source leg alone and sent
   // before the whole session is observed, so that nothing on the payee's side
@@ -2172,16 +2203,46 @@ export async function advanceCrossChainHtlc(
   // left to the whole-session path, because only an observation can show it
   // is not dead. An invalid one, like a source lock it does not report final
   // as checkpointed, leaves the whole refund to that path.
+  //
+  // Until the checkpoint exists, the source-leg observation records it from
+  // the retained source lock reported final, as the whole-session path does,
+  // so that a payee side down from the source-lock broadcast onward cannot
+  // keep the refund from ever becoming due.
+  const preimageNeverLeft = !retainedCheckpoint && !prepared.has("destination-claim") &&
+    !prepared.has("source-claim");
+  let checkpointView: Readonly<HtlcLedgerSnapshot> | undefined;
+  if (!sourceFinalityCheckpoint && prepared.has("source-lock") && preimageNeverLeft) {
+    const view = await observeSource();
+    let viewedLock: Readonly<FinalHtlcObservation> | undefined;
+    try {
+      viewedLock = view ? final(view, "source-lock", prepared.get("source-lock")) : undefined;
+    } catch {
+      viewedLock = undefined;
+    }
+    // A validated final lock always carries its inclusion and expiry.
+    if (view && viewedLock?.includedAt !== undefined && viewedLock.expiresAt !== undefined) {
+      const viewedCheckpoint = sourceFinalityCheckpointOf(
+        viewedLock,
+        viewedLock.includedAt,
+        viewedLock.expiresAt,
+      );
+      if (!await persistSourceFinality(viewedCheckpoint)) {
+        return { status: "indeterminate", reason: "htlc-source-finality-persistence-uncertain" };
+      }
+      sourceFinalityCheckpoint = viewedCheckpoint;
+      checkpointView = view;
+    }
+  }
   let sourceRefundFirst: Readonly<{
     attempt: "none" | "sent" | "uncertain";
     latest: Readonly<HtlcLedgerSnapshot>;
     reason: HtlcRefundReason;
   }> | undefined;
-  if (sourceFinalityCheckpoint && !retainedCheckpoint && !prepared.has("destination-claim") &&
-      !prepared.has("source-claim") &&
+  if (sourceFinalityCheckpoint && preimageNeverLeft &&
       readNow() >= secondsToMilliseconds(sourceFinalityCheckpoint.sourceExpiry, "source refund expiry")) {
     const checkpointed = sourceFinalityCheckpoint;
-    const sourceView = await observeSource();
+    // The view the checkpoint was just recorded from, when it was.
+    const sourceView = checkpointView ?? await observeSource();
     let viewedLock: Readonly<FinalHtlcObservation> | undefined;
     try {
       viewedLock = sourceView ? final(sourceView, "source-lock", prepared.get("source-lock")) : undefined;
@@ -2323,14 +2384,7 @@ export async function advanceCrossChainHtlc(
     if (sourceLock.includedAt === undefined || sourceLock.expiresAt === undefined) {
       return { status: "indeterminate", reason: "htlc-adapter-lock-observation-invalid" };
     }
-    const observedCheckpoint: Readonly<HtlcSourceFinalityCheckpoint> = Object.freeze({
-      sourceLockEffectHash: prepared.get("source-lock")!.effectHash,
-      sourceLockTxRef: sourceLock.txRef as Extract<HtlcTxRef, { kind: "htlc-lock" }>,
-      includedAt: sourceLock.includedAt,
-      sourceExpiry: sourceLock.expiresAt,
-      finalityObservedAt: sourceLock.finalityObservedAt,
-      authenticationHash: sourceLock.authenticationHash,
-    });
+    const observedCheckpoint = sourceFinalityCheckpointOf(sourceLock, sourceLock.includedAt, sourceLock.expiresAt);
     if (sourceFinalityCheckpoint &&
         (sourceFinalityCheckpoint.sourceLockEffectHash !== observedCheckpoint.sourceLockEffectHash ||
           !sameRef(sourceFinalityCheckpoint.sourceLockTxRef, observedCheckpoint.sourceLockTxRef) ||
@@ -2343,19 +2397,7 @@ export async function advanceCrossChainHtlc(
       };
     }
     if (!sourceFinalityCheckpoint) {
-      let checkpointed: HtlcStoreWrite;
-      try {
-        checkpointed = await recordSourceFinality({
-          settlementKey: intent.settlementKey,
-          bindingHash: intent.bindingHash,
-          owner: fence.owner,
-          generation: fence.generation,
-          checkpoint: observedCheckpoint,
-        });
-      } catch {
-        return { status: "indeterminate", reason: "htlc-source-finality-persistence-uncertain" };
-      }
-      if (checkpointed.status !== "recorded" && checkpointed.status !== "existing") {
+      if (!await persistSourceFinality(observedCheckpoint)) {
         return { status: "indeterminate", reason: "htlc-source-finality-persistence-uncertain" };
       }
       sourceFinalityCheckpoint = observedCheckpoint;

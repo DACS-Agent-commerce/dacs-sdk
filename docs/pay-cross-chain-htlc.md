@@ -143,36 +143,66 @@ payer's source refund is decided on the source leg alone and driven before the
 core calls `observe` or asks the payee's role service for anything. It applies
 once the source-finality checkpoint is recorded, the source expiry has passed,
 and no reveal or source claim is retained (so the preimage never left the
-core). The core then reads the source chain through the adapter's
+core). The core reads the source chain through the adapter's
 `observeSourceLeg`, which must not depend on the destination chain or the
-payee's side, and applies the refund rules below to what it reports: a refund
-is prepared or its retained bytes rebroadcast when none is reported (or an
-`absent` names none), and a refund reported `pending`, `final`, `failed` or
-`absent` naming it is not sent again. If that observation is unavailable (it
-throws, or is still running when half the lease time left at its start has
-passed), the core prepares and broadcasts only a first refund, on the
-strength of the checkpoint, in the remaining half; a retained refund is never
-rebroadcast without a source-leg observation showing it is not dead. If the
-observation is invalid, or does not report the source lock final as
-checkpointed, the whole-session path below decides instead.
+payee's side. Until the checkpoint is recorded, the core asks it first on
+every call that retains a source lock and no reveal or source claim: when it
+reports the retained lock final with valid timing (an inclusion, a finality
+no earlier than that and an expiry after it), the core records the checkpoint
+from it, with exactly the fields it would record from `observe`; a write the
+store fails ends the call `indeterminate` with reason
+`htlc-source-finality-persistence-uncertain`, as it does there. So neither
+the checkpoint nor the refund waits on a whole-session observation, even when
+the payee's side is down from the source-lock broadcast onward. Once the
+source expiry has passed, the core applies the refund rules below to what the
+source-leg observation reports: a refund is prepared or its retained bytes
+rebroadcast when none is reported (or an `absent` names none), and a refund
+reported `pending`, `final`, `failed` or `absent` naming it is not sent again.
+If that observation is unavailable (it throws, or is still running when half
+the lease time left at its start has passed), the core prepares and
+broadcasts only a first refund, on the strength of the checkpoint, in the
+remaining half; a retained refund is never rebroadcast without a source-leg
+observation showing it is not dead. If the observation is invalid, or does
+not report the source lock final as checkpointed (the same transaction,
+inclusion and expiry), nothing is sent on the source leg alone and the
+whole-session path below decides instead.
 
 Only after that does the core call `observe` for the whole session. If that
 fails, outlasts the lease or is invalid, the result is still a refund result:
 the payer's leg as the source leg reported it, and, when a destination lock is
 retained, reason `destination-lock-unresolved` with the `destination-refund`
 leg `uncertain`; a dead source refund still pages (`refund-stalled` or
-`htlc-refund-absent`). So a payee-side observation, preparation or broadcast
-that fails, is slow or never answers can leave only the destination leg
+`htlc-refund-absent`). So while `observeSourceLeg` works, a payee-side
+observation, preparation or broadcast that fails, is slow or never answers,
+before the checkpoint or after it, can leave only the destination leg
 uncertain; it cannot delay, skip or reorder the payer's refund, and the next
 call retries the destination leg. A source refund is driven at most once per
-call. The payer's leg can still wait on the source chain itself, on the store,
-or on a source-leg observation that fails; and a session with a retained
-reveal is never refunded on the source leg alone, because only the
-destination chain shows whether that reveal landed. When the
-final destination lock's expiry breaks the absolute margin (`sourceExpiry`
-must exceed `destinationExpiry + sourceFinalitySec + safetyWindowSec`) or its
-terms do not match the intent, the payer never reveals:
-the result is `refund-pending` with reason
+call. The payer's refund can still wait on:
+
+- the source chain itself;
+- the store, whose calls the core does not bound;
+- the source-leg observation. Before the checkpoint is recorded, while it
+  fails, is invalid or does not report the lock final, nothing is
+  checkpointed unless `observe` reports the lock final. After that, while it
+  fails, only a first refund is sent, and a retained refund is not resent
+  until an observation shows it is not dead; while it is invalid or disagrees
+  with the checkpoint, nothing is sent on the source leg alone;
+- `observe`, for an adapter object without `observeSourceLeg` at runtime (see
+  the contract change below); and
+- the destination chain, when a reveal, reveal checkpoint or source claim is
+  retained: such a session is never refunded on the source leg alone, because
+  only the destination chain shows whether that reveal landed.
+
+A refund that stays `pending` is not resent, and one the adapter keeps
+reporting `absent` without naming it is rebroadcast once per call; the core
+pages on neither. The host does (see the host checklist), and a core
+threshold is a launch gate.
+
+When the final destination lock's expiry breaks the absolute margin
+(`sourceExpiry` must exceed
+`destinationExpiry + sourceFinalitySec + safetyWindowSec`) or its terms do
+not match the intent, the payer never reveals: the result is
+`refund-pending` with reason
 `destination-expiry-margin-insufficient` or `destination-lock-terms-mismatch`
 from that point on, and each leg is refunded at its own expiry. Callers keep
 advancing a `refund-pending` session until it is `refunded`.
@@ -438,8 +468,9 @@ retained signed payloads, and persist both finality checkpoints. `claim`
 returns `conflict` when it holds the session under another binding or secret
 hash, or when the salt already belongs to another session; the core reports
 that as `htlc-salt-mismatch`, and only a `corrupt` claim as `failed`. After
-the source lock becomes final, the
-core calls `recordSourceFinality` with the exact source-lock transaction
+the source lock becomes final, the core calls `recordSourceFinality`, from
+the first observation that reports it final (`observeSourceLeg` or
+`observe`), with the exact source-lock transaction
 reference and prepared-effect hash, its within-ledger inclusion/finality
 timestamps and expiry, and the adapter's authentication hash. This
 generation-fenced write must be immutable
@@ -634,9 +665,10 @@ also accepting byte-equivalent uppercase and prefixed values.
 `CrossChainHtlcAdapter.observeSourceLeg` is a required adapter method, so
 adapters written against earlier heads of this module must add it. An
 adapter object without it at runtime is not refused: the core then has no
-source-leg observation, sends only a first source refund from the checkpoint
-when the source refund is due, and otherwise falls back to `observe`, so the
-payer's refund is not isolated from the payee's side for such an adapter.
+source-leg observation, records the source-finality checkpoint only from
+`observe`, sends only a first source refund from the checkpoint when the
+source refund is due, and otherwise falls back to `observe`, so the payer's
+refund is not isolated from the payee's side for such an adapter.
 
 ## Host recovery checklist
 
@@ -730,8 +762,8 @@ the core cannot check them itself.
 - `observeSourceLeg` reports exactly what `observe` reports for
   `source-lock`, `source-claim` and `source-refund`, and nothing else, and
   depends on neither the destination chain nor the payee's role service or
-  any other payee-side service. The payer's source refund is decided on it
-  alone.
+  any other payee-side service. The source-finality checkpoint may be
+  recorded from it, and the payer's source refund is decided on it alone.
 - With replacement history, `observe` reports the active attempt, and
   `absent` once that attempt never reached the chain and can no longer; but
   an earlier attempt that landed after all is reported `final` instead.
