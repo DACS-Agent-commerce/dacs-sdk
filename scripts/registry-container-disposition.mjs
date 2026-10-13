@@ -78,7 +78,8 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
 // installed (non-root) lock entry resolves to a tarball under the configured
 // registry's origin and path and carries an integrity, and every dependency
 // spec in the manifest and the lock is a registry spec (a version, range or
-// tag, or an npm: alias of one). Anything else is a violation: Git URLs and
+// tag, or an npm: alias of one) in a plain-object dependency map. Anything else
+// is a violation: dependency maps that are arrays, strings or null, Git URLs and
 // GitHub/GitLab shorthands with or without a ref, tarballs on any other host
 // (codeload.github.com included), file:, link:, paths, entries without
 // `resolved` or `integrity`, and `overrides`.
@@ -105,7 +106,13 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   const violations = [];
   const specs = (location, owner) => {
     for (const field of specFields) {
-      for (const [name, value] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+      // A present map that is not a plain object (an array, a string, null)
+      // has no specs to check, so it is a violation itself.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        violations.push({ location, field, value: JSON.stringify(owner[field]) });
+        continue;
+      }
+      for (const [name, value] of Object.entries(owner?.[field] ?? {})) {
         if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
           violations.push({ location, field: `${field}.${name}`, value });
         }

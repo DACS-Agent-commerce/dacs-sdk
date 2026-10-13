@@ -793,6 +793,22 @@ describe("registry dependency allowlist", () => {
       .toEqual([{ location: "package.json", field: "dependencies.avsc", value: spec }]);
   });
 
+  // Daybreak r10 P3: a present map that was not a plain object was read as
+  // empty, so a spec inside it was never checked.
+  it.each([
+    ["an array", ["github:Irys-xyz/avsc#csp-fixes"]],
+    ["a string", "github:Irys-xyz/avsc#csp-fixes"],
+    ["null", null],
+  ])("rejects a dependency map that is %s, in the lock and the manifest", (_label, map) => {
+    const value = JSON.stringify(map);
+    for (const field of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
+      expect(violationsWith({ "node_modules/z": { ...registered("z"), [field]: map } }))
+        .toEqual([{ location: "node_modules/z", field, value }]);
+      expect(violationsWith({ "": { name: "consumer", [field]: map } })).toEqual([{ location: "", field, value }]);
+      expect(violationsWith({}, { [field]: map })).toEqual([{ location: "package.json", field, value }]);
+    }
+  });
+
   it("rejects overrides, which can redirect a package to another source", () => {
     expect(violationsWith({}, { overrides: { viem: "npm:not-viem@2.55.19" } }))
       .toEqual([{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@2.55.19"}' }]);
