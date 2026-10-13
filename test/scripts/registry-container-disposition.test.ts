@@ -1128,8 +1128,11 @@ describe("acceptance failure class", () => {
   // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
   // shape), and `npm install`'s error lines when the registry fails.
   const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
+  // invalid-json-body.json is a 200 answer with an HTML page (a captive proxy's
+  // or CDN's error page); aborted-body.json is a connection dropped mid-body.
   it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
-    "econnrefused.json", "socket-hang-up.json"])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
+    "econnrefused.json", "socket-hang-up.json", "invalid-json-body.json", "aborted-body.json",
+  ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
     const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
     const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
     expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.stringMatching(/^npm-audit\.json: audit endpoint error: /)] });
@@ -1146,6 +1149,41 @@ describe("acceptance failure class", () => {
     const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
     expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toMatchObject({ failureClass: "functional",
       evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
+  });
+
+  it.each([
+    ["a fetch error npm has not been seen to write", { message: "request aborted by an unknown cause" }, "network"],
+    ["a transient fetch message beside a status", { message: "invalid json response body at http://r/ reason: x",
+      statusCode: 200 }, "network"],
+    ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
+  ])("classifies every npm audit-error object as an endpoint error: %s", (_label, error, failureClass) => {
+    const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read })).toEqual({ failureClass,
+      evidence: [`npm-audit.json: audit endpoint error: ${error.message}`] });
+  });
+
+  // Daybreak r9 P3: a report the policy rejected, whose advisory title carries
+  // a network phrase, was classed network and invited a pointless rerun.
+  it("classifies a report-shaped audit the policy rejected as policy, whatever text its advisories carry", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-malformed-report-"));
+    scratch.push(stage);
+    const report = { auditReportVersion: 2,
+      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+      vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
+        via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(report, null, 2));
+    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(stage, "npm-audit.json"), join(stage, "audit-policy.json")], { cwd: repoRoot, encoding: "utf8" });
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("npm audit advisory URL missing");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", String(policy.status)], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance policy failure::stopped at stage audit-policy");
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      failedStage: "audit-policy", failureClass: "policy", failureEvidence: [] });
+    // Text that is not an audit document still counts as network evidence.
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", read: reader({ "npm-audit.json": "socket hang up\n" }) }))
+      .toMatchObject({ failureClass: "network" });
   });
 
   it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(

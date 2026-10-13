@@ -1,0 +1,7 @@
+{
+  "message": "invalid json response body at http://127.0.0.1:38359/-/npm/v1/security/audits/quick reason: Unexpected token '<', \"<html>proxy</html>\" is not valid JSON",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}

@@ -162,20 +162,27 @@ export const FAILURE_CLASSES = ["network", "policy", "functional"];
 // `Response timeout while trying to fetch` for a body timeout.
 const networkSignature = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|E50[0234]|E408|E429)\b|socket hang up|network timeout at: |Response timeout while trying to fetch|TLS handshake timeout|i\/o timeout|toomanyrequests|curl: \((?:6|7|28|35|52|56)\)/;
 
+// A report-shaped `npm audit --json` document: a result for the audit policy.
+const isAuditReport = value => typeof value === "object" && value !== null &&
+  ("auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value);
+// npm's fetch errors: a request or body timeout, a refused or reset connection,
+// and a body that is not JSON or was cut off (a proxy's HTML page, a drop).
+const transientAuditMessage = /^(?:network timeout at: |request to \S+ failed, reason: |Response timeout while trying to fetch |invalid json response body at |Invalid response body while trying to fetch )/;
+
 // When the audit endpoint fails, `npm audit --json` writes npm's audit error
-// object (lib/utils/audit-error.js) instead of a report: the HTTP answer's
-// `statusCode` and message, or a fetch error's message with no status. A
-// timeout, an unreachable endpoint and 5xx/408/429 are transient (network);
-// any other answer means the audit could not be run (functional). Neither is a
-// policy result. Returns null for anything else.
+// object (lib/utils/audit-error.js) instead of a report: a string `message`,
+// with the HTTP answer's `statusCode` or, for a fetch error, no status. Every
+// such object is an endpoint error. One with no status, a 5xx/408/429 status
+// or a transient fetch message is network; any other answer means the audit
+// could not be run (functional). Neither is a policy result. Returns null for
+// anything else, a report included.
 export function auditEndpointError(text) {
   let value;
   try { value = JSON.parse(text ?? ""); } catch { return null; }
-  if (typeof value !== "object" || value === null || typeof value.message !== "string" ||
-      "auditReportVersion" in value || "vulnerabilities" in value || "metadata" in value) return null;
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" || isAuditReport(value)) return null;
   const status = Number.isInteger(value.statusCode) ? value.statusCode : null;
-  if (status === null && !/^(?:network timeout at: |request to \S+ failed, reason: )/.test(value.message)) return null;
-  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429;
+  const transient = status === null || (status >= 500 && status <= 599) || status === 408 || status === 429 ||
+    transientAuditMessage.test(value.message);
   return { transient, statusCode: status, message: value.message.replace(/\s+/g, " ").slice(0, 300) };
 }
 
@@ -193,11 +200,17 @@ const policyStages = new Set(["dependency-policy", "audit-policy"]);
 
 export function classifyAcceptanceFailure({ stage, read }) {
   if (stage === "audit-policy") {
-    const endpoint = auditEndpointError(read("npm-audit.json"));
+    const text = read("npm-audit.json");
+    const endpoint = auditEndpointError(text);
     if (endpoint) {
       return { failureClass: endpoint.transient ? "network" : "functional",
         evidence: [`npm-audit.json: audit endpoint error: ${endpoint.message}`] };
     }
+    // A report the policy rejected is a policy result, whatever text its
+    // advisories carry: the network signature is only for other evidence.
+    let report = null;
+    try { report = JSON.parse(text ?? ""); } catch { /* not JSON */ }
+    if (isAuditReport(report)) return { failureClass: "policy", evidence: [] };
   }
   const evidence = [];
   for (const [name, relevant] of stageEvidence[stage] ?? []) {
