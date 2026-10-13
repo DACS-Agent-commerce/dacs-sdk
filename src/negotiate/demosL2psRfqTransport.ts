@@ -327,7 +327,12 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
       | Promise<DurableRfqLifecycleResult<TSignature>>
       | DurableRfqLifecycleResult<TSignature>,
   ): void;
-  /** Replay role-bound inbound packets after a process restart. */
+  /**
+   * Replay role-bound inbound packets after a process restart. Each job's
+   * packets are delivered in order. A packet the consumer does not accept
+   * holds back only the later packets of its own job, which are reported in
+   * `skipped`; other jobs are still delivered.
+   */
   resumeInbound(remoteClaim: string): Promise<DemosL2psRfqInboundRecoveryResult>;
   /** Stop accepting inbound packets and detach when the peer supports it. */
   stop(): void;
@@ -338,9 +343,32 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
   drain(): Promise<void>;
 }
 
+/** A job whose recovered packets were not all accepted by the consumer. */
+export interface DemosL2psRfqInboundSkip {
+  jobId: string;
+  channelId: string;
+  /** The first packet of the job that the consumer did not accept. */
+  packetId: string;
+  /** That packet plus the job's later packets; none of them was delivered. */
+  packets: number;
+  /** The consumer's reason, or why the consumer call failed. */
+  reason: string;
+}
+
+/**
+ * "complete": history was read to its end and every recovered packet was
+ * handed to the consumer. A packet the lifecycle rejected (for example for a
+ * job that is retired, not open yet, or failed) is listed in `skipped` and
+ * does not make the call indeterminate. Any other uncertainty does.
+ */
 export type DemosL2psRfqInboundRecoveryResult =
-  | { status: "complete"; delivered: number }
-  | { status: "indeterminate"; delivered: number; reason: string };
+  | { status: "complete"; delivered: number; skipped: DemosL2psRfqInboundSkip[] }
+  | {
+      status: "indeterminate";
+      delivered: number;
+      skipped: DemosL2psRfqInboundSkip[];
+      reason: string;
+    };
 
 function isRecord(value: unknown): value is JsonRecord {
   if (
@@ -1554,6 +1582,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       return {
         status: "indeterminate",
         delivered: 0,
+        skipped: [],
         reason: errorFrom(cause, "RFQ recovery route failed").message,
       };
     }
@@ -1665,35 +1694,63 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       }
     }
     let delivered = 0;
+    const skipped: DemosL2psRfqInboundSkip[] = [];
     // Check even when retirement happened during a final failed/empty page.
     if (!started || active !== generation) {
       uncertainReason = "Demos L2PS inbound recovery generation retired";
     }
+    // History is per peer pair, not per job. Sorting keeps each job's packets
+    // together and in order, so a packet the consumer does not accept holds
+    // back only the rest of its own job.
+    let held: DemosL2psRfqInboundSkip | undefined;
     for (const packet of [...packets.values()].sort(packetOrder)) {
+      if (held?.jobId === packet.jobId && held.channelId === packet.channelId) {
+        held.packets += 1;
+        continue;
+      }
       if (!started || active !== generation) {
         uncertainReason = "Demos L2PS inbound recovery generation retired";
         break;
       }
+      let refusal: string;
       try {
         const result = await consume(handler, packet, calls);
-        if (result.status !== "ready" && result.status !== "duplicate") {
-          uncertainReason =
-            `Demos L2PS recovered packet was not accepted: ${"reason" in result ? result.reason : "unknown result"}`;
+        if (result.status === "ready" || result.status === "duplicate") {
+          delivered += 1;
+          continue;
+        }
+        refusal = "reason" in result ? result.reason : "unknown result";
+        // A rejection is the lifecycle's answer for this job (retired, not
+        // open, failed); only a result that may change is uncertain.
+        if (result.status !== "rejected") {
+          uncertainReason = `Demos L2PS recovered packet was not accepted: ${refusal}`;
+        }
+      } catch (cause) {
+        // A retired generation or a consumer that times out would stall
+        // every later job too, so these still stop recovery.
+        if (!started || active !== generation) {
+          uncertainReason = "Demos L2PS inbound recovery generation retired";
           break;
         }
-        delivered += 1;
-      } catch (cause) {
-        uncertainReason = !started || active !== generation
-          ? "Demos L2PS inbound recovery generation retired"
-          : cause instanceof ConsumerTimeoutError
-            ? CONSUMER_TIMEOUT_MESSAGE
-            : "Demos L2PS recovered packet handler failed";
-        break;
+        if (cause instanceof ConsumerTimeoutError) {
+          uncertainReason = CONSUMER_TIMEOUT_MESSAGE;
+          break;
+        }
+        refusal = "Demos L2PS recovered packet handler failed";
+        uncertainReason = refusal;
       }
+      held = {
+        jobId: packet.jobId,
+        channelId: packet.channelId,
+        packetId: packet.packetId,
+        packets: 1,
+        reason: refusal,
+      };
+      skipped.push(held);
     }
     return uncertainReason === undefined
-      ? { status: "complete", delivered }
-      : { status: "indeterminate", delivered, reason: uncertainReason };
+      ? { status: "complete", delivered, skipped }
+      : { status: "indeterminate", delivered, skipped, reason: uncertainReason };
   }
 
   async function publishRouted(

@@ -132,6 +132,7 @@ export {
   type DemosL2psRfqTransportOptions,
   type DemosL2psRfqTransport,
   type DemosL2psRfqInboundRecoveryResult,
+  type DemosL2psRfqInboundSkip,
 } from "./negotiate/demosL2psRfqTransport.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,

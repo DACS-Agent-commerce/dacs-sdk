@@ -526,6 +526,20 @@ Run `resumeInbound()` for each peer after any `start()`, not only at process
 start. Live events that overflowed the lane, timed out in the consumer, or were
 retired by `stop()` stay in Demos history and come back only that way.
 
+History is kept per peer pair, not per job, and Demos keeps every row. Recovery
+therefore sorts the packets it finds by job and channel and delivers each job's
+packets in turn order. When the consumer does not accept a packet, recovery
+holds back the rest of that job only and goes on with the other jobs. The
+result lists each such job in `skipped`, with the first packet that was not
+accepted, how many packets were held back, and the consumer's reason. A packet
+the lifecycle rejects is its final answer for that job (for example, the job is
+retired, not open yet, or carries a failure), so it does not make the call
+`indeterminate`; check `skipped`, and run `resumeInbound()` again after opening
+a job whose first packets may already be in history. An `indeterminate` or
+`conflict` result, or a consumer that throws, makes the call `indeterminate`.
+A consumer timeout or a retired generation still stops recovery, because every
+later job would wait on it too.
+
 Reconciliation only judges frames the local peer sent to the packet's
 recipient; a counterparty frame that reuses the packet hash is ignored. A frame
 of ours that decrypts to different bytes, or that the built-in AES-GCM codec

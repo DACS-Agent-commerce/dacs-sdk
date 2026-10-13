@@ -1063,6 +1063,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
       delivered: 1,
+      skipped: [],
     });
     sellerTransport.stop();
   });
@@ -1607,7 +1608,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       expect(result).toBeUndefined();
       vi.advanceTimersByTime(1_000);
       await settle();
-      expect(result).toEqual({ status: "indeterminate", delivered: 0, reason: CONSUMER_TIMEOUT });
+      expect(result).toEqual({ status: "indeterminate", delivered: 0, skipped: [], reason: CONSUMER_TIMEOUT });
       expect(signal?.aborted).toBe(true);
       expect(fixture.errors).toHaveLength(0);
       expect(fixture.hub.sends).toBe(1);
@@ -1642,12 +1643,13 @@ describe("Demos L2PS durable RFQ transport", () => {
       await expect(recovering).resolves.toEqual({
         status: "indeterminate",
         delivered: 0,
+        skipped: [],
         reason: "Demos L2PS inbound recovery generation retired",
       });
     }
     expect(fixture.errors).toHaveLength(0);
     expect(current).not.toHaveBeenCalled();
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
     fixture.transport.stop();
   });
 
@@ -1777,7 +1779,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(fixture.receive).not.toHaveBeenCalled();
     expect(current).not.toHaveBeenCalled();
     // The replacement generation can still recover the retired packet.
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
     expect(current).toHaveBeenCalledTimes(1);
     fixture.transport.stop();
   });
@@ -1835,7 +1837,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(fixture.hub.sends).toBe(1);
     hang = false;
     opens = 0;
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
     expect(opens).toBe(3);
     fixture.transport.stop();
   });
@@ -1940,7 +1942,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     await fixture.transport.drain();
     expect(opens).toBe(capacity + 1);
     expect(fixture.errors).toHaveLength(1);
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1 });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
     expect(fixture.hub.sends).toBe(1);
     fixture.transport.stop();
   }, 60_000);
@@ -2124,6 +2126,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
       delivered: 1,
+      skipped: [],
     });
     sellerStatus = await sellerClient.getStatus(JOB_ID);
     expect(
@@ -2132,6 +2135,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
       delivered: 1,
+      skipped: [],
     });
     expect(sellerErrors).not.toHaveBeenCalled();
     sellerTransport.stop();
@@ -2960,5 +2964,140 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(retired).not.toHaveBeenCalled();
     expect(current).toHaveBeenCalledTimes(1);
     sellerTransport.stop();
+  });
+});
+
+type InboundFixture = Awaited<ReturnType<typeof inboundReceiver>>;
+type BuyerPacket = InboundFixture["packet"];
+
+/** The buyer's offer, moved to another job, channel or turn sequence. */
+function offerVariant(
+  base: BuyerPacket,
+  change: { jobId?: string; channelId?: string; sequence?: number },
+): Omit<BuyerPacket, "packetId"> {
+  if (base.kind !== "turn") throw new Error("expected a turn packet");
+  const { packetId: _packetId, ...material } = structuredClone(base);
+  const channelId = change.channelId ?? material.channelId;
+  const variant = {
+    ...material,
+    jobId: change.jobId ?? material.jobId,
+    channelId,
+    message: {
+      ...material.message,
+      channelId,
+      sequence: change.sequence ?? material.message.sequence,
+    },
+  };
+  return variant as Omit<BuyerPacket, "packetId">;
+}
+
+/** Store a valid buyer-to-seller frame for `material` in the hub's history. */
+async function storeBuyerPacket(
+  fixture: InboundFixture,
+  material: Omit<BuyerPacket, "packetId">,
+  index: number,
+): Promise<BuyerPacket> {
+  const packet = { ...material, packetId: rfqLifecyclePacketId(material) } as BuyerPacket;
+  fixture.hub.messages.push({
+    ...structuredClone(fixture.own),
+    id: `stored-${index}`,
+    messageHash: packet.packetId,
+    timestamp: fixture.own.timestamp + index,
+    encrypted: await fixture.baseCodec.seal(
+      new TextEncoder().encode(canonicalize(packet as unknown as Record<string, unknown>)),
+      { messageHash: packet.packetId, fromPeer: BUYER_PEER, toPeer: SELLER_PEER },
+    ),
+  });
+  return packet;
+}
+
+const OTHER_JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7A";
+
+describe("Demos L2PS RFQ final review fixes", () => {
+  test("final: a recovered packet for an unopened job no longer blocks a later job", async () => {
+    const fixture = await inboundReceiver();
+    // The seller never opened this job, and its ID sorts before JOB_ID.
+    const early = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { jobId: OTHER_JOB_ID }), 1);
+    const results = [
+      await fixture.transport.resumeInbound(BUYER),
+      await fixture.transport.resumeInbound(BUYER),
+    ];
+    const status = await fixture.client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    expect(status.record.inboxPacketIds).toContain(fixture.packet.packetId);
+    // The second call sees the offer as a duplicate and the same refusal.
+    for (const result of results) {
+      expect(result).toEqual({
+        status: "complete",
+        delivered: 1,
+        skipped: [{
+          jobId: OTHER_JOB_ID,
+          channelId: CHANNEL_ID,
+          packetId: early.packetId,
+          packets: 1,
+          reason: "RFQ lifecycle job does not exist",
+        }],
+      });
+    }
+    fixture.transport.stop();
+  });
+
+  test.each([
+    { outcome: "rejected", status: "complete", reason: "test refusal" },
+    { outcome: "indeterminate", status: "indeterminate", reason: "test refusal" },
+    { outcome: "conflict", status: "indeterminate", reason: "test refusal" },
+    { outcome: "throw", status: "indeterminate", reason: "Demos L2PS recovered packet handler failed" },
+  ] as const)("final: a $outcome packet holds back only the rest of its own job", async ({ outcome, status, reason }) => {
+    const fixture = await inboundReceiver();
+    const sequence = fixture.packet.kind === "turn" ? fixture.packet.message.sequence : 0;
+    // On CHANNEL_ID, the other job's first packet is refused and its next turn
+    // is held back. The same job ID on another channel, and JOB_ID, still arrive.
+    const refused = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { jobId: OTHER_JOB_ID }), 1);
+    const later = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { jobId: OTHER_JOB_ID, sequence: sequence + 1 }), 2);
+    const sibling = await storeBuyerPacket(fixture, offerVariant(fixture.packet, {
+      jobId: OTHER_JOB_ID, channelId: "demos-l2ps-rfq-channel-02",
+    }), 3);
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      if (packet.packetId !== refused.packetId) return { status: "ready", record: {} as never };
+      if (outcome === "throw") throw new Error("consumer failed");
+      return { status: outcome, reason: "test refusal" };
+    });
+    const result = await fixture.transport.resumeInbound(BUYER);
+    expect(calls).toEqual([refused.packetId, sibling.packetId, fixture.packet.packetId]);
+    expect(calls).not.toContain(later.packetId);
+    expect(result).toEqual({
+      status,
+      delivered: 2,
+      skipped: [{
+        jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: refused.packetId, packets: 2, reason,
+      }],
+      ...(status === "indeterminate"
+        ? { reason: outcome === "throw" ? reason : `Demos L2PS recovered packet was not accepted: ${reason}` }
+        : {}),
+    });
+    fixture.transport.stop();
+  });
+
+  test("final: a consumer timeout still stops recovery before later jobs", async () => {
+    const fixture = await inboundReceiver({ consumerTimeoutMs: 20 });
+    const early = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { jobId: OTHER_JOB_ID }), 1);
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start((packet) => {
+      calls.push(packet.packetId);
+      return new Promise(() => {});
+    });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "indeterminate", delivered: 0, skipped: [], reason: CONSUMER_TIMEOUT,
+    });
+    expect(calls).toEqual([early.packetId]);
+    fixture.transport.stop();
   });
 });
