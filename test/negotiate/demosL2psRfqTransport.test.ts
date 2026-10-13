@@ -3338,4 +3338,55 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     });
     fixture.transport.stop();
   });
+
+  /** Exact code-unit order of two packets' job, then channel. */
+  const byBinding = (left: BuyerPacket, right: BuyerPacket) =>
+    left.jobId !== right.jobId
+      ? (left.jobId < right.jobId ? -1 : 1)
+      : left.channelId < right.channelId ? -1 : left.channelId > right.channelId ? 1 : 0;
+
+  // localeCompare() calls the first two twins equal to their base ID; a
+  // case-insensitive collation would call the last two equal.
+  test.each([
+    { field: "jobId", name: "a soft hyphen", twin: `${OTHER_JOB_ID}­` },
+    { field: "channelId", name: "a zero-width space", twin: `${CHANNEL_ID}​` },
+    { field: "jobId", name: "case", twin: OTHER_JOB_ID.toLowerCase() },
+    { field: "channelId", name: "case", twin: CHANNEL_ID.toUpperCase() },
+  ] as const)("re-review: a refused $field stays held when another differs only by $name", async ({ field, twin }) => {
+    const fixture = await inboundReceiver();
+    const sequence = fixture.packet.kind === "turn" ? fixture.packet.message.sequence : 0;
+    const base = { jobId: OTHER_JOB_ID, channelId: CHANNEL_ID };
+    const other = { ...base, [field]: twin };
+    expect(other[field]).not.toBe(base[field]);
+    // By turn rank alone the two groups would interleave: first, twin, later.
+    const first = await storeBuyerPacket(fixture, offerVariant(fixture.packet, { ...base, sequence }), 1);
+    const twinFirst = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { ...other, sequence: sequence + 1 }), 2);
+    const later = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { ...base, sequence: sequence + 2 }), 3);
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return packet.packetId === first.packetId || packet.packetId === twinFirst.packetId
+        ? { status: "rejected", reason: "test refusal" }
+        : { status: "ready", record: {} as never };
+    });
+    const result = await fixture.transport.resumeInbound(BUYER);
+    expect(calls).not.toContain(later.packetId);
+    const delivered = [first, twinFirst, fixture.packet].sort(byBinding);
+    expect(calls).toEqual(delivered.map((packet) => packet.packetId));
+    expect(result).toEqual({
+      status: "complete",
+      delivered: 1,
+      skipped: delivered.filter((packet) => packet !== fixture.packet).map((packet) => ({
+        jobId: packet.jobId,
+        channelId: packet.channelId,
+        packetId: packet.packetId,
+        packets: packet === first ? 2 : 1,
+        reason: "test refusal",
+      })),
+    });
+    fixture.transport.stop();
+  });
 });

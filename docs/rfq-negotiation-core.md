@@ -556,11 +556,13 @@ retired by `stop()` stay in Demos history and come back only that way.
 
 History is kept per peer pair, not per job, and Demos keeps every row. Recovery
 therefore sorts the packets it finds by job and channel and delivers each job's
-packets in turn order. When the consumer does not accept a packet, recovery
-holds back the rest of that job only and goes on with the other jobs. The
-result lists each such job in `skipped`, with the first packet that was not
-accepted, how many packets that covers (it and the ones held back), and the
-consumer's reason. A rejection is the consumer's answer about
+packets in turn order. IDs are compared by exact code units, not by locale
+collation, so two IDs that differ only in a character collation ignores (a
+zero-width space, say) stay separate groups. When the consumer does not accept
+a packet, recovery holds back the rest of that job only and goes on with the
+other jobs. The result lists each such job in `skipped`, with the first packet
+that was not accepted, how many packets that covers (it and the ones held
+back), and the consumer's reason. A rejection is the consumer's answer about
 the packet, not a transport uncertainty, so it does not make the call
 `indeterminate`. The lifecycle rejects, for example, a packet whose job is
 retired, not open yet, or carries a failure; when its clock, a verifier or its

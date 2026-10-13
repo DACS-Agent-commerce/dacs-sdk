@@ -399,6 +399,15 @@ export type DemosL2psRfqInboundRecoveryResult =
       reason: string;
     };
 
+/**
+ * Code-unit order, equal only for identical strings. localeCompare() can call
+ * distinct IDs equal (one with a soft hyphen or zero-width space appended),
+ * which would interleave two jobs' or channels' packets in recovery.
+ */
+function exactOrder(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   if (
     value === null ||
@@ -1625,8 +1634,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     left: Readonly<RfqLifecyclePacket<TSignature>>,
     right: Readonly<RfqLifecyclePacket<TSignature>>,
   ): number {
-    const binding = left.jobId.localeCompare(right.jobId) ||
-      left.channelId.localeCompare(right.channelId);
+    const binding = exactOrder(left.jobId, right.jobId) ||
+      exactOrder(left.channelId, right.channelId);
     if (binding !== 0) return binding;
     const rank = (packet: Readonly<RfqLifecyclePacket<TSignature>>) =>
       packet.kind === "turn"
@@ -1634,7 +1643,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         : packet.kind === "agreement-proposal"
           ? Number.MAX_SAFE_INTEGER - 1
           : Number.MAX_SAFE_INTEGER;
-    return rank(left) - rank(right) || left.packetId.localeCompare(right.packetId);
+    return rank(left) - rank(right) || exactOrder(left.packetId, right.packetId);
   }
 
   async function resumeInbound(
