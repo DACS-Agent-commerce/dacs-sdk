@@ -235,3 +235,22 @@ must return exactly the evidence it accepted. A transport response or an
 unverified signature string is not settlement evidence. A live wallet/RPC
 adapter and funded public-network proof remain a separate integration
 deliverable.
+
+## Upgrading
+
+- **Stores** must implement `recordFailure` and the `failed` claim. A store
+  without `recordFailure` is refused as `solana-spl-dependencies-invalid`
+  before its claim is read, so nothing is signed.
+- **Records with extra attempt fields.** Earlier versions retained, and
+  hashed, every field an adapter returned for a prepared attempt. A record
+  whose attempts carry keys beyond the nine `SolanaSplSignedAttempt` keys is
+  refused as `solana-spl-retained-state-corrupt`. The extra fields cannot be
+  stripped, because that breaks the attempt's integrity hash, so there is no
+  automatic migration. Refusing fails closed: nothing is reconciled, signed
+  or broadcast for that key. An attempt that was in flight at the upgrade can
+  still land, but the core will never record it `settled`. Reconcile such a
+  record by hand from its retained signature before the phase is paid any
+  other way.
+- **Records whose bytes do not carry their signature**, which a correct
+  adapter never produces, are refused as `solana-spl-retained-state-corrupt`
+  in the same way.
