@@ -1452,6 +1452,45 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
     await expect(claimWith("acquired", () => ({ status: "acquired" }))).resolves.toEqual(invalid);
   });
 
+  // Comparing the intent would canonicalize the object, running its code.
+  test("a stored intent field that is an object is intent-invalid before any of its code runs", async () => {
+    const reads = { count: 0 };
+    const jobId = Object.defineProperty({}, "id", {
+      enumerable: true,
+      get: () => {
+        reads.count += 1;
+        return "job-solana-spl-1";
+      },
+    });
+    await expect(claimWith("acquired", (claim) => ({
+      ...claim, intent: { ...(claim.intent as object), jobId },
+    }))).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" },
+      effects: [0, 0, 0, 0, 0],
+    });
+    expect(reads.count).toBe(0);
+  });
+
+  test("a stored intent field that is a proxy is intent-invalid before any trap runs", async () => {
+    const { traps, proxy } = trapLog();
+    await expect(claimWith("settled", (claim) => ({
+      ...claim, intent: { ...(claim.intent as object), amount: proxy({}) },
+    }))).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" },
+      effects: [0, 0, 0, 0, 0],
+    });
+    expect(traps).toEqual([]);
+  });
+
+  // A settled claim carrying acquired-claim fields is not a settled claim.
+  test.each<[string, Record<string, unknown>]>([
+    ["a lease", { lease: { owner: "worker-a", generation: 1, expiresAt: 1_100 } }],
+    ["retained attempts", { attempts: [], expiredSignatures: [] }],
+    ["a reason", { reason: "solana-spl-settlement-held" }],
+  ])("a settled claim that also carries %s is classified without any effect", async (_name, extra) => {
+    await expect(claimWith("settled", (claim) => ({ ...claim, ...extra }))).resolves.toEqual(invalid);
+  });
+
   test.each([
     ["acquired", { status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } }],
     ["waiting", { status: "waiting", reason: "solana-spl-settlement-held" }],
@@ -2493,6 +2532,56 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
       delete attempts[attempts.length - 1];
       return { ...claim, attempts };
     }, preflight({ payerTokenBalanceBaseUnits: "0" }))).resolves.toEqual(corrupt);
+  });
+
+  // Each row below is internally consistent (its hash matches), so only the
+  // check named would refuse it; without it the core would skip reconciling
+  // a live attempt, or replace it.
+  const rehash = (row: Record<string, unknown>) => {
+    const { attemptHash: _ignored, ...unsigned } = row;
+    return { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) };
+  };
+  const evidenceFor = (attempt: { signature: string; lastValidBlockHeight: number }) => ({
+    signature: attempt.signature,
+    observedBlockHeight: attempt.lastValidBlockHeight + 1,
+    commitmentLevel: "confirmed",
+    authenticationHash: "e".repeat(64),
+  });
+  test.each<[string, 1 | 2, (claim: Acquired) => unknown]>([
+    // The live attempt 2 would borrow attempt 1's expiry evidence.
+    ["a latest attempt that duplicates an expired attempt's signature", 2, (claim) => {
+      const [first, latest] = claim.attempts as SolanaSplSignedAttempt[];
+      return {
+        ...claim,
+        attempts: [first, rehash({
+          ...latest,
+          signature: first?.signature,
+          signedTransactionBase64: first?.signedTransactionBase64,
+        })],
+      };
+    }],
+    ["expiry evidence for a retained signature outside the expired set", 1, (claim) => ({
+      ...claim,
+      expiredSignatures: [],
+      expiryEvidence: [evidenceFor(claim.attempts[0] as SolanaSplSignedAttempt)],
+    })],
+    ["expiry evidence for a signature that is not retained", 1, (claim) => ({
+      ...claim,
+      expiryEvidence: [evidenceFor({ signature: signatureFor(9), lastValidBlockHeight: 10_001 })],
+    })],
+    ["two expiry evidence rows for one signature", 2, (claim) => ({
+      ...claim,
+      expiryEvidence: [...(claim.expiryEvidence ?? []), ...(claim.expiryEvidence ?? [])],
+    })],
+    // Attempt 1 is hidden: attempt 2 alone looks like a first attempt.
+    ["attempt 2 at index 0", 2, (claim) => ({
+      ...claim, attempts: claim.attempts.slice(1), expiredSignatures: [], expiryEvidence: [],
+    })],
+    ["the attempts in reverse order", 2, (claim) => ({
+      ...claim, attempts: [...claim.attempts].reverse(),
+    })],
+  ])("%s is corrupt state: nothing is reconciled, signed or broadcast", async (_name, count, view) => {
+    await expect(resumeWith(count, view)).resolves.toEqual(corrupt);
   });
 
   // A proxy answers `length`, its own keys and each index from separate code.
