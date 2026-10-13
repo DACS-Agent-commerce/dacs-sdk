@@ -817,6 +817,13 @@ export interface Agent {
    * strict DACS-2 vet closure. Bundles with vet records fail closed unless
    * `AgentConfig.verifyCompositeRecord` was configured; bundles with settlement
    * evidence likewise require `AgentConfig.resolveSettlementEvidenceContext`.
+   * Evidence at a PC-2 logical locator resolves only through the retained
+   * receipt from `AgentConfig.resolveAttestationAnchorReceipt`. With no
+   * callback, no receipt, or a receipt that does not bind the ref, it reports
+   * `missing`, as does a proven absence at the receipt's native address. A
+   * transient failure (a throwing receipt store, a receipt not yet finalized,
+   * or a failed read) rejects instead, exactly like a failed native-ref read,
+   * so the caller can retry.
    */
   verifyBundle(ref: string): Promise<BundleVerification>;
   /**
@@ -2076,10 +2083,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
-      // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs resolve the
-      // signed storage-program locator directly. Pre-#308 MVP refs alone use
-      // owner-bound name resolution (kind, jobId → name → address), because
-      // their physical address folds in the writer's create-time nonce (#70).
+      // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs read a
+      // native storage-program locator directly; a PC-2 logical evidence
+      // locator reads only the native address in its host-retained finalized
+      // receipt. Pre-#308 MVP refs alone use owner-bound name resolution
+      // (kind, jobId → name → address), because their physical address folds
+      // in the writer's create-time nonce (#70).
       return verifyBundleAtRef(ref);
     },
 

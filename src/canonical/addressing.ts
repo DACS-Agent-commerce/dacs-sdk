@@ -158,8 +158,9 @@ export function ratingAddress(jobId: string, rater: string): string {
  * `logical_address → storageProgramName` encoding, and the name MUST be treated
  * as an opaque write input — never as a canonical identifier or a CONSUMER
  * resolution key. Consumers resolve through the published logical→native
- * binding (§6.3.5/§6.3.6); the logical address is the metadata-of-record. This
- * string's only job is to be fed into
+ * binding (§6.3.5/§6.3.6) or, for PC-2 settlement evidence, through a retained
+ * finalized write receipt (CORE SR2-10, `Agent.verifyBundle`); the logical
+ * address is the metadata-of-record. This string's only job is to be fed into
  * `deriveStorageAddress(deployer, programName, nonce, salt)` at write time.
  *
  * Idempotent — encoding an already-colon-free name is a no-op — so it's safe to

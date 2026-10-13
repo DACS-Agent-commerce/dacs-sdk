@@ -165,22 +165,39 @@ expected deliverable locator (for delivery), plus key resolution and signature
 verification. Missing trust inputs fail as configuration errors rather than
 being silently skipped.
 
-For PC-2 logical settlement-evidence locators, configure
-`AgentConfig.resolveAttestationAnchorWriter({ ref, jobId, parties })`. This
-optional callback is captured when the Agent is constructed and must return a
-single anchor-writer ClaimRef (synchronously or asynchronously), or `null` when
-authority is missing or ambiguous. Obtain that claim from independently
-authenticated retained SR-2 receipt/session state. The attestation's `signer`
-identifies its issuer or validator set; neither it, the bundle parties, nor
-`anchoredByRole` establishes the storage writer. The SDK validates and
-round-trips the complete PC-2 tuple and checks its job ID before calling the
-resolver, resolves the writer's exact Demos key (using
-`resolveIdentitySigningPublicKey` for non-intrinsic claims), then looks up the
-encoded storage name with that owner and reads only a present native address.
-Missing, wrong, or indeterminate authority fails closed without name-only
-lookup or a direct logical-address fallback. Existing hash, signature, and
-job/phase checks still apply. Native-reference locators retain direct reads
-without invoking this callback. No artifact wire format changes.
+A PC-2 logical settlement-evidence locator
+(`dacs4:payment:{jobId}:{railId}:{phaseIndex}[:resolved]`) names no native
+Storage Program. Under CORE SR2-10/SR2-11 only an authenticated, finalized
+write receipt maps it, so `Agent.verifyBundle` never resolves the opaque
+storage-program name or the name index for it, and the program name the writer
+chose does not matter. Only hosts that retained the evidence write's receipt
+can use this path, for example the buyer that published the evidence or the
+seller that verified the buyer's `anchorReceipt` in the payment-evidence
+handshake. Configure `AgentConfig.resolveAttestationAnchorReceipt({ ref, jobId })`
+to return that CORE §5.1 `AnchorReceipt`, synchronously or asynchronously.
+Receipt fields alone are assertions (CORE SR2-4), so authenticate the receipt
+before retaining it, for Demos with `verifyDemosAnchorReceipt`. The callback is
+captured when the Agent is constructed and runs only after the complete PC-2
+tuple has been validated and its job ID matched to the bundle. The SDK then
+requires the receipt's exact `logicalAddress`, the ref's `contentHash`, a
+`stor-` native address with 40 lowercase hex characters, and a `finalized`,
+`established` state, and reads only that native address. Existing hash,
+signature, and job/phase checks still apply. Native-reference locators keep
+their direct reads and never invoke the callback. No artifact wire format
+changes.
+
+- **No authenticated mapping** (no callback, a `null` return, or a receipt that
+  does not bind the ref or records a `rejected` write): the evidence ref
+  reports `missing` and the bundle is not `ok`. A third-party verifier without
+  retained receipts therefore cannot verify these bundles, and `getReputation`
+  excludes them as `invalid-bundle`.
+- **Transient failure** (the callback throws, the receipt is not yet
+  `finalized`/`established`, which raises `TransientError`, or the read at the
+  native address fails): `verifyBundle` and `getReputation` reject exactly as
+  for a failed native-ref read, so the caller can retry. This is never reported
+  as `missing`.
+- **Proven absence** (the read at the receipt's native address returns
+  not-found): `missing`.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
