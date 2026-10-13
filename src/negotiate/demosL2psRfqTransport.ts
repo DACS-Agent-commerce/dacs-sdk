@@ -354,8 +354,9 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
   /**
    * Replay role-bound inbound packets after a process restart. Each job's
    * packets are delivered in order. A packet the consumer does not accept
-   * holds back only the later packets of its own job, which are reported in
-   * `skipped`; other jobs are still delivered.
+   * holds back only the later-ranked packets of its own job, which are
+   * reported in `skipped`; one of the same rank (a re-signed agreement
+   * proposal) is still delivered, and so are other jobs.
    */
   resumeInbound(remoteClaim: string): Promise<DemosL2psRfqInboundRecoveryResult>;
   /** Stop accepting inbound packets and detach when the peer supports it. */
@@ -367,13 +368,13 @@ export interface DemosL2psRfqTransport<TSignature = unknown>
   drain(): Promise<void>;
 }
 
-/** A job whose recovered packets were not all accepted by the consumer. */
+/** A recovered packet the consumer did not accept, with what it held back. */
 export interface DemosL2psRfqInboundSkip {
   jobId: string;
   channelId: string;
-  /** The first packet of the job that the consumer did not accept. */
+  /** The packet of the job that the consumer did not accept. */
   packetId: string;
-  /** That packet plus the job's later packets; none of them was delivered. */
+  /** That packet plus the job's later-ranked packets after it; none was delivered. */
   packets: number;
   /** The consumer's reason, or why the consumer call failed. */
   reason: string;
@@ -1631,6 +1632,15 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
   }
 
+  /** A packet's place in its job: turns by sequence, then proposal, then contribution. */
+  function packetRank(packet: Readonly<RfqLifecyclePacket<TSignature>>): number {
+    return packet.kind === "turn"
+      ? packet.message.sequence
+      : packet.kind === "agreement-proposal"
+        ? Number.MAX_SAFE_INTEGER - 1
+        : Number.MAX_SAFE_INTEGER;
+  }
+
   function packetOrder(
     left: Readonly<RfqLifecyclePacket<TSignature>>,
     right: Readonly<RfqLifecyclePacket<TSignature>>,
@@ -1638,13 +1648,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     const binding = exactOrder(left.jobId, right.jobId) ||
       exactOrder(left.channelId, right.channelId);
     if (binding !== 0) return binding;
-    const rank = (packet: Readonly<RfqLifecyclePacket<TSignature>>) =>
-      packet.kind === "turn"
-        ? packet.message.sequence
-        : packet.kind === "agreement-proposal"
-          ? Number.MAX_SAFE_INTEGER - 1
-          : Number.MAX_SAFE_INTEGER;
-    return rank(left) - rank(right) || exactOrder(left.packetId, right.packetId);
+    return packetRank(left) - packetRank(right) || exactOrder(left.packetId, right.packetId);
   }
 
   async function resumeInbound(
@@ -1798,10 +1802,17 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
     // History is per peer pair, not per job. Sorting keeps each job's packets
     // together and in order, so a packet the consumer does not accept holds
-    // back only the rest of its own job.
+    // back only the packets after it in its own job. One of the same rank (a
+    // buyer's proposal re-signed after a stale key) is still offered, and
+    // once one is accepted the job goes on.
     let held: DemosL2psRfqInboundSkip | undefined;
+    let heldRank = 0;
     for (const packet of [...packets.values()].sort(packetOrder)) {
-      if (held?.jobId === packet.jobId && held.channelId === packet.channelId) {
+      if (
+        held?.jobId === packet.jobId &&
+        held.channelId === packet.channelId &&
+        packetRank(packet) > heldRank
+      ) {
         held.packets += 1;
         continue;
       }
@@ -1814,6 +1825,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         const result = await consume(handler, packet, calls);
         if (result.status === "ready" || result.status === "duplicate") {
           delivered += 1;
+          held = undefined;
           continue;
         }
         refusal = "reason" in result ? result.reason : "unknown result";
@@ -1846,6 +1858,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         packets: 1,
         reason: refusal,
       };
+      heldRank = packetRank(packet);
       skipped.push(held);
     }
     return uncertainReason === undefined

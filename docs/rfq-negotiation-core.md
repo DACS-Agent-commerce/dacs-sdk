@@ -128,6 +128,21 @@ A verifier should answer `fail` or `invalid` for bad counterparty input and
 throw only for its own faults: one that throws keeps that packet
 `indeterminate` on every retry.
 
+`startAgreement()` answers `duplicate` while the buyer's proposal is in flight
+or finalized. If the buyer's signer used a stale or wrong key, the seller
+rejects that proposal, and the buyer's own verifier no longer accepts the
+stored contribution. Fix the signer and call `startAgreement()` again: it
+re-signs the same plan and sends a new proposal. While the new contribution
+does not verify either, or the verifier cannot decide, it answers
+`indeterminate` and stores nothing. The store gate
+(`durableRfqLifecycleTransitionViolation`) allows this one replacement, and
+only together with the new proposal's outbox entry. A seller that already
+holds the finalized Agreement answers `duplicate` to a proposal for the same
+plan and `rejected` to any other, so no second Agreement is made. If the
+seller's verifier still accepted the old key, it finalized the first proposal.
+Both sides then hold the same plan and agreement hash, but with different
+buyer signatures.
+
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({
   role: "buyer",
@@ -572,10 +587,12 @@ therefore sorts the packets it finds by job and channel and delivers each job's
 packets in turn order. IDs are compared by exact code units, not by locale
 collation, so two IDs that differ only in a character collation ignores (a
 zero-width space, say) stay separate groups. When the consumer does not accept
-a packet, recovery holds back the rest of that job only and goes on with the
-other jobs. The result lists each such job in `skipped`, with the first packet
-that was not accepted, how many packets that covers (it and the ones held
-back), and the consumer's reason. A rejection is the consumer's answer about
+a packet, recovery holds back the later packets of that job only and goes on
+with the other jobs. A packet of the same rank, such as a buyer's agreement
+proposal re-signed after a stale key, is still offered, and once one is
+accepted the job goes on. The result lists each refused packet in `skipped`,
+with how many packets that covers (it and the ones held back) and the
+consumer's reason. A rejection is the consumer's answer about
 the packet, not a transport uncertainty, so it does not make the call
 `indeterminate`. The lifecycle rejects, for example, a packet whose job is
 retired, not open yet, or carries a failure; when its clock, a verifier or its

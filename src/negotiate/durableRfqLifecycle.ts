@@ -38,6 +38,8 @@ import {
   createFixedPriceAgreementSignatureContribution,
   createFixedPriceAgreementSigningPlan,
   finalizeFixedPriceAgreementContributions,
+  fixedPriceAgreementSignedBytes,
+  type FixedPriceAgreementContributionVerificationDisposition,
   type FixedPriceAgreementContributionVerifier,
   type FixedPriceAgreementSignatureContribution,
   type FixedPriceAgreementSigningPlan,
@@ -278,11 +280,21 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * the agreement signer fails, cannot decide or answers malformed; the stored
    * session does not validate or the receipt time is before its
    * `awaitingSince`; or our own agreement contribution fails verification (a
-   * stale or wrong signer key). So a verifier should answer "fail" or
-   * "invalid" for bad counterparty input and throw only for its own faults.
+   * stale or wrong signer key; a buyer then calls startAgreement() again). So
+   * a verifier should answer "fail" or "invalid" for bad counterparty input
+   * and throw only for its own faults.
    */
   receive(packet: unknown): Promise<DurableRfqLifecycleResult<TSignature>>;
   resumeOutbox(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
+  /**
+   * Buyer only, after acceptance: sign and send the agreement proposal. It
+   * answers "duplicate" while that proposal is in flight or finalized. If the
+   * buyer's own stored contribution no longer verifies (its signer used a
+   * stale or wrong key, so the seller refuses it), a call re-signs the same
+   * plan with the current signer and sends a new proposal; while the new
+   * contribution does not verify either, it answers "indeterminate" and
+   * stores nothing.
+   */
   startAgreement(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
   getStatus(jobId: string): Promise<DurableRfqRecordLoad<TSignature>>;
 }
@@ -822,7 +834,35 @@ function arrayPrefix(left: readonly unknown[], right: readonly unknown[]): boole
   );
 }
 
-/** Append-only/monotonic CAS gate shared by every persistent store adapter. */
+/**
+ * The one agreement change that is not append-only: a buyer whose stored
+ * contribution no longer verifies re-signs the same unfinalized plan, and the
+ * proposal it queues carries exactly that plan and new contribution.
+ */
+function buyerResignedProposal<TSignature>(
+  prior: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+  next: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+): boolean {
+  const added = next.outbox.length === prior.outbox.length + 1
+    ? next.outbox.at(-1)!.packet
+    : undefined;
+  return (
+    prior.agreement?.contributions.length === 1 &&
+    next.agreement?.contributions.length === 1 &&
+    added?.kind === "agreement-proposal" &&
+    canonicalize({ plan: added.plan, contribution: added.buyerContribution }) ===
+      canonicalize({
+        plan: next.agreement.plan,
+        contribution: next.agreement.contributions[0],
+      })
+  );
+}
+
+/**
+ * Append-only/monotonic CAS gate shared by every persistent store adapter. Its
+ * one exception: a buyer may replace its unfinalized agreement contribution
+ * when it queues a new proposal for the same plan.
+ */
 export function durableRfqLifecycleTransitionViolation<TSignature = unknown>(
   priorValue: unknown,
   nextValue: unknown,
@@ -894,10 +934,11 @@ export function durableRfqLifecycleTransitionViolation<TSignature = unknown>(
     if (
       next.agreement === undefined ||
       canonicalize(next.agreement.plan) !== canonicalize(prior.agreement.plan) ||
-      !arrayPrefix(
+      (!arrayPrefix(
         prior.agreement.contributions,
         next.agreement.contributions,
-      ) ||
+      ) &&
+        !buyerResignedProposal(prior, next)) ||
       (prior.agreement.finalized !== undefined &&
         canonicalize(next.agreement.finalized) !==
           canonicalize(prior.agreement.finalized))
@@ -1755,6 +1796,27 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     return publishPacket(packet);
   }
 
+  /** The verifier's answer for one contribution, as finalizing reports it. */
+  async function verifyContribution(
+    plan: Readonly<FixedPriceAgreementSigningPlan>,
+    contribution: Readonly<FixedPriceAgreementSignatureContribution>,
+  ): Promise<FixedPriceAgreementContributionVerificationDisposition> {
+    try {
+      const disposition = await verifyAgreementContribution(Object.freeze({
+        role: contribution.role,
+        party: contribution.party,
+        algorithm: contribution.signature.algorithm,
+        value: contribution.signature.value,
+        signedBytes: fixedPriceAgreementSignedBytes(plan),
+      }));
+      return disposition === "valid" || disposition === "invalid" || disposition === "indeterminate"
+        ? disposition
+        : "error";
+    } catch {
+      return "error";
+    }
+  }
+
   /**
    * Finalize a received agreement. A counterparty contribution the verifier
    * calls invalid rejects the packet. Our own contribution called invalid (our
@@ -1860,6 +1922,13 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
   ): Promise<DurableRfqLifecycleResult<TSignature>> {
     if (role !== "seller" || record.session.status !== "accepted") {
       return { status: "rejected", reason: "agreement proposal is not expected", record };
+    }
+    if (record.agreement !== undefined) {
+      // A buyer that re-signed after a stale key sends the same plan again;
+      // the agreement on that plan is already finalized.
+      return canonicalize(record.agreement.plan) === canonicalize(packet.plan)
+        ? { status: "duplicate", record }
+        : { status: "rejected", reason: "RFQ agreement is already finalized", record };
     }
     let expectedPlan: Readonly<FixedPriceAgreementSigningPlan>;
     let sellerContribution: Readonly<FixedPriceAgreementSignatureContribution>;
@@ -2250,12 +2319,25 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       if (role !== "buyer" || record.session.status !== "accepted") {
         return { status: "rejected", reason: "buyer may start agreement only after RFQ acceptance", record };
       }
-      if (record.agreement !== undefined) {
-        return { status: "duplicate", record };
+      const prior = record.agreement;
+      if (prior !== undefined) {
+        // The proposal is in flight or finalized, unless our own stored
+        // contribution no longer verifies: our signer used a stale or wrong
+        // key, so the seller refuses that proposal. Only then start again.
+        if (prior.finalized !== undefined) return { status: "duplicate", record };
+        const stored = await verifyContribution(prior.plan, prior.contributions[0]!);
+        if (stored === "valid") return { status: "duplicate", record };
+        if (stored !== "invalid") {
+          return {
+            status: "indeterminate",
+            reason: `buyer agreement contribution is not cryptographically valid (${stored})`,
+            record,
+          };
+        }
       }
-      let generatedAt: number;
+      let now: number;
       try {
-        generatedAt = trustedNow();
+        now = trustedNow();
       } catch (cause) {
         return {
           status: "rejected",
@@ -2266,12 +2348,13 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       let plan: Readonly<FixedPriceAgreementSigningPlan>;
       let buyerContribution: Readonly<FixedPriceAgreementSignatureContribution>;
       try {
-        const draft = deriveRfqAgreement({
+        // A retry re-signs the stored plan, so whichever proposal the seller
+        // accepts finalizes the same agreement.
+        plan = prior?.plan ?? createFixedPriceAgreementSigningPlan(deriveRfqAgreement({
           ...record.authority,
           session: record.session,
-          generatedAt,
-        });
-        plan = createFixedPriceAgreementSigningPlan(draft);
+          generatedAt: now,
+        }));
         buyerContribution = await createFixedPriceAgreementSignatureContribution(
           plan,
           "buyer",
@@ -2284,6 +2367,20 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
           record,
         };
       }
+      if (prior !== undefined) {
+        // Replace the stored proposal only with one our verifier accepts.
+        const resigned = await verifyContribution(plan, buyerContribution);
+        if (resigned !== "valid") {
+          return {
+            status: "indeterminate",
+            reason: `buyer agreement contribution is not cryptographically valid (${resigned})`,
+            record,
+          };
+        }
+        if (canonicalize(buyerContribution) === canonicalize(prior.contributions[0])) {
+          return { status: "duplicate", record };
+        }
+      }
       const packet = makePacket(record, {
         kind: "agreement-proposal",
         plan,
@@ -2291,11 +2388,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       });
       const staged = await write(
         record,
-        nextRecord(record, generatedAt, {
+        nextRecord(record, now, {
           agreement: { plan, contributions: [buyerContribution] },
           outbox: [
             ...structuredClone(record.outbox),
-            { packet, state: "pending", attempts: 0, updatedAt: generatedAt },
+            { packet, state: "pending", attempts: 0, updatedAt: now },
           ],
         }),
       );

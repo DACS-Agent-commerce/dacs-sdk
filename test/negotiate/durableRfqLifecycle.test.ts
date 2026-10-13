@@ -15,10 +15,12 @@ import {
   createFixedPriceAgreementSigningPlan,
   createInMemoryDurableRfqLifecycleStore,
   createInMemoryRfqLifecycleNetwork,
+  durableRfqLifecycleTransitionViolation,
   rfqLifecyclePacketId,
   type AttestationRef,
   type ChannelMessageSignatureVerificationInput,
   type DurableRfqLifecycleClient,
+  type DurableRfqLifecycleRecord,
   type DurableRfqLifecycleStore,
   type DurableRfqLifecycleTransport,
   type IdentityBundle,
@@ -1084,5 +1086,277 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     expect(loaded.status === "ok" && loaded.record.agreement?.finalized).toBeUndefined();
     buyer.faults.agreement = undefined;
     await expect(buyer.client.receive(contribution)).resolves.toMatchObject({ status: "ready" });
+  });
+});
+
+describe("durable RFQ buyer starts again after its own stale agreement key", () => {
+  type Verify = typeof verifyAgreement;
+  type Signer = { stale: boolean; verify?: Verify };
+  const staleKeys = generateKeyPairSync("ed25519");
+  const thirdKeys = generateKeyPairSync("ed25519");
+  const price = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+  const invalid = "buyer agreement contribution is not cryptographically valid (invalid)";
+
+  /**
+   * A buyer client over `store`. `signer.stale` makes its agreement signer use
+   * another key; `signer.verify` replaces its contribution verifier.
+   */
+  function buyerOver(
+    store: DurableRfqLifecycleStore<string>,
+    transport: DurableRfqLifecycleTransport<string>,
+    signer: Signer,
+    nowMs = () => NOW,
+  ) {
+    return createDurableRfqLifecycleClient({
+      role: "buyer",
+      store,
+      transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(buyerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: {
+        party: BUYER,
+        algorithm: "ed25519" as const,
+        sign: (bytes: Uint8Array) =>
+          ed25519Sign(null, bytes, signer.stale ? staleKeys.privateKey : buyerKeys.privateKey),
+      },
+      verifyAgreementContribution: (input) => (signer.verify ?? verifyAgreement)(input),
+      nowMs,
+    });
+  }
+
+  type Network = ReturnType<typeof createInMemoryRfqLifecycleNetwork<string>>;
+
+  /** Negotiate to acceptance with a normal seller, or the one `sellerOf` makes. */
+  async function accepted(
+    signer: Signer,
+    sellerOf?: (network: Network) => DurableRfqLifecycleClient<string>,
+  ) {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const store = createInMemoryDurableRfqLifecycleStore<string>();
+    const buyerClient = buyerOver(store, network.transport, signer);
+    const sellerClient = sellerOf?.(network) ?? clients(network.transport).sellerClient;
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, price);
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyerClient);
+    return { network, store, buyerClient, sellerClient };
+  }
+
+  async function loadOk(client: DurableRfqLifecycleClient<string>) {
+    const loaded = await client.getStatus(JOB_ID);
+    if (loaded.status !== "ok") throw new Error("record did not load");
+    return loaded.record as DurableRfqLifecycleRecord<string>;
+  }
+
+  /** The buyer proposes with a stale key, and the seller rightly refuses it. */
+  async function spoiled(signer: Signer = { stale: true }) {
+    const fixture = await accepted(signer);
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const staleProposal = fixture.network.take(SELLER);
+    if (staleProposal?.kind !== "agreement-proposal") throw new Error("expected agreement proposal");
+    await expect(fixture.sellerClient.receive(staleProposal)).resolves.toMatchObject({
+      status: "rejected",
+      reason: invalid,
+    });
+    return { ...fixture, signer, staleProposal, spoiledRecord: await loadOk(fixture.buyerClient) };
+  }
+
+  /** Deliver the re-signed proposal and the seller's answer; both must hold one agreement. */
+  async function finish(
+    fixture: Awaited<ReturnType<typeof spoiled>>,
+    buyerClient: DurableRfqLifecycleClient<string>,
+  ) {
+    const fresh = fixture.network.take(SELLER);
+    if (fresh?.kind !== "agreement-proposal") throw new Error("expected re-signed proposal");
+    expect(fresh.packetId).not.toBe(fixture.staleProposal.packetId);
+    expect(fresh.plan).toEqual(fixture.staleProposal.plan);
+    await expect(fixture.sellerClient.receive(fresh)).resolves.toMatchObject({ status: "ready" });
+    await deliver(fixture.network, BUYER, buyerClient);
+    const buyerRecord = await loadOk(buyerClient);
+    const sellerRecord = await loadOk(fixture.sellerClient);
+    expect(sellerRecord.agreement?.finalized?.signatures).toHaveLength(2);
+    expect(buyerRecord.agreement?.finalized).toEqual(sellerRecord.agreement?.finalized);
+    expect(buyerRecord.agreement?.contributions).toEqual([
+      fresh.buyerContribution,
+      sellerRecord.agreement?.contributions[1],
+    ]);
+    // The old proposal cannot make a second agreement, and the buyer is done.
+    await expect(fixture.sellerClient.receive(fixture.staleProposal)).resolves.toMatchObject({
+      status: "duplicate",
+    });
+    await expect(loadOk(fixture.sellerClient)).resolves.toEqual(sellerRecord);
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    expect(fixture.network.pending(SELLER)).toBe(0);
+    return { buyerRecord, sellerRecord, fresh };
+  }
+
+  test("a stale key, then the right one: the buyer re-signs the same plan and both sides hold one agreement", async () => {
+    const fixture = await spoiled();
+    // Still stale: nothing is stored or sent.
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: invalid,
+    });
+    await expect(loadOk(fixture.buyerClient)).resolves.toEqual(fixture.spoiledRecord);
+    expect(fixture.network.pending(SELLER)).toBe(0);
+    fixture.signer.stale = false;
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const { buyerRecord } = await finish(fixture, fixture.buyerClient);
+    expect(buyerRecord.outbox).toHaveLength(fixture.spoiledRecord.outbox.length + 1);
+  });
+
+  test("a restart between the stale key and the right one", async () => {
+    const fixture = await spoiled();
+    // A new process over the same store, with the signer fixed and a later clock.
+    const restarted = buyerOver(fixture.store, fixture.network.transport, { stale: false }, () => NOW + 5_000);
+    await expect(restarted.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(fixture.network.pending(SELLER)).toBe(0);
+    await expect(restarted.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const { buyerRecord } = await finish(fixture, restarted);
+    // The stored plan is kept, so its generatedAt is the first attempt's.
+    expect(buyerRecord.agreement?.plan).toEqual(fixture.spoiledRecord.agreement?.plan);
+    expect(buyerRecord.agreement?.plan.draft.generatedAt).toBe(NOW);
+  });
+
+  test("control: a proposal in flight or finalized is still a duplicate, whatever the signer is now", async () => {
+    const signer: Signer = { stale: false };
+    const fixture = await accepted(signer);
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const inFlight = await loadOk(fixture.buyerClient);
+    // Our stored contribution verifies, so a now-stale signer does not replace it.
+    signer.stale = true;
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    signer.stale = false;
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    await expect(loadOk(fixture.buyerClient)).resolves.toEqual(inFlight);
+    expect(fixture.network.pending(SELLER)).toBe(1);
+    await deliver(fixture.network, SELLER, fixture.sellerClient);
+    await deliver(fixture.network, BUYER, fixture.buyerClient);
+    const finalized = await loadOk(fixture.buyerClient);
+    signer.stale = true;
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    await expect(loadOk(fixture.buyerClient)).resolves.toEqual(finalized);
+    expect(fixture.network.pending(SELLER)).toBe(0);
+  });
+
+  test.each([
+    { answer: "throw", reported: "error" },
+    { answer: "error", reported: "error" },
+    { answer: "indeterminate", reported: "indeterminate" },
+  ] as const)("a verifier answering $answer for the stored contribution leaves the retry indeterminate", async ({ answer, reported }) => {
+    const signer: Signer = { stale: true };
+    const fixture = await spoiled(signer);
+    signer.stale = false;
+    // The fault hits only the check of the stored contribution, so a retry
+    // that skipped that check would go on to sign and send.
+    let faults = 1;
+    signer.verify = (input) => {
+      if (faults === 0) return verifyAgreement(input);
+      faults -= 1;
+      if (answer === "throw") throw new Error("agreement verifier offline");
+      return answer as never;
+    };
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: `buyer agreement contribution is not cryptographically valid (${reported})`,
+    });
+    await expect(loadOk(fixture.buyerClient)).resolves.toEqual(fixture.spoiledRecord);
+    expect(fixture.network.pending(SELLER)).toBe(0);
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await finish(fixture, fixture.buyerClient);
+  });
+
+  test("a verifier that calls the stored contribution invalid and the same bytes valid gets a duplicate", async () => {
+    const signer: Signer = { stale: false };
+    const fixture = await accepted(signer);
+    await fixture.buyerClient.startAgreement(JOB_ID);
+    const inFlight = await loadOk(fixture.buyerClient);
+    let faults = 1;
+    signer.verify = (input) => {
+      if (faults === 0) return verifyAgreement(input);
+      faults -= 1;
+      return "invalid";
+    };
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    await expect(loadOk(fixture.buyerClient)).resolves.toEqual(inFlight);
+    expect(fixture.network.pending(SELLER)).toBe(1);
+  });
+
+  test("a seller that still accepts the stale key finalizes once; the buyer's re-signed proposal is a duplicate there", async () => {
+    // The seller's key directory still lists the buyer's old key.
+    const sellerVerify = (input: Parameters<Verify>[0]) =>
+      verifyAgreement(input) === "valid" ||
+      (input.party === BUYER &&
+        ed25519Verify(null, input.signedBytes, staleKeys.publicKey, Buffer.from(input.value, "base64url")))
+        ? ("valid" as const)
+        : ("invalid" as const);
+    const signer: Signer = { stale: true };
+    const fixture = await accepted(signer, (network) => createDurableRfqLifecycleClient({
+      role: "seller",
+      store: createInMemoryDurableRfqLifecycleStore<string>(),
+      transport: network.transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(sellerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(SELLER, sellerKeys.privateKey),
+      verifyAgreementContribution: sellerVerify,
+      nowMs: () => NOW,
+    }));
+    await fixture.buyerClient.startAgreement(JOB_ID);
+    await deliver(fixture.network, SELLER, fixture.sellerClient);
+    const sellerRecord = await loadOk(fixture.sellerClient);
+    const contribution = fixture.network.take(BUYER);
+    if (contribution === undefined) throw new Error("no seller contribution");
+    // The buyer's own verifier refuses its stale contribution.
+    await expect(fixture.buyerClient.receive(contribution)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: invalid,
+    });
+    signer.stale = false;
+    await expect(fixture.buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const fresh = fixture.network.take(SELLER);
+    if (fresh === undefined) throw new Error("no re-signed proposal");
+    await expect(fixture.sellerClient.receive(fresh)).resolves.toMatchObject({ status: "duplicate" });
+    await expect(loadOk(fixture.sellerClient)).resolves.toEqual(sellerRecord);
+    await expect(fixture.buyerClient.receive(contribution)).resolves.toMatchObject({ status: "ready" });
+    const buyerRecord = await loadOk(fixture.buyerClient);
+    // Same plan and agreement hash on both sides; only the buyer's signature differs.
+    expect(buyerRecord.agreement?.plan).toEqual(sellerRecord.agreement?.plan);
+    const finalizedHash = (record: DurableRfqLifecycleRecord<string>) =>
+      contentHash(record.agreement?.finalized as unknown as Record<string, unknown>);
+    expect(finalizedHash(buyerRecord)).toBe(sellerRecord.agreement?.plan.agreementHash);
+    expect(finalizedHash(sellerRecord)).toBe(sellerRecord.agreement?.plan.agreementHash);
+    expect(buyerRecord.agreement?.contributions[1]).toEqual(sellerRecord.agreement?.contributions[1]);
+  });
+
+  test("the store gate allows only a re-signed contribution that the new proposal carries", async () => {
+    const fixture = await spoiled();
+    fixture.signer.stale = false;
+    await fixture.buyerClient.startAgreement(JOB_ID);
+    const prior = fixture.spoiledRecord;
+    // The staged write: one revision on, with the new proposal not yet sent.
+    const next = structuredClone(await loadOk(fixture.buyerClient));
+    next.revision = prior.revision + 1;
+    next.outbox[next.outbox.length - 1] = { ...next.outbox.at(-1)!, state: "pending", attempts: 0 };
+    expect(durableRfqLifecycleTransitionViolation(prior, next)).toBeNull();
+    // The contribution replaced without queueing its proposal.
+    const unsent = structuredClone(next);
+    unsent.outbox = structuredClone(prior.outbox);
+    expect(durableRfqLifecycleTransitionViolation(prior, unsent)).toBe(
+      "agreement signing state was removed or replaced",
+    );
+    // The stored contribution differs from the one the new proposal carries.
+    const other = structuredClone(next);
+    other.agreement!.contributions = [structuredClone(await createFixedPriceAgreementSignatureContribution(
+      next.agreement!.plan,
+      "buyer",
+      agreementSigner(BUYER, thirdKeys.privateKey),
+    ))];
+    expect(durableRfqLifecycleTransitionViolation(prior, other)).toBe(
+      "agreement signing state was removed or replaced",
+    );
   });
 });

@@ -3543,3 +3543,133 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     sellerTransport.stop();
   });
 });
+
+describe("Demos L2PS RFQ buyer retry after a stale agreement key", () => {
+  test("stale buyer key: a refused packet does not hold back one of the same rank, and its job goes on", async () => {
+    const fixture = await inboundReceiver();
+    const offer = fixture.packet;
+    if (offer.kind !== "turn") throw new Error("expected a turn packet");
+    const sequence = offer.message.sequence;
+    // Two packets of one rank in one job, as a stale and a re-signed proposal are.
+    const sameRank = (signature: string) =>
+      offerVariant({ ...offer, message: { ...offer.message, signature } }, { jobId: OTHER_JOB_ID });
+    const one = await storeBuyerPacket(fixture, sameRank("one"), 1);
+    const two = await storeBuyerPacket(fixture, sameRank("two"), 2);
+    const next = await storeBuyerPacket(
+      fixture, offerVariant(offer, { jobId: OTHER_JOB_ID, sequence: sequence + 1 }), 3);
+    const [refused, accepted] = [one, two].sort((left, right) => (left.packetId < right.packetId ? -1 : 1));
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return packet.packetId === refused!.packetId
+        ? { status: "rejected", reason: "test refusal" }
+        : { status: "ready", record: {} as never };
+    });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete",
+      delivered: 3,
+      skipped: [{
+        jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: refused!.packetId, packets: 1, reason: "test refusal",
+      }],
+    });
+    expect(calls).toEqual([refused!.packetId, accepted!.packetId, next.packetId, fixture.packet.packetId]);
+    fixture.transport.stop();
+  });
+
+  test("stale buyer key: the buyer re-signs, and recovery after both sides restart finalizes one agreement", async () => {
+    const hub = new FakeL2psHub();
+    const sharedKey = randomBytes(32);
+    const outboxes = { buyer: memorySendOutbox(), seller: memorySendOutbox() };
+    const stores = {
+      buyer: createInMemoryDurableRfqLifecycleStore<string>(),
+      seller: createInMemoryDurableRfqLifecycleStore<string>(),
+    };
+    const transportFor = (role: DurableRfqLifecycleRole) =>
+      createDemosL2psRfqTransport<string>({
+        peer: hub.peer(role === "buyer" ? BUYER_PEER : SELLER_PEER),
+        codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
+        l2psUid: L2PS_UID,
+        peerChannel: "loopback",
+        outboxStore: outboxes[role],
+        localClaim: role === "buyer" ? BUYER : SELLER,
+        localPeerKey: role === "buyer" ? BUYER_PEER : SELLER_PEER,
+        peerForClaim,
+        claimForPeer,
+        onError: vi.fn(),
+      });
+    // The verifier knows each role's key: the buyer signs 1s and the seller 2s.
+    // The buyer's stale key signs 7s, a well-formed signature that does not verify.
+    const STALE = 7;
+    const signature = (fill: number) => Buffer.from(new Uint8Array(64).fill(fill)).toString("base64url");
+    const verifyAgreementContribution = (input: { role: string; value: string }) =>
+      input.value === signature(input.role === "buyer" ? 1 : 2) ? "valid" as const : "invalid" as const;
+    const reservation = durableReservation();
+    /** A process for `role`: a fresh transport and client over that role's stores. */
+    const processFor = (role: DurableRfqLifecycleRole, fill = role === "buyer" ? 1 : 2) => {
+      const transport = transportFor(role);
+      const options = clientOptions(role, transport, reservation);
+      const client = createDurableRfqLifecycleClient({
+        ...options,
+        store: stores[role],
+        agreementSigner: { ...options.agreementSigner, sign: () => new Uint8Array(64).fill(fill) },
+        verifyAgreementContribution,
+      });
+      transport.start((packet) => client.receive(packet));
+      return { transport, client };
+    };
+    let buyerSide = processFor("buyer", STALE);
+    let sellerSide = processFor("seller");
+    await buyerSide.client.open(openInput());
+    await sellerSide.client.open(openInput());
+    await buyerSide.client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    });
+    await sellerSide.transport.drain();
+    await expect(sellerSide.client.sendAccept(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await buyerSide.transport.drain();
+    // The seller is down while the buyer proposes with its stale key.
+    sellerSide.transport.stop();
+    await expect(buyerSide.client.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    // The buyer restarts with its signer fixed and starts again.
+    buyerSide.transport.stop();
+    buyerSide = processFor("buyer");
+    await expect(buyerSide.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await expect(buyerSide.client.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const proposed = await buyerSide.client.getStatus(JOB_ID);
+    if (proposed.status !== "ok") throw new Error("record did not load");
+    const [stale, fresh] = proposed.record.outbox.slice(-2).map((entry) => entry.packet);
+    if (stale?.kind !== "agreement-proposal" || fresh?.kind !== "agreement-proposal") {
+      throw new Error("expected two agreement proposals");
+    }
+    expect(fresh.plan).toEqual(stale.plan);
+    // The stale fill is chosen so that recovery meets the refused proposal first.
+    expect(stale.packetId < fresh.packetId).toBe(true);
+    // The seller restarts and recovers the offer and both proposals from history.
+    sellerSide = processFor("seller");
+    const reason = "buyer agreement contribution is not cryptographically valid (invalid)";
+    await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete",
+      delivered: 2,
+      skipped: [{ jobId: JOB_ID, channelId: CHANNEL_ID, packetId: stale.packetId, packets: 1, reason }],
+    });
+    await buyerSide.transport.drain();
+    await expect(buyerSide.transport.resumeInbound(SELLER)).resolves.toEqual({
+      status: "complete", delivered: 2, skipped: [],
+    });
+    // Once the agreement is final, the old proposal is only a duplicate.
+    await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete", delivered: 3, skipped: [],
+    });
+    const buyerStatus = await buyerSide.client.getStatus(JOB_ID);
+    const sellerStatus = await sellerSide.client.getStatus(JOB_ID);
+    if (buyerStatus.status !== "ok" || sellerStatus.status !== "ok") throw new Error("record did not load");
+    expect(sellerStatus.record.agreement?.finalized?.signatures).toHaveLength(2);
+    expect(buyerStatus.record.agreement?.finalized).toEqual(sellerStatus.record.agreement?.finalized);
+    expect(sellerStatus.record.agreement?.contributions[0]).toEqual(fresh.buyerContribution);
+    await expect(buyerSide.client.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    buyerSide.transport.stop();
+    sellerSide.transport.stop();
+  });
+});
