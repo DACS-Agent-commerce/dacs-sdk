@@ -226,9 +226,12 @@ export type HtlcObservedAction =
        * The retained attempt this `absent` is about. A retained reveal or
        * source claim is replaced only when this names its active attempt; an
        * `absent` that names an earlier attempt, or none, is refused. A retained
-       * refund counts as unable to land only when this names it; an `absent`
-       * without it means nothing is on chain yet, and the retained refund is
-       * rebroadcast byte for byte.
+       * lock (source or destination) or refund counts as unable to land only
+       * when this names it: its dead bytes are never rebroadcast, and a dead
+       * destination lock is no longer an owed leg. An `absent` without it
+       * means nothing is on chain yet: the retained bytes are rebroadcast byte
+       * for byte, and a retained destination lock stays owed, as when it is
+       * `pending`, so the session is never `refunded` while it may land.
        */
       txRef?: Readonly<HtlcTxRef>;
       authenticationHash: string;
@@ -551,7 +554,8 @@ export type CrossChainHtlcProgress =
       txRefs: readonly Readonly<HtlcTxRef>[];
       /**
        * Each locked leg's refund; `destination-refund` once a destination lock
-       * is final or retained and not authenticated `failed` or `absent`.
+       * is final, or retained and not authenticated `failed` or `absent`
+       * naming it.
        */
       refunds: HtlcRefundLegs;
     }
@@ -1720,13 +1724,25 @@ export async function advanceCrossChainHtlc(
     return retained !== undefined && observed?.state === "absent" &&
       observed.txRef !== undefined && sameRef(observed.txRef, retained.txRef);
   };
+  // The same rule for the payee's retained destination lock: only an `absent`
+  // naming it proves it can never land, so its leg is no longer owed and its
+  // dead bytes are not rebroadcast. An `absent` that names no transaction
+  // says only that nothing is on chain yet; the retained lock may still land,
+  // so it stays an owed leg, as when it is `pending` or unreported.
+  const destinationLockAbsent = (latest: Readonly<HtlcLedgerSnapshot>): boolean => {
+    const retained = prepared.get("destination-lock");
+    const observed = latest.actions["destination-lock"];
+    return retained !== undefined && observed?.state === "absent" &&
+      observed.txRef !== undefined && sameRef(observed.txRef, retained.txRef);
+  };
   // Reports each locked leg's refund from the latest observation. `sent` is a
   // refund broadcast in this call, reported as refunded only on a later call;
   // until the adapter reports it, or while it still reads `absent` in this
   // same call, it is `pending`, so only a later call can find it `absent`.
   // A tracked destination leg keeps its retained lock's reference even while
-  // the adapter does not report that lock, as do the retained actions in
-  // `unreported`.
+  // the adapter does not report that lock, or reports it `absent` naming
+  // nothing; the retained actions in `unreported` keep theirs while the
+  // adapter does not report them.
   const refundProgress = (
     reason: HtlcRefundReason,
     latest: Readonly<HtlcLedgerSnapshot>,
@@ -1747,9 +1763,7 @@ export async function advanceCrossChainHtlc(
             : refundAbsent(leg, latest) ? "absent" : "waiting";
     }
     const states = Object.values(refunds);
-    const unreportedLocks: HtlcAction[] = attempts["destination-refund"] === undefined
-      ? [...unreported]
-      : [...unreported, "destination-lock"];
+    const trackedLock: HtlcAction[] = attempts["destination-refund"] === undefined ? [] : ["destination-lock"];
     if (states.includes("absent")) {
       return {
         status: "operator-alert",
@@ -1757,8 +1771,11 @@ export async function advanceCrossChainHtlc(
         txRefs: collectRefs(
           latest,
           prepared,
-          unreportedLocks,
-          (["destination-refund", "source-refund"] as const).filter((leg) => refunds[leg] === "absent"),
+          unreported,
+          [
+            ...trackedLock,
+            ...(["destination-refund", "source-refund"] as const).filter((leg) => refunds[leg] === "absent"),
+          ],
         ),
         refunds: Object.freeze(refunds),
       };
@@ -1770,7 +1787,7 @@ export async function advanceCrossChainHtlc(
           ? "refunded"
           : "refund-pending",
       reason,
-      txRefs: collectRefs(latest, prepared, unreportedLocks),
+      txRefs: collectRefs(latest, prepared, unreported, trackedLock),
       refunds: Object.freeze(refunds),
     };
   };
@@ -2339,7 +2356,7 @@ export async function advanceCrossChainHtlc(
     // refund path's `htlc-refund-absent` or `refund-stalled`.
     const destinationLockState = snapshot.actions["destination-lock"];
     const destinationLockMayLand = prepared.has("destination-lock") &&
-      destinationLockState?.state !== "failed" && destinationLockState?.state !== "absent";
+      destinationLockState?.state !== "failed" && !destinationLockAbsent(snapshot);
     const attempts: Partial<Record<"source-refund" | "destination-refund", "none" | "sent" | "uncertain">> = {
       "source-refund": sourceRefundFirst?.attempt ?? "none",
       ...(destinationLock || destinationLockMayLand || prepared.has("destination-refund")
@@ -2685,12 +2702,13 @@ export async function advanceCrossChainHtlc(
     // payer's source leg is then refunded at its expiry, and the terms stay
     // the reason that the session refunds.
     const sourceTermsVerdict = lockTermsVerdict(sourceLock, expectedSourceLockTerms(intent));
-    // A retained destination lock that is not authenticated `failed` or
-    // `absent` may still land, so it stays an owed leg: its reference and its
-    // refund are reported and the session is never `refunded` before it
-    // resolves. Once final it takes the final-lock path and is refunded there.
+    // A retained destination lock that is not authenticated `failed`, or
+    // `absent` naming it, may still land, so it stays an owed leg: its
+    // reference and its refund are reported and the session is never
+    // `refunded` before it resolves. Once final it takes the final-lock path
+    // and is refunded there.
     const destinationLockMayLand = prepared.has("destination-lock") &&
-      state?.state !== "failed" && state?.state !== "absent";
+      state?.state !== "failed" && !destinationLockAbsent(snapshot);
     // The payer's source leg stays locked until its own refund is final, so
     // nothing on this path is terminal: a failed or impossible destination
     // lock is refund-pending until the source refund lands.
@@ -2717,13 +2735,17 @@ export async function advanceCrossChainHtlc(
       }
       return refundProgress(refundReason, snapshot, refundLegs("none"));
     }
-    if (state?.state === "failed") {
+    // A dead destination lock leaves only the source refund at its expiry, and
+    // its bytes are never rebroadcast.
+    if (state?.state === "failed" || destinationLockAbsent(snapshot)) {
       return refundProgress(refundReason, snapshot, refundLegs("none"));
     }
     const sourceTermsForbidden = sourceTermsVerdict === undefined
       ? undefined
       : refundProgress(refundReason, snapshot, refundLegs("none"));
     if (prepared.has("destination-lock")) {
+      // Unreported, or `absent` naming nothing: the retained lock may still
+      // land, so its exact bytes are rebroadcast.
       if (!state || state.state === "absent") {
         if (sourceTermsForbidden) return sourceTermsForbidden;
         const advanced = await execute("destination-lock", {

@@ -228,23 +228,37 @@ with reason `destination-lock-failed`, and a destination lock that can no
 longer be placed with the absolute margin is `refund-pending` with reason
 `destination-lock-window-closed`; the source
 leg is refunded at its expiry (reason `destination-lock-missing` when no
-destination lock was prepared or it is authenticated `absent`). When the
-source lock's terms ruled out the destination lock, its
+destination lock was prepared or it is authenticated `absent` naming it).
+When the source lock's terms ruled out the destination lock, its
 `source-lock-terms-missing` or `source-lock-terms-mismatch` reason is kept
-through the source refund.
+through the source refund. `destination-lock-missing` is also the reason of a
+call that drove the payer's source refund from the source-finality
+checkpoint alone, before any destination lock, with neither the source-leg
+nor the whole-session observation available: that call cannot read the
+source lock's terms, so a terms reason appears only from the next call that
+observes the source lock.
 
-A retained destination lock that the adapter has not authenticated as
-`failed` or `absent` may still land, whether it is reported `pending` or not
-reported at all (anyone who saw its signed bytes can rebroadcast them). Such a
-session is never `refunded`: after the source refund it stays
-`refund-pending` with reason `destination-lock-unresolved`, its reference in
-`txRefs` and its `destination-refund` leg `waiting`. The core keeps observing;
-if the lock lands it becomes final and its refund is driven after the
-destination expiry like any other. The same reason, with that leg `uncertain`,
-means the whole session could not be observed in this call after the payer's
-source refund was driven (see above). Adapters must therefore report `pending`,
-never `absent`, while a destination lock can still land, exactly as for a
-reveal.
+A destination lock's `absent` counts only when it names the retained lock, as
+a refund's or a claim's does. A retained destination lock the adapter reports
+`absent` with its exact `txRef` never reached the chain and can no longer: its
+bytes are never rebroadcast, its leg is no longer owed, and the source leg is
+refunded at its expiry with reason `destination-lock-missing`. Any other
+retained destination lock may still land, whether it is reported `pending`,
+`absent` naming no transaction (nothing is on chain yet, for example while it
+is not mined), or not reported at all (anyone who saw its signed bytes can
+rebroadcast them). Before the source expiry the core rebroadcasts the
+retained bytes, byte for byte, once per call while the lock is unreported or
+`absent` naming nothing. Such a session is never `refunded`: after the source
+refund it stays `refund-pending` with reason `destination-lock-unresolved`,
+its reference in `txRefs` and its `destination-refund` leg `waiting`. The
+core keeps observing; if the lock lands it becomes final and its refund is
+driven after the destination expiry like any other. The same reason, with
+that leg `uncertain`, means the whole session could not be observed in this
+call after the payer's source refund was driven (see above). The same rule
+holds while a checkpointed source lock has regressed (see below). Adapters
+must therefore report `pending`, or `absent` naming nothing, while a
+destination lock can still land, and name the lock in `absent` only once it
+can never land, exactly as for a reveal.
 
 A reveal that reverts on chain (out of gas, a fee spike, a token hook) still
 publishes the preimage: on EVM and Solana the failed transaction's calldata is
@@ -600,7 +614,9 @@ rebroadcasts a retained one byte for byte while it is unreported or `absent`
 without a reference, and never re-sends a retained refund reported `failed`,
 or `absent` naming it. Such a refund returns `operator-alert`
 `htlc-refund-absent` or `refund-stalled` on this path too, instead of the
-regression's `indeterminate`. A
+regression's `indeterminate`; their `refunds` keep a retained destination lock
+that is not final as an owed leg, with its reference, unless it is reported
+`failed` or `absent` naming it. A
 final lock observation that is malformed (missing or invalid inclusion or
 expiry, or malformed terms) returns `indeterminate` with reason
 `htlc-adapter-lock-observation-invalid` until the adapter reports it
@@ -740,8 +756,9 @@ the core cannot check them itself.
 - A final lock keeps being reported `final`, with its inclusion and expiry,
   for the rest of the session, also after it is claimed or refunded and even
   if the contract deletes its record.
-- `pending`, never `absent`, while a lock, reveal, claim or refund can still
-  land; `absent` only once it is authenticated that it cannot. A retained
+- `pending`, never an `absent` naming it, while a lock, reveal, claim or
+  refund can still land; such an `absent` only once it is authenticated that
+  it cannot. (An `absent` naming nothing is read as below.) A retained
   reveal or source claim reported `absent` is replaced, so a premature
   `absent` puts a second claim on the wire, and the earlier attempt may still
   land. For a reveal that means the payer already holds the destination funds:
@@ -751,11 +768,17 @@ the core cannot check them itself.
   both legs and the payee with neither, unless the payee claimed the source
   outside the core first. A retained refund reported `absent` naming it
   raises `htlc-refund-absent`, and a retained source lock reported `absent`
-  naming it ends the session with `failed` `htlc-source-lock-absent`.
-- A claim's or refund's `absent` names the attempt it is about in `txRef`
-  once that attempt can no longer land. For a claim, one that names an
-  earlier attempt, or none, is refused; for a refund, one that names none
-  reads as nothing on chain yet, and the retained refund is rebroadcast.
+  naming it ends the session with `failed` `htlc-source-lock-absent`. A
+  retained destination lock reported `absent` naming it is no longer owed and
+  never rebroadcast, so if it lands after all, the session may already read
+  `refunded` and the payee's destination funds wait for an operator.
+- A lock's, claim's or refund's `absent` names the transaction it is about in
+  `txRef` once that transaction can no longer land. For a claim, one that
+  names an earlier attempt, or none, is refused. For a lock or a refund, one
+  that names none reads as nothing on chain yet: the retained bytes are
+  rebroadcast (a destination lock only before the source expiry), and a
+  retained destination lock stays an owed leg, so the session is never
+  `refunded` while it may land.
 - `failed` only once the failure itself is final.
 - `observe` reports each action only for the core's own retained
   transaction, never a counterparty's, such as a payee's own source claim.
