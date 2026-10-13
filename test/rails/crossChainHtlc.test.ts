@@ -898,6 +898,50 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
+  test("pages but stays resumable when the two observers disagree on the source lock before any destination lock", async () => {
+    const h = harness();
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    // The source-leg observer reports the lock's inclusion 1 s later than
+    // `observe` does, so the checkpoint it records disagrees with `observe`.
+    h.observeSourceLeg.mockImplementation(async (_intent, fence) => {
+      await fence.assertCurrent();
+      const lock = h.actions["source-lock"];
+      if (!lock || lock.state !== "final" || lock.includedAt === undefined) throw new Error("expected final lock");
+      return {
+        observedAt: 1_000_000,
+        authenticationHash: AUTH_HASH,
+        actions: {
+          "source-lock": {
+            ...lock,
+            includedAt: lock.includedAt + 1_000,
+            finalityObservedAt: lock.finalityObservedAt + 1_000,
+          },
+        },
+      };
+    });
+    for (const _call of [1, 2]) {
+      const progress = await advanceCrossChainHtlc(run.nextOwner());
+      expect(progress).toEqual({ status: "indeterminate", reason: "htlc-source-observers-disagree" });
+      expect(htlcNeedsOperator(progress)).toBe(true);
+    }
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock"]);
+    // Once `observe` reports the checkpointed facts, the session moves on.
+    const lock = h.actions["source-lock"];
+    if (!lock || lock.state !== "final" || lock.includedAt === undefined) throw new Error("expected final lock");
+    h.actions["source-lock"] = {
+      ...lock,
+      includedAt: lock.includedAt + 1_000,
+      finalityObservedAt: lock.finalityObservedAt + 1_000,
+    };
+    h.observeSourceLeg.mockRestore();
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+  });
+
   test("does not prepare a destination lock when source-finality persistence fails", async () => {
     const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
     const store: CrossChainHtlcStore = {

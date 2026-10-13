@@ -221,7 +221,9 @@ below the bottom of the range has long passed, so that leg is refunded at
 once.
 
 The core never returns `failed` while a locked leg still needs a refund or
-claim that it will drive later, nor for a missing or different buyer salt
+claim that it will drive later, except when retained evidence and a new
+observation contradict each other (listed under `failed` below), nor for a
+missing or different buyer salt
 (`htlc-salt-missing` and `htlc-salt-mismatch` under Operator alerts). Before
 the destination lock exists, a failed destination lock is `refund-pending`
 with reason `destination-lock-failed`, and a destination lock that can no
@@ -392,7 +394,10 @@ deriver is unusable, so no session can be read with it; the store's record is
 corrupt (reported so by `claim`, or a retained action, history or checkpoint
 that fails validation, such as an expiry that overflows in milliseconds) or
 the store lacks a required method; retained evidence and a new observation
-contradict each other (a changed source-lock checkpoint fact, a reveal
+contradict each other (a source-lock checkpoint fact that `observe` reports
+changed once a destination lock is prepared,
+`htlc-source-finality-checkpoint-conflict`; before that it is the paged,
+resumable `indeterminate` `htlc-source-observers-disagree`; a reveal
 checkpoint for another transaction, a final reveal of another or a malformed
 preimage, a final source claim without a final source lock or without a final
 or checkpointed reveal, or a final source claim while the checkpointed reveal
@@ -602,7 +607,27 @@ final returns `indeterminate` with reason
 that regresses while a retained reveal is not yet final returns
 `indeterminate` with reason `htlc-destination-lock-finality-regressed`. Both
 are resumable: nothing moves the regressed leg, and the next call resumes once
-the adapter reports the lock final again. A destination lock that regresses
+the adapter reports the lock final again.
+
+Because the checkpoint is normally recorded from `observeSourceLeg`, the same
+two results also cover `observe` lagging or disagreeing with it. An `observe`
+that still reports the source lock `pending`, or not at all, after the
+source-leg observation reported it final and the core checkpointed it, is
+reported as such a regression: `indeterminate`
+`htlc-source-finality-checkpoint-without-final-lock`, resumable and not
+paged, until `observe` catches up. An `observe` that reports the source lock
+final with another transaction, inclusion or expiry than the checkpoint is an
+adapter fault, since both must report the same chain state. Before any
+destination lock is prepared, nothing is bound to the checkpoint yet, so the
+result is the paged but resumable `indeterminate`
+`htlc-source-observers-disagree`: nothing moves forward until `observe`
+reports the checkpointed facts, while the payer's source refund is still
+decided on the source leg at the source expiry. Once a destination lock is
+prepared it is bound to the checkpoint, so the result is `failed`
+`htlc-source-finality-checkpoint-conflict`. The checkpoint is never
+overwritten; an operator corrects the adapter, or reconciles the session.
+
+A destination lock that regresses
 after the reveal is final no longer waits: the reveal checkpoint and the
 payee's source claim proceed from the retained source-finality checkpoint and
 destination-lock reference, as described above, and nothing is refunded.
@@ -723,6 +748,12 @@ refund is not isolated from the payee's side for such an adapter.
     destination expiry a person can still help it land;
   - `waiting` with reason `htlc-destination-claim-unresolved-after-expiry`: a
     reveal is still unresolved after both expiries and blocks both refunds;
+  - `indeterminate` with reason `htlc-source-observers-disagree`: before any
+    destination lock, `observe` reports the source lock with another
+    transaction, inclusion or expiry than the source-finality checkpoint
+    (normally recorded from `observeSourceLeg`), an adapter fault; nothing
+    moves forward until `observe` reports the checkpointed facts, but the
+    payer's source refund is still driven on the source leg at its expiry;
   - `failed`: there is nothing left to drive and the record needs
     reconciling; keep the salt until the operator has done so.
 - Every other `waiting` and `indeterminate` result is retried by advancing
@@ -787,6 +818,11 @@ the core cannot check them itself.
   depends on neither the destination chain nor the payee's role service or
   any other payee-side service. The source-finality checkpoint may be
   recorded from it, and the payer's source refund is decided on it alone.
+  Both observers read the source chain through one code path with one
+  finality view (the same node or verifier, confirmation depth and
+  inclusion and expiry derivation), so that they never report the source
+  lock differently: a disagreement pages before any destination lock and is
+  `failed` after it.
 - With replacement history, `observe` reports the active attempt, and
   `absent` once that attempt never reached the chain and can no longer; but
   an earlier attempt that landed after all is reported `final` instead.

@@ -613,6 +613,8 @@ export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): b
     case "waiting":
       return progress.reason === "htlc-destination-claim-unresolved-after-cutoff" ||
         progress.reason === "htlc-destination-claim-unresolved-after-expiry";
+    case "indeterminate":
+      return progress.reason === "htlc-source-observers-disagree";
     default:
       return false;
   }
@@ -2407,6 +2409,15 @@ export async function advanceCrossChainHtlc(
           !sameRef(sourceFinalityCheckpoint.sourceLockTxRef, observedCheckpoint.sourceLockTxRef) ||
           sourceFinalityCheckpoint.includedAt !== observedCheckpoint.includedAt ||
           sourceFinalityCheckpoint.sourceExpiry !== observedCheckpoint.sourceExpiry)) {
+      // Until a destination lock is prepared nothing has been bound to the
+      // checkpoint, which is normally recorded from `observeSourceLeg`, so a
+      // whole-session view that disagrees with it is an adapter fault the
+      // operator can correct: the session pages but stays resumable, and
+      // moves forward only once `observe` reports the checkpointed facts.
+      // After that the destination lock is bound to it, so this is final.
+      if (!prepared.has("destination-lock")) {
+        return { status: "indeterminate", reason: "htlc-source-observers-disagree" };
+      }
       return {
         status: "failed",
         errorClass: "permanent",
