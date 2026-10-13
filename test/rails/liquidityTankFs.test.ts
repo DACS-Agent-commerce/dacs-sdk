@@ -9,6 +9,7 @@ import {
   readFile,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,25 +38,35 @@ const trace = vi.hoisted(() => ({
   /** Runs once before the next link to `linkTarget`, as another process could. */
   linkTarget: "",
   beforeLink: undefined as ((to: string) => Promise<void>) | undefined,
+  /**
+   * Sees each operation before it runs (`rename` and `link` as `from -> to`);
+   * an error code it returns fails that operation instead.
+   */
+  fault: undefined as ((operation: string, path: string) => string | undefined) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const traced = (path: unknown) => trace.root !== "" && String(path).startsWith(trace.root);
+  const inject = (operation: string, path: string) => {
+    const code = trace.fault?.(operation, path);
+    if (code !== undefined) throw Object.assign(new Error(`injected ${code}: ${operation} ${path}`), { code });
+  };
   return {
     ...actual,
     open: async (...args: Parameters<typeof actual.open>) => {
+      inject("open", String(args[0]));
       const handle = await actual.open(...args);
-      if (traced(args[0])) {
-        const sync = handle.sync.bind(handle);
-        handle.sync = async () => {
-          await sync();
-          trace.events.push(`sync ${String(args[0])}`);
-        };
-      }
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        inject("sync", String(args[0]));
+        await sync();
+        if (traced(args[0])) trace.events.push(`sync ${String(args[0])}`);
+      };
       return handle;
     },
     rename: async (from: Parameters<typeof actual.rename>[0], to: Parameters<typeof actual.rename>[1]) => {
+      inject("rename", `${String(from)} -> ${String(to)}`);
       await actual.rename(from, to);
       if (traced(to)) trace.events.push(`rename ${String(from)} -> ${String(to)}`);
     },
@@ -63,8 +74,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const before = String(to) === trace.linkTarget ? trace.beforeLink : undefined;
       trace.beforeLink = before ? undefined : trace.beforeLink;
       await before?.(String(to));
+      inject("link", `${String(from)} -> ${String(to)}`);
       await actual.link(from, to);
       if (traced(to)) trace.events.push(`link ${String(from)} -> ${String(to)}`);
+    },
+    unlink: async (path: Parameters<typeof actual.unlink>[0]) => {
+      inject("unlink", String(path));
+      await actual.unlink(path);
+    },
+    rm: async (path: Parameters<typeof actual.rm>[0], options?: Parameters<typeof actual.rm>[1]) => {
+      inject("rm", String(path));
+      await actual.rm(path, options);
     },
   };
 });
@@ -81,6 +101,7 @@ afterEach(async () => {
   trace.root = "";
   trace.linkTarget = "";
   trace.beforeLink = undefined;
+  trace.fault = undefined;
   trace.events.length = 0;
   for (const root of roots.splice(0)) {
     await chmod(root, 0o700).catch(() => undefined);
@@ -605,5 +626,135 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
         bridges: [base, ownStaging, `${base}.copy`].sort(),
       },
     ]);
+  });
+});
+
+/** Fails the first operation `match` accepts, once `after` has accepted an earlier one. */
+function failOnce(
+  match: (operation: string, path: string) => boolean,
+  after?: (operation: string, path: string) => boolean,
+  code = "EIO",
+) {
+  const state = { fired: false, armed: after === undefined };
+  const fault = (operation: string, path: string): string | undefined => {
+    if (state.fired) return undefined;
+    if (!state.armed) {
+      state.armed = after?.(operation, path) ?? true;
+      return undefined;
+    }
+    if (!match(operation, path)) return undefined;
+    state.fired = true;
+    return code;
+  };
+  return Object.assign(fault, { state });
+}
+
+describe("createFsLiquidityTankStore locks", () => {
+  test("reclaims a stale lock an earlier process with this PID left, but not one another thread of this process may hold", async () => {
+    const startedNs = process.hrtime.bigint() - BigInt(Math.ceil(process.uptime() * 1e9));
+    const cases = [
+      { left: "before this process started", createdNs: startedNs - 1_000_000_000n },
+      { left: "in an earlier boot: after now on the monotonic clock", createdNs: process.hrtime.bigint() + 3_600_000_000_000n },
+      { left: "after this process started, as another worker thread would", createdNs: process.hrtime.bigint() },
+    ];
+    const outcomes = [];
+    for (const { left, createdNs } of cases) {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 500 });
+      const lock = join(dir, "locks", `${sha256Hex(intent.settlementKey)}.lock`);
+      await mkdir(lock, { mode: 0o700 });
+      await writeFile(join(lock, "owner.json"), JSON.stringify({
+        pid: process.pid,
+        processToken: "another-process-token",
+        token: "its-lock-token",
+        createdNs: String(createdNs),
+      }), { flag: "wx", mode: 0o600 });
+      const stale = new Date(Date.now() - 60_000);
+      await utimes(lock, stale, stale);
+      outcomes.push({ left, claim: await outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 })) });
+    }
+    expect(outcomes).toEqual([
+      { left: cases[0]!.left, claim: "acquired" },
+      { left: cases[1]!.left, claim: "acquired" },
+      { left: cases[2]!.left, claim: "threw: timed out acquiring the liquidity-tank filesystem store lock" },
+    ]);
+  });
+
+  test("a failure at any lock acquisition or release step leaves no lock behind, and a second store acquires at once", async () => {
+    const candidateRename = (operation: string, path: string) => operation === "rename" && path.includes(".candidate -> ");
+    const sites = [
+      { site: "acquire: directory fsync after the reclaim gate's link", first: "rejected",
+        fault: (locks: string) => failOnce((op, path) => op === "sync" && path === locks,
+          (op, path) => op === "link" && path.endsWith(` -> ${locks}/.reclaim`)) },
+      { site: "acquire: rename of the lock into place", first: "rejected",
+        fault: () => failOnce(candidateRename) },
+      { site: "acquire: directory fsync after the lock's rename", first: "rejected",
+        fault: (locks: string) => failOnce((op, path) => op === "sync" && path === locks, candidateRename) },
+      { site: "acquire: owner read of the reclaim gate on its release", first: "acquired",
+        fault: (locks: string) => failOnce((op, path) => op === "open" && path === `${locks}/.reclaim`, candidateRename, "EMFILE") },
+      { site: "acquire: rename of the reclaim gate on its release", first: "acquired",
+        fault: (locks: string) => failOnce((op, path) => op === "rename" && path.startsWith(`${locks}/.reclaim -> `)) },
+      { site: "acquire: owner read of the moved reclaim gate", first: "acquired",
+        fault: () => failOnce((op, path) => op === "open" && path.endsWith(".quarantine"), undefined, "EMFILE") },
+      { site: "acquire: removal of the moved reclaim gate", first: "acquired",
+        fault: () => failOnce((op, path) => op === "unlink" && path.endsWith(".quarantine")) },
+      { site: "acquire: directory fsync after the reclaim gate's removal", first: "acquired",
+        fault: (locks: string) => failOnce((op, path) => op === "sync" && path === locks,
+          (op, path) => op === "unlink" && path.endsWith(".quarantine")) },
+      { site: "release: owner read of the lock", first: "acquired",
+        fault: () => failOnce((op, path) => op === "open" && path.endsWith(".lock/owner.json"), undefined, "EMFILE") },
+      { site: "release: rename of the lock away", first: "acquired",
+        fault: () => failOnce((op, path) => op === "rename" && path.endsWith(".released")) },
+      { site: "release: directory fsync after the lock's rename", first: "acquired",
+        fault: (locks: string) => failOnce((op, path) => op === "sync" && path === locks,
+          (op, path) => op === "rename" && path.endsWith(".released")) },
+      { site: "release: removal of the released lock", first: "acquired",
+        fault: () => failOnce((op, path) => op === "rm" && path.endsWith(".released")) },
+    ];
+    const outcomes = [];
+    for (const { site, fault } of sites) {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir, lockTimeoutMs: 2_000 });
+      const locks = join(dir, "locks");
+      const injected = fault(locks);
+      trace.fault = injected;
+      const first = await outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }));
+      trace.fault = undefined;
+      // Never reclaims within the test: only a released lock lets it in.
+      const second = await createFsLiquidityTankStore({ dir, lockStaleMs: 600_000, lockTimeoutMs: 1_000 });
+      outcomes.push({
+        site,
+        fired: injected.state.fired,
+        first: first.startsWith("threw: ") ? "rejected" : first,
+        leftovers: await readdir(locks),
+        second: await outcome(() => second.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 })),
+      });
+    }
+    expect(outcomes).toEqual(sites.map(({ site, first }) => ({
+      site,
+      fired: true,
+      first,
+      leftovers: [],
+      second: first === "acquired" ? "waiting" : "acquired",
+    })));
+  }, 120_000);
+
+  test("a release that keeps failing fails the call, and its lock is reclaimed by this live process after the stale age", async () => {
+    const dir = await freshDir();
+    const first = await createFsLiquidityTankStore({ dir, lockTimeoutMs: 200 });
+    trace.fault = (operation, path) =>
+      operation === "open" && path.endsWith(".lock/owner.json") ? "EMFILE" : undefined;
+    await expect(first.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }))
+      .rejects.toThrow(/could not release its lock/);
+    trace.fault = undefined;
+    // The lock is still there: a store that waits out a long stale age cannot take it ...
+    const patient = await createFsLiquidityTankStore({ dir, lockStaleMs: 600_000, lockTimeoutMs: 200 });
+    await expect(patient.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 }))
+      .rejects.toThrow(/timed out acquiring/);
+    // ... but once it is stale this process reclaims it, although its PID is alive.
+    const reclaiming = await createFsLiquidityTankStore({ dir, lockStaleMs: 1, lockTimeoutMs: 2_000 });
+    await expect(reclaiming.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 }))
+      .resolves.toMatchObject({ status: "waiting", lease: { owner: "worker-1" } });
+    expect(await readdir(join(dir, "locks"))).toEqual([]);
   });
 });

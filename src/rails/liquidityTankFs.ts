@@ -57,7 +57,10 @@ export interface FsLiquidityTankStoreOptions {
   dir: string;
   /** Maximum time spent waiting for another process. Defaults to 5 seconds. */
   lockTimeoutMs?: number;
-  /** Age at which a lock owned by a dead process may be reclaimed. Defaults to 30 seconds. */
+  /**
+   * Age at which a lock whose owner cannot still hold it (a dead process, or
+   * an earlier process with this PID) may be reclaimed. Defaults to 30 seconds.
+   */
   lockStaleMs?: number;
   /** Contention polling interval. Defaults to 5 milliseconds. */
   lockPollMs?: number;
@@ -67,7 +70,36 @@ type StoredRecord = LiquidityTankRecord & { storeVersion: typeof LIQUIDITY_TANK_
 
 interface LockOwner {
   pid: number;
+  /** This module instance's `PROCESS_TOKEN`. */
+  processToken: string;
+  /** This lock's own token. */
   token: string;
+  /** `process.hrtime.bigint()` when the lock was made, in decimal. */
+  createdNs: string;
+}
+
+/**
+ * Every lock this module instance publishes carries `PROCESS_TOKEN`, and
+ * `HELD_LOCK_TOKENS` names the ones it holds now. One of its own locks that it
+ * does not hold was left by a failed release: nothing holds it.
+ */
+const PROCESS_TOKEN = randomUUID();
+const HELD_LOCK_TOKENS = new Set<string>();
+/**
+ * No later than this process started, on the monotonic clock: in every worker
+ * thread `process.uptime()` counts from the process's start, and reading it
+ * after the clock only moves this earlier.
+ */
+const PROCESS_STARTED_BY_NS = process.hrtime.bigint() -
+  BigInt(Math.ceil(process.uptime() * 1e9)) - 1_000_000n;
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
+
+function errno(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+function ignoreMissing(error: unknown): void {
+  if (errno(error) !== "ENOENT") throw error;
 }
 
 type RecordRead =
@@ -160,6 +192,22 @@ export async function createFsLiquidityTankStore(
     join(locksDir, `${sha256Hex(settlementKey)}.lock`);
   const bridgeLockPath = (bridgeId: string): string =>
     join(locksDir, `bridge.${sha256Hex(bridgeId)}.lock`);
+  const pause = (): Promise<void> =>
+    new Promise<void>((resolve) => setTimeout(resolve, options.lockPollMs));
+
+  /** Runs `step` again until it succeeds or the lock timeout passes, then throws its last error. */
+  async function retried(step: () => Promise<void>): Promise<void> {
+    const deadline = Date.now() + options.lockTimeoutMs;
+    for (;;) {
+      try {
+        await step();
+        return;
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+      }
+      await pause();
+    }
+  }
 
   async function syncDirectory(path: string): Promise<void> {
     let handle;
@@ -191,21 +239,46 @@ export async function createFsLiquidityTankStore(
     }
   }
 
+  /**
+   * The owner recorded at `path`, or `null` if it is missing or is not one
+   * this store wrote. A read that fails for another reason (`EMFILE`, `EIO`)
+   * throws: it never makes a lock look ownerless.
+   */
   async function readOwner(path: string): Promise<LockOwner | null> {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(await readOwnedFile(path)) as unknown;
-      if (isPlainRecord(parsed) && Number.isSafeInteger(parsed["pid"]) &&
-          (parsed["pid"] as number) > 0 && typeof parsed["token"] === "string" &&
-          parsed["token"].length > 0) {
-        return { pid: parsed["pid"] as number, token: parsed["token"] };
+      parsed = JSON.parse(await readOwnedFile(path)) as unknown;
+    } catch (error) {
+      if (errno(error) !== "ENOENT" && errno(error) !== "ELOOP" &&
+          !(error instanceof DacsError) && !(error instanceof SyntaxError)) {
+        throw error;
       }
-    } catch {
       // A missing or malformed owner is reclaimable only after the stale age.
+      return null;
+    }
+    if (isPlainRecord(parsed) && Object.keys(parsed).length === 4 &&
+        Number.isSafeInteger(parsed["pid"]) && (parsed["pid"] as number) > 0 &&
+        typeof parsed["processToken"] === "string" && parsed["processToken"].length > 0 &&
+        typeof parsed["token"] === "string" && parsed["token"].length > 0 &&
+        typeof parsed["createdNs"] === "string" && DECIMAL.test(parsed["createdNs"])) {
+      return {
+        pid: parsed["pid"] as number,
+        processToken: parsed["processToken"],
+        token: parsed["token"],
+        createdNs: parsed["createdNs"],
+      };
     }
     return null;
   }
 
   const readLockOwner = (path: string): Promise<LockOwner | null> => readOwner(join(path, "owner.json"));
+
+  const newOwner = (): LockOwner => ({
+    pid: process.pid,
+    processToken: PROCESS_TOKEN,
+    token: randomUUID(),
+    createdNs: process.hrtime.bigint().toString(),
+  });
 
   function processIsAlive(pid: number): boolean {
     try {
@@ -216,51 +289,49 @@ export async function createFsLiquidityTankStore(
     }
   }
 
+  /**
+   * Whether the lock's owner may still hold it. With this process's PID, it
+   * cannot if it is one of this module instance's locks that it does not hold,
+   * or was made before this process started (or after now, in an earlier
+   * boot): a restart that reused the PID, such as PID 1 in a container. Any
+   * other lock with this PID may belong to another worker thread or module
+   * copy in this process, and counts as held.
+   */
+  function ownerMayBeAlive(owner: LockOwner): boolean {
+    if (owner.pid !== process.pid) return processIsAlive(owner.pid);
+    if (owner.processToken === PROCESS_TOKEN) return HELD_LOCK_TOKENS.has(owner.token);
+    const created = BigInt(owner.createdNs);
+    return created >= PROCESS_STARTED_BY_NS && created <= process.hrtime.bigint();
+  }
+
   function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
     return left === null
       ? right === null
-      : right !== null && left.pid === right.pid && left.token === right.token;
-  }
-
-  async function publishCompleteOwner(path: string, owner: LockOwner): Promise<void> {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      const handle = await open(temporary, "wx", FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify(owner), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await link(temporary, path);
-      await syncDirectory(locksDir);
-    } finally {
-      await unlink(temporary).catch(() => {});
-    }
+      : right !== null && left.pid === right.pid && left.processToken === right.processToken &&
+        left.token === right.token && left.createdNs === right.createdNs;
   }
 
   const reclaimQuarantinePath = (): string =>
     join(locksDir, `${reclaimQuarantinePrefix}${randomUUID()}.quarantine`);
+  const reclaimQuarantineNames = async (): Promise<string[]> =>
+    (await readdir(locksDir)).filter((name) =>
+      name.startsWith(reclaimQuarantinePrefix) && name.endsWith(".quarantine"));
 
   async function activeReclaimQuarantines(): Promise<string[]> {
-    const names = (await readdir(locksDir)).filter((name) =>
-      name.startsWith(reclaimQuarantinePrefix) && name.endsWith(".quarantine"));
     const live: string[] = [];
-    for (const name of names) {
+    for (const name of await reclaimQuarantineNames()) {
       const path = join(locksDir, name);
       try {
         const metadata = await stat(path);
         const owner = await readOwner(path);
         if (Date.now() - metadata.mtimeMs <= options.lockStaleMs ||
-            (owner !== null && processIsAlive(owner.pid))) {
+            (owner !== null && ownerMayBeAlive(owner))) {
           live.push(path);
           continue;
         }
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
+        await unlink(path).catch(ignoreMissing);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        ignoreMissing(error);
       }
     }
     return live;
@@ -276,7 +347,7 @@ export async function createFsLiquidityTankStore(
     }
     if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return;
     const observedOwner = await readOwner(reclaimGatePath);
-    if (observedOwner !== null && processIsAlive(observedOwner.pid)) return;
+    if (observedOwner !== null && ownerMayBeAlive(observedOwner)) return;
 
     const quarantine = reclaimQuarantinePath();
     try {
@@ -297,55 +368,64 @@ export async function createFsLiquidityTankStore(
     if (moved.dev === observed.dev && moved.ino === observed.ino &&
         sameOwner(movedOwner, observedOwner) &&
         Date.now() - moved.mtimeMs > options.lockStaleMs &&
-        (movedOwner === null || !processIsAlive(movedOwner.pid))) {
-      await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") throw error;
-      });
+        (movedOwner === null || !ownerMayBeAlive(movedOwner))) {
+      await unlink(quarantine).catch(ignoreMissing);
     }
     // A moved replacement remains as a live quarantine and blocks reclaimers.
   }
 
+  /** Releases this owner's gate, retrying a failed step; afterwards this process does not hold it. */
   async function releaseReclaimGate(owner: LockOwner): Promise<void> {
-    const observed = await readOwner(reclaimGatePath);
-    if (sameOwner(observed, owner)) {
-      const quarantine = reclaimQuarantinePath();
-      try {
-        await rename(reclaimGatePath, quarantine);
-        if (sameOwner(await readOwner(quarantine), owner)) {
-          await unlink(quarantine).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") throw error;
-          });
+    try {
+      await retried(async () => {
+        if (sameOwner(await readOwner(reclaimGatePath), owner)) {
+          await rename(reclaimGatePath, reclaimQuarantinePath()).catch(ignoreMissing);
         }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+        // Only this owner's moved gate is removed: a moved replacement stays.
+        for (const name of await reclaimQuarantineNames()) {
+          const path = join(locksDir, name);
+          if (sameOwner(await readOwner(path), owner)) await unlink(path).catch(ignoreMissing);
+        }
+        await syncDirectory(locksDir);
+      });
+    } catch (error) {
+      throw new DacsError(`${LABEL} could not release its reclaim gate`, { cause: error });
+    } finally {
+      HELD_LOCK_TOKENS.delete(owner.token);
     }
-    for (const name of (await readdir(locksDir)).filter((item) =>
-      item.startsWith(reclaimQuarantinePrefix) && item.endsWith(".quarantine"))) {
-      const path = join(locksDir, name);
-      if (sameOwner(await readOwner(path), owner)) {
-        await unlink(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-      }
-    }
-    await syncDirectory(locksDir);
   }
 
   async function acquireReclaimGate(owner: LockOwner): Promise<boolean> {
     if ((await activeReclaimQuarantines()).length > 0) return false;
+    HELD_LOCK_TOKENS.add(owner.token);
+    let linked = false;
     try {
-      await publishCompleteOwner(reclaimGatePath, owner);
+      const temporary = `${reclaimGatePath}.${randomUUID()}.tmp`;
+      try {
+        const handle = await open(temporary, "wx", FILE_MODE);
+        try {
+          await handle.writeFile(JSON.stringify(owner), "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await link(temporary, reclaimGatePath);
+        linked = true;
+      } finally {
+        await unlink(temporary).catch(() => {});
+      }
+      await syncDirectory(locksDir);
+      if ((await activeReclaimQuarantines()).length === 0) return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // A gate this acquisition published is never left behind by its failure.
+      if (linked) await releaseReclaimGate(owner);
+      else HELD_LOCK_TOKENS.delete(owner.token);
+      if (linked || errno(error) !== "EEXIST") throw error;
       await quarantineStaleReclaimGate();
       return false;
     }
-    if ((await activeReclaimQuarantines()).length > 0) {
-      await releaseReclaimGate(owner);
-      return false;
-    }
-    return true;
+    await releaseReclaimGate(owner);
+    return false;
   }
 
   async function maybeReclaimStale(path: string): Promise<void> {
@@ -353,12 +433,12 @@ export async function createFsLiquidityTankStore(
       const metadata = await stat(path);
       if (Date.now() - metadata.mtimeMs <= options.lockStaleMs) return;
       const owner = await readLockOwner(path);
-      if (owner && processIsAlive(owner.pid)) return;
+      if (owner && ownerMayBeAlive(owner)) return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
+    const gateOwner = newOwner();
     if (!await acquireReclaimGate(gateOwner)) return;
     try {
       let observed;
@@ -370,7 +450,7 @@ export async function createFsLiquidityTankStore(
       }
       if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return;
       const observedOwner = await readLockOwner(path);
-      if (observedOwner !== null && processIsAlive(observedOwner.pid)) return;
+      if (observedOwner !== null && ownerMayBeAlive(observedOwner)) return;
       const quarantine = `${path}.${randomUUID()}.stale`;
       try {
         await rename(path, quarantine);
@@ -384,7 +464,7 @@ export async function createFsLiquidityTankStore(
       if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
           !sameOwner(movedOwner, observedOwner) ||
           Date.now() - moved.mtimeMs <= options.lockStaleMs ||
-          (movedOwner !== null && processIsAlive(movedOwner.pid))) {
+          (movedOwner !== null && ownerMayBeAlive(movedOwner))) {
         throw new DacsError(`${LABEL} lock changed during stale recovery`);
       }
       await rm(quarantine, { recursive: true, force: true });
@@ -394,29 +474,68 @@ export async function createFsLiquidityTankStore(
     }
   }
 
-  async function publishLockCandidate(candidate: string, path: string): Promise<boolean> {
+  /**
+   * Moves this owner's lock away from `path` and deletes it, retrying a failed
+   * step; afterwards this process does not hold it. A lock that could not be
+   * released throws, and this module instance may reclaim it after the stale age.
+   */
+  async function releaseLock(path: string, owner: LockOwner): Promise<void> {
+    // Moved away from its publication path before it is deleted, so a
+    // successor that publishes in between is never deleted.
+    const released = `${path}.${owner.token}.released`;
+    try {
+      await retried(async () => {
+        if (sameOwner(await readLockOwner(path), owner)) {
+          await rename(path, released).catch(ignoreMissing);
+        }
+        await syncDirectory(locksDir);
+        await rm(released, { recursive: true, force: true });
+      });
+    } catch (error) {
+      throw new DacsError(`${LABEL} could not release its lock`, { cause: error });
+    } finally {
+      HELD_LOCK_TOKENS.delete(owner.token);
+    }
+  }
+
+  async function publishLockCandidate(candidate: string, path: string, owner: LockOwner): Promise<boolean> {
     // Stale recovery observes and renames `path` while holding this gate, so a
     // normal successor publishes through the same gate.
-    const gateOwner: LockOwner = { pid: process.pid, token: randomUUID() };
+    const gateOwner = newOwner();
     if (!await acquireReclaimGate(gateOwner)) return false;
+    let published = false;
+    let gateReleasing = false;
+    // Held before it is published, so it never looks abandoned to this process.
+    HELD_LOCK_TOKENS.add(owner.token);
     try {
       try {
         await rename(candidate, path);
-        await syncDirectory(locksDir);
-        return true;
+        published = true;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "EEXIST" || code === "ENOTEMPTY") return false;
         throw error;
       }
-    } finally {
+      await syncDirectory(locksDir);
+      gateReleasing = true;
       await releaseReclaimGate(gateOwner);
+      return true;
+    } catch (error) {
+      // A lock this acquisition published is never left behind by its failure.
+      if (published) {
+        published = false;
+        await releaseLock(path, owner);
+      }
+      throw error;
+    } finally {
+      if (!published) HELD_LOCK_TOKENS.delete(owner.token);
+      if (!gateReleasing) await releaseReclaimGate(gateOwner);
     }
   }
 
   /** Runs `operation` while this process holds the lock at `path`. */
   async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-    const owner: LockOwner = { pid: process.pid, token: randomUUID() };
+    const owner = newOwner();
     const deadline = Date.now() + options.lockTimeoutMs;
     for (;;) {
       // A complete lock directory is published in one rename.
@@ -431,12 +550,12 @@ export async function createFsLiquidityTankStore(
           await handle.close();
         }
         await syncDirectory(candidate);
-        if (await publishLockCandidate(candidate, path)) break;
+        if (await publishLockCandidate(candidate, path, owner)) break;
         await maybeReclaimStale(path);
         if (Date.now() >= deadline) {
           throw new DacsError(`timed out acquiring the ${LABEL} lock`);
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, options.lockPollMs));
+        await pause();
       } finally {
         await rm(candidate, { recursive: true, force: true }).catch(() => {});
       }
@@ -444,18 +563,8 @@ export async function createFsLiquidityTankStore(
     try {
       return await operation();
     } finally {
-      // Move the lock away from its publication path before deleting it, so a
-      // successor that publishes in between is never deleted.
-      if (sameOwner(await readLockOwner(path), owner)) {
-        const released = `${path}.${owner.token}.released`;
-        try {
-          await rename(path, released);
-          await syncDirectory(locksDir);
-          await rm(released, { recursive: true, force: true });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
-      }
+      // A lock left behind fails the call instead of reporting its result.
+      await releaseLock(path, owner);
     }
   }
 

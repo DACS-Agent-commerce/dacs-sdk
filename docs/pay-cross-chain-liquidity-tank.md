@@ -527,6 +527,19 @@ same fields, and runs each one under a per-phase filesystem lock:
   process with SIGKILL at each step of the reservation and of the row write
   after it, then finish `recordSubmission` with the same signed bytes from a
   reopened store.
+- **Locks.** Each lock records the owner's PID, a random token for its module
+  instance, a token of its own and its creation time on the monotonic clock.
+  A lock older than `lockStaleMs` is reclaimed when its owner cannot still
+  hold it: a dead PID; one of this module instance's own locks that it no
+  longer holds; or this process's PID on a lock made before this process
+  started, or after now (an earlier boot). The last covers a restarted worker
+  that gets its old PID back, such as PID 1 in a container. A lock with this
+  PID made since this process started may belong to another worker thread or
+  module copy here, so it counts as held. A step that fails after a lock or
+  the store-wide reclaim gate is published removes it before the call fails. A
+  release retries a failed step until `lockTimeoutMs` passes; a release that
+  still fails fails the call instead of returning its result. A read error on
+  an owner file is never taken for a missing owner.
 - **Directory admission.** The SDK's private-store checks (see
   [Durable filesystem safety](filesystem-store-safety.md)) refuse a directory
   that is group- or world-writable, owned by another user, reached through a
@@ -541,7 +554,28 @@ The SDK's tests run every `runLiquidityTankStoreConformance` case against it,
 reopening a new store on the same directory for each restart and race, and it
 declares `restartSafety: "conformance-tested"`. Its lock serializes writers on
 one host only; workers on several hosts need a shared database store that
-passes the suite.
+passes the suite. Every process sharing one directory must also share a PID
+namespace (the same container, or all on the host): owners are told apart by
+PID.
+
+**Clearing a stuck lock.** A lock that no rule above can reclaim shows as
+`liquidity-tank-settlement-store-unavailable` on every call for its phase, or
+for every phase if it is the reclaim gate. This can happen when a lock's PID
+now belongs to an unrelated live process, or when a live worker's release kept
+failing. To clear it:
+
+1. Stop every process that uses the directory, so nothing holds a lock.
+2. Look under `dir/locks`. A phase lock is the directory
+   `<sha256 of the settlement key>.lock`; a bridge ID's lock is
+   `bridge.<sha256 of the bridge ID>.lock`; the store-wide gate is the file
+   `.reclaim`, with `.reclaim.*.quarantine` files beside it. Each holds or is
+   an `owner.json` with the owner's `pid`.
+3. Remove what is left there, with `rm -r` on the lock directories and `rm` on
+   the gate files. With every process stopped, no lock is held, and the rows
+   under `dir/records` and reservations under `dir/bridges` are unaffected.
+
+Never remove a lock while a process that uses the directory runs: the lock is
+what keeps two writers from interleaving a phase's compare-and-set.
 
 Passing does not show that a store is durable; `reopenStore` has to open it
 the way a restarted process would. The suite refuses only a `reopenStore`
