@@ -2196,6 +2196,146 @@ describe("Vet terminal pre-agreement boundary", () => {
     expect(reads).toBeGreaterThan(0);
     expect(actor.signComponent).not.toHaveBeenCalled();
   });
+
+  // Final re-review 1: the re-reads inside proposal assessment and inbound
+  // validation still turned one busy read into a rejection, so the job went to
+  // an operator. These lock the store from the k-th durable read on.
+  const lockedFrom = (actor: ReturnType<typeof memoryRoleDatabase>, k: number,
+    error: () => Error = () => Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" })) => {
+    const database = actor.context.database as unknown as { loadEffectInput: (kind: string, id: string) => unknown };
+    const load = database.loadEffectInput;
+    const state = { reads: 0, unlock: () => { database.loadEffectInput = load; } };
+    database.loadEffectInput = (kind, id) => {
+      state.reads += 1;
+      if (state.reads > k) throw error();
+      return load(kind, id);
+    };
+    return state;
+  };
+  // The buyer's own Vet passed and it accepted the seller's plan. Built once,
+  // then copied, since the sweeps need a fresh actor per read.
+  let acceptedEffects: Map<string, unknown> | undefined;
+  const acceptedPeerPlan = async () => {
+    const actor = memoryRoleDatabase("buyer");
+    if (acceptedEffects === undefined) {
+      await actor.passOwnVet();
+      await expect(actor.runtime.handleMessage(
+        await peerProposal("buyer"),
+        { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({ disposition: "accepted" });
+      acceptedEffects = new Map(actor.effects);
+    }
+    for (const [key, value] of acceptedEffects) actor.effects.set(key, structuredClone(value));
+    return actor;
+  };
+
+  it("never sends a healthy terminal tick to an operator for lock contention, only other read errors", async () => {
+    // Reads 1-120: past the 80 the review's probe swept (its reads 44-70 were
+    // the assessment's) and into the durable core, which answers any callback
+    // failure as indeterminate.
+    const reasons = new Set<string>();
+    let parked = 0;
+    for (let k = 0; k < 120; k += 1) {
+      const actor = await acceptedPeerPlan();
+      const locked = lockedFrom(actor, k);
+      const result = await advanceDacsVetTerminalTrackV1(actor.runtime, actor.context, 1_000, JOB_ID) as
+        Readonly<{ status: string; reasonCode?: string }> | undefined;
+      expect(locked.reads, `the tick reaches read ${k + 1}`).toBeGreaterThan(k);
+      expect(["indeterminate", "pending-retry"], `read ${k + 1} locked`).toContain(result?.status);
+      reasons.add(String(result?.reasonCode));
+      // The same read failing for another reason still needs an operator.
+      if (result?.reasonCode !== "vet-terminal-finalization-unavailable-busy") continue;
+      const failing = await acceptedPeerPlan();
+      lockedFrom(failing, k, () => Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" }));
+      await expect(advanceDacsVetTerminalTrackV1(failing.runtime, failing.context, 1_000, JOB_ID), `read ${k + 1}`)
+        .resolves.toEqual({ status: "operator-action", reasonCode: "vet-terminal-finalization-unavailable" });
+      parked += 1;
+    }
+    expect(parked).toBeGreaterThan(70);
+    expect(reasons).toContain("vet-terminal-finalization-indeterminate");
+  }, 120_000);
+
+  it(
+    "never rejects an inbound peer plan or contribution for lock contention at any read",
+    async () => {
+      const proposalMessage = await peerProposal("buyer");
+      const plan = (proposalMessage.envelope.payload as DacsVetTerminalBundleProposalV1).plan;
+      const contributionMessage = authenticated(
+        "terminal-bundle-contribution-seller",
+        contribution(plan, "seller"),
+        SELLER,
+        BUYER,
+      );
+      const cases = [
+        ["proposal", proposalMessage, async () => {
+          const actor = memoryRoleDatabase("buyer");
+          await actor.passOwnVet();
+          return actor;
+        }],
+        ["contribution", contributionMessage, acceptedPeerPlan],
+      ] as const;
+      for (const [label, message, arrange] of cases) {
+        const envelope = message.envelope;
+        // Validation alone (the HTTP endpoint's check): a locked read decides
+        // nothing, which the endpoint answers with 503.
+        let validationReads = 0;
+        for (let k = 0; ; k += 1) {
+          expect(k).toBeLessThan(500);
+          const actor = await arrange();
+          const locked = lockedFrom(actor, k);
+          const validation = await actor.runtime.validatePayload({
+            type: envelope.type as "terminal-bundle-proposal-seller",
+            payload: envelope.payload,
+            jobId: envelope.jobId,
+            sender: envelope.sender,
+            audience: envelope.audience,
+          });
+          if (locked.reads <= k) {
+            expect(validation).toEqual({ status: "valid" });
+            validationReads = k;
+            break;
+          }
+          expect(validation, `${label} validation read ${k + 1} locked`)
+            .toEqual({ status: "unavailable", reasonCode: "vet-terminal-store-busy" });
+        }
+        // The handler, which validates first: it throws, so the inbox keeps
+        // the message pending, never a durable rejection the peer would have
+        // to take to an operator.
+        let handlerReads = 0;
+        for (let k = 0; ; k += 1) {
+          expect(k).toBeLessThan(500);
+          const actor = await arrange();
+          const locked = lockedFrom(actor, k);
+          const outcome = await actor.runtime.handleMessage(
+            message,
+            { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+          ).then((value) => ({ value }), (error: unknown) => ({ error }));
+          if (locked.reads <= k) {
+            expect(outcome).toEqual({ value: { disposition: "accepted" } });
+            handlerReads = k - validationReads;
+            break;
+          }
+          expect(outcome, `${label} read ${k + 1} locked`).toHaveProperty("error");
+          const error = (outcome as { error: unknown }).error;
+          if (k < validationReads) {
+            expect(error, `${label} read ${k + 1} locked`).toMatchObject({ reasonCode: "vet-terminal-store-busy" });
+            continue;
+          }
+          // The lock met the handler after it may have written: once it
+          // clears, the same message is accepted.
+          expect(error, `${label} read ${k + 1} locked`).toMatchObject({ code: "SQLITE_BUSY" });
+          locked.unlock();
+          await expect(actor.runtime.handleMessage(
+            message,
+            { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+          ), `${label} after read ${k + 1} unlocks`).resolves.toEqual({ disposition: "accepted" });
+        }
+        expect(validationReads, label).toBeGreaterThan(10);
+        expect(handlerReads, label).toBeGreaterThan(10);
+      }
+    },
+    120_000,
+  );
 });
 
 // Plan A: the buyer's own Vet of the seller failed (local material). Plan B:

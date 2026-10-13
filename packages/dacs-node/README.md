@@ -639,7 +639,13 @@ Envelope authentication requires two host-owned, fail-closed callbacks. The
 identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
-may trust the HTTP body as identity or authorization evidence.
+may trust the HTTP body as identity or authorization evidence. A validator that
+cannot read its own state now returns `unavailable`, which decides nothing: the
+endpoint answers 503 with `Retry-After`, the sender retries, and a handler
+leaves the message pending. The Vet terminal runtime answers so when its SQLite
+store stays locked (`SQLITE_BUSY` or `SQLITE_LOCKED`) during validation, and
+its track reports such a read as `indeterminate` with a `-busy` reason, never
+as operator action.
 
 
 Upgrade note: `DacsBuyerAuditAuthorizationV1` callbacks may now return

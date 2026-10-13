@@ -548,6 +548,50 @@ describe("authenticated HTTP listener and durable client", () => {
     expect(handled).not.toHaveBeenCalled();
   });
 
+  // Final re-review 1: a validator that could not read its own state (its
+  // SQLite store stayed locked) could only answer 4xx, which parks the sender.
+  it("answers a validator that cannot decide now with 503, and the sender retries", async () => {
+    const directory = root();
+    const sellerDatabase = await open(join(directory, "seller.sqlite"), SELLER, "seller");
+    const buyerDatabase = await open(join(directory, "buyer.sqlite"), BUYER, "buyer");
+    const handled = vi.fn(async () => ({ disposition: "accepted" as const }));
+    const server = await start(endpointOptions(sellerDatabase, handled, {
+      validatePayload: async () => ({ status: "unavailable", reasonCode: "vet-terminal-store-busy" }),
+    }));
+    const inbox = sellerDatabase.createHttpInboxStore();
+
+    const response = await fetch(server.endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: canonicalize(await proposal(await inbox.readTime(), 8)),
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    await expect(response.json()).resolves.toEqual({ error: "vet-terminal-store-busy" });
+    await expect(inbox.list({ limit: 10 })).resolves.toEqual({ items: [] });
+
+    const outbox = buyerDatabase.createHttpOutboxStore({ retryJitter: () => 0 });
+    const client = createDacsHttpMessageClientV1({
+      endpoint: server.endpoint,
+      authority: BUYER,
+      outbox,
+      resolveIdentity: identityResolver(),
+      workerId: "buyer-worker",
+    });
+    const signed = await proposal(await outbox.readTime(), 9);
+    await expect(client.send(signed)).rejects.toMatchObject({
+      name: "DacsHttpTransportError",
+      reasonCode: "response-ambiguous",
+      retryable: true,
+    });
+    await expect(outbox.load(signed.envelopeId)).resolves.toMatchObject({
+      state: "pending",
+      attempts: 1,
+      reasonCode: "response-ambiguous",
+    });
+    expect(handled).not.toHaveBeenCalled();
+  });
+
   it("bounds request bodies and rate limits before invoking the handler", async () => {
     const sellerDatabase = await open(join(root(), "seller.sqlite"), SELLER, "seller");
     const handled = vi.fn(async () => ({ disposition: "accepted" as const }));

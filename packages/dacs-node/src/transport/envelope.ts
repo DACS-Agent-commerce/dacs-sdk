@@ -256,10 +256,15 @@ export type DacsHttpIdentityResolverV1 = (
   input: Readonly<DacsHttpIdentityResolutionInputV1>,
 ) => Promise<DacsHttpIdentityResolutionV1> | DacsHttpIdentityResolutionV1;
 
+/**
+ * `unavailable` decides nothing about the message: the validator could not
+ * read its own state now (for example, its store stayed locked), so the sender
+ * should retry.
+ */
 export type DacsHttpPayloadValidationV1 =
   | Readonly<{ status: "valid" }>
   | Readonly<{
-      status: "invalid" | "authentication-failure";
+      status: "invalid" | "authentication-failure" | "unavailable";
       reasonCode: string;
     }>;
 
@@ -297,7 +302,7 @@ export interface DacsHttpAuthenticatedEnvelopeV1 {
 
 export interface DacsHttpEnvelopeRejectionV1 {
   status: "rejected";
-  category: "malformed" | "authentication";
+  category: "malformed" | "authentication" | "unavailable";
   reasonCode: string;
 }
 
@@ -376,7 +381,7 @@ const ACK_KEYS = Object.freeze([
 
 class EnvelopeFailure extends Error {
   constructor(
-    readonly category: "malformed" | "authentication",
+    readonly category: DacsHttpEnvelopeRejectionV1["category"],
     readonly reasonCode: string,
   ) {
     super(reasonCode);
@@ -384,7 +389,7 @@ class EnvelopeFailure extends Error {
 }
 
 function failure(
-  category: "malformed" | "authentication",
+  category: DacsHttpEnvelopeRejectionV1["category"],
   reasonCode: string,
 ): never {
   throw new EnvelopeFailure(category, reasonCode);
@@ -864,7 +869,7 @@ export async function authenticateDacsHttpEnvelopeV1(
         failure(
           validation.status === "authentication-failure"
             ? "authentication"
-            : "malformed",
+            : validation.status === "unavailable" ? "unavailable" : "malformed",
           validation.reasonCode,
         );
       }

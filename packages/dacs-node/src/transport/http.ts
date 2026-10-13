@@ -549,10 +549,12 @@ export function createDacsHttpMessageRequestHandlerV1(
           validatePayload: options.validatePayload,
         });
         if (authenticated.status !== "authenticated") {
-          throw new HttpRequestFailure(
-            authenticated.category === "authentication" ? 401 : 400,
-            authenticated.reasonCode,
-          );
+          throw authenticated.category === "unavailable"
+            ? new HttpRequestFailure(503, authenticated.reasonCode, 1)
+            : new HttpRequestFailure(
+                authenticated.category === "authentication" ? 401 : 400,
+                authenticated.reasonCode,
+              );
         }
         if (authenticated.envelope.type === "acknowledgement") {
           throw new HttpRequestFailure(400, "acknowledgement-request-forbidden");

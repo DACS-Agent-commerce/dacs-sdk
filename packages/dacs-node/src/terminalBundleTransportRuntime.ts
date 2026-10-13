@@ -623,6 +623,12 @@ function busyOr(error: unknown, reasonCode: string): unknown {
   return isDacsNodeSqliteBusyError(error) ? error : new DacsVetTerminalBundleTransportError(reasonCode);
 }
 
+// A catch that answers for a proposal or message lets lock contention through
+// unchanged: a busy read is no answer, and the caller retries.
+function rethrowBusy(error: unknown): void {
+  if (isDacsNodeSqliteBusyError(error)) throw error;
+}
+
 // Commit the job to the terminal for this role before retaining or signing
 // terminal material. Fails if this role already committed to the agreement.
 function claimTerminalPhase(
@@ -1230,6 +1236,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     try {
       await assertProposalOrder(proposal, true);
     } catch (error) {
+      rethrowBusy(error);
       return Object.freeze({
         disposition: "rejected" as const,
         reasonCode: error instanceof DacsVetTerminalBundleTransportError
@@ -1342,6 +1349,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       captured = captureProposal(value);
       await assertNoPlanConflict(context, captured.terminalInput.jobId);
     } catch (error) {
+      rethrowBusy(error);
       return Object.freeze({
         disposition: "rejected" as const,
         reasonCode: error instanceof DacsVetTerminalBundleTransportError
@@ -1354,6 +1362,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       await detectPlanConflict(assessment.proposal, sealConflict);
       return assessment;
     } catch (error) {
+      rethrowBusy(error);
       if (error instanceof PeerPlanEquivocation) {
         return Object.freeze({
           disposition: "rejected" as const,
@@ -1907,6 +1916,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         "vet-terminal-contribution-invalid",
       );
     } catch (error) {
+      // The store was locked, so nothing was decided: the sender retries.
+      if (isDacsNodeSqliteBusyError(error)) {
+        return Object.freeze({ status: "unavailable" as const, reasonCode: "vet-terminal-store-busy" });
+      }
       return payloadValidation(false, error instanceof DacsVetTerminalBundleTransportError
         ? error.reasonCode : "vet-terminal-message-invalid");
     }
@@ -2266,7 +2279,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         sender: envelope.sender,
         audience: envelope.audience,
       });
-      if (validation.status === "authentication-failure") {
+      if (validation.status === "authentication-failure" || validation.status === "unavailable") {
         throw new DacsVetTerminalBundleTransportError(validation.reasonCode);
       }
       if (validation.status !== "valid") return rejected(validation.reasonCode);
