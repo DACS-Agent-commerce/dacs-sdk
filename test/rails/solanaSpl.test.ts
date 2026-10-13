@@ -1,7 +1,9 @@
 import { types as nodeTypes } from "node:util";
+import vm from "node:vm";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
   advanceSolanaSplSettlement,
   createInMemorySolanaSplSettlementStore,
@@ -147,6 +149,29 @@ function trapLog(): { traps: string[]; proxy: WatchedProxy } {
 // A proxy that an async store method resolves with is probed for `then` by
 // the promise itself, as any resolved value is, before the core receives it.
 const RESOLVED = ["get then"];
+
+// Counts `Object.getOwnPropertyDescriptor` reads of each key of `objects`,
+// including objects added later, until `restore`. An own data property can
+// only be read without running store code through its descriptor, so this is
+// how often the core read it.
+function countDescriptorReads(objects: readonly object[]) {
+  const counts = new Map<object, Record<string, number>>();
+  const original = Object.getOwnPropertyDescriptor;
+  const spy = vi.spyOn(Object, "getOwnPropertyDescriptor").mockImplementation((target, key) => {
+    if (objects.includes(target)) {
+      const seen = counts.get(target) ?? {};
+      counts.set(target, seen);
+      seen[String(key)] = (seen[String(key)] ?? 0) + 1;
+    }
+    return original(target, key);
+  });
+  return {
+    reads: () => objects.map((value) => counts.get(value) ?? {}),
+    restore: () => spy.mockRestore(),
+  };
+}
+// The read counts expected of a store object: each own key exactly once.
+const onceEach = (value: object) => Object.fromEntries(Object.keys(value).map((key) => [key, 1]));
 
 function adapter(overrides: Partial<SolanaSplAdapter> = {}): SolanaSplAdapter {
   return {
@@ -1999,8 +2024,32 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
     return result;
   }
 
+  // Copies with a null prototype, as `Object.create(null)` or a parser makes.
+  const bare = (value: Fields): Fields => Object.assign(Object.create(null) as Fields, value);
+
   test.each<[string, () => Fields]>([
     ["no extra fields", stored],
+    ["a JSON round trip", () => JSON.parse(JSON.stringify(stored())) as Fields],
+    ["null prototypes throughout", () => {
+      const value = stored();
+      return bare({
+        ...value,
+        txRef: bare(value.txRef),
+        paymentAmount: bare(value.paymentAmount),
+        settlementFinality: bare(value.settlementFinality),
+      });
+    }],
+  ])("a stored settlement with %s is returned as a fresh frozen copy",
+    async (_name, settlement) => {
+      const value = settlement();
+      const result = await settledWith(value);
+      expect(result).toEqual({ status: "settled", settlement: stored() });
+      const copy = (result as { settlement?: unknown }).settlement;
+      expect(copy).not.toBe(value);
+      expect(deeplyFrozen(copy)).toBe(true);
+    });
+
+  test.each<[string, () => unknown]>([
     ["its own toJSON", () => Object.assign(stored(), { toJSON: () => ({ source: SECRET }) })],
     ["a nested toJSON", () => {
       const value = stored();
@@ -2008,16 +2057,68 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
       return value;
     }],
     ["an extra field", () => ({ ...stored(), note: `store ${SECRET}` })],
-  ])("a stored settlement with %s is returned as a fresh frozen copy without store text",
-    async (_name, settlement) => {
-      const value = settlement();
-      const result = await settledWith(value);
-      expect(JSON.stringify(result)).not.toContain(SECRET);
-      expect(result).toEqual({ status: "settled", settlement: stored() });
-      const copy = (result as { settlement?: unknown }).settlement;
-      expect(copy).not.toBe(value);
-      expect(deeplyFrozen(copy)).toBe(true);
+    ["an extra nested field", () => {
+      const value = stored();
+      value.settlementFinality.note = `store ${SECRET}`;
+      return value;
+    }],
+    ["a prototype other than Object.prototype",
+      () => Object.assign(Object.create({ note: SECRET }) as Fields, stored())],
+    ["a nested prototype other than Object.prototype", () => {
+      const value = stored();
+      return { ...value, txRef: Object.assign(Object.create({ note: SECRET }) as Fields, value.txRef) };
+    }],
+  ])("a stored settlement with %s is refused, never reported settled", async (_name, settlement) => {
+    const result = await settledWith(settlement());
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "solana-spl-stored-settlement-mismatch",
     });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
+  // `util.types.isProxy` is false for a vm context's global, yet reading it
+  // runs the sandbox proxy's traps. Its prototype comes from the other realm,
+  // and even with `Object.prototype` it carries every global as an own key.
+  test.each([
+    ["as created", false],
+    ["with its prototype reset to Object.prototype", true],
+  ])("a stored settlementFinality that is a vm context global %s is refused, its descriptor trap never run",
+    async (_name, resetPrototype) => {
+      let descriptorTraps = 0;
+      const finality = vm.runInContext("this", vm.createContext(new Proxy(
+        { model: "commitment-level", finalityCommitmentLevel: "confirmed", finalityObservedAt: 7 },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            const field = Reflect.getOwnPropertyDescriptor(target, key);
+            if (key !== "finalityObservedAt" || field === undefined) return field;
+            descriptorTraps += 1;
+            return { ...field, value: descriptorTraps <= 2 ? 7 : `store ${SECRET}` };
+          },
+        },
+      ))) as Fields;
+      expect(nodeTypes.isProxy(finality)).toBe(false);
+      if (resetPrototype) Object.setPrototypeOf(finality, Object.prototype);
+      const result = await settledWith({ ...stored(), settlementFinality: finality });
+      expect(result).toEqual({
+        status: "indeterminate",
+        reason: "solana-spl-stored-settlement-mismatch",
+      });
+      expect(descriptorTraps).toBe(0);
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+    });
+
+  test("each field of an accepted stored settlement is read once, from its descriptor", async () => {
+    const value = stored();
+    const objects: object[] = [value, value.txRef, value.paymentAmount, value.settlementFinality];
+    const { reads, restore } = countDescriptorReads(objects);
+    try {
+      await expect(settledWith(value)).resolves.toEqual({ status: "settled", settlement: stored() });
+    } finally {
+      restore();
+    }
+    expect(reads()).toEqual(objects.map(onceEach));
+  });
 
   test.each<[string, () => { value: unknown; reads: () => number }]>([
     ["an authenticationHash getter that changes after validation", () => {
@@ -2122,6 +2223,326 @@ describe("advanceSolanaSplSettlement with a stored settlement", () => {
       status: "indeterminate",
       reason: "solana-spl-stored-settlement-mismatch",
     });
+  });
+});
+
+describe("advanceSolanaSplSettlement captures each store object as plain data", () => {
+  type Acquired = Extract<SolanaSplStoreClaim, { status: "acquired" }>;
+  type Fields = Record<string, unknown>;
+  type ExpiryRequest = Parameters<SolanaSplSettlementStore["markAttemptExpired"]>[0];
+  const signatureFor = (n: number) => `${"1".repeat(63)}${n}`;
+  // An enumerable getter that returns the field's own value and counts reads.
+  const getter = (value: object, key: string, reads: { count: number }) => {
+    const field = (value as Fields)[key];
+    return Object.defineProperty(value, key, {
+      enumerable: true,
+      get: () => {
+        reads.count += 1;
+        return field;
+      },
+    });
+  };
+  const withPrototype = (value: object) => Object.assign(Object.create({}) as Fields, value);
+  const rehash = (row: Fields) => {
+    const { attemptHash: _ignored, ...unsigned } = row;
+    return { ...row, attemptHash: sha256Hex(canonicalize(unsigned)) };
+  };
+
+  interface Rewrites {
+    claim?: (claim: Acquired) => unknown;
+    markAttemptExpired?: (write: SolanaSplStoreWrite, request: ExpiryRequest) => unknown;
+    recordAttempt?: (write: SolanaSplStoreWrite) => unknown;
+    recordSettlement?: (write: SolanaSplStoreWrite) => unknown;
+    reconcileLatest?: (attempt: SolanaSplSignedAttempt) => SolanaSplReconciliation;
+  }
+
+  // Retains attempt 1, expired with durable evidence, and attempt 2, broadcast
+  // with an unknown outcome and valid through block 10_002. Then resumes once
+  // with the store's results rewritten. On resume attempt 2 reconciles as
+  // expired (`reconcileLatest`) and attempt 3 as settled, so an honest store
+  // signs attempt 3 and settles: anything refused stops before that.
+  async function resume(rewrites: Rewrites = {}) {
+    let clock = 1_000;
+    let stage = 1;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const resumed = () => stage === 3;
+    const store: SolanaSplSettlementStore = {
+      ...memory,
+      async claim(request) {
+        const claim = await memory.claim(request);
+        return resumed() && rewrites.claim ? rewrites.claim(claim as Acquired) as never : claim;
+      },
+      async markAttemptExpired(request) {
+        const write = await memory.markAttemptExpired(request);
+        return resumed() && rewrites.markAttemptExpired
+          ? rewrites.markAttemptExpired(write, request) as never
+          : write;
+      },
+      async recordAttempt(request) {
+        const write = await memory.recordAttempt(request);
+        return resumed() && rewrites.recordAttempt ? rewrites.recordAttempt(write) as never : write;
+      },
+      async recordSettlement(request) {
+        const write = await memory.recordSettlement(request);
+        return resumed() && rewrites.recordSettlement
+          ? rewrites.recordSettlement(write) as never
+          : write;
+      },
+    };
+    const checkedPreflight = vi.fn(adapter().preflight);
+    const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => ({
+      ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+      signature: signatureFor(attempt),
+    }));
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      if (!resumed()) {
+        return stage === 2 && attempt.attempt === 1
+          ? expired(attempt)
+          : { disposition: "indeterminate", reason: "lost" };
+      }
+      if (attempt.attempt === 2) return (rewrites.reconcileLatest ?? expired)(attempt);
+      return { disposition: "settled-same", transfer: observed({ signature: attempt.signature }) };
+    });
+    const shared = input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile,
+      }),
+    });
+    for (; stage <= 2; stage += 1) {
+      await advanceSolanaSplSettlement({ ...shared, owner: `worker-${stage}` });
+      clock += 101;
+    }
+    expect(broadcastRetained.mock.calls.map((call) => call[0].attempt)).toEqual([1, 2]);
+    for (const spy of [
+      checkedPreflight, prepareSignedTransfer, recordAttempt, broadcastRetained, reconcile,
+    ]) spy.mockClear();
+    const result = await advanceSolanaSplSettlement({ ...shared, owner: "worker-resume" });
+    return {
+      result,
+      reconciled: reconcile.mock.calls.map((call) => [call[1].attempt, call[1].lastValidBlockHeight]),
+      preflights: checkedPreflight.mock.calls.length,
+      prepared: prepareSignedTransfer.mock.calls.map((call) => call[1]),
+      recorded: recordAttempt.mock.calls.map((call) => call[0].attempt.attempt),
+      broadcast: broadcastRetained.mock.calls.map((call) => call[0].attempt),
+    };
+  }
+  const nothingAfter = (reason: string, reconciled: number[][] = []) => ({
+    result: { status: "indeterminate", reason },
+    reconciled,
+    preflights: 0,
+    prepared: [],
+    recorded: [],
+    broadcast: [],
+  });
+
+  // Daybreak round-3 P1-1. The row's first key is an `attemptHash` getter
+  // whose first read answers the hash of the row with bound 0. Its second read
+  // lowers the row's own bound to 0. Object-rest read it twice, so the rest
+  // copy hashed to the answer, and a proof of expiry at block 1 replaced an
+  // attempt that can still land until block 10_002.
+  test("an attemptHash getter that lowers the retained bound never authorizes attempt 3", async () => {
+    let forgedReads = 0;
+    const run = await resume({
+      claim(claim) {
+        const actual = claim.attempts.at(-1)!;
+        const { attemptHash: _ignored, ...unsigned } = actual;
+        const forgedHash = sha256Hex(canonicalize({ ...unsigned, lastValidBlockHeight: 0 }));
+        const row: Fields = {};
+        Object.defineProperty(row, "attemptHash", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            forgedReads += 1;
+            if (forgedReads === 2) row.lastValidBlockHeight = 0;
+            return forgedHash;
+          },
+        });
+        Object.assign(row, unsigned);
+        return { ...claim, attempts: [...claim.attempts.slice(0, -1), row] };
+      },
+      // Confirmed absence at block 1, which proves expiry only for bound 0.
+      reconcileLatest: (attempt) => expired(attempt, { observedBlockHeight: 1 }),
+      // A store that acknowledges exactly the evidence it was sent.
+      markAttemptExpired: (_write, request) => ({
+        status: "recorded",
+        expiryEvidence: {
+          signature: request.signature,
+          observedBlockHeight: request.observedBlockHeight,
+          commitmentLevel: request.commitmentLevel,
+          authenticationHash: request.authenticationHash,
+        },
+      }),
+    });
+    expect(run).toEqual(nothingAfter("solana-spl-retained-state-corrupt"));
+    expect(forgedReads).toBe(0);
+  });
+
+  test("an attempt row whose fields are all getters is refused before any of them runs", async () => {
+    const reads: Record<string, { count: number }> = {};
+    const run = await resume({
+      claim(claim) {
+        const row: Fields = { ...claim.attempts.at(-1)! };
+        for (const key of Object.keys(row)) getter(row, key, reads[key] = { count: 0 });
+        return { ...claim, attempts: [...claim.attempts.slice(0, -1), row] };
+      },
+    });
+    expect(Object.values(reads).map((field) => field.count)).toEqual(new Array(9).fill(0));
+    expect(run).toEqual(nothingAfter("solana-spl-retained-state-corrupt"));
+  });
+
+  test("each field of every store object is read once, from its descriptor", async () => {
+    const objects: object[] = [];
+    const track = <T extends object>(value: T): T => {
+      objects.push(value);
+      return value;
+    };
+    const fresh = (write: SolanaSplStoreWrite) => {
+      const copy: Fields = { ...write };
+      if (copy.expiryEvidence) copy.expiryEvidence = track({ ...(copy.expiryEvidence as object) });
+      return track(copy);
+    };
+    const { reads, restore } = countDescriptorReads(objects);
+    let run: Awaited<ReturnType<typeof resume>>;
+    try {
+      run = await resume({
+        claim: (claim) => track({
+          ...claim,
+          intent: track({ ...claim.intent }),
+          lease: track({ ...claim.lease }),
+          attempts: track(claim.attempts.map((attempt) => track({ ...attempt }))),
+          expiredSignatures: track([...claim.expiredSignatures]),
+          expiryEvidence: track(claim.expiryEvidence!.map((evidence) => track({ ...evidence }))),
+        }),
+        markAttemptExpired: fresh,
+        recordAttempt: fresh,
+        recordSettlement: fresh,
+      });
+    } finally {
+      restore();
+    }
+    expect(run).toMatchObject({
+      result: { status: "settled", settlement: { txRef: { signature: signatureFor(3) } } },
+      reconciled: [[2, 10_002], [3, 10_003]],
+      prepared: [3],
+      broadcast: [3],
+    });
+    // Claim, intent, lease, attempts and their two rows, expired signatures,
+    // evidence and its row; the expiry write and its evidence; two writes.
+    expect(objects).toHaveLength(13);
+    expect(reads()).toEqual(objects.map(onceEach));
+  });
+
+  const invalid = "solana-spl-settlement-store-claim-invalid";
+  const corrupt = "solana-spl-retained-state-corrupt";
+  test.each<[string, string, (claim: Acquired) => unknown]>([
+    ["a claim whose attempts is a getter", invalid,
+      (claim) => getter({ ...claim }, "attempts", { count: 0 })],
+    ["a claim with an extra key", invalid, (claim) => ({ ...claim, note: "store" })],
+    ["a claim with a prototype other than Object.prototype", invalid, withPrototype],
+    ["a lease whose generation is a getter", invalid,
+      (claim) => ({ ...claim, lease: getter({ ...claim.lease }, "generation", { count: 0 }) })],
+    ["a lease with an extra key", invalid,
+      (claim) => ({ ...claim, lease: { ...claim.lease, note: "store" } })],
+    ["an attempt row with a non-enumerable attemptHash", corrupt, (claim) => {
+      const row: Fields = { ...claim.attempts.at(-1)! };
+      Object.defineProperty(row, "attemptHash", { enumerable: false });
+      return { ...claim, attempts: [...claim.attempts.slice(0, -1), row] };
+    }],
+    ["an attempt row with an extra key its hash covers", corrupt, (claim) => ({
+      ...claim,
+      attempts: [...claim.attempts.slice(0, -1), rehash({ ...claim.attempts.at(-1)!, note: "store" })],
+    })],
+    ["an attempt row with a prototype other than Object.prototype", corrupt, (claim) => ({
+      ...claim,
+      attempts: [...claim.attempts.slice(0, -1), withPrototype(claim.attempts.at(-1)!)],
+    })],
+    ["an expiry evidence row whose signature is a getter", corrupt, (claim) => ({
+      ...claim,
+      expiryEvidence: claim.expiryEvidence!.map((row) => getter({ ...row }, "signature", { count: 0 })),
+    })],
+    ["an expiry evidence row with an extra key", corrupt, (claim) => ({
+      ...claim,
+      expiryEvidence: claim.expiryEvidence!.map((row) => ({ ...row, note: "store" })),
+    })],
+  ])("%s is refused before anything is reconciled or signed", async (_name, reason, view) => {
+    await expect(resume({ claim: view })).resolves.toEqual(nothingAfter(reason));
+  });
+
+  const acknowledgement = (edit: (evidence: Fields) => unknown) =>
+    (write: SolanaSplStoreWrite) => ({
+      ...write,
+      expiryEvidence: edit({ ...(write as { expiryEvidence: SolanaSplExpiryEvidence }).expiryEvidence }),
+    });
+  test.each<[string, (write: SolanaSplStoreWrite) => unknown]>([
+    ["whose status is a getter", (write) => getter({ ...write }, "status", { count: 0 })],
+    ["whose evidence's authenticationHash is a getter",
+      acknowledgement((evidence) => getter(evidence, "authenticationHash", { count: 0 }))],
+    ["whose evidence has an extra key", acknowledgement((evidence) => ({ ...evidence, note: "store" }))],
+    ["whose evidence has a prototype other than Object.prototype", acknowledgement(withPrototype)],
+    ["with an extra key", (write) => ({ ...write, note: "store" })],
+  ])("an expiry acknowledgement %s never reaches preflight or a new signature",
+    async (_name, markAttemptExpired) => {
+      await expect(resume({ markAttemptExpired })).resolves.toEqual(
+        nothingAfter("solana-spl-expiry-persistence-uncertain", [[2, 10_002]]),
+      );
+    });
+
+  test.each<[string, (write: SolanaSplStoreWrite) => unknown]>([
+    ["whose status is a getter", (write) => getter({ ...write }, "status", { count: 0 })],
+    ["with an extra key", (write) => ({ ...write, note: "store" })],
+    ["with a prototype other than Object.prototype", withPrototype],
+  ])("a recordAttempt result %s never broadcasts attempt 3", async (_name, recordAttempt) => {
+    await expect(resume({ recordAttempt })).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" },
+      reconciled: [[2, 10_002]],
+      preflights: 1,
+      prepared: [3],
+      recorded: [3],
+      broadcast: [],
+    });
+  });
+
+  test.each<[string, (write: SolanaSplStoreWrite) => unknown]>([
+    ["whose status is a getter", (write) => getter({ ...write }, "status", { count: 0 })],
+    ["with an extra key", (write) => ({ ...write, note: "store" })],
+  ])("a recordSettlement result %s is never reported settled", async (_name, recordSettlement) => {
+    await expect(resume({ recordSettlement })).resolves.toMatchObject({
+      result: { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" },
+      broadcast: [3],
+    });
+  });
+
+  test("a prepared attempt is retained with exactly its fields, so a resume can read it back", async () => {
+    const memory = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(memory, "recordAttempt");
+    let clock = 1_000;
+    let observations = 0;
+    const shared = input({
+      store: memory,
+      now: () => clock,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          return { ...(await adapter().prepareSignedTransfer(plan, attempt, fence)), note: "adapter" };
+        },
+        async reconcile(_intent, attempt) {
+          return ++observations === 1
+            ? { disposition: "indeterminate", reason: "lost" }
+            : { disposition: "settled-same", transfer: observed({ signature: attempt.signature }) };
+        },
+      }),
+    });
+    await advanceSolanaSplSettlement(shared);
+    expect(Object.keys(recordAttempt.mock.calls[0]![0].attempt)).toEqual([
+      "attemptVersion", "attempt", "authorityHash", "signature", "signedTransactionBase64",
+      "lastValidBlockHeight", "transferInstructionIndex", "preparedAt", "attemptHash",
+    ]);
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toMatchObject({ status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } });
   });
 });
 

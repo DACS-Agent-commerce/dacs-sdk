@@ -500,8 +500,19 @@ function createAttempt(
   expectedAttempt: number,
   intent: Readonly<SolanaSplSettlementIntent>,
 ): Readonly<SolanaSplSignedAttempt> {
-  // Copy once, so what is checked is what is retained, hashed and broadcast.
-  const value = { ...prepared };
+  // Copy each field once, so what is checked is what is retained, hashed and
+  // broadcast. Only these fields are kept, so every attempt the core retains
+  // has exactly the keys a retained attempt is later required to have.
+  const value = {
+    attemptVersion: prepared.attemptVersion,
+    attempt: prepared.attempt,
+    authorityHash: prepared.authorityHash,
+    signature: prepared.signature,
+    signedTransactionBase64: prepared.signedTransactionBase64,
+    lastValidBlockHeight: prepared.lastValidBlockHeight,
+    transferInstructionIndex: prepared.transferInstructionIndex,
+    preparedAt: prepared.preparedAt,
+  };
   if (value.attemptVersion !== "1" || value.attempt !== expectedAttempt ||
       value.authorityHash !== intent.bindingHash) {
     throw new DacsError("pay-solana-spl: prepared transaction authority mismatch");
@@ -544,11 +555,80 @@ function isDataObject(value: unknown): value is object {
 }
 
 /**
- * Reads a store array once into a fresh array. Element n must be an own data
- * property at index n, and the array has no other own keys. A proxy is refused
- * before any of its traps runs. A hole, an inherited index, an accessor or a
- * length that disagrees with the own keys could hide a retained attempt or its
- * expiry record, so each throws.
+ * The value of an own, enumerable data property, read once from its
+ * descriptor, so no getter runs. A missing, inherited, non-enumerable or
+ * accessor property throws.
+ */
+function ownDataValue(value: object, key: string, label: string): unknown {
+  const field = Object.getOwnPropertyDescriptor(value, key);
+  if (field === undefined || !Object.hasOwn(field, "value") || !field.enumerable) {
+    throw new DacsError(`pay-solana-spl: ${label} ${key} must be an own data property`);
+  }
+  return field.value;
+}
+
+const ATTEMPT_KEYS = [
+  "attemptVersion", "attempt", "authorityHash", "signature", "signedTransactionBase64",
+  "lastValidBlockHeight", "transferInstructionIndex", "preparedAt", "attemptHash",
+] as const;
+const EVIDENCE_KEYS = [
+  "signature", "observedBlockHeight", "commitmentLevel", "authenticationHash",
+] as const;
+const LEASE_KEYS = ["owner", "generation", "expiresAt"] as const;
+
+/**
+ * Captures a store object as plain data: the one meaning of "plain data" for
+ * every store result the core relies on. The object must not be a proxy, its
+ * prototype must be `Object.prototype` or null, and its own keys must be
+ * exactly `required` plus any of `optional`: no symbol, extra or missing key.
+ * Each must be an own, enumerable data property. Each value is read once from
+ * its descriptor into a fresh object, which is the only thing checked and used
+ * afterwards. A proxy is refused before any trap runs, and no getter runs.
+ */
+function plainData(
+  value: unknown,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> {
+  if (!isDataObject(value)) {
+    throw new DacsError(`pay-solana-spl: ${label} must be plain data`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new DacsError(`pay-solana-spl: ${label} must be plain data`);
+  }
+  const keys = Reflect.ownKeys(value);
+  const snapshot: Record<string, unknown> = Object.create(null);
+  for (const key of keys) {
+    if (typeof key !== "string" || (!required.includes(key) && !optional.includes(key))) {
+      throw new DacsError(`pay-solana-spl: ${label} has an unexpected key`);
+    }
+    snapshot[key] = ownDataValue(value, key, label);
+  }
+  return exactKeys(Object.freeze(snapshot), label, required, optional);
+}
+
+/** Throws unless a snapshot has every `required` key and no key outside `optional`. */
+function exactKeys(
+  snapshot: Readonly<Record<string, unknown>>,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> {
+  if (required.some((key) => !Object.hasOwn(snapshot, key)) ||
+      Object.keys(snapshot).some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw new DacsError(`pay-solana-spl: ${label} must have exactly its keys`);
+  }
+  return snapshot;
+}
+
+/**
+ * Reads a store array once into a fresh array. Element n must be an own,
+ * enumerable data property at index n, and the array has no other own keys. A
+ * proxy is refused before any of its traps runs. A hole, an inherited index,
+ * an accessor or a length that disagrees with the own keys could hide a
+ * retained attempt or its expiry record, so each throws.
  */
 function ownElements(values: unknown, label: string): unknown[] {
   if (!isDataObject(values) || !Array.isArray(values)) {
@@ -561,11 +641,7 @@ function ownElements(values: unknown, label: string): unknown[] {
   }
   const elements: unknown[] = [];
   for (let index = 0; index < length; index += 1) {
-    const element = Object.getOwnPropertyDescriptor(values, String(index));
-    if (element === undefined || !("value" in element)) {
-      throw new DacsError(`pay-solana-spl: ${label} must be a dense array`);
-    }
-    elements.push(element.value);
+    elements.push(ownDataValue(values, String(index), label));
   }
   return elements;
 }
@@ -580,13 +656,16 @@ function captureRetainedAttempts(
   const signatures = new Set<string>();
   const retained: Readonly<SolanaSplSignedAttempt>[] = [];
   for (let index = 0; index < elements.length; index += 1) {
-    const value = elements[index];
-    if (!isDataObject(value)) {
-      throw new DacsError("pay-solana-spl: retained attempt must be plain data");
-    }
-    const { attemptHash, ...unsigned } = value as Readonly<SolanaSplSignedAttempt>;
-    const captured = createAttempt(unsigned, index + 1, intent);
-    if (captured.attemptHash !== attemptHash) {
+    // Only the snapshot is validated, hashed and used: a getter could
+    // otherwise answer the integrity check with one row and the use with
+    // another.
+    const row = plainData(elements[index], "retained attempt", ATTEMPT_KEYS);
+    const captured = createAttempt(
+      row as unknown as Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>,
+      index + 1,
+      intent,
+    );
+    if (captured.attemptHash !== row.attemptHash) {
       throw new DacsError("pay-solana-spl: retained attempt integrity mismatch");
     }
     if (signatures.has(captured.signature)) {
@@ -639,71 +718,63 @@ function captureRetainedExpiryEvidence(
   if (values === undefined) return new Map();
   const captured = new Map<string, Readonly<SolanaSplExpiryEvidence>>();
   for (const value of ownElements(values, "retained expiry evidence")) {
-    if (!isDataObject(value)) {
-      throw new DacsError("pay-solana-spl: retained expiry evidence is invalid");
-    }
-    const candidate = value as Record<string, unknown>;
+    const candidate = plainData(value, "retained expiry evidence", EVIDENCE_KEYS);
     const attempt = attempts.find((retained) => retained.signature === candidate.signature);
     if (!attempt || !expiredSignatures.includes(attempt.signature) ||
         captured.has(attempt.signature)) {
       throw new DacsError("pay-solana-spl: retained expiry evidence is inconsistent");
     }
-    captured.set(attempt.signature, captureExpiryEvidence({
-      signature: candidate.signature,
-      observedBlockHeight: candidate.observedBlockHeight,
-      commitmentLevel: candidate.commitmentLevel,
-      authenticationHash: candidate.authenticationHash,
-    }, attempt));
+    captured.set(attempt.signature, captureExpiryEvidence(
+      candidate as Readonly<SolanaSplExpiryEvidence>,
+      attempt,
+    ));
   }
   return captured;
 }
 
-/** A store write result, refused before any trap runs unless it is plain data. */
-function storeWrite(value: SolanaSplStoreWrite): SolanaSplStoreWrite {
-  if (!isDataObject(value)) {
-    throw new DacsError("pay-solana-spl: store write must be plain data");
-  }
-  return value;
-}
-
-/** Reads an own data property once; a proxy, missing, inherited or accessor field throws. */
-function ownField(value: unknown, key: string): unknown {
-  if (!isDataObject(value)) {
-    throw new DacsError("pay-solana-spl: stored settlement must be plain data");
-  }
-  const field = Object.getOwnPropertyDescriptor(value, key);
-  if (field === undefined || !("value" in field)) {
-    throw new DacsError(`pay-solana-spl: stored settlement ${key} must be a data property`);
-  }
-  return field.value;
+/**
+ * A store write result as a plain-data snapshot. A successful write has only
+ * `status` and an optional `expiryEvidence`; any other has `status` and
+ * `reason`. Anything else throws, so it never counts as a success.
+ */
+function storeWrite(value: unknown): Readonly<Record<string, unknown>> {
+  const write = plainData(value, "store write", ["status"], ["expiryEvidence", "reason"]);
+  return write.status === "recorded" || write.status === "existing"
+    ? exactKeys(write, "store write", ["status"], ["expiryEvidence"])
+    : exactKeys(write, "store write", ["status", "reason"]);
 }
 
 /**
  * Copies a stored settlement into fresh frozen plain data, then checks the
- * copy against the intent. Only own data properties are read, each once, so a
- * store accessor, `toJSON` hook or extra field never reaches the caller.
- * Returns null when the settlement or a nested object is a proxy, or a field
- * is missing, inherited, an accessor or invalid.
+ * copy against the intent. The settlement and each nested object are captured
+ * by `plainData`, so a store accessor, `toJSON` hook or extra field never
+ * reaches the caller. Returns null when any of them is not plain data with
+ * exactly its keys, or a field is invalid.
  */
 function captureStoredSettlement(
   value: unknown,
   intent: Readonly<SolanaSplSettlementIntent>,
 ): Readonly<SolanaSplSettlementResult> | null {
   try {
-    const txRef = ownField(value, "txRef");
-    const paymentAmount = ownField(value, "paymentAmount");
-    const finality = ownField(value, "settlementFinality");
+    const settlement = plainData(value, "stored settlement",
+      ["txRef", "paymentAmount", "settlementFinality", "authenticationHash"]);
+    const txRef = plainData(settlement.txRef, "stored txRef",
+      ["kind", "cluster", "signature", "instructionIndex"]);
+    const paymentAmount = plainData(settlement.paymentAmount, "stored paymentAmount",
+      ["amount", "currency"]);
+    const finality = plainData(settlement.settlementFinality, "stored settlementFinality",
+      ["model", "finalityCommitmentLevel", "finalityObservedAt"]);
     const stored = {
-      kind: ownField(txRef, "kind"),
-      cluster: ownField(txRef, "cluster"),
-      signature: ownField(txRef, "signature"),
-      instructionIndex: ownField(txRef, "instructionIndex"),
-      amount: ownField(paymentAmount, "amount"),
-      currency: ownField(paymentAmount, "currency"),
-      model: ownField(finality, "model"),
-      finalityCommitmentLevel: ownField(finality, "finalityCommitmentLevel"),
-      finalityObservedAt: ownField(finality, "finalityObservedAt"),
-      authenticationHash: ownField(value, "authenticationHash"),
+      kind: txRef.kind,
+      cluster: txRef.cluster,
+      signature: txRef.signature,
+      instructionIndex: txRef.instructionIndex,
+      amount: paymentAmount.amount,
+      currency: paymentAmount.currency,
+      model: finality.model,
+      finalityCommitmentLevel: finality.finalityCommitmentLevel,
+      finalityObservedAt: finality.finalityObservedAt,
+      authenticationHash: settlement.authenticationHash,
     };
     const signature = requireBase58Bytes(stored.signature, "stored signature", 64);
     const { instructionIndex, finalityObservedAt, authenticationHash } = stored;
@@ -788,13 +859,14 @@ function settlementFrom(
 }
 
 /**
- * A store claim after validation; every field was read exactly once. A
- * settlement is a frozen copy already checked against the intent.
+ * A store claim after validation; every field was read exactly once. The
+ * lease is a `plainData` snapshot with exactly `LEASE_KEYS`. A settlement is a
+ * frozen copy already checked against the intent.
  */
 type ClaimView =
   | {
       status: "acquired";
-      lease: Readonly<{ owner: unknown; generation: unknown; expiresAt: unknown }>;
+      lease: Readonly<Record<string, unknown>>;
       attempts: readonly Readonly<SolanaSplSignedAttempt>[];
       expiredSignatures: readonly string[];
       expiryEvidence: readonly Readonly<SolanaSplExpiryEvidence>[] | undefined;
@@ -804,8 +876,9 @@ type ClaimView =
 /**
  * Parses a store claim as the complete discriminated union before anything
  * acts on it. A partial, malformed or unreadable claim is never trusted: it
- * could belong to another binding or hide a retained broadcast. A proxy claim,
- * intent or lease is refused before any of its traps runs.
+ * could belong to another binding or hide a retained broadcast. The claim, its
+ * intent and its lease are captured by `plainData` with exactly their
+ * variant's keys before any field is used.
  */
 function readClaim(
   value: unknown,
@@ -816,20 +889,35 @@ function readClaim(
     reason: "solana-spl-settlement-store-claim-invalid",
   } as const;
   try {
-    if (!isDataObject(value)) return invalid;
-    const claim = value as Record<string, unknown>;
+    const claim = plainData(value, "claim", ["status"], [
+      "reason", "intent", "lease", "attempts", "expiredSignatures", "expiryEvidence", "settlement",
+    ]);
     const status = claim.status;
     // A conflicting binding for the same phase, or a corrupt record, may hold
     // a broadcast this call cannot inspect, so neither proves the phase unpaid.
-    if (status === "conflict") {
-      return { status: "indeterminate", reason: "solana-spl-settlement-store-conflict" };
+    if (status === "conflict" || status === "corrupt") {
+      exactKeys(claim, "claim", ["status", "reason"]);
+      return {
+        status: "indeterminate",
+        reason: status === "conflict"
+          ? "solana-spl-settlement-store-conflict"
+          : "solana-spl-settlement-store-corrupt",
+      };
     }
-    if (status === "corrupt") {
-      return { status: "indeterminate", reason: "solana-spl-settlement-store-corrupt" };
+    if (status === "settled") {
+      exactKeys(claim, "claim", ["status", "intent", "settlement"]);
+    } else if (status === "acquired" || status === "waiting") {
+      exactKeys(claim, "claim",
+        ["status", "intent", "lease", "attempts", "expiredSignatures"], ["expiryEvidence"]);
+    } else {
+      return invalid;
     }
-    if (status !== "acquired" && status !== "waiting" && status !== "settled") return invalid;
-    const storedIntent = claim.intent;
-    if (!isDataObject(storedIntent)) return invalid;
+    const storedIntent = plainData(claim.intent, "stored intent", Object.keys(intent));
+    // Every intent field is a string, number or boolean; an object here could
+    // only run store code while it is compared.
+    if (Object.values(storedIntent).some((field) => typeof field === "object" && field !== null)) {
+      return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-invalid" };
+    }
     try {
       if (canonicalize(storedIntent) !== canonicalize(intent)) {
         return { status: "indeterminate", reason: "solana-spl-settlement-store-intent-mismatch" };
@@ -846,24 +934,18 @@ function readClaim(
         ? { status, settlement: captured }
         : { status: "indeterminate", reason: "solana-spl-stored-settlement-mismatch" };
     }
-    const lease = claim.lease;
+    const lease = plainData(claim.lease, "lease", LEASE_KEYS);
     const attempts = claim.attempts;
     const expiredSignatures = claim.expiredSignatures;
     const expiryEvidence = claim.expiryEvidence;
-    if (!isDataObject(lease) || !Array.isArray(attempts) ||
-        !Array.isArray(expiredSignatures) ||
+    if (!Array.isArray(attempts) || !Array.isArray(expiredSignatures) ||
         (expiryEvidence !== undefined && !Array.isArray(expiryEvidence))) {
       return invalid;
     }
     if (status === "waiting") return { status, reason: "solana-spl-settlement-held" };
-    const leaseFields = lease as Record<string, unknown>;
     return {
       status,
-      lease: Object.freeze({
-        owner: leaseFields.owner,
-        generation: leaseFields.generation,
-        expiresAt: leaseFields.expiresAt,
-      }),
+      lease,
       attempts,
       expiredSignatures,
       expiryEvidence,
@@ -1157,9 +1239,12 @@ export async function advanceSolanaSplSettlement(
       }));
       const status = marked.status;
       if (status === "recorded" || status === "existing") {
-        const acknowledged = marked.expiryEvidence;
-        if (isDataObject(acknowledged) &&
-            canonicalize(captureExpiryEvidence(acknowledged, attempt)) ===
+        const acknowledged = plainData(
+          marked.expiryEvidence,
+          "acknowledged expiry evidence",
+          EVIDENCE_KEYS,
+        ) as Readonly<SolanaSplExpiryEvidence>;
+        if (canonicalize(captureExpiryEvidence(acknowledged, attempt)) ===
               canonicalize(evidence)) return null;
       }
     } catch {
