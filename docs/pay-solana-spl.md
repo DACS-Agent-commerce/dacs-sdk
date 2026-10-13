@@ -108,10 +108,10 @@ hold a broadcast this call cannot inspect, so it must be resolved out of band.
 `waiting` and `indeterminate` never authorize a fresh payment. Resume the same
 authority after the lease expires. A production store must atomically retain
 the signed wire bytes, lease generation, complete `SolanaSplExpiryEvidence` and
-final settlement or failure across process restart. The evidence binds the retained
-signature to a non-negative safe-integer `observedBlockHeight` strictly greater
-than its `lastValidBlockHeight`, the literal `confirmed` commitment and an
-authentication hash. `expiredSignatures` remains in the store claim for source
+final settlement or failure across process restart. The evidence binds the
+retained signature to a non-negative safe-integer `observedBlockHeight`
+strictly greater than its `lastValidBlockHeight`, the literal `confirmed`
+commitment and an authentication hash. `expiredSignatures` remains in the store claim for source
 compatibility, but a hash-only legacy marker is never replacement authority: it
 causes the retained attempt to be reconciled again. A store must allow a later
 authenticated `settled-same` observation to supersede such an expiry marker.
@@ -128,10 +128,10 @@ every other write for the key is refused. `failure` is exactly
 class; any other failure is `solana-spl-settlement-store-claim-invalid`.
 Every store object the core relies on must be plain data, and plain data has
 one meaning, enforced the same way for each of them. These objects are the
-claim and its `intent`, `lease` and `failure`, each retained attempt and expiry-evidence
-row, each write result and the `expiryEvidence` it acknowledges, and a stored
-settlement with its `txRef`, `paymentAmount` and `settlementFinality`. Each
-must meet three conditions:
+claim and its `intent`, `lease` and `failure`, each retained attempt and
+expiry-evidence row, each write result and the `expiryEvidence` it
+acknowledges, and a stored settlement with its `txRef`, `paymentAmount` and
+`settlementFinality`. Each must meet three conditions:
 
 - it is not a proxy (checked with `util.types.isProxy`);
 - its prototype is `Object.prototype` or `null`, so `JSON.parse` output and
