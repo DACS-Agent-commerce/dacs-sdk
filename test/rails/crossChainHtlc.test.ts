@@ -3338,12 +3338,14 @@ describe("advanceCrossChainHtlc", () => {
         reason: "htlc-destination-lock-finality-pending",
       });
       h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
-      // The deadline the core set for the source-leg observation is the
-      // timer it armed just before calling it, with the lease time then left.
+      // The deadline the core set for the first source-leg observation (the
+      // refund step's; a later one re-observes the refund) is the timer it
+      // armed just before calling it, with the lease time then left.
       const timers = vi.spyOn(globalThis, "setTimeout");
       let deadline: number | undefined;
       let leaseLeft = 0;
       const recordDeadline = () => {
+        if (deadline !== undefined) return;
         deadline = timers.mock.calls.at(-1)?.[1];
         leaseLeft = leaseExpiresAt - now();
       };
