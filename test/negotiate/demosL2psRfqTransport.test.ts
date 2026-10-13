@@ -3389,4 +3389,77 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     });
     fixture.transport.stop();
   });
+
+  test("re-review: a refused first packet holds back every later packet of its job", async () => {
+    const fixture = await inboundReceiver();
+    const sequence = fixture.packet.kind === "turn" ? fixture.packet.message.sequence : 0;
+    const job = { jobId: OTHER_JOB_ID };
+    const first = await storeBuyerPacket(fixture, offerVariant(fixture.packet, { ...job, sequence }), 1);
+    const second = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { ...job, sequence: sequence + 1 }), 2);
+    const third = await storeBuyerPacket(
+      fixture, offerVariant(fixture.packet, { ...job, sequence: sequence + 2 }), 3);
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return packet.packetId === first.packetId
+        ? { status: "rejected", reason: "test refusal" }
+        : { status: "ready", record: {} as never };
+    });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete",
+      delivered: 1,
+      skipped: [{
+        jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: first.packetId, packets: 3, reason: "test refusal",
+      }],
+    });
+    expect(calls).toEqual([first.packetId, fixture.packet.packetId]);
+    expect(calls).not.toContain(second.packetId);
+    expect(calls).not.toContain(third.packetId);
+    fixture.transport.stop();
+  });
+
+  test("re-review: at the cap, recovery stops instead of skipping a large packet", async () => {
+    const probe = await inboundReceiver();
+    probe.transport.stop();
+    const offer = probe.packet;
+    if (offer.kind !== "turn") throw new Error("expected a turn packet");
+    const sequence = offer.message.sequence;
+    const turn = (step: number) =>
+      offerVariant(offer, { jobId: OTHER_JOB_ID, sequence: sequence + step });
+    const small = turn(0);
+    const large = offerVariant(
+      { ...offer, message: { ...offer.message, signature: "s".repeat(4096) } },
+      { jobId: OTHER_JOB_ID, sequence: sequence + 1 },
+    );
+    const bytes = (material: Omit<BuyerPacket, "packetId">) => new TextEncoder().encode(canonicalize(
+      { ...material, packetId: rfqLifecyclePacketId(material) } as unknown as Record<string, unknown>,
+    )).byteLength;
+    // History is newest first: newest (small), large, oldest (small), the offer.
+    // The cap fits both small packets but not the newest with the large one.
+    const cap = bytes(turn(2)) + bytes(small);
+    expect(bytes(large)).toBeGreaterThan(bytes(small));
+    const fixture = await inboundReceiver({ inboundRecoveryMaxBytes: cap });
+    const oldest = await storeBuyerPacket(fixture, small, 1);
+    const middle = await storeBuyerPacket(fixture, large, 2);
+    const newest = await storeBuyerPacket(fixture, turn(2), 3);
+    fixture.transport.stop();
+    const calls: string[] = [];
+    fixture.transport.start(async (packet) => {
+      calls.push(packet.packetId);
+      return { status: "ready", record: {} as never };
+    });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "indeterminate",
+      delivered: 1,
+      skipped: [],
+      reason: "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended",
+    });
+    // Nothing older than the cut is delivered, so the job gets no hole.
+    expect(calls).toEqual([newest.packetId]);
+    expect(calls).not.toContain(oldest.packetId);
+    expect(calls).not.toContain(middle.packetId);
+    fixture.transport.stop();
+  });
 });
