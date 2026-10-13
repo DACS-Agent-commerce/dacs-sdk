@@ -3456,7 +3456,9 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
       skipped: [],
       reason: "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended",
     });
-    // Nothing older than the cut is delivered, so the job gets no hole.
+    // Recovery stops at the cut rather than skip the large packet: the newest
+    // packet is delivered, the two older ones are not read, and the call is
+    // indeterminate, so the job's earlier packets are still missing.
     expect(calls).toEqual([newest.packetId]);
     expect(calls).not.toContain(oldest.packetId);
     expect(calls).not.toContain(middle.packetId);
