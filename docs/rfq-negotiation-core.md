@@ -334,12 +334,21 @@ stores, queries and delivers `from`/`to` keys lower-cased with any `0x`
 removed (`src/features/l2ps-messaging/keys.ts:13-16`), and registers only hex
 keys of at least 64 digits. The transport captures `localPeerKey`, every key
 returned by `peerForClaim`, and every inbound and history key in that form, and
-calls `claimForPeer` only with canonical keys. A `claimForPeer` that knows only
-`0x` or upper-case keys fails the reciprocal check, so the first send to that
-claim is `rejected`, a terminal transport failure for the job. The transport
-cannot check the mapping when it is constructed, because it does not know the
-remote claims; check it before going live. A key that is not hex of at least
-64 digits once `0x` is removed is refused. The route in the AES-GCM
+calls `claimForPeer` only with canonical keys. A mapping that returns
+`undefined` (or `null`), like one that throws, has no answer yet, for example
+a directory that has not loaded after a restart. `publish` and `reconcile`
+then return `indeterminate`, nothing is sent, and `resumeOutbox()` retries once
+the mapping answers. A `claimForPeer` that knows only `0x` or upper-case keys
+returns nothing for the canonical key, so sends to that claim stay
+`indeterminate` and are never sent. Only a wrong answer refuses a packet: a
+value that is not a hex key, the local key, or a key that `claimForPeer` maps
+to a different claim. Even then, `publish` returns `rejected` (a terminal
+transport failure for the job) only if this transport never stored a frame for
+the packet, and so never sent it; otherwise it, like `reconcile`, stays
+`indeterminate`, because the packet may already have been delivered. The
+transport cannot check the mapping when it is constructed, because it does not
+know the remote claims; check it before going live. A key that is not hex of at
+least 64 digits once `0x` is removed is refused. The route in the AES-GCM
 authenticated data and in the send outbox entry also uses the canonical keys. No signed bytes change, because
 packets carry claims, not peer keys. A caller who passed `0x` or upper-case
 keys to an earlier build of this unreleased transport sealed frames under the

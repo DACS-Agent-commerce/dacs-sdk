@@ -3174,4 +3174,93 @@ describe("Demos L2PS RFQ final review fixes", () => {
         });
     }
   });
+
+  /** A buyer transport over `hub` whose mapping options the caller supplies. */
+  function mappedBuyerTransport(
+    hub: FakeL2psHub,
+    mapping: Pick<DemosL2psRfqTransportOptions, "peerForClaim" | "claimForPeer">,
+    outboxStore = memorySendOutbox(),
+  ) {
+    return createDemosL2psRfqTransport<string>({
+      peer: hub.peer(BUYER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore,
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      ...mapping,
+      onError: vi.fn(),
+    });
+  }
+
+  test.each([
+    { side: "peerForClaim", answer: undefined, reason: "Demos L2PS RFQ peer mapping has no key for the claim yet" },
+    { side: "peerForClaim", answer: null, reason: "Demos L2PS RFQ peer mapping has no key for the claim yet" },
+    { side: "claimForPeer", answer: undefined, reason: "Demos L2PS RFQ reciprocal claim mapping has no claim for the peer yet" },
+    { side: "claimForPeer", answer: null, reason: "Demos L2PS RFQ reciprocal claim mapping has no claim for the peer yet" },
+  ] as const)("final: $side answering $answer before it loads is retried, not a job failure", async ({ side, answer, reason }) => {
+    const hub = new FakeL2psHub();
+    let loaded = false;
+    const transport = mappedBuyerTransport(hub, {
+      peerForClaim: (claim) => (side === "peerForClaim" && !loaded ? answer as never : peerForClaim(claim)),
+      claimForPeer: (peerKey) => (side === "claimForPeer" && !loaded ? answer as never : claimForPeer(peerKey)),
+    });
+    const client = createDurableRfqLifecycleClient(clientOptions("buyer", transport, durableReservation()));
+    await client.open(openInput());
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate", reason });
+    expect(hub.sends).toBe(0);
+    loaded = true;
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(hub.sends).toBe(1);
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record did not load");
+    expect(status.record.failure).toBeUndefined();
+    expect(status.record.outbox[0]).toMatchObject({ state: "acknowledged" });
+  });
+
+  test("final: a wrong mapping refuses only a packet this transport never sent", async () => {
+    const hub = new FakeL2psHub();
+    const outboxStore = memorySendOutbox();
+    let wrong = false;
+    const mapping = {
+      peerForClaim,
+      // Once wrong, the seller's key maps back to another claim.
+      claimForPeer: (peerKey: string) =>
+        (wrong && peerKey === SELLER_PEER ? "did:demos:someone-else" : claimForPeer(peerKey)),
+    };
+    const transport = mappedBuyerTransport(hub, mapping, outboxStore);
+    const client = createDurableRfqLifecycleClient(clientOptions("buyer", transport, durableReservation()));
+    await client.open(openInput());
+    hub.loseNextResponse = true;
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    const sent = await client.getStatus(JOB_ID);
+    if (sent.status !== "ok") throw new Error("record did not load");
+    const packet = sent.record.outbox[0]!.packet;
+    wrong = true;
+    // The frame was sent and may have been delivered: never terminal.
+    const reason = "Demos L2PS RFQ peer/claim mapping is not reciprocal";
+    await expect(transport.publish(packet)).resolves.toEqual({ disposition: "indeterminate", reason });
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "indeterminate", reason });
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate", reason });
+    const after = await client.getStatus(JOB_ID);
+    if (after.status !== "ok") throw new Error("record did not load");
+    expect(after.record.failure).toBeUndefined();
+    expect(hub.sends).toBe(1);
+    // With no stored frame the same packet was never sent, so it is refused,
+    // unless the store cannot say.
+    await expect(mappedBuyerTransport(hub, mapping).publish(packet))
+      .resolves.toEqual({ disposition: "rejected", reason });
+    await expect(mappedBuyerTransport(hub, mapping, {
+      load: () => { throw new Error("outbox unavailable"); },
+      save: () => false,
+    }).publish(packet)).resolves.toEqual({ disposition: "indeterminate", reason });
+    expect(hub.sends).toBe(1);
+  });
 });

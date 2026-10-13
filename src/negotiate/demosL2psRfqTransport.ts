@@ -270,9 +270,18 @@ export interface DemosL2psRfqTransportOptions {
    * peer key in the node's canonical form: lower-case hex without 0x.
    */
   localPeerKey: string;
-  /** May return any accepted key form; the result is canonicalized. */
+  /**
+   * May return any accepted key form; the result is canonicalized. Returning
+   * undefined, like throwing, means the mapping cannot answer yet: the send
+   * or reconcile stays indeterminate and is retried. Only a wrong answer (not
+   * a hex key, the local key, or a key that claimForPeer maps to another
+   * claim) refuses a packet, and only one this transport never sent.
+   */
   peerForClaim(claim: string): string | undefined;
-  /** Always called with a canonical key (lower-case hex, no 0x). */
+  /**
+   * Always called with a canonical key (lower-case hex, no 0x). Undefined, like
+   * a throw, is retried, as for peerForClaim.
+   */
   claimForPeer(peerKey: string): string | undefined;
   onError(error: Error): void;
   /**
@@ -1158,6 +1167,12 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     }
   }
 
+  /**
+   * A mapping that throws or has no answer yet (undefined or null, for
+   * example a directory not loaded after a restart) is transient. Only a
+   * wrong answer is a DacsError: not a hex key, the local key, or a key
+   * whose claim is another one.
+   */
   function remotePeer(claim: string): string {
     let value: string | undefined;
     try {
@@ -1166,6 +1181,11 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       throw new TransientTransportCapabilityError(
         "Demos L2PS RFQ peer mapping failed",
         { cause },
+      );
+    }
+    if (value === undefined || value === null) {
+      throw new TransientTransportCapabilityError(
+        "Demos L2PS RFQ peer mapping has no key for the claim yet",
       );
     }
     const peerKey = capturePeerKey(value, "resolved peer key");
@@ -1179,6 +1199,11 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       throw new TransientTransportCapabilityError(
         "Demos L2PS RFQ reciprocal claim mapping failed",
         { cause },
+      );
+    }
+    if (reciprocalClaim === undefined || reciprocalClaim === null) {
+      throw new TransientTransportCapabilityError(
+        "Demos L2PS RFQ reciprocal claim mapping has no claim for the peer yet",
       );
     }
     if (reciprocalClaim !== claim) {
@@ -1344,11 +1369,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     try {
       prepared = routePacket(candidate);
     } catch (cause) {
+      // A packet under reconciliation may already have been delivered, so
+      // no routing failure here is terminal; a mapping fixed later settles it.
       return {
-        disposition:
-          cause instanceof TransientTransportCapabilityError
-            ? "indeterminate"
-            : "rejected",
+        disposition: "indeterminate",
         reason: errorFrom(cause, "RFQ packet failed").message,
       };
     }
@@ -1783,6 +1807,33 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       : { status: "indeterminate", delivered, skipped, reason: uncertainReason };
   }
 
+  /**
+   * A definite routing refusal is terminal only for a packet this transport
+   * never sent. The pre-send outbox write always precedes the peer call, so
+   * a packet with no stored entry never reached the peer. A stored entry, or
+   * a store that cannot answer, keeps the refusal indeterminate.
+   */
+  async function routingRefusal(
+    candidate: unknown,
+    reason: string,
+  ): Promise<{ disposition: "rejected" | "indeterminate"; reason: string }> {
+    let packetId: string;
+    try {
+      packetId = parseRfqLifecyclePacket<TSignature>(candidate).packetId;
+    } catch {
+      // A packet that does not parse is never encoded, so never sent.
+      return { disposition: "rejected", reason };
+    }
+    try {
+      const stored = await withPacketLock(packetId, () =>
+        bounded(() => captured.load(packetId), "Demos L2PS RFQ send outbox read"));
+      if (stored === undefined) return { disposition: "rejected", reason };
+    } catch {
+      // The store cannot say whether a frame was sent.
+    }
+    return { disposition: "indeterminate", reason };
+  }
+
   async function publishRouted(
     routed: ReturnType<typeof routePacket>,
   ): Promise<Exclude<RfqLifecycleTransportResult, { disposition: "absent" }>> {
@@ -1884,13 +1935,10 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       try {
         routed = routePacket(candidate);
       } catch (cause) {
-        return {
-          disposition:
-            cause instanceof TransientTransportCapabilityError
-              ? "indeterminate" as const
-              : "rejected" as const,
-          reason: errorFrom(cause, "Demos L2PS RFQ packet preparation failed").message,
-        };
+        const reason = errorFrom(cause, "Demos L2PS RFQ packet preparation failed").message;
+        return cause instanceof TransientTransportCapabilityError
+          ? { disposition: "indeterminate", reason }
+          : routingRefusal(candidate, reason);
       }
       // One publish per packet at a time in this process, so a concurrent
       // enqueueTurn publish and resumeOutbox cannot both seal a frame.
