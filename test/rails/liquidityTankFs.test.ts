@@ -298,6 +298,85 @@ describe("createFsLiquidityTankStore", () => {
     expect(new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash)).size).toBe(1);
   });
 
+  describe("a contradicted lock across a restart", () => {
+    const emptyAt = (observedAt: number): LiquidityTankObservation => ({
+      status: "empty", bridgeId: BRIDGE_ID, operationHash: intent.operationHash, history: ["empty"], observedAt,
+      authenticationHash: "a".repeat(64),
+    });
+    /** Locks the phase (checkpoint observed at T0 + 10); each call opens a new store instance, as a restart would. */
+    async function locked(dir: string) {
+      const phase = { now: T0, observation: emptyAt(T0) };
+      const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
+        const { submissionHash: _hash, ...unsigned } = submission();
+        return unsigned;
+      });
+      const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async () => {
+        phase.observation = lockedPending();
+      });
+      const adapter: LiquidityTankAdapter = { prepareSubmission, broadcastRetained, observe: async () => phase.observation };
+      const run = async (owner: string) => advanceLiquidityTankSettlement({
+        authority: authority(), owner, store: await createFsLiquidityTankStore({ dir }), adapter,
+        verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+        now: () => phase.now, leaseDurationMs: 1_000,
+      });
+      await expect(run("locker")).resolves.toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased" });
+      return { phase, run, prepareSubmission, broadcastRetained };
+    }
+
+    test("a read no later than the checkpoint never expires the lock, and its timely completion then settles", async () => {
+      const dir = await freshDir();
+      const { phase, run, prepareSubmission, broadcastRetained } = await locked(dir);
+      phase.now = DEADLINE;
+      for (const stamp of [T0 + 5, T0 + 10]) {
+        phase.observation = emptyAt(stamp);
+        await expect(run(`stale-${stamp}`)).resolves.toMatchObject({
+          status: "settle-asymmetric", reason: "lock-contradicted", bridgeStatus: "conflicting", pastDeadline: true,
+        });
+        phase.now += 1_000;
+      }
+      // A restarted store still holds the open lock, and refuses the same evidence written directly.
+      const { claimed, write } = await acquire(await createFsLiquidityTankStore({ dir }), "direct", DEADLINE + 2_000);
+      expect(claimed.observation).toEqual(lockedPending());
+      await expect((await createFsLiquidityTankStore({ dir })).recordRecoveryExpired({
+        ...write, expectedObservation: lockedPending(),
+        observation: { status: "contradicted-after-lock", checkpoint: lockedPending(), contradiction: emptyAt(T0 + 10) } as never,
+      })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" });
+      phase.observation = {
+        status: "completed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+        history: ["empty", "pending", "completed"], observedAt: DEADLINE - 1, finalityObservedAt: DEADLINE - 1,
+        recoveryDeadline: DEADLINE, authenticationHash: "a".repeat(64),
+        lockTxHash: "fs-source-lock-tx", releaseTxHash: "fs-release-tx",
+      };
+      phase.now = DEADLINE + 5_000;
+      await expect(run("settler")).resolves.toMatchObject({
+        status: "settled", settlement: { txRef: { lockTxHash: "fs-source-lock-tx", releaseTxHash: "fs-release-tx" } },
+      });
+      expect(prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test("a read after the checkpoint expires the lock, and a restarted store replays the expiry", async () => {
+      const dir = await freshDir();
+      const { phase, run, broadcastRetained } = await locked(dir);
+      const expired = {
+        status: "failed", errorClass: "failed-substrate", reason: "tank-lock-contradicted-recovery-expired",
+        reputationNeutral: true,
+      };
+      phase.observation = emptyAt(T0 + 11);
+      phase.now = DEADLINE;
+      await expect(run("expirer")).resolves.toEqual(expired);
+      await expect((await createFsLiquidityTankStore({ dir })).claim({
+        intent, owner: "inspector", now: DEADLINE + 2_000, leaseDurationMs: 1_000,
+      })).resolves.toMatchObject({
+        status: "recovery-expired",
+        observation: { status: "contradicted-after-lock", checkpoint: lockedPending(), contradiction: emptyAt(T0 + 11) },
+      });
+      phase.now = DEADLINE + 5_000;
+      await expect(run("replayer")).resolves.toEqual(expired);
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test("each row write fsyncs a temporary, renames it over the row and fsyncs the directory before it returns", async () => {
     const dir = await freshDir();
     const store = await createFsLiquidityTankStore({ dir });

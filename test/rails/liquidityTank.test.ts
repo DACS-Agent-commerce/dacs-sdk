@@ -6738,3 +6738,218 @@ describe("final review, round 3", () => {
     });
   });
 });
+
+describe("final review, round 4", () => {
+  describe("a contradiction expires the lock only when observed after the checkpoint", () => {
+    // `lockDurably` records the checkpoint observed at 2_000.
+    const CHECKPOINT_OBSERVED_AT = 2_000;
+    const LOCK_CONTRADICTED = {
+      status: "settle-asymmetric", reason: "lock-contradicted", bridgeStatus: "conflicting", pastDeadline: true,
+      recoveryDeadline: RECOVERY_DEADLINE_MS,
+    } as const;
+    const OTHER_DEADLINE = RECOVERY_DEADLINE_MS + 600_000;
+    const otherRelease = (finalityObservedAt: number) => ({
+      ...CONTRADICTED_EXPIRY,
+      txRef: {
+        kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+        lockTxHash: "another-lock-tx", releaseTxHash: "another-release-tx", recoveryDeadline: OTHER_DEADLINE,
+      },
+      finalityObservedAt,
+    });
+    /** Every kind of read that contradicts the checkpoint and is not a live pending, observed at `observedAt`. */
+    const CONTRADICTIONS: readonly [string, (operationHash: string, observedAt: number) => LiquidityTankObservation][] = [
+      ["empty", (operationHash, observedAt) => emptyAt(operationHash, observedAt)],
+      ["capacity-unavailable", (operationHash, observedAt) =>
+        ({ ...emptyAt(operationHash, observedAt), status: "capacity-unavailable", reason: "no capacity" }) as LiquidityTankObservation],
+      ["failed without a lock", (operationHash, observedAt) =>
+        ({ ...emptyAt(operationHash, observedAt), status: "failed", history: ["empty", "failed"], reason: "rejected" }) as LiquidityTankObservation],
+      ["failed of another lock", (operationHash, observedAt) =>
+        ({ ...failedAfterLock(operationHash, observedAt), lockTxHash: "another-lock-tx" })],
+      ["completion of another lock", (operationHash, observedAt) => ({
+        ...completed(operationHash, observedAt, OTHER_DEADLINE), observedAt,
+        lockTxHash: "another-lock-tx", releaseTxHash: "another-release-tx",
+      })],
+      ["pending of another lock past its own deadline", (operationHash, observedAt) =>
+        ({ ...pending(operationHash, true, 1_500, observedAt), lockTxHash: "another-lock-tx" })],
+    ];
+
+    test.each(CONTRADICTIONS.flatMap(([kind, read]) =>
+      [1_500, CHECKPOINT_OBSERVED_AT].map((observedAt) => [kind, observedAt, read] as const)))(
+      "a %s observed at %d, not after the checkpoint, never expires the lock, whatever the host clock",
+      async (_kind, observedAt, read) => {
+        const h = harness();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const expire = vi.spyOn(store, "recordRecoveryExpired");
+        const run = await lockDurably(store, h);
+        h.setObservation(read(h.operationHash, observedAt));
+        for (const at of [RECOVERY_DEADLINE_MS, RECOVERY_DEADLINE_MS + 86_400_000]) {
+          run.setClock(at);
+          await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: `stale-${at}` }))
+            .resolves.toEqual({ ...LOCK_CONTRADICTED, txRef: expect.objectContaining({ lockTxHash: "source-lock-tx" }) });
+        }
+        expect(expire).not.toHaveBeenCalled();
+        // The lock is still open: its timely completion settles it.
+        h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS - 1));
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
+          status: "settled", settlement: { txRef: { lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx" } },
+        });
+        expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      },
+    );
+
+    test.each(CONTRADICTIONS)(
+      "a %s observed one millisecond after the checkpoint expires the lock once the host clock reaches the deadline",
+      async (kind, read) => {
+        const h = harness();
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const expire = vi.spyOn(store, "recordRecoveryExpired");
+        const run = await lockDurably(store, h);
+        h.setObservation(read(h.operationHash, CHECKPOINT_OBSERVED_AT + 1));
+        run.setClock(RECOVERY_DEADLINE_MS);
+        const expired = kind === "completion of another lock"
+          ? otherRelease(CHECKPOINT_OBSERVED_AT + 1)
+          : CONTRADICTED_EXPIRY;
+        await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "fresh" })).resolves.toEqual(expired);
+        expect(expire).toHaveBeenCalledTimes(1);
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual(expired);
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      },
+    );
+
+    test("M1/M2: a cached empty older than the lock, read at D by a host clock ahead of the bridge, leaves the lock to its timely release", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      const run = await lockDurably(store, h);
+      // The host clock reads D while the bridge is two minutes behind it, and a
+      // replica serves an empty snapshot stamped before the lock was observed.
+      h.setObservation(emptyAt(h.operationHash, 1_500));
+      run.setClock(RECOVERY_DEADLINE_MS);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "fast-clock" }))
+        .resolves.toMatchObject(LOCK_CONTRADICTED);
+      expect(expire).not.toHaveBeenCalled();
+      // The release lands inside the window by the bridge's time.
+      h.setObservation({ ...completed(h.operationHash, RECOVERY_DEADLINE_MS - 30_000), observedAt: RECOVERY_DEADLINE_MS - 30_000 });
+      run.setClock(RECOVERY_DEADLINE_MS + 1);
+      const settled = {
+        status: "settled",
+        settlement: {
+          txRef: {
+            kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+            lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx", recoveryDeadline: RECOVERY_DEADLINE_MS,
+          },
+          paymentAmount: { amount: "1.25", currency: "USDC" },
+          settlementFinality: { model: "liquidity-tank", finalityObservedAt: RECOVERY_DEADLINE_MS - 30_000 },
+          authenticationHash: AUTH_HASH,
+        },
+      };
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "later" })).resolves.toEqual(settled);
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual(settled);
+      expect(expire).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("a worker whose clock runs ahead cannot expire a live lock on a cached read, so a host never pays twice", async () => {
+      // Daybreak's scenario: two workers share the store; one clock is in step
+      // with the bridge, the other two minutes ahead. A replica serves an empty
+      // snapshot older than the lock, and the lock then releases in time.
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const expire = vi.spyOn(store, "recordRecoveryExpired");
+      const run = await lockDurably(store, h);
+      let bridgeTime = RECOVERY_DEADLINE_MS - 120_000;
+      const inStep = { ...run.shared, owner: "in-step", now: () => bridgeTime };
+      const ahead = { ...run.shared, owner: "ahead", now: () => bridgeTime + 120_000 };
+      // A host that reads any terminal `failed` as unpaid and pays the phase again.
+      let replacementPayments = 0;
+      const host = async (input: AdvanceLiquidityTankInput) => {
+        const progress = await advanceLiquidityTankSettlement(input);
+        if (progress.status === "failed") replacementPayments += 1;
+        return progress;
+      };
+      h.setObservation(emptyAt(h.operationHash, 1_500));
+      await expect(host(inStep)).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased", bridgeStatus: "conflicting", pastDeadline: false,
+      });
+      bridgeTime += 1;
+      await expect(host(ahead)).resolves.toMatchObject(LOCK_CONTRADICTED);
+      // The store refuses the same evidence written directly at the fast clock.
+      const intent = createLiquidityTankIntent(authority());
+      bridgeTime += 1;
+      const claim = await store.claim({ intent, owner: "direct", now: bridgeTime + 120_000, leaseDurationMs: 1 });
+      if (claim.status !== "acquired" || claim.observation?.status !== "pending") throw new Error("expected lock");
+      const checkpoint = claim.observation as Extract<LiquidityTankRecoveryEvidence, { status: "pending" }>;
+      await expect(store.recordRecoveryExpired({
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash, owner: "direct",
+        generation: claim.lease.generation, now: bridgeTime + 120_000, expectedObservation: checkpoint,
+        observation: { status: "contradicted-after-lock", checkpoint, contradiction: emptyAt(h.operationHash, 1_500) } as
+          LiquidityTankRecoveryEvidence,
+      })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" });
+      expect(expire).toHaveBeenCalledTimes(1);
+      // The release lands at D - 30 s by the bridge's time.
+      bridgeTime = RECOVERY_DEADLINE_MS - 30_000;
+      h.setObservation({ ...completed(h.operationHash, bridgeTime), observedAt: bridgeTime });
+      bridgeTime += 1;
+      await expect(host(ahead)).resolves.toMatchObject({
+        status: "settled", settlement: { txRef: { lockTxHash: "source-lock-tx", releaseTxHash: "destination-release-tx" } },
+      });
+      bridgeTime += 200_000;
+      await expect(host(inStep)).resolves.toMatchObject({ status: "settled" });
+      expect(replacementPayments).toBe(0);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("a claim that replays an expiry committed on a read not after the checkpoint refuses it, and never signs or broadcasts", async () => {
+      // Such a row is what the round-4 rule committed; a replay re-checks it.
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const run = await lockDurably(store, h);
+      h.setObservation(emptyAt(h.operationHash, CHECKPOINT_OBSERVED_AT + 1));
+      run.setClock(RECOVERY_DEADLINE_MS);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expire" })).resolves.toEqual(CONTRADICTED_EXPIRY);
+      let restamp: number | undefined;
+      const claim = store.claim.bind(store);
+      store.claim = async (input) => {
+        const claimed = await claim(input);
+        if (claimed.status !== "recovery-expired" || restamp === undefined) return claimed;
+        const evidence = claimed.observation as Extract<LiquidityTankRecoveryEvidence, { status: "contradicted-after-lock" }>;
+        return { ...claimed, observation: { ...evidence, contradiction: { ...evidence.contradiction, observedAt: restamp } } };
+      };
+      h.observe.mockClear();
+      for (const stamp of [CHECKPOINT_OBSERVED_AT, 1_500]) {
+        restamp = stamp;
+        await expect(advanceLiquidityTankSettlement(run.nextOwner()))
+          .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt" });
+      }
+      restamp = undefined;
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual(CONTRADICTED_EXPIRY);
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("the store refuses a contradiction observed at or before the checkpoint, and records one after it", async () => {
+      const h = harness();
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      await lockDurably(store, h);
+      const intent = createLiquidityTankIntent(authority());
+      const claim = await store.claim({ intent, owner: "cas", now: RECOVERY_DEADLINE_MS, leaseDurationMs: 86_400_000 });
+      if (claim.status !== "acquired" || claim.observation?.status !== "pending") throw new Error("expected lock");
+      const checkpoint = claim.observation as Extract<LiquidityTankRecoveryEvidence, { status: "pending" }>;
+      // However far past the deadline the store clock is.
+      const write = (observedAt: number) => store.recordRecoveryExpired({
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash, owner: "cas",
+        generation: claim.lease.generation, now: RECOVERY_DEADLINE_MS + 86_400_000 - 1, expectedObservation: checkpoint,
+        observation: { status: "contradicted-after-lock", checkpoint, contradiction: emptyAt(h.operationHash, observedAt) } as
+          LiquidityTankRecoveryEvidence,
+      });
+      for (const observedAt of [1_500, CHECKPOINT_OBSERVED_AT]) {
+        await expect(write(observedAt))
+          .resolves.toEqual({ status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" });
+      }
+      await expect(write(CHECKPOINT_OBSERVED_AT + 1)).resolves.toEqual({ status: "recorded" });
+    });
+  });
+});
