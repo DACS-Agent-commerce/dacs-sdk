@@ -389,9 +389,19 @@ if the chain has changed. The reasons are:
   cache, and supplies them on the next call. It discards no salt: this session,
   and with a reused salt the other session too, may still need it.
 
+A call whose `owner`, `leaseDurationMs`, authority or hashlock deriver is
+unusable (an owner that is not a non-empty string, a lease that is not a
+positive safe integer, an
+authority that does not validate, such as a jobId that is not a canonical
+uppercase ULID, or a deriver that throws) cannot name a session, so it says
+nothing about whether one exists. It returns the resumable `indeterminate`
+with reason `htlc-call-input-invalid`, which `htlcNeedsOperator` pages, before
+the store or the adapter is called. A live session is untouched: the next call
+with corrected input drives it on. `createCrossChainHtlcIntent` with the same
+authority, salt and deriver throws the validation error.
+
 `failed` means there is nothing left for the core to drive. It is returned
-only when: the call's `owner`, `leaseDurationMs`, authority or hashlock
-deriver is unusable, so no session can be read with it; the store's record is
+only when: the store's record is
 corrupt (reported so by `claim`, or a retained action, history or checkpoint
 that fails validation, such as an expiry that overflows in milliseconds) or
 the store lacks a required method; retained evidence and a new observation
@@ -755,6 +765,9 @@ refund is not isolated from the payee's side for such an adapter.
     (normally recorded from `observeSourceLeg`), an adapter fault; nothing
     moves forward until `observe` reports the checkpointed facts, but the
     payer's source refund is still driven on the source leg at its expiry;
+  - `indeterminate` with reason `htlc-call-input-invalid`: the call's owner,
+    lease, authority or hashlock deriver is unusable, a host error; correct
+    the input and call again, keeping the salt;
   - `failed`: there is nothing left to drive and the record needs
     reconciling; keep the salt until the operator has done so.
 - Every other `waiting` and `indeterminate` result is retried by advancing

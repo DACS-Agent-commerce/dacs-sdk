@@ -623,7 +623,8 @@ export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): b
       return progress.reason === "htlc-destination-claim-unresolved-after-cutoff" ||
         progress.reason === "htlc-destination-claim-unresolved-after-expiry";
     case "indeterminate":
-      return progress.reason === "htlc-source-observers-disagree";
+      return progress.reason === "htlc-source-observers-disagree" ||
+        progress.reason === "htlc-call-input-invalid";
     default:
       return false;
   }
@@ -1467,6 +1468,13 @@ export async function advanceCrossChainHtlc(
   const prepareAdapterAction = adapter.prepareAction.bind(adapter);
   const broadcastAdapterAction = adapter.broadcastRetained.bind(adapter);
   const now = input.now ?? Date.now;
+  // Input that cannot even name a session (an unusable owner, lease,
+  // authority or hashlock deriver) says nothing about whether one exists:
+  // a live session may still need driving with corrected input, so this is
+  // never `failed`, which would tell the host the session and its salt can
+  // go. The host pages and retries with corrected input; nothing is read or
+  // moved until then.
+  const inputInvalid: CrossChainHtlcProgress = { status: "indeterminate", reason: "htlc-call-input-invalid" };
   let owner: string;
   let leaseDurationMs: number;
   try {
@@ -1476,8 +1484,8 @@ export async function advanceCrossChainHtlc(
       "leaseDurationMs",
       true,
     );
-  } catch (error) {
-    return { status: "failed", errorClass: "permanent", reason: String(error) };
+  } catch {
+    return inputInvalid;
   }
   const readNow = (): number => requireUInt(now(), "clock");
   // A missing or different salt is a host error the host can correct, not the
@@ -1493,12 +1501,8 @@ export async function advanceCrossChainHtlc(
   }>;
   try {
     created = createCrossChainHtlcIntent(input.authority, input.buyerSalt, input.hashlocks);
-  } catch (error) {
-    return {
-      status: "failed",
-      errorClass: "permanent",
-      reason: error instanceof Error ? error.message : "htlc-authority-invalid",
-    };
+  } catch {
+    return inputInvalid;
   }
   const { intent, secrets } = created;
   let claimed: HtlcStoreClaim;

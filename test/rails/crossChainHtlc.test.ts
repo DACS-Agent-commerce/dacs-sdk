@@ -448,12 +448,14 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     ["destination token id", { destinationTokenId: undefined }],
     ["source precision", { amount: "1.0000001" }],
   ])("rejects invalid %s before effects", async (_name, override) => {
+    expect(() => createCrossChainHtlcIntent(authority(override as never), SALT, hashlocks)).toThrow();
     const h = harness();
     const result = await advanceCrossChainHtlc(runner({
       authority: authority(override as never),
       adapter: h.adapter,
     }).shared);
-    expect(result).toMatchObject({ status: "failed", errorClass: "permanent" });
+    expect(result).toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
+    expect(htlcNeedsOperator(result)).toBe(true);
     expect(h.prepareAction).not.toHaveBeenCalled();
   });
 
@@ -496,11 +498,7 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
       adapter: h.adapter,
     }).shared);
 
-    expect(result).toMatchObject({
-      status: "failed",
-      errorClass: "permanent",
-      reason: "jobId must be a canonical uppercase ULID",
-    });
+    expect(result).toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
     expect(deriveHashlock).not.toHaveBeenCalled();
     expect(claim).not.toHaveBeenCalled();
     expect(h.observe).not.toHaveBeenCalled();
@@ -3872,9 +3870,42 @@ describe("advanceCrossChainHtlc", () => {
         leaseDurationMs,
         store: { ...base, claim },
         adapter: h.adapter,
-      }).shared)).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      }).shared)).resolves.toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
       expect(claim).not.toHaveBeenCalled();
       expect(h.prepareAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ["an empty owner", { owner: "" }],
+    ["an invalid lease duration", { leaseDurationMs: 0 }],
+    ["a non-canonical authority spelling", { authority: authority({ jobId: JOB_ID.toLowerCase() }) }],
+    ["a hashlock deriver that throws", {
+      hashlocks: { deriveHashlock: () => { throw new Error("hashlock service unavailable"); } },
+    }],
+  ] as const)(
+    "keeps a live session resumable, and pages, when one call has %s",
+    async (_name, override) => {
+      const h = harness({ sourceExpiry: 1_700 });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      const calls = () => [
+        h.observe.mock.calls.length,
+        h.observeSourceLeg.mock.calls.length,
+        h.prepareAction.mock.calls.length,
+        h.broadcastRetained.mock.calls.length,
+      ];
+      const before = calls();
+      const progress = await advanceCrossChainHtlc({ ...run.nextOwner(), ...override });
+      expect(progress).toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
+      expect(htlcNeedsOperator(progress)).toBe(true);
+      expect(calls()).toEqual(before);
+      // The corrected call drives the same session on.
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "waiting",
+        reason: "htlc-destination-lock-finality-pending",
+      });
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
     },
   );
 
