@@ -16,9 +16,9 @@ dependency the tree already had, is treated by where the run comes from:
   requests too (exit 3), as CI fails on any direct high/critical advisory.
 - Everywhere else it fails closed (exit 3), and the error names it: the
   scheduled drift workflow, manual runs, and any release or publication path
-  that runs this acceptance or its disposition. `Publish npm prerelease` runs
-  this acceptance with drift enforced as a job its publish job needs, so an
-  unlisted ID stops publication. Failing closed is the default; only the
+  that runs this acceptance or its disposition. `Publish gated npm prerelease`
+  runs this acceptance with drift enforced as a job its publish job needs, so
+  an unlisted ID stops publication. Failing closed is the default; only the
   pull-request job sets `DACS_UNLISTED_ADVISORIES=warn`, and never when a
   caller enforces drift.
 
@@ -34,7 +34,10 @@ closed.
 #191 is resolved: an observed ID recorded there, with `assessment` naming where
 its reachability assessment is written, does not block. It is empty today.
 An assessment cannot accept an advisory that npm reports at high or critical
-severity on a direct dependency of the consumer; that blocks (exit 3).
+severity on a direct dependency of the consumer, and neither can this baseline:
+listed or assessed, such an advisory blocks (exit 3). A baseline-only exit 4
+lets a prerelease publish, so the baseline only ever waives transitive
+findings.
 
 The job runs only for pull requests that change a path in its
 `pull_request.paths` filter, so it must not be a required status check in

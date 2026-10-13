@@ -313,7 +313,7 @@ describe("registry/container workflow wiring", () => {
   // Daybreak r9 P2: prerelease publication never ran the advisory gate, so an
   // advisory published after the baseline could not stop it.
   it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
-    const publish = join(repoRoot, ".github/workflows/publish-prerelease.yml");
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
     expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
     expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish"]);
     const gate = workflowJob(publish, "registry-container-acceptance");
@@ -323,7 +323,7 @@ describe("registry/container workflow wiring", () => {
     expect(job.steps).toContain("node scripts/publish-release-set.mjs");
     // No job-level `if:`: always(), failure() or !cancelled() there would run
     // the publish job after the acceptance job failed.
-    expect(job).toMatchObject({ needs: "registry-container-acceptance", environment: "npm-prerelease",
+    expect(job).toMatchObject({ needs: "registry-container-acceptance", environment: "npm-prerelease-gated",
       permissions: "\ncontents: read\nid-token: write" });
     expect(job).not.toHaveProperty("if");
     // The OIDC permission is the publish job's alone; the called acceptance
@@ -333,6 +333,42 @@ describe("registry/container workflow wiring", () => {
     expect(/\npermissions:\n((?: {2}.+\n)+)/.exec(workflow)?.[1]).toBe("  contents: read\n");
     expect(workflow).not.toMatch(/secrets: inherit/);
     expect(acceptance).not.toMatch(/continue-on-error|secrets\./);
+    // Code r10 P3-1: nor can the called side skip the acceptance. A skipped
+    // called job, or a skipped acceptance step before the drift step, would
+    // not run the gate at all; only the later steps run always().
+    expect(workflowBlockKeys(workflowPath, "jobs")).toEqual(["registry-container-consumer"]);
+    const called = workflowJob(workflowPath, "registry-container-consumer");
+    expect(Object.keys(called)).toEqual(["name", "runs-on", "timeout-minutes", "steps"]);
+    expect(called).not.toHaveProperty("if");
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+    expect(workflowStepCondition("Check advisory-ID drift")).toBe("always()");
+  });
+
+  // Daybreak r10 P2: a manual dispatch runs the workflow file at the selected
+  // ref, so an older tag still ran the ungated publish-prerelease.yml with the
+  // same environment. Publication credentials now belong to a workflow file and
+  // an environment that no older ref names.
+  it("keeps publication credentials to a gated workflow and environment no older ref names", () => {
+    const directory = join(repoRoot, ".github/workflows");
+    const gatedName = "publish-prerelease-gated.yml";
+    const files = readdirSync(directory).filter((name) => /\.ya?ml$/.test(name));
+    expect(files).not.toContain("publish-prerelease.yml");
+    expect(files).toContain(gatedName);
+    const gated = join(directory, gatedName);
+    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "registry-container-acceptance",
+      environment: "npm-prerelease-gated" });
+    expect(workflowJob(gated, "registry-container-acceptance"))
+      .toMatchObject({ uses: "./.github/workflows/registry-container-acceptance.yml", with: "\nenforce-audit-drift: true" });
+    const environments = (text: string) => [...text.matchAll(/^ +environment:(.*)$/gm)].map((match) => match[1]?.trim());
+    expect(environments(readFileSync(gated, "utf8"))).toEqual(["npm-prerelease-gated"]);
+    const publishes = /\bnpm publish\b|npm-publish|publish-release-set|release:set:publish/;
+    for (const name of files.filter((file) => file !== gatedName)) {
+      const text = readFileSync(join(directory, name), "utf8");
+      expect(text, name).not.toContain("npm-prerelease-gated");
+      expect(environments(text), name).not.toContain("npm-prerelease");
+      expect(text, name).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
+      expect(/id-token: *write/.test(text) && publishes.test(text), `${name} requests OIDC and publishes`).toBe(false);
+    }
   });
 
   it("cannot select the warn policy from a caller that enforces drift", () => {
@@ -360,14 +396,18 @@ describe("registry/container workflow wiring", () => {
     expect(runWorkflowStep(4, baselineOnlySummary(), true, undefined, "workflow_dispatch").status).toBe(0);
   });
 
-  it("requires code-owner review of the baseline, the scripts that decide it, and the workflows", () => {
+  it("requires code-owner review of the baseline, the scripts that decide it, and every workflow", () => {
     const owners = readFileSync(join(repoRoot, ".github/CODEOWNERS"), "utf8").split("\n");
-    for (const file of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
+    // The whole workflows directory, so a workflow added later is owned too, and
+    // the package script mapping and local publisher the acceptance runs.
+    for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
       "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
-      ".github/workflows/registry-container-acceptance.yml", ".github/workflows/registry-container-audit-drift.yml",
-      ".github/workflows/publish-prerelease.yml", ".github/CODEOWNERS"]) {
-      expect(owners).toContain(`/${file} @randomblocker`);
+      "scripts/publish-exact-local-registry.mjs", "package.json", ".github/workflows/", ".github/CODEOWNERS"]) {
+      expect(owners).toContain(`/${path} @randomblocker`);
     }
+    // A later, more specific pattern would replace the directory's owner.
+    const patterns = owners.filter((line) => line.trim() !== "" && !line.startsWith("#")).map((line) => line.split(/\s+/)[0]);
+    expect(patterns.filter((pattern) => pattern?.includes("workflows"))).toEqual(["/.github/workflows/"]);
   });
 });
 
@@ -753,6 +793,22 @@ describe("registry dependency allowlist", () => {
       .toEqual([{ location: "package.json", field: "dependencies.avsc", value: spec }]);
   });
 
+  // Daybreak r10 P3: a present map that was not a plain object was read as
+  // empty, so a spec inside it was never checked.
+  it.each([
+    ["an array", ["github:Irys-xyz/avsc#csp-fixes"]],
+    ["a string", "github:Irys-xyz/avsc#csp-fixes"],
+    ["null", null],
+  ])("rejects a dependency map that is %s, in the lock and the manifest", (_label, map) => {
+    const value = JSON.stringify(map);
+    for (const field of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
+      expect(violationsWith({ "node_modules/z": { ...registered("z"), [field]: map } }))
+        .toEqual([{ location: "node_modules/z", field, value }]);
+      expect(violationsWith({ "": { name: "consumer", [field]: map } })).toEqual([{ location: "", field, value }]);
+      expect(violationsWith({}, { [field]: map })).toEqual([{ location: "package.json", field, value }]);
+    }
+  });
+
   it("rejects overrides, which can redirect a package to another source", () => {
     expect(violationsWith({}, { overrides: { viem: "npm:not-viem@2.55.19" } }))
       .toEqual([{ location: "package.json", field: "overrides", value: '{"viem":"npm:not-viem@2.55.19"}' }]);
@@ -884,6 +940,40 @@ describe("advisory-ID baseline", () => {
     expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" }))
       .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" } });
     expect(runWorkflowStep(4, summary).status).toBe(0);
+  });
+  // Code r10 P3-2: a baseline-only exit 4 lets a prerelease publish, so the
+  // #191 baseline may waive transitive findings only.
+  it("never lets the #191 baseline waive an advisory that is high or critical on a direct dependency", () => {
+    const listed = "GHSA-23hp-3jrh-7fpw";
+    expect(baseline.advisoryIds).toContain(listed);
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.directAdvisories = [listed];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: [],
+        checks: { audit: "blocked" } });
+      expect(result.message).toContain("#191 baseline advisories that are high or critical on a direct dependency, " +
+        `which the baseline cannot waive: ${listed}`);
+    }
+    // Prerelease publication's enforced call, and a pull request, refuse a claimed 4.
+    for (const [enforce, event] of [[true, "workflow_dispatch"], [false, "pull_request"]] as const) {
+      const claimed = runWorkflowStep(4, summary, enforce, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    }
+    // The same baselined ID, transitive, stays baseline-only and does not stop a prerelease.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+    expect(runWorkflowStep(4, summary, true, undefined, "workflow_dispatch").status).toBe(0);
+    // SECURITY.md and the runbook say so.
+    const prose = (path: string) => readFileSync(join(repoRoot, path), "utf8").replace(/\s+/g, " ");
+    expect(prose("SECURITY.md")).toContain("baseline (exit 4) passes that prerequisite, so baseline-only findings do " +
+      "not stop a prerelease");
+    expect(prose("SECURITY.md")).toContain("always does, even when the #191 baseline lists it");
+    expect(prose("docs/npm-prerelease-release.md")).toContain("so baseline-only findings do not stop a prerelease. " +
+      "The baseline waives transitive findings only");
   });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();

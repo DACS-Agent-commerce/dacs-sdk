@@ -8,9 +8,10 @@
 // ID that is high or critical on a direct dependency fails pull requests too.
 // An observed ID recorded in `assessedAdvisories` (a transitive advisory
 // assessed for reachability, as SECURITY.md's audit policy allows) does not
-// block the gate; one on a direct dependency at high or critical severity
-// always does. Nothing here permits production publication while #191 remains
-// blocked.
+// block the gate, and one recorded in the #191 baseline is baseline-only; one
+// on a direct dependency at high or critical severity always blocks, whichever
+// list records it. Nothing here permits production publication while #191
+// remains blocked.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +78,8 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
 // installed (non-root) lock entry resolves to a tarball under the configured
 // registry's origin and path and carries an integrity, and every dependency
 // spec in the manifest and the lock is a registry spec (a version, range or
-// tag, or an npm: alias of one). Anything else is a violation: Git URLs and
+// tag, or an npm: alias of one) in a plain-object dependency map. Anything else
+// is a violation: dependency maps that are arrays, strings or null, Git URLs and
 // GitHub/GitLab shorthands with or without a ref, tarballs on any other host
 // (codeload.github.com included), file:, link:, paths, entries without
 // `resolved` or `integrity`, and `overrides`.
@@ -104,7 +106,13 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
   const violations = [];
   const specs = (location, owner) => {
     for (const field of specFields) {
-      for (const [name, value] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+      // A present map that is not a plain object (an array, a string, null)
+      // has no specs to check, so it is a violation itself.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        violations.push({ location, field, value: JSON.stringify(owner[field]) });
+        continue;
+      }
+      for (const [name, value] of Object.entries(owner?.[field] ?? {})) {
         if (typeof value !== "string" || !registrySpec.test(value) || tarballFile.test(value)) {
           violations.push({ location, field: `${field}.${name}`, value });
         }
@@ -456,8 +464,12 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   // blocks otherwise. One that is high or critical on a direct dependency
   // blocks under both policies, as CI fails on any direct high/critical one.
   const unlistedDirect = policy.unlistedAdvisories.filter(id => policy.directAdvisories.includes(id));
+  // The #191 baseline waives transitive findings only: a baselined ID that is
+  // high or critical on a direct dependency blocks, so a baseline-only exit 4
+  // (which lets a prerelease publish) never covers one.
+  const baselineDirect = policy.directAdvisories.filter(id => baseline.advisoryIds.includes(id));
   const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode === 1 && observed === 0) ||
-      assessedDirect.length > 0 || unlistedDirect.length > 0 ? "blocked"
+      assessedDirect.length > 0 || unlistedDirect.length > 0 || baselineDirect.length > 0 ? "blocked"
     : policy.unlistedAdvisories.length > 0 ? (unlistedAdvisories === "warn" ? "unlisted" : "blocked")
     : observed > policy.assessedAdvisories.length ? "baseline" : "passed";
   const states = { ...checks, audit };
@@ -479,7 +491,9 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     (unlistedDirect.length ? `; of those, high or critical on a direct dependency, which fail pull requests too: ` +
       unlistedDirect.join(", ") : "") +
     (assessedDirect.length ? `; assessed advisories that are high or critical on a direct dependency (or of unrecorded ` +
-      `directness), which an assessment cannot accept: ${assessedDirect.join(", ")}` : ""),
+      `directness), which an assessment cannot accept: ${assessedDirect.join(", ")}` : "") +
+    (baselineDirect.length ? `; #191 baseline advisories that are high or critical on a direct dependency, which the ` +
+      `baseline cannot waive: ${baselineDirect.join(", ")}` : ""),
     ...policy };
 }
 

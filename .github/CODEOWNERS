@@ -1,11 +1,12 @@
 # Changes to the #191 registry/container baseline, the scripts that produce and
-# classify its findings, its acceptance workflows and the publication workflow
-# that depends on them need review from a code owner.
+# classify its findings, the package scripts that run them, and every workflow
+# (the acceptance workflows, the publication workflow that depends on them, and
+# any workflow added later) need review from a code owner.
 /scripts/registry-container-audit-baseline.json @randomblocker
 /scripts/registry-container-audit-baseline.md @randomblocker
 /scripts/registry-container-disposition.mjs @randomblocker
 /scripts/verify-registry-container-consumer.sh @randomblocker
-/.github/workflows/registry-container-acceptance.yml @randomblocker
-/.github/workflows/registry-container-audit-drift.yml @randomblocker
-/.github/workflows/publish-prerelease.yml @randomblocker
+/scripts/publish-exact-local-registry.mjs @randomblocker
+/package.json @randomblocker
+/.github/workflows/ @randomblocker
 /.github/CODEOWNERS @randomblocker
