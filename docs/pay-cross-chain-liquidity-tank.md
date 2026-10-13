@@ -111,7 +111,8 @@ Recovery expiry needs authenticated evidence bound to the exact checkpoint:
 - a locked pending snapshot with `observedAt >= recoveryDeadline`;
 - a terminal `failed` with either `empty -> pending -> failed` or
   `empty -> failed` history, whose authenticated `lockTxHash` and
-  `recoveryDeadline` match the durable lock; or
+  `recoveryDeadline` match the durable lock, or which carries them itself
+  when no checkpoint was stored; or
 - a completion with `finalityObservedAt >= recoveryDeadline`.
 
 For pending snapshots, `observedAt` is the time the bridge snapshot describes,
@@ -130,6 +131,18 @@ call or restarted worker can commit reputation-neutral `failed-substrate`
 from that retained evidence, including when the next bridge read is unavailable
 or contradictory. A timely completion observed before the expiry commit still
 wins; a failed completion write never triggers expiry in that call.
+
+**A failure that carries its lock is never `permanent`.** If no checkpoint was
+stored, for example because the worker stopped or its checkpoint write failed
+after the bridge reported the lock, a `failed` observation that itself carries
+`lockTxHash` and `recoveryDeadline` is handled the same way: it is stored as
+the durable observation, reports the lock's `settle-asymmetric` progress with
+`bridgeStatus: "failed"` (also through a bridge-read or verifier outage), and
+expires to reputation-neutral `failed-substrate` once the host clock reaches
+the deadline. A timely completion of the same lock still settles before then,
+and a late one commits the late release. So crash timing no longer changes
+the class of a post-lock failure. Only a failure without a lock (`empty ->
+failed`, or `empty -> pending -> failed` without `lockTxHash`) is `permanent`.
 
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
@@ -394,15 +407,20 @@ as retained-state corruption.
 the acquired claim or confirmed write, with a current lease and host `now` at
 or after the deadline. For `failed-after-lock`, the evidence must equal the
 retained failure and its checkpoint must equal the durable one; no new failure
-timestamp is required. Pending expiry still re-checks snapshot freshness, and
-completed expiry still re-checks late finality. A completed observation carries
-its authenticated deadline even without a prior checkpoint; with a checkpoint,
-its lock and deadline must match exactly.
+timestamp is required. A `failed` that carries its own lock and deadline is
+evidence only when it is exactly the durable observation and no failure is
+retained beside a checkpoint. Pending expiry still re-checks snapshot
+freshness, and completed expiry still re-checks late finality. A completed
+observation carries its authenticated deadline even without a prior
+checkpoint; with a checkpoint, or a durable failure that carries a lock, its
+lock and deadline must match exactly.
 
 Completion persistence and recovery expiry race atomically. Persisting a timely
 completion clears retained failure evidence and blocks expiry, even before its
 settlement is written: refuse any expiry once a completed observation is
-durable. Whichever
+durable. `recordObservation` must accept a timely completion of the same lock
+and deadline in place of a durable `failed` that carries them, and refuse any
+other observation after it. Whichever
 eligible terminal transition commits first wins; the loser must report a
 non-successful write. Once expiry commits, every claim from a host whose clock
 is at or after the deadline returns the same terminal state and no later
@@ -832,7 +850,7 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422); and
 - confirm with the DACS-4 §9.5.5 owner whether a `failed` after a committed
   lock should settle via ST-8 (neutral `failed-substrate` at D, as now) or
-  immediately as `permanent` (the §9.5.5 failure-mode list), and whether a
-  failure bound to the lock with no stored checkpoint should do the same.
-  Today a `failed` with history `empty -> pending -> failed` and no stored
-  checkpoint is `permanent`, even when it carries the lock hash and deadline.
+  immediately as `permanent` (the §9.5.5 failure-mode list). Today every
+  failure that carries a lock hash and deadline, with or without a stored
+  checkpoint, resolves through D to `failed-substrate`; only a failure
+  without a lock is `permanent`.

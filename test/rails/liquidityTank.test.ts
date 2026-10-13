@@ -6312,4 +6312,116 @@ describe("final review, round 3", () => {
       });
     });
   });
+
+  describe("a failure that carries its lock resolves through the lock's deadline", () => {
+    test("after a crash before the lock's checkpoint, the failure is not permanent and expires neutral at the deadline", async () => {
+      const h = harness();
+      h.setAfterBroadcast(pending(h.operationHash, true));
+      const store = createInMemoryLiquidityTankStore(VOLATILE);
+      const recordObservation = store.recordObservation.bind(store);
+      // The locked pending is read, but its checkpoint write is lost.
+      store.recordObservation = vi.fn<LiquidityTankStore["recordObservation"]>(async (input) => {
+        if (input.observation.status === "pending") throw new Error("simulated crash before the checkpoint");
+        return recordObservation(input);
+      });
+      const run = runner({ adapter: h.adapter, store });
+      await advanceLiquidityTankSettlement(run.shared);
+      store.recordObservation = recordObservation;
+
+      h.setObservation(failedAfterLock(h.operationHash, 3_000));
+      const lockProgress = {
+        status: "settle-asymmetric",
+        reason: "tank-locked-unreleased",
+        recoveryDeadline: RECOVERY_DEADLINE_MS,
+        bridgeStatus: "failed",
+        txRef: {
+          kind: "liquidity-tank",
+          bridgeId: BRIDGE_ID,
+          sourceChainId: 11_155_111,
+          destChainId: 80_002,
+          lockTxHash: "source-lock-tx",
+          recoveryDeadline: RECOVERY_DEADLINE_MS,
+        },
+      };
+      await expect(advanceLiquidityTankSettlement(run.nextOwner()))
+        .resolves.toEqual({ ...lockProgress, pastDeadline: false });
+      // A restart before the deadline, with the bridge read unavailable, still reports the lock.
+      h.setObservation({ status: "indeterminate", reason: "offline" });
+      await expect(advanceLiquidityTankSettlement(run.nextOwner()))
+        .resolves.toEqual({ ...lockProgress, pastDeadline: false });
+      // So does a verifier outage past the deadline, which expires nothing.
+      run.setClock(RECOVERY_DEADLINE_MS);
+      await expect(advanceLiquidityTankSettlement({
+        ...run.shared,
+        owner: "outage-worker",
+        verifier: { ...APPROVING_VERIFIER, authenticateObservation: async () => "unavailable" as const },
+      })).resolves.toEqual({ ...lockProgress, pastDeadline: true });
+
+      run.setClock(RECOVERY_DEADLINE_MS + 101);
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "deadline-worker" })).resolves.toEqual({
+        status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
+        reputationNeutral: true,
+      });
+      run.setClock(RECOVERY_DEADLINE_MS + 10_000);
+      h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS - 1));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay-worker" })).resolves.toMatchObject({
+        status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
+      });
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+    test("the first read after broadcast is a failure with a lock: never permanent", async () => {
+      const h = harness();
+      h.setAfterBroadcast(failedAfterLock(h.operationHash, 3_000));
+      await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared)).resolves.toMatchObject({
+        status: "settle-asymmetric", reason: "tank-locked-unreleased", bridgeStatus: "failed", pastDeadline: false,
+      });
+    });
+
+    test("a failure without a lock is still permanent", async () => {
+      const h = harness();
+      h.setAfterBroadcast({ ...failedAfterLock(h.operationHash, 3_000), lockTxHash: undefined, recoveryDeadline: undefined });
+      await expect(advanceLiquidityTankSettlement(runner({ adapter: h.adapter }).shared)).resolves.toEqual({
+        status: "failed", errorClass: "permanent", reason: "release rejected by tank shard",
+      });
+    });
+
+    test("a timely completion of the same lock still settles; another lock's completion does not", async () => {
+      for (const [lockTxHash, expected] of [
+        ["source-lock-tx", { status: "settled" }],
+        ["another-lock-tx", { status: "settle-asymmetric", bridgeStatus: "failed", pastDeadline: false }],
+      ] as const) {
+        const h = harness();
+        h.setAfterBroadcast(failedAfterLock(h.operationHash, 3_000));
+        const run = runner({ adapter: h.adapter });
+        await advanceLiquidityTankSettlement(run.shared);
+        h.setObservation({ ...completed(h.operationHash, 4_000), lockTxHash });
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject(expected);
+      }
+    });
+
+    test("a late completion of the same lock commits the late release", async () => {
+      const h = harness();
+      h.setAfterBroadcast(failedAfterLock(h.operationHash, 3_000));
+      const run = runner({ adapter: h.adapter });
+      await advanceLiquidityTankSettlement(run.shared);
+      run.setClock(RECOVERY_DEADLINE_MS + 5);
+      h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS + 1));
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late" }))
+        .resolves.toEqual(releasedLate(RECOVERY_DEADLINE_MS + 1));
+    });
+
+    test("a late completion of another lock does not keep the failed lock from expiring", async () => {
+      const h = harness();
+      h.setAfterBroadcast(failedAfterLock(h.operationHash, 3_000));
+      const run = runner({ adapter: h.adapter });
+      await advanceLiquidityTankSettlement(run.shared);
+      run.setClock(RECOVERY_DEADLINE_MS + 5);
+      h.setObservation({ ...completed(h.operationHash, RECOVERY_DEADLINE_MS + 1), lockTxHash: "another-lock-tx" });
+      await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late" })).resolves.toEqual({
+        status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
+        reputationNeutral: true,
+      });
+    });
+  });
 });

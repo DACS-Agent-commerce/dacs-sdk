@@ -314,13 +314,18 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
 /**
  * Authenticated evidence that the release missed `recoveryDeadline`: the
  * locked pending checkpoint observed at or after it, a completion finalized at
- * or after it, or a terminal bridge failure bound to the exact lock.
+ * or after it, or a terminal bridge failure bound to the exact lock (retained
+ * beside the checkpoint, or, without one, the durable observation itself).
  * A terminal failure need not refresh its transition timestamp.
  * `observedAt` is the bridge's authenticated time of the status snapshot.
  */
 export type LiquidityTankRecoveryEvidence =
   | LiquidityTankRecoveryCheckpoint
   | Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>
+  | (Readonly<Extract<LiquidityTankObservation, { status: "failed" }>> & {
+      lockTxHash: string;
+      recoveryDeadline: number;
+    })
   | Readonly<{
       status: "failed-after-lock";
       checkpoint: LiquidityTankRecoveryCheckpoint;
@@ -1356,32 +1361,36 @@ function validateCapturedObservation(
   }) as unknown as Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 }
 
+/**
+ * The progress of a durable lock: a locked pending checkpoint, or a failure
+ * that carries the lock it failed after, which is that lock's terminal
+ * evidence (`bridgeStatus: "failed"`).
+ */
 function progressFromDurableObservation(
   intent: Readonly<LiquidityTankIntent>,
   observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
   now: number,
   bridgeStatus?: "failed" | "conflicting",
 ): LiquidityTankProgress | null {
-  if (!observation) return null;
-  if (observation.status === "pending" && observation.lockTxHash && observation.recoveryDeadline) {
-    return {
-      status: "settle-asymmetric",
-      reason: bridgeStatus === "conflicting" && now >= observation.recoveryDeadline
-        ? "lock-contradicted" : "tank-locked-unreleased",
-      recoveryDeadline: observation.recoveryDeadline,
-      pastDeadline: now >= observation.recoveryDeadline,
-      ...(bridgeStatus === undefined ? {} : { bridgeStatus }),
-      txRef: Object.freeze({
-        kind: "liquidity-tank",
-        bridgeId: observation.bridgeId,
-        sourceChainId: intent.sourceChainId,
-        destChainId: intent.destinationChainId,
-        lockTxHash: observation.lockTxHash,
-        recoveryDeadline: observation.recoveryDeadline,
-      }),
-    };
-  }
-  return null;
+  const lock = recoveryCheckpoint(observation) ?? lockBearingFailure(observation);
+  if (!lock) return null;
+  const status = lock.status === "failed" ? "failed" : bridgeStatus;
+  return {
+    status: "settle-asymmetric",
+    reason: status === "conflicting" && now >= lock.recoveryDeadline
+      ? "lock-contradicted" : "tank-locked-unreleased",
+    recoveryDeadline: lock.recoveryDeadline,
+    pastDeadline: now >= lock.recoveryDeadline,
+    ...(status === undefined ? {} : { bridgeStatus: status }),
+    txRef: Object.freeze({
+      kind: "liquidity-tank",
+      bridgeId: lock.bridgeId,
+      sourceChainId: intent.sourceChainId,
+      destChainId: intent.destinationChainId,
+      lockTxHash: lock.lockTxHash,
+      recoveryDeadline: lock.recoveryDeadline,
+    }),
+  };
 }
 
 function recoveryCheckpoint(
@@ -1390,6 +1399,18 @@ function recoveryCheckpoint(
   return observation?.status === "pending" && observation.lockTxHash !== undefined &&
       observation.recoveryDeadline !== undefined
     ? observation as LiquidityTankRecoveryCheckpoint
+    : undefined;
+}
+
+type LiquidityTankLockBearingFailure = Extract<LiquidityTankRecoveryEvidence, { status: "failed-after-lock" }>["failure"];
+
+/** A terminal failure that carries the authenticated lock it failed after. */
+function lockBearingFailure(
+  observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>> | undefined,
+): LiquidityTankLockBearingFailure | undefined {
+  return observation?.status === "failed" && observation.lockTxHash !== undefined &&
+      observation.recoveryDeadline !== undefined
+    ? observation as LiquidityTankLockBearingFailure
     : undefined;
 }
 
@@ -1416,6 +1437,7 @@ function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean 
   if (evidence.status === "completed") {
     return evidence.finalityObservedAt >= evidence.recoveryDeadline;
   }
+  if (evidence.status === "failed") return lockBearingFailure(evidence) !== undefined;
   return evidence.status === "pending"
     ? evidence.observedAt >= evidence.recoveryDeadline
     : failedAfterLock(evidence.failure, evidence.checkpoint);
@@ -1446,6 +1468,8 @@ function validateRecoveryEvidence(
   }
   const observation = validateCapturedObservation(captured, intent, submission);
   if (observation.status === "completed") return observation;
+  const failure = observation.status === "indeterminate" ? undefined : lockBearingFailure(observation);
+  if (failure) return failure;
   const checkpoint = observation.status === "indeterminate"
     ? undefined
     : recoveryCheckpoint(observation);
@@ -1865,7 +1889,7 @@ export async function advanceLiquidityTankSettlement(
     if (expiryUnchecked) return verifierUnavailable();
     // A terminal failure carries no time of its own: this host's clock must
     // also have reached the deadline before the expiry is reported.
-    if (evidence.status === "failed-after-lock" &&
+    if ((evidence.status === "failed-after-lock" || evidence.status === "failed") &&
         claimNow < recoveryEvidenceDeadline(evidence)) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
     }
@@ -2124,9 +2148,9 @@ export async function advanceLiquidityTankSettlement(
           reason: "liquidity-tank-completion-finality-invalid",
         };
       }
-      return observation.status === "pending"
-        ? progressFromDurableObservation(intent, observation, recoveryNow)
-        : progressFromDurableObservation(intent, observation.checkpoint, recoveryNow, "failed");
+      return observation.status === "failed-after-lock"
+        ? progressFromDurableObservation(intent, observation.checkpoint, recoveryNow, "failed")
+        : progressFromDurableObservation(intent, observation, recoveryNow);
     }
     let stored: boolean;
     try {
@@ -2171,13 +2195,18 @@ export async function advanceLiquidityTankSettlement(
         };
   }
 
-  // Retained terminal evidence survives an unavailable/contradictory read.
-  // Timely completion is considered first in finalize and can still win.
+  // Retained terminal evidence survives an unavailable/contradictory read:
+  // a failure retained beside the checkpoint, or one that carries its lock
+  // and is itself the durable observation. Timely completion is considered
+  // first in finalize and can still win.
   const resolveDurableProgress = async (
     bridgeStatus?: "conflicting",
-  ): Promise<LiquidityTankProgress | null> => durableFailure
-    ? persistRecoveryExpired(durableFailure, durableObservation)
-    : progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
+  ): Promise<LiquidityTankProgress | null> => {
+    const retainedFailure = durableFailure ?? lockBearingFailure(durableObservation);
+    return retainedFailure
+      ? persistRecoveryExpired(retainedFailure, durableObservation)
+      : progressFromDurableObservation(intent, durableObservation, latestNow, bridgeStatus);
+  };
 
   // An operation the bridge accepted without a lock: bounded from the durable
   // receipt, so a bridge that accepts an operation and never locks it is
@@ -2293,6 +2322,14 @@ export async function advanceLiquidityTankSettlement(
         reason: "liquidity-tank-recovery-checkpoint-conflict",
       };
     }
+    // A durable failure that carries its lock is that lock's terminal
+    // evidence: only a completion of the same lock can still move it.
+    const durableLockFailure = lockBearingFailure(durableObservation);
+    if (durableLockFailure && !(observation.status === "completed" &&
+        observation.lockTxHash === durableLockFailure.lockTxHash &&
+        observation.recoveryDeadline === durableLockFailure.recoveryDeadline)) {
+      return await resolveDurableProgress();
+    }
     if (observation.status === "completed" &&
         observation.finalityObservedAt >= observation.recoveryDeadline) {
       return await persistRecoveryExpired(observation, durableObservation) ?? {
@@ -2319,6 +2356,9 @@ export async function advanceLiquidityTankSettlement(
       return { status: "waiting", reason: "liquidity-tank-capacity-unavailable" };
     }
     if (observation.status === "failed") {
+      // A failure after a committed lock resolves through that lock's
+      // deadline, as one beside a durable checkpoint does: never `permanent`.
+      if (lockBearingFailure(observation)) return await resolveDurableProgress();
       return { status: "failed", errorClass: "permanent", reason: observation.reason };
     }
     if (observation.status === "pending") {
@@ -2539,7 +2579,13 @@ function recordObservationTransition(
   if (record.recoveryFailure && observation.status !== "completed") {
     return { result: { status: "conflict", reason: "liquidity-tank-terminal-failure-retained" } };
   }
-  if (prior) {
+  // A timely completion of the lock a durable failure carried still wins, as
+  // it does over failure evidence retained beside a checkpoint.
+  const priorLockFailure = lockBearingFailure(prior);
+  const completesFailedLock = priorLockFailure !== undefined && observation.status === "completed" &&
+    observation.lockTxHash === priorLockFailure.lockTxHash &&
+    observation.recoveryDeadline === priorLockFailure.recoveryDeadline;
+  if (prior && !completesFailedLock) {
     if (canonicalize(prior) === canonicalize(observation)) return { result: { status: "existing" } };
     if (!preservesRecoveryCheckpoint(prior, observation) ||
         observationRank(observation.status) < observationRank(prior.status)) {
@@ -2637,14 +2683,22 @@ function recordRecoveryExpiredTransition(
     return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
   }
   const priorCheckpoint = recoveryCheckpoint(record.observation);
+  // The durable lock: a checkpoint, or a failure that carries its lock.
+  const priorLock = priorCheckpoint ?? lockBearingFailure(record.observation);
   if (evidence.status === "pending") {
     if (canonicalize(record.observation) !== canonicalize(evidence)) {
       return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
     }
   } else if (evidence.status === "completed") {
-    if (priorCheckpoint &&
-        (evidence.lockTxHash !== priorCheckpoint.lockTxHash ||
-          evidence.recoveryDeadline !== priorCheckpoint.recoveryDeadline)) {
+    if (priorLock &&
+        (evidence.lockTxHash !== priorLock.lockTxHash ||
+          evidence.recoveryDeadline !== priorLock.recoveryDeadline)) {
+      return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
+    }
+  } else if (evidence.status === "failed") {
+    // A failure that carries its lock is evidence only as the durable
+    // observation itself; beside a checkpoint it is retained as failed-after-lock.
+    if (canonicalize(record.observation) !== canonicalize(evidence) || record.recoveryFailure) {
       return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
     }
   } else if (!priorCheckpoint ||
