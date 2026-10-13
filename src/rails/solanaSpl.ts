@@ -221,7 +221,11 @@ export type SolanaSplStoreWrite =
     }
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
-/** Atomic durable retained-transaction store. */
+/**
+ * Atomic durable retained-transaction store. Every result, and each object
+ * nested in it, must be plain data with exactly its type's keys: see
+ * "Store and adapter contract" in `docs/pay-solana-spl.md`.
+ */
 export interface SolanaSplSettlementStore {
   claim(input: {
     intent: Readonly<SolanaSplSettlementIntent>;

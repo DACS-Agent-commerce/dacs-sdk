@@ -113,29 +113,87 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
-Every store result must be plain data, not a proxy. A proxy anywhere in a
-store result is refused before the core runs any of its traps: a proxy claim,
-`intent` or `lease` is `solana-spl-settlement-store-claim-invalid`, and a
-proxy write result or acknowledged `expiryEvidence` is
-`solana-spl-retained-attempt-persistence-uncertain`,
-`solana-spl-expiry-persistence-uncertain` or
-`solana-spl-settlement-persistence-uncertain` for `recordAttempt`,
-`markAttemptExpired` and `recordSettlement` respectively.
-A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be plain,
-dense arrays: element n is an own data property at index n, so attempt n is at
-index n − 1, and the array has no other own keys. A proxy is refused before any
-of its traps runs, because its answers to separate reads (`length`, its own
-keys, each index) need not agree. A proxy array or element, a hole, an
-inherited index, an accessor or a length that disagrees with the array's own
-keys could hide the live latest attempt or its expiry record, so each is
+Every store object the core relies on must be plain data, and plain data has
+one meaning, enforced the same way for each of them. These objects are the
+claim and its `intent` and `lease`, each retained attempt and expiry-evidence
+row, each write result and the `expiryEvidence` it acknowledges, and a stored
+settlement with its `txRef`, `paymentAmount` and `settlementFinality`. Each
+must meet three conditions:
+
+- it is not a proxy (checked with `util.types.isProxy`);
+- its prototype is `Object.prototype` or `null`, so `JSON.parse` output and
+  `Object.create(null)` records qualify but class instances do not;
+- its own keys are exactly the keys of its variant in the exported types.
+  Optional keys may be absent. There are no symbol keys and no extra or
+  missing keys. Each key is an own, enumerable data property, never an
+  accessor.
+
+A write result is `{ status, expiryEvidence? }` when it succeeds and
+`{ status, reason }` otherwise.
+
+Before using any of these objects, the core reads each value once from its
+property descriptor into a fresh object. It validates, hashes and uses only
+that snapshot, never the store's object. So no getter runs, and no proxy trap
+runs. A retained attempt therefore cannot pass its integrity check as one row
+and then be used as another.
+
+Every field that the contract types as a string, number or boolean is checked
+with `typeof` or `===` before anything else reads it. A nested object in such
+a field is therefore refused without running any of its code.
+
+An object that breaks the rule is refused with nothing reconciled, signed or
+broadcast after it:
+
+- the claim, its `intent` or its `lease`:
+  `solana-spl-settlement-store-claim-invalid`;
+- a retained attempt or expiry-evidence row:
+  `solana-spl-retained-state-corrupt`;
+- a write result, or the evidence it acknowledges:
+  `solana-spl-retained-attempt-persistence-uncertain`,
+  `solana-spl-expiry-persistence-uncertain` or
+  `solana-spl-settlement-persistence-uncertain`, for `recordAttempt`,
+  `markAttemptExpired` and `recordSettlement` respectively;
+- a stored settlement or any object nested in it:
+  `solana-spl-stored-settlement-mismatch`.
+
+The rule has two limits, and neither changes a decision:
+
+- Awaiting a store method's result reads its `then` property. That read is
+  part of promise resolution, and it happens before the core receives the
+  value, so a `then` getter or proxy trap on the result can still run.
+- A host object that is not a proxy can answer reads from native
+  interceptors, and the core does not detect such objects. The global of a
+  `vm` context is one example: when its sandbox is a proxy, listing the
+  global's own keys runs that proxy's `ownKeys` trap. The global is still
+  refused, because it always keeps `undefined`, `NaN` and `Infinity` as own
+  keys, even when its prototype is set to `Object.prototype`.
+
+Every attempt the core signs is retained with exactly its nine
+`SolanaSplSignedAttempt` keys. Fields that an adapter adds to a prepared
+attempt are dropped. They are not hashed or retained, and they are not passed
+back to `broadcastRetained` or `reconcile`.
+
+A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be real,
+dense arrays. Element n is an own, enumerable data property at index n, so
+attempt n is at index n − 1, and the array has no other own keys. A proxy is
+refused before any of its traps runs, because its answers to separate reads
+(`length`, its own keys, each index) need not agree. Each of the following
+could hide the live latest attempt or its expiry record, so each is
 `solana-spl-retained-state-corrupt` before anything is reconciled, signed or
-broadcast. The core cannot detect plain data that leaves out a retained
-attempt, so the store must return every attempt it retained.
-A stored settlement must be plain data. Only its own data properties are read,
-each once, into a fresh frozen copy that is checked against the intent, and a
-`settled` result returns only that copy. Extra fields and `toJSON` hooks are
-dropped; a proxy anywhere in the settlement, or an accessor, inherited or
-invalid field, is `solana-spl-stored-settlement-mismatch`.
+broadcast:
+
+- a proxy array;
+- a hole;
+- an inherited index;
+- an accessor;
+- a `length` that disagrees with the array's own keys.
+
+The core cannot detect plain data that leaves out a retained attempt, so the
+store must return every attempt it retained.
+
+A `settled` result returns a fresh frozen copy of the stored settlement,
+checked against the intent. It never returns the store's object, so store
+text, extra fields and `toJSON` hooks never reach the caller.
 The exported in-memory store is for tests and development only.
 
 The adapter must authenticate reconciliation from Solana ledger state. For
