@@ -587,7 +587,11 @@ const LEASE_KEYS = ["owner", "generation", "expiresAt"] as const;
  * exactly `required` plus any of `optional`: no symbol, extra or missing key.
  * Each must be an own, enumerable data property. Each value is read once from
  * its descriptor into a fresh object, which is the only thing checked and used
- * afterwards. A proxy is refused before any trap runs, and no getter runs.
+ * afterwards. A proxy is refused before any trap runs, and no getter runs. A
+ * host object that is not a proxy, such as a `vm` context global, can still
+ * run native interceptors while its keys are listed (for a proxy sandbox, its
+ * `ownKeys` and descriptor traps); their answers are never used, because such
+ * an object is refused.
  */
 function plainData(
   value: unknown,

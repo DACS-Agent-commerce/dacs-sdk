@@ -133,8 +133,9 @@ A write result is `{ status, expiryEvidence? }` when it succeeds and
 
 Before using any of these objects, the core reads each value once from its
 property descriptor into a fresh object. It validates, hashes and uses only
-that snapshot, never the store's object. So no getter runs, and no proxy trap
-runs. A retained attempt therefore cannot pass its integrity check as one row
+that snapshot, never the store's object. So no getter runs, and no trap of a
+proxy runs (a host object can still run native code; see the second limit
+below). A retained attempt therefore cannot pass its integrity check as one row
 and then be used as another.
 
 Every field that the contract types as a string, number or boolean is checked
@@ -164,9 +165,11 @@ The rule has two limits, and neither changes a decision:
 - A host object that is not a proxy can answer reads from native
   interceptors, and the core does not detect such objects. The global of a
   `vm` context is one example: when its sandbox is a proxy, listing the
-  global's own keys runs that proxy's `ownKeys` trap. The global is still
-  refused, because it always keeps `undefined`, `NaN` and `Infinity` as own
-  keys, even when its prototype is set to `Object.prototype`.
+  global's own keys may run that proxy's `ownKeys` trap and its
+  `getOwnPropertyDescriptor` trap (Node 22 runs only `ownKeys`; Node 20 runs
+  both). Their answers are never used: the global is refused, because it
+  always keeps `undefined`, `NaN` and `Infinity` as own keys, even when its
+  prototype is set to `Object.prototype`.
 
 Every attempt the core signs is retained with exactly its nine
 `SolanaSplSignedAttempt` keys. Fields that an adapter adds to a prepared
