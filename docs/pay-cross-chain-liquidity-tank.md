@@ -611,13 +611,19 @@ same fields, and runs each one under a per-phase filesystem lock:
     terminated, or exited, while it held the lock or the reclaim gate.
 
   Any other lock counts as held: one whose thread is still listed (it may be
-  the owner, or a later thread that reused its ID), one made in another boot
-  or PID namespace, and one whose thread could not be told, as off Linux. No
-  wall clock decides liveness; it only sets the stale age. A step that fails
-  after a lock or the store-wide reclaim gate is published removes it before
-  the call fails. A release retries a failed step until `lockTimeoutMs`
-  passes; a release that still fails fails the call instead of returning its
-  result. A read error on an owner file is never taken for a missing owner.
+  the owner, or a later thread that reused its ID), one with this process's
+  PID made during this process's lifetime but in another boot or PID
+  namespace, and one whose thread could not be told, as off Linux. No wall
+  clock decides liveness; it only sets the stale age. These rules hold only
+  inside one host and one PID namespace (see below). A lock made by a live
+  process on another host or in another PID namespace is judged by its PID
+  here: once stale, it is taken when no process here has that PID, or when it
+  carries this process's PID and a creation time outside this process's
+  lifetime. A step that fails after a lock or the store-wide reclaim gate is
+  published removes it before the call fails. A release retries a failed step
+  until `lockTimeoutMs` passes; a release that still fails fails the call
+  instead of returning its result. A read error on an owner file is never
+  taken for a missing owner.
 - **Directory admission.** The SDK's private-store checks (see
   [Durable filesystem safety](filesystem-store-safety.md)) refuse a directory
   that is group- or world-writable, owned by another user, reached through a

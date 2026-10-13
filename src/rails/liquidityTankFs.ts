@@ -386,7 +386,8 @@ export async function createFsLiquidityTankStore(
    * boot): a restart that reused the PID, such as PID 1 in a container; or if
    * it was made by another thread of this process that has since exited. Any
    * other lock with this PID may belong to a live thread here, and counts as
-   * held. No clock but the monotonic one decides this.
+   * held. No clock but the monotonic one decides this. Owners are told apart
+   * by PID, so this holds only within one host and PID namespace.
    */
   async function ownerMayBeAlive(owner: LockOwner): Promise<boolean> {
     if (owner.pid !== process.pid) return processIsAlive(owner.pid);
