@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { preparePrivateStoreDirectory } from "../../src/filesystem/privateStore.js";
+
 export type RailMode = "generic" | "evm" | "x402";
 export interface WorkerOptions {
   mode?: RailMode;
@@ -51,8 +53,26 @@ export async function waitForFiles(root: string, names: string[], timeoutMs = 15
   });
 }
 
+// The filesystem stores admit a directory only if every ancestor is owned by the
+// user or root and is not group/world writable (a root-owned sticky /tmp is
+// allowed), so a private directory under an unsafe TMPDIR is still refused.
+// Use the first scratch base whose chain the SDK's own policy admits; if none
+// does, keep the TMPDIR root and let the stores name the unsafe component.
+export async function createPrivateScratchRoot(prefix: string, bases = [tmpdir(), "/tmp"]): Promise<string> {
+  for (const base of bases) {
+    let root: string | undefined;
+    try {
+      root = await mkdtemp(join(base, prefix));
+      return await preparePrivateStoreDirectory(root, "settlement restart harness");
+    } catch {
+      if (root) await rm(root, { recursive: true, force: true });
+    }
+  }
+  return mkdtemp(join(tmpdir(), prefix));
+}
+
 export async function createSettlementProcessHarness() {
-  const root = await mkdtemp(join(tmpdir(), "dacs-settlement-restart-"));
+  const root = await createPrivateScratchRoot("dacs-settlement-restart-");
   await mkdir(join(root, "log"));
   const children: Array<{ child: ChildProcess; exit: Promise<WorkerExit>; output: () => string }> = [];
   return {
@@ -80,7 +100,11 @@ export async function createSettlementProcessHarness() {
         "--loader", fileURLToPath(new URL("./settlementProcessLoader.mjs", import.meta.url)),
         fileURLToPath(new URL("./settlementProcessWorker.ts", import.meta.url)),
         root, id, JSON.stringify(options),
-      ], { stdio: ["ignore", "pipe", "pipe"] });
+      ], {
+        stdio: ["ignore", "pipe", "pipe"],
+        // Later children of a scenario reuse the first child's transpiled fixtures.
+        env: { ...process.env, DACS_TEST_TRANSPILE_CACHE: join(root, "transpiled") },
+      });
       let output = "";
       child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
       child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
