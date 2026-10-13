@@ -775,6 +775,30 @@ describe("advisory-ID baseline", () => {
       checks: { audit: "unlisted", registryDependency: "blocked" } });
     expect(runWorkflowStep(4, summary).status).toBe(4);
   });
+  // Code r9 P3-2: SECURITY.md says CI fails on any direct high/critical
+  // advisory, but pull requests only warned on an unlisted direct one.
+  it("fails a pull request on an unlisted advisory that is high or critical on a direct dependency", () => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.unlistedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.directAdvisories = [unknown];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { audit: "blocked" } });
+      expect(result.message).toContain(`of those, high or critical on a direct dependency, which fail pull requests ` +
+        `too: ${unknown}`);
+    }
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(4);
+    expect(pullRequest.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+    expect(runWorkflowStep(3, summary).status).toBe(3);
+    // The same IDs, neither of them direct, only warn.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" }))
+      .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" } });
+    expect(runWorkflowStep(4, summary).status).toBe(0);
+  });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
     summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);

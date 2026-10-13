@@ -1041,7 +1041,8 @@ under the ignored `registry-container-artifacts/` path, or a directory outside
 the repository; other in-repository paths will appear as untracked files.
 The acceptance audits the generated consumer's tree by advisory ID against
 `scripts/registry-container-audit-baseline.json`. On pull requests an advisory
-ID outside that baseline is a warning; the scheduled drift job, manual runs and
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
 release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
 Production publication remains blocked by #191.
 

@@ -11,7 +11,9 @@ dependency the tree already had, is treated by where the run comes from:
 - On `pull_request` it is a warning annotation and a line in the job's step
   summary, and the job passes (exit 4). A new advisory on an unchanged tree
   therefore cannot turn unrelated pull requests red, in line with SECURITY.md's
-  audit policy for transitive advisories.
+  audit policy for transitive advisories. An unlisted ID that npm reports at
+  high or critical severity on a direct dependency of the consumer fails pull
+  requests too (exit 3), as CI fails on any direct high/critical advisory.
 - Everywhere else it fails closed (exit 3), and the error names it: the
   scheduled drift workflow, manual runs, and any release or publication path
   that runs this acceptance or its disposition. Failing closed is the default;

@@ -4,11 +4,12 @@
 // (exit 3) unless DACS_UNLISTED_ADVISORIES=warn, which only the pull_request
 // acceptance job sets: there it is a warning, so an advisory newly published
 // against an unchanged tree cannot turn every PR red. The scheduled drift job,
-// manual runs and release paths fail. An observed ID recorded in
-// `assessedAdvisories` (a transitive advisory assessed for reachability, as
-// SECURITY.md's audit policy allows) does not block the gate; one on a direct
-// dependency at high or critical severity always does. Nothing here permits
-// production publication while #191 remains blocked.
+// manual runs and release paths fail, and an unlisted ID that is high or
+// critical on a direct dependency fails pull requests too. An observed ID
+// recorded in `assessedAdvisories` (a transitive advisory assessed for
+// reachability, as SECURITY.md's audit policy allows) does not block the gate;
+// one on a direct dependency at high or critical severity always does. Nothing
+// here permits production publication while #191 remains blocked.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -451,9 +452,11 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
   const assessedDirect = policy.assessedAdvisories.filter(id => !directKnown || policy.directAdvisories.includes(id));
   // An ID outside the baseline, even one newly published against a dependency
   // the tree already had, is "unlisted" under the pull-request warn policy and
-  // blocks otherwise.
+  // blocks otherwise. One that is high or critical on a direct dependency
+  // blocks under both policies, as CI fails on any direct high/critical one.
+  const unlistedDirect = policy.unlistedAdvisories.filter(id => policy.directAdvisories.includes(id));
   const audit = ![0, 1].includes(gate?.auditExitCode) || (gate.auditExitCode === 1 && observed === 0) ||
-      assessedDirect.length > 0 ? "blocked"
+      assessedDirect.length > 0 || unlistedDirect.length > 0 ? "blocked"
     : policy.unlistedAdvisories.length > 0 ? (unlistedAdvisories === "warn" ? "unlisted" : "blocked")
     : observed > policy.assessedAdvisories.length ? "baseline" : "passed";
   const states = { ...checks, audit };
@@ -472,6 +475,8 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
     (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
       "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : "") +
+    (unlistedDirect.length ? `; of those, high or critical on a direct dependency, which fail pull requests too: ` +
+      unlistedDirect.join(", ") : "") +
     (assessedDirect.length ? `; assessed advisories that are high or critical on a direct dependency (or of unrecorded ` +
       `directness), which an assessment cannot accept: ${assessedDirect.join(", ")}` : ""),
     ...policy };
