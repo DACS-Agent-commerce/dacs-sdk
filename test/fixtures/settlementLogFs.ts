@@ -60,12 +60,15 @@ function current(record: RecordValue | undefined, input: {
  * left by a crash are ignored; the test harness removes the entire directory.
  * This fixture models process restart on a local filesystem, not a public adapter.
  */
-export function createTestFsSettlementLog(dir: string): SettlementLog {
+export function createTestFsSettlementLog(dir: string, hooks: {
+  /** Runs after a candidate is flushed and before it is linked: a test race barrier. */
+  beforeCommit?: () => Promise<void>;
+} = {}): SettlementLog {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  function transaction<T>(key: string, decide: (record?: RecordValue) => {
+  async function transaction<T>(key: string, decide: (record?: RecordValue) => {
     result: T; next?: RecordValue;
-  }): T {
+  }): Promise<T> {
     const records = join(dir, sha256Hex(key));
     mkdirSync(records, { recursive: true, mode: 0o700 });
     const deadline = Date.now() + 10_000;
@@ -90,6 +93,7 @@ export function createTestFsSettlementLog(dir: string): SettlementLog {
         closeSync(handle);
       }
       try {
+        await hooks.beforeCommit?.();
         linkSync(candidate, join(records, `${revision}.json`));
         const directory = openSync(records, "r");
         try { fsyncSync(directory); } finally { closeSync(directory); }

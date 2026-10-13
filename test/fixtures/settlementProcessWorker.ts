@@ -61,7 +61,13 @@ async function effect() {
   append("effects", { pid: process.pid, txHash: TX });
 }
 
-const durable = createTestFsSettlementLog(join(root, "log"));
+// Racing grants both read the reconcile revision before either may commit it.
+const durable = createTestFsSettlementLog(join(root, "log"), options.action === "grant" && options.race ? {
+  async beforeCommit() {
+    await marker(`decided-${id}`);
+    await waitForFiles(root!, ["commit-grant"]);
+  },
+} : {});
 const log: SettlementLog = {
   ...durable,
   async putOutcome(input) {

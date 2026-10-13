@@ -185,6 +185,10 @@ describe("atomic recovery across processes (#43)", () => {
     const b = h.start("b", { action: "grant", now: 200, race: true });
     await Promise.all([a.wait(["ready-a"]), b.wait(["ready-b"])]);
     await h.barrier("start-race");
+    // Both have read the reconcile revision and flushed a grant candidate; only
+    // the exclusive commit can choose between them.
+    await Promise.all([a.wait(["decided-a"]), b.wait(["decided-b"])]);
+    await h.barrier("commit-grant");
     const results = await Promise.all([a.result(), b.result()]);
     expect(results.every((result) => result.ok)).toBe(true);
     expect(results.map((result) => (result.value as { status: string }).status).sort()).toEqual(["granted", "stale"]);
