@@ -43,6 +43,8 @@ const trace = vi.hoisted(() => ({
    * an error code it returns fails that operation instead.
    */
   fault: undefined as ((operation: string, path: string) => string | undefined) | undefined,
+  /** Runs before each unlink and may hold it. */
+  beforeUnlink: undefined as ((path: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -79,6 +81,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       if (traced(to)) trace.events.push(`link ${String(from)} -> ${String(to)}`);
     },
     unlink: async (path: Parameters<typeof actual.unlink>[0]) => {
+      await trace.beforeUnlink?.(String(path));
       inject("unlink", String(path));
       await actual.unlink(path);
     },
@@ -102,6 +105,7 @@ afterEach(async () => {
   trace.linkTarget = "";
   trace.beforeLink = undefined;
   trace.fault = undefined;
+  trace.beforeUnlink = undefined;
   trace.events.length = 0;
   for (const root of roots.splice(0)) {
     await chmod(root, 0o700).catch(() => undefined);
@@ -571,9 +575,16 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
       now: () => now,
       leaseDurationMs: 1_000,
     });
+    trace.root = dir;
     await expect(run("worker-1")).resolves.toMatchObject({ status: "settle-asymmetric" });
     now += 2_000;
     await expect(run("worker-2")).resolves.toMatchObject({ status: "settle-asymmetric" });
+    // The removal is fsynced before the row that holds the submission is
+    // written: the claim's write is the only row write before it.
+    const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
+    const finished = trace.events.indexOf(`sync ${bridges}`);
+    expect(finished).toBeGreaterThanOrEqual(0);
+    expect(trace.events.slice(0, finished).filter((event) => event.endsWith(` -> ${row}`))).toHaveLength(1);
     expect(prepareSubmission).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalled();
     expect(new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash)).size).toBe(1);
@@ -626,6 +637,46 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
         bridges: [base, ownStaging, `${base}.copy`].sort(),
       },
     ]);
+  });
+
+  test("another phase with the same bridge ID waits for a live publisher stopped right after its link", async () => {
+    const dir = await freshDir();
+    const bridges = join(dir, "bridges");
+    const store = await createFsLiquidityTankStore({ dir });
+    const otherStore = await createFsLiquidityTankStore({ dir });
+    const other = createLiquidityTankIntent(authority(1));
+    const { write } = await acquire(store, "worker-1", T0);
+    const otherClaim = await otherStore.claim({ intent: other, owner: "worker-2", now: T0, leaseDurationMs: 1_000 });
+    if (otherClaim.status !== "acquired") throw new Error("expected acquired");
+    let resume = (): void => undefined;
+    const linked = new Promise<void>((resolve) => {
+      trace.beforeUnlink = async (path) => {
+        if (dirname(path) !== bridges || !path.endsWith(".tmp")) return;
+        trace.beforeUnlink = undefined;
+        resolve();
+        await new Promise<void>((resumed) => {
+          resume = resumed;
+        });
+      };
+    });
+    const publishing = store.recordSubmission({ ...write, submission: submission() });
+    // The reservation is linked and its staging name not yet removed.
+    await linked;
+    const reading = otherStore.recordSubmission({
+      settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-2",
+      generation: otherClaim.lease.generation, now: T0,
+      submission: { ...submission(), authorityHash: other.bindingHash },
+    });
+    const meanwhile = await Promise.race([
+      reading.then(() => "finished", () => "finished"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 300)),
+    ]);
+    const stagingWhileStopped = (await readdir(bridges)).filter((name) => name.endsWith(".tmp")).length;
+    resume();
+    await expect(publishing).resolves.toEqual({ status: "recorded" });
+    await expect(reading).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" });
+    // It neither read the reservation nor removed the live publisher's staging name.
+    expect({ meanwhile, stagingWhileStopped }).toEqual({ meanwhile: "waiting", stagingWhileStopped: 1 });
   });
 });
 
