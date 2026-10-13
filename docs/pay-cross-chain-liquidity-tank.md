@@ -529,19 +529,30 @@ same fields, and runs each one under a per-phase filesystem lock:
   process with SIGKILL at each step of the reservation and of the row write
   after it, then finish `recordSubmission` with the same signed bytes from a
   reopened store.
-- **Locks.** Each lock records the owner's PID, a random token for its module
-  instance, a token of its own and its creation time on the monotonic clock.
-  A lock older than `lockStaleMs` is reclaimed when its owner cannot still
-  hold it: a dead PID; one of this module instance's own locks that it no
-  longer holds; or this process's PID on a lock made before this process
-  started, or after now (an earlier boot). The last covers a restarted worker
-  that gets its old PID back, such as PID 1 in a container. A lock with this
-  PID made since this process started may belong to another worker thread or
-  module copy here, so it counts as held. A step that fails after a lock or
-  the store-wide reclaim gate is published removes it before the call fails. A
-  release retries a failed step until `lockTimeoutMs` passes; a release that
-  still fails fails the call instead of returning its result. A read error on
-  an owner file is never taken for a missing owner.
+- **Locks.** Each lock records the owner's PID, its OS thread ID, the boot
+  and PID namespace those belong to, a random token for its thread, a token
+  of its own and its creation time on the monotonic clock. Every copy of the
+  SDK on one thread shares that thread's token and its list of held locks (they
+  are kept on the thread's `process` object), so module copies never take each
+  other's live locks. A lock older than `lockStaleMs` is reclaimed when its
+  owner cannot still hold it:
+  - another PID that no longer exists;
+  - one of this thread's own locks that it no longer holds;
+  - this process's PID on a lock made before this process started, or after
+    now (an earlier boot), such as a restarted worker that got its old PID
+    back (PID 1 in a container);
+  - a lock another thread of this process made, once the OS no longer lists
+    that thread (`/proc/self/task/<tid>`): a worker thread that was
+    terminated, or exited, while it held the lock or the reclaim gate.
+
+  Any other lock counts as held: one whose thread is still listed (it may be
+  the owner, or a later thread that reused its ID), one made in another boot
+  or PID namespace, and one whose thread could not be told, as off Linux. No
+  wall clock decides liveness; it only sets the stale age. A step that fails
+  after a lock or the store-wide reclaim gate is published removes it before
+  the call fails. A release retries a failed step until `lockTimeoutMs`
+  passes; a release that still fails fails the call instead of returning its
+  result. A read error on an owner file is never taken for a missing owner.
 - **Directory admission.** The SDK's private-store checks (see
   [Durable filesystem safety](filesystem-store-safety.md)) refuse a directory
   that is group- or world-writable, owned by another user, reached through a
@@ -563,15 +574,16 @@ PID.
 **Clearing a stuck lock.** A lock that no rule above can reclaim shows as
 `liquidity-tank-settlement-store-unavailable` on every call for its phase, or
 for every phase if it is the reclaim gate. This can happen when a lock's PID
-now belongs to an unrelated live process, or when a live worker's release kept
-failing. To clear it:
+now belongs to an unrelated live process, when a live worker's release kept
+failing, when an exited thread's ID was reused by a live one, or off Linux,
+where an exited worker thread cannot be told from a live one. To clear it:
 
 1. Stop every process that uses the directory, so nothing holds a lock.
 2. Look under `dir/locks`. A phase lock is the directory
    `<sha256 of the settlement key>.lock`; a bridge ID's lock is
    `bridge.<sha256 of the bridge ID>.lock`; the store-wide gate is the file
    `.reclaim`, with `.reclaim.*.quarantine` files beside it. Each holds or is
-   an `owner.json` with the owner's `pid`.
+   an `owner.json` with the owner's `pid` and `tid`.
 3. Remove what is left there, with `rm -r` on the lock directories and `rm` on
    the gate files. With every process stopped, no lock is held, and the rows
    under `dir/records` and reservations under `dir/bridges` are unaffected.

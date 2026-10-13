@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, readFileSync, readlinkSync } from "node:fs";
 import {
   link,
   lstat,
@@ -58,8 +58,9 @@ export interface FsLiquidityTankStoreOptions {
   /** Maximum time spent waiting for another process. Defaults to 5 seconds. */
   lockTimeoutMs?: number;
   /**
-   * Age at which a lock whose owner cannot still hold it (a dead process, or
-   * an earlier process with this PID) may be reclaimed. Defaults to 30 seconds.
+   * Age at which a lock whose owner cannot still hold it (a dead process, an
+   * earlier process with this PID, or an exited thread of this process) may be
+   * reclaimed. Defaults to 30 seconds.
    */
   lockStaleMs?: number;
   /** Contention polling interval. Defaults to 5 milliseconds. */
@@ -70,8 +71,12 @@ type StoredRecord = LiquidityTankRecord & { storeVersion: typeof LIQUIDITY_TANK_
 
 interface LockOwner {
   pid: number;
-  /** This module instance's `PROCESS_TOKEN`. */
-  processToken: string;
+  /** The OS thread that made the lock, or `null` where it cannot be read. */
+  tid: number | null;
+  /** The boot and PID namespace `pid` and `tid` belong to, or `null` where unreadable. */
+  pidScope: string | null;
+  /** The making thread's `LockRegistry.threadToken`. */
+  threadToken: string;
   /** This lock's own token. */
   token: string;
   /** `process.hrtime.bigint()` when the lock was made, in decimal. */
@@ -79,12 +84,74 @@ interface LockOwner {
 }
 
 /**
- * Every lock this module instance publishes carries `PROCESS_TOKEN`, and
- * `HELD_LOCK_TOKENS` names the ones it holds now. One of its own locks that it
- * does not hold was left by a failed release: nothing holds it.
+ * The lock state of one JavaScript thread, shared by every copy of this module
+ * on it. Every lock the thread publishes carries `threadToken`, and `held`
+ * names the ones it holds now: one of its locks that it does not hold was left
+ * by a failed release, and nothing holds it.
  */
-const PROCESS_TOKEN = randomUUID();
-const HELD_LOCK_TOKENS = new Set<string>();
+interface LockRegistry {
+  readonly threadToken: string;
+  readonly held: Set<string>;
+  readonly tid: number | null;
+  readonly pidScope: string | null;
+}
+
+/**
+ * Kept on `process`, which is one object per thread: the main thread and each
+ * worker thread have their own, and every module copy on a thread sees the
+ * same one. So a module copy never takes a lock another copy on its thread
+ * holds, and a lock is told apart from another thread's by `threadToken`.
+ */
+const LOCK_REGISTRY = Symbol.for("@kynesyslabs/dacs/liquidity-tank-fs/lock-registry/v1");
+
+/**
+ * This thread's OS thread ID and the boot and PID namespace it belongs to,
+ * read synchronously so `/proc/thread-self` names this thread. Both are `null`
+ * where `/proc` cannot tell them (not Linux, or `/proc` from another PID
+ * namespace); another thread can then never prove this one has exited.
+ */
+function threadIdentity(): { tid: number | null; pidScope: string | null } {
+  try {
+    const self = /^([0-9]+)\/task\/([0-9]+)$/u.exec(readlinkSync("/proc/thread-self"));
+    if (self === null || Number(self[1]) !== process.pid) return { tid: null, pidScope: null };
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    const pidNamespace = readlinkSync("/proc/self/ns/pid");
+    const tid = Number(self[2]);
+    if (!Number.isSafeInteger(tid) || tid <= 0 || bootId.length === 0 || pidNamespace.length === 0) {
+      return { tid: null, pidScope: null };
+    }
+    return { tid, pidScope: `${bootId} ${pidNamespace}` };
+  } catch {
+    return { tid: null, pidScope: null };
+  }
+}
+
+function isLockRegistry(value: unknown): value is LockRegistry {
+  if (value === null || typeof value !== "object" || nodeTypes.isProxy(value)) return false;
+  const registry = value as Partial<Record<keyof LockRegistry, unknown>>;
+  return typeof registry.threadToken === "string" && registry.threadToken.length > 0 &&
+    nodeTypes.isSet(registry.held) &&
+    (registry.tid === null || (Number.isSafeInteger(registry.tid) && (registry.tid as number) > 0)) &&
+    (registry.pidScope === null || (typeof registry.pidScope === "string" && registry.pidScope.length > 0));
+}
+
+/** This thread's registry, made by the first store on the thread. */
+function threadLockRegistry(): LockRegistry {
+  const existing = (process as unknown as Record<symbol, unknown>)[LOCK_REGISTRY];
+  if (existing !== undefined) {
+    if (!isLockRegistry(existing)) throw new DacsError(`${LABEL} found an unreadable lock registry on this thread`);
+    return existing;
+  }
+  const registry: LockRegistry = Object.freeze({
+    threadToken: randomUUID(),
+    held: new Set<string>(),
+    ...threadIdentity(),
+  });
+  // Neither writable nor configurable: nothing replaces it while the thread runs.
+  Object.defineProperty(process, LOCK_REGISTRY, { value: registry });
+  return registry;
+}
+
 /**
  * No later than this process started, on the monotonic clock: in every worker
  * thread `process.uptime()` counts from the process's start, and reading it
@@ -173,6 +240,7 @@ export async function createFsLiquidityTankStore(
   rawOptions: FsLiquidityTankStoreOptions,
 ): Promise<LiquidityTankStore> {
   const options = snapshotOptions(rawOptions);
+  const registry = threadLockRegistry();
   const root = await preparePrivateStoreDirectory(options.dir, LABEL);
   const recordsDir = join(root, "records");
   const bridgesDir = join(root, "bridges");
@@ -256,14 +324,18 @@ export async function createFsLiquidityTankStore(
       // A missing or malformed owner is reclaimable only after the stale age.
       return null;
     }
-    if (isPlainRecord(parsed) && Object.keys(parsed).length === 4 &&
+    if (isPlainRecord(parsed) && Object.keys(parsed).length === 6 &&
         Number.isSafeInteger(parsed["pid"]) && (parsed["pid"] as number) > 0 &&
-        typeof parsed["processToken"] === "string" && parsed["processToken"].length > 0 &&
+        (parsed["tid"] === null || (Number.isSafeInteger(parsed["tid"]) && (parsed["tid"] as number) > 0)) &&
+        (parsed["pidScope"] === null || (typeof parsed["pidScope"] === "string" && parsed["pidScope"].length > 0)) &&
+        typeof parsed["threadToken"] === "string" && parsed["threadToken"].length > 0 &&
         typeof parsed["token"] === "string" && parsed["token"].length > 0 &&
         typeof parsed["createdNs"] === "string" && DECIMAL.test(parsed["createdNs"])) {
       return {
         pid: parsed["pid"] as number,
-        processToken: parsed["processToken"],
+        tid: parsed["tid"] as number | null,
+        pidScope: parsed["pidScope"] as string | null,
+        threadToken: parsed["threadToken"],
         token: parsed["token"],
         createdNs: parsed["createdNs"],
       };
@@ -275,7 +347,9 @@ export async function createFsLiquidityTankStore(
 
   const newOwner = (): LockOwner => ({
     pid: process.pid,
-    processToken: PROCESS_TOKEN,
+    tid: registry.tid,
+    pidScope: registry.pidScope,
+    threadToken: registry.threadToken,
     token: randomUUID(),
     createdNs: process.hrtime.bigint().toString(),
   });
@@ -290,24 +364,43 @@ export async function createFsLiquidityTankStore(
   }
 
   /**
-   * Whether the lock's owner may still hold it. With this process's PID, it
-   * cannot if it is one of this module instance's locks that it does not hold,
-   * or was made before this process started (or after now, in an earlier
-   * boot): a restart that reused the PID, such as PID 1 in a container. Any
-   * other lock with this PID may belong to another worker thread or module
-   * copy in this process, and counts as held.
+   * Whether the OS reports that the lock's thread has exited. Only for a lock
+   * made in this boot and PID namespace, so its thread ID names a thread of
+   * this process. A listed thread may be the owner or a later thread that
+   * reused its ID, so it counts as alive; anything but a missing entry does too.
    */
-  function ownerMayBeAlive(owner: LockOwner): boolean {
+  async function ownerThreadExited(owner: LockOwner): Promise<boolean> {
+    if (owner.tid === null || owner.pidScope === null || owner.pidScope !== registry.pidScope) return false;
+    try {
+      await lstat(`/proc/self/task/${owner.tid}`);
+      return false;
+    } catch (error) {
+      return errno(error) === "ENOENT";
+    }
+  }
+
+  /**
+   * Whether the lock's owner may still hold it. With this process's PID, it
+   * cannot if it is one of this thread's locks that the thread does not hold;
+   * if it was made before this process started (or after now, in an earlier
+   * boot): a restart that reused the PID, such as PID 1 in a container; or if
+   * it was made by another thread of this process that has since exited. Any
+   * other lock with this PID may belong to a live thread here, and counts as
+   * held. No clock but the monotonic one decides this.
+   */
+  async function ownerMayBeAlive(owner: LockOwner): Promise<boolean> {
     if (owner.pid !== process.pid) return processIsAlive(owner.pid);
-    if (owner.processToken === PROCESS_TOKEN) return HELD_LOCK_TOKENS.has(owner.token);
+    if (owner.threadToken === registry.threadToken) return registry.held.has(owner.token);
     const created = BigInt(owner.createdNs);
-    return created >= PROCESS_STARTED_BY_NS && created <= process.hrtime.bigint();
+    if (created < PROCESS_STARTED_BY_NS || created > process.hrtime.bigint()) return false;
+    return !await ownerThreadExited(owner);
   }
 
   function sameOwner(left: LockOwner | null, right: LockOwner | null): boolean {
     return left === null
       ? right === null
-      : right !== null && left.pid === right.pid && left.processToken === right.processToken &&
+      : right !== null && left.pid === right.pid && left.tid === right.tid &&
+        left.pidScope === right.pidScope && left.threadToken === right.threadToken &&
         left.token === right.token && left.createdNs === right.createdNs;
   }
 
@@ -325,7 +418,7 @@ export async function createFsLiquidityTankStore(
         const metadata = await stat(path);
         const owner = await readOwner(path);
         if (Date.now() - metadata.mtimeMs <= options.lockStaleMs ||
-            (owner !== null && ownerMayBeAlive(owner))) {
+            (owner !== null && await ownerMayBeAlive(owner))) {
           live.push(path);
           continue;
         }
@@ -347,7 +440,7 @@ export async function createFsLiquidityTankStore(
     }
     if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return;
     const observedOwner = await readOwner(reclaimGatePath);
-    if (observedOwner !== null && ownerMayBeAlive(observedOwner)) return;
+    if (observedOwner !== null && await ownerMayBeAlive(observedOwner)) return;
 
     const quarantine = reclaimQuarantinePath();
     try {
@@ -368,13 +461,13 @@ export async function createFsLiquidityTankStore(
     if (moved.dev === observed.dev && moved.ino === observed.ino &&
         sameOwner(movedOwner, observedOwner) &&
         Date.now() - moved.mtimeMs > options.lockStaleMs &&
-        (movedOwner === null || !ownerMayBeAlive(movedOwner))) {
+        (movedOwner === null || !await ownerMayBeAlive(movedOwner))) {
       await unlink(quarantine).catch(ignoreMissing);
     }
     // A moved replacement remains as a live quarantine and blocks reclaimers.
   }
 
-  /** Releases this owner's gate, retrying a failed step; afterwards this process does not hold it. */
+  /** Releases this owner's gate, retrying a failed step; afterwards this thread does not hold it. */
   async function releaseReclaimGate(owner: LockOwner): Promise<void> {
     try {
       await retried(async () => {
@@ -391,13 +484,13 @@ export async function createFsLiquidityTankStore(
     } catch (error) {
       throw new DacsError(`${LABEL} could not release its reclaim gate`, { cause: error });
     } finally {
-      HELD_LOCK_TOKENS.delete(owner.token);
+      registry.held.delete(owner.token);
     }
   }
 
   async function acquireReclaimGate(owner: LockOwner): Promise<boolean> {
     if ((await activeReclaimQuarantines()).length > 0) return false;
-    HELD_LOCK_TOKENS.add(owner.token);
+    registry.held.add(owner.token);
     let linked = false;
     try {
       const temporary = `${reclaimGatePath}.${randomUUID()}.tmp`;
@@ -419,7 +512,7 @@ export async function createFsLiquidityTankStore(
     } catch (error) {
       // A gate this acquisition published is never left behind by its failure.
       if (linked) await releaseReclaimGate(owner);
-      else HELD_LOCK_TOKENS.delete(owner.token);
+      else registry.held.delete(owner.token);
       if (linked || errno(error) !== "EEXIST") throw error;
       await quarantineStaleReclaimGate();
       return false;
@@ -433,7 +526,7 @@ export async function createFsLiquidityTankStore(
       const metadata = await stat(path);
       if (Date.now() - metadata.mtimeMs <= options.lockStaleMs) return;
       const owner = await readLockOwner(path);
-      if (owner && ownerMayBeAlive(owner)) return;
+      if (owner && await ownerMayBeAlive(owner)) return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
@@ -450,7 +543,7 @@ export async function createFsLiquidityTankStore(
       }
       if (Date.now() - observed.mtimeMs <= options.lockStaleMs) return;
       const observedOwner = await readLockOwner(path);
-      if (observedOwner !== null && ownerMayBeAlive(observedOwner)) return;
+      if (observedOwner !== null && await ownerMayBeAlive(observedOwner)) return;
       const quarantine = `${path}.${randomUUID()}.stale`;
       try {
         await rename(path, quarantine);
@@ -464,7 +557,7 @@ export async function createFsLiquidityTankStore(
       if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
           !sameOwner(movedOwner, observedOwner) ||
           Date.now() - moved.mtimeMs <= options.lockStaleMs ||
-          (movedOwner !== null && ownerMayBeAlive(movedOwner))) {
+          (movedOwner !== null && await ownerMayBeAlive(movedOwner))) {
         throw new DacsError(`${LABEL} lock changed during stale recovery`);
       }
       await rm(quarantine, { recursive: true, force: true });
@@ -476,8 +569,8 @@ export async function createFsLiquidityTankStore(
 
   /**
    * Moves this owner's lock away from `path` and deletes it, retrying a failed
-   * step; afterwards this process does not hold it. A lock that could not be
-   * released throws, and this module instance may reclaim it after the stale age.
+   * step; afterwards this thread does not hold it. A lock that could not be
+   * released throws, and this thread may reclaim it after the stale age.
    */
   async function releaseLock(path: string, owner: LockOwner): Promise<void> {
     // Moved away from its publication path before it is deleted, so a
@@ -494,7 +587,7 @@ export async function createFsLiquidityTankStore(
     } catch (error) {
       throw new DacsError(`${LABEL} could not release its lock`, { cause: error });
     } finally {
-      HELD_LOCK_TOKENS.delete(owner.token);
+      registry.held.delete(owner.token);
     }
   }
 
@@ -505,8 +598,8 @@ export async function createFsLiquidityTankStore(
     if (!await acquireReclaimGate(gateOwner)) return false;
     let published = false;
     let gateReleasing = false;
-    // Held before it is published, so it never looks abandoned to this process.
-    HELD_LOCK_TOKENS.add(owner.token);
+    // Held before it is published, so it never looks abandoned to this thread.
+    registry.held.add(owner.token);
     try {
       try {
         await rename(candidate, path);
@@ -528,7 +621,7 @@ export async function createFsLiquidityTankStore(
       }
       throw error;
     } finally {
-      if (!published) HELD_LOCK_TOKENS.delete(owner.token);
+      if (!published) registry.held.delete(owner.token);
       if (!gateReleasing) await releaseReclaimGate(gateOwner);
     }
   }

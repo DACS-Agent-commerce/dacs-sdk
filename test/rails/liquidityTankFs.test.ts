@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import {
   chmod,
   link,
@@ -12,8 +15,10 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import * as nodeModule from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -680,6 +685,41 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
   });
 });
 
+/**
+ * This thread's OS thread ID and its boot and PID namespace, as the store
+ * records them in a lock's owner; `null` where `/proc` cannot tell them.
+ */
+function threadScope(): { tid: number; pidScope: string } | null {
+  try {
+    const self = /^([0-9]+)\/task\/([0-9]+)$/u.exec(readlinkSync("/proc/thread-self"));
+    if (self === null || Number(self[1]) !== process.pid) return null;
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return { tid: Number(self[2]), pidScope: `${bootId} ${readlinkSync("/proc/self/ns/pid")}` };
+  } catch {
+    return null;
+  }
+}
+
+/** Plants `owner` as the phase's lock, made a minute ago. */
+async function plantStaleLock(dir: string, owner: Record<string, unknown>): Promise<void> {
+  const lock = join(dir, "locks", `${sha256Hex(intent.settlementKey)}.lock`);
+  await mkdir(lock, { mode: 0o700 });
+  await writeFile(join(lock, "owner.json"), JSON.stringify(owner), { flag: "wx", mode: 0o600 });
+  const stale = new Date(Date.now() - 60_000);
+  await utimes(lock, stale, stale);
+}
+
+/** Resolves once the OS no longer lists thread `tid` of this process. */
+async function threadExited(tid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (existsSync(`/proc/self/task/${tid}`)) {
+    if (Date.now() >= deadline) throw new Error(`thread ${tid} did not exit`);
+    await new Promise((done) => setTimeout(done, 5));
+  }
+}
+
+const TIMED_OUT = "threw: timed out acquiring the liquidity-tank filesystem store lock";
+
 /** Fails the first operation `match` accepts, once `after` has accepted an earlier one. */
 function failOnce(
   match: (operation: string, path: string) => boolean,
@@ -712,16 +752,14 @@ describe("createFsLiquidityTankStore locks", () => {
     for (const { left, createdNs } of cases) {
       const dir = await freshDir();
       const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 500 });
-      const lock = join(dir, "locks", `${sha256Hex(intent.settlementKey)}.lock`);
-      await mkdir(lock, { mode: 0o700 });
-      await writeFile(join(lock, "owner.json"), JSON.stringify({
+      // A live thread: this one, as another worker thread here would be.
+      await plantStaleLock(dir, {
         pid: process.pid,
-        processToken: "another-process-token",
+        ...(threadScope() ?? { tid: null, pidScope: null }),
+        threadToken: "another-thread-token",
         token: "its-lock-token",
         createdNs: String(createdNs),
-      }), { flag: "wx", mode: 0o600 });
-      const stale = new Date(Date.now() - 60_000);
-      await utimes(lock, stale, stale);
+      });
       outcomes.push({ left, claim: await outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 })) });
     }
     expect(outcomes).toEqual([
@@ -807,5 +845,126 @@ describe("createFsLiquidityTankStore locks", () => {
     await expect(reclaiming.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 }))
       .resolves.toMatchObject({ status: "waiting", lease: { owner: "worker-1" } });
     expect(await readdir(join(dir, "locks"))).toEqual([]);
+  });
+});
+
+describe("createFsLiquidityTankStore locks of other threads and module copies", () => {
+  test.skipIf(threadScope() === null)(
+    "reclaims a stale lock whose thread has exited, never one a live thread holds or one from another boot or PID namespace",
+    async () => {
+      const scope = threadScope()!;
+      const worker = new Worker(
+        "require('node:worker_threads').parentPort.postMessage(require('node:fs').readlinkSync('/proc/thread-self'));" +
+          "setInterval(() => {}, 1_000);",
+        { eval: true },
+      );
+      const [self] = await once(worker, "message") as [string];
+      const workerTid = Number(self.split("/").pop());
+      const attempt = async (tid: number | null, pidScope: string | null) => {
+        const dir = await freshDir();
+        const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 300 });
+        // What a sibling thread with its own registry leaves: this PID, made since this process started.
+        await plantStaleLock(dir, {
+          pid: process.pid, tid, pidScope, threadToken: "a-worker-thread", token: randomUUID(),
+          createdNs: String(process.hrtime.bigint()),
+        });
+        return outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }));
+      };
+      const whileAlive = await attempt(workerTid, scope.pidScope);
+      await worker.terminate();
+      await threadExited(workerTid);
+      expect({
+        whileAlive,
+        afterExit: await attempt(workerTid, scope.pidScope),
+        anotherBootOrNamespace: await attempt(workerTid, `another-boot ${scope.pidScope.split(" ")[1]}`),
+        unknownThread: await attempt(null, scope.pidScope),
+      }).toEqual({
+        whileAlive: TIMED_OUT,
+        afterExit: "acquired",
+        anotherBootOrNamespace: TIMED_OUT,
+        unknownThread: TIMED_OUT,
+      });
+    },
+  );
+
+  test.skipIf(threadScope() === null || typeof (nodeModule as { registerHooks?: unknown }).registerHooks !== "function")
+    .each(["phase lock", "bridge-ID lock", "reclaim gate"] as const)(
+      "a worker thread terminated inside the %s leaves a lock this process reclaims after the stale age, and none while it runs",
+      async (stopIn) => {
+        const dir = await freshDir();
+        // The worker holds phase 0; another phase with the same bridge ID needs its bridge-ID lock.
+        const other = createLiquidityTankIntent(authority(1));
+        const otherSubmission = { ...submission(), authorityHash: other.bindingHash };
+        const { submissionHash: _hash, ...unsignedOther } = otherSubmission;
+        otherSubmission.submissionHash = sha256Hex(canonicalize(unsignedOther));
+        const worker = new Worker(resolve("test/fixtures/liquidity-tank-fs-worker.mjs"), {
+          execArgv: ["--experimental-transform-types"],
+          workerData: { repo: process.cwd(), dir, stopIn, intent, submission: submission(), now: T0 },
+        });
+        const exited = once(worker, "exit");
+        expect(await once(worker, "message")).toEqual(["holding"]);
+        const attempt = async (lockTimeoutMs: number) => {
+          const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs });
+          if (stopIn !== "bridge-ID lock") {
+            return outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }));
+          }
+          const claimed = await store.claim({ intent: other, owner: "worker-1", now: T0, leaseDurationMs: 600_000 });
+          if (claimed.status !== "acquired" && claimed.status !== "waiting") return `claimed ${claimed.status}`;
+          return outcome(() => store.recordSubmission({
+            settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-1",
+            generation: claimed.lease.generation, now: T0, submission: otherSubmission,
+          }));
+        };
+        const whileRunning = await attempt(300);
+        await worker.terminate();
+        await exited;
+        // The terminated thread's ID leaves the OS's list once the thread is gone.
+        const owners = await readdir(join(dir, "locks"));
+        expect({ whileRunning, afterTermination: await attempt(10_000), owners: owners.length > 0 }).toEqual({
+          whileRunning: TIMED_OUT,
+          afterTermination: stopIn === "bridge-ID lock" ? "recorded" : "acquired",
+          owners: true,
+        });
+      },
+      60_000,
+    );
+
+  test("module copies on one thread share their locks: a copy reclaims another's failed release, and never takes its live lock", async () => {
+    vi.resetModules();
+    const copy = await import("../../src/rails/liquidityTankFs.js");
+    expect(copy.createFsLiquidityTankStore).not.toBe(createFsLiquidityTankStore);
+
+    // A live lock of the first copy, paused inside the phase and bridge-ID locks.
+    const liveDir = await freshDir();
+    const first = await createFsLiquidityTankStore({ dir: liveDir, lockTimeoutMs: 5_000 });
+    const { write } = await acquire(first, "worker-1", T0);
+    let resume = (): void => undefined;
+    const paused = new Promise<void>((reached) => {
+      trace.linkTarget = join(liveDir, "bridges", `${sha256Hex(BRIDGE_ID)}.json`);
+      trace.beforeLink = () => {
+        reached();
+        return new Promise<void>((resumed) => { resume = resumed; });
+      };
+    });
+    const holding = first.recordSubmission({ ...write, submission: submission() });
+    await paused;
+    const second = await copy.createFsLiquidityTankStore({ dir: liveDir, lockStaleMs: 1, lockTimeoutMs: 300 });
+    const live = await outcome(() => second.claim({ intent, owner: "worker-2", now: T0 + 2_000, leaseDurationMs: 1_000 }));
+    resume();
+    await expect(holding).resolves.toEqual({ status: "recorded" });
+
+    // A lock the first copy left by a failed release: nothing on this thread holds it.
+    const leftDir = await freshDir();
+    const leaving = await createFsLiquidityTankStore({ dir: leftDir, lockTimeoutMs: 200 });
+    trace.fault = (operation, path) =>
+      operation === "open" && path.endsWith(".lock/owner.json") ? "EMFILE" : undefined;
+    await expect(leaving.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }))
+      .rejects.toThrow(/could not release its lock/);
+    trace.fault = undefined;
+    const reclaiming = await copy.createFsLiquidityTankStore({ dir: leftDir, lockStaleMs: 1, lockTimeoutMs: 2_000 });
+    expect({
+      live,
+      left: await outcome(() => reclaiming.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 })),
+    }).toEqual({ live: TIMED_OUT, left: "waiting" });
   });
 });
