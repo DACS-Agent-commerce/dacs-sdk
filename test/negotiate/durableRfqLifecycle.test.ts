@@ -822,10 +822,11 @@ describe("durable two-agent RFQ lifecycle", () => {
 });
 
 describe("durable RFQ receive keeps local failures retryable", () => {
-  type Fault = "throw" | "error" | "indeterminate" | "fail" | "invalid" | undefined;
+  type Fault = "throw" | "error" | "indeterminate" | "fail" | "invalid" | "malformed" | undefined;
+  type LoadFault = "throw" | "unavailable" | "corrupt" | "unsupported" | undefined;
   const staleKeys = generateKeyPairSync("ed25519");
 
-  /** A client whose clock, verifiers and agreement signer can be made to fail. */
+  /** A client whose store, clock, verifiers and agreement signer can be made to fail. */
   function flakyClient(
     role: "buyer" | "seller",
     transport: DurableRfqLifecycleTransport<string>,
@@ -833,7 +834,10 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     const claim = role === "buyer" ? BUYER : SELLER;
     const keys = role === "buyer" ? buyerKeys : sellerKeys;
     const faults = {
+      load: undefined as LoadFault,
       clock: false,
+      // The clock reads earlier than the session's awaitingSince.
+      behind: false,
       sign: false,
       // The agreement signer returns a well-formed signature made by another key.
       staleKey: false,
@@ -842,9 +846,22 @@ describe("durable RFQ receive keeps local failures retryable", () => {
       // When set, the agreement fault answers only for this role's contribution.
       agreementRole: undefined as "buyer" | "seller" | undefined,
     };
+    const memory = createInMemoryDurableRfqLifecycleStore<string>();
+    const store: DurableRfqLifecycleStore<string> = {
+      load: (storeRole, jobId) => {
+        if (faults.load === "throw") throw new Error("store offline");
+        if (faults.load === "unavailable") return { status: "unavailable", reason: "store offline" };
+        if (faults.load === "corrupt") return { status: "corrupt", reason: "stored record is corrupt" };
+        if (faults.load === "unsupported") return { status: "unsupported", version: 99 };
+        return memory.load(storeRole, jobId);
+      },
+      create: (record) => memory.create(record),
+      compareAndSwap: (storeRole, jobId, revision, next) =>
+        memory.compareAndSwap(storeRole, jobId, revision, next),
+    };
     const client = createDurableRfqLifecycleClient({
       role,
-      store: createInMemoryDurableRfqLifecycleStore<string>(),
+      store,
       transport,
       reserveChannelId: durableReservation(),
       signChannelMessage: channelSigner(keys.privateKey),
@@ -871,7 +888,7 @@ describe("durable RFQ receive keeps local failures retryable", () => {
           ? verifyAgreement(input)
           : (fault as "error" | "indeterminate" | "invalid");
       },
-      nowMs: () => (faults.clock ? Number.NaN : NOW),
+      nowMs: () => (faults.clock ? Number.NaN : faults.behind ? NOW - 5_000 : NOW),
     });
     return { client, faults };
   }
@@ -903,10 +920,36 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     await expect(seller.client.receive(offer)).resolves.toMatchObject({ status: "ready" });
   });
 
+  test("a clock behind the session leaves a turn indeterminate until it catches up", async () => {
+    const { seller, offer } = await offered();
+    seller.faults.behind = true;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: "RFQ session state or trusted receipt time is inconsistent",
+      record: { inboxPacketIds: [] },
+    });
+    seller.faults.behind = false;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({ status: "ready" });
+  });
+
+  test.each([
+    { load: "throw", status: "indeterminate", reason: "RFQ lifecycle store load failed" },
+    { load: "unavailable", status: "indeterminate", reason: "store offline" },
+    { load: "corrupt", status: "rejected", reason: "stored record is corrupt" },
+    { load: "unsupported", status: "rejected", reason: "RFQ lifecycle store version 99 is unsupported" },
+  ] as const)("a store load answering $load leaves a turn $status", async ({ load, status, reason }) => {
+    const { seller, offer } = await offered();
+    seller.faults.load = load;
+    await expect(seller.client.receive(offer)).resolves.toEqual({ status, reason });
+    seller.faults.load = undefined;
+    await expect(seller.client.receive(offer)).resolves.toMatchObject({ status: "ready" });
+  });
+
   test.each([
     { fault: "throw", status: "indeterminate", reason: "channel signature verifier failed" },
     { fault: "error", status: "indeterminate", reason: "channel signature verification returned error" },
     { fault: "indeterminate", status: "indeterminate", reason: "channel signature verification returned indeterminate" },
+    { fault: "malformed", status: "indeterminate", reason: "channel signature verifier returned a malformed decision" },
     { fault: "fail", status: "rejected", reason: "channel signature verification returned fail" },
   ] as const)("a channel verifier answering $fault leaves a turn $status", async ({ fault, status, reason }) => {
     const { seller, offer } = await offered();
@@ -995,13 +1038,16 @@ describe("durable RFQ receive keeps local failures retryable", () => {
     { fault: "throw", status: "indeterminate" },
     { fault: "error", status: "indeterminate" },
     { fault: "indeterminate", status: "indeterminate" },
+    { fault: "malformed", status: "indeterminate" },
     { fault: "invalid", status: "rejected" },
   ] as const)("a contribution verifier answering $fault leaves a proposal $status", async ({ fault, status }) => {
     const { network, seller, proposal } = await proposed();
     seller.faults.agreement = fault;
+    // Finalizing reports a throw or a malformed answer as "error".
+    const reported = fault === "throw" || fault === "malformed" ? "error" : fault;
     await expect(seller.client.receive(proposal)).resolves.toMatchObject({
       status,
-      reason: `buyer agreement contribution is not cryptographically valid (${fault === "throw" ? "error" : fault})`,
+      reason: `buyer agreement contribution is not cryptographically valid (${reported})`,
     });
     const loaded = await seller.client.getStatus(JOB_ID);
     expect(loaded.status === "ok" && loaded.record.agreement).toBeUndefined();

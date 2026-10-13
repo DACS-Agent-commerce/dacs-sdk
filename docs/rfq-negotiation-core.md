@@ -109,13 +109,24 @@ redrive only an authenticated `absent` result. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
 `receive()` returns `rejected` only as its answer about the packet: it is
-malformed or misrouted, its job does not exist, has failed or cannot be read
-from the store, or the turn, plan or counterparty contribution is refused.
-When the trusted clock, the channel signature verifier, the agreement signer
-or the contribution verifier throws or cannot decide, or the role's own
-agreement contribution does not verify (its signer used a stale or wrong
-key), `receive()` returns `indeterminate`, stores nothing, and the same
-packet can be received again.
+malformed or misrouted; its job does not exist, has failed, or is stored
+corrupt or in an unsupported version; its RFQ turn timed out; or the turn, plan
+or counterparty contribution is refused. It returns `indeterminate` instead,
+stores nothing, and the same packet can be received again, when:
+
+- the store's `load` throws or reports `unavailable`;
+- the trusted clock, the channel signature verifier, the agreement signer or
+  the contribution verifier throws, cannot decide, or answers something
+  malformed;
+- the stored session does not validate, or the clock reads earlier than the
+  session's `awaitingSince` (it is behind);
+- the role's own agreement contribution does not verify, for example because
+  its signer used a stale or wrong key. Only an invalid counterparty
+  contribution is `rejected`.
+
+A verifier should answer `fail` or `invalid` for bad counterparty input and
+throw only for its own faults: one that throws keeps that packet
+`indeterminate` on every retry.
 
 ```ts
 const buyerRfq = createDurableRfqLifecycleClient({

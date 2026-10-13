@@ -270,12 +270,16 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
   ): Promise<DurableRfqLifecycleResult<TSignature>>;
   /**
    * Apply one counterparty packet. "rejected" is the lifecycle's answer about
-   * the packet: it is malformed or misrouted, its job does not exist, has
-   * failed or is unreadable in the store, or the turn, plan or counterparty
-   * contribution is refused. A clock, verifier or signer that fails or cannot
-   * decide, or our own agreement contribution failing verification (a stale
-   * or wrong signer key), gives "indeterminate" instead; nothing is stored,
-   * and the same packet may be received again.
+   * the packet: it is malformed or misrouted; its job does not exist, has
+   * failed, or is stored corrupt or in an unsupported version; its RFQ turn
+   * timed out; or the turn, plan or counterparty contribution is refused.
+   * It gives "indeterminate" instead, stores nothing, and the same packet may
+   * be received again, when the store load fails; the clock, a verifier or
+   * the agreement signer fails, cannot decide or answers malformed; the stored
+   * session does not validate or the receipt time is before its
+   * `awaitingSince`; or our own agreement contribution fails verification (a
+   * stale or wrong signer key). So a verifier should answer "fail" or
+   * "invalid" for bad counterparty input and throw only for its own faults.
    */
   receive(packet: unknown): Promise<DurableRfqLifecycleResult<TSignature>>;
   resumeOutbox(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
