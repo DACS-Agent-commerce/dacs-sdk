@@ -1,5 +1,10 @@
 # Reviewed historical fixtures and false positives. Keep entries exact: never
 # replace these fingerprints with path, rule, or commit-wide allowlists.
+# Reviewed public deterministic fixtures reachable from the current finality
+# branch. These are the published Base-Sepolia USDC address, repeated-address
+# fixtures, and a test key derived in source from a fixed label.
+# Published Base-Sepolia USDC token address in the settlement restart worker fixture (PR #336).
+# Placeholder EVM token addresses in the package-consumer type fixture (PR #268).
 2da38fcb55b1c6843cff3fac55549fe7f2f14526:test/integration/connectivity.smoke.test.ts:dacs-mnemonic-assignment:7
 e7bb2528a9c3ca42ce40f01d01ed04e841cf94f0:test/identity/claimReference.test.ts:generic-api-key:55
 2c83f6ffb0ac1c5939c3336377135bb588623c8c:test/identity/claimReference.test.ts:generic-api-key:87
@@ -27,9 +32,6 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-
 f5266368c979ac9ab68dee1e93f43726f44aa47e:test/registry/registry.test.ts:generic-api-key:166
 f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api-key:9
 60afda953de7dfff972b9a029a5a32a5718f3107:test/registry/registry.test.ts:generic-api-key:21
-# Reviewed public deterministic fixtures reachable from the current finality
-# branch. These are the published Base-Sepolia USDC address, repeated-address
-# fixtures, and a test key derived in source from a fixed label.
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/rails/x402.test.ts:generic-api-key:21
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/e2e/session.e2e.test.ts:generic-api-key:53
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:815
@@ -37,11 +39,10 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:870
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:899
 9e23f7c13addf5732f642d9e5590649956c9f0a8:test/registry/registry.test.ts:generic-api-key:921
-
-# PR #332 (DACS-3 v0.6 CanonicalChannelMessage): public Standard test-vector values
-# in the byte-identical copy of conformance/vectors/security/canonical-channel-message-v0.6.json
-# (sha256 5e5210845473d892246223475c5cbfcbf16c8de0dba84937fa114635e46501bb) and two
-# fixture signatures in test/negotiate/channel.test.ts, all introduced by c8259167.
+63e41f1d35536884cce585b7c390dcc95b47730d:test/fixtures/settlementProcessWorker.ts:generic-api-key:23
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
+80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
 c8259167c344f5257edc66c9ce57a64f7a91f6ab:test/fixtures/standard-next/canonical-channel-message-v0.6.json:generic-api-key:1014
 c8259167c344f5257edc66c9ce57a64f7a91f6ab:test/fixtures/standard-next/canonical-channel-message-v0.6.json:generic-api-key:1015
 c8259167c344f5257edc66c9ce57a64f7a91f6ab:test/fixtures/standard-next/canonical-channel-message-v0.6.json:generic-api-key:1037
