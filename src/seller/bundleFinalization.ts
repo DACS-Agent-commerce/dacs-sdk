@@ -71,6 +71,7 @@ import {
   type SellerFulfilmentAgreement,
   type SellerFulfilmentResult,
 } from "../agent/runFulfilmentCore.js";
+import { compositeVerificationAddress } from "../agent/vetCore.js";
 /*
  * Payment authorization is an operational handoff, not a bundle artifact.
  * Its store-backed shape is nevertheless revalidated at this boundary before
@@ -2107,6 +2108,12 @@ async function auditResolvedDependencyGraph(
     ) {
       throw new DacsError("completed session carries an invalid Vet record/requirement invocation");
     }
+    const vetDependency = dependencies.get(dependencySourceId(refSource(ref)));
+    if (vetDependency !== undefined && ref.anchor.locator === vetDependency.anchorReceipt.nativeAddress &&
+        vetDependency.anchorReceipt.logicalAddress !==
+          compositeVerificationAddress(session.jobId, record.evaluatedParty)) {
+      throw new DacsError("native Vet dependency receipt binds a different logical address");
+    }
     await verifiedDisposition("Vet requirement invocation provenance", () =>
       provider.verifyVetRequirementProvenance({
         invocation: snapshot(invocation, "Vet requirement provenance input"),
@@ -2680,7 +2687,9 @@ async function verifyDependencies(
         : requirement.source.kind === "deliverable"
           ? requirement.source.anchor.locator
           : undefined;
-    if (locator !== undefined && receipt.logicalAddress !== locator) {
+    const nativeVetRef = requirement.kinds.includes("vet-record") &&
+      locator === receipt.nativeAddress;
+    if (locator !== undefined && !nativeVetRef && receipt.logicalAddress !== locator) {
       throw new DacsError(`dependency ${id} receipt binds a different logical address`);
     }
     await verifiedDisposition(`dependency ${id} receipt proof`, () =>

@@ -4,18 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ARTIFACT_SEPARATORS,
+  type CompositeVerificationRecord,
+  type IdentityBundle,
+} from "@kynesyslabs/dacs/artifacts";
+import { compositeVerificationAddress, type ProtocolAnchorReceipt } from
+  "@kynesyslabs/dacs";
+import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
   FIXED_PRICE_PAY_DEM_REGISTRY_INDEX_REF,
   FIXED_PRICE_PAY_DEM_STANDARD_REVISION,
   type FixedPricePayDemTrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
-import { rawPublicKey } from "@kynesyslabs/dacs/crypto";
-import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
+import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import { createDacsFixedPricePayDemOrderPairV1 } from "../src/liveOrder.js";
-import { createDacsLiveSessionIdentityV1 } from "../src/sessionIdentityVetRuntime.js";
+import {
+  authenticateDacsSessionVetProductionV1,
+  createDacsLiveSessionIdentityV1,
+} from "../src/sessionIdentityVetRuntime.js";
 import { authenticateDacsLiveSessionIdentityV1 } from
   "../src/sessionBootstrapTransportRuntime.js";
 import {
@@ -127,5 +138,108 @@ describe("rail-bound live session identity", () => {
       "pay-x402",
       "eip155:84532",
     )).resolves.toBe(false);
+  });
+
+  it("binds a Vet reference to finalized native readback, not the logical name", async () => {
+    const verifierKeys = generateKeyPairSync("ed25519");
+    const evaluatedKeys = generateKeyPairSync("ed25519");
+    const verifier = demosAgentClaimRef(rawPublicKey(verifierKeys.publicKey));
+    const evaluated = demosAgentClaimRef(rawPublicKey(evaluatedKeys.publicKey));
+    const evaluatedIdentity: IdentityBundle = {
+      bundleVersion: "1",
+      presentedBy: evaluated,
+      presentedAt: 1_800_000_000_000,
+      sessionNonce: "native-vet-reference",
+      claims: [{ ref: evaluated }],
+      presentation: {
+        kind: "session-key",
+        key: "native-vet-session-key",
+        signature: "native-vet-presentation",
+      },
+    };
+    const requirement = Object.freeze({ requirementVersion: "1" as const, required: [] });
+    const unsigned = {
+      recordVersion: "1" as const,
+      jobId: JOB_ID,
+      evaluatedParty: evaluated,
+      bundleHash: identityBundleHash(evaluatedIdentity),
+      requirementHash: sha256Hex(canonicalize(requirement)),
+      freshness: [],
+      supplementary: [],
+      dealSpecific: [],
+      overallDecision: "pass" as const,
+      generatedAt: 1_800_000_000_100,
+    };
+    const record: CompositeVerificationRecord = {
+      ...unsigned,
+      signature: {
+        algorithm: "ed25519",
+        signer: verifier,
+        value: sign(
+          null,
+          signedBytes(
+            ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+            contentHash(unsigned),
+          ),
+          verifierKeys.privateKey,
+        ).toString("base64url"),
+      },
+    };
+    const logicalAddress = compositeVerificationAddress(JOB_ID, evaluated);
+    const nativeAddress = `stor-${"4".repeat(64)}`;
+    const recordHash = contentHash(record as unknown as Record<string, unknown>);
+    const receipt: ProtocolAnchorReceipt = {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress,
+      nativeAddress,
+      contentHash: recordHash,
+      transactionRef: { kind: "demos", value: "5".repeat(64) },
+      writer: verifier,
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: 1_800_000_000_500,
+      blockRef: { id: "6".repeat(64), height: "42" },
+      evidence: { kind: "demos-bft", value: "7".repeat(64) },
+    };
+    const context = {
+      demos: { adapter: {
+        verifyDemosAnchorReceipt: async () => true,
+        readAnchor: async (address: string) => address === nativeAddress ? record : null,
+      } },
+    } as never;
+    const exact = {
+      record,
+      recordRef: {
+        anchor: { kind: "storage-program" as const, locator: nativeAddress },
+        contentHash: recordHash,
+        signer: verifier,
+      },
+      anchorReceipt: receipt,
+    };
+
+    await expect(authenticateDacsSessionVetProductionV1({
+      context,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production: exact,
+    })).resolves.toBe("valid");
+    await expect(authenticateDacsSessionVetProductionV1({
+      context,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production: {
+        ...exact,
+        recordRef: {
+          ...exact.recordRef,
+          anchor: { kind: "storage-program", locator: logicalAddress },
+        },
+      },
+    })).resolves.toBe("invalid");
   });
 });

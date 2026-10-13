@@ -503,7 +503,8 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
   });
 
   it("records a valid late acknowledgement monotonically and rejects an unbound ACK", async () => {
-    const database = await open(join(root(), "buyer.sqlite"), BUYER, "buyer");
+    const databasePath = join(root(), "buyer.sqlite");
+    const database = await open(databasePath, BUYER, "buyer");
     const store = database.createHttpOutboxStore();
     const now = await store.readTime();
     const signed = await envelope("buyer", 4, now);
@@ -535,6 +536,7 @@ describe("SQLite authenticated HTTP inbox/outbox", () => {
       BUYER,
       now + 2,
     );
+    advanceStoreClock(databasePath, acknowledgement.receivedAt);
     expect(await store.acknowledge({
       envelopeId: signed.envelopeId,
       envelopeHash: put.record.envelopeHash,

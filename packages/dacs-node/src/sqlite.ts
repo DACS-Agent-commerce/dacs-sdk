@@ -526,6 +526,20 @@ export class DacsNodeSqliteError extends Error {
   }
 }
 
+/**
+ * Whether `error` is SQLite lock contention a retry may clear: another
+ * connection held the lock past the busy timeout. That is SQLITE_BUSY or
+ * SQLITE_LOCKED, with any extended code, as better-sqlite3 reports it, or the
+ * same primary result code as node:sqlite reports it.
+ */
+export function isDacsNodeSqliteBusyError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const { code, errcode } = error as { code?: unknown; errcode?: unknown };
+  if (typeof code === "string" && /^SQLITE_(?:BUSY|LOCKED)(?:_[A-Z]+)*$/.test(code)) return true;
+  return code === "ERR_SQLITE_ERROR" && typeof errcode === "number" &&
+    ((errcode & 0xff) === 5 || (errcode & 0xff) === 6);
+}
+
 interface MetadataRow {
   schema_version: number;
   mode: string;

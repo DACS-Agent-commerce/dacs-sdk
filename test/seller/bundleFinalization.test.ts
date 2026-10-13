@@ -167,6 +167,7 @@ function fixture(
     sellerVetDecision?: "pass" | "fail" | "indeterminate" | "error";
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
+    nativeVetRefs?: boolean;
   } = {},
 ) {
   const attested = deliveryMode === "attested";
@@ -397,6 +398,10 @@ function fixture(
     "seller-vet",
     sellerVet as unknown as Record<string, unknown>,
   );
+  if (options.nativeVetRefs) {
+    buyerVetRef.anchor.locator = `stor-${buyerVetRef.contentHash.slice(0, 40)}`;
+    sellerVetRef.anchor.locator = `stor-${sellerVetRef.contentHash.slice(0, 40)}`;
+  }
   const listingPin = {
     listingId: listingArtifact.listingId,
     version: listingArtifact.listingVersion,
@@ -1086,6 +1091,12 @@ function fixture(
       deliveryEvidence.deliverableAnchor.locator,
     ),
   ];
+  if (options.nativeVetRefs) {
+    for (const [vetRef, party] of [[buyerVetRef, BUYER], [sellerVetRef, SELLER]] as const) {
+      const dependency = input.dependencies.find((candidate) => candidate.anchorReceipt.contentHash === vetRef.contentHash)!;
+      dependency.anchorReceipt.logicalAddress = `dacs2:composite:${JOB_ID}:${encodeURIComponent(party)}`;
+    }
+  }
   const commitmentDependency = input.dependencies.find(
     (candidate) =>
       candidate.source.kind === "attestation-ref" &&
@@ -2582,6 +2593,20 @@ function providerWriteCounts(f: ReturnType<typeof fixture>): {
 }
 
 describe("read-only authentication of retained finalized seller bundles", () => {
+  test("finalizes and re-verifies native Vet references with their logical receipt bindings", async () => {
+    const f = fixture("pure", "storage", false, false, false, { nativeVetRefs: true });
+    const result = await finalizeCompletedSellerBundleCore(f.input, f.provider);
+    await expect(verifyFinalizedSellerBundleReadOnly(terminalVerificationInput(f), result, terminalReadProvider(f)))
+      .resolves.toEqual(result);
+  });
+
+  test("rejects native Vet references with a receipt bound to another logical party", async () => {
+    const f = fixture("pure", "storage", false, false, false, { nativeVetRefs: true });
+    const dependency = f.input.dependencies.find((candidate) => candidate.anchorReceipt.logicalAddress.startsWith("dacs2:composite:"))!;
+    dependency.anchorReceipt.logicalAddress = `dacs2:composite:${JOB_ID}:another-party`;
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(/native Vet dependency receipt/);
+  });
+
   test.each(["pure", "write-input"] as const)(
     "accepts a real cryptographically verified %s finalization",
     async (mapping) => {
