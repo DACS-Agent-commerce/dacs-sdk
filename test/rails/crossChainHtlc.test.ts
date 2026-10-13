@@ -3202,6 +3202,66 @@ describe("advanceCrossChainHtlc", () => {
     },
   );
 
+  test("never refunds on the source leg alone for a store row that retains a source claim without a reveal checkpoint", async () => {
+    const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const run = runner({ adapter: h.adapter, store, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    // A corrupt row: a source claim retained without a reveal or a reveal checkpoint.
+    const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const corrupter = await store.claim({ intent, secrets, owner: "corrupter", now: 1_600_000, leaseDurationMs: 100 });
+    if (corrupter.status !== "acquired") throw new Error("corrupter lease not acquired");
+    await expect(store.recordPrepared({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      owner: corrupter.lease.owner,
+      generation: corrupter.lease.generation,
+      prepared: preparedFor(intent, "source-claim"),
+    })).resolves.toMatchObject({ status: "recorded" });
+    h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+    const sourceLegCalls = h.observeSourceLeg.mock.calls.length;
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "corrupt-row", now: () => 1_700_000 }))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-ledger-observation-unavailable" });
+    expect(h.observeSourceLeg).toHaveBeenCalledTimes(sourceLegCalls);
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+    expect(h.broadcastRetained.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+  });
+
+  test.each(["transaction", "inclusion", "expiry"] as const)(
+    "sends no source refund on a source-leg view that changes the checkpointed lock's %s",
+    async (fact) => {
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await advanceCrossChainHtlc(run.nextOwner());
+      const lock = h.actions["source-lock"];
+      if (!lock || lock.state !== "final" || lock.includedAt === undefined || lock.expiresAt === undefined) {
+        throw new Error("expected final source lock");
+      }
+      const viewed: HtlcObservedAction = fact === "transaction"
+        ? { ...lock, txRef: refFor("source-lock", "-reorged") as Extract<HtlcTxRef, { kind: "htlc-lock" }> }
+        : fact === "inclusion"
+          ? { ...lock, includedAt: lock.includedAt + 1, finalityObservedAt: lock.finalityObservedAt + 1 }
+          : { ...lock, expiresAt: lock.expiresAt + 1 };
+      h.observeSourceLeg.mockImplementation(async () => ({
+        observedAt: 1_000_000,
+        authenticationHash: AUTH_HASH,
+        actions: { "source-lock": viewed },
+      }));
+      h.observe.mockImplementation(async () => { throw new Error("payee observation unavailable"); });
+      const sourceLegCalls = h.observeSourceLeg.mock.calls.length;
+      run.setClock(1_700_000);
+      await expect(advanceCrossChainHtlc({ ...run.shared, owner: `changed-${fact}` })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "htlc-ledger-observation-unavailable",
+      });
+      expect(h.observeSourceLeg).toHaveBeenCalledTimes(sourceLegCalls + 1);
+      expect(h.prepareAction.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+      expect(h.broadcastRetained.mock.calls.map((call) => call[0].action)).toEqual(["source-lock", "destination-lock"]);
+    },
+  );
+
   test("abandons an adapter broadcast that outlasts the lease and resends the same bytes next call", async () => {
     const h = harness();
     const broadcast = h.adapter.broadcastRetained;
