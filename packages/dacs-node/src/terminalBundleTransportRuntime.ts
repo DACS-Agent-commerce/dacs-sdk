@@ -2299,6 +2299,13 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
             await recordDisagreement(envelope.jobId, choice, assessment.proposal, authentication);
             return rejected(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
           }
+          // This role's own failure of another plan was claimed before that
+          // plan was selected, so the peer's plan won the selection: that is
+          // the disagreement, which the resumed local failure records.
+          const local = await loadLocalVetResult(envelope.jobId);
+          if (local?.status === "failed" && local.planHash !== assessment.proposal.plan.planHash) {
+            return rejected(DACS_VET_TERMINAL_PLAN_DISAGREEMENT);
+          }
           // The peer signs its plan only after this acceptance. Until this
           // role's own Vet result agrees with the plan, it stays selected and
           // the message stays pending in the inbox, to be decided again.

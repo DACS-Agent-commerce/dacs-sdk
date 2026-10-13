@@ -2251,6 +2251,44 @@ describe("authenticated peer plans on the Vet terminal", () => {
       expect(actor.signComponent).not.toHaveBeenCalled();
     });
 
+    // Daybreak r9 P3: this role's own failure is claimed, but its plan not yet
+    // selected (here a crash stops it there), when the peer's different plan
+    // arrives and wins the selection. That is the plan disagreement, not a
+    // pass-against-failure conflict of this role's own Vet.
+    it(`${rail}: reports a peer plan that arrives in this role's own failure's claim window as the disagreement`, async () => {
+      const actor = memoryRoleDatabase("buyer", undefined, rail);
+      const database = actor.context.database as unknown as {
+        putEffectIntent: (input: Readonly<{ effectId: string }>) => unknown;
+      };
+      const put = database.putEffectIntent;
+      database.putEffectIntent = (input) => {
+        if (input.effectId !== terminalTransportEffectId("buyer", "selection")) return put(input);
+        database.putEffectIntent = put;
+        throw new Error("crash before the selection");
+      };
+      await expect(actor.runtime.registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+        .rejects.toThrow("crash before the selection");
+      expect(actor.effects.get(`session:${terminalTransportEffectId("buyer", "local-vet")}`))
+        .toMatchObject({ kind: "local-vet-failure" });
+      expect(row(actor, "selection")).toBeUndefined();
+
+      const planB = await terminalProposal(terminalInput("fail", phaseOf(rail), "buyer"));
+      await expect(restart(actor).handleMessage(fromSeller(planB), inbound)).resolves.toEqual({
+        disposition: "rejected", reasonCode: "vet-terminal-plan-disagreement",
+      });
+      expect(row(actor, "selection")).toMatchObject({ source: "peer", planHash: planB.plan.planHash });
+      expect(actor.retainedProposal()).toBeUndefined();
+      // The resumed local failure records the disagreement with its own plan.
+      await expect(restart(actor).registerLocalTerminal(terminalInput("fail", phaseOf(rail))))
+        .rejects.toMatchObject({ reasonCode: "vet-terminal-plan-disagreement" });
+      await expect(actor.runtime.loadPlanDisagreementEvidence!(JOB_ID)).resolves.toMatchObject({
+        kind: "plan-disagreement", operatorAlert: true, selected: "peer", peerPlanHash: planB.plan.planHash });
+      await expect(advanceDacsVetTerminalTrackV1(restart(actor), actor.context, 1_000, JOB_ID))
+        .resolves.toEqual(disagreementStop);
+      expect(sealed(actor)).toBeUndefined();
+      expect(actor.signComponent).not.toHaveBeenCalled();
+    });
+
     it(`${rail}: alerts the operator for a conflicting plan after commit and keeps the committed plan`, async () => {
       const actor = memoryRoleDatabase("buyer", undefined, rail);
       await actor.passOwnVet();
