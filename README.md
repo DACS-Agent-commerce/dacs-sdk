@@ -243,6 +243,15 @@ const seller = await createAgent({
   // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
+  // Also required for DACS-4 PC-2 SettlementEvidence references (CORE §5.1).
+  // Without this callback every PC-2 reference resolves as `unresolved`.
+  // Verify retained receipt evidence and its logical/native addresses,
+  // content hash, transaction, writer and nonce against the same Demos chain
+  // this Agent reads. The host can connect its own DemosAdapter to that chain
+  // and call verifyDemosAnchorReceipt; false/throw alone is indeterminate.
+  // The SDK binds and reads the receipt but does not authenticate it itself.
+  resolveAttestationAnchorReceipt: (input) =>
+    resolveVerifiedAttestationReceipt(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
