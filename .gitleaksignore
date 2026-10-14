@@ -43,3 +43,5 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
+# Public ed25519 signer reference ("key:<64 hex>") in the HTLC SettlementEvidence test fixture (PR #268).
+a2dcd490c4a0bd535f37c19a3d476768f0b0594e:test/rails/crossChainHtlc.test.ts:generic-api-key:6307
