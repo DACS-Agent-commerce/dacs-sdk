@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   createInMemoryLiquidityTankStore,
   type LiquidityTankLease,
+  type LiquidityTankObservation,
   type LiquidityTankStore,
   type LiquidityTankStoreClaim,
 } from "../../src/rails/liquidityTank.js";
@@ -37,6 +38,9 @@ const CASE = {
   expiryBlocks: "recovery expiry blocks a later completion and settlement",
   failureRetention: "terminal failure evidence is retained once, echoed and expires the lock",
   failureCleared: "a timely completion clears retained failure evidence and wins",
+  failureLockCompletion: "a timely completion of the lock a durable failure carries replaces it and blocks expiry",
+  failureEvidence: "a failure that carries its lock is expiry evidence only as the durable observation",
+  contradictionCas: "a contradiction expires a lock only when stamped after its checkpoint and at or after the deadline, never while the operation is live",
   restart: "retained state survives a restart",
   settles: "through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
   expires: "through the core, an expired phase stays expired across restarts and a late release",
@@ -228,6 +232,35 @@ function rewritingWrites(
 }
 
 /** Claims that overlap both read a free phase: the one that resumes first is granted a lease the store never wrote. */
+/**
+ * Refuses a completion whenever the durable observation is a failure that
+ * carries a lock, so that lock's timely release can never replace it.
+ */
+function blocksCompletionAfterLockBearingFailure(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
+  const durable = new Map<string, LiquidityTankObservation>();
+  return {
+    recordObservation: async (input) => {
+      const prior = durable.get(input.settlementKey) as { status?: string; lockTxHash?: string } | undefined;
+      if (input.observation.status === "completed" && prior?.status === "failed" && prior.lockTxHash !== undefined) {
+        return { status: "conflict", reason: "refuses-completion-after-failure" };
+      }
+      const result = await inner.recordObservation(input);
+      if (result.status === "recorded") durable.set(input.settlementKey, input.observation);
+      return result;
+    },
+  };
+}
+
+/** Records any contradicted-after-lock expiry without checking its checkpoint, time or the host clock. */
+function acceptingAnyContradictionExpiry(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
+  return {
+    recordRecoveryExpired: async (input) =>
+      (input.observation as { status: string }).status === "contradicted-after-lock"
+        ? { status: "recorded" }
+        : inner.recordRecoveryExpired(input),
+  };
+}
+
 function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
   let inFlight = 0;
   return {
@@ -404,6 +437,62 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   [CASE.failureCleared, "expires past a completion that cleared a retained failure",
     () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-lost-to-completion")),
     /expiry from the cleared failure: store answered recorded/],
+  [CASE.failureLockCompletion, "refuses a completion once a failure that carries its lock is durable",
+    () => database(blocksCompletionAfterLockBearingFailure),
+    /timely completion of that failure's lock: store answered conflict; expected recorded or existing/],
+  [CASE.failureLockCompletion, "expires past a completion that replaced a failure carrying its lock",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-lost-to-completion")),
+    /expiry from the replaced failure: store answered recorded/],
+  [CASE.failureEvidence, "expires from a failure that is not the durable observation",
+    () => database(accepting("recordRecoveryExpired", "liquidity-tank-recovery-checkpoint-cas-failed")),
+    /expiry from a failure that is not the durable one: store answered recorded/],
+  [CASE.failureEvidence, "expires from a bare failure retained beside a checkpoint", () => database((inner) => {
+    const failures = new Set<string>();
+    return {
+      recordRecoveryFailure: async (input) => {
+        const result = await inner.recordRecoveryFailure(input);
+        if (result.status === "recorded") failures.add(input.settlementKey);
+        return result;
+      },
+      recordRecoveryExpired: async (input) => {
+        const result = await inner.recordRecoveryExpired(input);
+        return input.observation.status === "failed" && failures.has(input.settlementKey) &&
+          result.status === "conflict" ? { status: "recorded" } : result;
+      },
+    };
+  }), /expiry from a bare failure retained beside a checkpoint: store answered recorded/],
+  [CASE.contradictionCas, "records any contradiction expiry without its CAS",
+    () => database(acceptingAnyContradictionExpiry),
+    /contradiction stamped before the deadline: store answered recorded/],
+  [CASE.contradictionCas, "checks only the deadline on a contradiction", () => database((inner) => ({
+    recordRecoveryExpired: async (input) => {
+      const result = await inner.recordRecoveryExpired(input);
+      const evidence = input.observation as {
+        status: string; checkpoint?: { recoveryDeadline: number }; contradiction?: { observedAt: number };
+      };
+      const deadline = evidence.checkpoint?.recoveryDeadline ?? Infinity;
+      return evidence.status === "contradicted-after-lock" && result.status === "conflict" &&
+        result.reason === "liquidity-tank-recovery-expiry-not-due" &&
+        input.now >= deadline && (evidence.contradiction?.observedAt ?? 0) >= deadline
+        ? { status: "recorded" }
+        : result;
+    },
+  })), /pending without a lock at the deadline: store answered recorded/],
+  [CASE.contradictionCas, "accepts a contradiction beside retained failure evidence", () => database((inner) => {
+    const failures = new Set<string>();
+    return {
+      recordRecoveryFailure: async (input) => {
+        const result = await inner.recordRecoveryFailure(input);
+        if (result.status === "recorded") failures.add(input.settlementKey);
+        return result;
+      },
+      recordRecoveryExpired: async (input) => {
+        const result = await inner.recordRecoveryExpired(input);
+        return (input.observation as { status: string }).status === "contradicted-after-lock" &&
+          failures.has(input.settlementKey) && result.status === "conflict" ? { status: "recorded" } : result;
+      },
+    };
+  }), /contradiction beside retained failure evidence: store answered recorded/],
   [CASE.restart, "starts empty after a restart", forgetful,
     /the reopened store lost the submission or the checkpoint/],
   [CASE.restart, "keeps its bridge-ID index in process memory (code review B2)",
