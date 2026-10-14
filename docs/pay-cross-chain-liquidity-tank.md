@@ -12,18 +12,34 @@ inside its own window, or while every contradicting read is stamped before the
 deadline or no later than the lock's checkpoint (see
 [Contradicted locks](#contradicted-locks)).
 
+**It is a core, not a phase handler.** It drives one phase's bridge operation
+to a progress result. It does not build, anchor or supersede
+`SettlementEvidence`, return a `PhaseHandlerResult`, or retry an anchor (DACS-4
+PC-2, PC-3 and PC-7, and the interim and `:resolved` records of ST-8). A host
+phase handler does that around it (see [Host duties](#host-duties) and
+[Mapping progress to DACS results](#mapping-progress-to-dacs-results)); until
+one exists, the core alone does not conform to §9.5.5.
+
 The core:
 
 - validates the exact stablecoin-cross-chain / cross-chain / liquidity-tank
-  authority, SR-5 binding, route and distinct tank pair;
+  authority, the fixed route and a distinct tank pair, and checks that the
+  SR-5 binding, rail descriptor and agreement hashes are 32-byte hex. It does
+  not resolve or compare those hashes, or check the tank pair against the
+  pinned rail's `liquidityTankIds`: the host must (see
+  [Host duties](#host-duties));
 - binds both addresses, the fixed route's exact six-decimal USDC conversion,
   amount, agreement, rail, job and phase before effects;
 - requires the complete signed native-bridge transaction to be prepared and
   durably stored before broadcast;
 - generation-fences preparation, exact-byte broadcast and authenticated status
   reads across worker takeover;
-- reconciles the same 16-character `bridgeId` and operation hash before every
-  rebroadcast;
+- reconciles the same `bridgeId` and operation hash before every
+  rebroadcast. A bridge ID is 1 to 128 characters from `[A-Za-z0-9_-]`:
+  §9.5.5's prose calls it a 16-character hash, but the pinned Standard's
+  `txref-liquidity-tank` vector uses `"tank-308"` and the Demos native-bridge
+  branches derive `bridge_` plus 16 or 64 hex characters, so the core accepts
+  all of them and only ever compares the ID exactly;
 - refuses to run without the host's two checks: it uses a bridge observation
   only when the host's `authenticateObservation` returns `true`, and
   broadcasts signed bytes only when `verifySignedSubmission` returns `true`;
@@ -82,11 +98,20 @@ const result = await advanceLiquidityTankSettlement({
 });
 ```
 
-`prepareSubmission` must build and sign without broadcasting—for the current
-Demos programmatic API this corresponds to the manual confirmation path. The
-store commits those exact signed bytes first. `broadcastRetained` may then
-rebroadcast only that retained transaction, so an ambiguous response never
-authorizes a new nonce or bridge operation. The core binds the intent it passes
+`prepareSubmission` must build and sign offline, and send nothing. **It must
+not use the Demos SDK's `"manual"` confirmation path**: in demosdk 4.0.16,
+`"manual"` means build, sign *and confirm*, and `confirm` sends the full
+signed transaction to the node as `confirmTx`
+(`build/websdk/DemosTransactions.js:231`) before anything is stored. Build
+the bridge transaction and sign it locally (for example
+`NativeBridgeMethods.generateOperationTx` and `demos.sign`), and return those
+bytes. The store commits those exact signed bytes first. `broadcastRetained`
+then does every network step for that retained transaction, `confirm` and
+`broadcast` included, and may repeat only those steps for those bytes, so an
+ambiguous response never authorizes a new nonce or bridge operation. Whether
+the node accepts a later `confirm` of the same signed bytes, and for how long
+(see [Open before any live adapter is wired](#open-before-any-live-adapter-is-wired)),
+is unverified. The core binds the intent it passes
 to `prepareSubmission` and checks the returned authority, operation hash and
 bridge ID. It does not decode `signedSubmissionBase64` itself: the host's
 `verifySignedSubmission` must, before the bytes are stored or broadcast.
@@ -278,7 +303,12 @@ returns (or resolves to) a `LiquidityTankVerifierAnswer`:
   evidence. A refused fresh observation returns
   `liquidity-tank-observation-unauthenticated`; a refused retained one returns
   `liquidity-tank-retained-observation-unauthenticated`. Neither settles,
-  expires, records anything or broadcasts.
+  expires, records anything or broadcasts. **It is also the ST-8 finality
+  gate:** the core enters `settle-asymmetric` on any accepted observation
+  that carries `lockTxHash`, and cannot tell whether that source lock is
+  final. So the hook must answer `"unavailable"` for such an observation until
+  the lock has reached finality under the rail's finality model, and `true`
+  only after. ST-8 forbids entering the asymmetric state before then.
 - **`verifySignedSubmission({ intent, submission })`** decodes
   `signedSubmissionBase64` and confirms it signs exactly the intent: the source
   amount in base units, origin and destination addresses, asset, tank pair and
@@ -441,6 +471,47 @@ beyond normal bridge lag: ordinary locked progress past its
 `pendingDeadline` (an operation the bridge accepted but has not locked). Send
 contradictions to an operator immediately.
 
+## Mapping progress to DACS results
+
+The progress vocabulary is the core's, not DACS's. `errorClass:
+"failed-substrate"` is not a DACS-4 PC-4 `errorClass`, and the three expiry
+reasons are not evidence reasons: DACS-5 SEB-3 admits an expired tank record
+only with `errorClass: "substrate"` and the interim reason
+`tank-locked-unreleased`, and ST-8(b) records the bundle cause
+`failed-substrate`. Do not copy `errorClass` or `reason` into a phase result
+or evidence. `liquidityTankPhaseOutcome(progress)` returns the mapping, and
+the SDK's tests pin it:
+
+| Progress | Phase handler records |
+|---|---|
+| `settled` | `ok: true`; success evidence with the settlement's `txRef` (both hashes), `paymentAmount` and `settlementFinality`, superseding any interim record at the `:resolved` address |
+| `settle-asymmetric` (`tank-locked-unreleased` or `lock-contradicted`) | the interim failure evidence, reason `tank-locked-unreleased`, with `lockTxHash` and `recoveryDeadline` and no `releaseTxHash`; the session is `settle-asymmetric` |
+| `failed`, `errorClass: "failed-substrate"` (any of its three reasons) | `ok: false`, `errorClass: "substrate"`; the interim record stands with reason `tank-locked-unreleased`; bundle cause `failed-substrate`. Keep the core's reason only as host metadata |
+| `failed`, `errorClass: "permanent"` | `ok: false`, `errorClass: "permanent"` |
+| `waiting`, `indeterminate` | no phase result yet: retry, or escalate by reason (see [Reasons that need an operator](#reasons-that-need-an-operator)). A host that gives up on `liquidity-tank-capacity-unavailable` fails the phase `transient` on the same rail, never another mechanism |
+
+## Host duties
+
+The core cannot do these, and §9.5.5 needs each of them. Each is part of
+reviewing the host phase handler:
+
+- **Evidence and anchoring** (PC-2, PC-3, PC-7, ST-8): build, anchor and
+  supersede `SettlementEvidence` as mapped above, return the
+  `PhaseHandlerResult`, and keep a durable, idempotent anchor retry. A retry
+  calls the core again, which never signs a second submission.
+- **Pinned rail** (§9.5.5 step 2, §9.13): resolve the rail descriptor behind
+  `railDescriptorHash`, check `sourceLiquidityTankId` and
+  `destinationLiquidityTankId` against its `liquidityTankIds` for the route,
+  and check `agreementHash` and `sr5BindingHash` against the agreement. The
+  core checks only their shape.
+- **`railId` grammar** (§9.4.1): lowercase ASCII, at most 64 characters. The
+  core requires only a non-empty string.
+- **Source-lock finality** (ST-8): the verifier's `authenticateObservation`
+  answers `"unavailable"` for an observation that carries `lockTxHash` until
+  that lock is final (see [Host verifier](#host-verifier)).
+- **Trust model** (§9.5.5): evaluate recipes that use this rail against the
+  substrate's security profile.
+
 ## Store contract
 
 **Leases.** An acquired claim must return a lease whose `owner` is the
@@ -542,8 +613,12 @@ fencing (including a re-claim by the same owner, whose earlier generation must
 stay fenced), lease expiry on every write, first-submission retention, the
 submission receipt (the first write's `now`, kept through a replay, a
 restart and an expiry), bridge-ID uniqueness, observation ordering, late completions, the
-completion-versus-expiry election in both orders, failure retention,
-settlement replay, and state that survives `reopenStore`, including the
+completion-versus-expiry election in both orders, failure retention, a
+timely completion replacing a durable failure that carries its lock, a
+failure that carries its lock as expiry evidence only when it is the durable
+observation, the contradiction-expiry compare-and-set (refused before the
+deadline, at or before the checkpoint, on a live pending or beside retained
+failure evidence), settlement replay, and state that survives `reopenStore`, including the
 bridge-ID index. Two more drive the core through one phase with a worker that
 stops before its submission write commits, a lost broadcast response and
 restarts between every step. After every step they check that no second
@@ -840,9 +915,11 @@ persists: `liquidity-tank-settlement-store-unavailable`,
 `…-persistence-uncertain` reasons, `liquidity-tank-broadcast-outcome-uncertain`,
 `liquidity-tank-recovery-checkpoint-conflict`,
 `liquidity-tank-recovery-expiry-not-due`,
-`liquidity-tank-completion-finality-invalid` and
-`liquidity-tank-status-transition-unresolved`. A typed discriminator for this
-is left to a later release.
+`liquidity-tank-completion-finality-invalid`,
+`liquidity-tank-status-transition-unresolved`, and any reason that starts with
+`liquidity-tank-adapter-indeterminate: ` (the adapter's own `indeterminate`
+reason after the prefix, which keeps it from ever reading as one of the
+core's reasons). A typed discriminator for this is left to a later release.
 
 ## Polluted or replaced built-ins
 
@@ -909,6 +986,26 @@ bundled live Demos adapter and funded proof are explicitly blocked on that
 upstream capability. The pure protocol/recovery core and its adversarial tests
 do not pretend a submit response is completion.
 
+**The bridge this core models is not yet the one upstream ships.** Checked
+read-only on 2026-10-14 against these revisions, none of which the SDK pins:
+
+- `@kynesyslabs/demosdk` 4.0.16 (this repository's lockfile; consumers get
+  `^4.0.16`) and `kynesyslabs/sdks` `ff543a9` (4.0.18): `BridgeOperation` has
+  `status: "empty" | "pending" | "completed" | "failed"`, one `txHash`, one
+  `amount` and `token`, chain types and names. It has none of `lockTxHash`,
+  `releaseTxHash`, `recoveryDeadline`, `finalityObservedAt`, `history`,
+  `authenticationHash` or `capacity-unavailable`, nor the operation fields
+  the core hashes (`originAmount`, `destinationAmount`, `originAsset`,
+  `destinationAsset` and both tank IDs). §9.5.5 names
+  `demos.bridge.submitBridgeOperation`, which no fetched SDK source has.
+- `kynesyslabs/sdks` `9eca7e6` (`native-bridges`) and `kynesyslabs/node`
+  `02bac17` (`native_bridges`): bridge IDs are `bridge_` plus 64 or 16 hex
+  characters; a signed operation is refused once `validUntil` (about five
+  minutes) passes; and the payer's EVM deposit happens first, with the Demos
+  transaction carrying its hash.
+- `kynesyslabs/node` `61b8e75a`, which `node2.demos.sh` reported running: the
+  native-bridge handlers are stubs, and no bridge-status call exists.
+
 `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })` is for tests
 and development only, and declares `restartSafety: "volatile-acknowledged"`.
 Without that option it throws a `TypeError`: it keeps
@@ -932,9 +1029,29 @@ atomically, and pass `runLiquidityTankStoreConformance`.
 - reviewed evidence that the bridge enforces `reserved + available =
   capacity` atomically across concurrent phases (see
   [Tank balance](#tank-balance-is-the-bridges)); the SDK does not;
-- a review of the live adapter's signing window, with a test that
-  `prepareSubmission` neither broadcasts nor keeps the signed bytes, and
-  bounded deadlines on every adapter and verifier call;
+- a review of the live adapter's signing window, with a test against the
+  real SDK transport that `prepareSubmission` makes no network call (no
+  `confirm`) and keeps no copy of the signed bytes, and bounded deadlines on
+  every adapter and verifier call;
+- one versioned bridge API and DTO, agreed between the Standard and the Demos
+  SDK and node, carrying what the core and the verifier need (see
+  [Adapter trust boundary](#adapter-trust-boundary)), with its SDK and node
+  revisions pinned here and a contract test against a real adapter;
+- a model of the operation's validity window: retained bytes past
+  `validUntil` can never land, so the core's rebroadcast-only rule then parks
+  the phase. Re-signing is safe only once the bridge shows the retained
+  operation absent after its window, and that needs its own no-double-pay
+  argument;
+- the no-double-pay argument for a deposit-first flow, where the value-moving
+  EVM deposit is outside the signed Demos bytes the core retains;
+- the Standard's decisions on: the bridge-ID grammar (§9.5.5's "16-char hash"
+  against its own `"tank-308"` vector); whether a `finalityObservedAt` equal
+  to `recoveryDeadline` is timely (the core treats it as expired and reports
+  `tank-released-after-recovery-deadline`, so the buyer is told not to pay
+  again); and a mechanism mismatch, which §9.5.5 and PC-5 make `permanent` but
+  the core returns as `indeterminate`, because the settlement key binds only
+  `jobId`, `railId` and `phaseIndex` and the phase may already hold a lock
+  (see [Refusals before any claim](#refusals-before-any-claim));
 - a contradicted lock now expires past D only on a contradiction the bridge
   stamped after its checkpoint and at or after D, and not a live `pending`, as
   `tank-lock-contradicted-recovery-expired` (with its `txRef` when it is a

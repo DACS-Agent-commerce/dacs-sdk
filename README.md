@@ -28,7 +28,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** and **liquidity-tank safety-core** settlement · one delivery type · attestation bundle + reputation. AP2 also has an optional provider-test reference integration that is never enabled implicitly. Bundled live cross-chain settlement, bundled live Solana wallet/RPC integration, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** and **liquidity-tank safety-core** settlement (a core, not a phase handler: the host builds and anchors its `SettlementEvidence`; see `docs/pay-cross-chain-liquidity-tank.md`) · one delivery type · attestation bundle + reputation. AP2 also has an optional provider-test reference integration that is never enabled implicitly. Bundled live cross-chain settlement, bundled live Solana wallet/RPC integration, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
