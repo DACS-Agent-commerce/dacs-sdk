@@ -132,11 +132,11 @@ durable channel-ID reservation, Listing-bound price/turn/timeout enforcement,
 restart-safe state transitions, exact accepted-term agreement derivation,
 role-separated replay-safe transport outboxes, detached buyer/seller
 co-signatures, finalized SR-2 commitment, complete private-transcript
-reverification, fail-closed Listing disclosure policy, and Demos-compatible
-AES-GCM L2PS packet transport with outbound and inbound history recovery. It
-does not invent the still-undefined DACS signature or encrypted-transcript
-publication wires, and clean construction of demosdk's messaging peer awaits a
-focused public demosdk export; see the
+reverification, fail-closed Listing disclosure policy, and a low-level
+AES-GCM packet transport over Demos L2PS messaging with outbound and inbound
+history recovery. It does not invent the still-undefined DACS signature or
+encrypted-transcript publication wires, and the host supplies the demosdk
+messaging peer and the verified claim/peer-key membership mapping; see the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream dependencies.
 

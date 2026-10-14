@@ -108,6 +108,17 @@ ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
 redrive only an authenticated `absent` result. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
 
+Either member records the RFQ-4 timeout (CH-4, CH-5 (c)). The member whose turn
+it is records it when it tries to send late. The member waiting on the
+counterparty records it with any send call, such as `sendAbort()` or
+`respond()`, once the counterparty's turn timeout has passed on its trusted
+clock: the call answers `rejected` with "RFQ turn timeout elapsed (RFQ-4)" and
+stores the `timeout` failure without signing or publishing anything. Before
+the timeout has passed, the waiting member's send is refused with
+"counterparty owns the next RFQ turn" and nothing is stored. A turn received
+after the timeout records it too. Our own reject or abort reason is limited to
+4,096 characters.
+
 `receive()` returns `rejected` only as its answer about the packet: it is
 malformed or misrouted; its job does not exist, has failed, or is stored
 corrupt or in an unsupported version; its RFQ turn timed out; or the turn, plan
@@ -215,8 +226,37 @@ restart boundary.
 `L2PSMessagingPeer` to the durable lifecycle transport. It encrypts canonical
 packet bytes with fresh-nonce AES-256-GCM, binds the sender peer, recipient
 peer, and exact packet hash as authenticated data, and uses the packet ID as
-the Demos message deduplication hash. The Demos subnet UID and reciprocal
-ClaimReference/peer-key mapping are checked during history recovery.
+the Demos message deduplication hash. The Demos subnet UID and the
+ClaimReference/peer-key mapping are checked during history recovery; the
+mapping is checked only for being reciprocal (below).
+
+This is a low-level transport primitive, not by itself a conforming DACS-3
+SR-4 channel. It does not provide:
+
+- the §8.3.2 membership binding. `peerForClaim` and `claimForPeer` are that
+  binding, and the transport cannot tell a true one from a reciprocal pair of
+  wrong answers. The host MUST derive both from verified membership evidence:
+  each member's anchored, CCI-signed "L2PS subnet X membership = CCI Y"
+  attestation (demosdk 4.0.16 ships `l2ps.binding.createMembershipBinding`,
+  `verifyMembershipBinding` and `resolveMember`), together with an
+  authenticated binding of that member to the messaging key it registers.
+  `resolveMember(channelId, subnetMemberId, rpcUrl)` maps a subnet member ID
+  to a claim, not to a messaging key, so the second binding is the host's.
+  Never fill either callback from an unauthenticated directory.
+- the §8.3.4 member acknowledgement. An acknowledgement here is the node's
+  statement that it stored the frame (below), not a receipt from the other
+  member. The member waiting on a reply detects a silent or censored channel
+  through the RFQ-4 turn timeout instead: once it has elapsed, any send call,
+  such as `sendAbort()`, records the timeout as the job's terminal failure.
+- a normative channel-signature profile. Signing and verification stay with
+  the lifecycle's callbacks until DACS-Standard#349 settles the framing.
+
+`createDemosL2psRfqAesGcmCodec()` frames are this SDK's own format: they do
+not interoperate with demosdk's `L2PSChannelTransport` or the node's own
+encryption helpers. Every holder of `sharedKey` can read the RFQ (CH-2). If
+the subnet key is held by anyone besides the two channel members, such as
+other subnet members or nodes that take part in the subnet, use a key that
+only the two members hold.
 
 ```ts
 const transport = createDemosL2psRfqTransport({
@@ -272,8 +312,14 @@ an unauthenticated link can make the transport stop resending a message the
 recipient never received.
 
 The host MUST therefore connect the peer over authenticated `wss://` (TLS with
-certificate checks) to a node it trusts: its own, or one the operator pins.
-It MUST use that same node for history and reconcile. Node `61b8e75` itself
+certificate checks) to a node it trusts, and MUST use that same node for
+history and reconcile. Both members MUST register on the same messaging node
+(or on nodes that share its database) under the same subnet UID. Node
+`61b8e75` answers a send to any key that is not registered there with
+`message_queued`, which acknowledges the packet, and delivers queued rows only
+to a peer that later registers on that node (`L2PSMessagingServer.ts:259-294,
+429-465`); nothing relays between nodes. If each member used a node of its
+own, every send would be acknowledged and none delivered. Node `61b8e75` itself
 serves plain WebSocket (`Bun.serve` with no TLS options,
 `L2PSMessagingServer.ts:51-69`), so a remote node needs a TLS-terminating
 proxy in front of it. Plain `ws://` is acceptable only to a loopback IP
@@ -419,10 +465,12 @@ operator can read what the peer or node said. The text is read without running
 a getter, any URL in it is replaced with `<url>` because a URL may carry
 credentials, and it is reduced to printable ASCII and cut at 200 characters.
 Without a readable message the reason is "Demos L2PS RFQ send outcome is
-unknown". The transport cannot tell a permanent refusal (for example, an
-unregistered recipient) from a lost reply, so such a packet is resent after
-each grace like any ambiguous send; stopping after repeated identical refusals
-is a follow-up.
+unknown". The transport cannot tell a permanent refusal from a lost reply, so
+such a packet is resent after each grace like any ambiguous send; stopping
+after repeated identical refusals is a follow-up. A recipient that is not
+registered on the node is not refused at all: the node queues the message and
+answers `queued` (above). A frame over the node's size limit never reaches the
+node (see the size limits below).
 
 The default grace is 60,000 ms; configure a positive integer up to 600,000 ms.
 The grace only reduces noise; it is not what makes a resend safe. The evidence
@@ -442,8 +490,12 @@ is the Demos node source at commit `61b8e75` (paths under
   Nothing in the node deletes these rows.
 
 The transport uses the packet ID as the Demos message hash, so on this node a
-packet is stored and delivered at most once. The generation-fenced send outbox
-also makes every resend byte-identical, so any copy carries the same frame.
+packet is stored at most once. Delivery may repeat: the node sends queued rows
+to a peer that registers and only then marks them delivered
+(`L2PSMessagingServer.ts:429-465`), so a crash in between sends them again.
+The lifecycle records each received packet ID once and answers a repeat as a
+duplicate. The generation-fenced send outbox also makes every resend
+byte-identical, so any copy carries the same frame.
 
 No finite grace can prove absence. The node keeps processing after a client
 gives up, its database statement, query and lock timeouts are commented out
@@ -484,8 +536,9 @@ can still become `acknowledged` when our exact frame appears, or `rejected` on
 a conflicting frame. The SDK has no call that clears a `duplicate` entry. Handle it like a
 failed history entry (below): if the counterparty did receive the packet, its
 reply still arrives through `receive()` and the job continues. Only otherwise
-may the host need to abandon the job and open a new one with a new `jobId` and
-`channelId`.
+may the host need to end the job (once the counterparty's turn timeout has
+passed, `sendAbort()` records it as the job's failure) and open a new one with
+a new `jobId` and `channelId`.
 
 The limits of this evidence:
 
@@ -496,6 +549,12 @@ The limits of this evidence:
 - A `failed` history row for the packet blocks every resend, permanently.
 - Nothing bounds when a timed-out send lands.
 - All of this describes node `61b8e75`; recheck it when the node changes.
+  The transport has no node version handshake. Before deploying, check that
+  the node's `getNetworkInfo` reports commit `61b8e75` and is not `dirty`,
+  and that the installed demosdk is 4.0.16 or a release whose
+  `instant_messaging/L2PSMessagingPeer.js` and `l2ps_types.d.ts` match it.
+  The duplicate handling above keys on the node's exact "Duplicate message"
+  text.
 
 A send outbox entry stored as `acknowledged` is final. It records the node's
 unsigned acknowledgement (see the acknowledgement authority above); it is not
@@ -541,15 +600,27 @@ history case also applies to `publish`: after a "Duplicate message" refusal it
 reads history while it holds the packet's in-process lock, so other outbox
 calls for that packet wait for it.
 
+Node `61b8e75` refuses a send whose `encrypted.ciphertext` is longer than
+131,072 characters, before it stores anything (`L2PSMessagingServer.ts:27,
+247-249`). The transport applies the same limit, so the node never refuses a
+frame of ours for its size. The built-in codec seals at most 98,288 plaintext
+bytes (98,304 with its tag, exactly 131,072 Base64 characters). `publish`
+answers `rejected` before the send outbox is written for a packet whose
+canonical bytes are larger, or for a custom codec's frame over the limit; the
+lifecycle records that as a terminal transport failure instead of resending a
+frame the node can never take. The lifecycle itself refuses our own reject or
+abort reason over 4,096 characters before anything is signed or stored, so a
+terminal turn always fits.
+
 Payloads from Demos are size-checked before they are copied or canonicalized:
-a frame over the 16 MiB plaintext limit, a history page of more than 100
-entries, or a page whose strings total more than 32 MiB is refused. A refused
-live payload goes to `onError`; a refused history page makes reconciliation or
-recovery `indeterminate`. If your frames are large enough to hit the page
-budget, lower `historyPageSize`.
+a frame over that limit, a history page of more than 100 entries, or a page
+whose strings total more than 100 × (131,072 + 8,192) characters is refused.
+A page of node-written rows stays well within that budget. A refused live
+payload goes to `onError`; a refused history page makes reconciliation or
+recovery `indeterminate`.
 
 Live admission and capture run synchronously when the peer emits an event.
-The serialized receive lane holds at most 100 events and 64 MiB, including the
+The serialized receive lane holds at most 100 events and 16 MiB, including the
 event being processed. Each event is charged two bytes per string code unit
 plus 1 KiB for record and queue metadata. These limits are fixed. Excess live
 events are reported immediately through `onError` as a `TransientError` and
@@ -575,7 +646,7 @@ ignored, and recovery checks retirement again before delivering its next
 packet. Each
 `start()` gets a fresh receive lane, so a consumer call left over from a
 retired generation cannot hold back the new consumer. The retired call keeps
-its share of the 100-event and 64 MiB budget until it settles or times out.
+its share of the 100-event and 16 MiB budget until it settles or times out.
 `drain()` waits only for the current generation's lane.
 
 Run `resumeInbound()` for each peer after any `start()`, not only at process
@@ -647,14 +718,16 @@ have reached the peer. A failed send acknowledgement without a matching history
 entry follows the same grace and exhaustive-absence rule as any ambiguous send.
 A matching failed history entry cannot prove absence, so it prevents automatic
 resend even after the grace expires. The SDK currently has no call that clears
-such a failed-history entry: `resumeOutbox()` keeps returning `indeterminate`, and
-`sendAbort()` is refused while the counterparty owns the next turn. If
-the counterparty did receive the packet, its reply still arrives through
+such a failed-history entry: `resumeOutbox()` keeps returning `indeterminate`.
+If the counterparty did receive the packet, its reply still arrives through
 `receive()` and the job continues, with the stale entry left `indeterminate`.
-Otherwise the only remedy is to abandon the job: stop driving that `jobId` and
-open a new job with a new `jobId` and `channelId`. Alert on outbox entries that
-remain `indeterminate` across restarts. An operator redrive or acknowledgement
-call is tracked as a follow-up.
+Otherwise end the job: once the counterparty's turn timeout has passed on the
+trusted clock, `sendAbort()` (or any other send call) records the RFQ-4
+timeout as the job's terminal failure, without signing or sending anything;
+before that it is refused with "counterparty owns the next RFQ turn". Then
+open a new job with a new `jobId` and `channelId`. Alert on outbox entries
+that remain `indeterminate` across restarts. An operator redrive or
+acknowledgement call is tracked as a follow-up.
 
 The live receive path reports decryption, mapping and lifecycle failures only
 through `onError`. The live Demos payload carries no subnet UID, so live frames
@@ -662,19 +735,38 @@ are bound to the subnet only by the codec key; history recovery also checks the
 UID. A frame that failed live is recovered only by the next `resumeInbound()`,
 so call it again after an `onError` report as well as on every start.
 
+A history row holds fields the node writes (`id`, `from`, `to`, `l2psUid`,
+`l2psTxHash`, `timestamp`, `status`) and fields the sender chose
+(`messageHash`, `encrypted`). Node `61b8e75` stores any non-empty
+`messageHash` and any `encrypted` value with a ciphertext and a nonce, and
+never deletes a row (`L2PSMessagingServer.ts:236-250`). A row whose
+sender-chosen fields are not shaped like an RFQ frame is therefore skipped,
+not refused: a `messageHash` that is not a lower-case SHA-256 hash (demosdk's
+own `L2PSChannelTransport` sends 128 hex digits), or an `encrypted` value
+that is not a well-formed frame. Reconciliation ignores such a row, and
+`resumeInbound()` counts it in `ignored` without offering it to the consumer
+or becoming `indeterminate`. A malformed node-written field still refuses the
+whole page. A row under our packet ID and route whose frame is not well
+formed is a conflict, like one that does not authenticate.
+
 Use a dedicated RFQ subnet/peer conversation. The Demos messaging envelope has
 no application content-type discriminator, so sharing the same encrypted
-conversation with unrelated codecs makes history recovery ambiguous.
+conversation with unrelated codecs makes history recovery ambiguous. A
+well-formed frame that does not open, a `failed` row, or a transport `l2psUid`
+that differs from the subnet the peer registered on keeps every later
+`resumeInbound()` for that pair `indeterminate`; so does a pair whose history
+is longer than one page, because timestamp pagination cannot prove
+completeness. Set `l2psUid` to the subnet the peer registers with.
 
-The SDK accepts a structural peer instead of importing a private demosdk path.
-At demosdk 4.0.16, the only public `instantMessaging` export is the eager package
-root, whose clean import currently fails on an undeclared dependency; the
-focused public subpath fix is tracked in
-[kynesyslabs/sdks#125](https://github.com/kynesyslabs/sdks/issues/125). Until
-that package fix lands, the companion host must supply the connected peer. This
-transport still delegates DACS channel signing and verification to the
-lifecycle callbacks because the normative framing remains open in
-DACS-Standard#349.
+The SDK accepts a structural peer instead of importing demosdk. At the pinned
+demosdk 4.0.16, the only public `instantMessaging` export is the eager package
+root, whose clean import fails in this install. demosdk 4.0.17 and later also
+export a focused `./instant-messaging` subpath
+([kynesyslabs/sdks#125](https://github.com/kynesyslabs/sdks/issues/125),
+closed). Either way the host constructs, connects and registers the peer and
+passes it in. This transport still delegates DACS channel signing and
+verification to the lifecycle callbacks because the normative framing remains
+open in DACS-Standard#349.
 
 ## Finalizing and committing an accepted agreement
 
@@ -742,9 +834,10 @@ encryption-envelope, SR-2 address and receipt-binding definitions. Once that is
 resolved, the verified transcript and disclosure plan can feed the conforming
 encrypted publisher.
 
-The live Demos L2PS adapter also remains separate. Until it lands, the SDK
-supplies the complete transport-neutral, durable buyer/seller RFQ lifecycle,
-agreement/commitment and transcript-policy core but not a complete live
-`negotiate-rfq` phase handler.
-DACS-Standard#349 must resolve the current channel signature-framing conflict
-before the adapter can safely choose a normative wire format.
+The low-level Demos L2PS transport adapter (above) has landed. The SDK supplies
+it with the complete transport-neutral, durable buyer/seller RFQ lifecycle,
+agreement/commitment and transcript-policy core, but not a complete live
+`negotiate-rfq` phase handler. Still deferred: a normative channel-signature
+profile (DACS-Standard#349 must resolve the current signature-framing conflict
+first), authenticated §8.3.2 membership binding inside the SDK, §8.3.4 member
+acknowledgements, and constructing the demosdk peer.
