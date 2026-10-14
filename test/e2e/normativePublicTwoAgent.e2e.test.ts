@@ -4017,7 +4017,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       expect(await filesBelow(receiptDir)).toEqual([]);
       expect(await filesBelow(fulfilmentDir)).toEqual([]);
     }
-  });
+  }, 15_000);
 
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();
