@@ -58,13 +58,21 @@ const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 
 const signatureFor = (attempt: number) => `${"1".repeat(63)}${attempt}`.slice(-64);
 
+// A legacy Solana message: one signer, two account keys, a recent blockhash,
+// and one instruction that calls key 1 with no accounts and `data`.
+function legacyMessage(data: Uint8Array): Buffer {
+  return Buffer.concat([
+    Buffer.from([1, 0, 1, 2]), Buffer.alloc(32, 1), Buffer.alloc(32, 2), Buffer.alloc(32, 3),
+    Buffer.from([1, 1, 0, data.length]), data,
+  ]);
+}
 // Solana wire bytes: a compact-u16 signature count, the signatures, then a
-// stand-in for the message.
-function signedWire(signatures: readonly string[], message: string): string {
+// message whose instruction data is `memo`.
+function signedWire(signatures: readonly string[], memo: string): string {
   return Buffer.concat([
     Buffer.from([signatures.length]),
     ...signatures.map((signature) => base58Decode(signature, 64)),
-    Buffer.from(message, "utf8"),
+    legacyMessage(Buffer.from(memo, "utf8")),
   ]).toString("base64");
 }
 
@@ -383,7 +391,7 @@ describe("a prepared or retained attempt is checked field by field", () => {
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
-  const message = Buffer.from([0xfb, 0xff, 0xbf]);
+  const message = legacyMessage(Buffer.from([0xfb, 0xff, 0xbf]));
   const wire = () => Buffer.concat([Buffer.from([1]), base58Decode(SIGNATURE_1, 64), message]).toString("base64");
   test.each([
     ["the URL-safe alphabet", () => wire().replaceAll("+", "-").replaceAll("/", "_")],
@@ -408,12 +416,99 @@ describe("a prepared or retained attempt is checked field by field", () => {
           return {
             ...prepared,
             signedTransactionBase64: Buffer.concat([
-              Buffer.from([0]), base58Decode(prepared.signature, 64), Buffer.from("m"),
+              Buffer.from([0]), base58Decode(prepared.signature, 64), legacyMessage(Buffer.from("m")),
             ]).toString("base64"),
           };
         },
       }),
     }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+  });
+});
+
+// Expiry evidence proves nothing about a durable-nonce transaction, so one is
+// never retained: agave treats a message as one when its first instruction
+// calls the system program (32 zero bytes) with AdvanceNonceAccount data.
+describe("durable-nonce and malformed messages", () => {
+  // A legacy message, or v0 with no address table lookups, whose key 0 signs.
+  function message(
+    keys: readonly Buffer[],
+    instructions: readonly { program: number; data: readonly number[]; accounts?: readonly number[] }[],
+    version?: number,
+  ): Buffer {
+    return Buffer.concat([
+      ...(version === undefined ? [] : [Buffer.from([0x80 | version])]),
+      Buffer.from([1, 0, 1, keys.length]), ...keys, Buffer.alloc(32, 3),
+      Buffer.from([instructions.length]),
+      ...instructions.map(({ program, data, accounts = [] }) =>
+        Buffer.from([program, accounts.length, ...accounts, data.length, ...data])),
+      ...(version === undefined ? [] : [Buffer.from([0])]),
+    ]);
+  }
+  const PAYER_KEY = Buffer.alloc(32, 1);
+  const SYSTEM = Buffer.alloc(32);
+  const OTHER = Buffer.alloc(32, 5);
+  const NEARLY_SYSTEM = Buffer.concat([Buffer.alloc(31), Buffer.from([1])]);
+  const NONCE = [4, 0, 0, 0];
+  const TRANSFER = message([PAYER_KEY, OTHER], [{ program: 1, data: [12] }]);
+
+  async function prepareWith(wireMessage: Buffer) {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
+          return {
+            ...prepared,
+            signedTransactionBase64: Buffer.concat([
+              Buffer.from([1]), base58Decode(prepared.signature, 64), wireMessage,
+            ]).toString("base64"),
+          };
+        },
+        broadcastRetained,
+      }),
+    }));
+    return { result, recordAttempt, broadcastRetained };
+  }
+
+  test.each([
+    ["a legacy durable-nonce transaction", message([PAYER_KEY, SYSTEM], [{ program: 1, accounts: [0], data: NONCE }])],
+    ["a v0 durable-nonce transaction", message([PAYER_KEY, SYSTEM], [{ program: 1, accounts: [0], data: NONCE }], 0)],
+    ["a nonce advance with trailing data", message([PAYER_KEY, SYSTEM], [{ program: 1, data: [...NONCE, 9] }])],
+    ["a nonce advance before the transfer",
+      message([PAYER_KEY, SYSTEM, OTHER], [{ program: 1, data: NONCE }, { program: 2, data: [12] }])],
+    ["a message version other than 0", message([PAYER_KEY, OTHER], [{ program: 1, data: [12] }], 1)],
+    ["a program index one past the account keys", message([PAYER_KEY, OTHER], [{ program: 2, data: [12] }])],
+    ["instruction data past the end", TRANSFER.subarray(0, -1)],
+    ["accounts past the end", message([PAYER_KEY, OTHER], [{ program: 1, accounts: [0], data: [] }]).subarray(0, -2)],
+    ["a message cut before its instructions", TRANSFER.subarray(0, 4 + 64 + 32)],
+    ["a message cut inside its header", TRANSFER.subarray(0, 2)],
+    ["no message", Buffer.alloc(0)],
+  ])("%s is refused before it is retained or broadcast", async (_name, wireMessage) => {
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a transfer", TRANSFER],
+    ["a v0 transfer", message([PAYER_KEY, OTHER], [{ program: 1, data: [12] }], 0)],
+    ["a system transfer first", message([PAYER_KEY, SYSTEM], [{ program: 1, data: [2, 0, 0, 0] }])],
+    ["a nonce advance second",
+      message([PAYER_KEY, SYSTEM, OTHER], [{ program: 2, data: [12] }, { program: 1, data: NONCE }])],
+    // v0 ends with a zero lookup count, so a read past the three bytes sees 0.
+    ["three bytes of a nonce advance", message([PAYER_KEY, SYSTEM], [{ program: 1, data: [4, 0, 0] }], 0)],
+    ["nonce data for a program one bit from the system program",
+      message([PAYER_KEY, NEARLY_SYSTEM], [{ program: 1, data: NONCE }])],
+    ["a message with no instructions", message([PAYER_KEY], [], 0)],
+  ])("%s is retained and settles", async (_name, wireMessage) => {
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
+    expect(result).toMatchObject({ status: "settled" });
+    expect(recordAttempt).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -587,7 +682,9 @@ describe("real-length Base58 keys and signatures", () => {
           return {
             ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
             signature,
-            signedTransactionBase64: Buffer.concat([Buffer.from([1]), other, Buffer.from("m")]).toString("base64"),
+            signedTransactionBase64: Buffer.concat([
+              Buffer.from([1]), other, legacyMessage(Buffer.from("m")),
+            ]).toString("base64"),
           };
         },
       }),

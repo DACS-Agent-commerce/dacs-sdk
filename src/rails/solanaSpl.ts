@@ -18,14 +18,16 @@ const U64_MAX = 0xffff_ffff_ffff_ffffn;
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
 const BASE58_ALPHABET =
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-// The associated token account program, and the two token programs whose
-// accounts it derives: SPL Token and Token-2022.
+// The associated token account program, and the one token program this rail
+// pays through: SPL Token. Token-2022 is not supported: a transfer-fee mint
+// credits the payee less than the instruction's amount, so the amount the
+// core checks would not be the amount paid.
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const TOKEN_PROGRAMS = [
-  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
-] as const;
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const ED25519_P = 2n ** 255n - 19n;
+// The system program's key is 32 zero bytes; `AdvanceNonceAccount` is its
+// instruction 4, a little-endian u32.
+const ADVANCE_NONCE_ACCOUNT = [4, 0, 0, 0] as const;
 
 export type SolanaCluster = "mainnet" | "devnet" | "testnet";
 export type SolanaCommitmentLevel = "processed" | "confirmed" | "finalized";
@@ -135,9 +137,9 @@ export interface SolanaSplObservedTransfer {
   signature: string;
   instructionIndex: number;
   /**
-   * The decoded instruction at `instructionIndex`: an SPL Token or Token-2022
+   * The decoded instruction at `instructionIndex`: an SPL Token
    * `TransferChecked`. This is not the DACS ledger-event `standard`, which
-   * names an authenticated event `spl-transfer` for either instruction; see
+   * names an authenticated event `spl-transfer` for either SPL instruction; see
    * "Store and adapter contract" in `docs/pay-solana-spl.md`.
    */
   standard: "spl-transfer-checked";
@@ -201,7 +203,8 @@ export interface SolanaSplEffectFence {
  *
  * `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
  * durable-nonce one: expiry evidence proves nothing about a nonce transaction,
- * which stays valid past its blockhash's last valid block height.
+ * which stays valid past its blockhash's last valid block height. The core
+ * refuses one before retaining it, as agave recognizes it.
  */
 export interface SolanaSplAdapter {
   preflight(
@@ -466,6 +469,51 @@ function firstSignature(transaction: Uint8Array): Uint8Array | null {
   return transaction.subarray(offset, offset + 64);
 }
 
+/** A compact-u16 at `offset`: its value and the offset after it. */
+function compactU16(bytes: Uint8Array, offset: number): [number, number] {
+  let value = 0;
+  for (let index = 0; index < 3; index += 1) {
+    const byte = bytes[offset + index];
+    if (byte === undefined) break;
+    value |= (byte & 0x7f) << (7 * index);
+    if ((byte & 0x80) === 0) return [value, offset + index + 1];
+  }
+  throw new DacsError("pay-solana-spl: truncated compact-u16");
+}
+
+/**
+ * Whether a wire transaction is a durable-nonce transaction, decided as agave
+ * decides it (`get_durable_nonce`): the message's first instruction calls the
+ * system program with `AdvanceNonceAccount` data, trailing bytes allowed.
+ * Throws for bytes that are not a legacy or v0 message through that
+ * instruction. Expiry evidence proves nothing about a nonce transaction, which
+ * stays valid past its blockhash's last valid block height.
+ */
+function isDurableNonceTransaction(transaction: Uint8Array): boolean {
+  const invalid = () => new DacsError("pay-solana-spl: signed transaction message is malformed");
+  const [signatures, afterSignatures] = compactU16(transaction, 0);
+  let offset = afterSignatures + 64 * signatures;
+  const prefix = transaction[offset];
+  if (prefix === undefined) throw invalid();
+  // A versioned message starts with 0x80 | version; only v0 exists.
+  if ((prefix & 0x80) !== 0) {
+    if (prefix !== 0x80) throw invalid();
+    offset += 1;
+  }
+  // Three header bytes, the static account keys, then the recent blockhash.
+  const [keys, keysAt] = compactU16(transaction, offset + 3);
+  const [instructions, instructionAt] = compactU16(transaction, keysAt + 32 * keys + 32);
+  if (instructions === 0) return false;
+  const programIndex = transaction[instructionAt];
+  if (programIndex === undefined || programIndex >= keys) throw invalid();
+  const [accounts, accountsAt] = compactU16(transaction, instructionAt + 1);
+  const [dataLength, dataAt] = compactU16(transaction, accountsAt + accounts);
+  if (dataAt + dataLength > transaction.length) throw invalid();
+  const program = transaction.subarray(keysAt + 32 * programIndex, keysAt + 32 * (programIndex + 1));
+  return program.every((byte) => byte === 0) && dataLength >= ADVANCE_NONCE_ACCOUNT.length &&
+    ADVANCE_NONCE_ACCOUNT.every((byte, index) => transaction[dataAt + index] === byte);
+}
+
 function uint(value: unknown, label: string): bigint {
   // Only a string: an object could print as one amount and convert to another.
   if (typeof value !== "string" || !UINT_RE.test(value) || BigInt(value) > U64_MAX) {
@@ -501,9 +549,12 @@ function isOnEd25519Curve(bytes: Uint8Array): boolean {
   return ratio === 0n || modPow(ratio, (p - 1n) / 2n, p) === 1n;
 }
 
-/** Solana `find_program_address`: the first off-curve candidate from bump 255 down. */
+/**
+ * Solana `find_program_address`: the first off-curve candidate from bump 255
+ * down to 1. Bump 0 is never tried.
+ */
 function programAddress(seeds: readonly Uint8Array[], program: Uint8Array): Buffer {
-  for (let bump = 255; bump >= 0; bump -= 1) {
+  for (let bump = 255; bump >= 1; bump -= 1) {
     const hash = createHash("sha256");
     for (const seed of seeds) hash.update(seed);
     const candidate = hash.update(Uint8Array.of(bump)).update(program)
@@ -515,17 +566,15 @@ function programAddress(seeds: readonly Uint8Array[], program: Uint8Array): Buff
 
 /**
  * Whether `account` is the owner's associated token account for the mint
- * under SPL Token or Token-2022: the address the associated token account
- * program derives from the seeds owner, token program and mint. Each value
- * must already be a checked 32-byte Base58 key.
+ * under SPL Token: the address the associated token account program derives
+ * from the seeds owner, token program and mint. Each value must already be a
+ * checked 32-byte Base58 key.
  */
 function isAssociatedTokenAccount(account: string, owner: string, mint: string): boolean {
-  const address = base58Bytes(account, 32);
-  const program = base58Bytes(ASSOCIATED_TOKEN_PROGRAM, 32);
-  return TOKEN_PROGRAMS.some((tokenProgram) => programAddress(
-    [base58Bytes(owner, 32), base58Bytes(tokenProgram, 32), base58Bytes(mint, 32)],
-    program,
-  ).equals(address));
+  return programAddress(
+    [base58Bytes(owner, 32), base58Bytes(TOKEN_PROGRAM, 32), base58Bytes(mint, 32)],
+    base58Bytes(ASSOCIATED_TOKEN_PROGRAM, 32),
+  ).equals(base58Bytes(account, 32));
 }
 
 function positiveSafeInteger(value: number, label: string): number {
@@ -669,11 +718,18 @@ function validatePreflight(
       return { status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-binding-mismatch" };
     }
     const requiredNative = networkFee + (preflight.payeeAtaExists ? 0n : ataRent);
-    // The runtime refuses a fee payer left between zero and its rent-exempt
+    const remaining = nativeBalance - requiredNative;
+    const leftRentPaying = remaining > 0n && remaining < rentExemptMinimum;
+    // A payer already below its minimum may stay there under agave's older
+    // rent-state rules, but not once SIMD-0392 is active. The core cannot see
+    // which applies, so it neither signs nor closes the key.
+    if (leftRentPaying && nativeBalance < rentExemptMinimum) {
+      return { status: "indeterminate", reason: "solana-spl-payer-rent-state-unknown" };
+    }
+    // The runtime refuses a rent-exempt fee payer left between zero and its
     // minimum, at the fee check or after execution, so such a transfer can
     // never succeed.
-    const remaining = nativeBalance - requiredNative;
-    if (remaining < 0n || (remaining > 0n && remaining < rentExemptMinimum)) {
+    if (remaining < 0n || leftRentPaying) {
       return {
         status: "failed",
         errorClass: "permanent",
@@ -738,6 +794,11 @@ function createAttempt(
   if (carried === null || !Buffer.from(carried).equals(base58Bytes(signature, 64))) {
     throw new DacsError("pay-solana-spl: signed transaction does not carry the signature");
   }
+  // Expiry evidence for these bytes may authorize a replacement, so they must
+  // be a transaction that can never land after its blockhash expires.
+  if (isDurableNonceTransaction(decoded)) {
+    throw new DacsError("pay-solana-spl: signed transaction uses a durable nonce");
+  }
   for (const [label, number] of [
     ["lastValidBlockHeight", value.lastValidBlockHeight],
     ["transferInstructionIndex", value.transferInstructionIndex],
@@ -795,11 +856,11 @@ const FAILURES: ReadonlyMap<string, "permanent" | "counterparty"> = new Map([
   ["solana-spl-transfer-failed-on-chain", "permanent"],
 ]);
 /** DACS-4 PC-4: a transfer refused by the chain is `permanent`. */
-const LANDED_FAILURE = {
+const LANDED_FAILURE = Object.freeze({
   status: "failed",
   errorClass: "permanent",
   reason: "solana-spl-transfer-failed-on-chain",
-} as const;
+} as const);
 
 /**
  * Checks a landed-failure proof for a retained attempt. Returns null for a
@@ -1487,20 +1548,23 @@ export async function advanceSolanaSplSettlement(
   // only once the store has closed the key under this lease: no later call
   // can then sign under it.
   const close = async (
-    failure: Extract<SolanaSplProgress, { status: "failed" }>,
+    failure: Readonly<Extract<SolanaSplProgress, { status: "failed" }>>,
     landedFailure?: Readonly<SolanaSplLandedFailureEvidence>,
   ): Promise<SolanaSplProgress> => {
+    // Read once into the record and a fresh result: the caller owns what it
+    // gets back, so an edit to it never reaches another call or record.
+    const { errorClass, reason } = failure;
     try {
       const closed = storeWrite(await recordFailure({
         settlementKey: intent.settlementKey,
         bindingHash: intent.bindingHash,
         owner: fence.owner,
         generation: fence.generation,
-        failure: Object.freeze({ errorClass: failure.errorClass, reason: failure.reason }),
+        failure: Object.freeze({ errorClass, reason }),
         ...(landedFailure ? { landedFailure } : {}),
       }));
       const status = closed.status;
-      if (status === "recorded" || status === "existing") return failure;
+      if (status === "recorded" || status === "existing") return { status: "failed", errorClass, reason };
     } catch {
       // Falls through to the uncertain result.
     }

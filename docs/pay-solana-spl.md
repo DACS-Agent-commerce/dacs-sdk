@@ -12,8 +12,10 @@ The core:
   canonical CORE JID-1 `jobId`;
 - converts the canonical DACS amount into exact integer token base units,
   within the SPL `u64` range;
-- requires `TransferChecked` and records its exact instruction index;
+- requires SPL Token `TransferChecked` and records its exact instruction
+  index; Token-2022 mints are not supported;
 - pays only the payee's associated token account, which it derives itself;
+- refuses a signed durable-nonce transaction before it is retained;
 - refuses to create a missing associated token account unless the selected
   authority explicitly permits it, and charges its rent to the payer;
 - checks token, network-fee and optional rent balances before signing, and
@@ -108,7 +110,7 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
 | `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
-| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
 phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
@@ -133,7 +135,21 @@ failure can exhaust a retry budget and end the session as `failed-perm`
 (DACS-5) while a retained transfer can still land. §9.5.3's "congestion or
 timeout → `transient`" is the case the core reports as `waiting` or
 `indeterminate` for that reason: once a transfer may have been broadcast,
-only reconciliation may end the phase.
+only reconciliation may end the phase. For the same reason the core has no
+`counterparty` result for a wallet that declines to sign and no `permanent`
+result for a signature it refuses: both are reported as `indeterminate`
+(`solana-spl-preparation-unavailable`,
+`solana-spl-prepared-transaction-invalid`), and the key stays open, because
+the core cannot prove that nothing was signed or sent.
+
+The core is the rail step of a payment phase, not a whole PC-7 handler. After
+`settled`, the caller still owns the rest of PC-7: build and sign the
+`SettlementEvidence`, durably queue its idempotent anchor write, and keep the
+session non-terminal until a finalized, independently resolvable receipt
+exists. The core never resubmits a settled payment, so retrying the anchor
+cannot pay twice. Likewise, CORE profile admission (the exact Standard
+release and module tuple both parties accepted) is the session's job, and must
+pass before the caller builds an authority for this core.
 
 PC-5 requires `amount.currency` to resolve to the rail's asset symbol. The
 caller checks this before calling, from the pinned agreement and rail, and
@@ -283,11 +299,17 @@ synchronous RPC answer is not ledger state. A malformed `landed-failed` is
 
 `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
 durable-nonce one. A nonce transaction stays valid past its blockhash's last
-valid block height, so expiry evidence would prove nothing about it.
+valid block height, so expiry evidence would prove nothing about it. The core
+decodes the signed message (legacy or v0) as far as its first instruction and
+refuses a system-program `AdvanceNonceAccount` there, which is how agave
+recognizes a nonce transaction, as
+`solana-spl-prepared-transaction-invalid`: nothing is retained or broadcast.
+Bytes that are not such a message are refused the same way. The same check
+applies to every retained attempt a store returns.
 
 `settled-same` reports the instruction it decoded at `instructionIndex`:
-`standard: "spl-transfer-checked"` means that instruction is an SPL Token or
-Token-2022 `TransferChecked`. This is not the DACS ledger-event `standard`.
+`standard: "spl-transfer-checked"` means that instruction is an SPL Token
+`TransferChecked`. This is not the DACS ledger-event `standard`.
 The Standard's authenticated Solana event names either SPL instruction
 `spl-transfer` and carries the DACS amount and asset. An adapter that
 authenticates such an event translates it losslessly: `mint` from the asset,
@@ -300,18 +322,31 @@ Standard's `solana-instruction` reference, which carries no `standard`.
 Preflight amounts must be canonical decimal strings within the `u64` range,
 `payeeAtaExists` a boolean, and `payerTokenAccount` and `payeeAta` Base58
 public keys. `payeeAta` must be the payee's associated token account for the
-mint, under SPL Token or Token-2022. The core derives both addresses and
-refuses any other destination as `solana-spl-payee-ata-not-associated`. That
-covers any other token account the payee owns for the mint, because the
-address is derived, not observed, so another one is the adapter's fault.
-Nothing is signed and the key stays open.
+mint under SPL Token. The core derives that address and refuses any other
+destination as `solana-spl-payee-ata-not-associated`. That covers any other
+token account the payee owns for the mint, because the address is derived,
+not observed, so another one is the adapter's fault. Nothing is signed and
+the key stays open.
+
+Token-2022 is not supported, and its associated token account is refused in
+the same way. A Token-2022 mint with a transfer fee credits the payee less
+than the `TransferChecked` amount, so the amount the core checks would not be
+the amount paid. Because the address is derived under SPL Token, the
+transfer the adapter builds is an SPL Token transfer, and an SPL Token
+account can only hold an SPL Token mint.
 
 `payerRentExemptMinimumLamports` is the rent-exempt minimum of the payer's
-system account, `getMinimumBalanceForRentExemption(0)`. The payer must end
-with zero lamports or at least that minimum after the network fee and any
-ATA rent. The runtime refuses a fee payer left in between, at the fee check
-or after execution, so such a transfer could never succeed. The core reports
-it as the matching `permanent` balance failure.
+system account, `getMinimumBalanceForRentExemption(0)`. A payer that starts
+at or above that minimum must end with zero lamports or at least the minimum
+after the network fee and any ATA rent. The runtime refuses a rent-exempt
+fee payer left in between, at the fee check or after execution, so such a
+transfer could never succeed. The core reports it as the matching `permanent`
+balance failure. A payer that already starts below the minimum may stay
+there under agave's older rent-state rules, but not once SIMD-0392
+(`relax_post_exec_min_balance_check`) is active. The core cannot see which
+applies, so it reports `indeterminate` with
+`solana-spl-payer-rent-state-unknown`: nothing is signed and the key stays
+open. A top-up to the minimum lets the same key proceed.
 
 When `payeeAtaExists` is true, `payeeAtaOwner` and `payeeAtaMint` must be
 Base58 public keys too: strings, so pass `toBase58()` rather than a
@@ -342,9 +377,10 @@ read at these revisions:
 | Behaviour | Source |
 |---|---|
 | Commitment levels, `getSignatureStatuses` and its `err`, blockhash expiry, durable nonces, fee-payer rent | agave `v4.3.0` (`825efd18292aff6ffcf9daa0f7612f21b3531a72`): `rpc/src/rpc.rs`, `runtime/src/bank/check_transactions.rs`, `svm/src/account_loader.rs`, `svm/src/rent_calculator.rs` |
-| Wire format: compact-u16 signature count, then the signatures | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
+| Wire format: compact-u16 signature count, then the signatures, then a legacy or v0 message | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
+| Durable-nonce detection: the first instruction is the system program's `AdvanceNonceAccount` | agave `v4.3.0`, `get_durable_nonce` in the message crate it locks |
 | `TransferChecked` (`u64` amount, `u8` decimals), token-account owner, mint and state, on-chain refusals | SPL Token `program@v9.0.0` (`dfb260231c761be7d9c8b63728e770a102b86495`) |
-| Associated token account address: seeds owner, token program and mint under `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`; SPL Token `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` and Token-2022 `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `@solana/spl-token` 0.3.11 `getAssociatedTokenAddressSync` and `@solana/web3.js` 1.98.0 `findProgramAddressSync`, as `package-lock.json` resolves them; the tests pin their answers |
+| Associated token account address: seeds owner, token program and mint under `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`, with SPL Token `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`; bumps 255 down to 1 | `@solana/spl-token` 0.3.11 `getAssociatedTokenAddressSync` and `@solana/web3.js` 1.98.0 `findProgramAddressSync`, as `package-lock.json` resolves them; the tests pin their answers |
 | Base58 | `bs58` 5.0.0; the tests pin its answers |
 | DACS-4 §9.5.3, PC-4 to PC-7, SB-1 and the settlement-event vectors | DACS-Standard `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, `package.json` `dacs.standardRevision` |
 
@@ -392,5 +428,12 @@ new revision of any of them.
   its settlement key and binding are unchanged. A key created for any other
   `jobId` can no longer be resumed: reconcile any attempt retained under it
   by hand before the phase is paid another way.
+- **Token-2022 mints** are no longer paid: their associated token account is
+  `solana-spl-payee-ata-not-associated` before anything is signed.
+- **Durable-nonce and malformed signed messages** are
+  `solana-spl-prepared-transaction-invalid` before they are retained. A
+  retained attempt of either kind from an earlier version is
+  `solana-spl-retained-state-corrupt`; reconcile it by hand from its retained
+  signature before the phase is paid any other way.
 - **Amounts above the SPL `u64` range** are `solana-spl-authority-invalid`.
   `TransferChecked` cannot carry them, so no such transfer was ever valid.
