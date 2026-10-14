@@ -238,14 +238,18 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     const fetchPage = createDemosHistoryPageFetcher(
       clientWith(async (_owner, _type, { start, limit }) => history.slice(start, start + limit)), OWNER);
     const seen: string[] = [];
+    const sizes: number[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 10; page++) {
       const result = await fetchPage(cursor, 2);
       seen.push(...result.entries.map((entry) => entry.nativeAddress));
+      sizes.push(result.entries.length);
       cursor = result.nextCursor;
       if (cursor === null) break;
     }
     expect(seen).toEqual([1, 2, 3, 4, 5].map((n) => `stor-${n.toString(16).padStart(40, "0")}`));
+    // Each page honours the limit even when the window holds more rows.
+    expect(sizes).toEqual([2, 2, 1]);
   });
 
   test("a new traversal forgets the previous traversal's logical metadata", async () => {
