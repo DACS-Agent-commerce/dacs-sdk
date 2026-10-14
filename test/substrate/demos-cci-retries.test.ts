@@ -123,8 +123,15 @@ describe("Demos identity transient retries", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["60", "Thu, 01 Jan 2099 00:00:00 GMT"])("caps Retry-After %s at 2 seconds", async (retryAfter) => {
+  it.each([
+    "60",
+    // RFC 9110 §5.6.7: IMF-fixdate, then the obsolete asctime and RFC 850 forms.
+    "Thu, 01 Jan 2099 00:00:00 GMT", "Fri Nov  6 08:49:37 2099", "Fri Nov 06 08:49:37 2099",
+    // In 2026 a two-digit year up to 76 is this century: 2070, and 2076 (exactly 50 years ahead).
+    "Thursday, 06-Nov-70 08:49:37 GMT", "Friday, 06-Nov-76 08:49:37 GMT",
+  ])("caps Retry-After %s at 2 seconds", async (retryAfter) => {
     const { adapter, transport } = setup();
+    vi.setSystemTime(Date.UTC(2026, 9, 14));
     transport.mockResolvedValueOnce(new Response("discarded", {
       status: 503, headers: { "Retry-After": retryAfter },
     })).mockImplementationOnce(async () => success());
@@ -170,14 +177,21 @@ describe("Demos identity transient retries", () => {
   it.each([
     // Date.parse accepts these leniently; most become past dates.
     "-1", "5, 5", "foo 2", "1.2.3",
-    // Not delay-seconds or an exact IMF-fixdate.
+    // Not delay-seconds or an HTTP-date.
     "", "junk", "1.5", "+5",
     // Future dates in the wrong format: they would cap at 2 s if accepted.
-    "Sat, 06 Nov 2099 08:49:37 GMT", "Fri, 6 Nov 2099 08:49:37 GMT", "Fri Nov  6 08:49:37 2099",
-    // Valid, but shorter than the backoff.
-    "0", "Sun, 06 Nov 1994 08:49:37 GMT",
+    "Sat, 06 Nov 2099 08:49:37 GMT", "Fri, 6 Nov 2099 08:49:37 GMT", "fri, 06 Nov 2099 08:49:37 GMT",
+    "Sat Nov  6 08:49:37 2099", "Fri Nov 6 08:49:37 2099", "Fri Nov  6 08:49:37 2099 GMT",
+    "Friday, 06 Nov 2099 08:49:37 GMT", "Fri, 06-Nov-70 08:49:37 GMT", "Wednesday, 06-Nov-70 08:49:37 GMT",
+    "Thursday, 06-Nov-2070 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 UTC", "Thursday, 31-Feb-70 08:49:37 GMT",
+    "Fri Nov  6 24:49:37 2099",
+    // 6 Nov 2077 is a Saturday, but 77 is more than 50 years ahead, so this names 1977, a Sunday.
+    "Saturday, 06-Nov-77 08:49:37 GMT",
+    // Valid, but shorter than the backoff. A two-digit year more than 50 years ahead is in the past.
+    "0", "Sun, 06 Nov 1994 08:49:37 GMT", "Sun Nov  6 08:49:37 1994", "Sunday, 06-Nov-77 08:49:37 GMT",
   ])("never waits less or more than the 250 ms backoff for Retry-After %j", async (retryAfter) => {
     const { adapter, transport } = setup();
+    vi.setSystemTime(Date.UTC(2026, 9, 14));
     transport.mockResolvedValueOnce(new Response("discarded", {
       status: 503, headers: { "Retry-After": retryAfter },
     })).mockImplementationOnce(async () => success());
@@ -192,6 +206,7 @@ describe("Demos identity transient retries", () => {
   it.each([
     { retryAfter: ["1", "0"], calls: [1_000, 1_500] },
     { retryAfter: ["Sun, 06 Nov 1994 08:49:38 GMT", "1"], calls: [1_000, 2_000] },
+    { retryAfter: ["Sunday, 06-Nov-94 08:49:38 GMT", "Sun Nov  6 08:49:39 1994"], calls: [1_000, 2_000] },
   ])("waits max(backoff, Retry-After) for $retryAfter", async ({ retryAfter, calls }) => {
     const { adapter, transport } = setup();
     vi.setSystemTime(Date.UTC(1994, 10, 6, 8, 49, 37));
@@ -338,6 +353,31 @@ describe("Demos identity transient retries", () => {
     expect(caught).toMatchObject({ message: READ_FAILED, category: "substrate" });
     expect(caught).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, undefined, "fetch failed", 0, false])(
+    "replaces a non-object transport rejection %j with SubstrateError, without retrying", async (thrown) => {
+      const { adapter, transport } = setup();
+      transport.mockImplementation(() => Promise.reject(thrown));
+      const result = adapter.resolveIdentity("subject").catch(caught => caught);
+      await vi.advanceTimersByTimeAsync(12_000);
+      const caught = await result;
+      expect(caught).toBeInstanceOf(SubstrateError);
+      expect(caught).toMatchObject({ message: READ_FAILED, category: "substrate" });
+      expect(transport).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retries a bodyless 503 and reports a bodyless 500 by status", async () => {
+    const { adapter, transport } = setup();
+    transport.mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }));
+    const result = adapter.resolveIdentity("subject").catch(error => error);
+    await vi.advanceTimersByTimeAsync(250);
+    const error = await result;
+    expect(error).toBeInstanceOf(SubstrateError);
+    expect(error.message).toBe("Demos GCR identity read failed with HTTP 500");
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   // Unrecognised Fetch failures: their causes carry socket addresses (and parser errors the node's bytes).
@@ -645,6 +685,38 @@ describe("Demos identity monotonic expiry checks", () => {
     await expect(read(transport, async () => ({}), () => clock)).resolves.toEqual(GCR);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("ends a retry wait when the overall timer fires inside it", async () => {
+    vi.useFakeTimers();
+    // A timer can fire before the monotonic clock reads expiry (Node timers start from
+    // cached loop time). Here the clock never advances: the 250 ms wait after a 503 at
+    // 100 ms fits, but the 300 ms overall timer lands inside it.
+    const transport = vi.fn<typeof fetch>().mockImplementation(() => new Promise(resolve => {
+      setTimeout(() => resolve(new Response("discarded", { status: 503 })), 100);
+    }));
+    let settled = false;
+    const result = read(transport, async () => ({}), () => 0).then(error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(299);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("checks expiry on a monotonic clock: a wall-clock jump does not expire the lookup", async () => {
+    // Real timers: only the wall clock jumps; performance.now() does not.
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const wall = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(wall + 3_600_000);
+      return success();
+    });
+    await expect(readDemosCciResponse(
+      "https://node.example/rpc", "subject", async () => ({}), transport,
+      DEMOS_CCI_MAX_RESPONSE_BYTES, 5_000, 12_000,
+    )).resolves.toEqual(GCR);
+  });
 });
 
 // Node's own fetch against a real socket: these are the errors a restarting node produces.
@@ -653,12 +725,18 @@ describe("Demos identity reads against a real local HTTP server", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     server?.closeAllConnections();
     await new Promise(resolve => (server ? server.close(resolve) : resolve(undefined)));
     server = undefined;
   });
 
   async function serve(handler: (request: IncomingMessage, response: ServerResponse, connection: number) => void) {
+    // The default transport refuses to bypass a proxy the environment names.
+    for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+      vi.stubEnv(name, "");
+      vi.stubEnv(name.toUpperCase(), "");
+    }
     let connections = 0;
     let requests = 0;
     server = createServer((request, response) => {

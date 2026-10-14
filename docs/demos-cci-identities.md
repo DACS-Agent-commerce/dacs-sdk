@@ -2,7 +2,11 @@
 
 The SDK projects the complete production `GCRMain.identities` surface returned
 by Demos `getIdentities`. This is a read/projection API: it does not link,
-remove, refresh, or fund an identity.
+remove, refresh, or fund an identity. It is not free of node side effects:
+in the public node source (`kynesyslabs/node` `testnet` at `ac8f45f`),
+`getIdentities` creates an empty GCR account for an address the node has not
+seen. Resolving arbitrary addresses therefore grows that node's state. The SDK
+sends the request demosdk sends and cannot prevent this.
 
 | Demos context | SDK claim | Canonical reference |
 | --- | --- | --- |
@@ -73,8 +77,11 @@ started, no connection failure is retried: a connection closed or reset during
 the body, with any of the codes above, ends the lookup. Backoff is 250 ms then 500 ms. `Retry-After` can
 lengthen that wait, up to 2,000 ms, but never shorten it: the wait is
 `max(backoff, min(Retry-After, 2,000 ms))`. Only whole seconds (`^\d+$`) or an
-exact IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) are accepted; any other
-value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx
+HTTP-date in one of the three forms RFC 9110 §5.6.7 requires recipients to
+accept are used: IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), RFC 850
+(`Sunday, 06-Nov-94 08:49:37 GMT`, where a two-digit year more than 50 years
+ahead means the previous century) or asctime (`Sun Nov  6 08:49:37 1994`).
+A date must be exact, including its weekday; any other value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx
 (including 429), and other 5xx are never retried. Failed bodies are cancelled
 without retaining response text.
 
@@ -91,11 +98,15 @@ accepted. An occupied JavaScript event loop can delay when a lookup settles, but
 once the deadline has passed no further request is sent and no result is
 accepted; the lookup ends in the timeout error below.
 
-dacs-node resolves an inbound peer's sender identity inside that peer's HTTP
-request, and the peer aborts the request after 15 seconds
+dacs-node's built-in peer resolvers accept only a self-certifying
+`did:demos:agent:` authority, which resolves locally without this read. A
+custom resolver that calls `agent.resolveIdentity()` or
+`resolveAuthenticatedIdentity()` for an inbound peer does read CCI inside that
+peer's HTTP request, and the peer aborts the request after 15 seconds
 (`DEFAULT_REQUEST_TIMEOUT_MS`). The 12-second default keeps a slow or restarting
 Demos node from making the sender give up and resend. Keep
-`identityTotalTimeoutMs` below the dacs-node request timeout if you raise it.
+`identityTotalTimeoutMs` below the dacs-node request timeout if you raise it
+for such a resolver.
 
 | Demos node | Defaults (5 s per attempt, 12 s overall) | `identityTimeoutMs: 8000` (12 s overall) |
 | --- | --- | --- |
@@ -124,11 +135,12 @@ transport that ignores abort, stalled signing, or body cancellation that never
 settles; no request is sent once signing outlasts its deadline, and late
 responses are cancelled without decoding.
 
-Identity requests use Fetch's `redirect: "error"`. The adapter additionally
-rejects a response marked `redirected` or with any 3xx status, including one
-returned by an injected transport, before reading or decoding its body. It
-cancels that body and throws a permanent `DacsError` with the stable message
-`Demos GCR identity response redirect refused`.
+Identity requests use Fetch's `redirect: "manual"`, so a redirect is never
+followed and reaches the adapter as its 3xx response. The adapter rejects a
+response with any 3xx status, marked `redirected`, or of type `opaqueredirect`,
+including one returned by an injected transport, before reading or decoding its
+body. It cancels that body and throws a permanent `DacsError` with the stable
+message `Demos GCR identity response redirect refused`.
 
 `DemosAdapterConfig.identityMaxResponseBytes` can tighten the raw ceiling to a
 positive safe integer; values above the hard maximum of 2,097,152 are rejected
@@ -141,6 +153,37 @@ preserves demosdk's `gcr_routine` request and wallet authentication headers.
 Other HTTP failures throw `SubstrateError`; invalid UTF-8/JSON fails closed without
 retaining response text in the error. Self-certifying primary Demos agent DIDs
 continue to resolve locally.
+
+Two differences between Fetch and demosdk's Axios transport are handled
+explicitly:
+
+- **Credentials in the RPC URL.** Fetch refuses a URL such as
+  `https://user:pass@node.example/`. The adapter removes the credentials from
+  the URL and sends them as `Authorization: Basic` with the percent-decoded
+  `user:password`, as Axios does. This also applies to an injected
+  `identityFetch`. No error message contains the URL or its credentials.
+- **Proxies.** Axios honours `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
+  `NO_PROXY` (either case). Node's global `fetch` ignores them unless
+  `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` is set (checked on Node 22.23).
+  If the environment names a proxy for the RPC URL, neither switch is set, and
+  no `identityFetch` is injected, identity reads throw a permanent `DacsError`
+  (`Demos GCR identity read would bypass the environment proxy; set
+  NODE_USE_ENV_PROXY=1 or inject identityFetch`) before signing or sending
+  anything, rather than bypass the proxy. Set `NODE_USE_ENV_PROXY=1`, or
+  inject an `identityFetch` that uses a proxy dispatcher. To connect directly
+  on purpose, list the host in `NO_PROXY` or pass `identityFetch: fetch`.
+
+The wallet authentication headers are those of demosdk's `rpcCall`: a test
+compares them with the installed demosdk and requires the locked 4.0.16. They
+match the node verifier of `kynesyslabs/node` commit `3e62225` with the
+`nonceEnforcement` fork active, which checks a signature over
+`identity:timestamp` within five minutes. The verifier on that repository's
+`testnet` branch (`ac8f45f`) checks a signature over the public key alone and
+answers a wallet-connected read with HTTP 401; demosdk's own `getIdentities`
+gets the same answer from such a node. Reads without a connected wallet send
+no signature. An opt-in live check, `DACS_DEMOS_CCI_LIVE_RPC` with
+`DACS_DEMOS_CCI_LIVE_ADDRESS` (an address that already has a GCR account),
+runs one unauthenticated read in `test/substrate/demos-cci-live.test.ts`.
 
 Reverse lookup currently follows the operations exported by Demos SDK:
 

@@ -4,7 +4,8 @@ import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
 export const DEMOS_CCI_DEFAULT_TIMEOUT_MS = 5_000;
-// Below dacs-node's 15 s peer request timeout, which covers inbound identity reads.
+// Below dacs-node's 15 s peer request timeout, for custom inbound resolvers that
+// call resolveIdentity(); the built-in resolvers answer agent DIDs locally.
 export const DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS = 12_000;
 // Match demosdk 4.0.16's connection/status lists, with a smaller retry budget.
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
@@ -24,14 +25,45 @@ class RetryableFailure {
   constructor(readonly error: TransientError, readonly waitMs: number) {}
 }
 
-// Accept only delay-seconds or an exact IMF-fixdate. toUTCString() emits
-// IMF-fixdate, so the round trip rejects everything Date.parse merely tolerates.
+const MONTH = "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+const TIME_OF_DAY = "(\\d{2}:\\d{2}:\\d{2})";
+const RFC850_DATE = new RegExp(
+  `^(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (\\d{2})-${MONTH}-(\\d{2}) ${TIME_OF_DAY} GMT$`,
+);
+const ASCTIME_DATE = new RegExp(
+  `^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (\\d{2}| \\d) ${TIME_OF_DAY} (\\d{4})$`,
+);
+
+// RFC 9110 §5.6.7: recipients accept IMF-fixdate and both obsolete HTTP-date
+// forms. Rewrite an obsolete form as IMF-fixdate; anything else is unchanged.
+function asImfFixdate(value: string, nowMs: number): string {
+  const rfc850 = RFC850_DATE.exec(value);
+  if (rfc850 !== null) {
+    const [, weekday, day, month, yy, time] = rfc850;
+    // A two-digit year more than 50 years ahead is in the previous century.
+    const latest = new Date(nowMs).getUTCFullYear() + 50;
+    const year = latest - (latest - Number(yy)) % 100;
+    return `${weekday!.slice(0, 3)}, ${day} ${month} ${year} ${time} GMT`;
+  }
+  const asctime = ASCTIME_DATE.exec(value);
+  if (asctime !== null) {
+    const [, weekday, month, day, time, year] = asctime;
+    return `${weekday}, ${day!.trim().padStart(2, "0")} ${month} ${year} ${time} GMT`;
+  }
+  return value;
+}
+
+// Accept only delay-seconds or an HTTP-date. toUTCString() emits IMF-fixdate,
+// so the round trip rejects impossible dates, wrong weekdays and everything
+// Date.parse merely tolerates.
 function retryAfterMs(value: string | null): number | undefined {
   if (value === null) return undefined;
   if (/^\d+$/.test(value)) return Number(value) * 1_000;
-  const date = Date.parse(value);
-  if (Number.isNaN(date) || new Date(date).toUTCString() !== value) return undefined;
-  return date - Date.now();
+  const nowMs = Date.now();
+  const fixdate = asImfFixdate(value, nowMs);
+  const date = Date.parse(fixdate);
+  if (Number.isNaN(date) || new Date(date).toUTCString() !== fixdate) return undefined;
+  return date - nowMs;
 }
 
 function retryWait(retryAfter: string | null, backoffMs: number): number {
@@ -131,9 +163,79 @@ async function consumeBoundedBody(
   }
 }
 
+interface RpcEndpoint {
+  url: string;
+  authorization?: string;
+}
+
+function decodeCredential(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+// Fetch rejects a URL that carries credentials; demosdk's Axios transport sends
+// them as Basic authentication. Do the same: strip them from the URL and send
+// the percent-decoded user:password, as Axios 1.x does. An unparseable URL is
+// left for the transport to reject.
+function rpcEndpoint(rpc: string): RpcEndpoint {
+  let url: URL;
+  try {
+    url = new URL(rpc);
+  } catch {
+    return { url: rpc };
+  }
+  if (url.username === "" && url.password === "") return { url: rpc };
+  const credentials = `${decodeCredential(url.username)}:${decodeCredential(url.password)}`;
+  url.username = "";
+  url.password = "";
+  return { url: url.href, authorization: `Basic ${Buffer.from(credentials).toString("base64")}` };
+}
+
+const DEFAULT_PORTS: Readonly<Record<string, number>> = { "http:": 80, "https:": 443 };
+
+/**
+ * True when demosdk's Axios transport would reach `rpc` through a proxy named
+ * in the environment (proxy-from-env 2.x rules: `<scheme>_proxy`, `all_proxy`,
+ * `no_proxy`) but Node's global fetch would connect directly, because neither
+ * NODE_USE_ENV_PROXY=1 nor --use-env-proxy is set.
+ */
+export function fetchIgnoresEnvironmentProxy(
+  rpc: string,
+  env: NodeJS.ProcessEnv = process.env,
+  execArgv: readonly string[] = process.execArgv,
+): boolean {
+  const flag = "--use-env-proxy";
+  if (env.NODE_USE_ENV_PROXY === "1" || execArgv.includes(flag) ||
+      (env.NODE_OPTIONS ?? "").split(/\s+/).includes(flag)) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(rpc);
+  } catch {
+    return false;
+  }
+  const read = (name: string) => env[name] || env[name.toUpperCase()] || "";
+  if (!read(`${url.protocol.slice(0, -1)}_proxy`) && !read("all_proxy")) return false;
+  const noProxy = read("no_proxy").toLowerCase();
+  if (noProxy === "*") return false;
+  const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
+  return noProxy.split(/[,\s]/).every((entry) => {
+    if (entry === "") return true;
+    const withPort = /^(.+):(\d+)$/.exec(entry);
+    const host = withPort?.[1] ?? entry;
+    if (withPort !== null && Number(withPort[2]) !== port) return true;
+    if (!/^[.*]/.test(host)) return url.hostname !== host;
+    return !url.hostname.endsWith(host.startsWith("*") ? host.slice(1) : host);
+  });
+}
+
 /** One fresh, bounded attempt, including time-bound header construction. */
 async function readAttempt(
-  rpc: string,
+  endpoint: RpcEndpoint,
   address: string,
   buildHeaders: () => Promise<Record<string, string>>,
   transport: typeof fetch,
@@ -166,10 +268,13 @@ async function readAttempt(
       if (expired()) throw overallSignal.reason;
       controller.signal.throwIfAborted();
       phase = "send";
-      const response = await transport(rpc, {
+      const response = await transport(endpoint.url, {
         method: "POST",
-        headers,
-        redirect: "error",
+        headers: endpoint.authorization === undefined
+          ? headers : { ...headers, Authorization: endpoint.authorization },
+        // "error" would turn a redirect into an anonymous network error; with
+        // "manual" the 3xx check below refuses it with a stable DacsError.
+        redirect: "manual",
         signal: controller.signal,
         body: JSON.stringify({
           method: "gcr_routine",
@@ -183,7 +288,8 @@ async function readAttempt(
         void response.body?.cancel().catch(() => undefined);
         throw controller.signal.reason;
       }
-      if (response.redirected || response.status >= 300 && response.status < 400) {
+      if (response.redirected || response.type === "opaqueredirect" ||
+          response.status >= 300 && response.status < 400) {
         void response.body?.cancel().catch(() => undefined);
         throw new DacsError("Demos GCR identity response redirect refused");
       }
@@ -247,6 +353,7 @@ export async function readDemosCciResponse(
   totalTimeoutMs: number,
   now: () => number = () => performance.now(),
 ): Promise<unknown> {
+  const endpoint = rpcEndpoint(rpc);
   const budgetMs = Math.min(3 * timeoutMs + OVERALL_SLACK_MS, totalTimeoutMs);
   const expiresAt = now() + budgetMs;
   const overall = new AbortController();
@@ -266,7 +373,7 @@ export async function readDemosCciResponse(
       if (expired()) throw overall.signal.reason;
       try {
         return await readAttempt(
-          rpc, address, buildHeaders, transport, maxBytes, timeoutMs,
+          endpoint, address, buildHeaders, transport, maxBytes, timeoutMs,
           overall.signal, expired, 250 * 2 ** attempt,
         );
       } catch (error) {

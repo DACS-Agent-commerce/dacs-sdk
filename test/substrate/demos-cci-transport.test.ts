@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
@@ -6,6 +10,7 @@ import { sha256Hex } from "../../src/canonical/index.js";
 import { DacsError, SubstrateError, TransientError, faultCategory } from "../../src/errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS, parseCciRecord } from "../../src/identity/cci.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
+import { fetchIgnoresEnvironmentProxy } from "../../src/substrate/demosCciTransport.js";
 
 const RPC = "https://node.example/rpc";
 const PRIMARY = `did:demos:agent:${"11".repeat(32)}`;
@@ -118,7 +123,7 @@ describe("Demos CCI raw response boundary", () => {
     expect(stream.cancel).not.toHaveBeenCalled();
     expect(transport).toHaveBeenCalledWith(RPC, {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       signal: expect.any(AbortSignal),
       headers: {
         "Content-Type": "application/json",
@@ -164,15 +169,27 @@ describe("Demos CCI raw response boundary", () => {
     });
   });
 
-  it.each([false, true])(
-    "sends the same request and headers as demosdk's real rpcCall (wallet connected: %s)",
-    async (walletConnected) => {
+  it("compares rpcCall parity against the locked demosdk version", () => {
+    // Re-check the parity tests below, then update this pin, when bumping demosdk.
+    const manifest = JSON.parse(readFileSync(new URL(
+      "../../node_modules/@kynesyslabs/demosdk/package.json", import.meta.url,
+    ), "utf8")) as { version: string };
+    expect(manifest.version).toBe("4.0.16");
+  });
+
+  it.each([
+    { walletConnected: false, algorithm: "ed25519" },
+    { walletConnected: true, algorithm: "ed25519" },
+    { walletConnected: true, algorithm: "falcon" },
+  ])(
+    "sends the same request and headers as demosdk's real rpcCall (wallet connected: $walletConnected, $algorithm)",
+    async ({ walletConnected, algorithm }) => {
       vi.useFakeTimers();
       vi.setSystemTime(1_700_000_000_000);
       const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
       const demos = adapter.raw as unknown as Demos;
       // connect() hands config.rpc to demosdk unchanged; mirror that here.
-      Object.assign(demos, { rpc_url: RPC });
+      Object.assign(demos, { rpc_url: RPC, algorithm });
       vi.spyOn(demos, "walletConnected", "get").mockReturnValue(walletConnected);
       const keypair = { publicKey: Buffer.alloc(32, 0xab), privateKey: Buffer.alloc(64) };
       vi.spyOn(demos, "keypair", "get").mockReturnValue(keypair);
@@ -207,6 +224,9 @@ describe("Demos CCI raw response boundary", () => {
       expect(doPost).toHaveBeenCalledTimes(3);
       expect(sign).toHaveBeenCalledTimes(walletConnected ? 6 : 0);
       if (walletConnected) {
+        expect(sign.mock.calls[0]?.[0]).toBe(algorithm);
+        expect((transport.mock.calls[0]?.[1]?.headers as Record<string, string>).identity)
+          .toBe(`${algorithm}:0x${"ab".repeat(32)}`);
         const timestamps = transport.mock.calls.map(([, init]) =>
           (init?.headers as Record<string, string>).timestamp);
         expect(timestamps).toEqual(["1700000000000", "1700000000250", "1700000000750"]);
@@ -416,7 +436,7 @@ describe("Demos CCI raw response boundary", () => {
     });
     expect(error).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
-    expect(transport.mock.calls[0]?.[1]?.redirect).toBe("error");
+    expect(transport.mock.calls[0]?.[1]?.redirect).toBe("manual");
     expect(stream.reads()).toBe(0);
     expect(stream.cancel).toHaveBeenCalledOnce();
     expect(decoder).not.toHaveBeenCalled();
@@ -433,5 +453,268 @@ describe("Demos CCI raw response boundary", () => {
     expect(error).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails closed on invalid UTF-8 inside otherwise valid JSON", async () => {
+    const bytes = Buffer.concat([
+      Buffer.from('{"result":200,"response":{"web2":{"github":[{"username":"'),
+      Buffer.from([0xff]),
+      Buffer.from('","userId":"1"}]}}}'),
+    ]);
+    const { adapter } = adapterFor(new Response(bytes));
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({ message: "Demos GCR identity response is not valid UTF-8 JSON" });
+  });
+
+  it("sends the address byte-for-byte, as rpcCall does", async () => {
+    const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
+    const address = `0x${"Ab".repeat(32)}`;
+    await adapter.resolveIdentity(address);
+    expect(transport.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({
+      method: "gcr_routine", params: [{ method: "getIdentities", params: [address] }],
+    }));
+  });
+
+  it("fails closed on a bodyless 204 response", async () => {
+    const { adapter } = adapterFor(new Response(null, { status: 204 }));
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({ message: "Demos GCR identity response is not valid UTF-8 JSON" });
+  });
+
+  it.each(["1x", "x1", "1 2"])("ignores a non-numeric Content-Length %j and counts the body", async (length) => {
+    const stream = streamedResponse([new TextEncoder().encode(JSON.stringify(GCR))], length);
+    const { adapter } = adapterFor(stream.response);
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+  });
+
+  it("owns each chunk, so a transport that reuses its buffer cannot change retained bytes", async () => {
+    const json = JSON.stringify(GCR);
+    const text = json.padEnd(json.length + (json.length % 2), " ");
+    const half = text.length / 2;
+    const buffer = new Uint8Array(half);
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (reads === 2) return controller.close();
+        buffer.set(new TextEncoder().encode(text.slice(reads * half, ++reads * half)));
+        controller.enqueue(buffer);
+      },
+    }, { highWaterMark: 0 });
+    const { adapter } = adapterFor(new Response(body));
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+  });
+
+  it.each([301, 302, 303, 307, 308])("refuses a bodyless %s redirect with the stable DacsError", async (status) => {
+    const response = new Response(null, { status, headers: { Location: "https://elsewhere.example/" } });
+    const { adapter, transport } = adapterFor(response);
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({ message: "Demos GCR identity response redirect refused" });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("refuses an opaque redirect from a browser-style transport", async () => {
+    const response = new Response(null, { status: 200 });
+    vi.spyOn(response, "type", "get").mockReturnValue("opaqueredirect");
+    const { adapter } = adapterFor(response);
+    await expect(adapter.resolveIdentity("subject")).rejects.toMatchObject({
+      message: "Demos GCR identity response redirect refused",
+    });
+  });
+
+  it.each([
+    { rpc: "https://user:secret-pass@node.example/rpc", credentials: "user:secret-pass" },
+    // Axios percent-decodes each part before sending it.
+    { rpc: "https://us%40er:p%3Ass%20w@node.example/rpc", credentials: "us@er:p:ss w" },
+    { rpc: "https://user@node.example/rpc", credentials: "user:" },
+    { rpc: "https://:secret@node.example/rpc", credentials: ":secret" },
+    { rpc: "https://user:bad%ZZ@node.example/rpc", credentials: "user:bad%ZZ" },
+  ])("sends RPC URL credentials $rpc as Basic auth on a credential-free URL", async ({ rpc, credentials }) => {
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(GCR)));
+    const adapter = new DemosAdapter({ rpc, identityFetch: transport });
+    Object.assign(adapter, { connected: true });
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+    expect(transport.mock.calls[0]?.[0]).toBe(RPC);
+    expect(transport.mock.calls[0]?.[1]?.headers).toEqual({
+      "Content-Type": "application/json",
+      identity: "ed25519:",
+      signature: "",
+      timestamp: "",
+      Authorization: `Basic ${Buffer.from(credentials).toString("base64")}`,
+    });
+  });
+
+  it("passes a credential-free RPC URL through unchanged, with no Authorization header", async () => {
+    const rpc = "https://node.example";
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(GCR)));
+    const adapter = new DemosAdapter({ rpc, identityFetch: transport });
+    Object.assign(adapter, { connected: true });
+    await adapter.resolveIdentity("subject");
+    expect(transport.mock.calls[0]?.[0]).toBe(rpc);
+    expect(transport.mock.calls[0]?.[1]?.headers).not.toHaveProperty("Authorization");
+  });
+});
+
+describe("Demos CCI environment proxy detection (proxy-from-env rules)", () => {
+  const HTTPS = "https://node.example:8443/rpc";
+  it.each([
+    { env: {}, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "http://proxy:3128" }, rpc: HTTPS, ignored: true },
+    { env: { https_proxy: "proxy:3128" }, rpc: HTTPS, ignored: true },
+    { env: { ALL_PROXY: "http://proxy:3128" }, rpc: HTTPS, ignored: true },
+    { env: { all_proxy: "http://proxy:3128" }, rpc: "http://node.example/", ignored: true },
+    // Like Axios, an HTTPS URL does not fall back to HTTP_PROXY.
+    { env: { HTTP_PROXY: "http://proxy:3128" }, rpc: HTTPS, ignored: false },
+    { env: { HTTP_PROXY: "http://proxy:3128" }, rpc: "http://node.example/", ignored: true },
+    { env: { HTTPS_PROXY: "http://proxy:3128", NODE_USE_ENV_PROXY: "1" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "http://proxy:3128", NODE_USE_ENV_PROXY: "0" }, rpc: HTTPS, ignored: true },
+    { env: { HTTPS_PROXY: "p", NODE_OPTIONS: "--max-old-space-size=64 --use-env-proxy" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "*" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", no_proxy: "other.example, node.example" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "NODE.EXAMPLE" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: ".example" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "*.example" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "node.example:8443" }, rpc: HTTPS, ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "node.example:443" }, rpc: HTTPS, ignored: true },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "node.example:443" }, rpc: "https://node.example/", ignored: false },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "de.example" }, rpc: HTTPS, ignored: true },
+    { env: { HTTPS_PROXY: "p", NO_PROXY: "other.example" }, rpc: HTTPS, ignored: true },
+    { env: { HTTPS_PROXY: "p" }, rpc: "not a url", ignored: false },
+  ])("$env for $rpc: ignored=$ignored", ({ env, rpc, ignored }) => {
+    expect(fetchIgnoresEnvironmentProxy(rpc, env, [])).toBe(ignored);
+  });
+
+  it("honours --use-env-proxy on the command line", () => {
+    expect(fetchIgnoresEnvironmentProxy(HTTPS, { HTTPS_PROXY: "p" }, ["--use-env-proxy"])).toBe(false);
+  });
+});
+
+describe("Demos CCI default transport and the environment proxy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  function stubProxyEnvironment(values: Record<string, string | undefined>) {
+    for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+      vi.stubEnv(name, "");
+      vi.stubEnv(name.toUpperCase(), "");
+    }
+    vi.stubEnv("NODE_USE_ENV_PROXY", "");
+    for (const [name, value] of Object.entries(values)) vi.stubEnv(name, value);
+  }
+
+  it("refuses to bypass a proxy the environment names, before signing or sending", async () => {
+    stubProxyEnvironment({ HTTPS_PROXY: "http://user:proxy-secret@proxy.example:3128" });
+    const globalFetch = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", globalFetch);
+    const adapter = new DemosAdapter({ rpc: "https://user:rpc-secret@node.example/rpc" });
+    Object.assign(adapter, { connected: true });
+    const demos = adapter.raw as unknown as Demos;
+    vi.spyOn(demos, "walletConnected", "get").mockReturnValue(true);
+    const sign = vi.spyOn(demos.crypto, "sign");
+
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({
+      message: "Demos GCR identity read would bypass the environment proxy; " +
+        "set NODE_USE_ENV_PROXY=1 or inject identityFetch",
+      category: "permanent",
+    });
+    expect(inspect(error)).not.toMatch(/secret|proxy\.example|node\.example/);
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "NODE_USE_ENV_PROXY=1", env: { HTTPS_PROXY: "http://proxy.example:3128", NODE_USE_ENV_PROXY: "1" } },
+    { kind: "NO_PROXY", env: { HTTPS_PROXY: "http://proxy.example:3128", NO_PROXY: "node.example" } },
+    { kind: "no proxy", env: {} },
+  ])("uses global fetch with $kind", async ({ env }) => {
+    stubProxyEnvironment(env);
+    const globalFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
+    vi.stubGlobal("fetch", globalFetch);
+    const adapter = new DemosAdapter({ rpc: RPC });
+    Object.assign(adapter, { connected: true });
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+    expect(globalFetch).toHaveBeenCalledOnce();
+  });
+
+  it("leaves routing to an injected transport", async () => {
+    stubProxyEnvironment({ HTTPS_PROXY: "http://proxy.example:3128" });
+    const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+});
+
+// Node's own fetch, and demosdk's Axios transport for comparison, against a real socket.
+describe("Demos CCI default transport against a real local HTTP server", () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    server?.closeAllConnections();
+    await new Promise(resolve => (server ? server.close(resolve) : resolve(undefined)));
+    server = undefined;
+  });
+
+  async function serve(reply: (headers: IncomingHttpHeaders, url: string) => [number, Record<string, string>, string]) {
+    for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+      vi.stubEnv(name, "");
+      vi.stubEnv(name.toUpperCase(), "");
+    }
+    const seen: Array<{ url: string; authorization: string | undefined }> = [];
+    server = createServer((request, response) => {
+      seen.push({ url: request.url ?? "", authorization: request.headers.authorization });
+      request.resume().on("end", () => {
+        const [status, headers, body] = reply(request.headers, request.url ?? "");
+        response.writeHead(status, headers).end(body);
+      });
+    });
+    await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
+    return { port: (server.address() as AddressInfo).port, seen };
+  }
+
+  it.each([301, 302, 303, 307, 308])("refuses a real %s redirect with the stable DacsError, without following it", async (status) => {
+    const { port, seen } = await serve((_headers, url) => url === "/"
+      ? [status, { Location: "/elsewhere" }, "redirect body"]
+      : [200, { "Content-Type": "application/json" }, JSON.stringify(GCR)]);
+    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/` });
+    Object.assign(adapter, { connected: true });
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({ message: "Demos GCR identity response redirect refused", category: "permanent" });
+    expect(seen.map(({ url }) => url)).toEqual(["/"]);
+  });
+
+  it("sends RPC URL credentials exactly as demosdk's Axios rpcCall does, and never reports them", async () => {
+    const { port, seen } = await serve(headers => headers.authorization === undefined
+      ? [401, {}, "unauthorized"]
+      : [200, { "Content-Type": "application/json" }, JSON.stringify(GCR)]);
+    const rpc = `http://us%40er:secret%3Apass@127.0.0.1:${port}/`;
+    const adapter = new DemosAdapter({ rpc });
+    Object.assign(adapter, { connected: true });
+    const demos = adapter.raw as unknown as Demos;
+    Object.assign(demos, { rpc_url: rpc });
+
+    await expect(new Identities().getIdentities(demos, "getIdentities", "subject")).resolves.toEqual(GCR);
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual(seen[0]);
+    expect(seen[1]?.authorization).toBe(`Basic ${Buffer.from("us@er:secret:pass").toString("base64")}`);
+
+    server?.closeAllConnections();
+    await new Promise(resolve => server!.close(resolve));
+    server = undefined;
+    const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(inspect(error, { depth: 10 })).not.toMatch(/secret|us%40er|us@er/);
   });
 });

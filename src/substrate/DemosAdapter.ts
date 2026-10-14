@@ -30,6 +30,7 @@ import {
   DEMOS_CCI_MAX_RESPONSE_BYTES,
   DEMOS_CCI_DEFAULT_TIMEOUT_MS,
   DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
+  fetchIgnoresEnvironmentProxy,
   readDemosCciResponse,
 } from "./demosCciTransport.js";
 import {
@@ -4091,8 +4092,13 @@ export class DemosAdapter implements SubstrateAdapter {
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
    * The read uses a bounded raw transport, not demosdk's rpcCall, but sends
-   * fresh rpcCall timestamp-bound auth headers on every attempt, pinned by a
-   * test to demosdk 4.0.16. Transient failures get at most two retries with a
+   * fresh rpcCall timestamp-bound auth headers on every attempt. A test compares
+   * them with the installed demosdk's rpcCall and requires demosdk 4.0.16, the
+   * locked version. They match the node verifier of kynesyslabs/node@3e62225
+   * with the nonceEnforcement fork active; the verifier on that repository's
+   * testnet branch (ac8f45f) checks a signature over the public key alone and
+   * answers a wallet-connected read with HTTP 401, as it does for demosdk itself.
+   * Transient failures get at most two retries with a
    * configurable per-attempt deadline (default 5 s). The overall deadline is
    * min(3 × identityTimeoutMs + 2,750 ms, identityTotalTimeoutMs), default 12 s,
    * including signing, reads and waits; past it, no request is sent and no
@@ -4137,6 +4143,14 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       return headers;
     };
+    // demosdk's Axios transport honours HTTP(S)_PROXY; never bypass a proxy
+    // it would have used. The message names no URL, which may hold credentials.
+    if (this.config.identityFetch === undefined && fetchIgnoresEnvironmentProxy(this.config.rpc)) {
+      throw new DacsError(
+        "Demos GCR identity read would bypass the environment proxy; " +
+          "set NODE_USE_ENV_PROXY=1 or inject identityFetch",
+      );
+    }
     const raw = await readDemosCciResponse(
       this.config.rpc,
       ref,
