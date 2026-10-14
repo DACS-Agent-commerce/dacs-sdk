@@ -32,12 +32,37 @@ if [ -n "$octopus" ]; then
   exit 1
 fi
 
+# Gitleaks runs the first git on its PATH, so it gets this one, which runs the real git and
+# records the exit status of Gitleaks' `git -C . log`: Gitleaks passes even if git dies without
+# a word on stderr. It also drops git's `remerge ...` lines, which describe a merge's
+# conflicts. Gitleaks 8.30.1 reads one as the start of a new commit if it contains the text
+# `commit`, and then drops the merge's commit from that file's fingerprint and every later
+# file's. In `git log -p`, only these lines start with `remerge ` at the start of a line:
+# patch lines start with `+`, `-`, ` ` or `\`, and commit messages are indented.
+export SECRET_SCAN_GIT SECRET_SCAN_GIT_STATUS="$temp/git-log.status"
+SECRET_SCAN_GIT=$(command -v git)
+mkdir "$temp/bin"
+cat > "$temp/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1-} ${3-}" != "-C log" ]; then exec "$SECRET_SCAN_GIT" "$@"; fi
+set -o pipefail
 status=0
-"$gitleaks" git . --log-opts="$LOG_OPTS" "$@" 2> "$temp/gitleaks.log" || status=$?
+"$SECRET_SCAN_GIT" "$@" | LC_ALL=C sed '/^remerge /d' || status=$?
+echo "$status" > "$SECRET_SCAN_GIT_STATUS"
+exit "$status"
+EOF
+chmod +x "$temp/bin/git"
+
+status=0
+PATH="$temp/bin:$PATH" "$gitleaks" git . --log-opts="$LOG_OPTS" "$@" 2> "$temp/gitleaks.log" || status=$?
 cat "$temp/gitleaks.log" >&2
 # Gitleaks logs this when git writes to stderr during its own run, then stops and passes.
 if grep -qF "stderr is not empty" "$temp/gitleaks.log"; then
   echo "The scan is partial: git failed during Gitleaks' run." >&2
+  exit 1
+fi
+if [ "$(cat "$SECRET_SCAN_GIT_STATUS" 2> /dev/null)" != 0 ]; then
+  echo "The scan is partial: Gitleaks' git log did not run, or did not finish." >&2
   exit 1
 fi
 exit "$status"

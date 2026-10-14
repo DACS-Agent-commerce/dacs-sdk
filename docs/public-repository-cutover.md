@@ -93,9 +93,11 @@ reported by that run rather than creating a similarly named placeholder.
   - git comes from the `ubuntu-24.04` runner image, which GitHub updates. The
     merge scan needs git 2.36 or later. Gitleaks 8.30.1 logs a git error but
     still passes, so each scan first runs the same `git log` and fails if git
-    exits with an error or writes anything to stderr, and fails afterwards if
-    Gitleaks logged one. If git warns that it skipped rename detection, add
-    `-l<n>`, with the limit git suggests, to both workflows' `LOG_OPTS`;
+    exits with an error or writes anything to stderr. It then gives Gitleaks a
+    `git` that records whether Gitleaks' own `git log` finished, and fails if
+    it didn't or if Gitleaks logged a git error. If git warns that it
+    skipped rename detection, add `-l<n>`, with the limit git suggests, to
+    both workflows' `LOG_OPTS`;
   - before scanning, each scan runs `scripts/secret-scan-self-test.sh`: it
     builds a repository with one case of each kind above, scans it with the
     job's git, Gitleaks and options, and fails unless Gitleaks reports exactly
@@ -142,7 +144,8 @@ reported by that run rather than creating a similarly named placeholder.
   reproduction.
 
   To spot a new finding while the audit is red, first check the scan step's
-  log: if it says `partial scan`, Gitleaks stopped on an error and findings may
+  log: if it says `Nothing was scanned` or `The scan is partial`,
+  `scripts/secret-scan.sh` failed the step because git failed, and findings may
   be missing. Compare the run with the last
   run whose findings were all reviewed, not just with the previous run. An ID
   that wasn't among that run's findings, or a higher count for an ID, is new.
@@ -185,21 +188,18 @@ reported by that run rather than creating a similarly named placeholder.
   your local scan failed; look up its commit on GitHub, and dispatch a new
   run to compare.
 
-  A finding in a merge's conflict resolution has a file segment that starts
-  with `b/`. Gitleaks 8.30.1 also drops the commit from a fingerprint when
-  git's `remerge CONFLICT` line before that file contains the text `commit`,
-  as it does for a path such as `src/negotiate/commitment.ts` or a parent
-  whose subject mentions a commit. That finding, and every later file of the
-  same merge, then has a `file:rule:line` fingerprint. Pin a `b/` one as
-  Gitleaks wrote it, directly under a comment that names the merge it was
-  reviewed in (`# Reviewed in merge <40-hex commit>: ...`). Like any entry
-  without a commit it matches that file, rule and line in every commit, but
-  only Gitleaks' reading of a conflict resolution has a `b/` file segment. A
-  commit-less finding in a later file of the merge has the file's own path,
-  so an entry for it would hide that file, rule and line everywhere; don't
-  pin it. On a pull request branch, redo the merge so that it changes nothing
-  beyond its conflict resolutions. On `main`, the scans stay red until the
-  maintainers decide.
+  In a merge's patch, git prints a `remerge CONFLICT` line for each
+  conflicted file. Gitleaks 8.30.1 reads the file's path after that line as
+  `b/<path>`, and if the line contains the text `commit` (as for a path such
+  as `src/negotiate/commitment.ts`, or a parent whose subject mentions a
+  commit), it also drops the merge's commit from that file's fingerprint and
+  from every later file of the merge. So `scripts/secret-scan.sh` removes
+  git's `remerge` lines from the log it gives Gitleaks: every fingerprint
+  then has its commit and the file's own path, which the self-test checks.
+  Pin every finding as `commit:file:rule:line`; the `.gitleaksignore` test
+  rejects any other entry. An entry without a commit would hide that file,
+  rule and line in every commit, so don't pin a finding shown as
+  `no-commit`: it means the scan no longer works as described here.
 - Enable GitHub private vulnerability reporting and verify that the
   **Security → Report a vulnerability** route is visible when logged out.
 - Enable code scanning when an appropriate TypeScript configuration is ready;

@@ -176,11 +176,13 @@ describe("Gitleaks finding summary", () => {
     expectNoFindingDetails(summary.markdown);
 
     // A failed scan step may also be a partial scan; a passed one is not.
-    expect(summary.markdown).toContain("If the step's log says `partial scan`, findings may be missing");
+    expect(summary.markdown).toContain(
+      "If the step's log says `Nothing was scanned` or `The scan is partial`, findings may be missing",
+    );
     const inconsistent = summarizeGitleaksReport({ text: reportOf([NEW_A]) }, "success");
     expect(inconsistent.clean).toBe(false);
     expect(inconsistent.markdown).toContain("although the scan step passed");
-    expect(inconsistent.markdown).not.toContain("partial scan");
+    expect(inconsistent.markdown).not.toContain("The scan is partial");
 
     // The malformed count is of findings, the omitted count of IDs.
     const twice = `${SHA}:src/a.ts:generic api key:3`;
@@ -239,7 +241,8 @@ describe("Gitleaks finding summary", () => {
   });
 
   it("shows `no-commit` for a finding Gitleaks reported without a commit", () => {
-    // Gitleaks 8.30.1 writes `file:rule:line`, and an empty Commit, after some merges' conflict headers.
+    // Gitleaks 8.30.1 writes `file:rule:line`, and an empty Commit, after some merges' conflict headers
+    // if it reads git's own log, which scripts/secret-scan.sh prevents.
     const withoutCommit = (fingerprint: string) => ({ ...finding(fingerprint), Commit: "" });
     const conflict = "b/src/commitment.ts:generic-api-key:4";
     const colon = "src/a:b.ts:generic-api-key:5";

@@ -203,20 +203,18 @@ describe("secret scan workflows", () => {
     expect(docs).toContain('\n  bash scripts/secret-scan.sh "$(command -v gitleaks)" --redact=100 --no-banner \\\n');
   });
 
-  it("pins every .gitleaksignore entry to a commit, or a conflict resolution to its reviewed merge", async () => {
+  it("pins every .gitleaksignore entry to a commit", async () => {
     const lines = (await readFile(join(root, ".gitleaksignore"), "utf8")).split("\n");
     expect(lines.filter((line) => line.trim() !== "" && !line.startsWith("#")).length).toBeGreaterThan(0);
     expect(ignoreEntryProblems(lines)).toEqual([]);
   });
 
-  it("accepts an entry without a commit only for a b/ file under a comment naming its merge", () => {
+  it("rejects every entry without a commit", () => {
     const merge = "c".repeat(40);
-    expect(ignoreEntryProblems([`${"a".repeat(40)}:src/a:b.ts:generic-api-key:4`, ""])).toEqual([]);
-    expect(
-      ignoreEntryProblems([`# Reviewed in merge ${merge}: fixture`, "b/src/commitment.ts:generic-api-key:4"]),
-    ).toEqual([]);
+    expect(ignoreEntryProblems([`${"a".repeat(40)}:src/a:b.ts:generic-api-key:4`, "", "# comment"])).toEqual([]);
     const rejected = [
       ["b/src/commitment.ts:generic-api-key:4"],
+      [`# Reviewed in merge ${merge}: fixture`, "b/src/commitment.ts:generic-api-key:4"],
       ["# Reviewed in merge abc", "b/src/commitment.ts:generic-api-key:4"],
       [`# Reviewed in merge ${merge}`, "", "b/src/commitment.ts:generic-api-key:4"],
       [`# Reviewed in merge ${merge}`, "src/commitment.ts:generic-api-key:4"],
@@ -228,18 +226,12 @@ describe("secret scan workflows", () => {
   });
 });
 
-// The .gitleaksignore entries that are neither `commit:file:rule:line` nor a commit-less
-// `b/file:rule:line`, which Gitleaks writes for some merges' conflict resolutions, directly
-// under a comment that names the merge it was reviewed in. Any entry without a commit matches
-// that file, rule and line in every commit.
+// The .gitleaksignore entries that are not `commit:file:rule:line`. An entry without a commit
+// matches that file, rule and line in every commit.
 function ignoreEntryProblems(lines: string[]) {
-  return lines.filter((line, index) => {
-    if (line.trim() === "" || line.startsWith("#")) return false;
-    if (/^[0-9a-f]{40}:.+:[A-Za-z0-9._-]+:[0-9]+$/.test(line)) return false;
-    return !(
-      /^b\/.+:[A-Za-z0-9._-]+:[0-9]+$/.test(line) && /^# Reviewed in merge [0-9a-f]{40}\b/.test(lines[index - 1] ?? "")
-    );
-  });
+  return lines.filter(
+    (line) => line.trim() !== "" && !line.startsWith("#") && !/^[0-9a-f]{40}:.+:[A-Za-z0-9._-]+:[0-9]+$/.test(line),
+  );
 }
 
 // Gitleaks scans the added lines of the patches `git log -p -U0 <log-opts>` prints, so each
@@ -369,11 +361,23 @@ describe("secret scan git log options", () => {
   describe("scripts", () => {
     const scanScriptPath = join(root, "scripts/secret-scan.sh");
     const selfTestPath = join(root, "scripts/secret-scan-self-test.sh");
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
     let stub: string;
     let calls: string;
 
-    // A stand-in for Gitleaks: records its arguments, writes STUB_REPORT to --report-path,
-    // STUB_STDERR to stderr, and exits with STUB_STATUS.
+    // A directory holding a `git` that runs `shellCode` and then the real git.
+    async function gitShim(name: string, shellCode: string) {
+      const shim = join(directory, name);
+      await mkdir(shim);
+      await writeFile(join(shim, "git"), ["#!/bin/sh", shellCode, `exec '${realGit}' "$@"`, ""].join("\n"), {
+        mode: 0o755,
+      });
+      return { PATH: `${shim}:${process.env.PATH ?? ""}` };
+    }
+
+    // A stand-in for Gitleaks: records its arguments, runs `git log` as Gitleaks does (unless
+    // STUB_SKIP_GIT is set) and saves what it read to STUB_LOG, writes STUB_REPORT to
+    // --report-path, STUB_STDERR to stderr, and exits with STUB_STATUS.
     beforeAll(async () => {
       stub = join(directory, "gitleaks-stub");
       calls = join(directory, "gitleaks-calls");
@@ -382,7 +386,8 @@ describe("secret scan git log options", () => {
         [
           "#!/bin/sh",
           'printf "%s\\n" "$@" >> "$STUB_CALLS"',
-          'for argument; do case "$argument" in --report-path=*) printf "%s" "$STUB_REPORT" > "${argument#--report-path=}";; esac; done',
+          'for argument; do case "$argument" in --report-path=*) printf "%s" "$STUB_REPORT" > "${argument#--report-path=}";; --log-opts=*) opts=${argument#--log-opts=};; esac; done',
+          'if [ -z "$STUB_SKIP_GIT" ]; then git -C . log -p -U0 $opts > "${STUB_LOG:-/dev/null}"; fi',
           'printf "%s" "$STUB_STDERR" >&2',
           'exit "$STUB_STATUS"',
           "",
@@ -404,6 +409,7 @@ describe("secret scan git log options", () => {
           STUB_REPORT: "",
           STUB_STDERR: "",
           STUB_STATUS: "0",
+          STUB_SKIP_GIT: "",
           ...env,
         },
       });
@@ -469,6 +475,56 @@ describe("secret scan git log options", () => {
       expect(await stubCalls()).toHaveLength(3);
     });
 
+    it("fails when Gitleaks' git log dies without a word on stderr, or never runs", async () => {
+      // A git that prints part of Gitleaks' log and is then killed, as the OOM killer would.
+      const dying = await gitShim(
+        "dying-git",
+        `if [ "$1 $3" = "-C log" ]; then '${realGit}' "$@" | head -c 100; kill -KILL $$; fi`,
+      );
+      for (const env of [dying, { STUB_SKIP_GIT: "1" }]) {
+        const result = runScript(origin, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...env });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("The scan is partial: Gitleaks' git log did not run, or did not finish.\n");
+        expect(await stubCalls()).toHaveLength(3);
+      }
+    });
+
+    it("gives Gitleaks git's log without its remerge lines, so every merge keeps its commit", async () => {
+      const read = join(directory, "gitleaks-read.log");
+      const result = runScript(origin, scanScriptPath, [stub], { LOG_OPTS: AUDIT_LOG_OPTS, STUB_LOG: read });
+      expect(result.status).toBe(0);
+      const log = run(origin, ["-C", ".", "log", "-p", "-U0", ...AUDIT_LOG_OPTS.split(" ")]).stdout;
+      expect(log).toMatch(/^remerge CONFLICT \(content\): Merge conflict in conflict\.txt$/m);
+      expect(await readFile(read, "utf8")).toBe(log.replace(/^remerge .*\n/gm, ""));
+      await stubCalls();
+    });
+
+    it("refuses an octopus merge that only a pull request head reaches, in the audit", async () => {
+      const repository = join(directory, "octopus-pull");
+      await mkdir(repository);
+      git(repository, ["init", "-q", "-b", "main"]);
+      await commitFile(repository, "README", "fixture\n", "base");
+      for (const branch of ["o1", "o2", "o3"]) {
+        git(repository, ["checkout", "-q", "-b", branch, "main"]);
+        await commitFile(repository, `${branch}.txt`, `${branch}\n`, branch);
+      }
+      run(repository, ["merge", "-q", "--no-commit", "o1", "o2"]);
+      await commitFile(repository, "octopus.txt", "marker-octopus\n", "octopus");
+      const sha = git(repository, ["rev-parse", "HEAD"]);
+      git(repository, ["update-ref", "refs/pull/9/head", "HEAD"]);
+      git(repository, ["checkout", "-q", "main"]);
+      git(repository, ["branch", "-q", "-D", "o1", "o2", "o3"]);
+      expect(git(repository, ["rev-list", "--parents", "-n", "1", sha]).split(" ")).toHaveLength(4);
+      const audit = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: AUDIT_LOG_OPTS });
+      expect(audit.status).toBe(1);
+      expect(audit.stderr).toContain(`Merge one branch at a time instead of:\n${sha}\n`);
+      expect(await stubCalls()).toEqual([]);
+      // The required scan's history doesn't reach it.
+      const required = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS });
+      expect(required.status).toBe(0);
+      expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+    });
+
     it("self-test fails unless Gitleaks reports exactly the expected fingerprints", async () => {
       const missing = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, STUB_REPORT: "" });
       expect(missing.status).toBe(1);
@@ -477,6 +533,14 @@ describe("secret scan git log options", () => {
       const unknown = runScript(directory, selfTestPath, [stub], { LOG_OPTS: "--full-history --text --remerge-diff main" });
       expect(unknown.status).toBe(1);
       expect(unknown.stderr).toContain("self-test: LOG_OPTS must end with HEAD or --all");
+      // A git that no longer prints the remerge line the commit-less case relies on.
+      const quiet = await gitShim(
+        "no-remerge-git",
+        `if [ "$1" = log ]; then '${realGit}' "$@" | sed '/^remerge /d'; exit; fi`,
+      );
+      const noRemerge = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...quiet });
+      expect(noRemerge.status).toBe(1);
+      expect(noRemerge.stderr).toContain("self-test: git no longer shows the remerge CONFLICT line this case needs");
       await stubCalls();
     });
 

@@ -130,14 +130,14 @@ function findingsMarkdown(report, scanPassed, lines, omitted) {
       scanPassed ? ", although the scan step passed" : ""
     }. File names and fingerprints are not shown.`,
     "",
-    // Gitleaks exits 1 both for findings and when it stops on an error, after writing the report.
+    // scripts/secret-scan.sh fails the step for findings, and also when git failed, after Gitleaks wrote the report.
     ...(scanPassed
       ? []
       : [
-          "Gitleaks fails the scan step for findings, and also when it stops on an error. If the step's log says `partial scan`, findings may be missing from this list.",
+          "The scan step fails for findings, and also when the scan is incomplete. If the step's log says `Nothing was scanned` or `The scan is partial`, findings may be missing from this list.",
           "",
         ]),
-    "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The commit shows as `no-commit` when Gitleaks reported the finding without one (`file:rule:line`), as it does in some merges. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
+    "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The commit shows as `no-commit` when Gitleaks reported the finding without one (`file:rule:line`), which the scan should prevent; don't pin such a finding, see `docs/public-repository-cutover.md`. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
     "",
     "```text",
     ...lines,

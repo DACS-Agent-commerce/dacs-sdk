@@ -63,7 +63,7 @@ typechange=$(git rev-parse HEAD)
 printf 'notes.cfg -diff\n' > .gitattributes
 commit_file notes.cfg marker-attributes attributes
 attributes=$(git rev-parse HEAD)
-# A conflict whose resolution adds a line neither parent has. Gitleaks reads its file as b/<path>.
+# A conflict whose resolution adds a line neither parent has.
 git checkout -q -b side
 commit_file conflict.txt side side
 git checkout -q main
@@ -79,8 +79,9 @@ commit_file main2.txt main2 main2
 git merge -q --no-ff --no-commit side2 > /dev/null 2>&1
 commit_file merged.txt marker-merge "merge side2"
 merge=$(git rev-parse HEAD)
-# A conflict in a path containing "commit": Gitleaks 8.30.1 drops the merge's commit from the
-# conflicted file's fingerprint and from every later file of that merge.
+# A conflict in a path containing "commit". Without secret-scan.sh's git, Gitleaks 8.30.1 reads
+# git's `remerge CONFLICT` line for it as a new commit, and drops the merge's commit from that
+# file's fingerprint and from every later file of the merge.
 git checkout -q -b side3
 commit_file commitment.txt side3 side3
 git checkout -q main
@@ -88,6 +89,19 @@ commit_file commitment.txt main3 main3
 ! git merge -q side3 > /dev/null 2>&1
 printf 'marker-later\n' > later.txt
 commit_file commitment.txt marker-no-commit "resolve commitment"
+commitment=$(git rev-parse HEAD)
+# shellcheck disable=SC2086
+git log -p -U0 $LOG_OPTS > "$temp/log"
+if ! grep -q '^remerge CONFLICT .*commitment\.txt' "$temp/log"; then
+  echo "self-test: git no longer shows the remerge CONFLICT line this case needs" >&2
+  exit 1
+fi
+# Every case but the control is one that Gitleaks' default options would miss.
+git log -p -U0 --full-history --all --diff-filter=tuxdb > "$temp/default.log"
+if [ "$(grep -o '^+marker-[a-z-]*' "$temp/default.log" | LC_ALL=C sort -u | tr '\n' ' ')" != "+marker-control " ]; then
+  echo "self-test: Gitleaks' default options see more than the control case" >&2
+  exit 1
+fi
 # A commit that only a pull request ref reaches, as GitHub serves refs/pull/<number>/head.
 git checkout -q -b pull
 commit_file pull.txt marker-pull-request "pull request"
@@ -100,10 +114,10 @@ git branch -q -D pull side side2 side3
   echo "$control:control.txt:marker:1"
   echo "$typechange:link.cfg:marker:1"
   echo "$attributes:notes.cfg:marker:1"
-  echo "$conflict:b/conflict.txt:marker:1"
+  echo "$conflict:conflict.txt:marker:1"
   echo "$merge:merged.txt:marker:1"
-  echo "b/commitment.txt:marker:1"
-  echo "later.txt:marker:1"
+  echo "$commitment:commitment.txt:marker:1"
+  echo "$commitment:later.txt:marker:1"
   if [ "$pull_requests" = true ]; then echo "$pull:pull.txt:marker:1"; fi
 } | LC_ALL=C sort > "$temp/expected"
 fingerprints "$temp/found" > "$temp/found.sorted"
