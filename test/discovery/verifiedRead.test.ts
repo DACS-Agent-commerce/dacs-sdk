@@ -456,4 +456,42 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       record: { serviceId: "market-data" },
     });
   });
+
+  test("a verifier that mutates its inputs cannot change the bytes returned as verified", async () => {
+    const verifySignature = vi.fn<NonNullable<VerifiedReadDeps["verifySignature"]>>((record, resolved) => {
+      delete record.signature;
+      record.price = "0";
+      resolved.nativeAddress = "stor-attacker";
+      return true;
+    });
+    const result = await resolveAndRead(
+      createInMemoryBindingIndex([binding()]), LOGICAL, SELLER,
+      depsWith({ "stor-real": { ...RECORD } }, { verifySignature }),
+    );
+    expect(result).toEqual({ status: "verified", nativeAddress: "stor-real", record: RECORD });
+    expect(verifySignature).toHaveBeenCalledOnce();
+  });
+
+  test("a getter-backed binding is checked, read and verified as one snapshot", async () => {
+    let reads = 0;
+    // Each read of nativeAddress returns a different value.
+    const flipping = {
+      ...binding(),
+      get nativeAddress() { reads += 1; return reads === 1 ? "stor-real" : "stor-attacker"; },
+    };
+    const read = vi.fn(async (address: string) => (address === "stor-real" ? { ...RECORD } : { ...RECORD, price: "0" }));
+    const seenByVerifier: string[] = [];
+    const verifySignature = vi.fn((_record: Record<string, unknown>, resolved: AnchorBinding) => {
+      seenByVerifier.push(resolved.nativeAddress, resolved.nativeAddress);
+      return true;
+    });
+    const result = await resolveAndRead(
+      { resolve: async () => ({ status: "present", binding: flipping }) }, LOGICAL, SELLER,
+      { read, contentHashOf, verifySignature },
+    );
+    expect(result).toEqual({ status: "verified", nativeAddress: "stor-real", record: RECORD });
+    expect(read).toHaveBeenCalledExactlyOnceWith("stor-real", undefined);
+    expect(seenByVerifier).toEqual(["stor-real", "stor-real"]);
+    expect(reads).toBe(1);
+  });
 });

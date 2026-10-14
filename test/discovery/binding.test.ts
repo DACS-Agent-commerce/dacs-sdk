@@ -112,6 +112,19 @@ describe("resolveBinding (§6.3.4 (c) published logical→native binding)", () =
     ).toBe("indeterminate");
   });
 
+  test("CONFLICT: the same tuple under a different anchor kind is indeterminate", () => {
+    expect(
+      resolveBinding(
+        [binding({ anchorKind: "storage-program" }), binding({ anchorKind: "other-kind" })],
+        logicalFor(1),
+        SELLER,
+      ),
+    ).toMatchObject({ status: "indeterminate", code: "binding-conflict" });
+    expect(
+      resolveBinding([binding(), binding({ anchorKind: "storage-program" })], logicalFor(1), SELLER).status,
+    ).toBe("indeterminate");
+  });
+
   test("duplicate identical bindings are NOT a conflict", () => {
     const r = resolveBinding([binding(), binding()], logicalFor(1), SELLER);
     expect(r.status).toBe("present");
@@ -217,6 +230,18 @@ describe("createInMemoryBindingStore", () => {
     const r = await store.publish(binding({ nativeAddress: "stor-other" }));
     expect(r).toMatchObject({ status: "conflict" });
     expect(store.snapshot()).toEqual([binding()]);
+  });
+
+  test("an initial set with an exact and a conflicting binding conflicts, never already-published", async () => {
+    const initial = [binding(), binding({ nativeAddress: "stor-other" })];
+    const store = createInMemoryBindingStore(initial);
+    expect(await store.publish(binding())).toMatchObject({ status: "conflict" });
+    expect(store.snapshot()).toEqual(initial);
+  });
+
+  test("re-publishing under another anchor kind conflicts", async () => {
+    const store = createInMemoryBindingStore([binding({ anchorKind: "storage-program" })]);
+    expect(await store.publish(binding({ anchorKind: "other-kind" }))).toMatchObject({ status: "conflict" });
   });
 
   test("caller mutation cannot change stored or returned bindings", async () => {
