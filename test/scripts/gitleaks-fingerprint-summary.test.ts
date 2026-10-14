@@ -55,6 +55,7 @@ function finding(fingerprint: string) {
     File: `docs/${SENTINEL}.md`,
     SymlinkFile: "",
     Commit: SENTINEL,
+    Link: `https://github.com/${PERSON}/${SENTINEL}/blob/${SENTINEL}/docs/${SENTINEL}.md#L1`,
     Entropy: 4,
     Author: PERSON,
     Email: EMAIL,
@@ -163,7 +164,7 @@ describe("Gitleaks finding summary", () => {
     const summary = summarizeGitleaksReport({ text: severalFindings }, "failure");
     expect(summary.clean).toBe(false);
     expect(countsLine(summary.markdown)).toBe(
-      `**4 findings** under 3 IDs: 0 malformed, 0 omitted from the list below. ${COUNTS_TAIL}`,
+      `**4 findings** under 3 IDs: 0 malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
     );
     expect(listedLines(summary.markdown)).toEqual(
       byId([expectedLine(NEW_A), expectedLine(NEW_B), expectedLine(KNOWN, 2)]),
@@ -174,9 +175,21 @@ describe("Gitleaks finding summary", () => {
     }
     expectNoFindingDetails(summary.markdown);
 
+    // A failed scan step may also be a partial scan; a passed one is not.
+    expect(summary.markdown).toContain("If the step's log says `partial scan`, findings may be missing");
     const inconsistent = summarizeGitleaksReport({ text: reportOf([NEW_A]) }, "success");
     expect(inconsistent.clean).toBe(false);
     expect(inconsistent.markdown).toContain("although the scan step passed");
+    expect(inconsistent.markdown).not.toContain("partial scan");
+
+    // The malformed count is of findings, the omitted count of IDs.
+    const twice = `${SHA}:src/a.ts:generic api key:3`;
+    expect(countsLine(summarizeGitleaksReport({ text: reportOf([twice, NEW_A, twice]) }, "failure").markdown)).toBe(
+      `**3 findings** under 2 IDs: 2 malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
+    );
+    expect(countsLine(summarizeGitleaksReport({ text: reportOf([twice]) }, "failure").markdown)).toBe(
+      `**1 finding** under 1 ID: 1 malformed finding, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
+    );
   });
 
   it("shows a new finding as a new ID, or as a higher count for a known one", () => {
@@ -195,6 +208,7 @@ describe("Gitleaks finding summary", () => {
       [`${SHA}:src/a.ts:${"r".repeat(64)}:9007199254740991`, SHA, "r".repeat(64), "9007199254740991"],
       [`${"A".repeat(40)}:src/a.ts:generic-api-key:4`, INVALID, "generic-api-key", "4"],
       [`${"a".repeat(39)}:src/a.ts:generic-api-key:4`, INVALID, "generic-api-key", "4"],
+      [`${SHA}x:src/a.ts:generic-api-key:1`, INVALID, "generic-api-key", "1"],
       [`::add-mask::src/a.ts:generic-api-key:4`, INVALID, "generic-api-key", "4"],
       [`##[add-mask]${SHA}:src/a.ts:generic-api-key:4`, INVALID, "generic-api-key", "4"],
       [`${SHA}:src/a.ts:${"r".repeat(65)}:4`, SHA, INVALID, "4"],
@@ -216,7 +230,7 @@ describe("Gitleaks finding summary", () => {
     const summary = summarizeGitleaksReport({ text: reportOf(cases.map(([fingerprint]) => fingerprint)) }, "failure");
     const malformed = cases.filter((fields) => fields.includes(INVALID)).length;
     expect(countsLine(summary.markdown)).toBe(
-      `**${cases.length} findings** under ${cases.length} IDs: ${malformed} malformed, 0 omitted from the list below. ${COUNTS_TAIL}`,
+      `**${cases.length} findings** under ${cases.length} IDs: ${malformed} malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
     );
     expect(listedLines(summary.markdown)).toEqual(
       byId(cases.map(([fingerprint, commit, rule, line]) => `${idOf(fingerprint)} ${commit} ${rule} ${line} 1`)),
@@ -225,36 +239,49 @@ describe("Gitleaks finding summary", () => {
   });
 
   it("stops listing at its byte limit and still gives every count", () => {
-    const many = Array.from({ length: 200 }, (_, index) => `${SHA}:src/${index}.ts:generic-api-key:${index}`);
-    const summary = summarizeGitleaksReport({ text: reportOf(many) }, "failure", 4_096);
-    const size = Buffer.byteLength(summary.markdown);
-    const listed = listedLines(summary.markdown);
-    expect(size).toBeLessThanOrEqual(4_096);
-    expect(size).toBeGreaterThan(4_096 - 2 * (Buffer.byteLength(listed[0] ?? "") + 1));
-    expect(listed.length).toBeGreaterThan(0);
-    expect(listed).toEqual(byId(many.map((fingerprint) => expectedLine(fingerprint))).slice(0, listed.length));
-    expect(countsLine(summary.markdown)).toBe(
-      `**200 findings** under 200 IDs: 0 malformed, ${200 - listed.length} omitted from the list below. ${COUNTS_TAIL}`,
+    // Short and long lines, so that at some of these limits a shorter line that would
+    // still fit follows the cut: the list must stop there, not skip ahead.
+    const many = Array.from({ length: 200 }, (_, index) =>
+      index % 2
+        ? `${SHA}:src/${index}.ts:r:${index}`
+        : `${SHA}:src/${index}.ts:${"r".repeat(64)}:${9_000_000_000_000_000 + index}`,
     );
+    const all = byId(many.map((fingerprint) => expectedLine(fingerprint)));
+    const longest = Math.max(...all.map((line) => Buffer.byteLength(line) + 1));
+    for (let limit = 4_096; limit < 4_096 + 2 * longest; limit += 7) {
+      const summary = summarizeGitleaksReport({ text: reportOf(many) }, "failure", limit);
+      const size = Buffer.byteLength(summary.markdown);
+      const listed = listedLines(summary.markdown);
+      expect(size).toBeLessThanOrEqual(limit);
+      // The limit is used, less a few bytes reserved for the widest counts.
+      expect(size).toBeGreaterThan(limit - longest - 3);
+      expect(listed.length).toBeGreaterThan(0);
+      expect(listed).toEqual(all.slice(0, listed.length));
+      expect(countsLine(summary.markdown)).toBe(
+        `**200 findings** under 200 IDs: 0 malformed findings, ${200 - listed.length} IDs omitted from the list below. ${COUNTS_TAIL}`,
+      );
+    }
   });
 
   it("lists raw fingerprints only in the local listing, escaped to printable ASCII", () => {
-    const control = `${SHA}:src/\u001b]0;x\u0007\u0085.ts:generic-api-key:7`;
+    const control = `${SHA}:src/\u001b]0;x\u0007\u0085\u007f.ts:generic-api-key:7`;
     const quoted = `"${SHA}:src/a.ts":generic-api-key:8`;
-    const listing = listFingerprintsLocally({ text: reportOf([NEW_B, KNOWN, NEW_A, KNOWN, control, quoted]) });
+    const del = `${SHA}:src/a\u007f.ts:generic-api-key:9`;
+    const listing = listFingerprintsLocally({ text: reportOf([NEW_B, KNOWN, NEW_A, KNOWN, control, quoted, del]) });
     expect(listing.ok).toBe(true);
     expect(listing.text).toMatch(/^[\x20-\x7e\n]*$/);
     const lines = listing.text.split("\n");
     expect(lines[0]).toBe(
-      "6 findings under 5 IDs, 1 malformed. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.",
+      "7 findings under 6 IDs, 1 malformed finding. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.",
     );
     expect(lines.slice(1, -1)).toEqual(
       byId([
         `${idOf(NEW_A)} ${NEW_A}`,
         `${idOf(NEW_B)} ${NEW_B}`,
         `${idOf(KNOWN)} ${KNOWN}`,
-        `${idOf(control)} "${SHA}:src/\\u001b]0;x\\u0007\\u0085.ts:generic-api-key:7"`,
+        `${idOf(control)} "${SHA}:src/\\u001b]0;x\\u0007\\u0085\\u007f.ts:generic-api-key:7"`,
         `${idOf(quoted)} "\\u0022${SHA}:src/a.ts\\u0022:generic-api-key:8"`,
+        `${idOf(del)} "${SHA}:src/a\\u007f.ts:generic-api-key:9"`,
       ]),
     );
     expectNoFindingDetails(listing.text);
@@ -346,7 +373,7 @@ describe("Gitleaks finding summary", () => {
       expect(result.stderr).toBe("");
       expect(logBody(result.stdout).body).toBe(result.summary);
       expect(countsLine(result.summary)).toBe(
-        `**2 findings** under 2 IDs: 0 malformed, 0 omitted from the list below. ${COUNTS_TAIL}`,
+        `**2 findings** under 2 IDs: 0 malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
       );
       expect(listedLines(result.summary)).toEqual(
         byId([
@@ -433,7 +460,7 @@ describe("Gitleaks finding summary", () => {
         expect(Buffer.byteLength(result.summary)).toBeLessThan(ONE_MIB);
         expect(Buffer.byteLength(result.stdout)).toBeLessThan(ONE_MIB);
         expect(countsLine(result.summary)).toBe(
-          `**${fingerprints.length} findings** under ${fingerprints.length} IDs: 0 malformed, 0 omitted from the list below. ${COUNTS_TAIL}`,
+          `**${fingerprints.length} findings** under ${fingerprints.length} IDs: 0 malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
         );
         expect(listedLines(result.summary)).toEqual(byId(fingerprints.map((fingerprint) => expectedLine(fingerprint))));
         expect(result.summary).not.toContain("p".repeat(64));
@@ -459,7 +486,7 @@ describe("Gitleaks finding summary", () => {
       expect(omitted).toBeGreaterThan(0);
       expect(listed).toEqual(byId(many.map((fingerprint) => expectedLine(fingerprint))).slice(0, listed.length));
       expect(countsLine(result.summary)).toBe(
-        `**8000 findings** under 8000 IDs: 0 malformed, ${omitted} omitted from the list below. ${COUNTS_TAIL}`,
+        `**8000 findings** under 8000 IDs: 0 malformed findings, ${omitted} IDs omitted from the list below. ${COUNTS_TAIL}`,
       );
     }, 20_000);
 
@@ -500,6 +527,32 @@ describe("Gitleaks finding summary", () => {
         read.mockRestore();
       }
     }, 20_000);
+
+    it("fails closed when the report can't be read", async () => {
+      const handle = await open(stepSummary, "r");
+      const fileHandle = Object.getPrototypeOf(handle);
+      await handle.close();
+      const read = vi.spyOn(fileHandle, "readFile").mockRejectedValueOnce(new Error("EIO"));
+      try {
+        await writeFile(reportPath, "[]\n");
+        const report = await readGitleaksReport(reportPath);
+        expect(report).toEqual({ problem: "the report could not be read" });
+        expect(summarizeGitleaksReport(report, "success")).toMatchObject({ clean: false });
+        expect(listFingerprintsLocally(report).ok).toBe(false);
+      } finally {
+        read.mockRestore();
+      }
+    });
+
+    it("reads a report as UTF-8, so a non-ASCII file name gets the ID the workflow shows", async () => {
+      const accented = `${SHA}:src/é.ts:generic-api-key:1`;
+      await writeFile(reportPath, reportOf([accented]), "utf8");
+      const local = runStep(["--report", reportPath, "--local"]);
+      expect(local.status).toBe(0);
+      expect(local.stdout.split("\n").slice(1)).toEqual([`${idOf(accented)} "${SHA}:src/\\u00e9.ts:generic-api-key:1"`, ""]);
+      const workflow = runStep(["--report", reportPath, "--scan-outcome", "failure"]);
+      expect(listedLines(logBody(workflow.stdout).body)).toEqual([expectedLine(accented)]);
+    });
 
     it("lists a report over 64 MiB locally", async () => {
       const report = Buffer.alloc(64 * ONE_MIB + 1, 0x20);

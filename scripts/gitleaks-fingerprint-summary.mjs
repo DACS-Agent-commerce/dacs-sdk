@@ -117,12 +117,20 @@ function findingsMarkdown(report, scanPassed, lines, omitted) {
   return [
     "### Gitleaks findings",
     "",
-    `**${plural(report.findings, "finding")}** under ${plural(report.entries.length, "ID")}: ${
-      report.malformed
-    } malformed, ${omitted} omitted from the list below${
+    `**${plural(report.findings, "finding")}** under ${plural(report.entries.length, "ID")}: ${plural(
+      report.malformed,
+      "malformed finding",
+    )}, ${plural(omitted, "ID")} omitted from the list below${
       scanPassed ? ", although the scan step passed" : ""
     }. File names and fingerprints are not shown.`,
     "",
+    // Gitleaks exits 1 both for findings and when it stops on an error, after writing the report.
+    ...(scanPassed
+      ? []
+      : [
+          "Gitleaks fails the scan step for findings, and also when it stops on an error. If the step's log says `partial scan`, findings may be missing from this list.",
+          "",
+        ]),
     "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
     "",
     "```text",
@@ -196,7 +204,7 @@ export function listFingerprintsLocally(report) {
   return {
     ok: true,
     text: [
-      `${plural(parsed.findings, "finding")} under ${plural(parsed.entries.length, "ID")}, ${parsed.malformed} malformed. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.`,
+      `${plural(parsed.findings, "finding")} under ${plural(parsed.entries.length, "ID")}, ${plural(parsed.malformed, "malformed finding")}. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.`,
       ...parsed.entries.map(({ id, fingerprint }) => `${id} ${printableFingerprint(fingerprint)}`),
       "",
     ].join("\n"),
