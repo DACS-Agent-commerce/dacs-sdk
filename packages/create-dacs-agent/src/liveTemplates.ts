@@ -18,8 +18,26 @@ const STANDARD_REVISION = "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 8;
 
-function packageJson(options: LiveProjectTemplateOptions): string {
+// The image smoke probes each of these for its exact version.
+function productionDependencies(
+  options: LiveProjectTemplateOptions,
+): Readonly<Record<string, string>> {
   const x402 = options.rails !== "pay-dem";
+  return {
+    "@kynesyslabs/dacs": SDK_VERSION,
+    "@kynesyslabs/dacs-node": SDK_VERSION,
+    "@kynesyslabs/demosdk": DEMOSDK_VERSION,
+    "better-sqlite3": BETTER_SQLITE_VERSION,
+    ...(x402 ? {
+      "@x402/core": "2.15.0",
+      "@x402/evm": "2.15.0",
+      "@x402/fetch": "2.15.0",
+    } : {}),
+    ...(x402 ? { "viem": "2.55.19" } : {}),
+  };
+}
+
+function packageJson(options: LiveProjectTemplateOptions): string {
   return JSON.stringify({
     name: options.packageName,
     version: "0.1.0",
@@ -48,18 +66,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
       "dacs:image:smoke": "node scripts/docker-runtime-smoke.mjs",
     },
-    dependencies: {
-      "@kynesyslabs/dacs": SDK_VERSION,
-      "@kynesyslabs/dacs-node": SDK_VERSION,
-      "@kynesyslabs/demosdk": DEMOSDK_VERSION,
-      "better-sqlite3": BETTER_SQLITE_VERSION,
-      ...(x402 ? {
-        "@x402/core": "2.15.0",
-        "@x402/evm": "2.15.0",
-        "@x402/fetch": "2.15.0",
-      } : {}),
-      ...(x402 ? { "viem": "2.55.19" } : {}),
-    },
+    dependencies: productionDependencies(options),
     dacs: {
       generatorVersion: SDK_VERSION,
       releaseMetadataVersion: 1,
@@ -4521,14 +4528,37 @@ function quotedList(values: readonly string[]): string {
   return "[" + values.map((value) => JSON.stringify(value)).join(", ") + "]";
 }
 
-const PROBE_VERSIONS = JSON.stringify({
-  "@kynesyslabs/dacs": SDK_VERSION,
-  "@kynesyslabs/dacs-node": SDK_VERSION,
-  "@kynesyslabs/demosdk": DEMOSDK_VERSION,
-  "better-sqlite3": BETTER_SQLITE_VERSION,
-});
+// Entry points the SDK and host kit import, at start or on a rail's first use;
+// the image probe imports each one.
+const PROBE_ENTRY_POINTS = Object.freeze([
+  "@kynesyslabs/dacs",
+  "@kynesyslabs/dacs/substrate",
+  "@kynesyslabs/dacs-node",
+  "@kynesyslabs/demosdk/websdk",
+  "@kynesyslabs/demosdk/storage",
+  "@kynesyslabs/demosdk/abstraction",
+]);
+const X402_PROBE_ENTRY_POINTS = Object.freeze([
+  "viem",
+  "viem/accounts",
+  "@x402/core/client",
+  "@x402/core/server",
+  "@x402/evm",
+  "@x402/evm/exact/client",
+  "@x402/evm/exact/server",
+  "@x402/fetch",
+]);
 
-const DOCKER_RUNTIME_SMOKE = `import { randomBytes } from "node:crypto";
+// A compose project name that compose accepts without normalising it.
+const COMPOSE_PROJECT_NAME_PATTERN = "/^[a-z0-9][a-z0-9_-]*$/";
+
+function dockerRuntimeSmoke(options: LiveProjectTemplateOptions): string {
+  const probeVersions = JSON.stringify(productionDependencies(options));
+  const entryPoints = [
+    ...PROBE_ENTRY_POINTS,
+    ...(options.rails === "pay-dem" ? [] : X402_PROBE_ENTRY_POINTS),
+  ];
+  return `import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -4546,12 +4576,13 @@ const projectDirectory = new URL("../", import.meta.url);
 const projectPath = resolve(fileURLToPath(projectDirectory));
 const receiptDirectory = new URL(".dacs-runtime/", projectDirectory);
 const receiptPath = new URL("docker-image-smoke.json", receiptDirectory);
-let persisted = {};
+let persistedSource = "";
 try {
-  persisted = parseEnv(readFileSync(new URL(".env", projectDirectory), "utf8"));
+  persistedSource = readFileSync(new URL(".env", projectDirectory), "utf8");
 } catch (error) {
   if (!error || error.code !== "ENOENT") throw error;
 }
+const persisted = parseEnv(persistedSource);
 function setting(name) {
   const value = process.env[name] ?? persisted[name];
   return value === undefined || value === "" ? undefined : value;
@@ -4564,12 +4595,15 @@ const mode = {
   '["--down"]': "down",
   '["--down","--remove-orphans"]': "decommission",
 }[JSON.stringify(process.argv.slice(2))];
-// Compose's default project name for this directory. Every compose call names
-// it, with the generated compose.yaml and no COMPOSE_* variable, so neither
-// COMPOSE_FILE, COMPOSE_PROJECT_NAME nor an override file such as
-// compose.override.yaml can add a service, replace the image or move the project.
-const projectName = basename(projectPath).toLowerCase()
-  .replace(/[^a-z0-9_-]/g, "").replace(/^[_-]+/, "");
+// The directory's name is the compose project name as it stands: compose would
+// otherwise normalise it, and two directories differing only in case or
+// punctuation would share one project. Every compose call names it, with the
+// generated compose.yaml, and passes compose no other COMPOSE_* variable.
+// Compose also imports COMPOSE_* variables from .env, so a .env that sets one
+// is refused. Neither COMPOSE_FILE, COMPOSE_PROJECT_NAME nor an override file
+// such as compose.override.yaml can add a service, replace the image or move
+// the project.
+const projectName = basename(projectPath);
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
   "compose",
@@ -4581,18 +4615,25 @@ function compose(args, settings = {}) {
   const environment = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => !name.startsWith("COMPOSE_")));
   // Compose output goes to stderr; stdout carries only this script's report.
+  // Compose falls back to COMPOSE_PROJECT_NAME when it cannot load the file.
   const child = spawnSync("docker", [...composeArguments, ...args], {
-    env: { ...environment, ...settings },
+    env: { ...environment, ...settings, COMPOSE_PROJECT_NAME: projectName },
     stdio: ["ignore", 2, 2],
   });
   if (child.error) throw child.error;
   return child.status ?? 1;
 }
 
-if (mode === undefined || projectName === "") {
+if (mode === undefined || !${COMPOSE_PROJECT_NAME_PATTERN}.test(projectName)) {
   process.stderr.write("usage: node scripts/docker-runtime-smoke.mjs " +
     "[--up | --stop | --down [--remove-orphans]] from a project directory " +
-    "whose name contains a letter or digit\\n");
+    "whose name is a compose project name: lower-case letters, digits, _ and -, " +
+    "starting with a letter or digit\\n");
+  process.exit(2);
+}
+if (/^[ \\t]*(?:export[ \\t]+)?COMPOSE_/m.test(persistedSource)) {
+  process.stderr.write("remove every COMPOSE_* variable from .env: compose reads them " +
+    "from there, and this project's compose file, directory and name are fixed\\n");
   process.exit(2);
 }
 if (mode === "stop") process.exit(compose(["stop"]));
@@ -4607,7 +4648,7 @@ const identity = /^[1-9][0-9]{0,9}$/;
 if (image === undefined || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image) ||
     uid === undefined || !identity.test(uid) || Number(uid) > 2_147_483_647 ||
     gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647 ||
-    !/^[1-9][0-9]{0,3}$/.test(timeoutSeconds)) {
+    (mode === "smoke" && !/^[1-9][0-9]{0,3}$/.test(timeoutSeconds))) {
   process.stderr.write("usage: set DACS_IMAGE and non-root DACS_RUNTIME_UID/GID " +
     "(shell or .env), then run npm run dacs:image:smoke; " +
     "DACS_IMAGE_SMOKE_TIMEOUT_SECONDS, if set, is 1-9999\\n");
@@ -4629,6 +4670,49 @@ function docker(args) {
   return child.stdout.trim();
 }
 
+const serviceOf = (container) => container?.Config?.Labels?.["com.docker.compose.service"];
+// Every container compose labelled with this project, running or not.
+function projectContainers() {
+  const ids = docker([
+    "ps", "--all", "--quiet", "--no-trunc",
+    "--filter", "label=com.docker.compose.project=" + projectName,
+  ]).split("\\n").filter((line) => line !== "");
+  if (ids.length === 0) return [];
+  const containers = JSON.parse(docker(["container", "inspect", ...ids]));
+  if (!Array.isArray(containers)) throw new Error("docker container inspect returned no list");
+  return containers;
+}
+// Why the started project is not exactly one buyer and one seller from imageId.
+function startedMismatch(imageId) {
+  const containers = projectContainers();
+  for (const service of services) {
+    const created = containers.filter((container) => serviceOf(container) === service &&
+      container.Config.Labels["com.docker.compose.oneoff"] !== "True");
+    if (created.length !== 1) {
+      return "compose created " + created.length + " " + service + " containers";
+    }
+    if (created[0].Image !== imageId) {
+      return "the " + service + " container runs " + created[0].Image;
+    }
+  }
+  const unexpected = containers.find((container) =>
+    !services.includes(serviceOf(container)) && container.State?.Running === true);
+  return unexpected === undefined ? undefined
+    : "service " + serviceOf(unexpected) + " is also running in compose project " + projectName;
+}
+// Stops both roles and confirms neither still runs; otherwise says why not.
+function stopRoles(settings) {
+  try {
+    const stopped = compose(["stop", ...services], settings);
+    if (stopped !== 0) return "compose stop exited " + stopped;
+    const running = projectContainers().find((container) =>
+      services.includes(serviceOf(container)) && container.State?.Running !== false);
+    return running === undefined ? undefined : serviceOf(running) + " is still running";
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 if (mode === "up") {
   // dacs:up: one process reads the pass, resolves DACS_IMAGE once and hands
   // compose that image ID itself, so a tag moved after this check is not used.
@@ -4647,42 +4731,38 @@ if (mode === "up") {
     process.exit(5);
   }
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
-  const started = compose(
-    ["up", "--detach", "--no-build", "--pull", "never", ...services],
-    runtimeSettings,
-  );
-  if (started !== 0) process.exit(started);
   // Report success only once each role's container was created from that ID.
-  const projectContainers = docker([
-    "ps", "--all", "--quiet", "--no-trunc",
-    "--filter", "label=com.docker.compose.project=" + projectName,
-  ]).split("\\n").filter((line) => line !== "");
-  const containers = projectContainers.length === 0
-    ? [] : JSON.parse(docker(["container", "inspect", ...projectContainers]));
-  const serviceOf = (container) => container.Config?.Labels?.["com.docker.compose.service"];
-  let mismatch;
-  for (const service of services) {
-    const created = containers.filter((container) => serviceOf(container) === service &&
-      container.Config.Labels["com.docker.compose.oneoff"] !== "True");
-    if (created.length !== 1) {
-      mismatch = "compose created " + created.length + " " + service + " containers";
-    } else if (created[0].Image !== imageId) {
-      mismatch = "the " + service + " container runs " + created[0].Image;
+  // A failed or partial start, a failed check and a mismatch all stop both roles.
+  let failure;
+  let failureStatus = 5;
+  try {
+    const started = compose(
+      ["up", "--detach", "--no-build", "--pull", "never", ...services],
+      runtimeSettings,
+    );
+    if (started !== 0) {
+      failure = "compose up exited " + started;
+      failureStatus = started;
+    } else {
+      failure = startedMismatch(imageId);
     }
-    if (mismatch !== undefined) break;
+  } catch (error) {
+    failure = "could not check the started containers: " +
+      (error instanceof Error ? error.message : String(error));
+    failureStatus = 1;
   }
-  const unexpected = containers.find((container) =>
-    !services.includes(serviceOf(container)) && container.State?.Running === true);
-  if (mismatch === undefined && unexpected !== undefined) {
-    mismatch = "service " + serviceOf(unexpected) + " is also running in compose project " +
-      projectName;
-  }
-  if (mismatch !== undefined) {
-    compose(["stop", ...services], runtimeSettings);
-    process.stderr.write("dacs:up stopped " + services.join(" and ") + ": " + mismatch +
+  if (failure !== undefined) {
+    const notStopped = stopRoles(runtimeSettings);
+    if (notStopped !== undefined) {
+      process.stderr.write("dacs:up failed (" + failure + ") and could not stop " +
+        services.join(" and ") + " or confirm that they stopped: " + notStopped +
+        "; stop them before anything else\\n");
+      process.exit(1);
+    }
+    process.stderr.write("dacs:up stopped " + services.join(" and ") + ": " + failure +
       "; it runs only " + services.join(" and ") + " from " + imageId +
       ", the image ID that passed dacs:image:smoke\\n");
-    process.exit(5);
+    process.exit(failureStatus);
   }
   process.stdout.write(JSON.stringify({
     status: "started",
@@ -4710,15 +4790,27 @@ if (config.User !== ${JSON.stringify(IMAGE_USER)}) {
 if (config.WorkingDir !== ${JSON.stringify(IMAGE_WORKING_DIRECTORY)}) {
   throw new Error("image working directory is not ${IMAGE_WORKING_DIRECTORY}");
 }
-if (config.Entrypoint !== null &&
-    (!Array.isArray(config.Entrypoint) || config.Entrypoint.length !== 0)) {
+// Docker CLI 28.2 and later leave an unset entrypoint out of {{json .Config}};
+// earlier versions print null.
+const entrypoint = config.Entrypoint ?? null;
+if (entrypoint !== null && (!Array.isArray(entrypoint) || entrypoint.length !== 0)) {
   throw new Error("image entrypoint overrides the generated DACS service command");
 }
 const expectedCommand = ${quotedList(IMAGE_SERVICE_COMMAND)};
 if (JSON.stringify(config.Cmd) !== JSON.stringify(expectedCommand)) {
   throw new Error("image command does not start the generated DACS service");
 }
+// Compose sets each role's DACS_ variables; the image sets none, so neither
+// container below has a role or any other DACS setting.
+const imageEnvironment = config.Env ?? [];
+if (!Array.isArray(imageEnvironment) || imageEnvironment.some((entry) =>
+  typeof entry !== "string" || entry.startsWith("DACS_"))) {
+  throw new Error("image environment sets a DACS_ variable");
+}
 
+// The probe checks the production tree and the exact version of every
+// production dependency, imports each SDK, host-kit and payment entry point the
+// service loads, and opens a database, which loads better-sqlite3's native binding.
 const probe = [
   'import { access, readFile } from "node:fs/promises";',
   'const required = ["/app/dist/src/service.js", "/app/dist/src/cli.js", "/app/package.json", "/app/package-lock.json"];',
@@ -4728,26 +4820,29 @@ const probe = [
   '  try { await access(path); throw new Error("development or secret path is present: " + path); }',
   '  catch (error) { if (error && error.code !== "ENOENT") throw error; }',
   '}',
-  'const expected = ${PROBE_VERSIONS};',
+  'const expected = ${probeVersions};',
   'const versions = {};',
   'for (const [name, version] of Object.entries(expected)) {',
   '  const manifest = JSON.parse(await readFile("/app/node_modules/" + name + "/package.json", "utf8"));',
   '  if (manifest.version !== version) throw new Error(name + " version mismatch");',
   '  versions[name] = manifest.version;',
   '}',
-  'await import("@kynesyslabs/dacs");',
-  'await import("@kynesyslabs/dacs/substrate");',
-  'await import("@kynesyslabs/dacs-node");',
-  'await import("@kynesyslabs/demosdk/websdk");',
-  'await import("@kynesyslabs/demosdk/storage");',
-  'await import("@kynesyslabs/demosdk/abstraction");',
+${entryPoints.map((entryPoint) => `  'await import(${JSON.stringify(entryPoint)});',`).join("\n")}
+  'const { default: Database } = await import("better-sqlite3");',
+  'const database = new Database(":memory:");',
+  'try {',
+  '  if (database.prepare("SELECT 1 AS one").get().one !== 1) throw new Error("better-sqlite3 query failed");',
+  '} finally {',
+  '  database.close();',
+  '}',
   'if (typeof process.getuid !== "function" || process.getuid() === 0) throw new Error("container executed as root");',
   'process.stdout.write(JSON.stringify({status:"pass",node:process.versions.node,uid:process.getuid(),gid:process.getgid(),versions}) + "\\\\n");',
 ].join("\\n");
 
 // Both containers run as the compose runtime user, without network, writable
-// root, capabilities or privilege escalation, under an init process as compose
-// runs them. Each is named so that one still running at the timeout is removed.
+// root, capabilities or privilege escalation, under an init process and with
+// the memory, process and /tmp limits compose gives each role. Each is named
+// so that one still running at the timeout is removed.
 const containerOptions = [
   "run",
   "--rm",
@@ -4756,6 +4851,9 @@ const containerOptions = [
   "--read-only",
   "--cap-drop", "ALL",
   "--security-opt", "no-new-privileges:true",
+  "--memory", "512m",
+  "--pids-limit", "128",
+  "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
   "--user", user,
 ];
 function runContainer(args) {
@@ -4767,9 +4865,11 @@ function runContainer(args) {
     killSignal: "SIGKILL",
   });
   if (child.error && child.error.code === "ETIMEDOUT") {
-    spawnSync("docker", ["rm", "--force", name], { stdio: "ignore", timeout: 60_000 });
+    const removed = spawnSync("docker", ["rm", "--force", name],
+      { stdio: "ignore", timeout: 60_000 });
     throw new Error("container " + name + " did not exit within " + timeoutSeconds +
-      "s (DACS_IMAGE_SMOKE_TIMEOUT_SECONDS) and was removed");
+      "s (DACS_IMAGE_SMOKE_TIMEOUT_SECONDS) and " + (removed.status === 0
+        ? "was removed" : "could not be removed; run docker rm --force " + name));
   }
   if (child.error) throw child.error;
   return child;
@@ -4792,8 +4892,8 @@ if (runtime.uid !== Number(uid) || runtime.gid !== Number(gid)) {
   throw new Error("container runtime identity is not the compose user " + user);
 }
 
-// The image's own command, with no role configured, loads the complete service
-// module graph and then stops at its first check, before any secret, data or
+// The image's own command, with no role configured, loads the service's
+// modules and then stops at its first check, before any secret, data or
 // network access. Any other exit means the configured command cannot start.
 const service = runContainer([imageId]);
 const roleCheckReport = JSON.stringify({
@@ -4822,13 +4922,14 @@ process.stdout.write(JSON.stringify({
   image,
   imageId,
   configuredUser: config.User,
-  configuredEntrypoint: config.Entrypoint,
+  configuredEntrypoint: entrypoint,
   configuredCommand: config.Cmd,
   runtimeUser: user,
   runtime,
   serviceCommand: "stopped-at-role-check",
 }) + "\\n");
 `;
+}
 
 const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
 WORKDIR /app
@@ -5299,15 +5400,18 @@ and review what it reports.
 
 The generated \`dacs:image:smoke\` command resolves \`DACS_IMAGE\` to one image ID
 and checks that image's configured user, working directory, entrypoint and
-command. It then runs two containers from that ID as \`DACS_RUNTIME_UID:GID\`,
-the user compose runs, with no network, a read-only root and no capabilities: a
-probe that checks production files and exact package versions and imports the
-SDK entry points, and the image's configured service command, which must load
-the complete service and stop at its missing-role check. The smoke never starts
-a serving role, reads secrets or contacts a network. On success it records the
-image ID and user in \`.dacs-runtime/docker-image-smoke.json\`; a new attempt
-removes that record first. A container still running after
-\`DACS_IMAGE_SMOKE_TIMEOUT_SECONDS\` (default 120) is removed and the smoke fails.
+command, and that its environment sets no \`DACS_\` variable. It then runs two
+containers from that ID as \`DACS_RUNTIME_UID:GID\`, the user compose runs, with
+no network, a read-only root, no capabilities and compose's memory, process and
+\`/tmp\` limits: a probe that checks production files and the exact version of
+every production dependency, imports the SDK, host-kit and payment entry points
+the service loads and opens an in-memory SQLite database, and
+the image's configured service command, which must load its modules and stop
+at its missing-role check. The smoke never starts a serving role, reads secrets
+or contacts a network. On success it records the image ID and user in
+\`.dacs-runtime/docker-image-smoke.json\`; a new attempt removes that record
+first. A container still running after \`DACS_IMAGE_SMOKE_TIMEOUT_SECONDS\`
+(default 120) is removed and the smoke fails.
 
 Docker \`dacs:up\` reads that record and refuses to start unless
 \`DACS_IMAGE\` still names the recorded image ID and the runtime user is
@@ -5315,14 +5419,23 @@ unchanged. It then runs compose with \`DACS_IMAGE\` set to that image ID rather
 than the tag, so rebuilding or retagging after the check cannot change what
 starts. Compose gets this project's \`compose.yaml\` as its only file, this
 directory as its project directory, the directory's name as its project name,
-\`--no-build --pull never\`, and exactly the \`buyer\` and \`seller\` services. \`dacs:up\`, \`dacs:down\` and
-the backup, restore and uninstall stops remove every \`COMPOSE_*\` variable,
-including \`COMPOSE_FILE\` and \`COMPOSE_PROJECT_NAME\`, from compose's
-environment and never read override files such as \`compose.override.yaml\`.
-Other compose settings still come from the shell and \`.env\`. Once compose
-returns, \`dacs:up\` checks that the buyer and seller containers were created
-from the recorded image ID and that no other service runs in the project;
-otherwise it stops both roles and exits 5.
+\`--no-build --pull never\`, and exactly the \`buyer\` and \`seller\` services. The
+directory's name must already be a compose project name (lower-case letters,
+digits, \`_\` and \`-\`, starting with a letter or digit), so two projects never
+share one. \`dacs:up\`, \`dacs:down\` and the backup, restore and uninstall stops
+set \`COMPOSE_PROJECT_NAME\` to that name, remove every other \`COMPOSE_*\`
+variable, including \`COMPOSE_FILE\`, from compose's environment, refuse to run
+while \`.env\` sets any \`COMPOSE_*\` variable, and never read override files such
+as \`compose.override.yaml\`. Other compose settings still come from the shell
+and \`.env\`. Once compose returns, \`dacs:up\` checks that the buyer and seller
+containers were created from the recorded image ID and that no other service
+runs in the project. If compose fails, the check fails or the containers do not
+match, it stops both roles, confirms neither still runs and exits non-zero; if
+it cannot stop them it says so and exits 1.
+
+These commands need the Docker CLI with the Compose plugin v2.10 or later,
+which added \`up --pull never\`. The smoke accepts the image configuration that
+Docker CLI versions both before and after 28.2 print.
 
 Compiled services use the host package's exact Demos ESM
 compatibility loader rather than a general TypeScript/esbuild production
@@ -5364,7 +5477,7 @@ export function liveProjectTemplates(
     "src/local-lifecycle.ts": LOCAL_LIFECYCLE_SOURCE,
     "src/cli.ts": CLI_SOURCE,
     "src/offline-smoke.ts": OFFLINE_SMOKE_SOURCE,
-    "scripts/docker-runtime-smoke.mjs": DOCKER_RUNTIME_SMOKE,
+    "scripts/docker-runtime-smoke.mjs": dockerRuntimeSmoke(options),
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",

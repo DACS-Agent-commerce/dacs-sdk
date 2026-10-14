@@ -249,21 +249,30 @@ has tested service endpoints and authenticated loopback messaging. Starting
 services MUST NOT publish a Listing or purchase a service.
 
 `dacs:image:smoke` MUST resolve the locally built `DACS_IMAGE` to one immutable
-image ID, check that image's configured user, working directory, entrypoint and
-command, and run its containers from that ID as the compose runtime user, with
-no network, secrets or serving role. Only a pass may record the image ID and
-runtime user, and a new attempt MUST withdraw the previous record first. In a
-Docker deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
+image ID, check that image's configured user, working directory, entrypoint,
+command and environment, and run its containers from that ID as the compose
+runtime user, with no network, secrets or serving role. Its probe MUST check the
+exact version of every generated production dependency, import the entry points
+the service loads, including those of each enabled payment rail, and open a
+SQLite database. An unset entrypoint MUST be accepted whether Docker reports it
+as absent, `null` or empty. Only a pass may record the image ID and runtime
+user, and a new attempt MUST withdraw the previous record first. In a Docker
+deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
 
 - refuse to start unless `DACS_IMAGE` still resolves to the recorded image ID and
   the runtime user is unchanged;
 - start compose with the recorded image ID rather than the tag, the generated
   `compose.yaml` as its only file, the project's own directory and name, no
-  build or pull, and exactly the `buyer` and `seller` services;
-- ignore `COMPOSE_*` environment variables and compose override files, as the
-  generated `dacs:down` and maintenance stops also MUST; and
-- stop both roles and fail unless compose created each from the recorded image
-  ID.
+  build or pull, and exactly the `buyer` and `seller` services. The directory's
+  name MUST already be a compose project name, used without normalisation;
+- ignore `COMPOSE_*` environment variables and compose override files, and
+  refuse to run while `.env` sets a `COMPOSE_*` variable, as the generated
+  `dacs:down` and maintenance stops also MUST; and
+- stop both roles and fail unless compose started and created each from the
+  recorded image ID and the started containers could be checked, and report a
+  failure to stop them or confirm that they stopped.
+
+The generated Docker lifecycle requires the Compose plugin v2.10 or later.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without

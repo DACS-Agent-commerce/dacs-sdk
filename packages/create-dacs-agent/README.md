@@ -39,7 +39,9 @@ funding, signed registries, endpoints or reviewed effect adapters are absent.
 It does not start services, publish or pay. Generated Docker services use the
 same reviewed host image with separate non-root buyer/seller processes, secret
 mounts and data volumes; the template contains only configuration, command
-wiring and the seller fulfilment callback.
+wiring and the seller fulfilment callback. With `--deploy docker` the project
+directory's name is its compose project name, so it must already be one:
+lower-case letters, digits, `_` and `-`, starting with a letter or digit.
 
 The live bootstrap currently supervises buyer and seller services. Its
 `--role` default is therefore restricted to `buyer` or `seller`; the generated

@@ -208,6 +208,15 @@ export async function createDacsAgentProject(
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
+  // The generated Docker lifecycle uses the directory's name as its compose
+  // project name, unnormalised, so that two projects never share one.
+  if (mode === "live-demos" && deployment === "docker" &&
+      !/^[a-z0-9][a-z0-9_-]*$/.test(basename(requestedTargetDirectory))) {
+    throw new Error(
+      "a Docker deployment's directory name must be a compose project name: " +
+        "lower-case letters, digits, _ and -, starting with a letter or digit",
+    );
+  }
   const parent = await stableProjectParent(requestedTargetDirectory);
   const targetDirectory = resolve(parent.path, basename(requestedTargetDirectory));
   await prepareFreshTarget(targetDirectory);
