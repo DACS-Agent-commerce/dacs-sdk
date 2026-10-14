@@ -114,6 +114,13 @@ export interface EvidenceRailContext {
   /** REQUIRED HTLC route params (HTLC-7): both must be present for a cross-chain-htlc phase. */
   sourceFinalitySec?: number;
   safetyWindowSec?: number;
+  /**
+   * The pinned HTLC route's chains (`CrossChainRoute.sourceChainId` /
+   * `destChainId`). When supplied, the HTLC references must sit on them by
+   * role: the lock and claim on the source chain, the reveal on the
+   * destination chain.
+   */
+  htlcRoute?: { sourceChainId: number; destChainId: number };
 }
 
 export interface EvidenceContext {
@@ -818,6 +825,46 @@ async function evaluateSettlementEvidence(
           `paymentTxRef x402 chainId "${String(t["chainId"])}" does not ` +
             `match pinned rail network "${ctx.rail.network}"`,
         );
+      }
+    }
+  }
+
+  // ── HTLC reference set (§9.5.4 txRefs, HTLC-9, ST-8) ─────────────────────
+  // A success, direct or ST-8 `:resolved`, carries exactly the source lock,
+  // the destination reveal and the source claim. The HTLC-9 interim failure
+  // carries the source lock and the reveal and no claim. The record a
+  // resolution supersedes is authenticated by the caller, not here.
+  if (phase === "pay-cross-chain-htlc" && txRefs) {
+    const refsOf = (kind: string) =>
+      txRefs.filter((t): t is Record<string, unknown> => isObj(t) && t["kind"] === kind);
+    const locks = refsOf("htlc-lock");
+    const reveals = refsOf("htlc-reveal");
+    const claims = refsOf("htlc-claim");
+    const route = ctx.rail?.htlcRoute;
+    const roleChainsMismatch = (sourceRefs: Record<string, unknown>[]): boolean => {
+      const sourceChain = sourceRefs[0]!["chainId"];
+      const destChain = reveals[0]!["chainId"];
+      return sourceRefs.some((t) => t["chainId"] !== sourceChain) || sourceChain === destChain ||
+        (route !== undefined && (sourceChain !== route.sourceChainId || destChain !== route.destChainId));
+    };
+    if (outcome === "success") {
+      if (txRefs.length !== 3 || locks.length !== 1 || reveals.length !== 1 || claims.length !== 1) {
+        fail(
+          "HTLC success evidence MUST carry exactly the source htlc-lock, the destination " +
+            "htlc-reveal and the source htlc-claim (§9.5.4)",
+        );
+      } else if (roleChainsMismatch([locks[0]!, claims[0]!])) {
+        fail("HTLC success evidence MUST carry the lock and claim on the source chain and the reveal on the destination chain");
+      }
+    } else if (ev["reason"] === "dest-revealed-source-unclaimed") {
+      if (claims.length !== 0) fail("HTLC-9 interim evidence MUST NOT carry an htlc-claim");
+      if (reveals.length !== 1) fail("HTLC-9 interim evidence MUST include the htlc-reveal txRef (HTLC-9(b))");
+      if (locks.length !== 1) fail("HTLC-9 interim evidence MUST carry exactly the source htlc-lock");
+      if (reveals.length === 1 && locks.length === 1 && roleChainsMismatch(locks)) {
+        fail("HTLC-9 interim evidence MUST carry the lock on the source chain and the reveal on the destination chain");
+      }
+      if (ev["supersedesEvidenceRef"] !== undefined) {
+        fail("HTLC-9 interim evidence MUST NOT supersede another record");
       }
     }
   }

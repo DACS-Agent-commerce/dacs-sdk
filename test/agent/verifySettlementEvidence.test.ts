@@ -590,21 +590,70 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     );
   });
 
-  // HTLC route params (HTLC-7).
+  // HTLC route params (HTLC-7), over the pinned HTLC-9 fixtures' reference set.
+  const htlcResolved = () =>
+    structuredClone(read("fixtures/settlement/htlc9-asymmetric-resolved.json").settlementEvidence);
+  const htlcInterim = () =>
+    structuredClone(read("fixtures/settlement/htlc9-asymmetric.json").settlementEvidence);
   const htlc = () => {
     const ev = payment();
     ev.phase = "pay-cross-chain-htlc";
-    ev.paymentTxRefs = [
-      {
-        kind: "htlc-claim",
-        chainId: 80002,
-        contractAddress: "0x0000000000000000000000000000000000000001",
-        claimTxHash: "0xclaim",
-      },
-    ];
+    ev.paymentTxRefs = htlcResolved().paymentTxRefs;
     ev.settlementFinality = { model: "htlc-reveal", finalityObservedAt: 1 };
     return ev;
   };
+  const htlcRail: EvidenceContext["rail"] = {
+    railType: "cross-chain-htlc",
+    sourceFinalitySec: 120,
+    safetyWindowSec: 600,
+    htlcRoute: { sourceChainId: 84532, destChainId: 80002 },
+  };
+  test.each([
+    ["resolved", htlcResolved],
+    ["interim", htlcInterim],
+  ] as const)("htlc9 %s fixture → pass with its pinned route", async (_name, fixture) => {
+    expect(await verify(fixture(), { rail: htlcRail })).toEqual({ decision: "pass", reasons: [] });
+  });
+  test.each([
+    ["omits the claim", (ev: Record<string, any>) => { ev.paymentTxRefs.pop(); }],
+    ["adds the destination lock", (ev: Record<string, any>) => {
+      ev.paymentTxRefs.splice(1, 0, { ...ev.paymentTxRefs[0], chainId: 80002, lockTxHash: `0x${"d".repeat(64)}` });
+    }],
+    ["duplicates the claim", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[0] = { ...ev.paymentTxRefs[2], claimTxHash: `0x${"e".repeat(64)}` };
+    }],
+    ["puts the claim on the reveal's chain", (ev: Record<string, any>) => { ev.paymentTxRefs[2].chainId = 80002; }],
+    ["swaps the chain roles", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[0].chainId = 80002;
+      ev.paymentTxRefs[1].chainId = 84532;
+      ev.paymentTxRefs[2].chainId = 80002;
+    }],
+    ["uses chains off the pinned route", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[0].chainId = 11155111;
+      ev.paymentTxRefs[2].chainId = 11155111;
+    }],
+  ])("htlc success that %s → fail", async (_name, mutate) => {
+    const ev = htlcResolved();
+    mutate(ev);
+    expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
+  });
+  test.each([
+    ["carries a claim", (ev: Record<string, any>) => {
+      ev.paymentTxRefs.push(htlcResolved().paymentTxRefs[2]);
+    }],
+    ["omits the reveal", (ev: Record<string, any>) => { ev.paymentTxRefs.pop(); }],
+    ["adds the destination lock", (ev: Record<string, any>) => {
+      ev.paymentTxRefs.push({ ...ev.paymentTxRefs[0], chainId: 80002, lockTxHash: `0x${"d".repeat(64)}` });
+    }],
+    ["puts the lock on the reveal's chain", (ev: Record<string, any>) => { ev.paymentTxRefs[0].chainId = 80002; }],
+    ["supersedes another record", (ev: Record<string, any>) => {
+      ev.supersedesEvidenceRef = htlcResolved().supersedesEvidenceRef;
+    }],
+  ])("htlc9 interim that %s → fail", async (_name, mutate) => {
+    const ev = htlcInterim();
+    mutate(ev);
+    expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
+  });
   test("htlcFinalityParams → pass (both params pinned, margin ok)", async () => {
     const ctx: EvidenceContext = {
       rail: { railType: "cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 },
@@ -750,16 +799,9 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ctx: EvidenceContext = { rail: { railType: "cross-chain-liquidity-tank" } };
     expect((await verify(ev, ctx)).decision).toBe("pass");
   });
-  test("crossChainIdMatchingKindPass → pass (a valid cross-chain txRef kind)", async () => {
+  test("crossChainIdMatchingKindPass → pass (valid cross-chain txRef kinds)", async () => {
+    // The §9.5.4 success set; a lone htlc-claim is not a valid success.
     const ev = htlc();
-    ev.paymentTxRefs = [
-      {
-        kind: "htlc-claim",
-        chainId: 80002,
-        contractAddress: "0x0000000000000000000000000000000000000001",
-        claimTxHash: "0xclaim",
-      },
-    ];
     const ctx: EvidenceContext = {
       rail: { railType: "cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 },
       htlcExpiry: { source: 10_000, dest: 5_000 },

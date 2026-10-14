@@ -410,10 +410,23 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   const htlcEvidence = () => {
     const evidence = paymentEvidence();
     evidence.phase = "pay-cross-chain-htlc";
+    // The DACS-4 §9.5.4 success set: source lock, destination reveal, source claim.
     evidence.paymentTxRefs = [
       {
-        kind: "htlc-claim",
+        kind: "htlc-lock",
+        chainId: 84532,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        lockTxHash: "0xlock",
+      },
+      {
+        kind: "htlc-reveal",
         chainId: 80002,
+        contractAddress: "0x0000000000000000000000000000000000000001",
+        revealTxHash: "0xreveal",
+      },
+      {
+        kind: "htlc-claim",
+        chainId: 84532,
         contractAddress: "0x0000000000000000000000000000000000000001",
         claimTxHash: "0xclaim",
       },
