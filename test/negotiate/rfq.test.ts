@@ -507,6 +507,36 @@ describe("bounded RFQ turn reducer", () => {
     expect(verifier).not.toHaveBeenCalled();
   });
 
+  // RFQ-1 (DACS-3 §8.4.2): maxTurns MUST be >= 2. An unsafe integer cannot
+  // even be content-hashed into a Listing, so it is checked in a checkpoint only.
+  test.each([0, 1, 1.5, -1, "2", Number.MAX_SAFE_INTEGER + 1])(
+    "RFQ-1: refuses maxTurns %j at session opening and in a stored checkpoint",
+    async (maxTurns) => {
+      if (Number.isSafeInteger(maxTurns) || typeof maxTurns !== "number" || maxTurns % 1 !== 0) {
+        const reservation = vi.fn<RfqChannelReservation>(() => "pass");
+        await expect(
+          openRfqSession(openInput(listing({ maxTurns: maxTurns as number })), reservation),
+        ).resolves.toMatchObject({ decision: "error" });
+        expect(reservation).not.toHaveBeenCalled();
+      }
+
+      const verifier = vi.fn<ChannelMessageSignatureVerifier<RfqTurnBody, string>>(() => "pass");
+      const stored = { ...(await opened(listing({ maxTurns: 2 }))), maxTurns } as RfqSessionState;
+      await expect(
+        advanceRfqSession(stored, turn(stored, "offer", proposal("10")), NOW + 1, verifier),
+      ).resolves.toMatchObject({ decision: "error" });
+      expect(verifier).not.toHaveBeenCalled();
+    },
+  );
+
+  test("RFQ-1: accepts the minimum maxTurns of 2", async () => {
+    const reservation = vi.fn<RfqChannelReservation>(() => "pass");
+    await expect(
+      openRfqSession(openInput(listing({ maxTurns: 2 })), reservation),
+    ).resolves.toMatchObject({ decision: "pass", state: { maxTurns: 2 } });
+    expect(reservation).toHaveBeenCalledOnce();
+  });
+
   test("uses trusted receipt time, not sender sentAt, and times out without verification", async () => {
     const state = await opened(listing({ timeoutSec: 2 }));
     const verifier = vi.fn<
