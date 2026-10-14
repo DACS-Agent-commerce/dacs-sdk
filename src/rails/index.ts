@@ -145,6 +145,7 @@ export {
   liquidityTankSettlementKey,
   createLiquidityTankIntent,
   advanceLiquidityTankSettlement,
+  liquidityTankPhaseOutcome,
   createInMemoryLiquidityTankStore,
   type InMemoryLiquidityTankStoreOptions,
   type LiquidityTankAuthority,
@@ -164,6 +165,7 @@ export {
   type LiquidityTankStore,
   type LiquidityTankStoreRestartSafety,
   type LiquidityTankProgress,
+  type LiquidityTankPhaseOutcome,
   type AdvanceLiquidityTankInput,
 } from "./liquidityTank.js";
 export {

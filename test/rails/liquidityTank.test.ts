@@ -855,7 +855,10 @@ describe("advanceLiquidityTankSettlement", () => {
     const h = harness({ status: "indeterminate", reason: "status API unavailable" });
 
     await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
-      .resolves.toEqual({ status: "indeterminate", reason: "status API unavailable" });
+      .resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-adapter-indeterminate: status API unavailable",
+      });
     expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     expect(recordSubmission).toHaveBeenCalledTimes(1);
     expect(h.observe).toHaveBeenCalledTimes(1);
@@ -919,7 +922,7 @@ describe("advanceLiquidityTankSettlement", () => {
 
     await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
       status: "indeterminate",
-      reason: "status API unavailable",
+      reason: "liquidity-tank-adapter-indeterminate: status API unavailable",
     });
     expect(retainedSubmission).toBeDefined();
     expect(h.prepareSubmission).toHaveBeenCalledTimes(1);

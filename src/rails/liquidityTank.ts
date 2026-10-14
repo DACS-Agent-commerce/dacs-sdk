@@ -32,10 +32,19 @@ const stringSlice = String.prototype.slice;
 const oneShotHash = hash;
 
 const HASH_RE = /^[0-9a-f]{64}$/;
-const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
+/**
+ * The bridge's operation ID. §9.5.5's prose calls it a 16-character hash, but
+ * the pinned Standard's `txref-liquidity-tank` vector uses `"tank-308"`, and
+ * the Demos native-bridge branches derive `bridge_` plus 16 or 64 hex
+ * characters. So any 1-128 characters from this URL-safe set are accepted;
+ * the core only ever compares the ID exactly.
+ */
+const BRIDGE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+/** Prefix on an adapter's own `indeterminate` reason. */
+const ADAPTER_REASON_PREFIX = "liquidity-tank-adapter-indeterminate: ";
 /** CORE §B.1 canonical job ID, as in `negotiate/jobId.ts`. */
 const CANONICAL_JOB_ID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
-/** CD-1 plain decimal (§14.4): integer and fraction digits, at most one dot. */
+/** CD-1 plain decimal (CORE §B.2): integer and fraction digits, at most one dot. */
 const DECIMAL_PARTS_RE = /^([0-9]*)(?:\.([0-9]*))?$/;
 const LEADING_ZEROS_RE = /^0*([0-9]*)$/;
 const TRAILING_ZEROS_RE = /^([0-9]*?)0*$/;
@@ -260,6 +269,10 @@ export interface LiquidityTankVerifier {
    * or the store retained it: status, history, bridge ID, operation hash, lock
    * and release hashes, timestamps and `recoveryDeadline`, against the bridge's
    * own authenticated record (for example a pinned bridge key or attestation).
+   * It must not accept an observation that carries `lockTxHash` before that
+   * source lock has reached finality under the rail's finality model (ST-8):
+   * answer `"unavailable"` until it has. The core enters `settle-asymmetric`
+   * on any accepted locked observation and cannot tell finality itself.
    */
   authenticateObservation(input: Readonly<{
     intent: Readonly<LiquidityTankIntent>;
@@ -594,6 +607,47 @@ export type LiquidityTankProgress =
       }>;
     }
   | { status: "settled"; settlement: Readonly<LiquidityTankSettlement> };
+
+/**
+ * What a host phase handler records for one progress result, in DACS terms
+ * (DACS-4 PC-3, PC-4 and §9.5.5; DACS-5 ST-8 and SEB-3). The core's
+ * `errorClass: "failed-substrate"` and its three expiry reasons are not DACS
+ * values: an expiry is `errorClass: "substrate"`, its evidence keeps the
+ * interim reason `tank-locked-unreleased`, and the bundle records the cause
+ * `failed-substrate`; the core's reason is kept only as `progressReason`.
+ * `none` means there is no phase result yet: retry or escalate by `reason`.
+ */
+export type LiquidityTankPhaseOutcome =
+  | Readonly<{ kind: "none" }>
+  | Readonly<{ kind: "interim"; evidenceOutcome: "failure"; evidenceReason: "tank-locked-unreleased" }>
+  | Readonly<{ kind: "result"; ok: true; evidenceOutcome: "success" }>
+  | Readonly<{
+      kind: "result";
+      ok: false;
+      errorClass: "substrate";
+      evidenceOutcome: "failure";
+      evidenceReason: "tank-locked-unreleased";
+      bundleCause: "failed-substrate";
+      progressReason: string;
+    }>
+  | Readonly<{ kind: "result"; ok: false; errorClass: "permanent"; progressReason: string }>;
+
+export function liquidityTankPhaseOutcome(progress: LiquidityTankProgress): LiquidityTankPhaseOutcome {
+  if (progress.status === "settled") return { kind: "result", ok: true, evidenceOutcome: "success" };
+  // A contradicted lock is still open: the interim record stands.
+  if (progress.status === "settle-asymmetric") {
+    return { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased" };
+  }
+  if (progress.status === "failed") {
+    return progress.errorClass === "failed-substrate"
+      ? {
+          kind: "result", ok: false, errorClass: "substrate", evidenceOutcome: "failure",
+          evidenceReason: "tank-locked-unreleased", bundleCause: "failed-substrate", progressReason: progress.reason,
+        }
+      : { kind: "result", ok: false, errorClass: "permanent", progressReason: progress.reason };
+  }
+  return { kind: "none" };
+}
 
 export interface AdvanceLiquidityTankInput {
   authority: Readonly<LiquidityTankAuthority>;
@@ -2379,7 +2433,11 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return unavailable;
     }
-    return observed;
+    // The adapter's own reason goes out under a prefix, so it can never read
+    // as one of the core's documented reasons.
+    return observed.status === "indeterminate"
+      ? { status: "indeterminate", reason: `${ADAPTER_REASON_PREFIX}${observed.reason}` }
+      : observed;
   };
   const persistObservation = async (
     observation: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
