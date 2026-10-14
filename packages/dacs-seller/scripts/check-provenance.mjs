@@ -9,8 +9,12 @@
 // package's src/, test/ or port-sources/ that the manifest does not list.
 // With --source it also reads each source blob at its recorded commit, checks
 // the recorded PR heads and their ancestry, and checks that each PR's changed
-// files are exactly the ported ones plus the ones listed as not ported.
-// Exits 1 on any failure. No dependencies beyond Node and git.
+// files are exactly the ported ones plus the ones listed as not ported. It
+// then recomputes the copy plan (lib/plan.mjs, as copy-verbatim.mjs does) and
+// fails unless the manifest lists exactly the planned files and not-ported
+// lists, so a file dropped together with its manifest entry is caught.
+// Exits 1 on any failure. Without --source, no dependencies beyond Node and
+// git; --source also needs the SDK root's typescript devDependency.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
@@ -47,7 +51,7 @@ function walk(dir, rel, out) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const failures = [];
   const fail = (m) => failures.push(m);
@@ -96,6 +100,7 @@ function main() {
   }
 
   let sourceChecked = 0;
+  let planChecked = 0;
   if (args.source) {
     const git = (a, opts = {}) => execFileSync('git', ['-C', args.source, ...a], { maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
     const blob = (c, p) => { try { return git(['cat-file', 'blob', `${c}:${p}`]); } catch { return null; } };
@@ -123,6 +128,19 @@ function main() {
         }
         sourceChecked += 1;
       }
+      const { createSource } = await import('./lib/source-graph.mjs');
+      const { plan } = await import('./lib/plan.mjs');
+      const planned = plan(createSource(args.source));
+      const key = (e) => `${e.role} ${e.path} <- ${String(e.sourceCommit).slice(0, 7)}:${e.sourcePath}`;
+      const want = new Set(planned.entries.map(key));
+      const have = new Set(files.map(key));
+      for (const k of want) if (!have.has(k)) fail(`source: the copy plan has ${k}, which the manifest lacks`);
+      for (const k of have) if (!want.has(k)) fail(`source: the manifest has ${k}, which the copy plan lacks`);
+      for (const { port, notPorted } of planned.ports) {
+        const listedNotPorted = (ports.get(port.inspectedHead)?.notPorted ?? []).map((n) => n.sourcePath).sort();
+        if (JSON.stringify(notPorted.map((n) => n.sourcePath).sort()) !== JSON.stringify(listedNotPorted)) fail(`source: #${port.pr}: the not-ported list differs from the copy plan's`);
+      }
+      planChecked = planned.entries.length;
     }
   }
 
@@ -130,7 +148,7 @@ function main() {
   for (const e of files) counts[e.role] = (counts[e.role] ?? 0) + 1;
   process.stdout.write(`manifest: ${files.length} entries (${Object.entries(counts).map(([r, n]) => `${r} ${n}`).join(', ')})\n`);
   process.stdout.write(`files: ${verified} hashes match, ${found.length} files found under src/, test/, port-sources/\n`);
-  if (args.source) process.stdout.write(`source: ${sourceChecked} source blobs match at their recorded commits\n`);
+  if (args.source) process.stdout.write(`source: ${sourceChecked} source blobs match at their recorded commits; copy plan: ${planChecked} files\n`);
   if (failures.length) {
     for (const f of failures) process.stderr.write(`FAIL ${f}\n`);
     process.stderr.write(`check-provenance: ${failures.length} failure(s)\n`);
@@ -139,9 +157,7 @@ function main() {
   process.stdout.write('check-provenance: ok\n');
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   process.stderr.write(`check-provenance: ${error.message}\n`);
   process.exit(1);
-}
+});
