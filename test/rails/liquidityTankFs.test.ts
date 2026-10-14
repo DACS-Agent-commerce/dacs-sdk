@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -93,6 +93,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     rm: async (path: Parameters<typeof actual.rm>[0], options?: Parameters<typeof actual.rm>[1]) => {
       inject("rm", String(path));
       await actual.rm(path, options);
+    },
+    stat: async (...args: Parameters<typeof actual.stat>) => {
+      inject("stat", String(args[0]));
+      return actual.stat(...args);
+    },
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      inject("lstat", String(args[0]));
+      return actual.lstat(...args);
     },
   };
 });
@@ -1102,5 +1110,171 @@ describe("createFsLiquidityTankStore locks of other threads and module copies", 
       live,
       left: await outcome(() => reclaiming.claim({ intent, owner: "worker-2", now: T0, leaseDurationMs: 1_000 })),
     }).toEqual({ live: TIMED_OUT, left: "waiting" });
+  });
+});
+
+/** A PID no process here holds: a child's, once it has exited. */
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await once(child, "exit");
+  return child.pid as number;
+}
+
+/** An owner record of another process; only its PID is read for another PID. */
+function processOwner(pid: number, token: string): Record<string, unknown> {
+  return { pid, tid: null, pidScope: null, threadToken: `${token}-thread`, token, createdNs: "1" };
+}
+
+/** Plants `owner` as a reclaim-gate file at `path`, last modified `ageMs` ago. */
+async function plantGateFile(path: string, owner: Record<string, unknown>, ageMs = 60_000): Promise<void> {
+  await writeFile(path, JSON.stringify(owner), { flag: "wx", mode: 0o600 });
+  const when = new Date(Date.now() - ageMs);
+  await utimes(path, when, when);
+}
+
+const gateFiles = async (dir: string) =>
+  (await readdir(join(dir, "locks"))).filter((name) => name.startsWith(".reclaim")).sort();
+
+describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
+  const claimOf = (store: LiquidityTankStore) =>
+    outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }));
+
+  test("a stale lock is reclaimed when its owner is another process that has exited, never while it lives", async () => {
+    expect(process.ppid).not.toBe(process.pid);
+    const outcomes = [];
+    for (const [owner, pid] of [["live", process.ppid], ["exited", await exitedPid()]] as const) {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 400 });
+      await plantStaleLock(dir, processOwner(pid, `${owner}-process-lock`));
+      outcomes.push({ owner, claim: await claimOf(store) });
+    }
+    expect(outcomes).toEqual([{ owner: "live", claim: TIMED_OUT }, { owner: "exited", claim: "acquired" }]);
+  });
+
+  test.skipIf(threadScope() === null)(
+    "a stale lock another listed thread of this process made during this process's lifetime is never reclaimed",
+    async () => {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 400 });
+      // Made just after this process started, so only a live-thread check can decide it.
+      const startedNs = process.hrtime.bigint() - BigInt(Math.ceil(process.uptime() * 1e9));
+      await plantStaleLock(dir, {
+        pid: process.pid,
+        ...threadScope(),
+        threadToken: "another-thread-of-this-process",
+        token: "another-thread-lock",
+        createdNs: String(startedNs + 2_000_000n),
+      });
+      expect(await claimOf(store)).toBe(TIMED_OUT);
+    },
+  );
+
+  test("a stale reclaim gate whose owner is another live process is never quarantined", async () => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 400 });
+    await plantStaleLock(dir, processOwner(await exitedPid(), "exited-lock"));
+    await plantGateFile(join(dir, "locks", ".reclaim"), processOwner(process.ppid, "live-gate"));
+    expect({ claim: await claimOf(store), gate: await gateFiles(dir) })
+      .toEqual({ claim: TIMED_OUT, gate: [".reclaim"] });
+  });
+
+  test("a quarantined gate blocks reclaim while it is fresh or its owner lives, and is removed once neither holds", async () => {
+    const outcomes = [];
+    for (const [label, pid, ageMs, lockStaleMs] of [
+      ["stale, live owner", process.ppid, 60_000, 20],
+      ["fresh, exited owner", await exitedPid(), 0, 30_000],
+      ["stale, exited owner", await exitedPid(), 60_000, 20],
+    ] as const) {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir, lockStaleMs, lockTimeoutMs: 400 });
+      await plantStaleLock(dir, processOwner(await exitedPid(), "exited-lock"));
+      await plantGateFile(join(dir, "locks", `.reclaim.${randomUUID()}.quarantine`), processOwner(pid, "gate"), ageMs);
+      outcomes.push({ label, claim: await claimOf(store), quarantines: (await gateFiles(dir)).length });
+    }
+    expect(outcomes).toEqual([
+      { label: "stale, live owner", claim: TIMED_OUT, quarantines: 1 },
+      { label: "fresh, exited owner", claim: TIMED_OUT, quarantines: 1 },
+      { label: "stale, exited owner", claim: "acquired", quarantines: 0 },
+    ]);
+  });
+
+  test("a reclaim gate replaced just before its quarantine rename stays as a live quarantine", async () => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 400 });
+    const gate = join(dir, "locks", ".reclaim");
+    await plantStaleLock(dir, processOwner(await exitedPid(), "exited-lock"));
+    await plantGateFile(gate, processOwner(await exitedPid(), "exited-gate"));
+    const replacement = processOwner(process.ppid, "replacement-gate");
+    let replaced = false;
+    // Another reclaimer quarantines the stale gate and publishes its own between this one's checks and its rename.
+    trace.fault = (operation, path) => {
+      if (!replaced && operation === "rename" && path.startsWith(`${gate} -> `) && path.endsWith(".quarantine")) {
+        replaced = true;
+        unlinkSync(gate);
+        writeFileSync(gate, JSON.stringify(replacement), { flag: "wx", mode: 0o600 });
+      }
+      return undefined;
+    };
+    const claim = await claimOf(store);
+    trace.fault = undefined;
+    const left = await gateFiles(dir);
+    expect({ replaced, claim, left: left.length }).toEqual({ replaced: true, claim: TIMED_OUT, left: 1 });
+    expect(JSON.parse(await readFile(join(dir, "locks", left[0] as string), "utf8"))).toEqual(replacement);
+  });
+
+  test.each([
+    ["the reclaim gate's stat", true,
+      (locks: string) => failOnce((op, path) => op === "stat" && path === `${locks}/.reclaim`, undefined, "ENOENT")],
+    ["the reclaim gate's quarantine rename", true,
+      (locks: string) => failOnce((op, path) => op === "rename" && path.startsWith(`${locks}/.reclaim -> `), undefined, "ENOENT")],
+    ["the quarantined gate's stat", true,
+      () => failOnce((op, path) => op === "stat" && path.endsWith(".quarantine"), undefined, "ENOENT")],
+    // The first stat of the lock is its staleness check before the gate; the second is the re-check under it.
+    ["the stale lock's stat under the reclaim gate", false,
+      () => failOnce((op, path) => op === "stat" && path.endsWith(".lock"),
+        (op, path) => op === "stat" && path.endsWith(".lock"), "ENOENT")],
+    ["the stale lock's quarantine rename", false,
+      () => failOnce((op, path) => op === "rename" && path.includes(".lock -> ") && path.endsWith(".stale"), undefined, "ENOENT")],
+  ])("a path that vanishes at %s is a lost race, and the next poll reclaims", async (_site, staleGate, fault) => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir, lockStaleMs: 20, lockTimeoutMs: 2_000 });
+    await plantStaleLock(dir, processOwner(await exitedPid(), "exited-lock"));
+    if (staleGate) await plantGateFile(join(dir, "locks", ".reclaim"), processOwner(await exitedPid(), "exited-gate"));
+    const injected = fault(join(dir, "locks"));
+    trace.fault = injected;
+    const claim = await claimOf(store);
+    trace.fault = undefined;
+    expect({ fired: injected.state.fired, claim }).toEqual({ fired: true, claim: "acquired" });
+  });
+
+  test("a reservation staging name that vanishes while it is checked is skipped", async () => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir });
+    const reservation = `${sha256Hex(BRIDGE_ID)}.json`;
+    const staging = join(dir, "bridges", `.${reservation}.${"0".repeat(48)}.tmp`);
+    await writeFile(staging, "{}", { flag: "wx", mode: 0o600 });
+    const { write } = await acquire(store, "worker-1", T0);
+    const injected = failOnce((op, path) => op === "lstat" && path === staging, undefined, "ENOENT");
+    trace.fault = injected;
+    const recorded = await store.recordSubmission({ ...write, submission: submission() });
+    trace.fault = undefined;
+    expect({ fired: injected.state.fired, recorded }).toEqual({ fired: true, recorded: { status: "recorded" } });
+  });
+
+  test.each([
+    ["another store version", { storeVersion: 2, bridgeId: BRIDGE_ID, settlementKey: intent.settlementKey }],
+    ["another bridge ID", { storeVersion: 1, bridgeId: "fsStoreBridge-02", settlementKey: intent.settlementKey }],
+    ["a settlement key that is not a string", { storeVersion: 1, bridgeId: BRIDGE_ID, settlementKey: 7 }],
+    ["an extra field", { storeVersion: 1, bridgeId: BRIDGE_ID, settlementKey: intent.settlementKey, extra: true }],
+  ])("a bridge-ID reservation with %s is corrupt, and the submission is not recorded", async (_label, reservation) => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir });
+    await writeFile(join(dir, "bridges", `${sha256Hex(BRIDGE_ID)}.json`), JSON.stringify(reservation),
+      { flag: "wx", mode: 0o600 });
+    const { write } = await acquire(store, "worker-1", T0);
+    await expect(store.recordSubmission({ ...write, submission: submission() }))
+      .resolves.toEqual({ status: "corrupt", reason: "liquidity-tank-fs-record-corrupt" });
+    const reclaimed = await store.claim({ intent, owner: "worker-1", now: T0 + 1, leaseDurationMs: 1_000 });
+    expect(reclaimed).not.toHaveProperty("submission");
   });
 });
