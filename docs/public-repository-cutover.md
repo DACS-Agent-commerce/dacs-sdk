@@ -74,16 +74,32 @@ reported by that run rather than creating a similarly named placeholder.
   GitHub's scanner provides provider-backed detection and revocation signals.
 - Keep the **Secret scan (all branches)** workflow
   (`.github/workflows/secret-scan-all-branches.yml`). The required
-  `secret scan` covers only the history of the commit under test, so this audit
-  is the only Gitleaks scan of unmerged branches and tags. Its limits:
-  - it runs once a day (04:17 UTC) and when dispatched from **Actions**, so a
-    secret pushed to a branch can go unreported for about a day. A branch
+  `secret scan` covers only the history of the commit under test (for a pull
+  request, its merge commit with both parents), so this audit is the only
+  Gitleaks scan of unmerged branches, tags and pull request heads. GitHub keeps
+  serving every pull request's commits, closed and fork ones included, under
+  `refs/pull/<number>/head`, and the audit fetches them. Both scans read what
+  each commit's patch adds, including paths marked `-diff` in `.gitattributes`
+  and a merge's own changes: its remerge diff, which is what the merge changed
+  from git's automatic merge of its parents. Their limits:
+  - they scan file contents only. Commit messages, author and committer names
+    and emails, branch and tag names, and annotated tag messages are not
+    scanned; review them in the pull request;
+  - git comes from the `ubuntu-24.04` runner image, which GitHub updates. The
+    merge scan needs git 2.36 or later. Gitleaks 8.30.1 logs a git error but
+    still passes, so each scan first runs the same `git log` and fails if git
+    exits with an error or writes anything to stderr;
+  - the audit runs once a day (04:17 UTC) and when dispatched from **Actions**.
+    GitHub can delay a scheduled run, or drop it when Actions is busy, so a
+    secret pushed to a branch can go unreported for a day or more. A branch
     deleted or force-pushed before the next run is never scanned, although its
     commits can stay readable on GitHub; rely on push protection (above) for
     that window;
-  - GitHub emails a failed scheduled run only to whoever last edited its `cron`
-    line, and nothing else notifies anyone. GitHub also disables scheduled
-    workflows in a public repository after 60 days without activity;
+  - GitHub notifies one user of a failed scheduled run: whoever created the
+    workflow, then whoever last changed its `cron` line, or whoever last
+    re-enabled it, and only as that user's notification settings allow.
+    Nothing else alerts anyone. GitHub also disables scheduled workflows in a
+    public repository after 60 days without activity;
   - it is not a required check, so a red run blocks nothing. Don't add it to
     the ruleset: it never runs on pull requests, so the check would never
     report.
@@ -112,7 +128,9 @@ reported by that run rather than creating a similarly named placeholder.
   64 MiB, gives no counts and fails the run; review it with the local
   reproduction.
 
-  To spot a new finding while the audit is red, compare the run with the last
+  To spot a new finding while the audit is red, first check the scan step's
+  log: if it says `partial scan`, Gitleaks stopped on an error and findings may
+  be missing. Compare the run with the last
   run whose findings were all reviewed, not just with the previous run. An ID
   that wasn't among that run's findings, or a higher count for an ID, is new.
   Findings at the same commit, file, rule and line share one ID, so only its
@@ -121,21 +139,29 @@ reported by that run rather than creating a similarly named placeholder.
 
   The local reproduction also gives the exact fingerprint for
   `.gitleaksignore`. Run Gitleaks 8.30.1 in a fresh clone, which checks out
-  `main` and has every branch and tag, as the audit does:
+  `main` and has every branch and tag, after fetching the pull request heads,
+  as the audit does. Ignore your own git configuration: settings such as
+  `log.abbrevCommit` or `color.ui` change what Gitleaks reads.
 
   ```sh
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   git clone https://github.com/DACS-Agent-commerce/dacs-sdk.git dacs-sdk-audit
   cd dacs-sdk-audit
-  gitleaks git . --log-opts="--full-history --all" --redact=100 --no-banner \
+  git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'
+  gitleaks git . --log-opts="--full-history --text --remerge-diff --all" \
+    --redact=100 --no-banner \
     --report-format=json --report-path=../gitleaks-report.json
   node scripts/gitleaks-fingerprint-summary.mjs \
     --report ../gitleaks-report.json --local
   ```
 
   The last command prints each fingerprint after its ID, and refuses to run in
-  GitHub Actions. Unlike the run, it reads a report over 64 MiB. A fingerprint
-  can contain a secret, so keep the output and the report private, and delete
-  them afterwards. An ID from the run that the reproduction doesn't list
+  GitHub Actions. Unlike the run, it reads a report over 64 MiB, up to about
+  512 MiB, Node's limit on a string; a larger report fails closed. A
+  fingerprint can contain a secret, so keep the output and the report private,
+  and delete them afterwards. A finding in a merge's conflict resolution has a
+  file segment that starts with `b/`; pin it as Gitleaks wrote it. An ID from
+  the run that the reproduction doesn't list
   belongs to a branch that has changed since, or to a finding that has since
   been pinned in `main`'s `.gitleaksignore` or dropped by a change to its
   `.gitleaks.toml`; look up its commit on GitHub, and dispatch a new run to
@@ -150,12 +176,15 @@ reported by that run rather than creating a similarly named placeholder.
 - [ ] Inspect the repository while logged out and confirm only intended content
       is exposed.
 - [ ] Run CI, package-artifact verification, and the secret scan on `main`.
-- [ ] Merge #346, which pins the reviewed fingerprints of the known #336 and
-      #268 findings in `.gitleaksignore`, before #345, which adds the
-      all-branch audit; in the other order the audit is red for those four
-      fingerprints from its first run. After #345 merges, dispatch
-      **Actions → Secret scan (all branches)** on `main` once and confirm that
-      the run is green. It is the clean baseline for later runs.
+- [x] #346, which pins the reviewed fingerprints of the known #336 and #268
+      findings in `.gitleaksignore`, merged before #345, which adds the
+      all-branch audit. Without those four entries the audit would be red for
+      them from its first run.
+- [ ] After #345 merges, dispatch **Actions → Secret scan (all branches)** on
+      `main`. Its first run is also the first Gitleaks scan of every pull
+      request head. Review every finding it lists, rotate any real credential,
+      pin only reviewed fingerprints in `.gitleaksignore`, and dispatch again
+      until a run is green. That run is the clean baseline for later runs.
 - [ ] Re-run any pull request previously blocked by private-repository Actions
       billing and require the configured checks before merge.
 - [ ] Confirm ruleset enforcement with a non-admin test pull request.
@@ -184,8 +213,8 @@ reported by that run rather than creating a similarly named placeholder.
   from the current tree does not make a previously published secret private.
 - Review dependency and secret-scanning alerts before every release.
 - Before every release, open **Actions → Secret scan (all branches)** and
-  confirm a green run on `main` that started after the last push to any branch
-  or tag. A run dispatched from another branch uses that branch's workflow,
+  confirm a green run on `main` that started after the last push to any branch,
+  tag or pull request. A run dispatched from another branch uses that branch's workflow,
   script, `.gitleaksignore` and Gitleaks config, so it doesn't count. If there
   is none, dispatch the workflow on `main` and wait for it. A red run blocks the
   release until every finding has been reviewed, including any IDs its summary
