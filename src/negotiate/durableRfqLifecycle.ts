@@ -258,10 +258,17 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
     proposal: RfqProposal,
   ): Promise<DurableRfqLifecycleResult<TSignature>>;
   sendAccept(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
+  /** The reason is at most 4,096 characters. */
   sendReject(
     jobId: string,
     reason?: string,
   ): Promise<DurableRfqLifecycleResult<TSignature>>;
+  /**
+   * The reason is at most 4,096 characters. While the counterparty owns the
+   * turn this, like every send call, is refused; once its turn timeout has
+   * passed on the trusted clock, the call records the RFQ-4 timeout as the
+   * job's failure instead, without signing or publishing anything.
+   */
   sendAbort(
     jobId: string,
     reason?: string,
@@ -308,6 +315,13 @@ export interface InMemoryRfqLifecycleNetwork<TSignature = unknown> {
 type DataRecord = Record<string, unknown>;
 
 const MAX_CAS_ATTEMPTS = 16;
+/**
+ * Our own reject or abort reason, in UTF-16 code units. A longer one is
+ * refused before anything is signed or stored, so a terminal turn always
+ * fits a size-limited transport (the Demos L2PS node takes 98,288 bytes).
+ * Received turns are not bounded here.
+ */
+const MAX_TERMINAL_REASON_CHARS = 4_096;
 const HASH = /^[0-9a-f]{64}$/;
 const SIGNATURE_ALGORITHMS: ReadonlySet<string> = new Set(
   COMPONENT_SIGNATURE_ALGORITHMS,
@@ -1686,6 +1700,57 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     return updateOutbox(packet.jobId, packet.packetId, result);
   }
 
+  /** Persist an RFQ-4 timeout as the terminal channel failure (CH-5 (c)). */
+  async function recordTimeout(
+    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+    state: Readonly<RfqSessionState>,
+    at: number,
+  ): Promise<DurableRfqLifecycleResult<TSignature>> {
+    const reason = state.terminalReason ?? "RFQ turn timeout elapsed";
+    const timedOut = await write(
+      record,
+      nextRecord(record, at, {
+        session: state as RfqSessionState,
+        failure: { failureVersion: "1", class: "timeout", reason, recordedAt: at },
+      }),
+    );
+    return timedOut.status === "ready"
+      ? { status: "rejected", reason, record: timedOut.record }
+      : timedOut;
+  }
+
+  /**
+   * The counterparty owns the next turn. Once its turn timeout has elapsed
+   * on our trusted clock, the member waiting on it records the timeout as
+   * channel failure (RFQ-4, CH-4, CH-5), so any send attempt, such as
+   * sendAbort(), ends the job. Nothing is signed or published.
+   */
+  async function expireWaitingTurn(
+    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+  ): Promise<DurableRfqLifecycleResult<TSignature>> {
+    const waiting = {
+      status: "rejected" as const,
+      reason: "counterparty owns the next RFQ turn",
+      record,
+    };
+    let now: number;
+    try {
+      now = trustedNow();
+    } catch {
+      return waiting;
+    }
+    // With no turn to admit, the session reducer decides only its timeout.
+    const advanced = await advanceRfqSession<TSignature>(
+      record.session,
+      undefined,
+      now,
+      verifyChannelMessage,
+    );
+    return advanced.decision === "pass" && advanced.state.status === "timed-out"
+      ? recordTimeout(record, advanced.state, now)
+      : waiting;
+  }
+
   async function enqueueTurn(
     jobId: string,
     type: "offer" | "counter" | "accept" | "reject" | "abort",
@@ -1696,6 +1761,13 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       ownedBody = snapshot(body, "RFQ lifecycle turn body");
     } catch {
       return { status: "rejected", reason: "RFQ turn body is malformed" };
+    }
+    const reason = (ownedBody as { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason.length > MAX_TERMINAL_REASON_CHARS) {
+      return {
+        status: "rejected",
+        reason: `RFQ ${type} reason exceeds ${MAX_TERMINAL_REASON_CHARS} characters`,
+      };
     }
     const loaded = await load(jobId);
     if (loaded.status !== "ok") return loadFailure(loaded);
@@ -1712,7 +1784,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     }
     const sender = roleClaim(record, role);
     if (record.session.expectedSender !== sender) {
-      return { status: "rejected", reason: "counterparty owns the next RFQ turn", record };
+      return expireWaitingTurn(record);
     }
     let sentAt: number;
     try {
@@ -1759,25 +1831,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       advanced.state.status === "timed-out" &&
       advanced.state.turnCount === record.session.turnCount
     ) {
-      const timedOut = await write(
-        record,
-        nextRecord(record, sentAt, {
-          session: advanced.state as RfqSessionState,
-          failure: {
-            failureVersion: "1",
-            class: "timeout",
-            reason: advanced.state.terminalReason ?? "RFQ turn timeout elapsed",
-            recordedAt: sentAt,
-          },
-        }),
-      );
-      return timedOut.status === "ready"
-        ? {
-            status: "rejected",
-            reason: advanced.state.terminalReason ?? "RFQ turn timeout elapsed",
-            record: timedOut.record,
-          }
-        : timedOut;
+      return recordTimeout(record, advanced.state, sentAt);
     }
     const packet = makePacket(record, { kind: "turn", message });
     const outbox = [
@@ -1885,25 +1939,7 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       advanced.state.status === "timed-out" &&
       advanced.state.turnCount === record.session.turnCount
     ) {
-      const timedOut = await write(
-        record,
-        nextRecord(record, receivedAt, {
-          session: advanced.state as RfqSessionState,
-          failure: {
-            failureVersion: "1",
-            class: "timeout",
-            reason: advanced.state.terminalReason ?? "RFQ turn timeout elapsed",
-            recordedAt: receivedAt,
-          },
-        }),
-      );
-      return timedOut.status === "ready"
-        ? {
-            status: "rejected",
-            reason: advanced.state.terminalReason ?? "RFQ turn timeout elapsed",
-            record: timedOut.record,
-          }
-        : timedOut;
+      return recordTimeout(record, advanced.state, receivedAt);
     }
     return write(
       record,

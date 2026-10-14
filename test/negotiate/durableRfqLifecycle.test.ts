@@ -1,4 +1,5 @@
 import {
+  createHash,
   generateKeyPairSync,
   sign as ed25519Sign,
   verify as ed25519Verify,
@@ -16,6 +17,7 @@ import {
   createInMemoryDurableRfqLifecycleStore,
   createInMemoryRfqLifecycleNetwork,
   durableRfqLifecycleTransitionViolation,
+  parseRfqLifecyclePacket,
   rfqLifecyclePacketId,
   type AttestationRef,
   type ChannelMessageSignatureVerificationInput,
@@ -1358,5 +1360,237 @@ describe("durable RFQ buyer starts again after its own stale agreement key", () 
     expect(durableRfqLifecycleTransitionViolation(prior, other)).toBe(
       "agreement signing state was removed or replaced",
     );
+  });
+});
+
+describe("durable RFQ turn timeout for the waiting member", () => {
+  const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+  const TIMEOUT_REASON = "RFQ turn timeout elapsed (RFQ-4)";
+
+  async function offeredPair(nowMs: () => number) {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient, sellerClient } = clients(network.transport, durableReservation(), nowMs);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await expect(buyerClient.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "ready" });
+    return { network, buyerClient, sellerClient };
+  }
+
+  async function expectTimedOut(client: DurableRfqLifecycleClient<string>) {
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record missing");
+    expect(status.record.session.status).toBe("timed-out");
+    expect(status.record.failure).toMatchObject({ class: "timeout", reason: TIMEOUT_REASON });
+    return status.record;
+  }
+
+  test("the buyer waiting on a silent seller records the timeout once it elapses", async () => {
+    let now = NOW;
+    const { network, buyerClient } = await offeredPair(() => now);
+    // At the 10 s boundary the seller still owns the turn.
+    now = NOW + 10_000;
+    await expect(buyerClient.sendAbort(JOB_ID, "seller silent")).resolves.toMatchObject({
+      status: "rejected", reason: "counterparty owns the next RFQ turn",
+    });
+    const open = await buyerClient.getStatus(JOB_ID);
+    if (open.status !== "ok") throw new Error("record missing");
+    expect(open.record.session.status).toBe("open");
+    expect(open.record.failure).toBeUndefined();
+
+    now = NOW + 10_001;
+    await expect(buyerClient.sendAbort(JOB_ID, "seller silent")).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON,
+    });
+    const record = await expectTimedOut(buyerClient);
+    // Nothing was signed or published for the abort.
+    expect(record.transcript).toHaveLength(1);
+    expect(record.outbox).toHaveLength(1);
+    expect(network.pending(SELLER)).toBe(1);
+    await expect(buyerClient.respond(JOB_ID, () => ({ action: "abort" }))).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON,
+    });
+  });
+
+  test("the seller waiting on a silent buyer records the timeout, and a late turn is refused", async () => {
+    let now = NOW;
+    const { network, buyerClient, sellerClient } = await offeredPair(() => now);
+    await deliver(network, SELLER, sellerClient);
+    await expect(sellerClient.respond(JOB_ID, () => ({
+      action: "counter",
+      proposal: { rfqProposalVersion: "1", price: { amount: "9.5", currency: "USDC" } },
+    }))).resolves.toMatchObject({ status: "ready" });
+    await deliver(network, BUYER, buyerClient);
+
+    now = NOW + 10_001;
+    await expect(sellerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON,
+    });
+    await expectTimedOut(sellerClient);
+    // The buyer's accept, sent in time by its own clock, reaches a failed job.
+    now = NOW + 5_000;
+    await expect(buyerClient.sendAccept(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const late = network.take(SELLER);
+    if (late === undefined) throw new Error("no accept");
+    await expect(sellerClient.receive(late)).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON,
+    });
+  });
+
+  test("a turn received after the timeout records it on the receiver", async () => {
+    let now = NOW;
+    const { network, sellerClient } = await offeredPair(() => now);
+    const offer = network.take(SELLER);
+    if (offer === undefined) throw new Error("no offer");
+    now = NOW + 10_001;
+    await expect(sellerClient.receive(offer)).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON,
+    });
+    const record = await expectTimedOut(sellerClient);
+    expect(record.transcript).toHaveLength(0);
+    expect(record.inboxPacketIds).toEqual([]);
+    // The failure is final for every later packet.
+    now = NOW + 20_000;
+    await expect(sellerClient.receive(offer)).resolves.toMatchObject({
+      status: "rejected", reason: TIMEOUT_REASON, record: { failure: { class: "timeout" } },
+    });
+  });
+
+  test.each(["sendReject", "sendAbort"] as const)("%s refuses a reason over 4,096 characters before anything is stored", async (method) => {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient, sellerClient } = clients(network.transport);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    await deliver(network, SELLER, sellerClient);
+    await expect(sellerClient[method](JOB_ID, "r".repeat(4_097))).resolves.toEqual({
+      status: "rejected",
+      reason: `RFQ ${method === "sendReject" ? "reject" : "abort"} reason exceeds 4096 characters`,
+    });
+    const status = await sellerClient.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record missing");
+    expect(status.record.session.status).toBe("open");
+    expect(status.record.outbox).toHaveLength(0);
+    await expect(sellerClient[method](JOB_ID, "r".repeat(4_096))).resolves.toMatchObject({ status: "ready" });
+    expect(network.pending(BUYER)).toBe(1);
+  });
+});
+
+describe("durable RFQ receive() rejections and packet parsing", () => {
+  const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+
+  async function finalizedPair() {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient, sellerClient } = clients(network.transport);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    const offer = await deliver(network, SELLER, sellerClient);
+    await sellerClient.respond(JOB_ID, () => ({ action: "accept" }));
+    await deliver(network, BUYER, buyerClient);
+    await buyerClient.startAgreement(JOB_ID);
+    const proposal = await deliver(network, SELLER, sellerClient);
+    await deliver(network, BUYER, buyerClient);
+    return { sellerClient, offer: offer.packet, proposal: proposal.packet };
+  }
+
+  /** The packet with its packetId recomputed over its exact bytes. */
+  function withId(unsigned: Record<string, unknown>): RfqLifecyclePacket<string> {
+    return {
+      ...unsigned,
+      packetId: rfqLifecyclePacketId(unsigned as unknown as Omit<RfqLifecyclePacket<string>, "packetId">),
+    } as unknown as RfqLifecyclePacket<string>;
+  }
+
+  function unsignedOf(packet: Readonly<RfqLifecyclePacket<string>>): Record<string, unknown> {
+    const { packetId: _packetId, ...unsigned } = structuredClone(packet) as RfqLifecyclePacket<string>;
+    return unsigned as unknown as Record<string, unknown>;
+  }
+
+  test("a malformed packet is rejected without a record", async () => {
+    const { sellerClient, offer } = await finalizedPair();
+    await expect(sellerClient.receive({ ...offer, packetId: "b".repeat(64) })).resolves.toEqual({
+      status: "rejected", reason: "RFQ lifecycle packetId does not match exact bytes",
+    });
+  });
+
+  test.each([
+    { name: "another channel", channelId: "durable-private-channel-02" },
+    { name: "swapped members", swap: true },
+  ])("a packet routed to $name is rejected", async ({ channelId, swap }) => {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient, sellerClient } = clients(network.transport);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    const offer = network.take(SELLER);
+    if (offer === undefined) throw new Error("no offer");
+    const unsigned = unsignedOf(offer);
+    const message = unsigned.message as Record<string, unknown>;
+    if (channelId !== undefined) {
+      unsigned.channelId = channelId;
+      message.channelId = channelId;
+    }
+    if (swap) {
+      unsigned.sender = SELLER;
+      unsigned.recipient = BUYER;
+      message.sender = SELLER;
+    }
+    await expect(sellerClient.receive(withId(unsigned))).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ packet routing does not bind this session",
+    });
+  });
+
+  test("a proposal with another plan after finalization is rejected; the same plan is a duplicate", async () => {
+    const { sellerClient, proposal } = await finalizedPair();
+    if (proposal.kind !== "agreement-proposal") throw new Error("not a proposal");
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({ status: "duplicate" });
+    const plan = createFixedPriceAgreementSigningPlan({
+      ...structuredClone(proposal.plan.draft),
+      generatedAt: proposal.plan.draft.generatedAt + 1,
+    });
+    const buyerContribution = await createFixedPriceAgreementSignatureContribution(
+      plan, "buyer", agreementSigner(BUYER, buyerKeys.privateKey),
+    );
+    const other = withId({ ...unsignedOf(proposal), plan, buyerContribution });
+    await expect(sellerClient.receive(other)).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ agreement is already finalized",
+    });
+  });
+
+  test("parseRfqLifecyclePacket refuses a packetId that does not hash its exact bytes", async () => {
+    const { offer } = await finalizedPair();
+    expect(() => parseRfqLifecyclePacket(offer)).not.toThrow();
+    expect(() => parseRfqLifecyclePacket({ ...offer, packetId: "c".repeat(64) }))
+      .toThrow("RFQ lifecycle packetId does not match exact bytes");
+  });
+
+  test.each([
+    { name: "packetVersion 2", edit: (packet: Record<string, unknown>) => { packet.packetVersion = "2"; } },
+    { name: "a missing key", edit: (packet: Record<string, unknown>) => { delete packet.recipient; } },
+    { name: "an extra key", edit: (packet: Record<string, unknown>) => { packet.extra = true; } },
+    { name: "sender equal to recipient", edit: (packet: Record<string, unknown>) => { packet.recipient = packet.sender; } },
+    { name: "an unknown kind", edit: (packet: Record<string, unknown>) => { packet.kind = "receipt"; } },
+    { name: "an empty jobId", edit: (packet: Record<string, unknown>) => { packet.jobId = ""; } },
+  ])("parseRfqLifecyclePacket refuses $name under a matching packetId", async ({ edit }) => {
+    const { offer } = await finalizedPair();
+    const unsigned = unsignedOf(offer);
+    edit(unsigned);
+    expect(() => parseRfqLifecyclePacket(withId(unsigned))).toThrow("RFQ lifecycle packet is malformed");
+  });
+
+  test("parseRfqLifecyclePacket refuses contributionVersion 2 under matching hashes", async () => {
+    const { proposal } = await finalizedPair();
+    if (proposal.kind !== "agreement-proposal") throw new Error("not a proposal");
+    expect(() => parseRfqLifecyclePacket(proposal)).not.toThrow();
+    const contribution = { ...structuredClone(proposal.buyerContribution), contributionVersion: "2" };
+    const contributionHash = createHash("sha256").update(canonicalize({
+      contributionVersion: contribution.contributionVersion,
+      planHash: contribution.planHash,
+      role: contribution.role,
+      party: contribution.party,
+      signature: contribution.signature,
+    }), "utf8").digest("hex");
+    const changed = withId({ ...unsignedOf(proposal), buyerContribution: { ...contribution, contributionHash } });
+    expect(() => parseRfqLifecyclePacket(changed)).toThrow("RFQ agreement proposal packet is inconsistent");
   });
 });
