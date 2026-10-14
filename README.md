@@ -920,6 +920,12 @@ broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
 
+`rpc.reachable` passes only when the endpoint also answers the read-only Demos
+`getLastBlockNumber` node call with a non-negative integer, so a web server that
+merely answers HTTP `GET` fails it. The default adapter needs
+`@kynesyslabs/demosdk` 4.0.18 or later: earlier builds use directory imports
+that Node's ESM loader rejects, which `substrate.adapter-load` reports as `fail`.
+
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
 
@@ -932,22 +938,45 @@ credentials, path tokens, query strings, or fragments, use `--rpc-file <path>`,
 does not appear in shell history or process listings.
 
 For file inputs, doctor reports symlink status and the owner and mode of the
-file it inspects, without printing paths or contents. POSIX files
-must belong to the current user and have exactly mode `0600`, matching the
-Node host's live secret-file policy. Like the host, doctor applies this policy
-to the path before opening and again to the opened descriptor. Other modes,
-owner mismatches, and symlinks fail admission (exit code `1`); the secret is not
-read and no adapter is created. Symlinks are rejected before opening. Files must
-be non-empty and are limited to 65,536 bytes, with path and descriptor size
-checks and bounded reads that also reject growth beyond the limit. Empty,
-oversized, or unreadable files produce path-free usage errors (exit code `2`). Windows
-mode and owner checks report unavailable (`skip`); Windows ACLs are not checked.
-Stdin and environment inputs do not receive file checks.
+file it inspects, without printing paths or contents. Files must have exactly
+mode `0600` and, where Node reports a user ID, belong to the current user,
+matching the Node host's live secret-file policy. Like the host, doctor applies
+this policy to the path before opening and again to the opened descriptor, on
+every platform. Node reports Windows file modes as `0666` or `0444`, so Windows
+credential files always fail admission, as they do on the host; use stdin or an
+environment variable there. Windows ACLs are not checked. Other modes, owner
+mismatches, and symlinks, including one swapped in after inspection, fail
+admission (exit code `1`); the secret is not read and no adapter is created.
+Files are limited to 65,536 bytes, with path and descriptor size checks and
+bounded reads that also reject growth beyond the limit. Content is decoded as
+strict UTF-8 and trimmed, like the host consumer does. Empty, oversized,
+unreadable, whitespace-only, or non-UTF-8 files produce path-free usage errors
+(exit code `2`). Unlike the host, doctor also accepts relative paths. Stdin input
+gets the same content rules but no file checks, and environment inputs get
+neither.
 
 The shipped `pay-dem` handler is recognized as a known native DEM rail. Its
-availability and funding are not checked. Balance, nonce, storage, and cost
-checks remain `blocked`, including in offline mode, which makes no connections,
-writes, or payments.
+availability and funding are not checked, so it reports `warn`, meaning
+"classified only". `--rail` takes the host's rail profile IDs (`pay-dem`,
+`pay-d402`, `x402`, `evm-erc20`), not DACS-4 rail IDs. For example, the
+Standard's `demos-native:DEM` rail is selected as `pay-dem`. Balance, nonce,
+storage, anchor-completion, and cost checks remain `blocked`, including in
+offline mode, which makes no connections, writes, or payments.
+
+| Check ID | Statuses | `data` |
+| --- | --- | --- |
+| `runtime.node` | pass, fail | `version`, `required` |
+| `runtime.module` | pass, fail | `type` |
+| `package.version` | pass, fail (compiled SDK version differs from `package.json`) | `version`, `packageVersion` on fail |
+| `config.secrets` | pass, skip | `walletSecret` (always `[redacted]`) |
+| `config.{rpc,wallet}-file.symlink` | pass, fail | none |
+| `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
+| `config.{rpc,wallet}-file.owner` | pass, fail, skip (no user ID) | `ownerUid`, `currentUid` |
+| `substrate.adapter-load` | pass, fail | none |
+| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail, skip | `rpc` (redacted); `lastBlockNumber` on pass |
+| `wallet.identity` | pass, skip | `address` |
+| `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
+| `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |
 
 Exit codes are stable:
 

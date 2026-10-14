@@ -1,33 +1,67 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { chmodSync, constants, existsSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
+import * as tty from "node:tty";
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 import { isMainModule, parseDoctorArgs, runCli } from "../../src/bin/dacs.js";
 import type { DoctorReport } from "../../src/cli/index.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, lstatSync: vi.fn(actual.lstatSync), fstatSync: vi.fn(actual.fstatSync) };
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync), fstatSync: vi.fn(actual.fstatSync),
+    readFileSync: vi.fn(actual.readFileSync) };
+});
+vi.mock("node:tty", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:tty")>();
+  return { ...actual, isatty: vi.fn(actual.isatty) };
 });
 
-const adapterCalls = vi.hoisted(() => ({ factory: vi.fn(), connect: vi.fn(), address: vi.fn() }));
+const adapterCalls = vi.hoisted(() => ({ factory: vi.fn(), connect: vi.fn(), address: vi.fn(),
+  nodeCall: vi.fn() }));
 vi.mock("../../src/substrate/index.js", () => ({
   DemosAdapter: class {
     constructor(config: unknown) { adapterCalls.factory(config); }
     async connect() { adapterCalls.connect(); }
     getAddress() { adapterCalls.address(); return "unused"; }
+    get raw() {
+      return { nodeCall: async (message: unknown) => { adapterCalls.nodeCall(message); return 42; } };
+    }
   },
 }));
 
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+const actualTty = await vi.importActual<typeof import("node:tty")>("node:tty");
+
 afterEach(() => {
   vi.mocked(fs.fstatSync).mockReset();
+  vi.mocked(fs.readFileSync).mockImplementation(actualFs.readFileSync);
+  vi.mocked(tty.isatty).mockImplementation(actualTty.isatty);
   vi.clearAllMocks();
 });
+
+/** Serve doctor's stdin from memory, as a pipe rather than a TTY. */
+function pipeStdin(input: Buffer | string): void {
+  vi.mocked(tty.isatty).mockReturnValue(false);
+  vi.mocked(fs.readFileSync).mockImplementation(((path: Parameters<typeof fs.readFileSync>[0], ...rest: unknown[]) =>
+    path === 0 ? Buffer.from(input) : (actualFs.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)
+  ) as typeof fs.readFileSync);
+}
+
+async function runCaptured(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  const code = await runCli(args, {
+    stdout: (chunk) => { stdout += chunk; }, stderr: (chunk) => { stderr += chunk; },
+  });
+  return { code, stdout, stderr };
+}
 
 describe("dacs bin", () => {
   beforeAll(() => {
@@ -40,8 +74,9 @@ describe("dacs bin", () => {
       throw new Error(`failed to build CLI before bin tests\n${result.stdout}\n${result.stderr}`);
     }
   // The suite runs this redundant package build alongside CPU-heavy worker
-  // pools; the dedicated CI build step remains the correctness gate.
-  }, 60_000);
+  // pools; the dedicated CI build step remains the correctness gate. A loaded
+  // host can take minutes, and a timeout here silently skips every bin test.
+  }, 300_000);
 
   it.skipIf(process.platform === "win32").each(
     (["rpc", "wallet"] as const).flatMap((source) =>
@@ -135,7 +170,8 @@ describe("dacs bin", () => {
         const code = await runCli(["doctor", "--offline", "--json", flag, path, "--rail", "pay-dem"], {
           stdout: (chunk) => { stdout += chunk; }, stderr: (chunk) => { stderr += chunk; },
         });
-        expect(code).toBe(process.platform !== "win32" && mode !== 0o600 ? 1 : 5);
+        // Node reports Windows modes as 0666 or 0444, which the host always refuses.
+        expect(code).toBe(process.platform === "win32" || mode !== 0o600 ? 1 : 5);
         expect(stderr).toBe("");
         expect(stdout).not.toContain(path);
         expect(stdout).not.toContain(temp);
@@ -143,7 +179,7 @@ describe("dacs bin", () => {
         const report = JSON.parse(stdout) as DoctorReport;
         expect(report.checks.find((c) => c.id === `config.${source}-file.symlink`)?.status).toBe("pass");
         if (process.platform === "win32") {
-          expect(report.checks.find((c) => c.id === `config.${source}-file.mode`)?.status).toBe("skip");
+          expect(report.checks.find((c) => c.id === `config.${source}-file.mode`)?.status).toBe("fail");
         } else {
           expect(report.checks.find((c) => c.id === `config.${source}-file.mode`)).toMatchObject({
             status: mode === 0o600 ? "pass" : "fail", data: { mode: mode.toString(8).padStart(4, "0") },
@@ -240,8 +276,15 @@ describe("dacs bin", () => {
       const code = await runCli(["doctor", "--offline", "--json", "--wallet-secret-file", path], {
         stdout: (chunk) => { output += chunk; }, stderr: (chunk) => { output += chunk; },
       });
-      expect(code).toBe(2);
-      expect(output).toContain("Could not read wallet credential file");
+      // Like the host, O_NOFOLLOW's ELOOP is a symlink admission failure.
+      if (replacement === "symlink") {
+        expect(code).toBe(1);
+        const report = JSON.parse(output) as DoctorReport;
+        expect(report.checks.find((c) => c.id === "config.wallet-file.symlink")?.status).toBe("fail");
+      } else {
+        expect(code).toBe(2);
+        expect(output).toContain("Could not read wallet credential file");
+      }
       expect(output).not.toContain(secret);
       expect(output).not.toContain(temp);
     } finally {
@@ -315,6 +358,121 @@ describe("dacs bin", () => {
       rmSync(temp, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it.each((["rpc", "wallet"] as const).flatMap((source) => [
+    { source, label: "whitespace-only", content: Buffer.from("\n\n  \t\r\n") },
+    { source, label: "invalid UTF-8", content: Buffer.from([0x61, 0xff, 0x62]) },
+  ]))("refuses a $label $source credential file before adapter use", async ({ source, content }) => {
+    const temp = mkdtempSync(join(tmpdir(), "dacs-content-"));
+    const path = join(temp, randomBytes(16).toString("hex"));
+    try {
+      writeFileSync(path, content, { mode: 0o600 });
+      const { code, stdout, stderr } = await runCaptured(["doctor", "--json",
+        ...(source === "wallet" ? ["--rpc", "https://node.example", "--wallet-secret-file", path] : ["--rpc-file", path]),
+      ]);
+      expect(code).toBe(2);
+      expect(stdout).toBe("");
+      expect(stderr).toContain(`Could not use ${source} credential file; it must contain non-empty UTF-8 text`);
+      expect(stderr).not.toContain(temp);
+      expect(adapterCalls.factory).not.toHaveBeenCalled();
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["rpc", "wallet"] as const)("refuses whitespace-only and invalid UTF-8 %s stdin", async (source) => {
+    for (const input of [" \n\t\n", Buffer.from([0xff])]) {
+      pipeStdin(input);
+      const { code, stdout, stderr } = await runCaptured(["doctor", "--offline", "--json",
+        source === "rpc" ? "--rpc-file" : "--wallet-secret-file", "-"]);
+      expect(code).toBe(2);
+      expect(stdout).toBe("");
+      expect(stderr).toContain(`Could not use ${source} credential from stdin; it must be non-empty UTF-8 text`);
+    }
+  });
+
+  it("passes trimmed file and stdin credentials to the adapter intact", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "dacs-intact-"));
+    const secret = randomBytes(32).toString("hex");
+    const rpc = `https://node.example/${randomBytes(8).toString("hex")}`;
+    const walletFile = join(temp, "wallet");
+    try {
+      writeFileSync(walletFile, `${secret}\n`, { mode: 0o600 });
+      pipeStdin(`${rpc}\n`);
+      const { code, stdout, stderr } = await runCaptured(["doctor", "--json", "--rpc-file", "-",
+        "--wallet-secret-file", walletFile]);
+      expect(stderr).toBe("");
+      expect(code).toBe(5);
+      expect(adapterCalls.factory).toHaveBeenCalledExactlyOnceWith({ rpc, secret });
+      expect(adapterCalls.nodeCall).toHaveBeenCalledExactlyOnceWith("getLastBlockNumber");
+      const report = JSON.parse(stdout) as DoctorReport;
+      expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+        status: "pass", data: { lastBlockNumber: 42 },
+      });
+      expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("pass");
+      expect(stdout).not.toContain(secret);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps an unsafe RPC file's failure when a safe wallet file follows", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "dacs-two-files-"));
+    const rpcFile = join(temp, "rpc");
+    const walletFile = join(temp, "wallet");
+    try {
+      writeFileSync(rpcFile, "https://node.example/token\n", { mode: 0o644 });
+      chmodSync(rpcFile, 0o644);
+      writeFileSync(walletFile, `${randomBytes(32).toString("hex")}\n`, { mode: 0o600 });
+      const { code, stdout } = await runCaptured(["doctor", "--json", "--rpc-file", rpcFile,
+        "--wallet-secret-file", walletFile]);
+      expect(code).toBe(1);
+      const report = JSON.parse(stdout) as DoctorReport;
+      expect(report.checks.find((c) => c.id === "config.rpc-file.mode")?.status).toBe("fail");
+      expect(report.checks.find((c) => c.id === "config.wallet-file.mode")?.status).toBe("pass");
+      expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("skip");
+      expect(adapterCalls.factory).not.toHaveBeenCalled();
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [["--rpc", "https://node.example", "--rpc-env", "DACS_RPC"], "use only one of --rpc, --rpc-env, or --rpc-file"],
+    [["--rpc", "https://node.example", "--rpc-file", "rpc.url"], "use only one of --rpc, --rpc-env, or --rpc-file"],
+    [["--rpc-env", "DACS_RPC", "--rpc-file", "rpc.url"], "use only one of --rpc, --rpc-env, or --rpc-file"],
+    [["--wallet-secret-env", "DACS_WALLET", "--wallet-secret-file", "wallet.secret"],
+      "use only one of --wallet-secret-env or --wallet-secret-file"],
+    [["--rpc-file", "-", "--wallet-secret-file", "-"], "only one secret source can read from stdin"],
+  ])("rejects conflicting sources %j before reading any", async (args, message) => {
+    const { code, stdout, stderr } = await runCaptured(["doctor", "--offline", ...args]);
+    expect(code).toBe(2);
+    expect(stdout).toBe("");
+    expect(stderr).toContain(message);
+    expect(fs.lstatSync).not.toHaveBeenCalled();
+  });
+
+  it.each(["rpc", "wallet"] as const)("refuses %s input from - when stdin is a TTY", async (source) => {
+    vi.mocked(tty.isatty).mockReturnValue(true);
+    const { code, stderr } = await runCaptured(["doctor", "--offline",
+      source === "rpc" ? "--rpc-file" : "--wallet-secret-file", "-"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain(`${source} input requires piped stdin when path is -`);
+    expect(fs.readFileSync).not.toHaveBeenCalledWith(0);
+  });
+
+  it("reads a named credential file even when stdin is a TTY", async () => {
+    const temp = mkdtempSync(join(tmpdir(), "dacs-tty-file-"));
+    const path = join(temp, "wallet");
+    try {
+      writeFileSync(path, randomBytes(32).toString("hex"), { mode: 0o600 });
+      vi.mocked(tty.isatty).mockReturnValue(true);
+      const { code } = await runCaptured(["doctor", "--offline", "--wallet-secret-file", path]);
+      expect(code).toBe(5);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
 
   it("parses doctor flags", () => {
     expect(
@@ -524,11 +682,20 @@ describe("dacs bin", () => {
     expect(stderr).toContain("--rpc requires a value");
   });
 
+  it("rejects an invalid direct RPC URL", async () => {
+    const { code, stderr } = await runCaptured(["doctor", "--rpc", "not a url"]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("--rpc requires a valid URL");
+  });
+
   it("rejects credential-bearing direct RPC URLs", async () => {
     for (const rpc of [
       "https://user:pass@node.example",
+      "https://user@node.example",
+      "https://:pass@node.example",
       "https://eth-mainnet.g.alchemy.com/v2/api-key",
       "https://node.example?token=secret",
+      "https://node.example#fragment",
     ]) {
       let stderr = "";
       const code = await runCli(["doctor", "--rpc", rpc], {
@@ -615,5 +782,83 @@ describe("dacs bin", () => {
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
+  });
+
+  // Unmocked: the spawned built CLI loads the installed demosdk through Node's
+  // own ESM loader, which Vite's inlining hides from the in-process tests.
+  describe("built CLI with the installed Demos SDK", () => {
+    type Reply = { status: number; type: string; body: string };
+    async function withRpc(
+      reply: (method: string | undefined, body: string) => Reply,
+      run: (url: string, seen: Array<{ method?: string; body: string }>) => Promise<void>,
+    ): Promise<void> {
+      const seen: Array<{ method?: string; body: string }> = [];
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
+        req.on("end", () => {
+          seen.push({ method: req.method, body });
+          const out = reply(req.method, body);
+          res.writeHead(out.status, { "content-type": out.type }).end(out.body);
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+
+    function runBuiltDoctor(rpc: string): Promise<{ code: number | null; report: DoctorReport }> {
+      // Keep demosdk's HTTP client off any proxy so it reaches the local fixture.
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/_proxy$/i.test(key)));
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [join(process.cwd(), "dist", "bin", "dacs.js"), "doctor", "--json",
+          "--rpc", rpc, "--rail", "pay-dem"], { env: { ...env, NODE_NO_WARNINGS: "1" }, timeout: 90_000 });
+        let stdout = "";
+        child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+        child.on("error", reject);
+        child.on("close", (code) => {
+          try {
+            resolve({ code, report: JSON.parse(stdout) as DoctorReport });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+    }
+
+    it("passes against a Demos-shaped RPC using only read-only calls", async () => {
+      await withRpc((method, body) => {
+        if (method === "GET") return { status: 200, type: "application/json", body: '{"message":"Hello, World!"}' };
+        const request = JSON.parse(body) as { method?: string; params?: Array<{ message?: string }> };
+        return request.method === "nodeCall" && request.params?.[0]?.message === "getLastBlockNumber"
+          ? { status: 200, type: "application/json",
+              body: JSON.stringify({ result: 200, response: 4242, require_reply: false, extra: null }) }
+          : { status: 404, type: "application/json", body: "{}" };
+      }, async (url, seen) => {
+        const { code, report } = await runBuiltDoctor(url);
+        expect(report.checks.find((c) => c.id === "substrate.adapter-load")?.status).toBe("pass");
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+          status: "pass", data: { lastBlockNumber: 4242 },
+        });
+        expect(code).toBe(5);
+        for (const request of seen.filter((r) => r.method !== "GET")) {
+          expect(JSON.parse(request.body)).toMatchObject({ method: "nodeCall", params: [{ message: "getLastBlockNumber" }] });
+        }
+      });
+    }, 120_000);
+
+    it("fails against a generic HTTP 200 server", async () => {
+      await withRpc(() => ({ status: 200, type: "text/plain", body: "ok" }), async (url) => {
+        const { code, report } = await runBuiltDoctor(url);
+        expect(report.checks.find((c) => c.id === "substrate.adapter-load")?.status).toBe("pass");
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+          status: "fail", summary: "RPC endpoint did not answer the Demos block-height call",
+        });
+        expect(code).toBe(3);
+      });
+    }, 120_000);
   });
 });

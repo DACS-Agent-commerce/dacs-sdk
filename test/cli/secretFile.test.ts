@@ -135,24 +135,116 @@ describe("doctor credential descriptor admission", () => {
     },
   );
 
-  it("keeps Windows permission and owner assessment unavailable during admission", () => {
-    const secret = randomBytes(32).toString("hex");
-    const path = fixture(Buffer.from(secret));
-    fs.chmodSync(path, 0o644);
-    vi.mocked(fs.fstatSync).mockImplementationOnce((...args) => {
-      const stat = actual.fstatSync(...args);
-      stat.uid = (process.getuid?.() ?? 0) + 1;
-      return stat;
-    });
+  it("applies the host's mode rule on Windows without reading", () => {
+    const path = fixture();
+    fs.chmodSync(path, 0o666);
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     try {
       Object.defineProperty(process, "platform", { ...platform, value: "win32" });
       const result = readDoctorSecretFile(path, "wallet");
-      expect(result.value).toBe(secret);
-      expect(result.file.platform).toBe("win32");
+      expect(result.value).toBeUndefined();
+      expect(result.file).toMatchObject({ platform: "win32", symlink: false });
+      expect((result.file.mode ?? 0) & 0o777).toBe(0o666);
+      expect(fs.openSync).not.toHaveBeenCalled();
+      expectNoRead();
     } finally {
       Object.defineProperty(process, "platform", platform);
     }
+  });
+
+  it.skipIf(!fs.constants.O_NOFOLLOW || !fs.constants.O_NONBLOCK)("opens without following links or blocking", () => {
+    const secret = randomBytes(32).toString("hex");
+    const path = fixture(Buffer.from(secret));
+    expect(readDoctorSecretFile(path, "wallet").value).toBe(secret);
+    expect(fs.openSync).toHaveBeenCalledWith(path,
+      fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
+  });
+
+  it("reports a symlink swapped in after lstat as a symlink", () => {
+    const path = fixture();
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error(`ELOOP: too many symbolic links, open '${path}'`), { code: "ELOOP" });
+    });
+    const result = readDoctorSecretFile(path, "wallet");
+    expect(result.value).toBeUndefined();
+    expect(result.file).toMatchObject({ symlink: true });
+    expect(result.file.mode).toBeUndefined();
+    expectNoRead();
+  });
+
+  it.each([
+    ["device", (stat: fs.Stats) => { stat.dev += 1; }],
+    ["inode", (stat: fs.Stats) => { stat.ino += 1; }],
+    ["type", (stat: fs.Stats) => { stat.isFile = () => false; }],
+  ])("rejects a descriptor whose %s differs from the inspected path", (_label, change) => {
+    const path = fixture();
+    vi.mocked(fs.fstatSync).mockImplementationOnce((...args) => {
+      const stat = actual.fstatSync(...args);
+      change(stat as fs.Stats);
+      return stat;
+    });
+    expect(() => readDoctorSecretFile(path, "wallet")).toThrow("Could not read wallet credential file");
+    expectNoRead();
+    expect(fs.closeSync).toHaveBeenCalledOnce();
+  });
+
+  it("rejects growth past the limit from a file of exactly the limit", () => {
+    const path = fixture(Buffer.alloc(limit, 0x61));
+    vi.mocked(fs.fstatSync).mockImplementationOnce((...args) => {
+      const admitted = actual.fstatSync(...args);
+      fs.appendFileSync(path, "a");
+      return admitted;
+    });
+    // A short first read stops at the limit, so only a further read sees the growth.
+    vi.mocked(fs.readSync as (fd: number, buffer: Buffer, offset: number, length: number,
+      position: number | null) => number).mockImplementationOnce((fd, buffer, offset, length, position) =>
+      actual.readSync(fd, buffer, offset, Math.min(length, limit), position));
+    expect(() => readDoctorSecretFile(path, "wallet")).toThrow("Could not read wallet credential file");
+    expect(fs.readSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("trims surrounding whitespace like the host consumer", () => {
+    const secret = randomBytes(32).toString("hex");
+    expect(readDoctorSecretFile(fixture(Buffer.from(` \t${secret}\r\n\n`)), "wallet").value).toBe(secret);
+  });
+
+  it("decodes valid multibyte UTF-8 filling the limit exactly", () => {
+    const secret = "é".repeat(limit / 2);
+    expect(Buffer.byteLength(secret)).toBe(limit);
+    expect(readDoctorSecretFile(fixture(Buffer.from(secret)), "wallet").value).toBe(secret);
+  });
+
+  it.each([
+    ["whitespace only", Buffer.from("\n\n  \t\r\n")],
+    ["an invalid byte", Buffer.from([0xff])],
+    ["an encoded surrogate", Buffer.from([0x61, 0xed, 0xa0, 0x80])],
+    ["an overlong encoding", Buffer.from([0xc0, 0xaf])],
+    ["a multibyte sequence cut at the limit", Buffer.concat([Buffer.alloc(limit - 1, 0x61), Buffer.from([0xc3])])],
+  ])("refuses credential content with %s", (_label, bytes) => {
+    const path = fixture(bytes);
+    expect(() => readDoctorSecretFile(path, "rpc"))
+      .toThrow("Could not use rpc credential file; it must contain non-empty UTF-8 text");
+    expect(fs.closeSync).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["accepted", Buffer.from(randomBytes(32).toString("hex"))],
+    ["refused", Buffer.from([0xff, 0xfe])],
+  ])("zeroes the read buffer when content is %s", (_label, content) => {
+    const path = fixture(content);
+    const buffers: Buffer[] = [];
+    vi.mocked(fs.readSync as (fd: number, buffer: Buffer, offset: number, length: number,
+      position: number | null) => number).mockImplementation((fd, buffer, offset, length, position) => {
+      buffers.push(buffer);
+      return actual.readSync(fd, buffer, offset, length, position);
+    });
+    try {
+      readDoctorSecretFile(path, "wallet");
+    } catch {
+      // Refused content is covered above; only the wipe matters here.
+    }
+    expect(buffers.length).toBeGreaterThan(0);
+    for (const buffer of buffers) expect(buffer.every((byte) => byte === 0)).toBe(true);
   });
 
   it("keeps owner assessment unavailable when getuid is absent", () => {

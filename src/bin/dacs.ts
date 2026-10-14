@@ -3,7 +3,11 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
-import { readDoctorSecretFile, type DoctorSecretFile } from "../cli/secretFile.js";
+import {
+  decodeDoctorCredential,
+  readDoctorSecretFile,
+  type DoctorSecretFile,
+} from "../cli/secretFile.js";
 import { runDoctorForCli } from "../cli/doctor.js";
 import {
   formatDoctorText,
@@ -46,11 +50,18 @@ function readSecretInput(path: string, source: "rpc" | "wallet", options: Doctor
     throw new Error(`${source} input requires piped stdin when path is -`);
   }
   if (path === "-") {
+    let bytes: Buffer;
     try {
-      return readFileSync(0, "utf8").trimEnd();
+      bytes = readFileSync(0);
     } catch {
       throw new Error(`Could not read ${source} credential from stdin`);
     }
+    const value = decodeDoctorCredential(bytes);
+    bytes.fill(0);
+    if (value === undefined) {
+      throw new Error(`Could not use ${source} credential from stdin; it must be non-empty UTF-8 text`);
+    }
+    return value;
   }
   const { value, file } = readDoctorSecretFile(path, source);
   options.secretFiles = [...(options.secretFiles ?? []), file];

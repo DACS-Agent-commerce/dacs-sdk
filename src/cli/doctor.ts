@@ -27,6 +27,11 @@ export interface DoctorReport {
 export interface DoctorAdapter {
   connect(): Promise<void>;
   getAddress(): string;
+  /**
+   * Read-only Demos node call. Without it doctor cannot tell a Demos RPC from
+   * any endpoint that answers HTTP GET, so `rpc.reachable` reports `warn`.
+   */
+  getLastBlockNumber?(): Promise<unknown>;
 }
 
 export interface DoctorOptions {
@@ -82,6 +87,7 @@ interface PackageMetadata {
     node?: unknown;
   };
   type?: unknown;
+  version?: unknown;
 }
 
 function packageMetadata(): PackageMetadata | null {
@@ -172,8 +178,23 @@ async function defaultAdapterFactory(config: {
   secret?: string;
 }): Promise<DoctorAdapter> {
   const { DemosAdapter } = await import("../substrate/index.js");
-  return new DemosAdapter(config);
+  const adapter = new DemosAdapter(config);
+  return {
+    connect: () => adapter.connect(),
+    getAddress: () => adapter.getAddress(),
+    // demosdk resolves nodeCall with the node's `response` field, or with an
+    // error envelope on transport failure; doctor only accepts a block height.
+    getLastBlockNumber: () => adapter.raw.nodeCall("getLastBlockNumber"),
+  };
 }
+
+function isBlockHeight(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+const WINDOWS_CREDENTIAL_FILE_REMEDIATION =
+  "Node reports Windows file modes as 0666 or 0444, so the Node host refuses live credential files there; " +
+  "pass the credential through stdin (-) or an environment variable instead.";
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   return runDoctorForCli(options, []);
@@ -216,10 +237,16 @@ export async function runDoctorForCli(
         }),
   );
 
+  const packageVersion = typeof pkg?.version === "string" ? pkg.version : null;
   checks.push(
-    check("package.version", "pass", "SDK version detected", {
-      data: { version: VERSION },
-    }),
+    packageVersion === VERSION
+      ? check("package.version", "pass", "SDK version matches the installed package", {
+          data: { version: VERSION },
+        })
+      : check("package.version", "fail", "SDK version differs from the installed package", {
+          data: { version: VERSION, packageVersion },
+          remediation: "Reinstall the package so the compiled SDK and package.json versions agree.",
+        }),
   );
 
   checks.push(
@@ -236,19 +263,21 @@ export async function runDoctorForCli(
       file.symlink ? "Credential file is a symbolic link" : "Credential file is not a symbolic link", {
         remediation: file.symlink ? "Use a regular credential file directly." : undefined,
       }));
-    const posix = file.platform !== "win32" && !file.symlink;
-    // Match the Node host's live secret-file policy: exactly 0600 and current UID.
+    // Match the Node host's live secret-file policy on every platform, as the
+    // host has no platform gate: exactly 0600, and the current UID where Node
+    // reports one. Windows ACLs are not checked.
+    const inspected = !file.symlink && file.mode !== undefined;
     const mode = (file.mode ?? 0) & 0o777;
-    checks.push(posix && file.mode !== undefined
+    checks.push(inspected
       ? check(`${prefix}.mode`, mode === 0o600 ? "pass" : "fail",
           mode === 0o600 ? "Credential file mode is 0600" : "Credential file mode is unsafe", {
             data: { mode: mode.toString(8).padStart(4, "0") },
-            remediation: mode === 0o600 ? undefined : "Set the credential file mode to 0600.",
+            remediation: mode === 0o600 ? undefined : file.platform === "win32"
+              ? WINDOWS_CREDENTIAL_FILE_REMEDIATION
+              : "Set the credential file mode to 0600.",
           })
-      : check(`${prefix}.mode`, "skip", file.platform === "win32"
-          ? "Credential file mode check is unavailable on Windows; ACLs were not checked"
-          : "Credential file mode check is unavailable because the file was not opened"));
-    const ownerAvailable = posix && file.currentUid !== undefined && file.ownerUid !== undefined;
+      : check(`${prefix}.mode`, "skip", "Credential file mode check is unavailable because the file was not opened"));
+    const ownerAvailable = !file.symlink && file.currentUid !== undefined && file.ownerUid !== undefined;
     const ownerMatches = file.ownerUid === file.currentUid;
     checks.push(ownerAvailable
       ? check(`${prefix}.owner`, ownerMatches ? "pass" : "fail",
@@ -289,21 +318,53 @@ export async function runDoctorForCli(
     }
 
     if (made) {
+      const needles = [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)];
+      const data = { rpc: redactRpcUrl(options.rpc) };
+      let connected = false;
       try {
         await made.connect();
-        adapter = made;
-        checks.push(
-          check(RPC_REACHABLE, "pass", "Demos RPC is reachable", {
-            data: { rpc: redactRpcUrl(options.rpc) },
-          }),
-        );
+        connected = true;
       } catch (err) {
         checks.push(
           check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
-            detail: sanitizeError(err, [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)]),
+            detail: sanitizeError(err, needles),
             remediation: "Check the RPC URL and network reachability.",
           }),
         );
+      }
+      // connect() only proves an HTTP GET succeeded; any web server passes that.
+      if (connected && !made.getLastBlockNumber) {
+        adapter = made;
+        checks.push(
+          check(RPC_REACHABLE, "warn", "RPC endpoint answered; the adapter cannot confirm it is a Demos node", {
+            data,
+          }),
+        );
+      } else if (connected && made.getLastBlockNumber) {
+        let height: unknown;
+        let failure: string | undefined;
+        try {
+          height = await made.getLastBlockNumber();
+        } catch (err) {
+          failure = sanitizeError(err, needles);
+        }
+        if (isBlockHeight(height)) {
+          adapter = made;
+          checks.push(
+            check(RPC_REACHABLE, "pass", "Demos RPC is reachable and reports a block height", {
+              data: { ...data, lastBlockNumber: height },
+            }),
+          );
+        } else {
+          // Never echo the response: it is untrusted and may carry the RPC URL.
+          checks.push(
+            check(RPC_REACHABLE, "fail", "RPC endpoint did not answer the Demos block-height call", {
+              data,
+              detail: failure ?? "getLastBlockNumber did not return a non-negative integer",
+              remediation: "Check that the RPC URL points at a Demos node.",
+            }),
+          );
+        }
       }
     }
   }
@@ -314,7 +375,7 @@ export async function runDoctorForCli(
     checks.push(check("wallet.identity", "skip", "Offline mode skips wallet connection"));
   } else if (!adapter) {
     checks.push(
-      check("wallet.identity", "skip", "Wallet identity skipped because RPC did not connect"),
+      check("wallet.identity", "skip", "Wallet identity skipped because the Demos RPC check did not pass"),
     );
   } else {
     checks.push(

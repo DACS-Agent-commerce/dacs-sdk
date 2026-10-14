@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
 import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
@@ -6,6 +7,12 @@ import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.j
 
 import { runDoctorForCli } from "../../src/cli/doctor.js";
 import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
+import { VERSION } from "../../src/version.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 describe("dacs doctor", () => {
   it("recognizes native DEM without claiming availability or funding or making offline effects", async () => {
@@ -26,7 +33,8 @@ describe("dacs doctor", () => {
         status: "warn", data: { rail: "pay-dem", known: true },
         summary: "Native DEM rail is known; availability and funding were not checked",
       });
-      for (const id of ["wallet.balance", "wallet.nonce", "storage.binding-resolution", "cost.estimate"]) {
+      for (const id of ["wallet.balance", "wallet.nonce", "storage.binding-resolution", "anchor.completion",
+        "cost.estimate"]) {
         expect(report.checks.find((c) => c.id === id)?.status).toBe("blocked");
       }
       expect(factory).not.toHaveBeenCalled();
@@ -72,11 +80,54 @@ describe("dacs doctor", () => {
     expect(report.exitCode).toBe(1);
   });
 
-  it("does not infer Windows ACL safety from POSIX metadata", async () => {
-    const report = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, platform: "win32" }]);
-    expect(report.checks.find((c) => c.id === "config.wallet-file.mode")).toMatchObject({ status: "skip" });
-    expect(report.checks.find((c) => c.id === "config.wallet-file.mode")?.summary).toContain("unavailable");
-    expect(report.checks.find((c) => c.id === "config.wallet-file.owner")?.status).toBe("skip");
+  it("reports exact credential mode and owner wording", async () => {
+    const safe = await runDoctorForCli({ offline: true }, [inspectedFile]);
+    expect(safe.checks.find((c) => c.id === "config.wallet-file.mode")).toEqual({
+      id: "config.wallet-file.mode", status: "pass", summary: "Credential file mode is 0600",
+      data: { mode: "0600" }, remediation: undefined,
+    });
+    expect(safe.checks.find((c) => c.id === "config.wallet-file.owner")).toEqual({
+      id: "config.wallet-file.owner", status: "pass", summary: "Credential file belongs to the current user",
+      data: { ownerUid: 1000, currentUid: 1000 }, remediation: undefined,
+    });
+    const unsafe = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, mode: 0o100644, ownerUid: 1001 }]);
+    expect(unsafe.checks.find((c) => c.id === "config.wallet-file.mode")).toEqual({
+      id: "config.wallet-file.mode", status: "fail", summary: "Credential file mode is unsafe",
+      data: { mode: "0644" }, remediation: "Set the credential file mode to 0600.",
+    });
+    expect(unsafe.checks.find((c) => c.id === "config.wallet-file.owner")).toMatchObject({
+      status: "fail", remediation: "Use a credential file owned by the current user.",
+    });
+    const link = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, symlink: true,
+      mode: undefined, ownerUid: undefined }]);
+    expect(link.checks.find((c) => c.id === "config.wallet-file.symlink")).toMatchObject({
+      status: "fail", summary: "Credential file is a symbolic link",
+      remediation: "Use a regular credential file directly.",
+    });
+    expect(link.checks.find((c) => c.id === "config.wallet-file.mode")).toMatchObject({
+      status: "skip", summary: "Credential file mode check is unavailable because the file was not opened",
+    });
+  });
+
+  it("applies the host's mode rule to Windows files instead of skipping it", async () => {
+    // Node reports Windows modes as 0666 or 0444, and the host has no platform gate.
+    const adapter = { connect: vi.fn(), getAddress: vi.fn() };
+    const factory = vi.fn(() => adapter);
+    for (const mode of [0o100666, 0o100444]) {
+      const report = await runDoctorForCli({ rpc: "https://node.example", adapterFactory: factory },
+        [{ ...inspectedFile, platform: "win32", mode, currentUid: undefined }]);
+      expect(report.exitCode).toBe(1);
+      expect(report.checks.find((c) => c.id === "config.wallet-file.mode")).toEqual({
+        id: "config.wallet-file.mode", status: "fail", summary: "Credential file mode is unsafe",
+        data: { mode: (mode & 0o777).toString(8).padStart(4, "0") },
+        remediation: "Node reports Windows file modes as 0666 or 0444, so the Node host refuses live " +
+          "credential files there; pass the credential through stdin (-) or an environment variable instead.",
+      });
+      expect(report.checks.find((c) => c.id === "config.wallet-file.owner")).toMatchObject({
+        status: "skip", summary: "Credential file owner check is unavailable",
+      });
+    }
+    expect(factory).not.toHaveBeenCalled();
   });
 
   it("reports owner assessment unavailable without a current UID", async () => {
@@ -226,11 +277,113 @@ describe("dacs doctor", () => {
     );
   });
 
+  it("passes RPC reachability only for a Demos block height", async () => {
+    const getLastBlockNumber = vi.fn(async () => 1234);
+    const report = await runDoctor({
+      rpc: "https://node.example", walletSecret: "secret-value",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "demos-address", getLastBlockNumber }),
+    });
+    expect(report.exitCode).toBe(5);
+    expect(report.checks.find((c) => c.id === "rpc.reachable")).toEqual({
+      id: "rpc.reachable", status: "pass", summary: "Demos RPC is reachable and reports a block height",
+      data: { rpc: "https://node.example/", lastBlockNumber: 1234 },
+    });
+    expect(getLastBlockNumber).toHaveBeenCalledOnce();
+    expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("pass");
+  });
+
+  it.each([
+    ["a generic HTTP 200 body", undefined],
+    ["a string", "12"],
+    ["a negative height", -1],
+    ["a fractional height", 1.5],
+    ["an unsafe integer", 2 ** 53],
+    ["NaN", Number.NaN],
+    ["a node error envelope", { result: 500, response: "Error in nodeCall: " }],
+    ["a transport error envelope", { result: 500, response: new Error("POST https://user:pass@node.example/path-secret") }],
+  ])("fails RPC reachability when the endpoint answers with %s", async (_label, height) => {
+    const rpc = "https://user:pass@node.example/path-secret";
+    const report = await runDoctor({
+      rpc, walletSecret: "secret-value",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => height }),
+    });
+    expect(report.exitCode).toBe(3);
+    expect(report.checks.find((c) => c.id === "rpc.reachable")).toEqual({
+      id: "rpc.reachable", status: "fail", summary: "RPC endpoint did not answer the Demos block-height call",
+      data: { rpc: "https://node.example/[redacted]" },
+      detail: "getLastBlockNumber did not return a non-negative integer",
+      remediation: "Check that the RPC URL points at a Demos node.",
+    });
+    expect(report.checks.find((c) => c.id === "wallet.identity")).toMatchObject({
+      status: "skip", summary: "Wallet identity skipped because the Demos RPC check did not pass",
+    });
+    expect(JSON.stringify(report)).not.toContain("user:pass");
+    expect(JSON.stringify(report)).not.toContain("path-secret");
+  });
+
+  it("redacts a thrown block-height failure", async () => {
+    const report = await runDoctor({
+      rpc: "https://node.example", walletSecret: "secret-value",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused",
+        getLastBlockNumber: async () => { throw new Error("rejected secret-value"); } }),
+    });
+    expect(report.exitCode).toBe(3);
+    expect(report.checks.find((c) => c.id === "rpc.reachable")?.detail).toBe("rejected [redacted]");
+  });
+
+  it("warns instead of passing when an adapter cannot confirm a Demos node", async () => {
+    const report = await runDoctor({
+      rpc: "https://node.example",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused" }),
+    });
+    expect(report.exitCode).toBe(5);
+    expect(report.checks.find((c) => c.id === "rpc.reachable")).toEqual({
+      id: "rpc.reachable", status: "warn",
+      summary: "RPC endpoint answered; the adapter cannot confirm it is a Demos node",
+      data: { rpc: "https://node.example/" },
+    });
+  });
+
+  it.each([
+    ["v20.19.0", "pass"], ["v20.20.1", "pass"], ["v22.12.0", "pass"], ["v22.23.3", "pass"],
+    ["v23.0.0", "pass"], ["v24.1.0", "pass"], ["v26.0.0", "pass"],
+    ["v20.18.9", "fail"], ["v21.7.3", "fail"], ["v22.11.9", "fail"], ["v19.9.0", "fail"], ["not-a-version", "fail"],
+  ])("classifies Node %s as %s", async (nodeVersion, status) => {
+    const report = await runDoctor({ offline: true, nodeVersion });
+    expect(report.checks.find((c) => c.id === "runtime.node")?.status).toBe(status);
+  });
+
+  it("fails when the compiled SDK version differs from package.json", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const raw = actual.readFileSync("package.json", "utf8");
+    expect((JSON.parse(raw) as { version: string }).version).toBe(VERSION);
+    vi.mocked(fs.readFileSync).mockImplementationOnce(() => JSON.stringify({ ...JSON.parse(raw), version: "9.9.9" }));
+    const report = await runDoctor({ offline: true });
+    expect(report.exitCode).toBe(1);
+    expect(report.checks.find((c) => c.id === "package.version")).toEqual({
+      id: "package.version", status: "fail", summary: "SDK version differs from the installed package",
+      data: { version: VERSION, packageVersion: "9.9.9" },
+      remediation: "Reinstall the package so the compiled SDK and package.json versions agree.",
+    });
+    expect((await runDoctor({ offline: true })).checks.find((c) => c.id === "package.version")).toMatchObject({
+      status: "pass", summary: "SDK version matches the installed package", data: { version: VERSION },
+    });
+  });
+
+  it.each(["x402", "evm-erc20"])("classifies %s as needing external config", async (rail) => {
+    const report = await runDoctor({ offline: true, rail });
+    expect(report.checks.find((c) => c.id === "rail.availability")).toMatchObject({
+      status: "warn", summary: "Rail requires external config to validate", data: { rail },
+    });
+  });
+
   it("fails unknown rails", async () => {
     const report = await runDoctor({ offline: true, rail: "mystery" });
 
     expect(report.exitCode).toBe(1);
-    expect(report.checks.find((c) => c.id === "rail.availability")?.status).toBe("fail");
+    expect(report.checks.find((c) => c.id === "rail.availability")).toMatchObject({
+      status: "fail", remediation: "Use pay-dem, x402, evm-erc20, or pay-d402.",
+    });
   });
 
   it("reports pay-d402 as operator_gated (§9.4.4 vocabulary)", async () => {
