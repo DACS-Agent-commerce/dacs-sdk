@@ -38,7 +38,7 @@ const NEW_B = "2222222222222222222222222222222222222222:docs/b.md:dacs-mnemonic-
 
 const COUNTS_TAIL = "File names and fingerprints are not shown.";
 const LISTED_LINE =
-  /^[0-9a-f]{16} (?:[0-9a-f]{40}|\(invalid\)) (?:[A-Za-z0-9._-]{1,64}|\(invalid\)) (?:0|[1-9][0-9]*|\(invalid\)) [1-9][0-9]*$/;
+  /^[0-9a-f]{16} (?:[0-9a-f]{40}|no-commit|\(invalid\)) (?:[A-Za-z0-9._-]{1,64}|\(invalid\)) (?:0|[1-9][0-9]*|\(invalid\)) [1-9][0-9]*$/;
 
 // The fields Gitleaks 8.30.1 writes for each finding in a JSON report. Only the
 // fingerprint is read; every other field holds text that must never be printed.
@@ -238,6 +238,47 @@ describe("Gitleaks finding summary", () => {
     expectNoWorkflowCommand(summary.markdown);
   });
 
+  it("shows `no-commit` for a finding Gitleaks reported without a commit", () => {
+    // Gitleaks 8.30.1 writes `file:rule:line`, and an empty Commit, after some merges' conflict headers.
+    const withoutCommit = (fingerprint: string) => ({ ...finding(fingerprint), Commit: "" });
+    const conflict = "b/src/commitment.ts:generic-api-key:4";
+    const colon = "src/a:b.ts:generic-api-key:5";
+    const short = "generic-api-key:6";
+    const text = JSON.stringify([withoutCommit(conflict), withoutCommit(colon), withoutCommit(short), finding(conflict)]);
+    const summary = summarizeGitleaksReport({ text }, "failure");
+    expect(countsLine(summary.markdown)).toBe(
+      `**4 findings** under 3 IDs: 3 malformed findings, 0 IDs omitted from the list below. ${COUNTS_TAIL}`,
+    );
+    // A fingerprint reported both with and without a commit is checked as one with a commit.
+    expect(listedLines(summary.markdown)).toEqual(
+      byId([
+        `${idOf(conflict)} ${INVALID} ${INVALID} ${INVALID} 2`,
+        `${idOf(colon)} no-commit generic-api-key 5 1`,
+        `${idOf(short)} ${INVALID} ${INVALID} ${INVALID} 1`,
+      ]),
+    );
+    expect(listedLines(summarizeGitleaksReport({ text: JSON.stringify([withoutCommit(conflict)]) }, "failure").markdown)).toEqual([
+      `${idOf(conflict)} no-commit generic-api-key 4 1`,
+    ]);
+    expect(summary.markdown).toContain("The commit shows as `no-commit` when Gitleaks reported the finding without one");
+    expect(summary.markdown).not.toContain("commitment");
+  });
+
+  it("lists a line that fits its byte limit exactly, and never goes over it", () => {
+    const report = reportOf([NEW_A]);
+    const full = summarizeGitleaksReport({ text: report }, "failure").markdown;
+    expect(listedLines(full)).toEqual([expectedLine(NEW_A)]);
+    const exact = summarizeGitleaksReport({ text: report }, "failure", Buffer.byteLength(full)).markdown;
+    expect(exact).toBe(full);
+    // One byte less: "0 IDs omitted" is a byte wider than "1 ID omitted".
+    for (const limit of [Buffer.byteLength(full) - 1, Buffer.byteLength(full) - 2]) {
+      const short = summarizeGitleaksReport({ text: report }, "failure", limit).markdown;
+      expect(Buffer.byteLength(short)).toBeLessThanOrEqual(limit);
+      expect(listedLines(short)).toEqual([]);
+      expect(countsLine(short)).toContain("1 ID omitted");
+    }
+  });
+
   it("stops listing at its byte limit and still gives every count", () => {
     // Short and long lines, so that at some of these limits a shorter line that would
     // still fit follows the cut: the list must stop there, not skip ahead.
@@ -267,12 +308,16 @@ describe("Gitleaks finding summary", () => {
     const control = `${SHA}:src/\u001b]0;x\u0007\u0085\u007f.ts:generic-api-key:7`;
     const quoted = `"${SHA}:src/a.ts":generic-api-key:8`;
     const del = `${SHA}:src/a\u007f.ts:generic-api-key:9`;
-    const listing = listFingerprintsLocally({ text: reportOf([NEW_B, KNOWN, NEW_A, KNOWN, control, quoted, del]) });
+    // A backslash is escaped too, so a file name can't pass for an escape.
+    const backslash = `${SHA}:src/a\\u0007\u0007.ts:generic-api-key:10`;
+    const listing = listFingerprintsLocally({
+      text: reportOf([NEW_B, KNOWN, NEW_A, KNOWN, control, quoted, del, backslash]),
+    });
     expect(listing.ok).toBe(true);
     expect(listing.text).toMatch(/^[\x20-\x7e\n]*$/);
     const lines = listing.text.split("\n");
     expect(lines[0]).toBe(
-      "7 findings under 6 IDs, 1 malformed finding. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.",
+      "8 findings under 7 IDs, 1 malformed finding. Each line is the ID, then the fingerprint; a quoted fingerprint is a JSON string.",
     );
     expect(lines.slice(1, -1)).toEqual(
       byId([
@@ -282,6 +327,7 @@ describe("Gitleaks finding summary", () => {
         `${idOf(control)} "${SHA}:src/\\u001b]0;x\\u0007\\u0085\\u007f.ts:generic-api-key:7"`,
         `${idOf(quoted)} "\\u0022${SHA}:src/a.ts\\u0022:generic-api-key:8"`,
         `${idOf(del)} "${SHA}:src/a\\u007f.ts:generic-api-key:9"`,
+        `${idOf(backslash)} "${SHA}:src/a\\u005cu0007\\u0007.ts:generic-api-key:10"`,
       ]),
     );
     expectNoFindingDetails(listing.text);
@@ -527,6 +573,23 @@ describe("Gitleaks finding summary", () => {
         read.mockRestore();
       }
     }, 20_000);
+
+    it("fails closed on a report that holds more than its size said", async () => {
+      const handle = await open(stepSummary, "r");
+      const fileHandle = Object.getPrototypeOf(handle);
+      await handle.close();
+      // As if the report grew between the size check and the read.
+      const stat = vi.spyOn(fileHandle, "stat").mockResolvedValue({ isFile: () => true, size: 2 });
+      try {
+        await writeFile(reportPath, "[ ]");
+        expect(await readGitleaksReport(reportPath, 3)).toEqual({ text: "[ ]" });
+        expect(await readGitleaksReport(reportPath, 2)).toEqual({
+          problem: "the report is over 64 MiB, so it was not read",
+        });
+      } finally {
+        stat.mockRestore();
+      }
+    });
 
     it("fails closed when the report can't be read", async () => {
       const handle = await open(stepSummary, "r");

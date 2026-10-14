@@ -13,6 +13,8 @@ const MAX_REPORT_BYTES = 64 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 900 * 1024;
 // Shown in place of a commit, rule or line that fails its check.
 const INVALID = "(invalid)";
+// Shown in place of the commit of a finding that Gitleaks reported without one.
+const NO_COMMIT = "no-commit";
 const COMMIT = /^[0-9a-f]{40}$/;
 const RULE = /^[A-Za-z0-9._-]{1,64}$/;
 const LINE = /^(?:0|[1-9][0-9]*)$/;
@@ -48,18 +50,20 @@ export function findingId(fingerprint) {
 
 // A Gitleaks git fingerprint is `commit:file:rule:line`, and the file can contain
 // colons, so the commit is read from the left and the rule and line from the right.
-// The file is never shown. The commit, rule and line are shown as Gitleaks wrote
-// them if they pass their checks, which bound their shape, not their source.
-function checkedFields(fingerprint) {
+// A finding that Gitleaks reported without a commit, as it does in some merges, has
+// a `file:rule:line` fingerprint. The file is never shown. The commit, rule and line
+// are shown as Gitleaks wrote them if they pass their checks, which bound their
+// shape, not their source.
+function checkedFields(fingerprint, noCommit) {
   const first = fingerprint.indexOf(":");
   const last = fingerprint.lastIndexOf(":");
   const beforeLast = last > 0 ? fingerprint.lastIndexOf(":", last - 1) : -1;
-  const shaped = first >= 0 && beforeLast > first;
-  const commit = shaped ? fingerprint.slice(0, first) : "";
+  const shaped = noCommit ? beforeLast > 0 : first >= 0 && beforeLast > first;
+  const commit = shaped && !noCommit ? fingerprint.slice(0, first) : "";
   const rule = shaped ? fingerprint.slice(beforeLast + 1, last) : "";
   const line = shaped ? fingerprint.slice(last + 1) : "";
   const fields = {
-    commit: COMMIT.test(commit) ? commit : INVALID,
+    commit: noCommit && shaped ? NO_COMMIT : COMMIT.test(commit) ? commit : INVALID,
     rule: RULE.test(rule) ? rule : INVALID,
     line: LINE.test(line) && Number.isSafeInteger(Number(line)) ? line : INVALID,
   };
@@ -67,8 +71,8 @@ function checkedFields(fingerprint) {
 }
 
 // Only a JSON array is a report; Gitleaks writes [] when there are no findings.
-// Each finding's fingerprint is read. Its Secret, Match and Line fields, and its
-// commit metadata, are never read.
+// Each finding's fingerprint is read, and whether its Commit is empty. Its Secret,
+// Match and Line fields, and the rest of its commit metadata, are never read.
 export function findingsFromReport(text) {
   let report;
   try {
@@ -86,14 +90,16 @@ export function findingsFromReport(text) {
     if (typeof fingerprint !== "string" || fingerprint === "") {
       throw new Error(`finding ${index + 1} has no fingerprint`);
     }
-    counts.set(fingerprint, (counts.get(fingerprint) ?? 0) + 1);
+    const noCommit = Object.hasOwn(finding, "Commit") && finding.Commit === "";
+    const known = counts.get(fingerprint) ?? { findings: 0, noCommit: true };
+    counts.set(fingerprint, { findings: known.findings + 1, noCommit: known.noCommit && noCommit });
   });
   const entries = [...counts]
-    .map(([fingerprint, findings]) => ({
+    .map(([fingerprint, { findings, noCommit }]) => ({
       id: findingId(fingerprint),
       fingerprint,
       findings,
-      ...checkedFields(fingerprint),
+      ...checkedFields(fingerprint, noCommit),
     }))
     .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   const malformed = entries.reduce((total, entry) => total + (entry.malformed ? entry.findings : 0), 0);
@@ -131,7 +137,7 @@ function findingsMarkdown(report, scanPassed, lines, omitted) {
           "Gitleaks fails the scan step for findings, and also when it stops on an error. If the step's log says `partial scan`, findings may be missing from this list.",
           "",
         ]),
-    "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
+    "Each line is `id commit rule line findings`. The commit, rule and line are shown as Gitleaks wrote them in the fingerprint (`commit:file:rule:line`); one that fails its check shows as `(invalid)`. The commit shows as `no-commit` when Gitleaks reported the finding without one (`file:rule:line`), as it does in some merges. The ID is the first 16 hex digits of the fingerprint's SHA-256, and `findings` counts the findings that share it. Compare the IDs and counts with the last run whose findings were all reviewed. The list stops at 900 KiB. To review omitted IDs, and to get the fingerprints for `.gitleaksignore`, reproduce the scan locally as `docs/public-repository-cutover.md` describes.",
     "",
     "```text",
     ...lines,
@@ -165,8 +171,10 @@ export function summarizeGitleaksReport(report, scanOutcome, maxBytes = MAX_OUTP
       ].join("\n"),
     };
   }
-  // Reserve room for the widest counts, then list IDs while they fit.
-  let room = maxBytes - Buffer.byteLength(findingsMarkdown(parsed, scanPassed, [], parsed.entries.length));
+  // Reserve room for the widest counts, then list IDs while they fit. "0 IDs" is wider
+  // than "1 ID", so reserve for at least 2.
+  const widestOmitted = Math.max(parsed.entries.length, 2);
+  let room = maxBytes - Buffer.byteLength(findingsMarkdown(parsed, scanPassed, [], widestOmitted));
   const lines = [];
   for (const { id, commit, rule, line, findings } of parsed.entries) {
     const text = `${id} ${commit} ${rule} ${line} ${findings}`;
