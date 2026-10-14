@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Checks that this machine's git and the given Gitleaks still find what the secret-scan
+# workflows rely on, with the job's own options:
+#
+#   LOG_OPTS="<git log options>" scripts/secret-scan-self-test.sh <gitleaks>
+#
+# It builds a repository with one marker for each case, scans it with scripts/secret-scan.sh
+# and a rule that matches only the markers, and fails unless Gitleaks reports exactly the
+# expected fingerprints. A git or Gitleaks update that changes what the scans see, or the
+# fingerprints to pin, fails here before the real scan runs.
+set -euo pipefail
+
+gitleaks=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+scan=$(cd "$(dirname "$0")" && pwd)/secret-scan.sh
+case "$LOG_OPTS" in
+  *" HEAD") pull_requests=false ;;
+  *" --all") pull_requests=true ;;
+  *) echo "self-test: LOG_OPTS must end with HEAD or --all" >&2; exit 1 ;;
+esac
+temp=$(mktemp -d)
+trap 'rm -rf "$temp"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
+export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+
+cat > "$temp/markers.toml" <<'EOF'
+title = "secret scan self-test"
+
+[[rules]]
+id = "marker"
+description = "self-test marker"
+regex = '''marker-[a-z-]+'''
+EOF
+printf '{{ range . }}{{ .Fingerprint }}\n{{ end }}' > "$temp/fingerprints.tmpl"
+
+commit_file() { # file text message
+  printf '%s\n' "$2" > "$1"
+  git add --all
+  git commit -q -m "$3"
+}
+
+# The fingerprints Gitleaks reports for the repository in the working directory, one per line.
+fingerprints() { # report
+  bash "$scan" "$gitleaks" --config="$temp/markers.toml" --exit-code=0 --no-banner \
+    --report-format=template --report-template="$temp/fingerprints.tmpl" --report-path="$1"
+  LC_ALL=C sort "$1"
+}
+
+mkdir "$temp/repo"
+cd "$temp/repo"
+git init -q -b main
+printf 'base\n' > conflict.txt
+printf 'base\n' > commitment.txt
+ln -s README link.cfg
+commit_file README fixture base
+commit_file control.txt marker-control control
+control=$(git rev-parse HEAD)
+# A symlink turned into a regular file: a type change.
+rm link.cfg
+commit_file link.cfg marker-typechange "type change"
+typechange=$(git rev-parse HEAD)
+# A path that .gitattributes marks as binary.
+printf 'notes.cfg -diff\n' > .gitattributes
+commit_file notes.cfg marker-attributes attributes
+attributes=$(git rev-parse HEAD)
+# A conflict whose resolution adds a line neither parent has. Gitleaks reads its file as b/<path>.
+git checkout -q -b side
+commit_file conflict.txt side side
+git checkout -q main
+commit_file conflict.txt main main
+! git merge -q side > /dev/null 2>&1
+commit_file conflict.txt marker-conflict "resolve conflict"
+conflict=$(git rev-parse HEAD)
+# A merge without conflicts that also adds a file.
+git checkout -q -b side2
+commit_file side2.txt side2 side2
+git checkout -q main
+commit_file main2.txt main2 main2
+git merge -q --no-ff --no-commit side2 > /dev/null 2>&1
+commit_file merged.txt marker-merge "merge side2"
+merge=$(git rev-parse HEAD)
+# A conflict in a path containing "commit": Gitleaks 8.30.1 drops the merge's commit from the
+# conflicted file's fingerprint and from every later file of that merge.
+git checkout -q -b side3
+commit_file commitment.txt side3 side3
+git checkout -q main
+commit_file commitment.txt main3 main3
+! git merge -q side3 > /dev/null 2>&1
+printf 'marker-later\n' > later.txt
+commit_file commitment.txt marker-no-commit "resolve commitment"
+# A commit that only a pull request ref reaches, as GitHub serves refs/pull/<number>/head.
+git checkout -q -b pull
+commit_file pull.txt marker-pull-request "pull request"
+pull=$(git rev-parse HEAD)
+git update-ref refs/pull/7/head HEAD
+git checkout -q main
+git branch -q -D pull side side2 side3
+
+{
+  echo "$control:control.txt:marker:1"
+  echo "$typechange:link.cfg:marker:1"
+  echo "$attributes:notes.cfg:marker:1"
+  echo "$conflict:b/conflict.txt:marker:1"
+  echo "$merge:merged.txt:marker:1"
+  echo "b/commitment.txt:marker:1"
+  echo "later.txt:marker:1"
+  if [ "$pull_requests" = true ]; then echo "$pull:pull.txt:marker:1"; fi
+} | LC_ALL=C sort > "$temp/expected"
+fingerprints "$temp/found" > "$temp/found.sorted"
+if ! diff -u "$temp/expected" "$temp/found.sorted"; then
+  echo "self-test: Gitleaks did not report exactly the expected fingerprints (- expected, + found)" >&2
+  exit 1
+fi
+
+# An octopus merge that adds a file: the scan must refuse it, since Gitleaks can't see the file.
+mkdir "$temp/octopus"
+cd "$temp/octopus"
+git init -q -b main
+commit_file README fixture base
+for branch in o1 o2 o3; do
+  git checkout -q -b "$branch" main
+  commit_file "$branch.txt" "$branch" "$branch"
+done
+git checkout -q main
+git merge -q --no-commit o1 o2 o3 > /dev/null 2>&1
+commit_file octopus.txt marker-octopus octopus
+if fingerprints "$temp/octopus-found" > /dev/null 2>&1 || [ -e "$temp/octopus-found" ]; then
+  echo "self-test: the scan did not refuse an octopus merge before running Gitleaks" >&2
+  exit 1
+fi
+
+echo "Secret scan self-test passed: $(wc -l < "$temp/expected") fingerprints as expected; an octopus merge is refused."

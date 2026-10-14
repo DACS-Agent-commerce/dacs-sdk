@@ -80,15 +80,27 @@ reported by that run rather than creating a similarly named placeholder.
   serving every pull request's commits, closed and fork ones included, under
   `refs/pull/<number>/head`, and the audit fetches them. Both scans read what
   each commit's patch adds, including paths marked `-diff` in `.gitattributes`
-  and a merge's own changes: its remerge diff, which is what the merge changed
-  from git's automatic merge of its parents. Their limits:
+  and a two-parent merge's own changes: its remerge diff, which is what the
+  merge changed from git's automatic merge of its parents. Both run
+  `scripts/secret-scan.sh`. Their limits:
   - they scan file contents only. Commit messages, author and committer names
     and emails, branch and tag names, and annotated tag messages are not
     scanned; review them in the pull request;
+  - git shows no remerge diff for an octopus merge (one with more than two
+    parents), so nothing it changes itself would be scanned. Each scan fails
+    without running Gitleaks if the history it scans has one, and lists it;
+    merge one branch at a time instead;
   - git comes from the `ubuntu-24.04` runner image, which GitHub updates. The
     merge scan needs git 2.36 or later. Gitleaks 8.30.1 logs a git error but
     still passes, so each scan first runs the same `git log` and fails if git
-    exits with an error or writes anything to stderr;
+    exits with an error or writes anything to stderr, and fails afterwards if
+    Gitleaks logged one. If git warns that it skipped rename detection, add
+    `-l<n>`, with the limit git suggests, to both workflows' `LOG_OPTS`;
+  - before scanning, each scan runs `scripts/secret-scan-self-test.sh`: it
+    builds a repository with one case of each kind above, scans it with the
+    job's git, Gitleaks and options, and fails unless Gitleaks reports exactly
+    the expected fingerprints. A git or Gitleaks update that changes what the
+    scans see, or the fingerprints to pin, turns the scans red;
   - the audit runs once a day (04:17 UTC) and when dispatched from **Actions**.
     GitHub can delay a scheduled run, or drop it when Actions is busy, so a
     secret pushed to a branch can go unreported for a day or more. A branch
@@ -109,7 +121,8 @@ reported by that run rather than creating a similarly named placeholder.
   A file name can itself hold a secret, so they never show a fingerprint's file
   segment: besides the ID and the count, they show only the commit SHA, rule ID
   and line number, as Gitleaks wrote them in the fingerprint. A field that
-  fails its check shows as `(invalid)`. Gitleaks writes the report in the same
+  fails its check shows as `(invalid)`, and the commit of a finding that
+  Gitleaks reported without one (see below) as `no-commit`. Gitleaks writes the report in the same
   job, from the checked-out history and with `--redact=100`. A report replaced
   by someone who controls the job is outside what this step can protect: they
   could print anything anyway.
@@ -138,34 +151,55 @@ reported by that run rather than creating a similarly named placeholder.
   reproduction.
 
   The local reproduction also gives the exact fingerprint for
-  `.gitleaksignore`. Run Gitleaks 8.30.1 in a fresh clone, which checks out
-  `main` and has every branch and tag, after fetching the pull request heads,
-  as the audit does. Ignore your own git configuration: settings such as
-  `log.abbrevCommit` or `color.ui` change what Gitleaks reads.
+  `.gitleaksignore`. Run it in a fresh clone, which checks out `main` and has
+  every branch and tag, after fetching the pull request heads, as the audit
+  does. It needs Gitleaks 8.30.1 and git 2.36 or later; an older git can't
+  show merges, and the self-test fails on it. Ignore your own git
+  configuration: settings such as `log.abbrevCommit` or `color.ui` change what
+  Gitleaks reads.
 
   ```sh
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  export LOG_OPTS="--full-history --text --remerge-diff --all"
   git clone https://github.com/DACS-Agent-commerce/dacs-sdk.git dacs-sdk-audit
   cd dacs-sdk-audit
   git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'
-  gitleaks git . --log-opts="--full-history --text --remerge-diff --all" \
-    --redact=100 --no-banner \
+  test "$(gitleaks version)" = 8.30.1
+  bash scripts/secret-scan-self-test.sh "$(command -v gitleaks)"
+  bash scripts/secret-scan.sh "$(command -v gitleaks)" --redact=100 --no-banner \
     --report-format=json --report-path=../gitleaks-report.json
   node scripts/gitleaks-fingerprint-summary.mjs \
     --report ../gitleaks-report.json --local
   ```
 
-  The last command prints each fingerprint after its ID, and refuses to run in
-  GitHub Actions. Unlike the run, it reads a report over 64 MiB, up to about
-  512 MiB, Node's limit on a string; a larger report fails closed. A
-  fingerprint can contain a secret, so keep the output and the report private,
-  and delete them afterwards. A finding in a merge's conflict resolution has a
-  file segment that starts with `b/`; pin it as Gitleaks wrote it. An ID from
-  the run that the reproduction doesn't list
-  belongs to a branch that has changed since, or to a finding that has since
-  been pinned in `main`'s `.gitleaksignore` or dropped by a change to its
-  `.gitleaks.toml`; look up its commit on GitHub, and dispatch a new run to
-  compare.
+  Stop if any command before the scan fails. The scan exits 1 for findings
+  too, but if it printed `Nothing was scanned` or `The scan is partial`, its
+  report is missing or incomplete. The last command prints each fingerprint
+  after its ID, and refuses to run in GitHub Actions. Unlike the run, it reads
+  a report over 64 MiB, up to about 512 MiB, Node's limit on a string; a
+  larger report fails closed. A fingerprint can contain a secret, so keep the
+  output and the report private, and delete them afterwards. An ID from the
+  run that the reproduction doesn't list belongs to a branch that has changed
+  since, or to a finding that has since been pinned in `main`'s
+  `.gitleaksignore` or dropped by a change to its `.gitleaks.toml`, unless
+  your local scan failed; look up its commit on GitHub, and dispatch a new
+  run to compare.
+
+  A finding in a merge's conflict resolution has a file segment that starts
+  with `b/`. Gitleaks 8.30.1 also drops the commit from a fingerprint when
+  git's `remerge CONFLICT` line before that file contains the text `commit`,
+  as it does for a path such as `src/negotiate/commitment.ts` or a parent
+  whose subject mentions a commit. That finding, and every later file of the
+  same merge, then has a `file:rule:line` fingerprint. Pin a `b/` one as
+  Gitleaks wrote it, directly under a comment that names the merge it was
+  reviewed in (`# Reviewed in merge <40-hex commit>: ...`). Like any entry
+  without a commit it matches that file, rule and line in every commit, but
+  only Gitleaks' reading of a conflict resolution has a `b/` file segment. A
+  commit-less finding in a later file of the merge has the file's own path,
+  so an entry for it would hide that file, rule and line everywhere; don't
+  pin it. On a pull request branch, redo the merge so that it changes nothing
+  beyond its conflict resolutions. On `main`, the scans stay red until the
+  maintainers decide.
 - Enable GitHub private vulnerability reporting and verify that the
   **Security → Report a vulnerability** route is visible when logged out.
 - Enable code scanning when an appropriate TypeScript configuration is ready;
@@ -180,6 +214,11 @@ reported by that run rather than creating a similarly named placeholder.
       findings in `.gitleaksignore`, merged before #345, which adds the
       all-branch audit. Without those four entries the audit would be red for
       them from its first run.
+- [ ] Before #345 merges, get the entries that open pull requests pin in
+      their own `.gitleaksignore` reviewed onto `main`, as #346 did, or merge
+      those pull requests first. The audit scans every pull request head with
+      `main`'s `.gitleaksignore`, so it reports their findings until then.
+      #332 is one: its head reaches findings that only its own branch pins.
 - [ ] After #345 merges, dispatch **Actions → Secret scan (all branches)** on
       `main`. Its first run is also the first Gitleaks scan of every pull
       request head. Review every finding it lists, rotate any real credential,
@@ -204,8 +243,15 @@ reported by that run rather than creating a similarly named placeholder.
 - Keep `.gitleaksignore` entries pinned to exact reviewed fingerprints that
   include the commit (`commit:file:rule:line`). An entry without the commit
   (`file:rule:line`) would match that file, rule and line in every commit,
-  including a later leak. Never replace them with broad path, rule, regex, or
-  commit allowlists.
+  including a later leak. The only exception is a conflict resolution that
+  Gitleaks reports without a commit, pinned as the audit section above
+  describes. Never replace them with broad path, rule, regex, or commit
+  allowlists.
+- A pin in a pull request's own `.gitleaksignore` keeps that pull request's
+  `secret scan` green, but the audit reads only `main`'s. Get every reviewed
+  pin onto `main` before relying on a green audit, including the pins of a
+  pull request closed without merging: its head stays on GitHub, and the
+  audit keeps scanning it.
 - Supply live credentials only through environment variables or a managed
   secret store; never put funded configuration in examples, fixtures, issues,
   pull requests, logs, or workflow artifacts.

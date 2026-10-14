@@ -20,12 +20,21 @@ function stepsOf(workflow: string) {
   const lines = workflow.split("\n");
   expect(lines.filter((line) => line.trim() === "steps:")).toEqual(["    steps:"]);
   const steps: string[][] = [];
-  for (const line of lines.slice(lines.indexOf("    steps:") + 1)) {
+  const rest = lines.slice(lines.indexOf("    steps:") + 1);
+  for (const line of rest) {
     if (line.startsWith("      - ")) steps.push([line]);
     else if (line === "" || line.startsWith("        ")) steps.at(-1)?.push(line);
     else break;
   }
+  // The steps are the end of the file: no second job, and nothing after them.
+  expect(steps.flat()).toHaveLength(rest.length);
   return steps.map((step) => step.join("\n").trimEnd());
+}
+
+// Everything before the steps, without comments: the triggers, token, job name and image.
+function headerOf(workflow: string) {
+  const lines = workflow.split("\n");
+  return lines.slice(0, lines.indexOf("    steps:")).filter((line) => line !== "" && !line.trimStart().startsWith("#"));
 }
 
 function stepNames(workflow: string) {
@@ -61,18 +70,56 @@ function valueOf(step: string, key: string) {
     .trimEnd();
 }
 
-// Gitleaks logs a git error but still passes, so each scan first runs the same log itself.
+// Each scan first tests this git and Gitleaks on known history, then scans with the same script.
 function scanScript(gitleaksArguments: string) {
   return [
-    'if ! git log -p -U0 $LOG_OPTS > /dev/null 2> "$RUNNER_TEMP/git-log.err" || [ -s "$RUNNER_TEMP/git-log.err" ]; then',
-    '  cat "$RUNNER_TEMP/git-log.err"',
-    "  exit 1",
-    "fi",
-    `"$RUNNER_TEMP/gitleaks" git . --log-opts="$LOG_OPTS" ${gitleaksArguments}`,
+    'bash scripts/secret-scan-self-test.sh "$RUNNER_TEMP/gitleaks"',
+    `bash scripts/secret-scan.sh "$RUNNER_TEMP/gitleaks" ${gitleaksArguments}`,
   ].join("\n");
 }
 
 describe("secret scan workflows", () => {
+  it("keep their triggers, read-only token, job name and image, and let no step fail open", () => {
+    // `secret scan` is the check name the ruleset requires.
+    expect(headerOf(requiredWorkflow)).toEqual([
+      "name: Secret scan",
+      "on:",
+      "  push:",
+      "    branches: [main]",
+      "  pull_request:",
+      "  workflow_dispatch:",
+      "permissions:",
+      "  contents: read",
+      "jobs:",
+      "  secret-scan:",
+      "    name: secret scan",
+      "    runs-on: ubuntu-24.04",
+    ]);
+    // Daily at 04:17 UTC, as the docs say, and when dispatched.
+    expect(headerOf(auditWorkflow)).toEqual([
+      "name: Secret scan (all branches)",
+      "on:",
+      "  schedule:",
+      "    - cron: '17 4 * * *'",
+      "  workflow_dispatch:",
+      "permissions:",
+      "  contents: read",
+      "jobs:",
+      "  secret-scan-all-branches:",
+      "    name: secret scan (all branches)",
+      "    runs-on: ubuntu-24.04",
+    ]);
+    for (const workflow of [requiredWorkflow, auditWorkflow]) {
+      // The default shell, `bash -e`, stops a step at its first failing command.
+      expect(workflow).not.toMatch(/continue-on-error|shell:|defaults:|permissions:.*write|: write/);
+      for (const step of stepsOf(workflow)) {
+        expect(step.split("\n").filter((line) => /^ {6}(?:- | {2})if: /.test(line))).toEqual(
+          valueOf(step, "name") === "List findings" ? ["        if: ${{ !cancelled() && steps.scan.outcome != 'skipped' }}"] : [],
+        );
+      }
+    }
+  });
+
   it("pin the same Gitleaks release in both workflows and in .gitleaks.toml", async () => {
     const config = await readFile(join(root, ".gitleaks.toml"), "utf8");
     const minVersion = /^minVersion = "([^"]+)"$/m.exec(config)?.[1];
@@ -145,22 +192,55 @@ describe("secret scan workflows", () => {
     );
   });
 
-  it("documents a local reproduction that fetches and scans what the audit does", async () => {
+  it("documents a local reproduction that checks and scans what the audit does", async () => {
     const docs = await readFile(join(root, "docs/public-repository-cutover.md"), "utf8");
+    const install = valueOf(stepNamed(auditWorkflow, "Install pinned Gitleaks"), "GITLEAKS_VERSION");
     expect(docs).toContain("\n  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1\n");
+    expect(docs).toContain(`\n  export LOG_OPTS="${AUDIT_LOG_OPTS}"\n`);
     expect(docs).toContain(`\n  ${valueOf(stepNamed(auditWorkflow, "Fetch pull request heads"), "run")}\n`);
-    expect(docs).toContain(`\n  gitleaks git . --log-opts="${AUDIT_LOG_OPTS}" \\\n`);
+    expect(docs).toContain(`\n  test "$(gitleaks version)" = ${install?.replaceAll('"', "")}\n`);
+    expect(docs).toContain('\n  bash scripts/secret-scan-self-test.sh "$(command -v gitleaks)"\n');
+    expect(docs).toContain('\n  bash scripts/secret-scan.sh "$(command -v gitleaks)" --redact=100 --no-banner \\\n');
   });
 
-  it("pins every .gitleaksignore entry to a commit", async () => {
-    const entries = (await readFile(join(root, ".gitleaksignore"), "utf8"))
-      .split("\n")
-      .filter((line) => line.trim() !== "" && !line.startsWith("#"));
-    expect(entries.length).toBeGreaterThan(0);
-    // A `file:rule:line` entry would match that file, rule and line in every commit.
-    for (const entry of entries) expect(entry).toMatch(/^[0-9a-f]{40}:.+:[A-Za-z0-9._-]+:[0-9]+$/);
+  it("pins every .gitleaksignore entry to a commit, or a conflict resolution to its reviewed merge", async () => {
+    const lines = (await readFile(join(root, ".gitleaksignore"), "utf8")).split("\n");
+    expect(lines.filter((line) => line.trim() !== "" && !line.startsWith("#")).length).toBeGreaterThan(0);
+    expect(ignoreEntryProblems(lines)).toEqual([]);
+  });
+
+  it("accepts an entry without a commit only for a b/ file under a comment naming its merge", () => {
+    const merge = "c".repeat(40);
+    expect(ignoreEntryProblems([`${"a".repeat(40)}:src/a:b.ts:generic-api-key:4`, ""])).toEqual([]);
+    expect(
+      ignoreEntryProblems([`# Reviewed in merge ${merge}: fixture`, "b/src/commitment.ts:generic-api-key:4"]),
+    ).toEqual([]);
+    const rejected = [
+      ["b/src/commitment.ts:generic-api-key:4"],
+      ["# Reviewed in merge abc", "b/src/commitment.ts:generic-api-key:4"],
+      [`# Reviewed in merge ${merge}`, "", "b/src/commitment.ts:generic-api-key:4"],
+      [`# Reviewed in merge ${merge}`, "src/commitment.ts:generic-api-key:4"],
+      [`# Reviewed in merge ${merge}`, "later.txt:generic-api-key:4"],
+      [`${"A".repeat(40)}:src/a.ts:generic-api-key:4`],
+      [`${"a".repeat(40)}:src/a.ts:generic-api-key:`],
+    ];
+    for (const lines of rejected) expect(ignoreEntryProblems(lines)).toEqual([lines.at(-1)]);
   });
 });
+
+// The .gitleaksignore entries that are neither `commit:file:rule:line` nor a commit-less
+// `b/file:rule:line`, which Gitleaks writes for some merges' conflict resolutions, directly
+// under a comment that names the merge it was reviewed in. Any entry without a commit matches
+// that file, rule and line in every commit.
+function ignoreEntryProblems(lines: string[]) {
+  return lines.filter((line, index) => {
+    if (line.trim() === "" || line.startsWith("#")) return false;
+    if (/^[0-9a-f]{40}:.+:[A-Za-z0-9._-]+:[0-9]+$/.test(line)) return false;
+    return !(
+      /^b\/.+:[A-Za-z0-9._-]+:[0-9]+$/.test(line) && /^# Reviewed in merge [0-9a-f]{40}\b/.test(lines[index - 1] ?? "")
+    );
+  });
+}
 
 // Gitleaks scans the added lines of the patches `git log -p -U0 <log-opts>` prints, so each
 // case below must show up as an added line under both workflows' options.
@@ -284,5 +364,135 @@ describe("secret scan git log options", () => {
     // The workflow's `git fetch --no-tags origin '+refs/pull/*/head:refs/pull/*/head'`.
     git(clone, ["fetch", "-q", "--no-tags", "origin", "+refs/pull/*/head:refs/pull/*/head"]);
     expect(scanned(clone, AUDIT_LOG_OPTS)).toEqual([...markers, pullOnly]);
+  });
+
+  describe("scripts", () => {
+    const scanScriptPath = join(root, "scripts/secret-scan.sh");
+    const selfTestPath = join(root, "scripts/secret-scan-self-test.sh");
+    let stub: string;
+    let calls: string;
+
+    // A stand-in for Gitleaks: records its arguments, writes STUB_REPORT to --report-path,
+    // STUB_STDERR to stderr, and exits with STUB_STATUS.
+    beforeAll(async () => {
+      stub = join(directory, "gitleaks-stub");
+      calls = join(directory, "gitleaks-calls");
+      await writeFile(
+        stub,
+        [
+          "#!/bin/sh",
+          'printf "%s\\n" "$@" >> "$STUB_CALLS"',
+          'for argument; do case "$argument" in --report-path=*) printf "%s" "$STUB_REPORT" > "${argument#--report-path=}";; esac; done',
+          'printf "%s" "$STUB_STDERR" >&2',
+          'exit "$STUB_STATUS"',
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+    });
+
+    function runScript(cwd: string, script: string, args: string[], env: Record<string, string>) {
+      return spawnSync("bash", [script, ...args], {
+        cwd,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH ?? "",
+          TMPDIR: tmpdir(),
+          GIT_CONFIG_GLOBAL: devNull,
+          GIT_CONFIG_NOSYSTEM: "1",
+          STUB_CALLS: calls,
+          STUB_REPORT: "",
+          STUB_STDERR: "",
+          STUB_STATUS: "0",
+          ...env,
+        },
+      });
+    }
+
+    async function stubCalls() {
+      const text = existsSync(calls) ? await readFile(calls, "utf8") : "";
+      await rm(calls, { force: true });
+      return text.split("\n").filter((line) => line !== "");
+    }
+
+    it("runs Gitleaks on a clean history with the job's options, and keeps its exit status", async () => {
+      for (const status of ["0", "1"]) {
+        const result = runScript(origin, scanScriptPath, [stub, "--no-banner"], {
+          LOG_OPTS: REQUIRED_LOG_OPTS,
+          STUB_STATUS: status,
+        });
+        expect(result.status).toBe(Number(status));
+        expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`, "--no-banner"]);
+      }
+    });
+
+    it("fails without running Gitleaks on a git error, on anything git writes to stderr, or on an octopus merge", async () => {
+      const badRevision = runScript(origin, scanScriptPath, [stub], { LOG_OPTS: "--full-history --text --remerge-diff no-such-ref" });
+      expect(badRevision.status).toBe(1);
+      expect(badRevision.stderr).toContain("no-such-ref");
+      // A trace is the simplest way to make git write to stderr and still succeed.
+      const stderr = runScript(origin, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, GIT_TRACE: "1" });
+      expect(stderr.status).toBe(1);
+      expect(stderr.stderr).toContain("Nothing was scanned: git log failed or wrote to stderr.");
+      expect(await stubCalls()).toEqual([]);
+
+      const octopus = join(directory, "octopus");
+      await mkdir(octopus);
+      git(octopus, ["init", "-q", "-b", "main"]);
+      await commitFile(octopus, "README", "fixture\n", "base");
+      for (const branch of ["o1", "o2", "o3"]) {
+        git(octopus, ["checkout", "-q", "-b", branch, "main"]);
+        await commitFile(octopus, `${branch}.txt`, `${branch}\n`, branch);
+      }
+      git(octopus, ["checkout", "-q", "main"]);
+      run(octopus, ["merge", "-q", "--no-commit", "o1", "o2", "o3"]);
+      await commitFile(octopus, "octopus.txt", "marker-octopus\n", "octopus");
+      const sha = git(octopus, ["rev-parse", "HEAD"]);
+      // git itself shows no patch for it and says so only on stdout, so the preflight alone passes.
+      const log = run(octopus, ["log", "-p", "-U0", ...REQUIRED_LOG_OPTS.split(" ")]);
+      expect([log.status, log.stderr, log.stdout.includes("marker-octopus")]).toEqual([0, "", false]);
+      for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+        const result = runScript(octopus, scanScriptPath, [stub], { LOG_OPTS: logOpts });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`octopus merge itself changes. Merge one branch at a time instead of:\n${sha}\n`);
+      }
+      expect(await stubCalls()).toEqual([]);
+    });
+
+    it("fails when git fails during Gitleaks' own run, which Gitleaks passes", async () => {
+      const result = runScript(origin, scanScriptPath, [stub], {
+        LOG_OPTS: REQUIRED_LOG_OPTS,
+        STUB_STDERR: 'ERR [git] fatal: early EOF\nERR error="stderr is not empty"\nINF no leaks found\n',
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("INF no leaks found\nThe scan is partial: git failed during Gitleaks' run.\n");
+      expect(await stubCalls()).toHaveLength(3);
+    });
+
+    it("self-test fails unless Gitleaks reports exactly the expected fingerprints", async () => {
+      const missing = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, STUB_REPORT: "" });
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("self-test: Gitleaks did not report exactly the expected fingerprints");
+      // It knows which fingerprints to expect only for the workflows' revisions.
+      const unknown = runScript(directory, selfTestPath, [stub], { LOG_OPTS: "--full-history --text --remerge-diff main" });
+      expect(unknown.status).toBe(1);
+      expect(unknown.stderr).toContain("self-test: LOG_OPTS must end with HEAD or --all");
+      await stubCalls();
+    });
+
+    // Set GITLEAKS to a Gitleaks 8.30.1 binary to run the workflows' self-test here.
+    it.skipIf(!process.env.GITLEAKS)("self-test passes with the pinned Gitleaks under both workflows' options", () => {
+      for (const [logOpts, count] of [
+        [REQUIRED_LOG_OPTS, 7],
+        [AUDIT_LOG_OPTS, 8],
+      ] as const) {
+        const result = runScript(directory, selfTestPath, [process.env.GITLEAKS ?? ""], { LOG_OPTS: logOpts });
+        expect(result.stderr).not.toContain("self-test:");
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe(
+          `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge is refused.\n`,
+        );
+      }
+    });
   });
 });
