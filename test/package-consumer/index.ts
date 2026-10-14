@@ -121,7 +121,9 @@ function htlcPage(progress: CrossChainHtlcProgress): string | undefined {
       switch (progress.reason) {
         case "htlc-refund-absent":
           return `${progress.reason}: ${Object.entries(progress.refunds).join(" ")}`;
+        // Past the source expiry; ST-8 is terminal once no claim can still land.
         case "htlc-source-claim-missed-after-reveal":
+          return `${progress.reason}: source claim pending ${progress.sourceClaimPending}`;
         case "htlc-source-claim-replacement-limit-reached":
         case "htlc-destination-claim-failed-preimage-public":
         case "htlc-destination-claim-absent-preimage-broadcast":

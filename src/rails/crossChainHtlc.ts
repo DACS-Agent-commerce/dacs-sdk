@@ -6,6 +6,7 @@ import {
   canonicalize,
   sha256Hex,
 } from "../canonical/index.js";
+import type { AttestationRef } from "../artifacts/types.js";
 import { DacsError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
@@ -13,7 +14,6 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_LEASE_MS = 30_000;
 /** Longest delay a timer accepts; a longer lease is abandoned only this late. */
 const MAX_TIMER_MS = 2_147_483_647;
-const DEFAULT_SAFETY_WINDOW_SEC = 600;
 const SOURCE_LEG_ACTIONS: ReadonlySet<HtlcAction> = new Set(["source-lock", "source-claim", "source-refund"]);
 /** Replacements of a failed destination claim allowed per session. */
 const MAX_DESTINATION_CLAIM_REPLACEMENTS = 3;
@@ -63,7 +63,12 @@ export interface CrossChainHtlcAuthority {
   destinationContractAddress: string;
   sourceFinalitySec: number;
   destinationFinalitySec: number;
-  safetyWindowSec?: number;
+  /**
+   * The pinned rail's `safetyWindowSec` (HTLC-7). Required: the Standard's
+   * 600 s default belongs to the rail definition, so an authority that omits
+   * it is refused instead of being given that default.
+   */
+  safetyWindowSec: number;
   sourceTimelockSec: number;
   destinationTimelockSec: number;
 }
@@ -404,6 +409,28 @@ export interface CrossChainHtlcSettlement {
   authenticationHash: string;
 }
 
+/** Standard-shaped SettlementEvidence fields; see `crossChainHtlcEvidenceFields`. */
+export type CrossChainHtlcEvidenceFields =
+  | Readonly<{
+      outcome: "success";
+      paymentTxRefs: readonly [
+        Readonly<Extract<HtlcTxRef, { kind: "htlc-lock" }>>,
+        Readonly<Extract<HtlcTxRef, { kind: "htlc-reveal" }>>,
+        Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>,
+      ];
+      paymentAmount: Readonly<{ amount: string; currency: string }>;
+      settlementFinality: Readonly<{ model: "htlc-reveal"; finalityObservedAt: number }>;
+      supersedesEvidenceRef?: Readonly<AttestationRef>;
+    }>
+  | Readonly<{
+      outcome: "failure";
+      reason: "dest-revealed-source-unclaimed";
+      paymentTxRefs: readonly [
+        Readonly<Extract<HtlcTxRef, { kind: "htlc-lock" }>>,
+        Readonly<Extract<HtlcTxRef, { kind: "htlc-reveal" }>>,
+      ];
+    }>;
+
 export type HtlcStoreClaim =
   | {
       status: "acquired";
@@ -537,7 +564,17 @@ export type CrossChainHtlcProgress =
   | {
       status: "settle-asymmetric";
       reason: "dest-revealed-source-unclaimed";
+      /**
+       * Unix milliseconds: the source lock's expiry (`expiry_source`), which
+       * bounds the ST-8 recovery window. The source checkpoints keep the same
+       * instant as the contract's Unix seconds.
+       */
       recoveryDeadline: number;
+      /**
+       * Every reference a host follows, including the retained destination
+       * lock and any source claim. The interim SettlementEvidence carries only
+       * the Standard's subset; see `crossChainHtlcEvidenceFields`.
+       */
       txRefs: readonly Readonly<HtlcTxRef>[];
       finalityObservedAt: number;
     }
@@ -581,13 +618,33 @@ export type CrossChainHtlcProgress =
        */
       status: "operator-alert";
       reason:
-        | "htlc-source-claim-missed-after-reveal"
         | "htlc-source-claim-replacement-limit-reached"
         | "htlc-destination-claim-failed-preimage-public"
         | "htlc-destination-claim-absent-preimage-broadcast"
         | "htlc-salt-missing"
         | "htlc-salt-mismatch";
       txRefs: readonly Readonly<HtlcTxRef>[];
+    }
+  | {
+      /**
+       * The reveal is final and the source expiry has passed without a final
+       * source claim, but a claim may still prove final within the window or
+       * the core cannot rule one out. Once the adapter authenticates the
+       * retained source claim `failed`, or `absent` naming it, no claim can
+       * complete and the result is the terminal ST-8 expiry instead: `failed`,
+       * `settlement-atomicity`, `dest-revealed-source-unclaimed-expired`.
+       */
+      status: "operator-alert";
+      reason: "htlc-source-claim-missed-after-reveal";
+      txRefs: readonly Readonly<HtlcTxRef>[];
+      /**
+       * `true`: a retained source claim is pending, unreported, or `absent`
+       * naming nothing, and may still prove final within the window; a later
+       * call settles it or finds it unlanded. `false`: the core holds no source
+       * claim, so none it sent can settle; only a claim made outside the core
+       * could.
+       */
+      sourceClaimPending: boolean;
     }
   | {
       /** A retained refund is reported `absent` naming it; the core will not re-send it. */
@@ -605,7 +662,7 @@ type HtlcRefundReason = Extract<
 >["reason"];
 type HtlcOperatorAlertReason = Extract<
   CrossChainHtlcProgress,
-  { status: "operator-alert"; reason: string; refunds?: never }
+  { status: "operator-alert"; reason: string; refunds?: never; sourceClaimPending?: never }
 >["reason"];
 
 /**
@@ -747,6 +804,69 @@ export function crossChainHtlcSourceFinalityCheckpointHash(
   return sha256Hex(`dacs-cross-chain-htlc:source-finality:v1:${canonicalize(checkpoint)}`);
 }
 
+/**
+ * The DACS-4 §9.5.4 / §9.7 fields of the SettlementEvidence a host signs and
+ * anchors for a session, projected from the core's operational result:
+ * - `settled`: `outcome: "success"` with exactly the source `htlc-lock`, the
+ *   destination `htlc-reveal` and the source `htlc-claim`, and a closed
+ *   `htlc-reveal` finality record whose `finalityObservedAt` is the source
+ *   claim's chain-derived `finalityReachedAt`, the decisive event. A host that
+ *   anchored an interim record for this session (ST-8 `:resolved`) passes its
+ *   reference as `supersedesEvidenceRef`; the core cannot tell the two apart.
+ * - `settle-asymmetric`: the HTLC-9 interim `outcome: "failure"` with reason
+ *   `dest-revealed-source-unclaimed`, the source lock and the final reveal.
+ *
+ * The destination lock, any pending source claim, `sourceExpiry` and the
+ * observer's timestamp stay in the core's result for operations only.
+ */
+export function crossChainHtlcEvidenceFields(
+  progress: Readonly<Extract<CrossChainHtlcProgress, { status: "settled" | "settle-asymmetric" }>>,
+  options: Readonly<{ supersedesEvidenceRef?: Readonly<AttestationRef> }> = {},
+): CrossChainHtlcEvidenceFields {
+  const ofKind = <K extends HtlcTxRef["kind"]>(
+    refs: readonly Readonly<HtlcTxRef>[],
+    kind: K,
+  ): Readonly<Extract<HtlcTxRef, { kind: K }>>[] =>
+    refs.filter((ref): ref is Readonly<Extract<HtlcTxRef, { kind: K }>> => ref.kind === kind);
+  const copy = <T extends Readonly<HtlcTxRef>>(ref: T): T => Object.freeze({ ...ref });
+  if (progress.status === "settled") {
+    const { settlement } = progress;
+    const [sourceLock, destinationLock, reveal, claim] = settlement.txRefs;
+    if (settlement.txRefs.length !== 4 || sourceLock?.kind !== "htlc-lock" ||
+        destinationLock?.kind !== "htlc-lock" || reveal?.kind !== "htlc-reveal" ||
+        claim?.kind !== "htlc-claim" || sourceLock.chainId !== claim.chainId ||
+        reveal.chainId === claim.chainId) {
+      throw new DacsError("pay-cross-chain-htlc: settlement references are not a settled HTLC chain");
+    }
+    return Object.freeze({
+      outcome: "success",
+      paymentTxRefs: Object.freeze([copy(sourceLock), copy(reveal), copy(claim)] as const),
+      paymentAmount: Object.freeze({ ...settlement.paymentAmount }),
+      settlementFinality: Object.freeze({
+        model: "htlc-reveal",
+        finalityObservedAt: settlement.settlementFinality.finalityReachedAt,
+      }),
+      ...(options.supersedesEvidenceRef === undefined
+        ? {}
+        : { supersedesEvidenceRef: options.supersedesEvidenceRef }),
+    });
+  }
+  if (options.supersedesEvidenceRef !== undefined) {
+    throw new DacsError("pay-cross-chain-htlc: only a settled session supersedes an interim record");
+  }
+  const reveals = ofKind(progress.txRefs, "htlc-reveal");
+  // `txRefs` lists the source lock before the destination lock.
+  const sourceLock = ofKind(progress.txRefs, "htlc-lock")[0];
+  if (!sourceLock || reveals.length !== 1 || sourceLock.chainId === reveals[0]!.chainId) {
+    throw new DacsError("pay-cross-chain-htlc: asymmetric references omit the source lock or reveal");
+  }
+  return Object.freeze({
+    outcome: "failure",
+    reason: progress.reason,
+    paymentTxRefs: Object.freeze([copy(sourceLock), copy(reveals[0]!)] as const),
+  });
+}
+
 export function createCrossChainHtlcIntent(
   inputAuthority: Readonly<CrossChainHtlcAuthority>,
   buyerSalt: Uint8Array,
@@ -777,9 +897,7 @@ export function createCrossChainHtlcIntent(
     "destinationFinalitySec",
     true,
   );
-  const safetyWindowSec = authority.safetyWindowSec === undefined
-    ? DEFAULT_SAFETY_WINDOW_SEC
-    : requireUInt(authority.safetyWindowSec, "safetyWindowSec", true);
+  const safetyWindowSec = requireUInt(authority.safetyWindowSec, "safetyWindowSec", true);
   const sourceTimelockSec = requireUInt(authority.sourceTimelockSec, "sourceTimelockSec", true);
   const destinationTimelockSec = requireUInt(
     authority.destinationTimelockSec,
@@ -1508,7 +1626,12 @@ export async function advanceCrossChainHtlc(
   let claimed: HtlcStoreClaim;
   let claimNow: number;
   try {
+    // A host clock that is not a non-negative safe integer is call input.
     claimNow = readNow();
+  } catch {
+    return inputInvalid;
+  }
+  try {
     claimed = await claimSettlement({
       intent,
       secrets: Object.freeze({
@@ -1857,6 +1980,22 @@ export async function advanceCrossChainHtlc(
     latest: Readonly<HtlcLedgerSnapshot>,
   ): boolean => prepared.has(action) && latest.actions[action]?.state === "absent" &&
     !unlandedActiveClaim(action, latest);
+  // ST-8 past the source expiry after a final reveal. Every replaced attempt
+  // was authenticated unlanded before it was replaced, and none is prepared
+  // after the expiry, so once the active claim is unlanded too no claim can
+  // complete within the window: the interim record stands and the session is
+  // terminal. Otherwise a claim may still prove final in time.
+  const sourceClaimMissed = (
+    latest: Readonly<HtlcLedgerSnapshot>,
+    known: Readonly<Partial<Record<HtlcAction, Readonly<HtlcTxRef>>>>,
+  ): CrossChainHtlcProgress => unlandedActiveClaim("source-claim", latest)
+    ? { status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired" }
+    : {
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: collectRefs(latest, prepared, [], ["destination-lock"], known),
+      sourceClaimPending: prepared.has("source-claim"),
+    };
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
   // own expiry instead of the session stopping with both legs locked. No reveal
@@ -2604,11 +2743,11 @@ export async function advanceCrossChainHtlc(
     const landedReveal = { "destination-claim": checkpoint.revealTxRef } as const;
     // The reveal is final, so the payer holds the destination funds. Past the
     // source expiry the payee can no longer claim the source, and refunding it
-    // would give the payer both legs: the source is never refunded, and a
-    // person must settle the payee's leg. A source claim that is pending here
-    // and later reaches finality in time still settles on a later call.
+    // would give the payer both legs: the source is never refunded. A source
+    // claim that is pending here and later reaches finality in time still
+    // settles on a later call; one that can no longer land ends the session.
     if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
-      return operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"], landedReveal);
+      return sourceClaimMissed(snapshot, landedReveal);
     }
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
@@ -2626,7 +2765,7 @@ export async function advanceCrossChainHtlc(
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
-          ? operatorAlert("htlc-source-claim-missed-after-reveal", snapshot, ["destination-lock"], landedReveal)
+          ? sourceClaimMissed(snapshot, landedReveal)
           : sourceClaimReplacementLimitReached
             ? operatorAlert(
               "htlc-source-claim-replacement-limit-reached",
@@ -2682,7 +2821,7 @@ export async function advanceCrossChainHtlc(
     return {
       status: "settle-asymmetric",
       reason: "dest-revealed-source-unclaimed",
-      recoveryDeadline: checkpoint.sourceExpiry,
+      recoveryDeadline: secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry"),
       txRefs: collectRefs(snapshot, prepared, [], ["destination-lock"], landedReveal),
       finalityObservedAt: checkpoint.finalityObservedAt,
     };

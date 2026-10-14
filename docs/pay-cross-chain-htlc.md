@@ -1,15 +1,23 @@
 # Cross-chain HTLC settlement safety core
 
-The SDK exposes a chain-neutral `pay-cross-chain-htlc` producer core for
-DACS-4 §9.5.4. It coordinates authenticated chain adapters but never needs a
-payer or payee private key. An adapter can dispatch each effect to a separate
-role-local signer.
+The SDK exposes a `pay-cross-chain-htlc` producer core for DACS-4 §9.5.4,
+with a chain-neutral adapter boundary over numeric chain ids (see Authority
+fields and the pinned rail). It coordinates authenticated chain adapters but
+never needs a payer or payee private key. An adapter can dispatch each effect
+to a separate role-local signer.
 
 The core implements the normative HTLC lifecycle:
 
 - a unique buyer salt with at least 128 bits of entropy;
-- RFC 5869 HKDF-SHA256 preimage derivation using the exact `jobId` and
-  `agreementHash` inputs;
+- RFC 5869 HKDF-SHA256 preimage derivation (HTLC-5) over these exact bytes:
+  IKM is the buyer salt's bytes; the HKDF salt is the UTF-8 bytes of the
+  26-character canonical `jobId`; `info` is the 64 ASCII bytes of the
+  lowercase hexadecimal `agreementHash` string, not its 32 raw bytes; the
+  output is 32 bytes. The Standard does not yet fix the `info` encoding or
+  carry a vector for it, so a disputing party re-deriving the preimage must
+  use this one; the known-answer test pins salt `01` × 16, `jobId`
+  `01J8ME0SXKQ4T9V2RC5HJ6WX7F` and `agreementHash` `a` × 64 to
+  `436862ce4c59949393192d25592fa09197d439760bfdea3509697dda4863282e`;
 - separate chain-native hashlocks derived from the same preimage;
 - exact amount conversion for each chain's token decimals;
 - source/destination timelock and actual-expiry asymmetry checks;
@@ -85,8 +93,13 @@ does not reveal merely because both locks exist. Once the destination claim is
 final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
 refund or terminal ordinary failure. If the source expiry passes without that
-claim, the result is `operator-alert` with reason
-`htlc-source-claim-missed-after-reveal` (see Operator alerts).
+claim, the session follows ST-8's expiry: once the adapter authenticates the
+retained source claim `failed`, or `absent` naming it, no claim can complete
+within the window and the result is the terminal `failed` with `errorClass`
+`settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`.
+While a claim may still prove final in time, or the core holds none, it is
+`operator-alert` with reason `htlc-source-claim-missed-after-reveal` (see
+Operator alerts and Settlement evidence).
 
 The selected authority must provide a positive safe-integer
 `destinationFinalitySec`. For actual lock expiries, the last permissible reveal
@@ -134,8 +147,7 @@ checkpoint-path operator alerts name the retained destination-lock reference
 and the checkpointed reveal, which is the attempt that landed even when it is
 an earlier one than the active attempt or is no longer reported.
 Neither leg is ever refunded on this path, and a source claim that
-misses the source expiry is the usual `operator-alert`
-`htlc-source-claim-missed-after-reveal`.
+misses the source expiry takes the usual ST-8 expiry path above.
 
 Refunds are per leg. After the source expiry the payer's source refund is
 driven, and after the destination expiry the payee's destination refund. The
@@ -345,13 +357,19 @@ session, and a later call re-observes the chain and returns to normal progress
 if the chain has changed. The reasons are:
 
 - `htlc-source-claim-missed-after-reveal`: the payer's reveal is final, so
-  the payer holds the destination funds, but the payee's source claim did not
-  reach the chain before the source expiry. The source lock stays in the
-  contract; the core never refunds it, because a refund would give the payer
-  both legs. The operator checks whether a source claim is still pending (if
-  it reaches finality before the expiry the next call settles), and otherwise
-  arranges the payee's payment outside the core, for example by having the
-  payer refund the source and pay the payee under the agreement.
+  the payer holds the destination funds, but the source expiry has passed
+  without a final source claim. The source lock stays in the contract; the
+  core never refunds it, because a refund would give the payer both legs.
+  The alert also carries `sourceClaimPending`. `true` means that a retained
+  source claim is `pending`, unreported, or `absent` naming nothing, so it
+  may still prove final within the window: if its `finalityReachedAt` is
+  within the window the next call settles, and once the adapter authenticates
+  it unlanded the next call returns the terminal ST-8 expiry. `false` means
+  the core holds no source claim, so none it sent can settle. Only the
+  operator can tell whether a claim was made outside the core. If none was,
+  the host finalises ST-8 as expired (`settle-failed`, `failed-counterparty`)
+  and arranges the payee's payment outside the core, for example by having
+  the payer refund the source and pay the payee under the agreement.
 - `htlc-destination-claim-failed-preimage-public`: a reveal failed on chain,
   so the preimage is public, and the core cannot send another one: the
   destination-claim window has closed, the absolute margin is gone, or three
@@ -370,8 +388,10 @@ if the chain has changed. The reasons are:
   and the payee's source claim has been replaced three times and failed or
   was absent again. The core prepares no further fee-paying claims. The
   operator finds out why the claim cannot land (a paused contract, or a lock
-  already claimed outside the core) before the source expiry; past it the
-  reason becomes `htlc-source-claim-missed-after-reveal`.
+  already claimed outside the core) before the source expiry. Past it the
+  last attempt is still unlanded, so the session ends with the terminal ST-8
+  expiry (`failed`, `settlement-atomicity`,
+  `dest-revealed-source-unclaimed-expired`).
 - `htlc-refund-absent`: a retained refund is reported `absent` naming it, so
   it can never land, and the core will not re-send it; `refunds` shows that
   leg as `absent`. The operator lands a refund for that leg by hand. Refund
@@ -389,11 +409,12 @@ if the chain has changed. The reasons are:
   cache, and supplies them on the next call. It discards no salt: this session,
   and with a reused salt the other session too, may still need it.
 
-A call whose `owner`, `leaseDurationMs`, authority or hashlock deriver is
-unusable (an owner that is not a non-empty string, a lease that is not a
-positive safe integer, an
-authority that does not validate, such as a jobId that is not a canonical
-uppercase ULID, or a deriver that throws) cannot name a session, so it says
+A call whose `owner`, `leaseDurationMs`, clock, authority or hashlock deriver
+is unusable (an owner that is not a non-empty string, a lease that is not a
+positive safe integer, a `now()` that does not return a non-negative safe
+integer, an authority that does not validate, such as a jobId that is not a
+canonical uppercase ULID or a missing `safetyWindowSec`, or a deriver that
+throws) cannot name a session, so it says
 nothing about whether one exists. It returns the resumable `indeterminate`
 with reason `htlc-call-input-invalid`, which `htlcNeedsOperator` pages, before
 the store or the adapter is called. A live session is untouched: the next call
@@ -401,24 +422,36 @@ with corrected input drives it on. `createCrossChainHtlcIntent` with the same
 authority, salt and deriver throws the validation error.
 
 `failed` means there is nothing left for the core to drive. It is returned
-only when: the store's record is
-corrupt (reported so by `claim`, or a retained action, history or checkpoint
-that fails validation, such as an expiry that overflows in milliseconds) or
-the store lacks a required method; retained evidence and a new observation
-contradict each other (a source-lock checkpoint fact that `observe` reports
-changed once a destination lock is prepared,
-`htlc-source-finality-checkpoint-conflict`; before that it is the paged,
-resumable `indeterminate` `htlc-source-observers-disagree`; a reveal
-checkpoint for another transaction, a final reveal of another or a malformed
-preimage, a final source claim without a final source lock or without a final
-or checkpointed reveal, or a final source claim while the checkpointed reveal
-is reported `pending`, `failed` or `absent`,
-`htlc-reveal-checkpoint-contradicted`); the source lock itself failed, or is
-reported `absent` naming it (`htlc-source-lock-absent`; one reported `absent`
-without a reference is rebroadcast), so nothing was locked; or the source
-claim is final but reached finality after the source expiry
-(`settlement-atomicity`). These need an operator to reconcile the record, not
-a retry. A missing or different buyer salt is never `failed` (see
+only when:
+
+- the store's record is corrupt (reported so by `claim`, or a retained
+  action, history or checkpoint that fails validation, such as an expiry that
+  overflows in milliseconds) or the store lacks a required method;
+- retained evidence and a new observation contradict each other:
+  - a source-lock checkpoint fact that `observe` reports changed once a
+    destination lock is prepared, `htlc-source-finality-checkpoint-conflict`
+    (before that it is the paged, resumable `indeterminate`
+    `htlc-source-observers-disagree`);
+  - a reveal checkpoint for another transaction, or a final reveal that is
+    another attempt than the checkpointed one, `htlc-reveal-checkpoint-conflict`;
+  - a final reveal of another preimage, `htlc-revealed-preimage-mismatch`, or
+    of a malformed one, `htlc-revealed-preimage-invalid`;
+  - a final source claim without a final source lock, destination lock, or
+    final or checkpointed reveal, `htlc-final-claim-chain-incomplete`, or
+    whose source lock has no expiry, `htlc-final-claim-chain-invalid`;
+  - a final source claim while the checkpointed reveal is reported `pending`,
+    `failed` or `absent`, `htlc-reveal-checkpoint-contradicted`;
+- the source lock itself failed (its `reason`, or `htlc-source-lock-failed`
+  without one), or is reported `absent` naming it (`htlc-source-lock-absent`;
+  one reported `absent` without a reference is rebroadcast), so nothing was
+  locked; or
+- the HTLC-9 window closed without settlement (`errorClass`
+  `settlement-atomicity`, reason `dest-revealed-source-unclaimed-expired`):
+  the source claim is final but reached finality after the source expiry, or
+  the source expiry has passed and the adapter authenticates the retained
+  source claim `failed`, or `absent` naming it.
+
+These need an operator to reconcile the record, not a retry. A missing or different buyer salt is never `failed` (see
 `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other non-final
 state is `waiting`, `indeterminate`, `settle-asymmetric`, a refund status or
 `operator-alert`, and a host keeps advancing the session.
@@ -678,8 +711,9 @@ claim reaching finality after the expiry is a terminal settlement-atomicity
 failure. Missing, malformed, or impossibly ordered timing proof fails closed.
 Successful `CrossChainHtlcSettlement.settlementFinality` records both timestamps:
 `finalityReachedAt` preserves the expiry decision and `finalityObservedAt`
-remains the audit/evidence observation time. It also binds the exact
-`sourceExpiry` used for that decision.
+remains the adapter's observation time. It also binds the exact
+`sourceExpiry` used for that decision. This record is operational, not the
+Standard's `SettlementFinalityRecord`; see Settlement evidence.
 
 This is a public adapter contract addition. Existing adapters, including those
 that durably cache authenticated observations, must retain and return both
@@ -722,6 +756,75 @@ source-leg observation, records the source-finality checkpoint only from
 source refund is due, and otherwise falls back to `observe`, so the payer's
 refund is not isolated from the payee's side for such an adapter.
 
+## Settlement evidence
+
+The core's results are operational records, not SettlementEvidence:
+
+- `CrossChainHtlcSettlement.txRefs` has four references, including the
+  destination lock;
+- its `settlementFinality` carries `sourceExpiry`, `finalityReachedAt` and the
+  adapter's `finalityObservedAt`;
+- `settle-asymmetric` `txRefs` also names the destination lock and any source
+  claim.
+
+`crossChainHtlcEvidenceFields(progress, { supersedesEvidenceRef })` projects a
+`settled` or `settle-asymmetric` result onto the DACS-4 §9.5.4 / §9.7 fields of
+the evidence the host signs and anchors:
+
+| Result | `outcome` | `paymentTxRefs` | Other fields |
+| --- | --- | --- | --- |
+| `settle-asymmetric` (HTLC-9 interim) | `failure` | source `htlc-lock`, destination `htlc-reveal` | `reason: "dest-revealed-source-unclaimed"` |
+| `settled` | `success` | source `htlc-lock`, destination `htlc-reveal`, source `htlc-claim` | `paymentAmount`; `settlementFinality: { model: "htlc-reveal", finalityObservedAt }` |
+
+The success record's `finalityObservedAt` is the source claim's chain-derived
+`finalityReachedAt`, the decisive event §9.7 names, not the adapter's later
+observation time. The core cannot tell a direct success from one that resolves
+an interim record (ST-8 `:resolved`). A host that anchored an interim record
+for the session passes its `AttestationRef` as `supersedesEvidenceRef`, and the
+projection carries it. The host adds `evidenceVersion`, `jobId`, `phase`,
+`observedAt` and the signature. The projection reproduces the pinned
+Standard's `htlc9-asymmetric` and `htlc9-asymmetric-resolved` fixtures.
+
+ST-8 maps onto the core's results as follows:
+
+- `settle-asymmetric`: anchor the interim record. `recoveryDeadline` is the
+  window bound, `expiry_source`, in Unix milliseconds.
+- `settled`: ST-8 resolved; anchor the superseding success record.
+- `failed` with `settlement-atomicity` and
+  `dest-revealed-source-unclaimed-expired`: ST-8 expired. The interim record
+  stands, and the session goes `settle-failed` → `failed-counterparty`.
+- `operator-alert` `htlc-source-claim-missed-after-reveal`: still
+  `settle-asymmetric`; see `sourceClaimPending` under Operator alerts.
+
+## Authority fields and the pinned rail
+
+The host builds `CrossChainHtlcAuthority` from the authenticated, pinned rail
+definition and the agreement. The core takes only the flattened fields; the
+SDK does not yet ship a resolver from a `RailDefinition`. The Standard's names
+map as follows:
+
+| Pinned rail (DACS-4 §9.14, `CrossChainRoute`) | Authority field |
+| --- | --- |
+| `route.sourceChainId` / `route.destChainId` | `sourceChainId` / `destinationChainId` |
+| `route.htlcContracts.source` / `.dest` | `sourceContractAddress` / `destinationContractAddress` |
+| `parameters.timelockSourceSec` / `timelockDestSec` | `sourceTimelockSec` / `destinationTimelockSec` |
+| `parameters.sourceFinalitySec` | `sourceFinalitySec` |
+| `parameters.safetyWindowSec` | `safetyWindowSec` (required) |
+
+- `safetyWindowSec` is required, as HTLC-7 requires it. The Standard's 600 s
+  default applies when a rail definition is written, not in the core: an
+  authority without it returns `htlc-call-input-invalid`.
+- `destinationFinalitySec` has no pinned rail parameter. It is the SDK's own
+  budget for the payer's reveal to reach destination finality before the
+  destination expiry. The host sets it from the finality policy its
+  destination adapter enforces (for example, confirmation depth times block
+  time, with margin). It is bound into the intent like every other field.
+- Chain ids are positive safe integers, such as EIP-155 chain ids. The
+  Standard's route also allows string identifiers, for example for a Solana
+  leg. This version of the core does not support those routes and refuses a
+  non-integer chain id. A host must not invent a numeric alias for one,
+  because the id is bound into every transaction reference and the evidence.
+
 ## Host recovery checklist
 
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
@@ -754,7 +857,8 @@ refund is not isolated from the payee's side for such an adapter.
     `htlc-destination-claim-failed-preimage-public` and
     `htlc-destination-claim-absent-preimage-broadcast`: the preimage was
     broadcast, so the payee can claim the source before its expiry. The other
-    reasons are `htlc-source-claim-missed-after-reveal`,
+    reasons are `htlc-source-claim-missed-after-reveal` (see its
+    `sourceClaimPending`),
     `htlc-source-claim-replacement-limit-reached`, `htlc-refund-absent`,
     `htlc-salt-missing` and `htlc-salt-mismatch`;
   - `refund-stalled`: a refund reverted and is not re-sent;
