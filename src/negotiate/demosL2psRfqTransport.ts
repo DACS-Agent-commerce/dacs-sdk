@@ -21,21 +21,31 @@ const AES_ALGORITHM: CipherGCMTypes = "aes-256-gcm";
 const AES_KEY_BYTES = 32;
 const AES_NONCE_BYTES = 12;
 const AES_TAG_BYTES = 16;
-const MAX_RFQ_PLAINTEXT_BYTES = 16 * 1024 * 1024;
-const MAX_CIPHERTEXT_BYTES = MAX_RFQ_PLAINTEXT_BYTES + AES_TAG_BYTES;
+/**
+ * Demos node 61b8e75 refuses, before it stores anything, a send whose
+ * encrypted.ciphertext string is longer than 128 * 1024 characters
+ * (L2PSMessagingServer.ts:27,247-249). No frame over that is sealed, sent or
+ * accepted here, so the node never refuses one of ours for its size.
+ */
+const NODE_MAX_CIPHERTEXT_CHARS = 128 * 1024;
+// 98,304 bytes, which Base64 encodes in exactly 131,072 characters.
+const MAX_CIPHERTEXT_BYTES = (NODE_MAX_CIPHERTEXT_CHARS / 4) * 3;
+// 98,288 bytes: the AES-GCM codec appends its 16-byte tag.
+const MAX_RFQ_PLAINTEXT_BYTES = MAX_CIPHERTEXT_BYTES - AES_TAG_BYTES;
 const MAX_NONCE_BYTES = 64;
 const MAX_CANONICAL_STRING_CHARS = 16_384;
 const MAX_EPHEMERAL_KEY_CHARS = 4_096;
 /**
- * One history page may carry a maximum-size frame plus ordinary ones. A page
- * over this budget is refused before the deep snapshot; a smaller
- * historyPageSize splits large frames across pages.
+ * A history page is refused before the deep snapshot when it is larger than
+ * a full page of maximum-size frames, each with 8 KiB of other fields.
  */
-const MAX_HISTORY_PAGE_CHARS = 32 * 1024 * 1024;
+const MAX_HISTORY_PAGE_CHARS = 100 * (NODE_MAX_CIPHERTEXT_CHARS + 8 * 1024);
 // Include the active ingest in both limits. Charge two bytes per string code
 // unit plus 1 KiB per event for the bounded record/queue metadata.
+// A maximum-size frame is charged about 263 KiB, so the byte budget binds
+// before the count once most queued frames are large.
 const MAX_LIVE_EVENTS = 100;
-const MAX_LIVE_BYTES = 64 * 1024 * 1024;
+const MAX_LIVE_BYTES = 16 * 1024 * 1024;
 // Decoded packet bytes one resumeInbound() call may hold before delivering.
 const DEFAULT_INBOUND_RECOVERY_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_INBOUND_RECOVERY_MAX_BYTES = 1024 * 1024 * 1024;
@@ -242,9 +252,11 @@ export interface DemosL2psRfqTransportOptions {
    * statement that it saved the message, and a stored one is final, so a
    * node that lies, or anyone who can rewrite frames on the channel, can make
    * the transport stop resending a message the recipient never received.
-   * Connect the peer over authenticated wss:// to a node you trust (your own,
-   * or one the operator pins), and use that same node for history and
-   * reconcile. Plain ws:// is accepted only to a loopback IP literal.
+   * Connect the peer over authenticated wss:// to a node you trust, and use
+   * that same node for history and reconcile. Both members must register on
+   * that one node: node 61b8e75 acknowledges a send to a key registered
+   * elsewhere as "queued" and never relays it. Plain ws:// is accepted only to
+   * a loopback IP literal.
    *
    * demosdk 4.0.16 declares the peer's config private, but at runtime the URL
    * it dials is the own data property config.serverUrl. That is not public
@@ -273,6 +285,10 @@ export interface DemosL2psRfqTransportOptions {
    */
   localPeerKey: string;
   /**
+   * With claimForPeer, the DACS-3 §8.3.2 membership binding. The transport
+   * checks only that the two agree, so derive both from verified membership
+   * bindings, never from an unauthenticated directory.
+   *
    * May return any accepted key form; the result is canonicalized. Returning
    * undefined, like throwing, means the mapping cannot answer yet: the send
    * or reconcile stays indeterminate and is retried. Only a wrong answer (not
@@ -382,7 +398,8 @@ export interface DemosL2psRfqInboundSkip {
 
 /**
  * "complete": history was read to its end, and every recovered packet was
- * either accepted by the consumer or is counted in `skipped`. A packet the
+ * either accepted by the consumer or is counted in `skipped`; counterparty
+ * rows that are not RFQ frames are counted in `ignored`. A packet the
  * consumer rejects is listed in `skipped` and does not make the call
  * indeterminate, so "rejected" must be the consumer's answer about the
  * packet. The durable lifecycle rejects, for example, a packet for a job that
@@ -393,11 +410,24 @@ export interface DemosL2psRfqInboundSkip {
  * make the call indeterminate.
  */
 export type DemosL2psRfqInboundRecoveryResult =
-  | { status: "complete"; delivered: number; skipped: DemosL2psRfqInboundSkip[] }
+  | {
+      status: "complete";
+      delivered: number;
+      skipped: DemosL2psRfqInboundSkip[];
+      /** Counterparty rows that are not RFQ frames; see `ignored` below. */
+      ignored: number;
+    }
   | {
       status: "indeterminate";
       delivered: number;
       skipped: DemosL2psRfqInboundSkip[];
+      /**
+       * Counterparty rows whose messageHash is not a lower-case SHA-256 hash
+       * or whose encrypted value is not a well-formed frame. They cannot be
+       * RFQ packets, so none was offered to the consumer, and they do not
+       * make the call indeterminate.
+       */
+      ignored: number;
       reason: string;
     };
 
@@ -566,7 +596,22 @@ function admitIncoming(value: unknown): number {
   );
 }
 
-function admitHistoryPage(value: unknown): void {
+/**
+ * The node writes a history row's id, from, to, l2psUid, l2psTxHash,
+ * timestamp and status itself; a malformed one refuses the whole page. The
+ * messageHash and encrypted fields are whatever a registered sender
+ * submitted: node 61b8e75 stores any truthy messageHash and any encrypted
+ * value with a ciphertext and a nonce (L2PSMessagingServer.ts:236-250), and
+ * never deletes a row. So one foreign or malformed frame must not block a
+ * peer pair for good. Its row is kept for pagination, without a frame.
+ */
+const SENDER_HISTORY_KEYS = new Set<string>(["messageHash", "encrypted"]);
+
+/**
+ * Bound a history page before the deep snapshot, and return a copy in which
+ * a sender-supplied field that is not shaped like an RFQ frame's is null.
+ */
+function admitHistoryPage(value: unknown): JsonRecord {
   const label = "Demos L2PS RFQ history response";
   const page = admittedFields(value, ["messages", "hasMore"], label);
   const messages = page.messages;
@@ -586,6 +631,7 @@ function admitHistoryPage(value: unknown): void {
     throw new DacsError(`${label} is malformed`);
   }
   let chars = admittedChars(page.hasMore, MAX_CANONICAL_STRING_CHARS, label);
+  const admitted: JsonRecord[] = [];
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(messages, String(index));
     if (descriptor === undefined || !("value" in descriptor)) {
@@ -596,15 +642,29 @@ function admitHistoryPage(value: unknown): void {
       HISTORY_ENTRY_KEYS,
       "Demos L2PS RFQ history entry",
     );
+    const row: JsonRecord = {};
     for (const key of HISTORY_ENTRY_KEYS) {
-      chars += key === "encrypted"
-        ? admitEncrypted(entry[key])
-        : admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "Demos L2PS RFQ history entry");
+      if (!(key in entry)) continue;
+      if (SENDER_HISTORY_KEYS.has(key)) {
+        try {
+          chars += key === "encrypted"
+            ? admitEncrypted(entry[key])
+            : admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "messageHash");
+          row[key] = entry[key];
+        } catch {
+          row[key] = null;
+        }
+        continue;
+      }
+      chars += admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "Demos L2PS RFQ history entry");
+      row[key] = entry[key];
     }
+    admitted.push(row);
     if (chars > MAX_HISTORY_PAGE_CHARS) {
       throw new DacsError(`${label} exceeds its aggregate size budget`);
     }
   }
+  return { messages: admitted, ...("hasMore" in page ? { hasMore: page.hasMore } : {}) };
 }
 
 function captureEncrypted(value: unknown): DemosL2psRfqEncryptedMessage {
@@ -654,7 +714,11 @@ function wireAad(context: DemosL2psRfqWireContext): Buffer {
   );
 }
 
-/** Demos messaging-compatible AES-256-GCM codec with route-bound AAD. */
+/**
+ * AES-256-GCM codec with route-bound AAD, in this SDK's own frame format: it
+ * does not interoperate with demosdk's L2PSChannelTransport. Every holder of
+ * sharedKey can read the frames, so use a key only the two members hold.
+ */
 export function createDemosL2psRfqAesGcmCodec(
   options: DemosL2psRfqAesGcmCodecOptions,
 ): DemosL2psRfqWireCodec {
@@ -671,12 +735,11 @@ export function createDemosL2psRfqAesGcmCodec(
   const codec: DemosL2psRfqWireCodec = {
     codecId: "demos-l2ps-aes-256-gcm:v1",
     seal(plaintext: Uint8Array, context: Readonly<DemosL2psRfqWireContext>) {
-      if (
-        !(plaintext instanceof Uint8Array) ||
-        nodeTypes.isProxy(plaintext) ||
-        plaintext.byteLength > MAX_RFQ_PLAINTEXT_BYTES
-      ) {
+      if (!(plaintext instanceof Uint8Array) || nodeTypes.isProxy(plaintext)) {
         throw new DacsError("Demos L2PS RFQ plaintext must be bytes");
+      }
+      if (plaintext.byteLength > MAX_RFQ_PLAINTEXT_BYTES) {
+        throw new DacsError("Demos L2PS RFQ plaintext exceeds the wire size limit");
       }
       const nonce = randomBytes(AES_NONCE_BYTES);
       const cipher = createCipheriv(AES_ALGORITHM, key, nonce, {
@@ -873,9 +936,26 @@ function captureIncoming(value: unknown): DemosL2psRfqIncomingPayload {
   };
 }
 
-function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
-  admitHistoryPage(value);
-  value = ownedJson(value, "Demos L2PS RFQ history response");
+/**
+ * A captured history row. messageHash and encrypted are undefined when the
+ * sender's value is not a lower-case SHA-256 hash or a well-formed frame:
+ * such a row is never ours and never an RFQ packet.
+ */
+type HistoryRow = Omit<DemosL2psRfqStoredMessage, "messageHash" | "encrypted"> & {
+  messageHash: string | undefined;
+  encrypted: DemosL2psRfqEncryptedMessage | undefined;
+};
+
+function senderFrame(value: unknown): DemosL2psRfqEncryptedMessage | undefined {
+  try {
+    return captureEncrypted(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function captureHistoryPage(value: unknown): { messages: HistoryRow[]; hasMore: boolean } {
+  value = ownedJson(admitHistoryPage(value), "Demos L2PS RFQ history response");
   if (
     !isRecord(value) ||
     !exactKeys(value, ["messages", "hasMore"]) ||
@@ -885,11 +965,10 @@ function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
   ) {
     throw new DacsError("Demos L2PS RFQ history response is malformed");
   }
-  const messages = value.messages.map((candidate): DemosL2psRfqStoredMessage => {
+  const messages = value.messages.map((candidate): HistoryRow => {
     if (
       !isRecord(candidate) ||
       !exactKeys(candidate, HISTORY_ENTRY_KEYS) ||
-      !HASH.test(candidate.messageHash as string) ||
       !Number.isSafeInteger(candidate.timestamp) ||
       (candidate.timestamp as number) < 0 ||
       (candidate.l2psTxHash !== null && typeof candidate.l2psTxHash !== "string") ||
@@ -901,8 +980,10 @@ function captureHistoryPage(value: unknown): DemosL2psRfqHistoryPage {
       id: canonicalString(candidate.id, "history id"),
       from: capturePeerKey(candidate.from, "history sender"),
       to: capturePeerKey(candidate.to, "history recipient"),
-      messageHash: candidate.messageHash as string,
-      encrypted: captureEncrypted(candidate.encrypted),
+      messageHash: typeof candidate.messageHash === "string" && HASH.test(candidate.messageHash)
+        ? candidate.messageHash
+        : undefined,
+      encrypted: senderFrame(candidate.encrypted),
       l2psUid: canonicalString(candidate.l2psUid, "history L2PS UID"),
       l2psTxHash:
         candidate.l2psTxHash === null
@@ -1142,10 +1223,12 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
  * already-signed packet and verifies it on receipt. Acknowledgement means the
  * Demos peer returned the exact message hash as submitted/queued, or history
  * contains an exact decryptable packet; both come, unsigned, from the peer's
- * node, which the host must trust. Construction refuses a peer whose channel
+ * node, which the host must trust. That is node storage, not the DACS-3
+ * §8.3.4 member acknowledgement. Construction refuses a peer whose channel
  * is not wss:// or loopback ws:// (see the `peer` option). Absence is returned
  * only from a fully exhausted first history page; ambiguous pagination never
- * authorizes redrive.
+ * authorizes redrive. No frame exceeds node 61b8e75's ciphertext limit; a
+ * larger packet is rejected before the send outbox is written.
  */
 export function createDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqTransportOptions,
@@ -1448,7 +1531,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
     // duplicate entries cannot multiply the wait on a slow or hanging codec.
     let openBudget: { deadline: number; spent: boolean } | undefined;
     for (let pageIndex = 0; pageIndex < captured.historyMaxPages; pageIndex += 1) {
-      let page: DemosL2psRfqHistoryPage;
+      let page: ReturnType<typeof captureHistoryPage>;
       try {
         page = captureHistoryPage(
           await bounded(
@@ -1480,12 +1563,21 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           uncertainReason = "Demos L2PS history records packetId on another subnet";
           continue;
         }
+        // Every frame we send is well formed, and the node keeps one row
+        // per hash, so this row is not ours and ours can never be stored.
+        const encrypted = message.encrypted;
+        if (encrypted === undefined) {
+          return {
+            disposition: "rejected",
+            reason: "Demos L2PS history binds packetId to different bytes or route",
+          };
+        }
         openBudget ??= {
           deadline: performance.now() + captured.operationTimeoutMs,
           spent: false,
         };
         const opened = await openStored(
-          message.encrypted,
+          encrypted,
           prepared.packet,
           prepared.recipientPeer,
           openBudget,
@@ -1673,12 +1765,14 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         status: "indeterminate",
         delivered: 0,
         skipped: [],
+        ignored: 0,
         reason: errorFrom(cause, "RFQ recovery route failed").message,
       };
     }
     let before: number | undefined;
     let paginated = false;
     let uncertainReason: string | undefined;
+    let ignored = 0;
     const packets = new Map<string, Readonly<RfqLifecyclePacket<TSignature>>>();
     // Node history is newest first, so a job's earlier packets may still be
     // on a later page: nothing is delivered until the scan ends. The cap
@@ -1691,7 +1785,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         uncertainReason = "Demos L2PS inbound recovery generation retired";
         break;
       }
-      let page: DemosL2psRfqHistoryPage;
+      let page: ReturnType<typeof captureHistoryPage>;
       try {
         page = captureHistoryPage(
           await bounded(
@@ -1719,6 +1813,11 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           uncertainReason = "Demos L2PS inbound history crossed subnet identity";
           continue;
         }
+        const { messageHash, encrypted } = message;
+        if (messageHash === undefined || encrypted === undefined) {
+          ignored += 1;
+          continue;
+        }
         openDeadline ??= performance.now() + captured.operationTimeoutMs;
         const remainingMs = openDeadline - performance.now();
         if (remainingMs <= 0) {
@@ -1728,8 +1827,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
         try {
           const plaintext = await bounded(
             () =>
-              captured.open(message.encrypted, {
-                messageHash: message.messageHash,
+              captured.open(encrypted, {
+                messageHash,
                 fromPeer: remotePeerKey,
                 toPeer: captured.localPeerKey,
               }),
@@ -1738,7 +1837,7 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
           );
           const packet = decodePacket<TSignature>(plaintext);
           if (
-            packet.packetId !== message.messageHash ||
+            packet.packetId !== messageHash ||
             packet.sender !== remoteClaim ||
             packet.recipient !== captured.localClaim
           ) {
@@ -1862,8 +1961,8 @@ export function createDemosL2psRfqTransport<TSignature = unknown>(
       skipped.push(held);
     }
     return uncertainReason === undefined
-      ? { status: "complete", delivered, skipped }
-      : { status: "indeterminate", delivered, skipped, reason: uncertainReason };
+      ? { status: "complete", delivered, skipped, ignored }
+      : { status: "indeterminate", delivered, skipped, ignored, reason: uncertainReason };
   }
 
   /**

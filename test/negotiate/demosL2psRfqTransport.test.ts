@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -58,8 +58,15 @@ const SELLER = "did:demos:seller-l2ps-rfq";
 const BUYER_PEER = "a".repeat(64);
 const SELLER_PEER = "b".repeat(64);
 const THIRD_PEER = "c".repeat(64);
-// Base64 length of the largest frame the codec accepts (16 MiB + GCM tag).
-const MAX_CIPHERTEXT_CHARS = Math.ceil((16 * 1024 * 1024 + 16) / 3) * 4;
+// Node 61b8e75 refuses a ciphertext string over 128 * 1024 characters
+// (L2PSMessagingServer.ts:27,247-249); the transport takes the same limit.
+const MAX_CIPHERTEXT_CHARS = 128 * 1024;
+const MAX_LIVE_BYTES = 16 * 1024 * 1024;
+/** What the transport charges one live payload against its byte budget. */
+function liveCharge(payload: DemosL2psRfqIncomingPayload): number {
+  return 1024 + 2 * (payload.from.length + payload.messageHash.length +
+    payload.encrypted.ciphertext.length + payload.encrypted.nonce.length);
+}
 
 /**
  * The outbox contract's compare. Generation 0 matches only when no entry
@@ -242,6 +249,10 @@ class FakeL2psHub {
     messageHash: string,
   ) {
     this.sends += 1;
+    // Node 61b8e75 refuses this before it stores anything (L2PSMessagingServer.ts:247-249).
+    if (encrypted.ciphertext.length > MAX_CIPHERTEXT_CHARS) {
+      throw new Error(`Ciphertext too large (max ${MAX_CIPHERTEXT_CHARS} bytes)`);
+    }
     if (this.nodeDedup && this.messages.some((message) => message.messageHash === messageHash)) {
       throw new Error("Duplicate message");
     }
@@ -265,10 +276,12 @@ class FakeL2psHub {
       };
       this.messages.push(stored);
     }
+    // Like the node, a live delivery says offline: false (L2PSMessagingServer.ts:276).
     const payload: DemosL2psRfqIncomingPayload = {
       from,
       encrypted: structuredClone(stored.encrypted),
       messageHash,
+      offline: false,
     };
     for (const handler of this.handlers.get(to) ?? []) handler(payload);
     if (this.loseNextResponse) {
@@ -329,6 +342,7 @@ async function buyerWithSentOffer(options: {
   history?: (base: DemosL2psRfqPeerLike["history"]) => DemosL2psRfqPeerLike["history"];
   operationTimeoutMs?: number;
   monotonicNowMs?: () => number;
+  extra?: Partial<DemosL2psRfqTransportOptions>;
 } = {}) {
   const hub = new FakeL2psHub();
   const sharedKey = randomBytes(32);
@@ -351,6 +365,7 @@ async function buyerWithSentOffer(options: {
     ...(options.operationTimeoutMs === undefined
       ? {}
       : { operationTimeoutMs: options.operationTimeoutMs }),
+    ...options.extra,
   });
   const client = createDurableRfqLifecycleClient(
     clientOptions("buyer", transport, durableReservation()),
@@ -374,11 +389,16 @@ async function inboundReceiver(options: {
   operationTimeoutMs?: number;
   consumerTimeoutMs?: number;
   inboundRecoveryMaxBytes?: number;
+  history?: (base: DemosL2psRfqPeerLike["history"]) => DemosL2psRfqPeerLike["history"];
+  extra?: Partial<DemosL2psRfqTransportOptions>;
 } = {}) {
   const sent = await buyerWithSentOffer();
   const errors: Error[] = [];
+  const sellerPeer = sent.hub.peer(SELLER_PEER);
   const transport = createDemosL2psRfqTransport<string>({
-    peer: sent.hub.peer(SELLER_PEER),
+    peer: options.history === undefined
+      ? sellerPeer
+      : { ...sellerPeer, history: options.history(sellerPeer.history) },
     codec: {
       codecId: sent.baseCodec.codecId,
       seal: (plaintext, context) => sent.baseCodec.seal(plaintext, context),
@@ -397,6 +417,7 @@ async function inboundReceiver(options: {
     ...(options.inboundRecoveryMaxBytes === undefined
       ? {}
       : { inboundRecoveryMaxBytes: options.inboundRecoveryMaxBytes }),
+    ...options.extra,
   });
   const client = createDurableRfqLifecycleClient(clientOptions("seller", transport, durableReservation()));
   await client.open(openInput());
@@ -447,7 +468,11 @@ async function delayedSendFixture(options: {
   holdFirstSave?: boolean;
   /** The lifecycle's next record write after the first peer call is unavailable. */
   failLifecycleWriteAfterSend?: boolean;
+  /** The first outbox save after the first peer call throws. */
+  failSaveAfterSend?: boolean;
   ack?: Record<string, unknown>;
+  /** The peer resolves exactly this value, without echoing the hash. */
+  rawAck?: unknown;
   graceMs?: number;
   historyAdvanceMs?: number;
 } = {}) {
@@ -460,6 +485,7 @@ async function delayedSendFixture(options: {
   let heldSave = options.holdFirstSave ? firstSaveGate : undefined;
   let heldSaveResult: Promise<boolean> | undefined;
   let failRead = false;
+  let failedAfterSend = false;
   const outboxStore: DemosL2psRfqTransportOptions["outboxStore"] = {
     async load(id) {
       if (failRead) throw new Error("durable outbox read unavailable");
@@ -473,8 +499,10 @@ async function delayedSendFixture(options: {
     save(id, entry, expectedGeneration) {
       const held = heldSave;
       heldSave = undefined;
+      const failAfterSend = options.failSaveAfterSend === true && submissions.length > 0 && !failedAfterSend;
+      if (failAfterSend) failedAfterSend = true;
       const result = (async () => {
-        if (options.failWrite) throw new Error("durable outbox unavailable");
+        if (options.failWrite || failAfterSend) throw new Error("durable outbox unavailable");
         if (held !== undefined) await held.promise;
         const commit = commits.then(async () => {
           const current = await outboxStore.load(id);
@@ -519,6 +547,7 @@ async function delayedSendFixture(options: {
       submissions.push(structuredClone({ to, encrypted, messageHash }));
       if (options.failLifecycleWriteAfterSend && submissions.length === 1) failLifecycleWrite = true;
       sendEntered.release();
+      if ("rawAck" in options) return options.rawAck as never;
       if (options.ack !== undefined) return { messageHash, ...options.ack } as never;
       if (options.refuseSeal || timedOut) return { messageHash, l2psStatus: "submitted" };
       return new Promise((resolve) => {
@@ -628,9 +657,10 @@ async function delayedSendFixture(options: {
 
 /**
  * demosdk's own L2PSMessagingPeer from the installed build, so a later 4.x
- * that moves config.serverUrl fails these tests. The package has no focused
- * public export for it yet (kynesyslabs/sdks#125). The module has no imports,
- * and constructing a peer opens no socket.
+ * that moves config.serverUrl fails these tests. The pinned 4.0.16 has no
+ * focused public export for it; 4.0.17 added ./instant-messaging
+ * (kynesyslabs/sdks#125). The module has no imports, and constructing a peer
+ * opens no socket.
  *
  * This path is demosdk's private build layout, not API. package-lock.json pins
  * @kynesyslabs/demosdk 4.0.16, which has it; package.json allows ^4.0.16, so a
@@ -1071,7 +1101,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     sellerTransport.start((packet) => sellerClient.receive(packet));
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [],
     });
     sellerTransport.stop();
@@ -1617,7 +1647,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       expect(result).toBeUndefined();
       vi.advanceTimersByTime(1_000);
       await settle();
-      expect(result).toEqual({ status: "indeterminate", delivered: 0, skipped: [], reason: CONSUMER_TIMEOUT });
+      expect(result).toEqual({ status: "indeterminate", delivered: 0, ignored: 0, skipped: [], reason: CONSUMER_TIMEOUT });
       expect(signal?.aborted).toBe(true);
       expect(fixture.errors).toHaveLength(0);
       expect(fixture.hub.sends).toBe(1);
@@ -1651,14 +1681,14 @@ describe("Demos L2PS durable RFQ transport", () => {
     if (recovering !== undefined) {
       await expect(recovering).resolves.toEqual({
         status: "indeterminate",
-        delivered: 0,
+        delivered: 0, ignored: 0,
         skipped: [],
         reason: "Demos L2PS inbound recovery generation retired",
       });
     }
     expect(fixture.errors).toHaveLength(0);
     expect(current).not.toHaveBeenCalled();
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, ignored: 0, skipped: [] });
     fixture.transport.stop();
   });
 
@@ -1717,17 +1747,19 @@ describe("Demos L2PS durable RFQ transport", () => {
       opens += 1;
       throw new Error("temporary codec outage");
     } });
-    // Each event is charged about 24 MiB; a leak would overflow the third.
+    // Each round charges most of the byte budget; a leak would overflow the next.
     const large = {
       ...fixture.payload,
-      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(12 * 1024 * 1024) },
+      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS) },
     };
-    for (let index = 0; index < 4; index += 1) {
-      fixture.emit(large);
+    const perRound = Math.floor(MAX_LIVE_BYTES / liveCharge(large));
+    expect(perRound).toBeLessThan(100);
+    for (let round = 0; round < 3; round += 1) {
+      for (let index = 0; index < perRound; index += 1) fixture.emit(large);
       await fixture.transport.drain();
     }
-    expect(fixture.errors.map((error) => error.message)).toEqual(Array(4).fill("temporary codec outage"));
-    expect(opens).toBe(4);
+    expect(fixture.errors.map((error) => error.message)).toEqual(Array(3 * perRound).fill("temporary codec outage"));
+    expect(opens).toBe(3 * perRound);
     fixture.transport.stop();
   }, 120_000);
 
@@ -1788,7 +1820,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(fixture.receive).not.toHaveBeenCalled();
     expect(current).not.toHaveBeenCalled();
     // The replacement generation can still recover the retired packet.
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, ignored: 0, skipped: [] });
     expect(current).toHaveBeenCalledTimes(1);
     fixture.transport.stop();
   });
@@ -1846,7 +1878,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(fixture.hub.sends).toBe(1);
     hang = false;
     opens = 0;
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, ignored: 0, skipped: [] });
     expect(opens).toBe(3);
     fixture.transport.stop();
   });
@@ -1927,10 +1959,11 @@ describe("Demos L2PS durable RFQ transport", () => {
     } });
     const payload = limit === "count" ? fixture.payload : {
       ...fixture.payload,
-      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(12 * 1024 * 1024) },
+      encrypted: { ...fixture.payload.encrypted, ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS) },
     };
-    // Two 24 MiB charges fit in 64 MiB; the third must be dropped.
-    const capacity = limit === "count" ? 100 : 2;
+    // Maximum-size frames fill the byte budget before the count budget.
+    const capacity = limit === "count" ? 100 : Math.floor(MAX_LIVE_BYTES / liveCharge(payload));
+    if (limit === "bytes") expect(capacity).toBeLessThan(100);
     try {
       fixture.emit(payload);
       await entered.promise;
@@ -1951,7 +1984,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     await fixture.transport.drain();
     expect(opens).toBe(capacity + 1);
     expect(fixture.errors).toHaveLength(1);
-    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, skipped: [] });
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({ status: "complete", delivered: 1, ignored: 0, skipped: [] });
     expect(fixture.hub.sends).toBe(1);
     fixture.transport.stop();
   }, 60_000);
@@ -2134,7 +2167,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     sellerTransport.start((packet) => sellerClient.receive(packet));
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [],
     });
     sellerStatus = await sellerClient.getStatus(JOB_ID);
@@ -2143,7 +2176,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     ).toBe(1);
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [],
     });
     expect(sellerErrors).not.toHaveBeenCalled();
@@ -2685,24 +2718,27 @@ describe("Demos L2PS durable RFQ transport", () => {
       monotonicNowMs: () => ticks,
       history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
     });
-    // Each frame is within the per-frame limit; two together exceed the page budget.
-    const bulk = "A".repeat(17_000_000);
+    // Every frame is within the per-frame limit, and a full page of them is
+    // too; 9,000-character IDs push the page over its budget.
+    const bulk = "A".repeat(MAX_CIPHERTEXT_CHARS);
     const counterparty = (
       index: number,
-      ciphertext = bulk,
+      id = `bulk-${index}`,
     ): DemosL2psRfqStoredMessage => ({
-      id: `bulk-${index}`,
+      id,
       from: SELLER_PEER,
       to: BUYER_PEER,
       messageHash: "d".repeat(64),
-      encrypted: { ciphertext, nonce: own.encrypted.nonce },
+      encrypted: { ciphertext: bulk, nonce: own.encrypted.nonce },
       l2psUid: L2PS_UID,
       l2psTxHash: null,
       timestamp: own.timestamp + 10 + index,
       status: "delivered",
     });
+    const full = (id?: (index: number) => string) =>
+      Array.from({ length: 100 }, (_, index) => counterparty(index, id?.(index)));
 
-    page = { messages: [counterparty(0), counterparty(1)], hasMore: false };
+    page = { messages: full((index) => `${index}`.padStart(9_000, "x")), hasMore: false };
     snapshotLabels.length = 0;
     await expect(transport.reconcile(packet)).resolves.toEqual({
       disposition: "indeterminate",
@@ -2712,10 +2748,7 @@ describe("Demos L2PS durable RFQ transport", () => {
 
     // Control: an in-budget page is snapshotted; with our frame absent it is an
     // exhaustive absence proof.
-    page = {
-      messages: [counterparty(0, "A".repeat(1_000_000)), counterparty(1, "A".repeat(1_000_000))],
-      hasMore: false,
-    };
+    page = { messages: full(), hasMore: false };
     snapshotLabels.length = 0;
     ticks = 60_000;
     await expect(transport.reconcile(packet)).resolves.toEqual({
@@ -3040,7 +3073,7 @@ describe("Demos L2PS RFQ final review fixes", () => {
     for (const result of results) {
       expect(result).toEqual({
         status: "complete",
-        delivered: 1,
+        delivered: 1, ignored: 0,
         skipped: [{
           jobId: OTHER_JOB_ID,
           channelId: CHANNEL_ID,
@@ -3083,7 +3116,7 @@ describe("Demos L2PS RFQ final review fixes", () => {
     expect(calls).not.toContain(later.packetId);
     expect(result).toEqual({
       status,
-      delivered: 2,
+      delivered: 2, ignored: 0,
       skipped: [{
         jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: refused.packetId, packets: 2, reason,
       }],
@@ -3105,7 +3138,7 @@ describe("Demos L2PS RFQ final review fixes", () => {
       return new Promise(() => {});
     });
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
-      status: "indeterminate", delivered: 0, skipped: [], reason: CONSUMER_TIMEOUT,
+      status: "indeterminate", delivered: 0, ignored: 0, skipped: [], reason: CONSUMER_TIMEOUT,
     });
     expect(calls).toEqual([early.packetId]);
     fixture.transport.stop();
@@ -3149,23 +3182,23 @@ describe("Demos L2PS RFQ final review fixes", () => {
       expect(capped.calls).toEqual([capped.first.packetId, capped.second.packetId]);
       expect(capped.result).toEqual({
         status: "indeterminate",
-        delivered: 2,
+        delivered: 2, ignored: 0,
         skipped: [],
         reason: "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended",
       });
     }
     await expect(recoverUnderCap(total)).resolves.toMatchObject({
-      result: { status: "complete", delivered: 3, skipped: [] },
+      result: { status: "complete", delivered: 3, ignored: 0, skipped: [] },
     });
     // A repeated frame of a packet already held is not charged twice.
     await expect(recoverUnderCap(total, true)).resolves.toMatchObject({
-      result: { status: "complete", delivered: 3, skipped: [] },
+      result: { status: "complete", delivered: 3, ignored: 0, skipped: [] },
     });
     const none = await recoverUnderCap(decodedBytes(all.second) - 1);
     expect(none.calls).toEqual([]);
     expect(none.result).toMatchObject({ status: "indeterminate", delivered: 0 });
     // The default cap holds all three.
-    expect(all.result).toEqual({ status: "complete", delivered: 3, skipped: [] });
+    expect(all.result).toEqual({ status: "complete", delivered: 3, ignored: 0, skipped: [] });
   });
 
   test("final: inboundRecoveryMaxBytes must be a positive safe integer of at most 1 GiB", () => {
@@ -3326,7 +3359,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     failing = true;
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
       status: "indeterminate",
-      delivered: 0,
+      delivered: 0, ignored: 0,
       skipped: [{
         jobId: JOB_ID, channelId: CHANNEL_ID, packetId: fixture.packet.packetId, packets: 1, reason,
       }],
@@ -3334,7 +3367,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     });
     failing = false;
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
-      status: "complete", delivered: 1, skipped: [],
+      status: "complete", delivered: 1, ignored: 0, skipped: [],
     });
     fixture.transport.stop();
   });
@@ -3378,7 +3411,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     expect(calls).toEqual(delivered.map((packet) => packet.packetId));
     expect(result).toEqual({
       status: "complete",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: delivered.filter((packet) => packet !== fixture.packet).map((packet) => ({
         jobId: packet.jobId,
         channelId: packet.channelId,
@@ -3409,7 +3442,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     });
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [{
         jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: first.packetId, packets: 3, reason: "test refusal",
       }],
@@ -3452,7 +3485,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     });
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
       status: "indeterminate",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [],
       reason: "Demos L2PS inbound recovery reached inboundRecoveryMaxBytes before history ended",
     });
@@ -3523,7 +3556,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     const reason = "seller agreement contribution is not cryptographically valid (invalid)";
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
       status: "indeterminate",
-      delivered: 1,
+      delivered: 1, ignored: 0,
       skipped: [{ jobId: JOB_ID, channelId: CHANNEL_ID, packetId: proposalId, packets: 1, reason }],
       reason: `Demos L2PS recovered packet was not accepted: ${reason}`,
     });
@@ -3531,7 +3564,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     expect(held.status === "ok" && held.record.agreement).toBeUndefined();
     stale = false;
     await expect(sellerTransport.resumeInbound(BUYER)).resolves.toEqual({
-      status: "complete", delivered: 2, skipped: [],
+      status: "complete", delivered: 2, ignored: 0, skipped: [],
     });
     await buyerTransport.drain();
     const buyerStatus = await buyerClient.getStatus(JOB_ID);
@@ -3568,7 +3601,7 @@ describe("Demos L2PS RFQ buyer retry after a stale agreement key", () => {
     });
     await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 3,
+      delivered: 3, ignored: 0,
       skipped: [{
         jobId: OTHER_JOB_ID, channelId: CHANNEL_ID, packetId: refused!.packetId, packets: 1, reason: "test refusal",
       }],
@@ -3651,16 +3684,16 @@ describe("Demos L2PS RFQ buyer retry after a stale agreement key", () => {
     const reason = "buyer agreement contribution is not cryptographically valid (invalid)";
     await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
       status: "complete",
-      delivered: 2,
+      delivered: 2, ignored: 0,
       skipped: [{ jobId: JOB_ID, channelId: CHANNEL_ID, packetId: stale.packetId, packets: 1, reason }],
     });
     await buyerSide.transport.drain();
     await expect(buyerSide.transport.resumeInbound(SELLER)).resolves.toEqual({
-      status: "complete", delivered: 2, skipped: [],
+      status: "complete", delivered: 2, ignored: 0, skipped: [],
     });
     // Once the agreement is final, the old proposal is only a duplicate.
     await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
-      status: "complete", delivered: 3, skipped: [],
+      status: "complete", delivered: 3, ignored: 0, skipped: [],
     });
     const buyerStatus = await buyerSide.client.getStatus(JOB_ID);
     const sellerStatus = await sellerSide.client.getStatus(JOB_ID);
@@ -3672,4 +3705,691 @@ describe("Demos L2PS RFQ buyer retry after a stale agreement key", () => {
     buyerSide.transport.stop();
     sellerSide.transport.stop();
   });
+});
+
+describe("Demos L2PS RFQ verdict paths and node limits", () => {
+  /** A history row from the seller to the buyer, newer than the buyer's offer. */
+  function counterpartyRow(
+    own: DemosL2psRfqStoredMessage,
+    index: number,
+    fields: Record<string, unknown> = {},
+  ): DemosL2psRfqStoredMessage {
+    return {
+      ...structuredClone(own),
+      id: `counterparty-${index}`,
+      from: SELLER_PEER,
+      to: BUYER_PEER,
+      messageHash: (0x1000 + index).toString(16).padStart(64, "0"),
+      timestamp: own.timestamp + 1_000 - index,
+      ...fields,
+    } as DemosL2psRfqStoredMessage;
+  }
+
+  /** A buyer turn packet whose canonical JSON is exactly `bytes` long. */
+  function buyerRejectPacket(bytes: number) {
+    const build = (reason: string) => {
+      const unsigned = {
+        packetVersion: "1" as const,
+        jobId: JOB_ID,
+        channelId: CHANNEL_ID,
+        sender: BUYER,
+        recipient: SELLER,
+        kind: "turn" as const,
+        message: {
+          channelId: CHANNEL_ID,
+          sequence: 1,
+          sender: BUYER,
+          sentAt: NOW,
+          type: "reject" as const,
+          body: { rfqBodyVersion: "1" as const, reason },
+          signature: "buyer-signature",
+        },
+      };
+      return { ...unsigned, packetId: rfqLifecyclePacketId(unsigned as never) };
+    };
+    const probe = Buffer.byteLength(canonicalize(build("r") as never), "utf8");
+    const packet = build("r".repeat(bytes - probe + 1));
+    expect(Buffer.byteLength(canonicalize(packet as never), "utf8")).toBe(bytes);
+    return packet;
+  }
+
+  function hubTransport(
+    hub: FakeL2psHub,
+    role: "buyer" | "seller",
+    extra: Partial<DemosL2psRfqTransportOptions> = {},
+  ) {
+    const errors: Error[] = [];
+    const outboxStore = memorySendOutbox();
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: hub.peer(role === "buyer" ? BUYER_PEER : SELLER_PEER),
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore,
+      localClaim: role === "buyer" ? BUYER : SELLER,
+      localPeerKey: role === "buyer" ? BUYER_PEER : SELLER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: (error) => errors.push(error),
+      ...extra,
+    });
+    return { transport, errors, outboxStore };
+  }
+
+  /** A second buyer transport over the receiver fixture's hub and key. */
+  function buyerReconcile(fixture: Awaited<ReturnType<typeof inboundReceiver>>) {
+    return createDemosL2psRfqTransport<string>({
+      peer: fixture.hub.peer(BUYER_PEER),
+      codec: fixture.baseCodec,
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore: memorySendOutbox(),
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    }).reconcile(fixture.packet);
+  }
+
+  describe("send acknowledgement verdicts", () => {
+    test.each([
+      { name: "another hash, queued", ack: { messageHash: "f".repeat(64), status: "queued" } },
+      { name: "another hash, submitted", ack: { messageHash: "f".repeat(64), l2psStatus: "submitted" } },
+      { name: "status sent", ack: { status: "sent" } },
+      { name: "l2psStatus pending", ack: { l2psStatus: "pending" } },
+      { name: "l2psStatus failed", ack: { l2psStatus: "failed" } },
+      { name: "the hash alone", ack: {} },
+      { name: "no hash", rawAck: { status: "queued" } },
+      { name: "null", rawAck: null },
+      { name: "a string", rawAck: "ok" },
+    ])("an acknowledgement with $name is indeterminate and never stored as acknowledged", async (input) => {
+      const { name: _name, ...options } = input;
+      const fixture = await delayedSendFixture(options);
+      try {
+        await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+        expect(fixture.submissions).toHaveLength(1);
+        await expect(fixture.outboxStore.load(fixture.packet().packetId))
+          .resolves.toMatchObject({ state: "indeterminate" });
+      } finally { await fixture.cleanup(); }
+    });
+  });
+
+  describe("the node's offline flag", () => {
+    test.each([false, true])("a live payload with offline: %s is delivered", async (offline) => {
+      const fixture = await inboundReceiver();
+      fixture.emit({ ...fixture.payload, offline });
+      await fixture.transport.drain();
+      expect(fixture.errors).toEqual([]);
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      fixture.transport.stop();
+    });
+
+    test("a live payload whose offline flag is not a boolean is refused", async () => {
+      const fixture = await inboundReceiver();
+      fixture.emit({ ...fixture.payload, offline: "true" as never });
+      await fixture.transport.drain();
+      expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS incoming RFQ payload is malformed"]);
+      expect(fixture.receive).not.toHaveBeenCalled();
+      fixture.transport.stop();
+    });
+
+    test("the hub's live delivery carries offline: false, as the node's does", async () => {
+      const hub = new FakeL2psHub();
+      const seen: DemosL2psRfqIncomingPayload[] = [];
+      hub.peer(SELLER_PEER).onMessage((payload) => seen.push(payload));
+      const buyerSide = hubTransport(hub, "buyer");
+      await expect(buyerSide.transport.publish(buyerRejectPacket(1_000))).resolves.toEqual({ disposition: "acknowledged" });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.offline).toBe(false);
+    });
+  });
+
+  describe("history statuses and node-written fields", () => {
+    test.each(["delivered", "queued", "sent", "l2ps_pending", "l2ps_batched", "l2ps_confirmed"] as const)(
+      "our own history row with status %s acknowledges, and recovery completes",
+      async (status) => {
+        const fixture = await inboundReceiver();
+        fixture.hub.messages[0]!.status = status;
+        await expect(buyerReconcile(fixture)).resolves.toEqual({ disposition: "acknowledged" });
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+          status: "complete", delivered: 1, ignored: 0, skipped: [],
+        });
+        fixture.transport.stop();
+      },
+    );
+
+    test("a failed row keeps both reconcile and recovery indeterminate", async () => {
+      const fixture = await inboundReceiver();
+      fixture.hub.messages[0]!.status = "failed";
+      await expect(buyerReconcile(fixture)).resolves.toEqual({
+        disposition: "indeterminate",
+        reason: "Demos L2PS history records a failed submission with unknown delivery",
+      });
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 1, ignored: 0, skipped: [],
+        reason: "Demos L2PS inbound history includes failed submission status",
+      });
+      fixture.transport.stop();
+    });
+
+    test.each([
+      { name: "an unknown status", fields: { status: "archived" } },
+      { name: "a negative timestamp", fields: { timestamp: -1 } },
+      { name: "a fractional timestamp", fields: { timestamp: 1.5 } },
+      { name: "a numeric l2psTxHash", fields: { l2psTxHash: 7 } },
+      { name: "a sender that is not a hex key", fields: { from: "not-a-key" } },
+      { name: "an empty id", fields: { id: "" } },
+      { name: "an extra field", fields: { note: "x" } },
+    ])("a row with $name, which only the node writes, refuses the page", async ({ fields }) => {
+      let page: DemosL2psRfqHistoryPage | undefined;
+      const { transport, packet, own } = await buyerWithSentOffer({
+        history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+      });
+      page = { messages: [counterpartyRow(own, 0), structuredClone(own)], hasMore: false };
+      await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+      page = { messages: [counterpartyRow(own, 0, fields), structuredClone(own)], hasMore: false };
+      await expect(transport.reconcile(packet)).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ history reconciliation failed",
+      });
+    });
+
+    test("a row the node wrote with an unknown status refuses inbound recovery", async () => {
+      const fixture = await inboundReceiver();
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 0, { from: BUYER_PEER, to: SELLER_PEER, status: "archived" }));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 0, skipped: [],
+        reason: "Demos L2PS inbound history recovery failed",
+      });
+      expect(fixture.receive).not.toHaveBeenCalled();
+      fixture.transport.stop();
+    });
+
+    test.each([
+      { name: "no hasMore", page: (own: DemosL2psRfqStoredMessage) => ({ messages: [own] }) },
+      { name: "a string hasMore", page: (own: DemosL2psRfqStoredMessage) => ({ messages: [own], hasMore: "false" }) },
+      { name: "an extra key", page: (own: DemosL2psRfqStoredMessage) => ({ messages: [own], hasMore: false, cursor: 1 }) },
+      { name: "messages that are not an array", page: (own: DemosL2psRfqStoredMessage) => ({ messages: { 0: own }, hasMore: false }) },
+    ])("a page with $name is refused", async ({ page }) => {
+      const fixture = await buyerWithSentOffer();
+      const transport = createDemosL2psRfqTransport<string>({
+        peer: { ...fixture.hub.peer(BUYER_PEER), history: async () => page(fixture.own) as never },
+        codec: fixture.baseCodec,
+        l2psUid: L2PS_UID,
+        peerChannel: "loopback",
+        outboxStore: memorySendOutbox(),
+        localClaim: BUYER,
+        localPeerKey: BUYER_PEER,
+        peerForClaim,
+        claimForPeer,
+        onError: vi.fn(),
+      });
+      await expect(transport.reconcile(fixture.packet)).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ history reconciliation failed",
+      });
+    });
+  });
+
+  describe("a foreign or malformed counterparty frame never blocks the pair", () => {
+    test.each([
+      { name: "a non-hex messageHash", fields: { messageHash: "x" } },
+      { name: "a 128-hex messageHash, as demosdk's channel transport sends", fields: { messageHash: "ab".repeat(64) } },
+      { name: "an upper-case messageHash", fields: { messageHash: "E".repeat(64) } },
+      { name: "an oversized messageHash", fields: { messageHash: "f".repeat(20_000) } },
+      { name: "a numeric ciphertext", fields: { encrypted: { ciphertext: 1, nonce: 1 } } },
+      { name: "an extra encrypted key", fields: { encrypted: { ciphertext: "QUFB", nonce: "QUFB", tag: "x" } } },
+      { name: "an encrypted string", fields: { encrypted: "QUFB" } },
+      { name: "an oversized ciphertext", fields: { encrypted: { ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS + 4), nonce: "QUFB" } } },
+    ])("a row with $name is ignored by reconcile and counted by recovery", async ({ fields }) => {
+      const fixture = await inboundReceiver();
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 0, { from: BUYER_PEER, to: SELLER_PEER, ...fields }));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 1, ignored: 1, skipped: [],
+      });
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      // The buyer's own frame is still found on the same page.
+      await expect(buyerReconcile(fixture)).resolves.toEqual({ disposition: "acknowledged" });
+      fixture.transport.stop();
+      // Absence is still provable from a page that holds only such a row.
+      let ticks = 0;
+      const absent = await buyerWithSentOffer({
+        monotonicNowMs: () => ticks,
+        history: () => async () => ({ messages: [counterpartyRow(fixture.own, 0, fields)], hasMore: false }),
+      });
+      ticks = 60_000;
+      await expect(absent.transport.reconcile(absent.packet)).resolves.toEqual({ disposition: "absent" });
+    });
+
+    test("a row under our packetId and route that is not a well-formed frame is a conflict", async () => {
+      const { hub, transport, packet } = await buyerWithSentOffer();
+      hub.messages[0]!.encrypted = { ciphertext: 1, nonce: 1 } as never;
+      await expect(transport.reconcile(packet)).resolves.toEqual({
+        disposition: "rejected",
+        reason: "Demos L2PS history binds packetId to different bytes or route",
+      });
+    });
+  });
+
+  describe("multi-page reconcile", () => {
+    async function paged(
+      pages: (own: DemosL2psRfqStoredMessage, before: number | undefined) => DemosL2psRfqHistoryPage,
+      extra: Partial<DemosL2psRfqTransportOptions> = {},
+    ) {
+      let ticks = 0;
+      const requests: unknown[] = [];
+      let own: DemosL2psRfqStoredMessage | undefined;
+      const fixture = await buyerWithSentOffer({
+        monotonicNowMs: () => ticks,
+        history: (base) => async (peerKey, options) => {
+          if (own === undefined) return base(peerKey, options);
+          requests.push(structuredClone(options));
+          return pages(own, options?.before);
+        },
+        extra,
+      });
+      own = fixture.own;
+      // Past the grace, so one exhaustive page without our frame would prove absence.
+      ticks = 60_000;
+      return { ...fixture, requests };
+    }
+
+    test("absent from every page stays indeterminate, and the cursor is the oldest timestamp", async () => {
+      const fixture = await paged((own, before) => before === undefined
+        ? { messages: [counterpartyRow(own, 0)], hasMore: true }
+        : before === counterpartyRow(own, 0).timestamp
+          ? { messages: [counterpartyRow(own, 1)], hasMore: false }
+          : { messages: [], hasMore: false });
+      await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({
+        disposition: "indeterminate",
+        reason: "Demos L2PS timestamp pagination cannot prove packet absence",
+      });
+      expect(fixture.requests).toEqual([
+        { limit: 100 },
+        { before: counterpartyRow(fixture.own, 0).timestamp, limit: 100 },
+      ]);
+    });
+
+    test("our frame on page 2 acknowledges", async () => {
+      const fixture = await paged((own, before) => before === undefined
+        ? { messages: [counterpartyRow(own, 0)], hasMore: true }
+        : { messages: [structuredClone(own)], hasMore: false });
+      await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({ disposition: "acknowledged" });
+    });
+
+    test.each([
+      {
+        name: "an empty page that has more",
+        pages: (): DemosL2psRfqHistoryPage => ({ messages: [], hasMore: true }),
+        reason: "Demos L2PS history pagination made no progress",
+      },
+      {
+        name: "a page that repeats the last page's IDs",
+        pages: (own: DemosL2psRfqStoredMessage, before: number | undefined): DemosL2psRfqHistoryPage => ({
+          messages: [counterpartyRow(own, 0, before === undefined ? {} : { timestamp: own.timestamp })],
+          hasMore: true,
+        }),
+        reason: "Demos L2PS history pagination cursor is ambiguous",
+      },
+      {
+        name: "a page that does not move the cursor back",
+        pages: (own: DemosL2psRfqStoredMessage, before: number | undefined): DemosL2psRfqHistoryPage => ({
+          messages: [counterpartyRow(own, before === undefined ? 0 : 1, { timestamp: own.timestamp + 5_000 })],
+          hasMore: true,
+        }),
+        reason: "Demos L2PS history pagination cursor is ambiguous",
+      },
+    ])("$name stays indeterminate", async ({ pages, reason }) => {
+      const fixture = await paged(pages);
+      await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({ disposition: "indeterminate", reason });
+    });
+
+    test("historyMaxPages ends the search indeterminate", async () => {
+      let index = 0;
+      const fixture = await paged((own) => ({ messages: [counterpartyRow(own, index++)], hasMore: true }), { historyMaxPages: 2 });
+      await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ history reconciliation page limit reached",
+      });
+      expect(fixture.requests).toHaveLength(2);
+    });
+  });
+
+  describe("inbound recovery completion", () => {
+    test("a failed history read delivers nothing and is indeterminate", async () => {
+      const fixture = await inboundReceiver({ history: () => async () => { throw new Error("node offline"); } });
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 0, skipped: [],
+        reason: "Demos L2PS inbound history recovery failed",
+      });
+      expect(fixture.receive).not.toHaveBeenCalled();
+      fixture.transport.stop();
+    });
+
+    test("the oldest packet on page 2 is delivered, and pagination keeps the call indeterminate", async () => {
+      const fixture = await inboundReceiver({ extra: { historyPageSize: 1 } });
+      // A newer foreign row fills page 1; the offer is only on page 2.
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 0, { from: BUYER_PEER, to: SELLER_PEER, messageHash: "x" }));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 1, ignored: 1, skipped: [],
+        reason: "Demos L2PS timestamp pagination cannot prove inbound completeness",
+      });
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      fixture.transport.stop();
+    });
+
+    test("the shared decryption budget running out stops the scan with its reason", async () => {
+      let now = 0;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+      try {
+        const fixture = await inboundReceiver({
+          operationTimeoutMs: 500,
+          open: (base) => (encrypted, context) => {
+            now += 1_000;
+            return base.open(encrypted, context);
+          },
+        });
+        fixture.hub.messages.push({ ...structuredClone(fixture.own), id: "newer-copy", timestamp: fixture.own.timestamp + 1 });
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+          status: "indeterminate", delivered: 1, ignored: 0, skipped: [],
+          reason: "Demos L2PS inbound history decryption budget exhausted",
+        });
+        fixture.transport.stop();
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test.each([
+      {
+        name: "an empty page that has more",
+        page: (): DemosL2psRfqHistoryPage => ({ messages: [], hasMore: true }),
+        reason: "Demos L2PS inbound history pagination made no progress",
+      },
+      {
+        name: "a page that does not move the cursor back",
+        page: (own: DemosL2psRfqStoredMessage): DemosL2psRfqHistoryPage => ({ messages: [structuredClone(own)], hasMore: true }),
+        reason: "Demos L2PS inbound history cursor is ambiguous",
+      },
+    ])("$name stays indeterminate", async ({ page, reason }) => {
+      let own: DemosL2psRfqStoredMessage | undefined;
+      const fixture = await inboundReceiver({
+        history: (base) => async (peerKey, options) => own === undefined ? base(peerKey, options) : page(own),
+      });
+      own = fixture.own;
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "indeterminate", reason });
+      fixture.transport.stop();
+    });
+
+    test("historyMaxPages ends recovery indeterminate", async () => {
+      const fixture = await inboundReceiver({ extra: { historyPageSize: 1, historyMaxPages: 1 } });
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 0, { from: BUYER_PEER, to: SELLER_PEER, messageHash: "x" }));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 1, skipped: [],
+        reason: "Demos L2PS inbound history recovery page limit reached",
+      });
+      fixture.transport.stop();
+    });
+  });
+
+  describe("a custom codec relies on the transport's route checks", () => {
+    const THIRD = "did:demos:third-l2ps-rfq";
+    // No authentication at all: only the transport's own checks bind the route.
+    const plainCodec: DemosL2psRfqWireCodec = {
+      codecId: "plain-test-codec",
+      seal: (plaintext) => ({ ciphertext: Buffer.from(plaintext).toString("base64"), nonce: "AAAAAAAAAAAAAAAA" }),
+      open: (encrypted) => Uint8Array.from(Buffer.from(encrypted.ciphertext, "base64")),
+    };
+
+    function plainReceiver(localClaim: string, localPeerKey: string) {
+      const hub = new FakeL2psHub();
+      const errors: Error[] = [];
+      const transport = createDemosL2psRfqTransport<string>({
+        peer: hub.peer(localPeerKey),
+        codec: plainCodec,
+        l2psUid: L2PS_UID,
+        peerChannel: "loopback",
+        outboxStore: memorySendOutbox(),
+        localClaim,
+        localPeerKey,
+        peerForClaim: (claim) => claim === THIRD ? THIRD_PEER : peerForClaim(claim),
+        claimForPeer: (peer) => peer === THIRD_PEER ? THIRD : claimForPeer(peer),
+        onError: (error) => errors.push(error),
+      });
+      const consumer = vi.fn(() => ({ status: "ready" as const, record: undefined as never }));
+      transport.start(consumer);
+      const emit = async (payload: DemosL2psRfqIncomingPayload) => {
+        for (const handler of hub.handlers.get(localPeerKey) ?? []) handler(payload);
+        await transport.drain();
+      };
+      return { hub, transport, errors, consumer, emit };
+    }
+
+    async function offerFrame() {
+      const { packet } = await buyerWithSentOffer();
+      const encrypted = {
+        ciphertext: Buffer.from(canonicalize(packet as never), "utf8").toString("base64"),
+        nonce: "AAAAAAAAAAAAAAAA",
+      };
+      return { packet, encrypted };
+    }
+
+    function row(from: string, to: string, messageHash: string, encrypted: DemosL2psRfqEncryptedMessage): DemosL2psRfqStoredMessage {
+      return { id: "row-1", from, to, messageHash, encrypted, l2psUid: L2PS_UID, l2psTxHash: null, timestamp: NOW, status: "delivered" };
+    }
+
+    const ROUTE_ERROR = "Demos L2PS RFQ plaintext does not bind its peer route";
+
+    test("live: the frame's hash, sender claim and recipient must all match its plaintext", async () => {
+      const { packet, encrypted } = await offerFrame();
+      const seller = plainReceiver(SELLER, SELLER_PEER);
+      await seller.emit({ from: BUYER_PEER, encrypted, messageHash: "e".repeat(64) });
+      await seller.emit({ from: THIRD_PEER, encrypted, messageHash: packet.packetId });
+      const third = plainReceiver(THIRD, THIRD_PEER);
+      await third.emit({ from: BUYER_PEER, encrypted, messageHash: packet.packetId });
+      expect(seller.errors.map((error) => error.message)).toEqual([ROUTE_ERROR, ROUTE_ERROR]);
+      expect(third.errors.map((error) => error.message)).toEqual([ROUTE_ERROR]);
+      expect(seller.consumer).not.toHaveBeenCalled();
+      expect(third.consumer).not.toHaveBeenCalled();
+      // Control: the matching route is delivered.
+      await seller.emit({ from: BUYER_PEER, encrypted, messageHash: packet.packetId });
+      expect(seller.consumer).toHaveBeenCalledTimes(1);
+      expect(seller.errors).toHaveLength(2);
+    });
+
+    test.each([
+      { name: "another hash", local: "seller", from: BUYER_PEER, remote: BUYER, hash: "e".repeat(64) },
+      { name: "another sender", local: "seller", from: THIRD_PEER, remote: THIRD, hash: undefined },
+      { name: "another recipient", local: "third", from: BUYER_PEER, remote: BUYER, hash: undefined },
+    ])("recovery: a frame with $name than its plaintext is unreadable", async ({ local, from, remote, hash }) => {
+      const { packet, encrypted } = await offerFrame();
+      const receiver = local === "seller" ? plainReceiver(SELLER, SELLER_PEER) : plainReceiver(THIRD, THIRD_PEER);
+      const to = local === "seller" ? SELLER_PEER : THIRD_PEER;
+      receiver.hub.messages.push(row(from, to, hash ?? packet.packetId, encrypted));
+      await expect(receiver.transport.resumeInbound(remote)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 0, skipped: [],
+        reason: "Demos L2PS inbound history contains an unreadable RFQ frame",
+      });
+      expect(receiver.consumer).not.toHaveBeenCalled();
+    });
+
+    test("recovery control: the matching route is delivered", async () => {
+      const { packet, encrypted } = await offerFrame();
+      const seller = plainReceiver(SELLER, SELLER_PEER);
+      seller.hub.messages.push(row(BUYER_PEER, SELLER_PEER, packet.packetId, encrypted));
+      await expect(seller.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 1, ignored: 0, skipped: [],
+      });
+    });
+
+    test("publish refuses a packet whose sender is not the local claim, before any send", async () => {
+      const { packet } = await offerFrame();
+      const seller = plainReceiver(SELLER, SELLER_PEER);
+      await expect(seller.transport.publish(packet)).resolves.toEqual({
+        disposition: "rejected", reason: "Demos L2PS RFQ packet sender is not the local claim",
+      });
+      expect(seller.hub.sends).toBe(0);
+    });
+  });
+
+  test("a failed save after the peer call keeps the sending marker and a full grace", async () => {
+    const fixture = await delayedSendFixture({ ack: { l2psStatus: "submitted" }, failSaveAfterSend: true });
+    try {
+      await expect(fixture.offer()).resolves.toMatchObject({ status: "indeterminate" });
+      await expect(fixture.client.getStatus(JOB_ID)).resolves.toMatchObject({
+        record: { outbox: [{ state: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" }] },
+      });
+      const stored = await fixture.outboxStore.load(fixture.packet().packetId) as Record<string, unknown>;
+      expect(stored).toMatchObject({ state: "sending", generation: 1 });
+      expect(stored).not.toHaveProperty("attemptEndedAtMs");
+      // Recovery starts the whole grace now; only then may history prove absence.
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: ABSENCE_GRACE_REASON,
+      });
+      fixture.setTicks(10_000 + 59_999);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({
+        disposition: "indeterminate", reason: ABSENCE_GRACE_REASON,
+      });
+      fixture.setTicks(10_000 + 60_000);
+      await expect(fixture.transport.reconcile(fixture.packet())).resolves.toEqual({ disposition: "absent" });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  describe("the node's ciphertext limit", () => {
+    test("the codec seals 98,288 bytes into exactly 131,072 Base64 characters and refuses one more byte", () => {
+      const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+      const context = { messageHash: "1".repeat(64), fromPeer: BUYER_PEER, toPeer: SELLER_PEER };
+      const sealed = codec.seal(new Uint8Array(98_288), context) as DemosL2psRfqEncryptedMessage;
+      expect(sealed.ciphertext).toHaveLength(MAX_CIPHERTEXT_CHARS);
+      expect(codec.open(sealed, context)).toEqual(new Uint8Array(98_288));
+      expect(() => codec.seal(new Uint8Array(98_289), context))
+        .toThrow("Demos L2PS RFQ plaintext exceeds the wire size limit");
+    });
+
+    test("a 98,288-byte packet is sent; one byte more is rejected before any outbox write or send", async () => {
+      const hub = new FakeL2psHub();
+      const buyerSide = hubTransport(hub, "buyer");
+      const largest = buyerRejectPacket(98_288);
+      await expect(buyerSide.transport.publish(largest)).resolves.toEqual({ disposition: "acknowledged" });
+      expect(hub.messages[0]?.encrypted.ciphertext).toHaveLength(MAX_CIPHERTEXT_CHARS);
+      const over = buyerRejectPacket(98_289);
+      await expect(buyerSide.transport.publish(over)).resolves.toEqual({
+        disposition: "rejected", reason: "Demos L2PS RFQ packet exceeds the wire size limit",
+      });
+      expect(hub.sends).toBe(1);
+      expect(await buyerSide.outboxStore.load(over.packetId)).toBeUndefined();
+    });
+
+    test("a custom codec's frame over the node limit is rejected before any outbox write or send", async () => {
+      const hub = new FakeL2psHub();
+      const buyerSide = hubTransport(hub, "buyer", {
+        codec: {
+          codecId: "inflating-test-codec",
+          seal: () => ({ ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS + 4), nonce: "AAAAAAAAAAAAAAAA" }),
+          open: () => new Uint8Array(),
+        },
+      });
+      const packet = buyerRejectPacket(1_000);
+      await expect(buyerSide.transport.publish(packet)).resolves.toEqual({
+        disposition: "rejected", reason: "ciphertext exceeds its size limit",
+      });
+      expect(hub.sends).toBe(0);
+      expect(await buyerSide.outboxStore.load(packet.packetId)).toBeUndefined();
+    });
+  });
+
+  describe("the AES-GCM wire format", () => {
+    const key = Uint8Array.from({ length: 32 }, (_, index) => index);
+    const context = { messageHash: "1".repeat(64), fromPeer: BUYER_PEER, toPeer: SELLER_PEER };
+    // The exact AAD: JCS of the route plus the wire domain.
+    const AAD = `{"fromPeer":"${BUYER_PEER}","messageHash":"${"1".repeat(64)}","toPeer":"${SELLER_PEER}","wireDomain":"dacs-rfq-l2ps-wire:v1"}`;
+
+    test("opens a known-answer frame: 12-byte nonce, 16-byte tag, route AAD under the v1 domain", () => {
+      // Computed independently with node:crypto: key 00..1f, nonce a0..ab,
+      // plaintext {"dacs":"rfq"}, AAD as above.
+      const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: key });
+      const opened = codec.open(
+        { ciphertext: "nToYTCa4IIVAF+GiJQfeGcWcREfxE37VyWHUogAH", nonce: "oKGio6Slpqeoqaqr" },
+        context,
+      ) as Uint8Array;
+      expect(Buffer.from(opened).toString("utf8")).toBe('{"dacs":"rfq"}');
+    });
+
+    test("seals a frame that the same format opens outside the SDK", () => {
+      const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: key });
+      const plaintext = Buffer.from('{"dacs":"rfq"}', "utf8");
+      const sealed = codec.seal(plaintext, context) as DemosL2psRfqEncryptedMessage;
+      expect(sealed).not.toHaveProperty("ephemeralKey");
+      const nonce = Buffer.from(sealed.nonce, "base64");
+      const combined = Buffer.from(sealed.ciphertext, "base64");
+      expect(nonce).toHaveLength(12);
+      expect(combined).toHaveLength(plaintext.length + 16);
+      const decipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
+      decipher.setAAD(Buffer.from(AAD, "utf8"));
+      decipher.setAuthTag(combined.subarray(plaintext.length));
+      expect(Buffer.concat([decipher.update(combined.subarray(0, plaintext.length)), decipher.final()]))
+        .toEqual(plaintext);
+      expect(() => codec.open({ ...sealed, ephemeralKey: "ek" }, context))
+        .toThrow("AES-GCM RFQ frames cannot contain an ephemeralKey");
+    });
+
+    test.each([
+      { name: "31 bytes", options: { sharedKey: new Uint8Array(31) } },
+      { name: "33 bytes", options: { sharedKey: new Uint8Array(33) } },
+      { name: "a 32-character string", options: { sharedKey: "k".repeat(32) } },
+      { name: "an array of 32 numbers", options: { sharedKey: Array(32).fill(1) } },
+      { name: "an extra option", options: { sharedKey: new Uint8Array(32), nonce: 1 } },
+      { name: "no key", options: {} },
+    ])("the codec factory refuses $name", ({ options }) => {
+      expect(() => createDemosL2psRfqAesGcmCodec(options as never))
+        .toThrow("Demos L2PS RFQ sharedKey must be exactly 32 bytes");
+    });
+
+    test("a custom codec's ephemeralKey is stored, delivered and recovered unchanged", async () => {
+      const hub = new FakeL2psHub();
+      const aes = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+      const seen: Array<string | undefined> = [];
+      const codec: DemosL2psRfqWireCodec = {
+        codecId: "ephemeral-test-codec",
+        async seal(plaintext, sealContext) {
+          return { ...(await aes.seal(plaintext, sealContext)), ephemeralKey: "ek-1" };
+        },
+        open(encrypted, openContext) {
+          seen.push(encrypted.ephemeralKey);
+          return aes.open({ ciphertext: encrypted.ciphertext, nonce: encrypted.nonce }, openContext);
+        },
+      };
+      const buyerSide = hubTransport(hub, "buyer", { codec });
+      const sellerSide = hubTransport(hub, "seller", { codec });
+      const consumer = vi.fn(() => ({ status: "ready" as const, record: undefined as never }));
+      sellerSide.transport.start(consumer);
+      await expect(buyerSide.transport.publish(buyerRejectPacket(1_000))).resolves.toEqual({ disposition: "acknowledged" });
+      await sellerSide.transport.drain();
+      expect(hub.messages[0]?.encrypted.ephemeralKey).toBe("ek-1");
+      await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 1, ignored: 0, skipped: [],
+      });
+      expect(consumer).toHaveBeenCalledTimes(2);
+      expect(seen).toEqual(["ek-1", "ek-1"]);
+      expect(sellerSide.errors).toEqual([]);
+      sellerSide.transport.stop();
+    });
+  });
+
+  test.each(["rejected", "indeterminate", "conflict"] as const)(
+    "a live packet the lifecycle answers %s is reported once to onError with its reason",
+    async (status) => {
+      const fixture = await inboundReceiver();
+      fixture.receive.mockImplementationOnce(() => ({ status, reason: "lifecycle said no" }) as never);
+      fixture.emit(fixture.payload);
+      await fixture.transport.drain();
+      expect(fixture.errors.map((error) => error.message))
+        .toEqual(["Demos L2PS RFQ lifecycle receive failed: lifecycle said no"]);
+      // The same packet, now accepted, reports nothing more.
+      fixture.emit(fixture.payload);
+      await fixture.transport.drain();
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.receive).toHaveBeenCalledTimes(2);
+      fixture.transport.stop();
+    },
+  );
 });
