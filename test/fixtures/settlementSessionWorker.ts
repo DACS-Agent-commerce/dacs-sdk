@@ -3,14 +3,14 @@ import { join } from "node:path";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
-  runSessionCore, sessionAnchorName, type SessionDeps, type SettleRequest, type SettleResult,
+  legacyMvpSessionAnchorName, runSessionCore, type SessionDeps, type SettleRequest, type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { sha256Hex } from "../../src/canonical/index.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
-import type { WorkerOptions } from "./settlementProcess.js";
+import { RESTART_JOB_ID, type WorkerOptions } from "./settlementProcess.js";
 
 export async function runRestartSession(input: {
   root: string; id: string; options: WorkerOptions;
@@ -52,7 +52,7 @@ export async function runRestartSession(input: {
       }
     },
     anchor: async (name, value) => {
-      if (name === sessionAnchorName.evidence("job-restart") && input.options.crash === "before-anchor") {
+      if (name === legacyMvpSessionAnchorName.evidence(RESTART_JOB_ID) && input.options.crash === "before-anchor") {
         await input.stopAt(`before-anchor-${input.id}`);
       }
       await writeFile(path(name), JSON.stringify(value));
@@ -67,7 +67,12 @@ export async function runRestartSession(input: {
       return input.settle(req);
     },
     expectedSettlementPayee: input.result.payee,
-    newJobId: () => "job-restart",
+    // Only the first process mints the job id; a restart that silently took the
+    // new-session path instead of resuming must fail rather than reuse it.
+    newJobId: () => {
+      if (input.id !== "first") throw new Error("resume must not mint a job id");
+      return RESTART_JOB_ID;
+    },
     now: () => "2026-01-01T00:00:00Z", nowMs: () => 1_780_000_000_000,
     // These tests focus on settlement recovery, as settleResume.test.ts does.
     trustListing: true, authenticateRecoveredArtifact: () => true, sessionStore,
@@ -75,5 +80,5 @@ export async function runRestartSession(input: {
   return runSessionCore("stor:listing", {
     price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-x402" },
     deliveryPhase: "deliver-attested-payload", deliveryFormat: "application/json",
-  }, deps, input.id === "first" ? undefined : "job-restart");
+  }, deps, input.id === "first" ? undefined : RESTART_JOB_ID);
 }

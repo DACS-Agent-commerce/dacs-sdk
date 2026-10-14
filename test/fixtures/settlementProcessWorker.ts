@@ -2,6 +2,8 @@ import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { x402Client, x402HTTPClient } from "@x402/fetch";
+
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import { DacsError } from "../../src/errors.js";
 import { evmErc20Settle, evmErc20SettleCore } from "../../src/rails/evmErc20.js";
@@ -10,9 +12,11 @@ import {
   type SettlementBinding, type SettlementEffectFence, type SettlementLog,
   type SettlementReconcile,
 } from "../../src/rails/idempotency.js";
-import { x402Settle, x402SettleCore } from "../../src/rails/x402.js";
+import {
+  dacsX402AuthorizationNonce, x402Settle, x402SettleCore, type X402ClientLike,
+} from "../../src/rails/x402.js";
 import { createTestFsSettlementLog } from "./settlementLogFs.js";
-import { waitForFiles, type WorkerOptions } from "./settlementProcess.js";
+import { RESTART_JOB_ID, waitForFiles, type RailRecord, type WorkerOptions } from "./settlementProcess.js";
 
 const [root, id, rawOptions] = process.argv.slice(2);
 if (!root || !id || !rawOptions) throw new Error("settlement worker arguments are missing");
@@ -27,16 +31,21 @@ const TX = `0x${"a".repeat(64)}`;
 const BLOCK = `0x${"b".repeat(64)}`;
 const NEXT = `0x${"c".repeat(64)}`;
 const RESOURCE = "https://seller.example/resource";
+const token = options.token ?? TOKEN;
 const req: SettleRequest = {
   rail: mode === "evm" ? "pay-evm-erc20" : "pay-x402",
   phase: mode === "evm" ? "pay-evm-erc20" : "pay-x402",
-  jobId: "job-restart", phaseIndex: 0, amount: options.amount ?? "1000000", asset: "USDC",
+  jobId: RESTART_JOB_ID, phaseIndex: 0, amount: options.amount ?? "1000000", asset: "USDC",
   payee: "did:demos:seller", expectedPayee: PAYEE,
 };
-const success = (): SettleResult => ({
-  ok: true, txHash: TX, chainId: NETWORK, payer: PAYER, payee: PAYEE,
+const success = (txHash = TX): SettleResult => ({
+  ok: true, txHash, chainId: NETWORK, payer: PAYER, payee: PAYEE,
   finality: { model: "block-depth", finalityBlocks: 2 },
 });
+// The rail identity each mode can recompute from its own request after a restart.
+const genericIdentity = (request: SettleRequest) => `test-effect:${request.jobId}:${request.phaseIndex ?? 0}`;
+const sb3Nonce = (request: SettleRequest) =>
+  dacsX402AuthorizationNonce({ jobId: request.jobId, phaseIndex: request.phaseIndex ?? 0 });
 
 async function marker(name: string, value: unknown = { pid: process.pid }) {
   // Publish complete content: the parent may read a marker as soon as it exists.
@@ -56,9 +65,21 @@ function append(name: string, value: unknown) {
   finally { closeSync(handle); }
 }
 
-async function effect() {
+async function lines<T>(name: string): Promise<T[]> {
+  try { return (await readFile(join(root!, name), "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as T); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+// The irreversible effect: the test rail records it in its own authoritative
+// ledger, keyed by what that rail can be queried by. Nothing is copied from the
+// settlement result that the crashed process failed to persist.
+async function effect(record: RailRecord) {
   if (options.crash === "before-effect") await stopAt(`before-effect-${id}`);
-  append("effects", { pid: process.pid, txHash: TX });
+  append("authority", record);
+  append("effects", { pid: process.pid, ...record });
 }
 
 // Racing grants both read the reconcile revision before either may commit it.
@@ -71,7 +92,6 @@ const durable = createTestFsSettlementLog(join(root, "log"), options.action === 
 const log: SettlementLog = {
   ...durable,
   async putOutcome(input) {
-    await marker("landed", input.result);
     if (options.crash === "before-outcome") await stopAt(`before-outcome-${id}`);
     return durable.putOutcome(input);
   },
@@ -84,8 +104,39 @@ const log: SettlementLog = {
 // A deployment may fix one owner ID for every process it restarts.
 const owner = options.owner ?? id;
 const store = createIdempotencyStore(log, { owner, now: () => now, leaseDurationMs: 100 });
+
+// Query the test rail authority by the identity this process derives itself:
+// the generic effect identity, the SB-3 EIP-3009 nonce, or (direct ERC-20 has
+// no pre-submission reference) the bound transfer terms.
+async function lookup(fence?: Readonly<SettlementEffectFence>): Promise<SettleResult | null> {
+  const ledger = await lines<RailRecord>("authority");
+  if (mode === "generic") {
+    const found = ledger.filter((entry) => entry.rail === "generic" && entry.identity === genericIdentity(req)).at(-1);
+    return found ? success(found.txHash) : null;
+  }
+  if (mode === "evm") {
+    const found = ledger.filter((entry) => entry.rail === "evm" && entry.token === token &&
+      entry.from === PAYER && entry.to === PAYEE && entry.value === req.amount).at(-1);
+    return found ? success(found.txHash) : null;
+  }
+  // DACS-4 §9.5.8 SB-3: the derived nonce is the retry identity. Reconcile its
+  // authorization state; resume only the same transfer and never mint a new nonce.
+  const nonce = await sb3Nonce(req);
+  if (fence?.effectIdentity !== nonce) throw new DacsError("x402 effect fence does not retain the SB-3 nonce");
+  const found = ledger.filter((entry): entry is Extract<RailRecord, { rail: "x402" }> =>
+    entry.rail === "x402" && entry.nonce === nonce).at(-1);
+  if (!found) return null;
+  if (found.state === "cancelled") {
+    throw new DacsError("SB-3 authorization nonce is cancelled; refusing a fresh nonce for this phase");
+  }
+  if (found.to !== PAYEE || found.value !== req.amount || !found.txHash) {
+    throw new DacsError("SB-3 authorization nonce was used by a different transfer; refusing a fresh nonce for this phase");
+  }
+  return success(found.txHash);
+}
+
 const reconcile: SettlementReconcile = async (_key, fence) => {
-  append("reconciles", { pid: process.pid, key: _key, generation: fence?.generation });
+  append("reconciles", { pid: process.pid, key: _key, generation: fence?.generation, identity: fence?.effectIdentity });
   if (options.race) {
     await marker(`reconciling-${id}`);
     await waitForFiles(root!, ["finish-reconcile"]);
@@ -96,23 +147,26 @@ const reconcile: SettlementReconcile = async (_key, fence) => {
     if (!fence?.effectIdentity) throw new DacsError("test replay requires a retained external identity");
     return {
       disposition: "replay-authorized", bindingHash: fence.bindingHash,
-      effectIdentity: fence.effectIdentity, protection: "prior-effect-terminal",
+      // Bind the identity this rail derives, never an echo of the fence.
+      effectIdentity: mode === "x402" ? await sb3Nonce(req) : genericIdentity(req),
+      protection: "prior-effect-terminal",
       async assertReplaySafe() {
         // The parent has reaped the pre-effect process before either contender
         // starts. This file is test rail authority that it can never submit.
-        await readFile(join(root!, "prior-effect-terminal"), "utf8");
+        try { await readFile(join(root!, "prior-effect-terminal"), "utf8"); }
+        catch { throw new DacsError("test rail cannot prove the prior effect terminal"); }
       },
     };
   }
-  return JSON.parse(await readFile(join(root!, "landed"), "utf8")) as SettleResult;
+  return lookup(fence);
 };
 
 function binding(request: SettleRequest): SettlementBinding {
   return {
     bindingVersion: "1", railId: request.rail, jobId: request.jobId, phaseIndex: request.phaseIndex ?? 0,
     phase: request.phase, amount: request.amount, agreementAsset: request.asset,
-    settlementAsset: TOKEN, payer: PAYER, payee: PAYEE, network: NETWORK,
-    finality: { model: "block-depth", finalityBlocks: 2 }, effectIdentity: "test-external-effect",
+    settlementAsset: token, payer: PAYER, payee: PAYEE, network: NETWORK,
+    finality: { model: "block-depth", finalityBlocks: 2 }, effectIdentity: genericIdentity(request),
   };
 }
 
@@ -120,7 +174,10 @@ const evm = evmErc20Settle({
   address: PAYER, finalityBlocks: 2,
   settle: (params, fence) => evmErc20SettleCore({ ...params, finalityBlocks: 2 }, {
     address: PAYER,
-    transfer: async () => { await effect(); return TX; },
+    transfer: async () => {
+      await effect({ rail: "evm", txHash: TX, token: params.tokenAddress, from: PAYER, to: params.recipientEvm, value: params.amount });
+      return TX;
+    },
     finalityClient: {
       getChainId: async () => 84532,
       waitForTransactionReceipt: async () => receipt(),
@@ -132,7 +189,7 @@ const evm = evmErc20Settle({
       }),
     },
   }, fence),
-}, { tokenAddress: TOKEN, network: NETWORK, recipientEvm: PAYEE }, { store, reconcile });
+}, { tokenAddress: token, network: NETWORK, recipientEvm: PAYEE }, { store, reconcile });
 
 function receipt() {
   const topic = (address: string) => `0x${address.slice(2).padStart(64, "0")}`;
@@ -147,25 +204,56 @@ function receipt() {
   };
 }
 
+const encode = (value: unknown) => Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+// The real x402 v2 HTTP client: PAYMENT-REQUIRED in, PAYMENT-SIGNATURE out. Only
+// the EIP-3009 signer is replaced; it signs the SB-3 nonce for this exact phase.
+function x402HttpClient(nonce: string): X402ClientLike {
+  return new x402HTTPClient(new x402Client().register(NETWORK, {
+    scheme: "exact",
+    async createPaymentPayload(version, requirements) {
+      append("payloads", { pid: process.pid, nonce });
+      return {
+        x402Version: version,
+        payload: {
+          authorization: {
+            from: PAYER, to: requirements.payTo, value: requirements.amount,
+            validAfter: "0", validBefore: "4102444800", nonce,
+          },
+          signature: `0x${"44".repeat(65)}`,
+        },
+      };
+    },
+  })) as unknown as X402ClientLike;
+}
+
 const x402 = x402Settle({
   address: PAYER, finalityBlocks: 2,
-  settle: (params, fence) => x402SettleCore({ ...params, finalityBlocks: 2 }, {
+  settle: async (params, fence) => x402SettleCore({ ...params, finalityBlocks: 2 }, {
     payerAddress: PAYER, transportPolicy: { mode: "insecure-test" },
-    client: {
-      getPaymentRequiredResponse: () => ({ accepts: [{ network: NETWORK, payTo: PAYEE, amount: req.amount, asset: TOKEN }] }),
-      createPaymentPayload: async (challenge) => challenge,
-      encodePaymentSignatureHeader: () => ({ "X-PAYMENT": "test-authority" }),
-      getPaymentSettleResponse: () => ({ success: true, transaction: TX, network: NETWORK, payer: PAYER }),
-    },
-    fetchImpl: async (_url, init) => {
-      if (!new Headers(init?.headers).has("X-PAYMENT")) {
-        return new Response(JSON.stringify({ x402Version: 2 }), { status: 402 });
+    client: x402HttpClient(await dacsX402AuthorizationNonce({ jobId: params.jobId!, phaseIndex: params.phaseIndex! })),
+    fetchImpl: async (url, init) => {
+      const signature = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
+      if (signature === null) {
+        const challenge = {
+          x402Version: 2, resource: { url: String(url), mimeType: "application/json" },
+          accepts: [{
+            scheme: "exact", network: NETWORK, amount: req.amount, asset: TOKEN, payTo: PAYEE,
+            maxTimeoutSeconds: 120, extra: { name: "USD Coin", version: "2" },
+          }],
+          extensions: {},
+        };
+        return new Response(JSON.stringify(challenge), { status: 402, headers: { "PAYMENT-REQUIRED": encode(challenge) } });
       }
-      await effect();
+      // The facilitator executes the signed authorization it was given.
+      const { authorization } = (JSON.parse(Buffer.from(signature, "base64").toString("utf8")) as {
+        payload: { authorization: { nonce: string; to: string; value: string } };
+      }).payload;
+      await effect({
+        rail: "x402", txHash: TX, nonce: authorization.nonce, state: "used",
+        to: authorization.to, value: authorization.value,
+      });
       return new Response("delivered", { status: 200, headers: {
-        "PAYMENT-RESPONSE": Buffer.from(JSON.stringify({
-          success: true, transaction: TX, network: NETWORK, payer: PAYER, amount: req.amount,
-        })).toString("base64"),
+        "PAYMENT-RESPONSE": encode({ success: true, transaction: TX, network: NETWORK, payer: PAYER, amount: req.amount }),
       } });
     },
     assertFinalityContext: async () => undefined,
@@ -174,7 +262,7 @@ const x402 = x402Settle({
       blockNumber: 100, confirmations: 2, finalityObservedAt: 1_700_000_011_000,
     }),
   }, fence),
-}, { url: RESOURCE, network: NETWORK, recipientEvm: PAYEE, asset: TOKEN }, { store, reconcile });
+}, { url: options.resource ?? RESOURCE, network: NETWORK, recipientEvm: PAYEE, asset: token }, { store, reconcile });
 
 async function settle(request: SettleRequest) {
   let result: SettleResult;
@@ -183,7 +271,7 @@ async function settle(request: SettleRequest) {
   else result = await store.once(settlementKey(request.rail, request.jobId, request.phaseIndex ?? 0), binding(request),
     async (fence?: Readonly<SettlementEffectFence>) => {
       await fence?.assertCurrent();
-      await effect();
+      await effect({ rail: "generic", txHash: TX, identity: fence!.effectIdentity! });
       return success();
     }, reconcile);
   return result;

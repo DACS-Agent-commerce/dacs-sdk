@@ -3,11 +3,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { sessionAnchorName } from "../../src/agent/runSessionCore.js";
+import { legacyMvpSessionAnchorName } from "../../src/agent/runSessionCore.js";
 import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 import { sha256Hex } from "../../src/canonical/index.js";
 import {
-  createSettlementProcessHarness, type SettlementProcessHarness,
+  createSettlementProcessHarness, RESTART_JOB_ID, type SettlementProcessHarness,
 } from "../fixtures/settlementProcess.js";
 
 const harnesses: SettlementProcessHarness[] = [];
@@ -15,6 +15,8 @@ afterEach(async () => {
   await Promise.all(harnesses.splice(0).map((value) => value.cleanup()));
 });
 
+// runSessionCore anchors at the quarantined legacy MVP names, so this proves the
+// PC-7 no-resubmission rule on that path, not PC-7(b)'s per-phase payment anchor.
 describe("runSessionCore with filesystem stores across SIGKILL (#43)", () => {
   test.each(["before-outcome", "before-anchor"] as const)(
     "resume after %s rebuilds evidence with no second payment",
@@ -27,10 +29,10 @@ describe("runSessionCore with filesystem stores across SIGKILL (#43)", () => {
       expect(await first.exit).toMatchObject({ code: null, signal: "SIGKILL" });
       expect(await h.count()).toBe(1);
 
-      const evidencePath = join(h.root, "anchors", `${sha256Hex(sessionAnchorName.evidence("job-restart"))}.json`);
+      const evidencePath = join(h.root, "anchors", `${sha256Hex(legacyMvpSessionAnchorName.evidence(RESTART_JOB_ID))}.json`);
       expect(existsSync(evidencePath)).toBe(false);
       const sessionStore = await createFsSessionStore({ dir: join(h.root, "sessions") });
-      const interrupted = await sessionStore.load("job-restart");
+      const interrupted = await sessionStore.load(RESTART_JOB_ID);
       expect(interrupted.status).toBe("ok");
       if (interrupted.status !== "ok") throw new Error("missing interrupted session");
       const checkpoints = interrupted.record.checkpoints.filter((cp) => cp.key === "settle:0");
@@ -43,13 +45,13 @@ describe("runSessionCore with filesystem stores across SIGKILL (#43)", () => {
         action: "session", now: 200, reconcile: "landed",
       }).result();
       expect(resumed.pid).not.toBe(first.child.pid);
-      expect(resumed).toMatchObject({ ok: true, value: { jobId: "job-restart", outcome: "completed" } });
+      expect(resumed).toMatchObject({ ok: true, value: { jobId: RESTART_JOB_ID, outcome: "completed" } });
       expect(await h.count()).toBe(1);
       expect(await h.count("session-settle")).toBe(1);
       expect(await h.count("session-resume")).toBe(point === "before-outcome" ? 1 : 0);
       expect(await h.count("reconciles")).toBe(point === "before-outcome" ? 1 : 0);
       expect(existsSync(evidencePath)).toBe(true);
-      const completed = await sessionStore.load("job-restart");
+      const completed = await sessionStore.load(RESTART_JOB_ID);
       expect(completed.status).toBe("ok");
       if (completed.status !== "ok") throw new Error("missing completed session");
       expect(completed.record.phase).toBe("completed");

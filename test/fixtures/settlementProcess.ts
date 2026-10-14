@@ -7,17 +7,30 @@ import { fileURLToPath } from "node:url";
 
 import { preparePrivateStoreDirectory } from "../../src/filesystem/privateStore.js";
 
+/** A canonical CORE JID-1 ULID: the Standard's `valid-ulid-full-input` vector. */
+export const RESTART_JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
 export type RailMode = "generic" | "evm" | "x402";
 export interface WorkerOptions {
   mode?: RailMode;
   action?: "settle" | "stale" | "takeover" | "session" | "grant";
   now?: number;
   crash?: "before-effect" | "before-outcome" | "before-anchor";
+  /** `landed` queries the test rail authority by the effect's own rail identity. */
   reconcile?: "landed" | "absent" | "throws" | "replay";
   race?: boolean;
+  /** Changed terms for a restarted process: amount, token/asset, x402 resource. */
   amount?: string;
+  token?: string;
+  resource?: string;
   owner?: string;
 }
+
+/** One line of the test rail's authoritative ledger, written as the effect lands. */
+export type RailRecord =
+  | { rail: "generic"; txHash: string; identity: string }
+  | { rail: "evm"; txHash: string; token: string; from: string; to: string; value: string }
+  | { rail: "x402"; txHash?: string; nonce: string; state: "used" | "cancelled"; to?: string; value?: string };
 
 export interface WorkerResult {
   pid: number;
@@ -87,6 +100,15 @@ export async function createSettlementProcessHarness() {
     },
     async read<T>(name: string): Promise<T> {
       return JSON.parse(await readFile(join(root, name), "utf8")) as T;
+    },
+    async lines<T>(name: string): Promise<T[]> {
+      try {
+        return (await readFile(join(root, name), "utf8")).trim().split("\n").filter(Boolean)
+          .map((line) => JSON.parse(line) as T);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      }
     },
     async count(name = "effects") {
       try { return (await readFile(join(root, name), "utf8")).trim().split("\n").filter(Boolean).length; }

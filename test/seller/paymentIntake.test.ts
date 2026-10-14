@@ -28,6 +28,9 @@ import {
   type SellerSupportedRailDefinition,
   type X402TransferObservation,
 } from "../../src/seller/index.js";
+import {
+  dacsX402AuthorizationNonce, verifyDacsX402AuthorizationNonce,
+} from "../../src/rails/x402.js";
 
 const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
 const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
@@ -2258,29 +2261,62 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
-  it("replays the Standard SB-3 EIP-3009 nonce derivation vectors", () => {
+  it("replays the Standard SB-3 EIP-3009 nonce vectors by op, want and expected", async () => {
     const set = JSON.parse(readFileSync(new URL(
       "../../vendor/DACS-Standard/conformance/vectors/security/sb3-eip3009-nonce-v0.1.json",
       import.meta.url,
     ), "utf8")) as {
       vectors: Array<{
         name: string;
+        op: string;
+        expected: string;
         jobId: string;
         phaseIndex: number | string;
+        presentedNonce?: string;
+        derivedNonce?: string;
         expectedNonce?: string;
+        priorAuthorization?: { state: string; sameTransferParameters: boolean };
+        want: {
+          derivedNonce?: string;
+          binding?: string;
+          action?: string;
+          mustGenerateFreshNonce?: boolean;
+        };
       }>;
     };
+    const ops = { derive: 0, "verify-binding": 0, retry: 0 } as Record<string, number>;
     for (const vector of set.vectors) {
-      if (typeof vector.phaseIndex !== "number" || vector.phaseIndex < 0) {
-        expect(
-          () => x402Eip3009Nonce(vector.jobId, vector.phaseIndex as number),
-          vector.name,
-        ).toThrow();
-      } else if (vector.expectedNonce) {
-        expect(x402Eip3009Nonce(vector.jobId, vector.phaseIndex), vector.name)
-          .toBe(vector.expectedNonce);
+      expect(Object.keys(ops), vector.name).toContain(vector.op);
+      ops[vector.op]! += 1;
+      const input = { jobId: vector.jobId, phaseIndex: vector.phaseIndex as number };
+      if (vector.op === "derive") {
+        expect([vector.expected, vector.want.binding], vector.name).toEqual(["error", "malformed-input"]);
+        expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow();
+        await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow();
+        continue;
+      }
+      // Seller verification and the buyer's signing rail derive the same bytes.
+      const derived = x402Eip3009Nonce(input.jobId, input.phaseIndex);
+      expect(await dacsX402AuthorizationNonce(input), vector.name).toBe(derived);
+      if (vector.expectedNonce) expect(derived, vector.name).toBe(vector.expectedNonce);
+      if (vector.want.derivedNonce) expect(derived, vector.name).toBe(vector.want.derivedNonce);
+      if (vector.op === "verify-binding") {
+        const binding = await verifyDacsX402AuthorizationNonce(input, vector.presentedNonce!);
+        expect(binding, vector.name).toBe(vector.want.binding);
+        const verdict = binding === "present-and-matches" ? "pass" : binding === "malformed" ? "error" : "fail";
+        expect(verdict, vector.name).toBe(vector.expected);
+      } else {
+        // The retry identity is the derived nonce itself; the authorization-state
+        // actions run across a real restart in idempotencyProcessRestart.test.ts.
+        expect(derived, vector.name).toBe(vector.derivedNonce);
+        expect(vector.want.mustGenerateFreshNonce, vector.name).toBe(false);
+        const resumes = vector.priorAuthorization?.state === "used" &&
+          vector.priorAuthorization.sameTransferParameters;
+        expect([vector.want.action, vector.expected], vector.name)
+          .toEqual(resumes ? ["resume-existing", "pass"] : ["refuse", "fail"]);
       }
     }
+    expect(Object.values(ops).every((count) => count > 0)).toBe(true);
   });
 
   it("reconciles an ambiguous observation before claiming without rebroadcast", async () => {
