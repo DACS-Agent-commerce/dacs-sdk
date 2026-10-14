@@ -17,6 +17,7 @@ const sdk = vi.hoisted(() => ({
   connect: vi.fn(),
   connectWallet: vi.fn(),
   getNetworkInfo: vi.fn(),
+  getTxByHash: vi.fn(),
   nodeCall: vi.fn(),
   transfer: vi.fn(),
   waitForNonce: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connect = sdk.connect;
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
+    readonly getTxByHash = sdk.getTxByHash;
     readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
@@ -95,6 +97,17 @@ beforeEach(() => {
   });
   sdk.broadcast.mockResolvedValue({ response: { hash: TX_HASH } });
   sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
+  // The node's transaction record (#338): by default it is exactly the
+  // broadcast transaction, executed at the included block.
+  sdk.getTxByHash.mockImplementation(async () => {
+    const validity = sdk.broadcast.mock.calls.at(-1)?.[0] as
+      | { response?: { data?: { transaction?: Record<string, unknown> } } }
+      | undefined;
+    const transaction = validity?.response?.data?.transaction;
+    return transaction === undefined
+      ? null
+      : { ...transaction, status: "confirmed", blockNumber: 42 };
+  });
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
