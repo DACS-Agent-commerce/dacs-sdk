@@ -11,13 +11,13 @@ import {
   type X402BuyerEffectFence,
 } from "../../src/rails/index.js";
 
-const JOB_ID = "job-durable-buyer-http";
+const JOB_ID = "01JA9X402DVRAB1EBVYERHTTP0";
 const PHASE_INDEX = 2;
 const NETWORK = "eip155:84532" as const;
 const PAYER = `0x${"11".repeat(20)}`;
 const PAYEE = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
-const RESOURCE = "https://seller.example/deliver/job-durable-buyer-http";
+const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
 const NONCE = `0x${sha256Hex(`dacs-sb3:v1:${JOB_ID}:${PHASE_INDEX}`)}`;
 
 function authority(): PrepareX402BuyerSettlementInput["authority"] {
@@ -169,6 +169,32 @@ describe("prepareX402BuyerSettlement", () => {
         reason: "x402-payment-requirements-mismatch",
       });
     }
+    expect(counters.signs).toBe(0);
+  });
+
+  test.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}O`,
+    `${JOB_ID.slice(0, -1)}U`,
+    `${JOB_ID} `,
+    JOB_ID.slice(0, -1),
+    `${JOB_ID}0`,
+    "job-durable-buyer-http",
+  ])("rejects non-JID-1 jobId %j before the challenge request or signer", async (jobId) => {
+    const counters = { signs: 0 };
+    const fetchImpl = vi.fn(async () => new Response("must not run", { status: 402 }));
+    await expect(prepareX402BuyerSettlement(
+      { authority: { ...authority(), jobId } },
+      {
+        client: client(counters),
+        transportPolicy: { mode: "insecure-test" },
+        fetchImpl: fetchImpl as typeof fetch,
+      },
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "x402-settlement-authority-invalid",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
     expect(counters.signs).toBe(0);
   });
 

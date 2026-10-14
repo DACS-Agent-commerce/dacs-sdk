@@ -33,7 +33,7 @@ import {
 } from "../../src/rails/x402BuyerSettlement.js";
 import { createFsX402BuyerSettlementStore } from "../../src/rails/x402BuyerSettlementFs.js";
 
-const JOB_ID = "job-x402-café";
+const JOB_ID = "01JA9X402CAFEBVYERSETT1E00";
 const PHASE_INDEX = 3;
 const RAIL_ID = "x402-prod-A";
 const NETWORK = "eip155:84532" as const;
@@ -330,43 +330,47 @@ describe("durable buyer x402 intent", () => {
     expect(() => assertX402BuyerSettlementIntent(intent)).not.toThrow();
   });
 
-  test("retains exact job identity while NFC-normalizing only the SB-3 nonce preimage", () => {
-    const decomposedJob = "job-cafe\u0301";
-    const draft = intentDraft();
-    draft.jobId = decomposedJob;
-    draft.authorizationNonce = nonce(decomposedJob);
-    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
-    ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>).nonce =
-      nonce(decomposedJob);
-    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
-    draft.paymentHeader = {
-      name: "PAYMENT-SIGNATURE",
-      value: encode(payload),
-    };
-    const intent = createX402BuyerSettlementIntent(draft);
-    expect(intent.jobId).toBe(decomposedJob);
-    expect(intent.authorizationNonce).toBe(nonce(decomposedJob.normalize("NFC")));
-    expect(intent.settlementKey).not.toBe(x402BuyerSettlementKey({
-      railId: RAIL_ID,
-      jobId: decomposedJob.normalize("NFC"),
-      phaseIndex: PHASE_INDEX,
-    }));
+  test("refuses an intent whose jobId fails JID-1 even with a self-consistent nonce", () => {
+    // CORE JID-3: NFC in the SB-3 preimage reproduces historical fixtures only;
+    // it must not admit a decomposed or free-form session name.
+    for (const jobId of ["job-cafe\u0301", "job-x402-caf\u00e9", JOB_ID.toLowerCase()]) {
+      const draft = intentDraft();
+      draft.jobId = jobId;
+      draft.authorizationNonce = nonce(jobId);
+      const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+      ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>)
+        .nonce = nonce(jobId);
+      draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+      draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+      expect(() => createX402BuyerSettlementIntent(draft), jobId)
+        .toThrow("x402 buyer jobId must be a canonical uppercase ULID");
+    }
   });
 
-  test("rejects non-scalar job IDs before deriving an exact settlement key", () => {
-    const invalidJobIds = ["job-\ud800", "job-\ud801", "job-\udc00"];
-    const replacementKey = x402BuyerSettlementKey({
+  test("rejects non-JID-1 job IDs before deriving an exact settlement key", () => {
+    expect(x402BuyerSettlementKey({
       railId: RAIL_ID,
-      jobId: "job-\ufffd",
+      jobId: JOB_ID,
       phaseIndex: PHASE_INDEX,
-    });
-    expect(replacementKey).toMatch(/^dacs:x402-buyer:[0-9a-f]{64}$/);
+    })).toMatch(/^dacs:x402-buyer:[0-9a-f]{64}$/);
+    const invalidJobIds = [
+      "job-\ud800",
+      "job-\udc00",
+      "job-\ufffd",
+      JOB_ID.toLowerCase(),
+      `${JOB_ID.slice(0, -1)}L`,
+      `${JOB_ID.slice(0, -1)}U`,
+      `${JOB_ID}\r\n`,
+      JOB_ID.slice(1),
+      `${JOB_ID}0`,
+      `8${JOB_ID.slice(1)}`,
+    ];
     for (const jobId of invalidJobIds) {
       expect(() => x402BuyerSettlementKey({
         railId: RAIL_ID,
         jobId,
         phaseIndex: PHASE_INDEX,
-      })).toThrow(/Unicode scalar values/);
+      }), JSON.stringify(jobId)).toThrow("x402 buyer jobId must be a canonical uppercase ULID");
     }
   });
 

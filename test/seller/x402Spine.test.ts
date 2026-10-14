@@ -1064,6 +1064,36 @@ describe("createX402SellerSpine", () => {
     expect(harness.counts.delivery).toBe(0);
   });
 
+  it.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}I`,
+    `${JOB_ID.slice(0, -1)}U`,
+    "seller-spine-job",
+  ])("refuses a non-JID-1 jobId %j before the session resolver or a settlement key", async (jobId) => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    harness.retainSettlement(pre.authorization);
+
+    // "request-invalid" is decided before resolveCommittedSession runs; a
+    // malformed jobId that reached the resolver would be a scope mismatch.
+    await expect(harness.spine.authorizeSettlement({
+      ...harness.preContext,
+      jobId,
+    })).resolves.toEqual({
+      disposition: "rejected",
+      reason: "seller-session-request-invalid",
+    });
+    await expect(harness.spine.recoverPaymentAuthorization({
+      jobId,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    })).resolves.toEqual({
+      disposition: "rejected",
+      reason: "seller-recovery-scope-invalid",
+    });
+    expect(harness.counts.delivery).toBe(0);
+  });
+
   it("runs real #119 and generation-fenced #120/#121 with one irreversible delivery", async () => {
     const harness = makeHarness();
     const authorization = await authorize(harness);

@@ -18,6 +18,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { finalityCommitmentAddress } from "../negotiate/commitment.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -978,6 +979,9 @@ function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | 
   } catch {
     return null;
   }
+  // CORE JID-3: the jobId keys the committed-agreement resolver query, so it
+  // must pass JID-1 before any lookup. Malformed input is an error, not a
+  // binding mismatch (JID-4).
   if (!isRecord(snapshot) || !hasExactKeys(snapshot, [
     "jobId",
     "phaseIndex",
@@ -985,8 +989,7 @@ function snapshotPaymentIntakeInput(value: unknown): SellerPaymentIntakeInput | 
     "payerPayingKey",
     "receipt",
   ]) ||
-      typeof snapshot.jobId !== "string" || snapshot.jobId.length === 0 ||
-      snapshot.jobId.includes(":") ||
+      !isCanonicalJobId(snapshot.jobId) ||
       !isSafeUint(snapshot.phaseIndex) ||
       typeof snapshot.railId !== "string" || snapshot.railId.length === 0 ||
       typeof snapshot.payerPayingKey !== "string" || snapshot.payerPayingKey.length === 0 ||
@@ -1821,7 +1824,12 @@ export function canonicalSellerSettlementId(input:
   return `evm:${input.chainId}:${txHash}:${input.logIndex}`;
 }
 
-/** DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce. */
+/**
+ * DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce derivation unit. It reproduces
+ * the published preimage recipe, including historical derivation-only
+ * fixtures, and does not validate JID-1 itself: every operational caller
+ * (seller intake and the x402 paywall) admits only a canonical jobId at entry.
+ */
 export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
   if (
     typeof jobId !== "string" ||

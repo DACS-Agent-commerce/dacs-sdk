@@ -14,6 +14,7 @@ import type {
   SellerVerificationResult,
 } from "../agent/runFulfilmentCore.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { x402PaywallSettlementKey } from "../rails/x402Paywall.js";
 import type {
   X402PaywallAuthorizationContext,
@@ -295,7 +296,7 @@ function isCommittedSessionScope(value: unknown): value is X402SellerCommittedSe
     "commitmentContentHash",
     "commitmentFinalizedAt",
     "expected",
-  ]) && value.scopeVersion === "1" && isNonEmpty(value.jobId) &&
+  ]) && value.scopeVersion === "1" && isCanonicalJobId(value.jobId) &&
     isSafeUint(value.paymentPhaseIndex) && isSafeUint(value.deliveryPhaseIndex) &&
     value.deliveryPhaseIndex > value.paymentPhaseIndex && typeof value.payer === "string" &&
     EVM_ADDRESS_RE.test(value.payer) && isNonEmpty(value.payerPayingKey) &&
@@ -576,9 +577,10 @@ function captureSettlementStore(source: X402PaywallSettlementStore): X402Paywall
 }
 
 function validPreContext(context: Readonly<X402PaywallPreSettlementContext>): boolean {
+  // JID-3: the jobId keys the committed-session resolver query.
   return isRecord(context) && isRecord(context.request) &&
     typeof context.request.getUrl === "function" &&
-    isNonEmpty(context.jobId) && isSafeUint(context.phaseIndex) &&
+    isCanonicalJobId(context.jobId) && isSafeUint(context.phaseIndex) &&
     typeof context.payer === "string" && EVM_ADDRESS_RE.test(context.payer) &&
     validExpectedTerms(context.expected) &&
     requirementsMatch(context.paymentRequirements, context.expected) &&
@@ -1068,7 +1070,9 @@ export function createX402SellerSpine<T = unknown>(
 
   const recoverPaymentAuthorization: X402SellerSpine<T>["recoverPaymentAuthorization"] =
     async ({ jobId, phaseIndex }) => {
-      if (!isNonEmpty(jobId) || !isSafeUint(phaseIndex)) {
+      // JID-3: the recovery scope keys a settlement-store lookup, so the jobId
+      // must pass JID-1 before the key is derived.
+      if (!isCanonicalJobId(jobId) || !isSafeUint(phaseIndex)) {
         return { disposition: "rejected", reason: "seller-recovery-scope-invalid" };
       }
       const settlementKey = x402PaywallSettlementKey({ jobId, phaseIndex });

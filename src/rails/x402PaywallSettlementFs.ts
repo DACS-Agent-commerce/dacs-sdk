@@ -21,6 +21,7 @@ import {
   preparePrivateStoreDirectory,
   readPrivateFile,
 } from "../filesystem/privateStore.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   x402PaywallSettlementKey,
   type X402PaywallSettlementClaim,
@@ -210,7 +211,7 @@ function captureIntent(value: unknown): X402PaywallSettlementIntent {
   );
   if (record.intentVersion !== "2" ||
       typeof record.bindingHash !== "string" || !HASH_RE.test(record.bindingHash) ||
-      typeof record.jobId !== "string" || record.jobId.length === 0 ||
+      !isCanonicalJobId(record.jobId) ||
       typeof record.phaseIndex !== "number" || !Number.isSafeInteger(record.phaseIndex) ||
       record.phaseIndex < 0 || Object.is(record.phaseIndex, -0) ||
       typeof record.httpResource !== "string" ||

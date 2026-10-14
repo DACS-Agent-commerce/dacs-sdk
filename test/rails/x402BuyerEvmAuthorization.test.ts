@@ -35,8 +35,8 @@ const ASSET = `0x${"33".repeat(20)}` as `0x${string}`;
 const TX = `0x${"aa".repeat(32)}` as `0x${string}`;
 const BLOCK_HASH = `0x${"bb".repeat(32)}` as `0x${string}`;
 const HEAD_HASH = `0x${"cc".repeat(32)}` as `0x${string}`;
-const RESOURCE = "https://seller.example/deliver/job-evm-provider";
-const JOB_ID = "job-evm-provider";
+const JOB_ID = "01JA9X402EVMPR0V1DER000000";
+const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
 const PHASE_INDEX = 2;
 const AMOUNT = "1000";
 

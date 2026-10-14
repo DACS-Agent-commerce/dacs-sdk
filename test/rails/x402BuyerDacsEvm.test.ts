@@ -28,12 +28,12 @@ const OTHER_PRIVATE_KEY = keccak256(
   stringToHex("dacs-sdk:test:x402-buyer:other"),
 );
 const ACCOUNT = privateKeyToAccount(PRIVATE_KEY);
-const JOB_ID = "job-real-x402-dacs-nonce";
+const JOB_ID = "01JA9X402DACSEVMN0NCE00000";
 const PHASE_INDEX = 4;
 const NETWORK = "eip155:84532" as const;
 const PAYEE = "0x1111111111111111111111111111111111111111";
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const RESOURCE = "https://seller.example/deliver/job-real-x402-dacs-nonce";
+const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
 const AMOUNT = "1000";
 const EXPECTED_NONCE = x402Eip3009Nonce(JOB_ID, PHASE_INDEX) as `0x${string}`;
 
@@ -341,6 +341,21 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
     if (result.disposition === "prepared") {
       expect(result.intent.chosenRequirements.extra).toEqual(expected.extra);
     }
+  });
+
+  test.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}I`,
+    ` ${JOB_ID}`,
+    JOB_ID.slice(0, -1),
+    `9${JOB_ID.slice(1)}`,
+    "job-real-x402-dacs-nonce",
+  ])("refuses a non-JID-1 authority jobId %j before deriving a signing nonce", async (jobId) => {
+    await expect(createDacsX402BuyerEvmChallengeClient({
+      evmPrivateKey: PRIVATE_KEY,
+      authority: { ...authority(), jobId },
+      expectedRequirements: requirements(),
+    })).rejects.toThrow("DACS x402 buyer authority is invalid");
   });
 
   test("refuses a key that does not control the authenticated payer", async () => {

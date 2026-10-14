@@ -2357,11 +2357,38 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
+  it.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}L`,
+    `${JOB_ID.slice(0, -1)}U`,
+    `${JOB_ID}\n`,
+    JOB_ID.slice(1),
+    `9${JOB_ID.slice(1)}`,
+    "another-job",
+  ])("refuses non-JID-1 jobId %j as an error before resolving the agreement", async (jobId) => {
+    // CORE JID-3: no resolver query with a malformed jobId; JID-4: a malformed
+    // operand is an error, not a binding mismatch.
+    const ctx = makeContext("pay-x402");
+    let resolutions = 0;
+    ctx.deps.resolveCommittedAgreement = async () => {
+      resolutions += 1;
+      return ctx.committed;
+    };
+    ctx.input.jobId = jobId;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+      disposition: "error",
+      fulfilment: "none",
+      reason: "invalid-intake-input",
+    });
+    expect(resolutions).toBe(0);
+  });
+
   const mismatchCases: Array<{
     name: string;
     mutate: (ctx: Context) => void;
   }> = [
-    { name: "job", mutate: (ctx) => { ctx.input.jobId = "wrong-job"; } },
+    { name: "job", mutate: (ctx) => { ctx.input.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E"; } },
     { name: "phase", mutate: (ctx) => {
       ctx.input.phaseIndex = PAYMENT_PHASE_INDEX + 1;
     } },

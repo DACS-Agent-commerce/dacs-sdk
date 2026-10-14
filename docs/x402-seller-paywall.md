@@ -8,6 +8,10 @@ revision pinned by the fixed-price coordinator.
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
 
+`handle` first requires a canonical CORE JID-1 `jobId`. Any other value is
+rejected as `invalid-jobId` before the x402 server, settlement or fulfilment
+runs (CORE JID-3, DACS-4 SB-3).
+
 The callback sequence is deliberately:
 
 1. verify the x402 v2 authorization;
