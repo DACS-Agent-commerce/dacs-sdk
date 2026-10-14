@@ -391,6 +391,22 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && !Array.isArray(value);
 }
 
+/**
+ * demosdk's nodeCall resolves only the node's `response` member: a record for
+ * an object the node found, the string `"error"` for a not-found or failed
+ * lookup (the node's numeric result is dropped), and `{ result: 500,
+ * response: <transport error> }` when the request itself failed. Only a
+ * record is an answer.
+ */
+function demosNodeRecord(result: unknown): Record<string, unknown> | undefined {
+  const observed = isRecord(result) && "response" in result
+    ? result.response
+    : result;
+  return isJsonObject(observed) && !(observed instanceof Error)
+    ? observed
+    : undefined;
+}
+
 function httpStatus(error: unknown): number | undefined {
   if (!isRecord(error)) return undefined;
   if (typeof error.status === "number") return error.status;
@@ -1165,7 +1181,50 @@ export class DemosAdapter implements SubstrateAdapter {
       (provenance === undefined && interactions.length === 0);
   }
 
-  /** Re-authenticate full adapter-produced Demos evidence against this node. */
+  /**
+   * Read the transaction, block and Storage Program a Demos write proof is
+   * checked against. CORE §5.1 and DEMOS-MAPPING §A.2: an ordinary not-found,
+   * an RPC error or a transport failure leaves the read unanswered, so it
+   * throws SubstrateError instead of handing the comparison a missing
+   * observation that would read as an invalid proof.
+   */
+  private async observeDemosWrite(
+    transactionRef: string,
+    blockNumber: number,
+    nativeAddress: string,
+  ): Promise<{
+    transaction: Record<string, unknown>;
+    block: Record<string, unknown>;
+    native: Record<string, unknown>;
+  }> {
+    let observations: unknown[];
+    try {
+      observations = await Promise.all([
+        this.#demos.getTxByHash(transactionRef),
+        this.#demos.getBlockByNumber(blockNumber),
+        this.#demos.storagePrograms.read(nativeAddress),
+      ]) as unknown[];
+    } catch (error) {
+      // demosdk's Storage Program read throws on any non-2xx, including 404.
+      throw new SubstrateError("Demos write proof read failed", { cause: error });
+    }
+    const transaction = demosNodeRecord(observations[0]);
+    const block = demosNodeRecord(observations[1]);
+    const native = observations[2];
+    if (!transaction || !block || block.validation_data === undefined ||
+        !isJsonObject(native) || native.success !== true) {
+      throw new SubstrateError(
+        "Demos write proof observations are unavailable from this node",
+      );
+    }
+    return { transaction, block, native };
+  }
+
+  /**
+   * Re-authenticate full adapter-produced Demos evidence against this node.
+   * Resolves `false` only when the node's records contradict the evidence; an
+   * unanswered read rejects with SubstrateError (CORE §5.1 `indeterminate`).
+   */
   async verifyDemosWriteEvidence(
     evidence: Readonly<DemosWriteEvidence>,
   ): Promise<boolean> {
@@ -1175,20 +1234,25 @@ export class DemosAdapter implements SubstrateAdapter {
     assertDemosWriteEvidence(evidence);
     if (await this.resolveChainIdentity() !== evidence.chainIdentity) return false;
 
-    const observations = await Promise.all([
-      this.#demos.getTxByHash(evidence.transactionRef),
-      this.#demos.getBlockByNumber(evidence.blockNumber),
-      this.#demos.storagePrograms.read(evidence.nativeAddress),
-    ]) as unknown[];
+    const { transaction, block, native } = await this.observeDemosWrite(
+      evidence.transactionRef,
+      evidence.blockNumber,
+      evidence.nativeAddress,
+    );
     return this.demosEvidenceMatchesObservations(
       evidence,
-      observations[0],
-      observations[1],
-      observations[2],
+      transaction,
+      block,
+      native,
     );
   }
 
-  /** Re-authenticate a compact portable CORE AnchorReceipt without name-index IO. */
+  /**
+   * Re-authenticate a compact portable CORE AnchorReceipt without name-index
+   * IO. Resolves `false` only when the node's records contradict the receipt;
+   * a Demos not-found, RPC error or transport failure rejects with
+   * SubstrateError, because CORE §5.1 makes such a read `indeterminate`.
+   */
   async verifyDemosAnchorReceipt(
     receipt: Readonly<ProtocolAnchorReceipt>,
   ): Promise<boolean> {
@@ -1199,24 +1263,11 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
-    const observations = await Promise.all([
-      this.#demos.getTxByHash(receipt.transactionRef.value),
-      this.#demos.getBlockByNumber(blockNumber),
-      this.#demos.storagePrograms.read(receipt.nativeAddress),
-    ]) as unknown[];
-    const transactionResult = observations[0];
-    const blockResult = observations[1];
-    const transaction = isRecord(transactionResult) &&
-        isRecord(transactionResult.response)
-      ? transactionResult.response
-      : transactionResult;
-    const block = isRecord(blockResult) && isRecord(blockResult.response)
-      ? blockResult.response
-      : blockResult;
-    if (!isRecord(transaction) || !isRecord(block) ||
-        block.validation_data === undefined) {
-      return false;
-    }
+    const { transaction, block, native } = await this.observeDemosWrite(
+      receipt.transactionRef.value,
+      blockNumber,
+      receipt.nativeAddress,
+    );
     const evidence: DemosWriteEvidence = {
       evidenceVersion: "1",
       chainIdentity: proof.chainIdentity,
@@ -1251,9 +1302,9 @@ export class DemosAdapter implements SubstrateAdapter {
     )) return false;
     return this.demosEvidenceMatchesObservations(
       evidence,
-      observations[0],
-      observations[1],
-      observations[2],
+      transaction,
+      block,
+      native,
     );
   }
 

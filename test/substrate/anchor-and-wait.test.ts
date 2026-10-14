@@ -15,6 +15,7 @@ import {
   logicalToStorageProgramName,
   sha256Hex,
 } from "../../src/canonical/index.js";
+import { SubstrateError } from "../../src/errors.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 let fixtureId = 0;
@@ -1337,6 +1338,85 @@ describe("DemosAdapter.anchorAndWait", () => {
       ...receipt,
       contentHash: "78".repeat(32),
     })).resolves.toBe(false);
+  });
+
+  async function anchoredProof() {
+    const fixture = await makeAdapter();
+    const name = "immutable-proof-read";
+    const value = { value: 1 };
+    const anchored = await fixture.adapter.anchorWriteOnce(name, value, {
+      timeoutMs: 1_000,
+      pollMs: 1,
+    });
+    const evidence = anchored.demosEvidence!;
+    const receipt = demosWriteEvidenceToAnchorReceipt({
+      logicalAddress: name,
+      contentHash: contentHash(value),
+      writer: `did:demos:agent:${fixture.wallet.replace(/^0x/, "")}`,
+      evidence,
+    });
+    return { ...fixture, evidence, receipt };
+  }
+
+  // CORE §5.1 and DEMOS-MAPPING §A.2: a Demos not-found or a transport failure
+  // is indeterminate, never an invalid receipt. The first six arrangements are
+  // the exact shapes demosdk 4.0.16 surfaces for those conditions on
+  // kynesyslabs/node ac8f45f (nodeCall not-found answers `response: "error"`;
+  // a storage not-found is HTTP 404, which its Storage Program read throws).
+  // The last is a resolved body that does not report success.
+  const transportFailure = () => ({
+    result: 500,
+    response: new Error("socket hang up"),
+    require_reply: false,
+    extra: null,
+  });
+  it.each<[string, (raw: any) => void]>([
+    ["transaction not found", (raw) => raw.getTxByHash.mockResolvedValueOnce("error")],
+    ["block not found", (raw) => raw.getBlockByNumber.mockResolvedValueOnce("error")],
+    ["transaction transport failure",
+      (raw) => raw.getTxByHash.mockResolvedValueOnce(transportFailure())],
+    ["block transport failure",
+      (raw) => raw.getBlockByNumber.mockResolvedValueOnce(transportFailure())],
+    ["storage 404", (raw) => raw.storagePrograms.read.mockRejectedValueOnce(notFound())],
+    ["storage 503", (raw) => raw.storagePrograms.read.mockRejectedValueOnce(rpcFailure())],
+    ["storage body without success", (raw) => raw.storagePrograms.read.mockResolvedValueOnce({
+      success: false,
+      errorCode: "NOT_FOUND",
+      error: "Storage program not found",
+    })],
+  ])("keeps an unanswered proof read (%s) indeterminate instead of invalid", async (
+    _condition,
+    arrange,
+  ) => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    arrange(raw);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt))
+      .rejects.toBeInstanceOf(SubstrateError);
+    arrange(raw);
+    await expect(adapter.verifyDemosWriteEvidence(evidence))
+      .rejects.toBeInstanceOf(SubstrateError);
+    // The same proof verifies once the node answers.
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(true);
+  });
+
+  it("still refuses a proof that the node's own records contradict", async () => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    await expect(adapter.verifyDemosAnchorReceipt({
+      ...receipt,
+      blockRef: { ...receipt.blockRef!, id: "another-block" },
+    })).resolves.toBe(false);
+    const observed = await raw.getTxByHash(evidence.transactionRef);
+    raw.getTxByHash.mockResolvedValueOnce({
+      ...observed,
+      blockNumber: evidence.blockNumber + 1,
+    });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    raw.storagePrograms.read.mockResolvedValueOnce({
+      ...await raw.storagePrograms.read(evidence.nativeAddress),
+      data: { value: 2 },
+    });
+    await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(false);
   });
 
   it("retains a signed logical address behind its encoded native program name", async () => {
