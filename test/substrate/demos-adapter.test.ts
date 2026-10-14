@@ -45,6 +45,7 @@ describe("DemosAdapter", () => {
   it("requires an rpc url", () => {
     // @ts-expect-error — exercising the runtime guard
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
+    expect(() => new DemosAdapter({ rpc: "" })).toThrow("DemosAdapter requires an rpc URL");
   });
 
   it("rejects an invalid confirmed-fee ceiling", () => {

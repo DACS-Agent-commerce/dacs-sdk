@@ -79,8 +79,9 @@ lengthen that wait, up to 2,000 ms, but never shorten it: the wait is
 `max(backoff, min(Retry-After, 2,000 ms))`. Only whole seconds (`^\d+$`) or an
 HTTP-date in one of the three forms RFC 9110 §5.6.7 requires recipients to
 accept are used: IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), RFC 850
-(`Sunday, 06-Nov-94 08:49:37 GMT`, where a two-digit year more than 50 years
-ahead means the previous century) or asctime (`Sun Nov  6 08:49:37 1994`).
+(`Sunday, 06-Nov-94 08:49:37 GMT`, where a timestamp more than 50 years ahead
+names the previous century) or asctime (`Sun Nov  6 08:49:37 1994`). Second
+60, a leap second, is taken as the instant after second 59.
 A date must be exact, including its weekday; any other value is ignored. Size overflow, redirects, invalid UTF-8/JSON, all 4xx
 (including 429), and other 5xx are never retried. Failed bodies are cancelled
 without retaining response text.
@@ -163,15 +164,33 @@ explicitly:
   `user:password`, as Axios does. This also applies to an injected
   `identityFetch`. No error message contains the URL or its credentials.
 - **Proxies.** Axios honours `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
-  `NO_PROXY` (either case). Node's global `fetch` ignores them unless
-  `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` is set (checked on Node 22.23).
-  If the environment names a proxy for the RPC URL, neither switch is set, and
-  no `identityFetch` is injected, identity reads throw a permanent `DacsError`
-  (`Demos GCR identity read would bypass the environment proxy; set
-  NODE_USE_ENV_PROXY=1 or inject identityFetch`) before signing or sending
-  anything, rather than bypass the proxy. Set `NODE_USE_ENV_PROXY=1`, or
-  inject an `identityFetch` that uses a proxy dispatcher. To connect directly
-  on purpose, list the host in `NO_PROXY` or pass `identityFetch: fetch`.
+  `NO_PROXY` (either case, lowercase first), and also bypasses the proxy for
+  a loopback host when `NO_PROXY` names any loopback host. Node's global
+  `fetch` connects directly unless Node installed its own proxy agent at
+  startup. Node does that only on Node 22.21 or later, only when
+  `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` and `HTTP_PROXY` or
+  `HTTPS_PROXY` are set before the process starts (a `.env` file loaded at
+  runtime is too late), and that agent differs from Axios: it never reads
+  `ALL_PROXY`, sends an HTTPS URL through `HTTP_PROXY` when `HTTPS_PROXY` is
+  unset, has no loopback rule, and treats a blank lowercase variable as set.
+  It also tunnels `http://` URLs with `CONNECT`, which many proxies allow only
+  to port 443, and Node prints an experimental warning (Node 22.23).
+  Without an injected `identityFetch`, the adapter compares the route Axios
+  would take with the route of the dispatcher Node actually installed. If
+  they differ, identity reads throw a permanent `DacsError` before signing or
+  sending anything: `Demos GCR identity read would bypass the environment
+  proxy; start Node 22.21+ with NODE_USE_ENV_PROXY=1 or inject identityFetch`
+  when Axios would use a proxy that `fetch` would not, or `Demos GCR identity
+  read would use a proxy demosdk does not; list the RPC host in NO_PROXY or
+  inject identityFetch` in the reverse case. A global dispatcher installed by
+  other code is trusted only when Axios would connect directly. To choose the
+  route yourself, inject an `identityFetch` (for example one with a proxy
+  dispatcher, or `identityFetch: fetch` to connect directly).
+  The check reads the current environment, but Node's agent keeps the proxy
+  URLs it read at startup, so change `HTTP(S)_PROXY` only before Node starts.
+  With the switch, Node 22.21+ also proxies Axios's own direct connections,
+  so some reads that both clients would send through the same proxy are
+  refused; listing the exact RPC host in `NO_PROXY` avoids that.
 
 The wallet authentication headers are those of demosdk's `rpcCall`: a test
 compares them with the installed demosdk and requires the locked 4.0.16. They

@@ -35,10 +35,11 @@ export interface DemosAdapterConfig {
   identityTotalTimeoutMs?: number;
   /**
    * Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding.
-   * The default, global fetch, ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1 or
-   * --use-env-proxy is set (checked on Node 22.23). Without either, when the environment
-   * names a proxy for `rpc`, identity reads throw DacsError without sending. On a Node
-   * without that support, inject a fetch that uses a proxy dispatcher.
+   * The default, global fetch, uses a proxy only if Node 22.21+ started with
+   * NODE_USE_ENV_PROXY=1 (or --use-env-proxy) and HTTP(S)_PROXY, and then by rules that
+   * differ from demosdk's Axios. When the route of the dispatcher Node installed differs
+   * from Axios's route for `rpc`, identity reads throw DacsError without sending. Inject
+   * a fetch, for example one with a proxy dispatcher, to choose the route yourself.
    */
   identityFetch?: typeof fetch;
 }

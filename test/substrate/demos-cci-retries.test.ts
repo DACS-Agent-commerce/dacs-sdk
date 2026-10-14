@@ -127,8 +127,11 @@ describe("Demos identity transient retries", () => {
     "60",
     // RFC 9110 §5.6.7: IMF-fixdate, then the obsolete asctime and RFC 850 forms.
     "Thu, 01 Jan 2099 00:00:00 GMT", "Fri Nov  6 08:49:37 2099", "Fri Nov 06 08:49:37 2099",
-    // In 2026 a two-digit year up to 76 is this century: 2070, and 2076 (exactly 50 years ahead).
-    "Thursday, 06-Nov-70 08:49:37 GMT", "Friday, 06-Nov-76 08:49:37 GMT",
+    "Thursday, 06-Nov-70 08:49:37 GMT", "Saturday, 01-Jan-50 00:00:00 GMT",
+    // On 14 Oct 2026, a two-digit year names this century up to exactly 50 years ahead.
+    "Tuesday, 13-Oct-76 00:00:00 GMT", "Wednesday, 14-Oct-76 00:00:00 GMT",
+    // Second 60 is a leap second.
+    "Thu, 31 Dec 2099 23:59:60 GMT", "Thu Dec 31 23:59:60 2099",
   ])("caps Retry-After %s at 2 seconds", async (retryAfter) => {
     const { adapter, transport } = setup();
     vi.setSystemTime(Date.UTC(2026, 9, 14));
@@ -184,11 +187,20 @@ describe("Demos identity transient retries", () => {
     "Sat Nov  6 08:49:37 2099", "Fri Nov 6 08:49:37 2099", "Fri Nov  6 08:49:37 2099 GMT",
     "Friday, 06 Nov 2099 08:49:37 GMT", "Fri, 06-Nov-70 08:49:37 GMT", "Wednesday, 06-Nov-70 08:49:37 GMT",
     "Thursday, 06-Nov-2070 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 UTC", "Thursday, 31-Feb-70 08:49:37 GMT",
-    "Fri Nov  6 24:49:37 2099",
+    "Fri Nov  6 24:49:37 2099", "Thu, 31 Dec 2099 24:00:00 GMT", "Thu, 31 Dec 2099 23:60:00 GMT",
+    "Thu, 31 Dec 2099 23:59:61 GMT",
+    // Each form is anchored at both ends.
+    "xThu, 01 Jan 2099 00:00:00 GMT", "Thu, 01 Jan 2099 00:00:00 GMTx",
+    "xThursday, 06-Nov-70 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 GMTx",
+    "xFri Nov  6 08:49:37 2099", "Fri Nov  6 08:49:37 20990",
     // 6 Nov 2077 is a Saturday, but 77 is more than 50 years ahead, so this names 1977, a Sunday.
     "Saturday, 06-Nov-77 08:49:37 GMT",
+    // Ahead of 14 Oct 2076 by a day or weeks, so these name 1976, when those dates were a
+    // Friday and a Saturday.
+    "Thursday, 15-Oct-76 00:00:00 GMT", "Friday, 06-Nov-76 08:49:37 GMT",
     // Valid, but shorter than the backoff. A two-digit year more than 50 years ahead is in the past.
     "0", "Sun, 06 Nov 1994 08:49:37 GMT", "Sun Nov  6 08:49:37 1994", "Sunday, 06-Nov-77 08:49:37 GMT",
+    "Friday, 15-Oct-76 00:00:00 GMT", "Saturday, 06-Nov-76 08:49:37 GMT",
   ])("never waits less or more than the 250 ms backoff for Retry-After %j", async (retryAfter) => {
     const { adapter, transport } = setup();
     vi.setSystemTime(Date.UTC(2026, 9, 14));
@@ -208,8 +220,19 @@ describe("Demos identity transient retries", () => {
     { retryAfter: ["Sun, 06 Nov 1994 08:49:38 GMT", "1"], calls: [1_000, 2_000] },
     { retryAfter: ["Sunday, 06-Nov-94 08:49:38 GMT", "Sun Nov  6 08:49:39 1994"], calls: [1_000, 2_000] },
   ])("waits max(backoff, Retry-After) for $retryAfter", async ({ retryAfter, calls }) => {
+    await expectRetryCalls("1994-11-06T08:49:37Z", retryAfter, calls);
+  });
+
+  // RFC 9110 §5.6.7 allows second 60; it is the instant after :59.
+  it.each([
+    "Sat, 31 Dec 2016 23:59:60 GMT", "Saturday, 31-Dec-16 23:59:60 GMT", "Sat Dec 31 23:59:60 2016",
+  ])("waits until the leap second %s", async (retryAfter) => {
+    await expectRetryCalls("2016-12-31T23:59:59Z", [retryAfter], [1_000]);
+  });
+
+  async function expectRetryCalls(now: string, retryAfter: string[], calls: number[]) {
     const { adapter, transport } = setup();
-    vi.setSystemTime(Date.UTC(1994, 10, 6, 8, 49, 37));
+    vi.setSystemTime(Date.parse(now));
     for (const value of retryAfter) {
       transport.mockResolvedValueOnce(new Response("discarded", {
         status: 503, headers: { "Retry-After": value },
@@ -224,7 +247,7 @@ describe("Demos identity transient retries", () => {
       expect(transport).toHaveBeenCalledTimes(index + 2);
     }
     await expect(result).resolves.toHaveProperty("raw", GCR);
-  });
+  }
 
   it.each([
     { timeoutMs: 5_000, totalTimeoutMs: undefined, endMs: 12_000, attempts: 3 },
@@ -732,11 +755,15 @@ describe("Demos identity reads against a real local HTTP server", () => {
   });
 
   async function serve(handler: (request: IncomingMessage, response: ServerResponse, connection: number) => void) {
-    // The default transport refuses to bypass a proxy the environment names.
-    for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+    // The default transport refuses a route other than Axios's. NO_PROXY must
+    // name the local node rather than be blank: Node's proxy agent, if the run
+    // started with one, re-reads NO_PROXY per request.
+    for (const name of ["http_proxy", "https_proxy", "all_proxy"]) {
       vi.stubEnv(name, "");
       vi.stubEnv(name.toUpperCase(), "");
     }
+    vi.stubEnv("no_proxy", "127.0.0.1,localhost");
+    vi.stubEnv("NO_PROXY", "127.0.0.1,localhost");
     let connections = 0;
     let requests = 0;
     server = createServer((request, response) => {

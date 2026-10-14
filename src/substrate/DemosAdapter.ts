@@ -30,7 +30,7 @@ import {
   DEMOS_CCI_MAX_RESPONSE_BYTES,
   DEMOS_CCI_DEFAULT_TIMEOUT_MS,
   DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
-  fetchIgnoresEnvironmentProxy,
+  fetchProxyMismatch,
   readDemosCciResponse,
 } from "./demosCciTransport.js";
 import {
@@ -4143,14 +4143,12 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       return headers;
     };
-    // demosdk's Axios transport honours HTTP(S)_PROXY; never bypass a proxy
-    // it would have used. The message names no URL, which may hold credentials.
-    if (this.config.identityFetch === undefined && fetchIgnoresEnvironmentProxy(this.config.rpc)) {
-      throw new DacsError(
-        "Demos GCR identity read would bypass the environment proxy; " +
-          "set NODE_USE_ENV_PROXY=1 or inject identityFetch",
-      );
-    }
+    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; global
+    // fetch must take the same route or not send at all. The message names no
+    // URL, which may hold credentials.
+    const proxyMismatch = this.config.identityFetch === undefined
+      ? fetchProxyMismatch(this.config.rpc) : undefined;
+    if (proxyMismatch !== undefined) throw new DacsError(proxyMismatch);
     const raw = await readDemosCciResponse(
       this.config.rpc,
       ref,

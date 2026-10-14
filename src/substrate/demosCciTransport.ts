@@ -25,45 +25,71 @@ class RetryableFailure {
   constructor(readonly error: TransientError, readonly waitMs: number) {}
 }
 
-const MONTH = "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
-const TIME_OF_DAY = "(\\d{2}:\\d{2}:\\d{2})";
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH = `(${MONTHS.join("|")})`;
+const TIME_OF_DAY = "(\\d{2}):(\\d{2}):(\\d{2})";
+const IMF_FIXDATE = new RegExp(
+  `^(${WEEKDAYS.join("|")}), (\\d{2}) ${MONTH} (\\d{4}) ${TIME_OF_DAY} GMT$`,
+);
 const RFC850_DATE = new RegExp(
   `^(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (\\d{2})-${MONTH}-(\\d{2}) ${TIME_OF_DAY} GMT$`,
 );
 const ASCTIME_DATE = new RegExp(
-  `^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (\\d{2}| \\d) ${TIME_OF_DAY} (\\d{4})$`,
+  `^(${WEEKDAYS.join("|")}) ${MONTH} (\\d{2}| \\d) ${TIME_OF_DAY} (\\d{4})$`,
 );
 
-// RFC 9110 §5.6.7: recipients accept IMF-fixdate and both obsolete HTTP-date
-// forms. Rewrite an obsolete form as IMF-fixdate; anything else is unchanged.
-function asImfFixdate(value: string, nowMs: number): string {
-  const rfc850 = RFC850_DATE.exec(value);
-  if (rfc850 !== null) {
-    const [, weekday, day, month, yy, time] = rfc850;
-    // A two-digit year more than 50 years ahead is in the previous century.
-    const latest = new Date(nowMs).getUTCFullYear() + 50;
-    const year = latest - (latest - Number(yy)) % 100;
-    return `${weekday!.slice(0, 3)}, ${day} ${month} ${year} ${time} GMT`;
-  }
-  const asctime = ASCTIME_DATE.exec(value);
-  if (asctime !== null) {
-    const [, weekday, month, day, time, year] = asctime;
-    return `${weekday}, ${day!.trim().padStart(2, "0")} ${month} ${year} ${time} GMT`;
-  }
-  return value;
+type HttpDateFields = [string, string, string, string, string, string, string];
+
+// Midnight UTC of an exact calendar date with the given weekday, or undefined.
+function calendarDay(year: number, month: number, day: number, weekday: string): number | undefined {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  return date.getUTCMonth() === month && date.getUTCDate() === day &&
+    WEEKDAYS[date.getUTCDay()] === weekday ? date.getTime() : undefined;
 }
 
-// Accept only delay-seconds or an HTTP-date. toUTCString() emits IMF-fixdate,
-// so the round trip rejects impossible dates, wrong weekdays and everything
-// Date.parse merely tolerates.
+// RFC 9110 §5.6.7: recipients accept IMF-fixdate and both obsolete forms, and
+// second 60 is a leap second, taken here as the instant that follows :59.
+function httpDateMs(value: string, nowMs: number): number | undefined {
+  // [weekday, day, month, year, hour, minute, second]
+  let fields: string[] | undefined = IMF_FIXDATE.exec(value)?.slice(1);
+  const rfc850 = RFC850_DATE.exec(value);
+  const asctime = ASCTIME_DATE.exec(value);
+  if (rfc850 !== null) fields = [rfc850[1]!.slice(0, 3), ...rfc850.slice(2)];
+  if (asctime !== null) {
+    const [, weekday, month, day, hour, minute, second, year] = asctime;
+    fields = [weekday!, day!.trim(), month!, year!, hour!, minute!, second!];
+  }
+  if (fields === undefined) return undefined;
+  const [weekday, day, month, year, hour, minute, second] = fields as HttpDateFields;
+  const [h, m, s] = [Number(hour), Number(minute), Number(second)];
+  if (h > 23 || m > 59 || s > 60) return undefined;
+  const timeMs = ((h * 60 + m) * 60 + s) * 1_000;
+  const monthIndex = MONTHS.indexOf(month);
+  let fullYear = Number(year);
+  if (rfc850 !== null) {
+    // A timestamp more than 50 years ahead names the most recent past year
+    // with the same last two digits (RFC 9110 §5.6.7), judged per timestamp.
+    const limit = new Date(nowMs);
+    limit.setUTCFullYear(limit.getUTCFullYear() + 50);
+    fullYear = limit.getUTCFullYear() - (limit.getUTCFullYear() - fullYear) % 100;
+    const candidate = new Date(0);
+    candidate.setUTCFullYear(fullYear, monthIndex, Number(day));
+    if (candidate.getTime() + timeMs > limit.getTime()) fullYear -= 100;
+  }
+  const midnight = calendarDay(fullYear, monthIndex, Number(day), weekday);
+  return midnight === undefined ? undefined : midnight + timeMs;
+}
+
+// Accept only delay-seconds or an exact HTTP-date, including its weekday;
+// anything Date.parse would merely tolerate is ignored.
 function retryAfterMs(value: string | null): number | undefined {
   if (value === null) return undefined;
   if (/^\d+$/.test(value)) return Number(value) * 1_000;
   const nowMs = Date.now();
-  const fixdate = asImfFixdate(value, nowMs);
-  const date = Date.parse(fixdate);
-  if (Number.isNaN(date) || new Date(date).toUTCString() !== fixdate) return undefined;
-  return date - nowMs;
+  const date = httpDateMs(value, nowMs);
+  return date === undefined ? undefined : date - nowMs;
 }
 
 function retryWait(retryAfter: string | null, backoffMs: number): number {
@@ -195,42 +221,147 @@ function rpcEndpoint(rpc: string): RpcEndpoint {
 }
 
 const DEFAULT_PORTS: Readonly<Record<string, number>> = { "http:": 80, "https:": 443 };
+const GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
+export const DEMOS_CCI_PROXY_BYPASS =
+  "Demos GCR identity read would bypass the environment proxy; " +
+  "start Node 22.21+ with NODE_USE_ENV_PROXY=1 or inject identityFetch";
+export const DEMOS_CCI_PROXY_ADDED =
+  "Demos GCR identity read would use a proxy demosdk does not; " +
+  "list the RPC host in NO_PROXY or inject identityFetch";
 
-/**
- * True when demosdk's Axios transport would reach `rpc` through a proxy named
- * in the environment (proxy-from-env 2.x rules: `<scheme>_proxy`, `all_proxy`,
- * `no_proxy`) but Node's global fetch would connect directly, because neither
- * NODE_USE_ENV_PROXY=1 nor --use-env-proxy is set.
- */
-export function fetchIgnoresEnvironmentProxy(
-  rpc: string,
-  env: NodeJS.ProcessEnv = process.env,
-  execArgv: readonly string[] = process.execArgv,
-): boolean {
-  const flag = "--use-env-proxy";
-  if (env.NODE_USE_ENV_PROXY === "1" || execArgv.includes(flag) ||
-      (env.NODE_OPTIONS ?? "").split(/\s+/).includes(flag)) {
+// proxy-from-env 2.1.0's NO_PROXY match: true when `host` should be proxied.
+function proxyFromEnvShouldProxy(host: string, port: number, noProxy: string): boolean {
+  if (noProxy === "") return true;
+  if (noProxy === "*") return false;
+  return noProxy.split(/[,\s]/).every((entry) => {
+    if (entry === "") return true;
+    const withPort = /^(.+):(\d+)$/.exec(entry);
+    const entryHost = withPort?.[1] ?? entry;
+    const entryPort = Number(withPort?.[2] ?? 0);
+    if (entryPort !== 0 && entryPort !== port) return true;
+    if (!/^[.*]/.test(entryHost)) return host !== entryHost;
+    return !host.endsWith(entryHost.startsWith("*") ? entryHost.slice(1) : entryHost);
+  });
+}
+
+function isLoopback(host: string): boolean {
+  if (host === "localhost" || host === "::1") return true;
+  if (/^127\.\d+\.\d+\.\d+$/.test(host)) return host.split(".").every(part => Number(part) <= 255);
+  const groups = host.split(":");
+  const hex = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/i.exec(host);
+  if (hex !== null) return parseInt(hex[1]!, 16) >= 0x7f00 && parseInt(hex[1]!, 16) <= 0x7fff;
+  const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(host);
+  if (dotted !== null) return isLoopback(dotted[1]!);
+  return groups.length === 8 && groups.slice(0, 7).every(group => /^0+$/.test(group)) &&
+    /^0*1$/.test(groups[7]!);
+}
+
+// Strip IPv6 brackets and trailing dots, and write IPv4-mapped IPv6 as IPv4.
+function bypassHost(host: string): string {
+  const bare = (host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host)
+    .replace(/\.+$/, "");
+  const prefix = "(?:::|(?:0{1,4}:){1,4}:|(?:0{1,4}:){5})ffff:";
+  const dotted = new RegExp(`^${prefix}(\\d+\\.\\d+\\.\\d+\\.\\d+)$`, "i").exec(bare);
+  if (dotted !== null) return dotted[1]!;
+  const hex = new RegExp(`^${prefix}([0-9a-f]{1,4}):([0-9a-f]{1,4})$`, "i").exec(bare);
+  if (hex === null) return bare;
+  const [high, low] = [parseInt(hex[1]!, 16), parseInt(hex[2]!, 16)];
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
+// axios 1.17's shouldBypassProxy, applied after proxy-from-env chose a proxy.
+function axiosBypassesProxy(url: URL, port: number, noProxy: string): boolean {
+  if (noProxy === "") return false;
+  if (noProxy === "*") return true;
+  const host = bypassHost(url.hostname);
+  return noProxy.split(/[\s,]+/).some((entry) => {
+    let entryHost = entry;
+    let entryPort = 0;
+    const bracketed = /^\[([^\]]*)\](.*)$/.exec(entry);
+    if (bracketed !== null) {
+      entryHost = bracketed[1]!;
+      if (/^:\d+$/.test(bracketed[2]!)) entryPort = Number(bracketed[2]!.slice(1));
+    } else if (entry.indexOf(":") === entry.lastIndexOf(":") && /:\d+$/.test(entry)) {
+      entryHost = entry.slice(0, entry.lastIndexOf(":"));
+      entryPort = Number(entry.slice(entry.lastIndexOf(":") + 1));
+    }
+    entryHost = bypassHost(entryHost);
+    if (entryHost === "" || entryPort !== 0 && entryPort !== port) return false;
+    if (entryHost.startsWith("*")) entryHost = entryHost.slice(1);
+    if (entryHost.startsWith(".")) return host.endsWith(entryHost);
+    return host === entryHost || isLoopback(host) && isLoopback(entryHost);
+  });
+}
+
+// The proxy demosdk's Axios 1.17 transport uses for `url`, or "" for direct.
+function axiosProxyFor(url: URL, env: NodeJS.ProcessEnv): string {
+  const read = (name: string) => env[name] || env[name.toUpperCase()] || "";
+  const scheme = url.protocol.slice(0, -1);
+  const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
+  const noProxy = read("no_proxy").toLowerCase();
+  if (!proxyFromEnvShouldProxy(url.host.replace(/:\d*$/, ""), port, noProxy)) return "";
+  const proxy = read(`${scheme}_proxy`) || read("all_proxy");
+  if (proxy === "" || axiosBypassesProxy(url, port, noProxy)) return "";
+  return proxy.includes("://") ? proxy : `${scheme}://${proxy}`;
+}
+
+// The proxy Node's EnvHttpProxyAgent (undici, as bundled in Node 22.23) uses
+// for `url`, or "" for direct. It never reads ALL_PROXY, and an HTTPS URL falls
+// back to HTTP_PROXY.
+function envAgentProxyFor(url: URL, env: NodeJS.ProcessEnv): string {
+  const noProxy = env.no_proxy ?? env.NO_PROXY ?? "";
+  const host = url.host.replace(/:\d*$/, "").toLowerCase();
+  const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
+  if (noProxy.split(/[,\s]/).some(entry => entry !== "") &&
+      !proxyFromEnvShouldProxy(host, port, noProxy === "*" ? "*" : noProxy.toLowerCase())) {
+    return "";
+  }
+  const httpProxy = env.http_proxy ?? env.HTTP_PROXY ?? "";
+  const httpsProxy = env.https_proxy ?? env.HTTPS_PROXY ?? "";
+  return url.protocol === "https:" && httpsProxy !== "" ? httpsProxy : httpProxy;
+}
+
+function sameProxy(a: string, b: string): boolean {
+  if (a === "" || b === "") return a === b;
+  try {
+    return new URL(a).href === new URL(b).href;
+  } catch {
     return false;
   }
+}
+
+/**
+ * Why Node's global fetch would not take the route demosdk's Axios transport
+ * takes to `rpc`, or undefined when it would. Axios follows the environment
+ * (proxy-from-env 2.1.0, then axios 1.17's NO_PROXY bypass). Fetch follows
+ * the dispatcher Node actually installed: the default Agent connects directly;
+ * EnvHttpProxyAgent exists only when Node 22.21+ started with
+ * NODE_USE_ENV_PROXY=1 or --use-env-proxy and HTTP(S)_PROXY. Any other global
+ * dispatcher is trusted only where Axios connects directly. `installed` holds
+ * the global dispatcher, undefined until fetch first loads its default Agent.
+ */
+export function fetchProxyMismatch(
+  rpc: string,
+  env: NodeJS.ProcessEnv = process.env,
+  installed: { dispatcher: unknown } = {
+    dispatcher: (globalThis as Record<symbol, unknown>)[GLOBAL_DISPATCHER],
+  },
+): string | undefined {
+  const { dispatcher } = installed;
   let url: URL;
   try {
     url = new URL(rpc);
   } catch {
-    return false;
+    return undefined;
   }
-  const read = (name: string) => env[name] || env[name.toUpperCase()] || "";
-  if (!read(`${url.protocol.slice(0, -1)}_proxy`) && !read("all_proxy")) return false;
-  const noProxy = read("no_proxy").toLowerCase();
-  if (noProxy === "*") return false;
-  const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
-  return noProxy.split(/[,\s]/).every((entry) => {
-    if (entry === "") return true;
-    const withPort = /^(.+):(\d+)$/.exec(entry);
-    const host = withPort?.[1] ?? entry;
-    if (withPort !== null && Number(withPort[2]) !== port) return true;
-    if (!/^[.*]/.test(host)) return url.hostname !== host;
-    return !url.hostname.endsWith(host.startsWith("*") ? host.slice(1) : host);
-  });
+  const axios = axiosProxyFor(url, env);
+  const kind = (dispatcher as { constructor?: { name?: unknown } } | undefined)?.constructor?.name;
+  if (dispatcher !== undefined && kind !== "Agent" && kind !== "EnvHttpProxyAgent") {
+    return axios === "" ? undefined : DEMOS_CCI_PROXY_BYPASS;
+  }
+  const fetchProxy = kind === "EnvHttpProxyAgent" ? envAgentProxyFor(url, env) : "";
+  if (sameProxy(axios, fetchProxy)) return undefined;
+  return axios === "" ? DEMOS_CCI_PROXY_ADDED : DEMOS_CCI_PROXY_BYPASS;
 }
 
 /** One fresh, bounded attempt, including time-bound header construction. */
