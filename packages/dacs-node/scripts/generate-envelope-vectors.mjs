@@ -51,7 +51,7 @@ const payloads = {
     sellerVetReceipt: {
       receiptVersion: "1",
       substrate: "demos",
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress: "dacs2:vector:seller-vet",
       nativeAddress: `stor-${"d".repeat(40)}`,
       contentHash: "c".repeat(64),
@@ -208,7 +208,7 @@ const payloads = {
     buyerVetReceipt: {
       receiptVersion: "1",
       substrate: "demos",
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress: "dacs2:vector:buyer-vet",
       nativeAddress: `stor-${"f".repeat(40)}`,
       contentHash: "e".repeat(64),

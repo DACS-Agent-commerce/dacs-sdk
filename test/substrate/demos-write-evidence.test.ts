@@ -128,13 +128,39 @@ describe("Demos portable write evidence", () => {
       writer: "did:demos:agent:abc",
       evidence,
     })).toMatchObject({
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       nativeAddress: "stor-abc",
       nonce: "7",
       transactionRef: { value: "tx-abc" },
       blockRef: { id: "block-hash", height: "42", timestamp: 120 },
       evidence: { kind: "demos-bft-write-proof-v1" },
     });
+  });
+
+  it("names the DEMOS-MAPPING finality profile and accepts no other", () => {
+    // DEMOS-MAPPING §A.2 defines the Demos profile as `demos-bft-final`; the
+    // SDK's own proof format is carried by evidence.kind (CORE SR2-6).
+    const receipt = demosWriteEvidenceToAnchorReceipt({
+      logicalAddress: "dacs:test:v1",
+      contentHash: artifactHash,
+      writer: "did:demos:agent:abc",
+      evidence,
+    });
+    expect(receipt.finalityProfile).toBe("demos-bft-final");
+    expect(decodeDemosAnchorReceiptProof(receipt).chainIdentity).toBe(
+      evidence.chainIdentity,
+    );
+    for (const finalityProfile of [
+      "demos-bft-confirmed-native-read",
+      "demos-bft-final ",
+      "DEMOS-BFT-FINAL",
+      "evm-block-depth",
+    ]) {
+      expect(
+        () => decodeDemosAnchorReceiptProof({ ...receipt, finalityProfile }),
+        finalityProfile,
+      ).toThrow("AnchorReceipt does not contain Demos write evidence");
+    }
   });
 
   it("round-trips canonical self-contained evidence", () => {

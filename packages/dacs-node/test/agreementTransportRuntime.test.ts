@@ -111,7 +111,7 @@ function sellerVetProduction(): Readonly<{
     anchorReceipt: {
       receiptVersion: "1",
       substrate: "demos",
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress,
       nativeAddress: `stor-${"6".repeat(40)}`,
       contentHash: recordRef.contentHash,

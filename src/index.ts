@@ -305,6 +305,7 @@ export {
   type FsDemosWriteJournalOptions,
 } from "./substrate/demosWriteJournalFs.js";
 export {
+  DEMOS_BFT_FINALITY_PROFILE,
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
