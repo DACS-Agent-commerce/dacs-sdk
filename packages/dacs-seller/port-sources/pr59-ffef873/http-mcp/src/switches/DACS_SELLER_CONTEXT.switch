@@ -1,0 +1,11 @@
+{
+  "env": "DACS_SELLER_CONTEXT",
+  "configKey": "sellerContext",
+  "kind": "enum",
+  "values": ["in-process", "route"],
+  "default": "in-process",
+  "deployValue": "in-process",
+  "order": 35,
+  "operatorNote": "Operator seller Vet and Agreement context: in-process, or over the seller transport route.",
+  "contractNote": "read by the devnet operator's in-process seller only"
+}

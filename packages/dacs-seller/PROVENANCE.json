@@ -1,0 +1,1557 @@
+{
+  "format": "dacs-provenance/v1",
+  "package": "@kynesyslabs/dacs-seller",
+  "step": "WS-3 step 1: verbatim copy, no changes",
+  "sourceRepository": "DACS-Agent-commerce/frontend",
+  "integrationBase": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+  "generatedBy": "packages/dacs-seller/scripts/copy-verbatim.mjs",
+  "pathMapping": {
+    "http-mcp/src/X": "packages/dacs-seller/src/X",
+    "http-mcp/public/Y": "packages/dacs-seller/src/public/Y",
+    "http-mcp/test/Z": "packages/dacs-seller/test/Z",
+    "PR port source P": "packages/dacs-seller/port-sources/pr<N>-<7-character inspected head>/P"
+  },
+  "portSources": [
+    {
+      "pr": 58,
+      "topic": "seller-sourced lookup, manual hold of pre-payment writes (purchaseSource: \"seller\")",
+      "inspectedHead": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "planNamedHead": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "relation": "the plan names 5274f18; the ported head 786aa1d is its descendant and also merges main 82bf8c4, so git diff 82bf8c4 786aa1d is exactly the PR change",
+      "directory": "packages/dacs-seller/port-sources/pr58-786aa1d",
+      "notPorted": [
+        {
+          "sourcePath": "http-mcp/deploy/vps/README.md",
+          "change": "modified",
+          "reason": "plugin VPS deployment doc (plugin-side; outside src/ and test/)"
+        },
+        {
+          "sourcePath": "http-mcp/deploy/vps/dacs.env.example",
+          "change": "modified",
+          "reason": "plugin VPS environment template (plugin-side; outside src/ and test/)"
+        },
+        {
+          "sourcePath": "http-mcp/deploy/vps/preflight.mjs",
+          "change": "modified",
+          "reason": "plugin VPS preflight (plugin-side; outside src/ and test/)"
+        },
+        {
+          "sourcePath": "http-mcp/docs/OPS-HEALTH.md",
+          "change": "modified",
+          "reason": "plugin ops-health doc (plugin-side)"
+        },
+        {
+          "sourcePath": "http-mcp/docs/SELLER-POLICY-AND-DELIVERY-EVIDENCE.md",
+          "change": "modified",
+          "reason": "seller policy doc; outside src/ and not a test; D5 and the README delta read it at 786aa1d"
+        },
+        {
+          "sourcePath": "http-mcp/scripts/devnet-demo-seller-release.mjs",
+          "change": "added",
+          "reason": "operator script that releases a held seller attempt; outside src/; input to D12's `approvals` command"
+        },
+        {
+          "sourcePath": "http-mcp/src/devnet-demo/operator.mjs",
+          "change": "modified",
+          "reason": "the in-process operator (plugin-side, replaced by the seller host); its seller-mode wiring (journal binding, state lock, purchase resolver) is D5/D12 input"
+        },
+        {
+          "sourcePath": "http-mcp/src/ops/health.mjs",
+          "change": "modified",
+          "reason": "plugin ops health (plugin-side)"
+        }
+      ]
+    },
+    {
+      "pr": 59,
+      "topic": "Vet and Agreement context route, per-buyer and global unpaid-start limits (DACS_SELLER_CONTEXT=route)",
+      "inspectedHead": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "planNamedHead": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "relation": "the plan names febba6c; the ported head ffef873 is its descendant and also merges main 82bf8c4, so git diff 82bf8c4 ffef873 is exactly the PR change",
+      "directory": "packages/dacs-seller/port-sources/pr59-ffef873",
+      "notPorted": [
+        {
+          "sourcePath": "http-mcp/deploy/vps/README.md",
+          "change": "modified",
+          "reason": "plugin VPS deployment doc (plugin-side; outside src/ and test/)"
+        },
+        {
+          "sourcePath": "http-mcp/deploy/vps/preflight.mjs",
+          "change": "modified",
+          "reason": "plugin VPS preflight (plugin-side; outside src/ and test/)"
+        },
+        {
+          "sourcePath": "http-mcp/docs/OPS-HEALTH.md",
+          "change": "modified",
+          "reason": "plugin ops-health doc (plugin-side)"
+        },
+        {
+          "sourcePath": "http-mcp/docs/SWITCHES.md",
+          "change": "modified",
+          "reason": "plugin switch registry doc (plugin-side)"
+        },
+        {
+          "sourcePath": "http-mcp/docs/seller-context-route.md",
+          "change": "added",
+          "reason": "context-route design doc; outside src/ and not a test; D5 reads it at ffef873"
+        },
+        {
+          "sourcePath": "http-mcp/scripts/print-seller-context-digests.mjs",
+          "change": "added",
+          "reason": "operator script; outside src/; input to D12's `approvals` command"
+        },
+        {
+          "sourcePath": "http-mcp/scripts/release-seller-context-hold.mjs",
+          "change": "added",
+          "reason": "operator script that releases a held context step; outside src/; input to D12's `approvals` command"
+        },
+        {
+          "sourcePath": "http-mcp/src/dacs/dem-delivery-context-consumer.mjs",
+          "change": "modified",
+          "reason": "client-side: @kynesyslabs/dacs-client open item"
+        },
+        {
+          "sourcePath": "http-mcp/src/dacs/protocol-purchases.mjs",
+          "change": "modified",
+          "reason": "client-side: @kynesyslabs/dacs-client open item"
+        },
+        {
+          "sourcePath": "http-mcp/src/devnet-demo/composition.mjs",
+          "change": "modified",
+          "reason": "the in-process operator composition (plugin-side, replaced by the seller host)"
+        },
+        {
+          "sourcePath": "http-mcp/src/devnet-demo/operator-sessions.mjs",
+          "change": "modified",
+          "reason": "the in-process operator's buyer-side seller session keys (plugin-side)"
+        },
+        {
+          "sourcePath": "http-mcp/src/devnet-demo/operator.mjs",
+          "change": "modified",
+          "reason": "the in-process operator (plugin-side, replaced by the seller host)"
+        },
+        {
+          "sourcePath": "http-mcp/src/mcp/seller-content.mjs",
+          "change": "modified",
+          "reason": "plugin MCP untrusted-text envelope (plugin-side)"
+        },
+        {
+          "sourcePath": "http-mcp/src/ops/health.mjs",
+          "change": "modified",
+          "reason": "plugin ops health (plugin-side)"
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "src": {
+      "files": 18,
+      "lines": 4649,
+      "bytes": 334287
+    },
+    "test": {
+      "files": 110,
+      "lines": 20297,
+      "bytes": 1625782
+    },
+    "port-source": {
+      "files": 40,
+      "lines": 17657,
+      "bytes": 1451395
+    }
+  },
+  "files": [
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/src/dacs/seller-agent.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-agent.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "aabfd867bdb7e20973654382573218f6080693c8353919986f65be53f817a787",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "abbd778d53fe3b45f682523026f6f24e07d8605ee3e0f8018b14347c1eacd6c8",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/operator-approval.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/operator-approval.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "cf21d7fafdd9b203e00ed24122e81b35aadfe6b42815ec246aae60a8cff720e7",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "935a5162171a43189ee31fc5e9fdb080b669e64363c698a05d5e0a84fb49a70b",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-issuance.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/seller-issuance.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "3dad4b5403ff718309f78167f5fb4a1ce99bd791235106702dbead3c3fa172c1",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "3dad4b5403ff718309f78167f5fb4a1ce99bd791235106702dbead3c3fa172c1",
+      "note": "#58's seller issuance-journal binding for the approval ledger; imported only by operator.mjs and ops/health.mjs at 786aa1d, flagged: new seller-side code outside the named list"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-purchase-source.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/seller-purchase-source.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "865a459d5113961282fb35b6f88f1310f62a77a73c81e8ced795fe9199c6271d",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "865a459d5113961282fb35b6f88f1310f62a77a73c81e8ced795fe9199c6271d",
+      "note": "#58's seller-sourced purchase lookup (purchaseSource: \"seller\")"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-state-lock.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/seller-state-lock.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "e2b0ee5ca335146f874c5b3d24f4fa48a361f16c2dbd0ea2c21dcf256a454928",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "e2b0ee5ca335146f874c5b3d24f4fa48a361f16c2dbd0ea2c21dcf256a454928",
+      "note": "#58's process-lifetime seller state-directory lock"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/fee-approval-recovery-offline.test.mjs",
+      "sourcePath": "http-mcp/test/fee-approval-recovery-offline.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "9e2def0098251db72e19eaf1b2c4f8bd228e54606f715a136d6366366569eaa0",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "44979315baac75d7d44ed796789fc9fd7852a9ab0d182ec90fdeb043023ebacb",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "8d09b72540b6738b6103979100ca986957a66e34521b9a1046fab6199f6ae689",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "4f5c125f8fc466550b4957ee4d707de2d0bca4e024afb90155c281c76f716220",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/operator-approval-closing.test.mjs",
+      "sourcePath": "http-mcp/test/operator-approval-closing.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "3145ef4d06466867af153048a78450cddbdcfd3e02b92e7be62128392f084702",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": null,
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/ops-health-seller-records-off.test.mjs",
+      "sourcePath": "http-mcp/test/ops-health-seller-records-off.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "e04ebfa91ec3489b6b15d42ce4239dc58149488f31fcc3d7f808384d66a2323a",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "e04ebfa91ec3489b6b15d42ce4239dc58149488f31fcc3d7f808384d66a2323a",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/ops-health.test.mjs",
+      "sourcePath": "http-mcp/test/ops-health.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "466a115d28028cd77efda8aca46ac437da67b9eb7b8adf55b653264f232e367c",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "a3cf741b4451d8e6dafe79f4788ed0c18b875e2e6e10a687f1009d7b79a79070",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-commit-on-signature.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-commit-on-signature.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "6bf074a169d76efa0051ae06757f6cd2b0b02ef0b24f598c686ed1399ac128c4",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "6bf074a169d76efa0051ae06757f6cd2b0b02ef0b24f598c686ed1399ac128c4",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-journal-freshness.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-journal-freshness.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "a734e7b4944c22d289b617d082450f7645144cb83840463a6ffcd0c0e3af164a",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "a734e7b4944c22d289b617d082450f7645144cb83840463a6ffcd0c0e3af164a",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-journal-identity.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-journal-identity.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "277f75c288f8dd6d5190e59cb640ba3e3d534341ff21558958687e4ae8b6c429",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "277f75c288f8dd6d5190e59cb640ba3e3d534341ff21558958687e4ae8b6c429",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-purchase-source-node2.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-purchase-source-node2.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "37918f3a8d1677113ed16833bae7980ed482b168ce3201e40c4288728d2f6004",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "8b9476026affe1b63709992c2a3b45d9be1a287c1894cbfde23b29b715e87442",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-purchase-source.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-purchase-source.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "3ee572cd9d2da425fbea72b74b0fc2979cfffeebb0ee5c25e56983448983a42e",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "3ee572cd9d2da425fbea72b74b0fc2979cfffeebb0ee5c25e56983448983a42e",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-reservation-restart.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-reservation-restart.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "69e3ceab39b629c7447b1721c4ced744b9758991e4f224571699eb165526baea",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "69e3ceab39b629c7447b1721c4ced744b9758991e4f224571699eb165526baea",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/seller-policy-state-lock.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-state-lock.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "dd3247294fd2f483f6522ec11296e38900650d77f4fc699791f1d3af4b10e76d",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "added",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": "dd3247294fd2f483f6522ec11296e38900650d77f4fc699791f1d3af4b10e76d",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr58-786aa1d/http-mcp/test/vps-hosting.test.mjs",
+      "sourcePath": "http-mcp/test/vps-hosting.test.mjs",
+      "sourceCommit": "786aa1d9d6b6393190a6f388a4b92cb921af1fc6",
+      "sha256": "83d2662140b62bb4657ceb10bc387f021dd4cd75409b0dd9eea6b1eb07e300b8",
+      "role": "port-source",
+      "pr": 58,
+      "prChange": "modified",
+      "planNamedCommit": "5274f18541ac0e8c77e3e71463bb6c811f048922",
+      "planNamedSha256": null,
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/dacs/seller-agent.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-agent.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "b8ad256ee40157b9578627212478c8d94ee971e04d89f8fefe23b945c8fe98a9",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "cafdd938b567d9232813bca22ef503d985864da7037bc7830d7dfadb82444de9",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/dacs/seller-context-route.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-context-route.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "2b5995b428c8cb71afc8c797dc1628400217192d226df3da0ab23bf2b4c18de6",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "e5569dc176cc6dab250daf0d15fd37982cab14bc89bd3c450b9545ab321fcfac",
+      "note": "#59's Vet and Agreement-context route; it also holds the route client (createSellerContextClient), which the buyer side uses"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/dacs/seller-http.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-http.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "fb50f5152286a48350a7e4c0ec67d42a9fc9173fe3cb9bc8c2868c8a54fdc0a0",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "3b990ae45f47a2408d4a00edfa9020416cd9c198b25a5529f218367a1a3f22df",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/dacs/seller-transport-auth.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-transport-auth.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "ba41d81463557fca7abf4d4dd66a464a487c42e5c0e6941495e513645ee29bf6",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "9c36c734dbaa8d33940135f615ce8f9af9edb1ea00cc4af75475c8a3263d294d",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/devnet-demo/agreement-context.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/agreement-context.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "f9fd7396a8883e52b27bceedf2b290354c2c16fd88e51175721d671eeea8d4a9",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "8033139efb8527d8c6911a21791a95a84eb681793d009bf496588cd3f692e485",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/devnet-demo/artifact-anchor.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/artifact-anchor.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "b9aadf636868c2c01bdff93a42bb1c74708fe5dc1970978fabb02e3f3823a6ec",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "a9d1d198efdf7b51e230909b96e8fc3f1214e05b8134d8e2f3790e671cd154da",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/devnet-demo/operator-approval.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/operator-approval.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "bc9be58fe5a450f4577c6ef21438a740d341cc96f004080394b3aa9180b70082",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "9c82fb8ed1bdef6d3a8656ee54cb242a40f5064a127df9723ac2784faf5479be",
+      "note": "in the 82bf8c4 seller set"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/src/switches/DACS_SELLER_CONTEXT.switch",
+      "sourcePath": "http-mcp/src/switches/DACS_SELLER_CONTEXT.switch",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "07170b09b0bc5b868b9e3417cd1b154d24b50405f5ae3d22ebcfe270375b97b5",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "07170b09b0bc5b868b9e3417cd1b154d24b50405f5ae3d22ebcfe270375b97b5",
+      "note": "#59's switch file for DACS_SELLER_CONTEXT (in-process | route)"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/devnet-operator-plan-shutdown-owned.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-plan-shutdown-owned.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "2f2f6be0b7d6cdf5bd6c9ec10eacf06f37b0aed7ae7ec7b0ac5d51f1473781aa",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": null,
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/fee-approval-recovery-offline.test.mjs",
+      "sourcePath": "http-mcp/test/fee-approval-recovery-offline.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "1bb8d22e1428c84266534fdd4823f94dd62ac9af99dee5b08c5e12f94cd0a2ce",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "49a898e0a11a3b39d6f8689b799a178ad79aa1852b6f8ecd0702cb2f8cbbf5fe",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "6a58bfabb7e845e32fb57d5f685092338c6f968b53b8ac342198cb14da4db7e2",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "256b076a01ae8684cdfe30fa54f23967cd64f9564a8770e614d0304fb65d7091",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/helpers/seller-context-fixture.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-context-fixture.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "ad8bd755325a3c808a025abb770bea691a4da7ff3c00502019895d5c27b98f4b",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "ad8bd755325a3c808a025abb770bea691a4da7ff3c00502019895d5c27b98f4b",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/helpers/seller-context-off-operator.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-context-off-operator.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "52eb415e91ed356d1deff77b2a334960942ef90a9f853f9f049e99af9e0446c8",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "52eb415e91ed356d1deff77b2a334960942ef90a9f853f9f049e99af9e0446c8",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/helpers/seller-context-off-scenario.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-context-off-scenario.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "36ae20f68842bd89d7d84facd6da2aca129dc276920bb2372ca956cd913bd856",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "36ae20f68842bd89d7d84facd6da2aca129dc276920bb2372ca956cd913bd856",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/ops-health-lost-attempt.test.mjs",
+      "sourcePath": "http-mcp/test/ops-health-lost-attempt.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "bedbbc367effbef19237a2857fc99ffcdcfb634ce546fd0fd2cc5211f15b8d09",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "bedbbc367effbef19237a2857fc99ffcdcfb634ce546fd0fd2cc5211f15b8d09",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/ops-health.test.mjs",
+      "sourcePath": "http-mcp/test/ops-health.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "4947df8fcd8a3d4b6a80b268788f11a98884c48661ce4cb497fa16837bd749fe",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "4947df8fcd8a3d4b6a80b268788f11a98884c48661ce4cb497fa16837bd749fe",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-context-route-off.test.mjs",
+      "sourcePath": "http-mcp/test/seller-context-route-off.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "076c08f55955328a70c5204501f981c452ae0ee51f351b92c4b8858bbc524fd0",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "076c08f55955328a70c5204501f981c452ae0ee51f351b92c4b8858bbc524fd0",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-context-route-shutdown-resume.test.mjs",
+      "sourcePath": "http-mcp/test/seller-context-route-shutdown-resume.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "a87f69b2a599066f1c90efcf7e6928772ed50398d5bfd27e109811db5a2cf6aa",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": null,
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-context-route-unit.test.mjs",
+      "sourcePath": "http-mcp/test/seller-context-route-unit.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "1e30e51e382f086c8a08fd6bef6f0017a98cccfcd40d941e5b3e5284d16d3a43",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "8d37d91c311f888d4b88a8f02af6ad1dc916aeb48742d8eb3c2c35300c4180ed",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-context-route.test.mjs",
+      "sourcePath": "http-mcp/test/seller-context-route.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "21696f98de6806638682410047edda489542c596619de6e763fc6694ab1ebf2c",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "added",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "9584dc2b9237bb9e607a72af159c3dbb4f64e2283d30be64e327fc4734e3dc5e",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/seller-policy-delivery-evidence.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-delivery-evidence.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "25b5461b8e2218cfd5cffa6fb7a5d0abc71b224a487af92d107c428277e5cc8b",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "1e4ebb3c33ee8a58799c1729c1bdbe983bfa52a63e02b74e36c3609926051d51",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/pr59-ffef873/http-mcp/test/vps-hosting.test.mjs",
+      "sourcePath": "http-mcp/test/vps-hosting.test.mjs",
+      "sourceCommit": "ffef873a58a1e71f3a91ae159d92a549992c3857",
+      "sha256": "44536d01fd583b3e6f7daa7e69c241cf4d2527a43a6efdcc6126242c7912d96e",
+      "role": "port-source",
+      "pr": 59,
+      "prChange": "modified",
+      "planNamedCommit": "febba6cc2e732a59124eb39f33a50f017d4e3d4c",
+      "planNamedSha256": "d7f40843385bc307c2bb11dbbd681b527247f05623aa6f24087fe01da47f3c3d",
+      "note": "a test or test helper the PR adds or changes"
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/commit-on-signature.mjs",
+      "sourcePath": "http-mcp/src/dacs/commit-on-signature.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e6edd9fadd0cffe4af460d82d8970f8032a3a4eea723fc4102844a5ae6c3929f",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/purchase-protocol.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-agent.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "5149bc53c644ee4b2f323ed38febb1ce127c69cf2c1382e16df577604f455ce7",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/seller-http.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-durable-state.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-durable-state.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "9e6c0523c8bdbbd57c2df54836a6787414cc8991235cb259b35f2716bde870fe",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/seller-agent.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-http.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f00205916e5a93e29f2fa940b566e358265927d3d9939d057d962b60a8cbbbc0",
+      "role": "src",
+      "note": "§0.3 splits this file: the client half (seller-http.mjs:146-286 at 82bf8c4) goes to @kynesyslabs/dacs-client, :20-36 is ported to @kynesyslabs/dacs/wire, the server half stays in the seller; copied whole into both packages in step 1, the split is a later delta"
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
+      "sourcePath": "http-mcp/src/dacs/seller-transport-auth.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "daded5ece83e656d93f28e6f06297f81d93e0afbfa2d6b0368c3af1bc1e5bf7c",
+      "role": "src",
+      "note": "§0.3 splits this file: the client half goes to @kynesyslabs/dacs-client, :41-129 and :340-378 are ported to @kynesyslabs/dacs/wire, the server half stays in the seller; copied whole into both packages in step 1, the split is a later delta"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/agreement-context.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d6bc289531c3d27ca0489681dbc9b8781582edb819b57027654d8c798d2cbb29",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/artifact-anchor.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d31ab8138a6444e80e7702e62c18391fcb3635b4e252c1f724f6c5baecaf43c6",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/deliverable.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/deliverable.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "3eb5ac827a27138746f8d5eecd790d82cdf1ea15a31f7a9216200b16a0a07668",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/buyer-chain-readback.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/issued-readback.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/issued-readback.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "068cda5baacef2249080ef15568533744b6dec435c0a0f0d415f0f7bed4c5bc5",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/protocol-purchases.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/listing.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/listing.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e761ec81fd33a7fffb383f681953df13e63480d4f5bb913292c1f2a97d9beadb",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/native-delivery.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/native-delivery.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "220ed1c9fc344617745573141ec6d40bf0baf1d187e7038c1350e6a79beee700",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/protocol-purchases.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/operator-approval.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/operator-approval.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "1ea5e7b5753653b2bf988f0d8aece543654ed391ae2131da6060e58299365b1b",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/operator-custody.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/operator-custody.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e084ccad5c42c807f3e84696dcb30e9cf5a6985ca91edc2860e2bb4a7abdca69",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/party-vet-store.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/party-vet-store.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b8db340a0650c0343fa43531267fa6a06a1a2cf82883c3510423c2deea2a7ac1",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/public-signed-creates.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/public-signed-creates.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8dc3867b580cea4093473f3ca9eb57bba2daaec08ad736a89e6aec7c71fd25e4",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/seller-tls.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/seller-tls.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "03bf4d9dd44cedc1dcbca09b37357f519f6681c3eb4bc96e66665f8300808bf8",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/seller-write-batch.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/seller-write-batch.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "1f2b5a4d98fa03a69804e65fd5bc7ad4e9c1ae24afffb37a811f2b3c2b045ee0",
+      "role": "src"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/storage-write-recovery.mjs",
+      "sourcePath": "http-mcp/src/devnet-demo/storage-write-recovery.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "bc2263de239f2495e44449e336b5d11029d0d5b28a53f30bedf9c0a09d9f0906",
+      "role": "src",
+      "note": "also in the @kynesyslabs/dacs-client set (reached from http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs); copied whole into both packages in step 1"
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-durable-vet.test.mjs",
+      "sourcePath": "http-mcp/test/agreement-context-durable-vet.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "3f832f3f3f9ead497b4365ecbeb71222f90c835e1df10a03453e21d796f8e5a5",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-legacy-ops-health.test.mjs",
+      "sourcePath": "http-mcp/test/agreement-context-legacy-ops-health.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "1823849197e04c253ccf35e193d9e8e85c0730a8f5c7950a0a26b6191efc661a",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-replay-resend.test.mjs",
+      "sourcePath": "http-mcp/test/agreement-context-replay-resend.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8b55b9da08110111b801b24a55ae49a7aadd0714510933cd084429af87959821",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-write-effect.test.mjs",
+      "sourcePath": "http-mcp/test/agreement-context-write-effect.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "bc4a0433ecfccf16710ceed3f22528a9b978a7c7e9444594ebc27d61e9dcbaf7",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-plan-speed-composition.test.mjs",
+      "sourcePath": "http-mcp/test/agreement-plan-speed-composition.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "659a3d5cbbd096e6f0495338a3e306c360b60c5d1223c832aa4afb12ebc33739",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/buyer-chain-readback-commit-on-signature.test.mjs",
+      "sourcePath": "http-mcp/test/buyer-chain-readback-commit-on-signature.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "7ae7296fa33ad8a6b1d45bc4a508facc1fbab574b31acab5139fd4fe59d63a61",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/buyer-chain-readback-unit.test.mjs",
+      "sourcePath": "http-mcp/test/buyer-chain-readback-unit.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "eefe3c2bd35566e9f0ae59ed987640fe9a90b182528872b87e97245ceec1f1c4",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/claude-cli-recovery-coverage-operator-buyer.test.mjs",
+      "sourcePath": "http-mcp/test/claude-cli-recovery-coverage-operator-buyer.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "541772ea9556392517c0a0a29ae223b602bfbd6c26d633f7dfbca8cb41d5d01e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/claude-cli-recovery-coverage-seller-commitment.test.mjs",
+      "sourcePath": "http-mcp/test/claude-cli-recovery-coverage-seller-commitment.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "7a983cae8f3808a61c493373de077bf64e86350e64c355450eea78ee47d60def",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/claude-commit-phase-coverage-adoption.test.mjs",
+      "sourcePath": "http-mcp/test/claude-commit-phase-coverage-adoption.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "701b07e96225142d01a2aab56392a0e63ab796c188e086a4d7a423e65041692a",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/claude-commit-retry-coverage-interactions.test.mjs",
+      "sourcePath": "http-mcp/test/claude-commit-retry-coverage-interactions.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f863d9031c80b4a9be25db7bfde9e7c38e408f804c0d92b458d58f2444ed56e2",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-boundaries.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-boundaries.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "3748d8993f4ded39c045e5e54257677ce5c1a594664441d69a37a0b6af774976",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-driver-resend.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-driver-resend.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0092e0124ad5456524a81a8e9b3fb58d59a23eda4a1476a45a45f012c5c0640e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-guard-unit.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-guard-unit.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b7112a58396460f31c67a8d9ebb3c5245c50c756e36781353d9b98f3a76a0c54",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-paid-recovery.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-paid-recovery.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b1ccfdb4660013b26ae3c315f9700150c076a81ff8e6690d937d2afd879e14ff",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-readback.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-readback.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0a85a3a2eb280ac6055146b965716aff63d9ce088b55f89eb8ef9dff34817650",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-receipt-verify.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-receipt-verify.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "387e5db76d3a7ab673d4def21979377cbecde412d7a4faf20688759eaaf77db3",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-resend-notice.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-resend-notice.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "858a126e3f54c02c394b41acfc2c6d10b6fe07a5a1dbf7c0c0d36131c469eee9",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-retained-resend.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-retained-resend.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6f9f617972ac92e61f33bc3b5cb413d6491b794f8ef72502d5d988c0296a0394",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-rpc-auth.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-rpc-auth.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "980988dfff18c21f48b293e8126ee62234b14a1fcc56639caba2ce54be8e47ae",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-seller-relay.test.mjs",
+      "sourcePath": "http-mcp/test/closed-access-seller-relay.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e4e83939d2923ef9930a0ba4aa1a3abf3b60610e5cba0c263527d9ecd42ee748",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-authorization.test.mjs",
+      "sourcePath": "http-mcp/test/commit-on-signature-authorization.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6be4dc823ca8f9362f8b0a4c6cf39f9ea01aabb6bed185fe27500abc4814e96b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-native.test.mjs",
+      "sourcePath": "http-mcp/test/commit-on-signature-native.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6513de7a0d29ede55a37440b2e072797e2bb591cb8cd61acdb5cec135c304c55",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-recovery.test.mjs",
+      "sourcePath": "http-mcp/test/commit-on-signature-recovery.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0104957647fbff05f94706a57609bd97b8d3c3ffee7d65ca0fc3c55ad3b81283",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature.test.mjs",
+      "sourcePath": "http-mcp/test/commit-on-signature.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "dfed2c53d034074b7a7168571a4096b422f3213387aaf30df21aa1ef4a0ea7bb",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-loopback-fixture.test.mjs",
+      "sourcePath": "http-mcp/test/dacs-loopback-fixture.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "30271c5c2548d8b24f3dc5138b0cdd30219266d0bd211d2475ce349d5966e6e8",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-purchase.test.mjs",
+      "sourcePath": "http-mcp/test/dacs-purchase.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8722f657e94642f2361ff4f05dc8f19ddb913dfa541ace282d66b4b3a6a08b26",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-seller-recovery.test.mjs",
+      "sourcePath": "http-mcp/test/dacs-seller-recovery.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "697aa39282ad5130746c6f49a1c43272d913ed46444cf149ed7b54355f442e2d",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-seller-transport.test.mjs",
+      "sourcePath": "http-mcp/test/dacs-seller-transport.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b7134917111c1e44f0a14cad6c56ccb49833348fc52f0131fe89a855ead142f0",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-buyer-access-prefixed.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-buyer-access-prefixed.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d59156ecf6ce1810ced141c36b3211c2e05c60d2e3cc0ae38b3499c7be93b916",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-demo-anchor-recovery.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-demo-anchor-recovery.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "c44c45c1fd68db49d1944e430d8a5766bc7d56b3915c2608e9b87097e1aeb420",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-app.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-live-composition-app.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "14a7adddca84ed3621d068b22b971d40790bb38e5789ff6082482ace207f0c76",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-artifacts.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-live-composition-artifacts.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8efc7be4c3052b3778a2835347987c47e0afcdaf4c0b76f9f25b2874dd2616b3",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-builder.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-live-composition-builder.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0e3d7c141df9e75e447d33b23f8ebd686b9f741cd96f1254d8712ee91f16f77d",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-construction-cleanup.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-construction-cleanup.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8f4db7c56644f5935dab2781d152c8e601ff1e5db38fce99c5870daa1300c2c5",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-external-origin.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-external-origin.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "36b74a3311fcb837e0b5ddbb23f180d75019b9b072960a34128ef5c4b5b5a6fd",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-prefixed-controls.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-prefixed-controls.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "10617b6696b3ddaaa0f4b9485fe52eac8571fd41d4da4705b7738a0e0b1d38e6",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-prefixed-startup.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-prefixed-startup.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6bc5ef8c87f9860279449aed6507b76adf89d14e7c1e3e68d97ae8c78d13f191",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-seller-tls.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-operator-seller-tls.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6f9db5944644a03778a911308980196f287eb2ce4283bfd9e7122e6411b307c4",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs",
+      "sourcePath": "http-mcp/test/devnet-storage-write-recovery.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "11da500ee430169313194e301163ac6b3387e6536835bbe8f15d38820c6db725",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fee-approval-recovery-offline.test.mjs",
+      "sourcePath": "http-mcp/test/fee-approval-recovery-offline.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "43a19e2ed27d5ea3a27c1405db05ff7f3439bb1da7f93138e97896f311152017",
+      "role": "test",
+      "note": "changed by #58 and #59; the PR versions are under port-sources/"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/authorization-server.pre-dcr-logout.mjs",
+      "sourcePath": "http-mcp/test/fixtures/authorization-server.pre-dcr-logout.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "543d883aef6ff0603431b823d7603772855e7107b3f7631d8fdce26ed9a979b6",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/chain-server.mjs",
+      "sourcePath": "http-mcp/test/fixtures/chain-server.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0cac6299a080ce92d7e15f2be9e5d22ddaa72c03e43b6cec24a9cf613d6b3396",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/directory-server.mjs",
+      "sourcePath": "http-mcp/test/fixtures/directory-server.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "c88c3ee36ef2a8fcab038079a4dbfce00a254210a8e1c4ab9dc35e5b3e97bf3b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/listings.mjs",
+      "sourcePath": "http-mcp/test/fixtures/listings.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d32b2d0d088519399bad7ce256721efa9ac5b536fe780ff3a5ffaaaa46cbad55",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/mcp-seller-content.mjs",
+      "sourcePath": "http-mcp/test/fixtures/mcp-seller-content.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6f33cd540abcdc19d63cf7543f1419b7c9e7a4b8387729728d4de4aab4904206",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/seller-durable-state.main-06958bb.mjs",
+      "sourcePath": "http-mcp/test/fixtures/seller-durable-state.main-06958bb.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "286f59787bb279f29f5a6af4dbb03d176857f92324a1e5b38c98ab674ef1f70d",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/fixtures/wallet.mjs",
+      "sourcePath": "http-mcp/test/fixtures/wallet.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "02cdfb47c3e10cc19f357bbfa7cd468bdb26cd6064165950b2a301c1b449ba04",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/agreement-context-interactions.mjs",
+      "sourcePath": "http-mcp/test/helpers/agreement-context-interactions.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "5849cdfd46257815f9a85dddb6e93a9feb5676ea25fe30fd9e8c75cb10974310",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/buyer-chain-readback-flow.mjs",
+      "sourcePath": "http-mcp/test/helpers/buyer-chain-readback-flow.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6855d90e0fffae3316f24f913e3d5c5050afb9f5f9f51bbf0e7a22b3cce40891",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/buyer-chain-readback-identity.mjs",
+      "sourcePath": "http-mcp/test/helpers/buyer-chain-readback-identity.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "dac8080b5b0016f02d5ca2ed5aaa356da7ec4dff318be4fb2ad2311d24c8fd7c",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/claude-commit-phase-coverage-world.mjs",
+      "sourcePath": "http-mcp/test/helpers/claude-commit-phase-coverage-world.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "31bc05dbccce50da538da27fc03385f1ad3dbccc0d105f44dc5f0ee83150cc2b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/claude-commit-retry-coverage-world.mjs",
+      "sourcePath": "http-mcp/test/helpers/claude-commit-retry-coverage-world.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "7bd26bc810d07876d018340e8ccdc681b7ccbd0c628ad8805a3c7868f8b6af2b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/claude-node2-current-coverage-fixture.mjs",
+      "sourcePath": "http-mcp/test/helpers/claude-node2-current-coverage-fixture.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "79f2cb46b50a0d14462f28dea07746f1b674cfdd105e300d89a61478c2291fb4",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/dacs-storage-anchor-wallet-fixture.mjs",
+      "sourcePath": "http-mcp/test/helpers/dacs-storage-anchor-wallet-fixture.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "02ab04c2fc64bd5a74c46e9b39b91b88a352316dff278ca32edda987cbfe412a",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-agreement-transport-harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-agreement-transport-harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f051fd4fc57db6671fbbf8fd17eef1422cc5b5f788720fbfb0544298eeeeb21f",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-live-composition-app.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-live-composition-app.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "a4440a05cf2e945f6a6ac2682343689b2048427eb021f3dd45c1e40a5341d165",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-live-composition-transport.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-live-composition-transport.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "cb76ae89a492e0ad58d91b99d1c88369f5b586ab139058018fdb8bca31969a4d",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-operator-node2.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-operator-node2.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "3e60a3eb1417c5018a3e68ba107c1afd1ce7f3f675ca35b82b1ddc94f146cac9",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-operator-purchase-node2.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "6669cf6dec53fb7a6b39c0a871ffc977c2a562895bae5b5458360e78273c8fa1",
+      "role": "test",
+      "note": "changed by #58 and #59; the PR versions are under port-sources/"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/devnet-operator-recovery-node2.mjs",
+      "sourcePath": "http-mcp/test/helpers/devnet-operator-recovery-node2.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e2c97c3ace882a477186f75f1984df6575cd2b02f04ad1cb73dbc2d1ed4c34e4",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/embedded-wallet-flow-fixtures.mjs",
+      "sourcePath": "http-mcp/test/helpers/embedded-wallet-flow-fixtures.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "cb912bb2426296285f5d8346c31a08295e6cd075cf399925b7316c507248599b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/env-contract-view.mjs",
+      "sourcePath": "http-mcp/test/helpers/env-contract-view.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e4102ceb06d78afcd64fe4b6f26778f5e279e07927cea944683aba9516ec5605",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/finalized-payment.mjs",
+      "sourcePath": "http-mcp/test/helpers/finalized-payment.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "82fd7b9429d598d3b176342d1a4f01d8e56560b633ac96d3171203b7ad0c530e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/flows.mjs",
+      "sourcePath": "http-mcp/test/helpers/flows.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "7c0f24efade17d77a242bbad883f37b4a029e69f0d7558885c1992c90d96afa3",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "bca15059b737a5d4b46b359f9ac12a60ed280dbfea61f77646feaa4df6d7afa6",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/loopback-test-ca.mjs",
+      "sourcePath": "http-mcp/test/helpers/loopback-test-ca.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e31af200a90ee32f3ff3419e56726db76ae9c1f34f94b502759827c5c981293b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/loopback-test-tls.mjs",
+      "sourcePath": "http-mcp/test/helpers/loopback-test-tls.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "37712122c390bc626aae2605165683865df8911b826347ab9a4106e610e3a6ed",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/model-report.mjs",
+      "sourcePath": "http-mcp/test/helpers/model-report.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b357625a6b771136cb92197bc5462a939d15a3e82ab82ca72e59bb37ee380967",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-agreement-payment-flow.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-agreement-payment-flow.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "9c47e90856e854fd0f488442ff6fd90cce788191880300cff2b25b70736c4294",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-agreement-payment-harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-agreement-payment-harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e7656698091910a45eeb3b8b0bb8c9e1864a859e6642a67bb4b3377ca070e51e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-dem-delivery-provider.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-dem-delivery-provider.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "375a03e03ab32f7a4194d109d5560d64140a69ea0d4f758965897306d672dbca",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-payment-evidence-flow.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-payment-evidence-flow.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f6790353291ae5a4a67d95b85a9ce3aeeb3c92371d6c0ba0445aa24bbdab59ea",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-payment-evidence-harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-payment-evidence-harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "80cccf8575795266f1806c62c056bb624a9b5fedade74f4abb0e16a2e536ee38",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/native-settlement-consumer-seller.mjs",
+      "sourcePath": "http-mcp/test/helpers/native-settlement-consumer-seller.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "84a2cd8daa78fb71333e40c13e1dad3dfdd15be9dbbfa780562f205cb92c3ba1",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/oauth.mjs",
+      "sourcePath": "http-mcp/test/helpers/oauth.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0c8d3b1ee5b37ea0cd7e6c15a7bc0d090de2ebc84b05863011715ee5e365096e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/offline-agreement-fixture.mjs",
+      "sourcePath": "http-mcp/test/helpers/offline-agreement-fixture.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "07cbb9897a5567463e9aec060c1166afe228cbf413d83362d9cd57bf1311911d",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/party-vet-fixture.mjs",
+      "sourcePath": "http-mcp/test/helpers/party-vet-fixture.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d3d193e87a964cfda14434055fdba9b1c77c195438af902959c602f366dec636",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/portal-auto-dom.mjs",
+      "sourcePath": "http-mcp/test/helpers/portal-auto-dom.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "4daa925c44af81a22b2e7f7408627562ea6206d9f37a94235ed07bd2446cb015",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/portal-auto-harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/portal-auto-harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "8b548f2175bc3b5928295fdf1010fbd4e318defa8062523806b8365c9e9ac3c8",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/public-sr2-projection-flow.mjs",
+      "sourcePath": "http-mcp/test/helpers/public-sr2-projection-flow.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0a0a09ceac06b55ff4099245cf679df090ca342e38ebfc0100d94b85044c40b0",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/purchased-report-dom.mjs",
+      "sourcePath": "http-mcp/test/helpers/purchased-report-dom.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "d003de72e25c937bd0505d5f46d17eb449291f1349ec4aa3b4ac6d0157f2bde8",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/seller-durable-state-lock-holder.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-durable-state-lock-holder.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "a6df3c6da532a194caca44ba91f279bd30dcd0160e9418461d83124ee4f6907a",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/seller-sr2-agreement-harness.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-sr2-agreement-harness.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "5e4b4d54e2b79051c691a197a96504add61f3be51bd6306dce17770c4b3e512c",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/seller-state-lease-race.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-state-lease-race.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b7fba42e463b0a6d0e825f33f616334e50ea20e2ca8052c32cf6be617b9bc612",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/seller-state-no-procfs.mjs",
+      "sourcePath": "http-mcp/test/helpers/seller-state-no-procfs.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f35f9801c15f94e74d68546a08cd55d19c75d8e79a3dba3fe7cf4bcda2497b34",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/source-demo-delivery-context.mjs",
+      "sourcePath": "http-mcp/test/helpers/source-demo-delivery-context.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "73d9ddb8e56f373a13146fde9a4beebdfdd48942be0ae89e16ab7310ebb1263b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/source-demo-flow.mjs",
+      "sourcePath": "http-mcp/test/helpers/source-demo-flow.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "687cb739fec82c2bd6f97696b95109efab60067453e19fb698e000d895d97efc",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/source-demo-seller.mjs",
+      "sourcePath": "http-mcp/test/helpers/source-demo-seller.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "f12e92e03c44e66aa4c9dc2b30f115e762ace2662a010fbea63f15d336015b5c",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/start-intent.mjs",
+      "sourcePath": "http-mcp/test/helpers/start-intent.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "a80eb4046790bd12776a2a7cb94a34c47bffafe02465742c3d0096ee6c0fabaf",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs",
+      "sourcePath": "http-mcp/test/mcp-seller-diagnostics.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "9a436dc2cb5866bccd53b6b05fdd15dc38f3e4b7263b498c982abc318c56cc51",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/operator-approval-closing.test.mjs",
+      "sourcePath": "http-mcp/test/operator-approval-closing.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "012bdb9928da03d221342707f304a4815604618fcad8421b6cfccb3523fe5104",
+      "role": "test",
+      "note": "changed by #58; the PR version is under port-sources/"
+    },
+    {
+      "path": "packages/dacs-seller/test/ops-health.test.mjs",
+      "sourcePath": "http-mcp/test/ops-health.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "c70f63fa7211008fc02285f925aa72536155a85d141a8b07578b70cd301a2e9f",
+      "role": "test",
+      "note": "changed by #58 and #59; the PR versions are under port-sources/"
+    },
+    {
+      "path": "packages/dacs-seller/test/party-vet-store.test.mjs",
+      "sourcePath": "http-mcp/test/party-vet-store.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e1d362a7d4106658e24c6fbcd1fa65d1f5c3fba20e8d14e2a8847664b4cb4699",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/portal-seller-session-delegation.test.mjs",
+      "sourcePath": "http-mcp/test/portal-seller-session-delegation.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "4efc11b290ab4ee80b8776ca1d674aec3fe45abf38bf1367e6763762371b368e",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/public-sr2-projection.test.mjs",
+      "sourcePath": "http-mcp/test/public-sr2-projection.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "81e636c8eca607edb883fdeca2296e422c9a3273bb53a5d2fc691983f579d7a7",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/public-text-report-storage.test.mjs",
+      "sourcePath": "http-mcp/test/public-text-report-storage.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "fd2136c2a6270ca1f8264c2910898a68512ab01da0082ef46666867ae6b223bd",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/purchase-model-view.test.mjs",
+      "sourcePath": "http-mcp/test/purchase-model-view.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "96646528ef5360787c279821997cc7e5eab8e7c41eb669f693f224f1a0aca405",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/purchased-report.test.mjs",
+      "sourcePath": "http-mcp/test/purchased-report.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "b9f0d14c27519ddd348cd8229cdf3b828101922a65ec547da6e0f8d7cc74132b",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-durable-state-locks.test.mjs",
+      "sourcePath": "http-mcp/test/seller-durable-state-locks.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "1d0d26afee7801997ba18da45af15457861205ef5633a463dbb66a28bc835bec",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-http-failure-cause.test.mjs",
+      "sourcePath": "http-mcp/test/seller-http-failure-cause.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e02f9b6602ffd7777e831d2b46b0d9b4f8504801f3f2ce49f6d938adfa1891e2",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-delivery-evidence.test.mjs",
+      "sourcePath": "http-mcp/test/seller-policy-delivery-evidence.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "84306dd1dbaf4a15acdca15f4b1394e51c31c523e30c24111c0c27ab9e67afe8",
+      "role": "test",
+      "note": "changed by #59; the PR version is under port-sources/"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-session-keys.test.mjs",
+      "sourcePath": "http-mcp/test/seller-session-keys.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "12c32e942f3ee4556d9d38535ed2ae6c43a2db1cf663624e689be402e21707fb",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-session-open-access.test.mjs",
+      "sourcePath": "http-mcp/test/seller-session-open-access.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e55ff3674cbca24c1e070b7242c91bfd39b840280e2a2c6498a6fbb0af518db3",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-write-batch.test.mjs",
+      "sourcePath": "http-mcp/test/seller-write-batch.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "44235c1fa23eb3e3ca4b7fc5377ffc6998c8417a24a178713ea081d01c5b6186",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/service-request-binding-doc.test.mjs",
+      "sourcePath": "http-mcp/test/service-request-binding-doc.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "2fce5d72f2a804ccb532727b8dda7e283483ed0e040179af326ed8e6dc9a7e15",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/showcase-live-operator.test.mjs",
+      "sourcePath": "http-mcp/test/showcase-live-operator.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "5ee6accbb3c5389ba44ed2a68f124e89d7f9f386b48eb860ca4bd810c362acf2",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/showcase-report-commit-on-signature.test.mjs",
+      "sourcePath": "http-mcp/test/showcase-report-commit-on-signature.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "e8e68270c54e066b95873d7982f0d1473dac43b7c44562312d032a881126ffdf",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/start-intent-wallet.test.mjs",
+      "sourcePath": "http-mcp/test/start-intent-wallet.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "0c94fdf97b83f4285326c82c76fcc87c951306015aeb4dcaf8a9b5fe8e21c50a",
+      "role": "test"
+    },
+    {
+      "path": "packages/dacs-seller/test/vps-hosting.test.mjs",
+      "sourcePath": "http-mcp/test/vps-hosting.test.mjs",
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sha256": "7b388ee92d8b27a056414eb525cbc77014bf60c7ff9912df9e410ac22850e24b",
+      "role": "test",
+      "note": "changed by #58 and #59; the PR versions are under port-sources/"
+    }
+  ]
+}
