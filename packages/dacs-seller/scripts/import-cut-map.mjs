@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  computeSets, computeTests, createSource, FLAGS, INTEGRATION_BASE, mapPath, NOT_A_FILE, PARTIAL_NOTES, resolveReference, scanReferences, STOPS,
+  closure, computeSets, computeTests, createSource, FLAGS, INTEGRATION_BASE, mapPath, NOT_A_FILE, PARTIAL_NOTES, resolveReference, scanReferences, STOPS,
 } from './lib/source-graph.mjs';
 
 const PKG = 'dacs-seller';
@@ -116,6 +116,40 @@ function analyse(source, manifest) {
   return { sets, clientSet, rows, externals };
 }
 
+// Left-out tests that reach a copied seller src file without importing it:
+// through test helpers, or only through another *.test.mjs file. Same accept
+// rule as computeTests.
+function indirectReach(source, considered, sellerSet, copiedTests) {
+  const inTest = (p) => p.startsWith('http-mcp/test/');
+  const out = new Map();
+  for (const { test } of considered) {
+    const c = closure(source, INTEGRATION_BASE, [test], {
+      accept: (target) => (inTest(target) ? null : sellerSet.has(target) ? 'copied-src' : 'outside-test'),
+      pathStrings: inTest,
+    });
+    const hits = c.references.filter((r) => r.target && sellerSet.has(r.target));
+    if (!hits.length) continue;
+    const viaHelper = hits.filter((r) => !r.from.endsWith('.test.mjs'));
+    const used = viaHelper.length ? viaHelper : hits;
+    const through = [...new Set(used.map((r) => r.from))].sort();
+    out.set(test, {
+      seller: [...new Set(used.map((r) => r.target))].sort(),
+      through,
+      viaTestFile: viaHelper.length === 0,
+      uncopied: through.filter((p) => !copiedTests.has(p)),
+      operator: c.references.some((r) => r.stop === 'in-process-operator'),
+    });
+  }
+  return out;
+}
+
+function reachDecision(r) {
+  if (r.operator) return 'map: it also drives the in-process operator, which D12 replaces; DELTA-MAP records whether it is re-hosted on the seller host or stays in http-mcp';
+  if (r.viaTestFile) return `map: it reaches seller code only through the copied test file ${r.through.map(short).join(', ')}; DELTA-MAP records it with that file`;
+  if (r.uncopied.length === 0) return 'map: candidate moved test; its helpers are already copied, so moving it in D1 adds only this file';
+  return `map: candidate moved test; moving it in D1 also copies ${r.uncopied.map(short).join(', ')}`;
+}
+
 function portSourceRows(source, manifest, clientSet) {
   const sellerSrc = new Set(manifest.files.filter((e) => e.role === 'src').map((e) => e.sourcePath));
   const out = [];
@@ -190,17 +224,23 @@ function render(source, manifest) {
     L.push(`| ${code(short(t))} | ${cell(CLASS_WHY[c] ?? c)} | ${cell(deltaFor(c, t))} | ${cell(list.map((r) => code(`${r.file}:${r.line}${r.kind === 'import' ? '' : ` ${r.kind}`}`)).join(', '))} |`);
   }
 
-  const tests = computeTests(source, INTEGRATION_BASE, new Set(sets.seller.files.keys()));
+  const sellerSet = new Set(sets.seller.files.keys());
+  const tests = computeTests(source, INTEGRATION_BASE, sellerSet);
+  const indirect = indirectReach(source, tests.considered, sellerSet, new Set(tests.files.keys()));
+  const viaHelper = [...indirect.values()].filter((r) => !r.viaTestFile);
+  const sellerOnly = viaHelper.filter((r) => r.seller.some((p) => !clientSet.has(p))).length;
   L.push('', '### G6. Tests considered and left out', '');
-  L.push(`${tests.considered.length} of the ${tests.considered.length + tests.selected.length} \`http-mcp/test/**/*.test.mjs\` files import no copied seller file directly, so step 1 leaves them out. What each one does import from \`src/\` or \`public/\`:`, '');
+  L.push(`${tests.considered.length} of the ${tests.considered.length + tests.selected.length} \`http-mcp/test/**/*.test.mjs\` files import no copied seller file directly, so step 1 leaves them out (the brief's selection rule). The reason says what each one imports directly from \`src/\` or \`public/\`; that alone does not mean the test leaves seller code alone. ${indirect.size} of them drive copied seller files without importing them: ${viaHelper.length} through test helpers (${sellerOnly} of these reach a seller-only file, one not in the client set) and ${indirect.size - viaHelper.length} only through another test file. G8 lists those ${indirect.size} with a decision for each.`, '');
   L.push('| Test | Reason |', '|---|---|');
   for (const t of tests.considered) {
     const reach = t.reaches;
     const client = reach.filter((p) => clientSet.has(p));
-    const reason = reach.length === 0 ? 'imports no src/ or public/ file'
-      : client.length === reach.length ? `client-side: imports only client-set files (${client.map(short).join(', ')})`
-        : client.length ? `imports client-set files (${client.map(short).join(', ')}) and plugin-side files (${reach.filter((p) => !clientSet.has(p)).map(short).join(', ')})`
-          : `plugin-side: imports ${reach.map(short).join(', ')}`;
+    let reason = reach.length === 0 ? 'imports no src/ or public/ file directly'
+      : client.length === reach.length ? `client-side direct imports only (${client.map(short).join(', ')})`
+        : client.length ? `imports client-set files (${client.map(short).join(', ')}) and plugin-side files (${reach.filter((p) => !clientSet.has(p)).map(short).join(', ')}) directly`
+          : `plugin-side direct imports only (${reach.map(short).join(', ')})`;
+    const r = indirect.get(t.test);
+    if (r) reason += `; drives seller ${r.seller.map(short).join(', ')} through ${r.through.map(short).join(', ')} (G8)`;
     L.push(`| ${code(short(t.test))} | ${cell(reason)} |`);
   }
 
@@ -209,6 +249,13 @@ function render(source, manifest) {
   L.push('Nothing imports `port-sources/`. For D5, this lists what each ported file imports at its PR head, except references to other files of the same PR and, for tests, to files already in the seller package.', '');
   L.push('| PR | File:line | Specifier | Imports | Target at the PR head | Where it is |', '|---|---|---|---|---|---|');
   for (const r of ports) L.push(`| #${r.pr} | ${code(`${short(r.file)}:${r.line}`)} | ${code(r.specifier)} | ${cell(r.names ? r.names.join(', ') : '')} | ${code(short(r.target) || r.specifier)} | ${cell(r.where)} |`);
+
+  L.push('', '### G8. Left-out tests that drive seller code without importing it', '');
+  L.push(`The ${indirect.size} tests of G6 whose closure (test helpers and fixtures under \`http-mcp/test/\`, same stops) reaches a copied seller file. None is copied in step 1, because the brief selects tests by direct import. Each one is mapped: \`DELTA-MAP.md\` records whether it moves into the package or stays in \`http-mcp\`, so "moved tests pass or are mapped" accounts for it. "Through" names the files that import the seller file; "seller-only" means at least one reached file is not in the client set.`, '');
+  L.push('| Test | Seller src reached | Through | Seller-only | Decision |', '|---|---|---|---|---|');
+  for (const [test, r] of [...indirect].sort()) {
+    L.push(`| ${code(short(test))} | ${cell(r.seller.map((p) => code(short(p))).join(', '))} | ${cell(r.through.map((p) => code(short(p))).join(', '))} | ${r.seller.some((p) => !clientSet.has(p)) ? 'yes' : 'no'} | ${cell(reachDecision(r))} |`);
+  }
   return L.join('\n');
 }
 
