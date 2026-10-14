@@ -154,6 +154,7 @@ export {
   type SolanaSplTransferPlan,
   type SolanaSplSignedAttempt,
   type SolanaSplExpiryEvidence,
+  type SolanaSplLandedFailureEvidence,
   type SolanaSplObservedTransfer,
   type SolanaSplReconciliation,
   type SolanaSplBroadcastResult,

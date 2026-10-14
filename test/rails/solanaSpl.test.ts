@@ -28,10 +28,14 @@ const PAYER = "1".repeat(32);
 const PAYEE = `${"1".repeat(31)}2`;
 const MINT = `${"1".repeat(31)}3`;
 const PAYER_TOKEN = `${"1".repeat(31)}4`;
-const PAYEE_ATA = `${"1".repeat(31)}5`;
+// PAYEE's associated token account for MINT under SPL Token, as
+// `getAssociatedTokenAddressSync` in @solana/spl-token 0.3.11 derives it.
+const PAYEE_ATA = "4GdNzi5A6pM3dCkP9d58MRz8YLfppc1U9W3q3extZzK3";
 const SIGNATURE_1 = "1".repeat(64);
 const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
+// A canonical CORE JID-1 jobId: a 26-character uppercase ULID.
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 
 // The 64 bytes a fixed-width Base58 signature decodes to.
 function signatureBytes(signature: string): Buffer {
@@ -61,7 +65,7 @@ function authority(
   overrides: Partial<SolanaSplSettlementAuthority> = {},
 ): SolanaSplSettlementAuthority {
   return {
-    jobId: "job-solana-spl-1",
+    jobId: JOB_ID,
     phaseIndex: 2,
     railId: "solana-devnet-usdc",
     railDescriptorHash: HASH,
@@ -90,6 +94,9 @@ function preflight(overrides: Partial<SolanaSplPreflight> = {}): SolanaSplPrefli
     payeeAtaMint: MINT,
     networkFeeLamports: "5000",
     ataRentExemptReserveLamports: "2039280",
+    // (128 + 0) bytes × 3480 lamports per byte-year × 2 years, consistent
+    // with the 165-byte token-account reserve above.
+    payerRentExemptMinimumLamports: "890880",
     ...overrides,
   };
 }
@@ -272,8 +279,43 @@ describe("createSolanaSplSettlementIntent", () => {
   });
 
   test("uses an unambiguous structured settlement-key preimage", () => {
-    expect(solanaSplSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
-      .not.toBe(solanaSplSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
+    expect(solanaSplSettlementKey({ jobId: JOB_ID, railId: "c:1", phaseIndex: 1 }))
+      .toBe(sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
+        jobId: JOB_ID, phaseIndex: 1, railId: "c:1",
+      })}`));
+    expect(solanaSplSettlementKey({ jobId: JOB_ID, railId: "c:1", phaseIndex: 1 }))
+      .not.toBe(solanaSplSettlementKey({ jobId: JOB_ID, railId: "c", phaseIndex: 11 }));
+  });
+
+  // CORE JID-1/JID-3: validated before anything is hashed, never repaired.
+  test.each([
+    ["a free-form id", "job-solana-spl-1"],
+    ["a lower-case ULID", JOB_ID.toLowerCase()],
+    ["a ULID with a trailing newline", `${JOB_ID}\n`],
+    ["a ULID whose first character is 8", `8${JOB_ID.slice(1)}`],
+    ["a ULID with the decode alias O", `${JOB_ID.slice(0, -1)}O`],
+    ["a composed accent", "job-é"],
+    ["a decomposed accent", "job-é"],
+  ])("refuses %s as jobId before deriving a key", async (_name, jobId) => {
+    expect(() => solanaSplSettlementKey({ jobId, railId: "c", phaseIndex: 1 })).toThrow();
+    expect(() => createSolanaSplSettlementIntent(authority({ jobId }))).toThrow();
+    const store = createInMemorySolanaSplSettlementStore();
+    const claim = vi.spyOn(store, "claim");
+    await expect(advanceSolanaSplSettlement(input({ store, authority: authority({ jobId }) })))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-authority-invalid" });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  // TransferChecked carries a u64 amount.
+  test("accepts the largest u64 amount and refuses one more", () => {
+    expect(createSolanaSplSettlementIntent(authority({ amount: "18446744073709551615", tokenDecimals: 0 })))
+      .toMatchObject({ amountBaseUnits: "18446744073709551615" });
+    expect(createSolanaSplSettlementIntent(authority({ amount: "18446744073709.551615" })))
+      .toMatchObject({ amountBaseUnits: "18446744073709551615" });
+    expect(() => createSolanaSplSettlementIntent(authority({ amount: "18446744073709551616", tokenDecimals: 0 })))
+      .toThrow();
+    expect(() => createSolanaSplSettlementIntent(authority({ amount: "18446744073709.551616" })))
+      .toThrow();
   });
 });
 
@@ -482,6 +524,67 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ preflight: async () => checked, prepareSignedTransfer }),
     }))).resolves.toEqual({ status: "failed", errorClass: "permanent", reason });
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+
+  // The fee payer must end at zero lamports or at least its rent-exempt
+  // minimum (890880 here); anything between is refused by the runtime, so the
+  // transfer could never land. Fee 5000, ATA rent 2039280.
+  test.each([
+    ["exactly the fee", "5000", true, true],
+    ["the fee plus the minimum", "895880", true, true],
+    ["the fee plus one lamport", "5001", true, false],
+    ["one lamport short of the fee plus the minimum", "895879", true, false],
+    ["exactly the fee and the ATA rent", "2044280", false, true],
+    ["the fee, the ATA rent and the minimum", "2935160", false, true],
+    ["one lamport short of the fee, the ATA rent and the minimum", "2935159", false, false],
+  ])("a payer balance of %s (%s lamports)", async (_name, balance, exists, settles) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const result = await advanceSolanaSplSettlement(input({
+      authority: authority({ createPayeeAtaIfMissing: true }),
+      adapter: adapter({
+        preflight: async () => preflight({ payeeAtaExists: exists, payerNativeBalanceLamports: balance }),
+        prepareSignedTransfer,
+      }),
+    }));
+    if (settles) {
+      expect(result).toMatchObject({ status: "settled" });
+    } else {
+      expect(result).toEqual({
+        status: "failed",
+        errorClass: "permanent",
+        reason: exists
+          ? "solana-spl-insufficient-network-fee-balance"
+          : "solana-spl-insufficient-ata-rent-and-fee-balance",
+      });
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([
+    ["the token balance", "payerTokenBalanceBaseUnits"],
+    ["the native balance", "payerNativeBalanceLamports"],
+    ["the network fee", "networkFeeLamports"],
+    ["the ATA rent", "ataRentExemptReserveLamports"],
+    ["the rent-exempt minimum", "payerRentExemptMinimumLamports"],
+  ])("%s accepts the largest u64 and refuses one more as an adapter fault", async (_name, field) => {
+    const tooLarge = await advanceSolanaSplSettlement(input({
+      adapter: adapter({ preflight: async () => preflight({ [field]: "18446744073709551616" }) }),
+    }));
+    expect(tooLarge).toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
+    const largest = await advanceSolanaSplSettlement(input({
+      adapter: adapter({ preflight: async () => preflight({ [field]: "18446744073709551615" }) }),
+    }));
+    expect(largest.status).not.toBe("indeterminate");
+  });
+
+  test("a preflight without the payer's rent-exempt minimum is an adapter fault, never failed", async () => {
+    const { payerRentExemptMinimumLamports: _omitted, ...legacy } = preflight();
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    await expect(advanceSolanaSplSettlement(input({
+      store, adapter: adapter({ preflight: async () => legacy as never }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
+    expect(recordFailure).not.toHaveBeenCalled();
   });
 
   test("ambiguous broadcast recovers the retained signature without re-signing", async () => {
@@ -945,10 +1048,17 @@ describe("advanceSolanaSplSettlement", () => {
     ["instruction index", observed({ instructionIndex: 2 })],
     ["mint", observed({ mint: PAYEE_ATA })],
     ["amount", observed({ amountBaseUnits: "1250001" })],
-    ["commitment", observed({ commitmentLevel: "processed" })],
+    ["commitment name", observed({ commitmentLevel: "recent" as never })],
     ["authentication", observed({ authenticationHash: "not-a-hash" })],
-    ["stronger commitment", observed({ commitmentLevel: "finalized" })],
     ["upper-case authentication", observed({ authenticationHash: "C".repeat(64) })],
+    ["cluster", observed({ cluster: "mainnet" })],
+    ["signature", observed({ signature: SIGNATURE_2 })],
+    ["instruction standard", observed({ standard: "spl-transfer" as never })],
+    ["payer", observed({ payer: PAYEE })],
+    ["payee", observed({ payee: PAYER })],
+    ["token decimals", observed({ tokenDecimals: 9 })],
+    ["negative observation time", observed({ finalityObservedAt: -1 })],
+    ["fractional observation time", observed({ finalityObservedAt: 1.5 })],
     ["missing transfer", undefined],
     ["transfer getter", Object.defineProperty(observed(), "mint", {
       get() { throw new Error("rpc secret=abc"); },
@@ -965,6 +1075,69 @@ describe("advanceSolanaSplSettlement", () => {
       reason: "solana-spl-settled-instruction-mismatch",
     });
     expect(recordSettlement).not.toHaveBeenCalled();
+  });
+
+  // Commitment only strengthens (processed < confirmed < finalized), and
+  // `getSignatureStatuses` reports the level reached, so an exact transfer at
+  // or above the intent's level is settled; below it, it is still pending.
+  // The result always records the intent's level, the rail parameter.
+  const levels = ["processed", "confirmed", "finalized"] as const;
+  test.each(levels.flatMap((intended, rank) => levels.map((seen, seenRank) =>
+    [intended, seen, seenRank >= rank] as const)))(
+    "a %s intent with the exact transfer observed at %s settles: %s",
+    async (intended, seen, settles) => {
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordSettlement = vi.spyOn(store, "recordSettlement");
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const result = await advanceSolanaSplSettlement(input({
+        store,
+        authority: authority({ commitmentLevel: intended }),
+        adapter: adapter({
+          prepareSignedTransfer,
+          reconcile: async (_intent, attempt) => ({
+            disposition: "settled-same",
+            transfer: observed({ signature: attempt.signature, commitmentLevel: seen }),
+          }),
+        }),
+      }));
+      if (settles) {
+        expect(result).toMatchObject({
+          status: "settled",
+          settlement: { settlementFinality: { finalityCommitmentLevel: intended } },
+        });
+        expect(recordSettlement).toHaveBeenCalledTimes(1);
+      } else {
+        expect(result).toEqual({ status: "waiting", reason: "solana-spl-reconciliation-pending" });
+        expect(recordSettlement).not.toHaveBeenCalled();
+      }
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    });
+
+  test("a transfer first seen processed, then finalized, settles a confirmed intent on resume", async () => {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const shared = input({
+      now: () => clock,
+      adapter: adapter({
+        prepareSignedTransfer,
+        reconcile: async (_intent, attempt) => ({
+          disposition: "settled-same",
+          transfer: observed({
+            signature: attempt.signature,
+            commitmentLevel: ++reconciliations === 1 ? "processed" : "finalized",
+          }),
+        }),
+      }),
+    });
+    await expect(advanceSolanaSplSettlement(shared))
+      .resolves.toEqual({ status: "waiting", reason: "solana-spl-reconciliation-pending" });
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toMatchObject({
+      status: "settled",
+      settlement: { settlementFinality: { finalityCommitmentLevel: "confirmed" } },
+    });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
   });
 
   test("a different landed transfer is indeterminate without adapter text", async () => {
@@ -991,7 +1164,7 @@ describe("advanceSolanaSplSettlement", () => {
       reconciliations += 1;
       if (reconciliations === 1) return { disposition: "indeterminate", reason: "lost" };
       if (reconciliations === 2) {
-        return { disposition: "settled-same", transfer: observed({ commitmentLevel: "finalized" }) };
+        return { disposition: "settled-same", transfer: observed({ amountBaseUnits: "1250001" }) };
       }
       return { disposition: "settled-different", reason: "other", authenticationHash: HASH };
     });
@@ -1182,6 +1355,155 @@ describe("advanceSolanaSplSettlement", () => {
       reason: "solana-spl-absence-proof-invalid",
     });
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+});
+
+// DACS-4 §9.5.3: the destination is the payee's associated token account,
+// the address the associated token account program derives from the payee,
+// the token program and the mint. Known answers from @solana/spl-token 0.3.11
+// `getAssociatedTokenAddressSync` (web3.js 1.98.0 `findProgramAddressSync`):
+// [owner, mint, SPL Token ATA, Token-2022 ATA]. Most needed bump 254 or
+// lower, so the search past an on-curve candidate is covered.
+const ASSOCIATED_ACCOUNTS = [
+  [PAYEE, MINT, PAYEE_ATA, "8Em976QyEfL45yYTekTMgiF7jdS8TMR7vJ7Uas5eCc21"],
+  [PAYER, MINT, "CB7sb85wX4SE5s1b6BmhrsSf5nNtZoQNZcNAjwUVqXkz", "HfBQqsL26aUWZPC9KXG7HMnHtFDazy1SaRqM4cCaS62D"],
+  [PAYEE, "So11111111111111111111111111111111111111112",
+    "5os4kc32895qa1smTDGsAVXRiisXRo4UJWauUePnas1u", "4CSuzG2k3qEvX5BsjKQGabGvUQVr3cqZ5NAh485gL6js"],
+  ["Buyer11111111111111111111111111111111111111", "So11111111111111111111111111111111111111112",
+    "6vo9yGaw98pr2upGsNw2X3yvwAt1NsCJoTeFBiWrgCip", "5eNQ8phn33D2dPx5jxChMkCbhwpfFkB5caKkTuUV59xf"],
+  ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "Fd2FPt3s4Z532B3kvVxmimxqZgxeEXS9sRhuaSnEcMKU", "3uFheXGWRboRpdS4osMJ3GwxCJsjfD7rjxM9BhzUCck6"],
+  ["9FVVUspc2yRq8Feew9byB2J8rCFCDXonaLGbgXdhh6Np", "EqsWFNVrMScUvo7zXEwHPTMdzsygRm1QfnwehwSdwr8H",
+    "6XfAStHbvKjjU5egm1CsuCNQidcufpTFYpmHNqQbC1CB", "BKVPxMG4Xr3R86wMiRkcyph4MyLLTxFEvou2NWZyjoTx"],
+  ["ADnEyDpssY3fU7tGQ1w6qZNfX6rnXmttD22mUXcJRHn4", "4busRFW2nhyY79p94uB3p6gbKQBboadtzHYUniCdm6pW",
+    "EqRF7eLLRqNk6BJbo9PQRDzKkm2A6LbTWacQsKUajrBo", "NM9Ajws95zftTKr2gJCsQR3tQdbsETLDDLbqUs8Kc3T"],
+  ["6htcYS4EbBncY2Ayfn4QJmxeiP81Qj3aKYxB7nuonKMm", "HbRWpCFVfdRb12eess9PN7qbwKde5TduZw6eM5pVKwK6",
+    "DGSmCit1PZz9eKYMsroyGqtpHcC7T9aoFDMoaekJTc9E", "5DebpA8NX5BJkXLqwxe4UNnvn1ojegV6NS83khtXg2UN"],
+  ["FM8eUWEH2E1AkAHK3JNX2Auq5ihn5hiAu9pvCd1f93ea", "7VD1EdMhb8dUtCGAdwkNuYXjVxoMVphcvEroSns9vCfD",
+    "3VvcCTC3RwGysout9sH7HALJ7ouw11mAAxy7DfFoT6Hw", "3DC6YXzSPNCqh5m7ZhFnc3XbTSEo2Wx1eZhVX2VKTsAe"],
+  ["E1TbwNpeZWYKsJCfAP3XMHQsjqG1t2VCLzP6C48A2DJS", "7iqtBtNHGqVgSoBFZyKZknSHMbNea3wiXtgB1ALDNg6L",
+    "8pCkXeDL8NcsLYoWBL1HVk5Q9kVsypbhHuTHgts7LhUk", "EktYvLpCXwzwc3SZFVXejToLBfXw2kuA4XxAKoc1zCBN"],
+  ["7ZgxnoAh4eeMf7iQihkCVfSb3fLHukBNyr8oRSLC6unx", "13MDqQULRnBWXV4UawDR3kyA2CT9Mhzn6FG3gArHbzbL",
+    "AMRTQvwmAYU36HrcsWAWeSVTANCN5UFfAV2zpbH3zsNt", "621yrRBdBbP7k9JK8jCZ99rxGskWesqvj7Q8sUKYHkZF"],
+] as const;
+
+describe("advanceSolanaSplSettlement pays only the payee's associated token account", () => {
+  test.each(ASSOCIATED_ACCOUNTS.flatMap(([payee, mint, token, token2022]) => [
+    [payee, mint, "SPL Token", token],
+    [payee, mint, "Token-2022", token2022],
+  ]))("pays %s's account for %s under %s", async (payee, mint, _program, payeeAta) => {
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    await expect(advanceSolanaSplSettlement(input({
+      authority: authority({ payee, mint }),
+      adapter: adapter({
+        preflight: async () => preflight({ payeeAta, payeeAtaOwner: payee, payeeAtaMint: mint }),
+        prepareSignedTransfer,
+        reconcile: async (_intent, attempt) => ({
+          disposition: "settled-same",
+          transfer: observed({ signature: attempt.signature, payee, mint }),
+        }),
+      }),
+    }))).resolves.toMatchObject({ status: "settled" });
+    expect(prepareSignedTransfer.mock.calls[0]?.[0].payeeAta).toBe(payeeAta);
+  });
+
+  // The address is derived, not observed: another one is the adapter's fault,
+  // so nothing is signed and the key stays open, even if the payer is short.
+  test.each([
+    ["the payer's token account", PAYER_TOKEN],
+    ["the payer's associated token account", ASSOCIATED_ACCOUNTS[1][2]],
+    ["the payee's account for another mint", ASSOCIATED_ACCOUNTS[2][2]],
+    ["another owner's account for the mint", ASSOCIATED_ACCOUNTS[3][2]],
+    ["the payee's wallet", PAYEE],
+  ])("%s as the destination is refused before signing, never failed", async (_name, payeeAta) => {
+    for (const [exists, balance] of [[true, "5000000"], [false, "5000000"], [true, "0"]] as const) {
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      await expect(advanceSolanaSplSettlement(input({
+        store,
+        authority: authority({ createPayeeAtaIfMissing: true }),
+        adapter: adapter({
+          preflight: async () => preflight({
+            payeeAta, payeeAtaExists: exists, payerTokenBalanceBaseUnits: balance,
+          }),
+          prepareSignedTransfer,
+        }),
+      }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-payee-ata-not-associated" });
+      expect(prepareSignedTransfer).not.toHaveBeenCalled();
+      expect(recordFailure).not.toHaveBeenCalled();
+    }
+  });
+
+  // The DACS-Standard settlement-event-identity-v0.6 vector's Solana ledger
+  // event (current-solana-instruction-index, Standard revision d45c0a29) names
+  // the event `spl-transfer`, as it does for either SPL instruction; the
+  // adapter reports the instruction it decoded. The vector's payee,
+  // "Seller111…", is not Base58 (`l` is outside the alphabet), so no Solana
+  // adapter could observe it; PAYEE stands in for it.
+  const VECTOR_SIGNATURE =
+    "6pc4LiB8KHAPvbUbkozrTcPL5zXspYBdATv5raNDyVbhiKjrKokLb9o111kxTD5KkPVd7UBSCcFcnWFkrJ82Hu6";
+  const vectorEvent = {
+    ledger: "solana", cluster: "devnet", signature: VECTOR_SIGNATURE, instructionIndex: 2,
+    standard: "spl-transfer", asset: "solana:devnet/spl:So11111111111111111111111111111111111111112",
+    payer: "Buyer11111111111111111111111111111111111111", payee: PAYEE, amount: "5",
+  } as const;
+  // The documented translation, after the adapter has authenticated the event
+  // and decoded instruction `instructionIndex` as TransferChecked.
+  const fromLedgerEvent = (event: typeof vectorEvent, decimals: number): SolanaSplObservedTransfer => ({
+    cluster: event.cluster,
+    signature: event.signature,
+    instructionIndex: event.instructionIndex,
+    standard: "spl-transfer-checked",
+    mint: event.asset.slice(event.asset.lastIndexOf(":") + 1),
+    payer: event.payer,
+    payee: event.payee,
+    amountBaseUnits: (BigInt(event.amount) * 10n ** BigInt(decimals)).toString(),
+    tokenDecimals: decimals,
+    commitmentLevel: "finalized",
+    finalityObservedAt: 1_788_000_000_000,
+    authenticationHash: "c".repeat(64),
+  });
+  async function settleVector(transfer: unknown) {
+    return advanceSolanaSplSettlement(input({
+      authority: authority({
+        payer: vectorEvent.payer, payee: vectorEvent.payee, mint: ASSOCIATED_ACCOUNTS[2][1],
+        amount: vectorEvent.amount, currency: "SOL", assetSymbol: "SOL", tokenDecimals: 9,
+      }),
+      adapter: adapter({
+        preflight: async () => preflight({
+          payeeAta: ASSOCIATED_ACCOUNTS[2][2], payeeAtaMint: ASSOCIATED_ACCOUNTS[2][1],
+          payerTokenBalanceBaseUnits: "5000000000",
+        }),
+        async prepareSignedTransfer(plan, attempt, fence) {
+          return {
+            ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+            signature: VECTOR_SIGNATURE,
+            signedTransactionBase64: signedWire([VECTOR_SIGNATURE], "vector-message"),
+            transferInstructionIndex: vectorEvent.instructionIndex,
+          };
+        },
+        reconcile: async () => ({ disposition: "settled-same", transfer }) as never,
+      }),
+    }));
+  }
+
+  test("the Standard vector's ledger event, translated, settles at the vector's txRef", async () => {
+    await expect(settleVector(fromLedgerEvent(vectorEvent, 9))).resolves.toMatchObject({
+      status: "settled",
+      settlement: {
+        // The vector's paymentTxRefs[0] and paymentAmount.
+        txRef: { kind: "solana-instruction", cluster: "devnet", signature: VECTOR_SIGNATURE, instructionIndex: 2 },
+        paymentAmount: { amount: "5", currency: "SOL" },
+      },
+    });
+  });
+
+  test("the Standard vector's ledger event passed through untranslated is never settled", async () => {
+    await expect(settleVector({ ...fromLedgerEvent(vectorEvent, 9), standard: vectorEvent.standard }))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" });
+    await expect(settleVector(vectorEvent))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" });
   });
 });
 
@@ -1463,7 +1785,7 @@ describe("advanceSolanaSplSettlement with a partial or malformed store claim", (
       enumerable: true,
       get: () => {
         reads.count += 1;
-        return "job-solana-spl-1";
+        return JOB_ID;
       },
     });
     await expect(claimWith("acquired", (claim) => ({
@@ -1769,6 +2091,226 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
   });
 });
 
+// DACS-4 PC-4: a transfer refused by the chain is `permanent`. A transaction
+// that landed with an error status moved nothing, and its signature can never
+// land again, so once that is final the key can close.
+describe("advanceSolanaSplSettlement with a transfer the chain refused", () => {
+  const refused = {
+    status: "failed", errorClass: "permanent", reason: "solana-spl-transfer-failed-on-chain",
+  } as const;
+  const landedFailed = (
+    commitmentLevel: string = "finalized",
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    disposition: "landed-failed", slot: 4_242, commitmentLevel,
+    authenticationHash: "f".repeat(64), ...overrides,
+  }) as SolanaSplReconciliation;
+  const evidenceFor = (signature: string) => ({
+    signature, slot: 4_242, commitmentLevel: "finalized" as const, authenticationHash: "f".repeat(64),
+  });
+  const intent = createSolanaSplSettlementIntent(authority());
+
+  // Leaves attempt 1 broadcast but unobserved, then resumes with `later` as
+  // every reconciliation after the first; returns the counts of each effect.
+  async function resumeWith(
+    later: (attempt: SolanaSplSignedAttempt, call: number) => SolanaSplReconciliation,
+    store: SolanaSplSettlementStore = createInMemorySolanaSplSettlementStore(),
+  ) {
+    let clock = 1_000;
+    let reconciliations = 0;
+    const effects = {
+      preflight: vi.fn(adapter().preflight),
+      prepareSignedTransfer: vi.fn(adapter().prepareSignedTransfer),
+      broadcastRetained: vi.fn(adapter().broadcastRetained),
+    };
+    const shared = input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        ...effects,
+        reconcile: async (_intent, attempt) => (++reconciliations === 1
+          ? { disposition: "indeterminate", reason: "lost" }
+          : later(attempt, reconciliations)),
+      }),
+    });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual({
+      status: "indeterminate", reason: "solana-spl-reconciliation-indeterminate",
+    });
+    const next = async (owner: string) => {
+      clock += 101;
+      return advanceSolanaSplSettlement({ ...shared, owner });
+    };
+    return { next, effects, reconciliations: () => reconciliations };
+  }
+
+  test("a retained attempt refused at finalized closes the key, and later calls return it without effects",
+    async () => {
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const { next, effects, reconciliations } = await resumeWith(() => landedFailed(), store);
+      await expect(next("worker-b")).resolves.toEqual(refused);
+      expect(recordFailure.mock.calls.map(([request]) => request)).toEqual([{
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: "worker-b",
+        generation: 2,
+        failure: { errorClass: refused.errorClass, reason: refused.reason },
+        landedFailure: evidenceFor(SIGNATURE_1),
+      }]);
+      for (const owner of ["worker-c", "worker-d"]) {
+        await expect(next(owner)).resolves.toEqual(refused);
+      }
+      expect(reconciliations()).toBe(2);
+      expect(effects.preflight).toHaveBeenCalledTimes(1);
+      expect(effects.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+      expect(effects.broadcastRetained).toHaveBeenCalledTimes(1);
+    });
+
+  test("a fresh transfer refused at finalized closes the key in the same call", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    await expect(advanceSolanaSplSettlement(input({
+      store, adapter: adapter({ reconcile: async () => landedFailed() }),
+    }))).resolves.toEqual(refused);
+    expect(recordFailure.mock.calls[0]?.[0].landedFailure).toEqual(evidenceFor(SIGNATURE_1));
+    await expect(store.isCurrent({
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "worker-a", generation: 1, now: 1_001,
+    })).resolves.toBe(false);
+  });
+
+  test("a rebroadcast refused at finalized closes the key without re-signing", async () => {
+    const { next, effects } = await resumeWith((_attempt, call) => (call === 2
+      ? { disposition: "absent-valid", authenticationHash: "d".repeat(64) }
+      : landedFailed()));
+    await expect(next("worker-b")).resolves.toEqual(refused);
+    expect(effects.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(effects.broadcastRetained).toHaveBeenCalledTimes(2);
+  });
+
+  test("attempt 2 refused after attempt 1 expired closes the key", async () => {
+    const { next, effects } = await resumeWith((attempt, call) => (attempt.attempt === 1
+      ? expired(attempt)
+      : call === 3 ? { disposition: "indeterminate", reason: "lost" } : landedFailed()));
+    await expect(next("worker-b")).resolves.toEqual({
+      status: "indeterminate", reason: "solana-spl-reconciliation-indeterminate",
+    });
+    await expect(next("worker-c")).resolves.toEqual(refused);
+    expect(effects.prepareSignedTransfer.mock.calls.map((call) => call[1])).toEqual([1, 2]);
+  });
+
+  // A fork can still roll back a refusal below finalized, and the same bytes
+  // could then succeed, so it is awaited, never acted on.
+  test.each(["processed", "confirmed"])("a refusal observed at %s waits, then closes once finalized",
+    async (level) => {
+      const store = createInMemorySolanaSplSettlementStore();
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const { next, effects } = await resumeWith((_attempt, call) => landedFailed(
+        call === 2 ? level : "finalized",
+      ), store);
+      await expect(next("worker-b"))
+        .resolves.toEqual({ status: "waiting", reason: "solana-spl-reconciliation-pending" });
+      expect(recordFailure).not.toHaveBeenCalled();
+      await expect(next("worker-c")).resolves.toEqual(refused);
+      expect(effects.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    });
+
+  test.each<[string, Record<string, unknown>]>([
+    ["a negative slot", { slot: -1 }],
+    ["a fractional slot", { slot: 1.5 }],
+    ["a string slot", { slot: "4242" }],
+    ["no slot", { slot: undefined }],
+    ["no authentication hash", { authenticationHash: undefined }],
+    ["an upper-case authentication hash", { authenticationHash: "F".repeat(64) }],
+    ["a hash that only prints as one", { authenticationHash: { toString: () => "f".repeat(64) } }],
+    ["a legacy commitment name", { commitmentLevel: "max" }],
+  ])("a refusal with %s is indeterminate: never closed, never re-signed", async (_name, fields) => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    const { next, effects } = await resumeWith(() => landedFailed("finalized", fields), store);
+    await expect(next("worker-b"))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-landed-failure-proof-invalid" });
+    expect(recordFailure).not.toHaveBeenCalled();
+    expect(effects.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test.each<[string, SolanaSplSettlementStore["recordFailure"]]>([
+    ["a stale lease", async () => ({ status: "stale", reason: "stale-lease" })],
+    ["a conflict", async () => ({ status: "conflict", reason: "x" })],
+    ["a throw", async () => { throw new Error("store down"); }],
+  ])("a close refused with %s is failure-persistence-uncertain, and the key stays open", async (_name, refuse) => {
+    const base = createInMemorySolanaSplSettlementStore();
+    let refusing = true;
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      recordFailure: async (request) => (refusing ? refuse(request) : base.recordFailure(request)),
+    };
+    const { next, effects } = await resumeWith(() => landedFailed(), store);
+    await expect(next("worker-b"))
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain" });
+    refusing = false;
+    await expect(next("worker-c")).resolves.toEqual(refused);
+    expect(effects.prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test("the in-memory store closes on a landed failure only for a retained attempt that nothing else can outlive",
+    async () => {
+      const store = createInMemorySolanaSplSettlementStore();
+      await store.claim({ intent, owner: "worker-a", now: 1_000, leaseDurationMs: 100 });
+      const fence = {
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "worker-a", generation: 1,
+      };
+      const prepared = async (attempt: number) => {
+        const unsigned = await adapter().prepareSignedTransfer(
+          { intent } as never, attempt, { assertCurrent: async () => undefined } as never,
+        );
+        return { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) };
+      };
+      const failure = { errorClass: "permanent", reason: refused.reason } as const;
+      const first = await prepared(1);
+      await store.recordAttempt({ ...fence, attempt: first });
+      for (const landedFailure of [
+        evidenceFor(SIGNATURE_2),
+        { ...evidenceFor(SIGNATURE_1), commitmentLevel: "confirmed" },
+        { ...evidenceFor(SIGNATURE_1), slot: -1 },
+      ]) {
+        await expect(store.recordFailure({ ...fence, failure, landedFailure: landedFailure as never }))
+          .resolves.toMatchObject({ status: "conflict" });
+      }
+      await store.markAttemptExpired({ ...fence, ...expiredEvidence(first) });
+      // Nothing can land now, but a close that carries evidence for an
+      // attempt the store never retained is still refused.
+      await expect(store.recordFailure({ ...fence, failure, landedFailure: evidenceFor(SIGNATURE_2) }))
+        .resolves.toEqual({ status: "conflict", reason: "solana-landed-failure-invalid" });
+      const second = await prepared(2);
+      await store.recordAttempt({ ...fence, attempt: second });
+      // Attempt 1 expired, but attempt 2 can still land.
+      await expect(store.recordFailure({ ...fence, failure, landedFailure: evidenceFor(SIGNATURE_1) }))
+        .resolves.toMatchObject({ status: "conflict" });
+      await expect(store.recordFailure({ ...fence, failure }))
+        .resolves.toMatchObject({ status: "conflict" });
+      await expect(store.recordFailure({ ...fence, failure, landedFailure: evidenceFor(SIGNATURE_2) }))
+        .resolves.toEqual({ status: "recorded" });
+      await expect(store.recordFailure({ ...fence, failure, landedFailure: evidenceFor(SIGNATURE_2) }))
+        .resolves.toEqual({ status: "existing" });
+      await expect(store.recordFailure({
+        ...fence, failure, landedFailure: { ...evidenceFor(SIGNATURE_2), slot: 1 },
+      })).resolves.toMatchObject({ status: "conflict" });
+      await expect(store.claim({ intent, owner: "worker-b", now: 2_000, leaseDurationMs: 100 }))
+        .resolves.toEqual({ status: "failed", intent, failure });
+    });
+});
+
+function expiredEvidence(attempt: Pick<SolanaSplSignedAttempt, "signature" | "lastValidBlockHeight">) {
+  return {
+    signature: attempt.signature,
+    observedBlockHeight: attempt.lastValidBlockHeight + 1,
+    commitmentLevel: "confirmed" as const,
+    authenticationHash: "e".repeat(64),
+  };
+}
+
 describe("advanceSolanaSplSettlement with a stored failed claim", () => {
   const failure = { errorClass: "permanent", reason: "solana-spl-insufficient-network-fee-balance" };
   const invalid = { status: "indeterminate", reason: "solana-spl-settlement-store-claim-invalid" };
@@ -1803,6 +2345,12 @@ describe("advanceSolanaSplSettlement with a stored failed claim", () => {
       .resolves.toEqual({ status: "failed", ...failure });
   });
 
+  test("a key closed by a transfer the chain refused returns that failure without any effect", async () => {
+    const refused = { errorClass: "permanent", reason: "solana-spl-transfer-failed-on-chain" };
+    await expect(failedWith((intent) => ({ status: "failed", intent, failure: refused })))
+      .resolves.toEqual({ status: "failed", ...refused });
+  });
+
   test.each<[string, (intent: unknown) => unknown, unknown]>([
     ["an extra claim key", (intent) => ({ status: "failed", intent, failure, attempts: [] }), invalid],
     ["no failure", (intent) => ({ status: "failed", intent }), invalid],
@@ -1825,6 +2373,16 @@ describe("advanceSolanaSplSettlement with a stored failed claim", () => {
     }), invalid],
     ["a reason of the other class", (intent) => ({
       status: "failed", intent, failure: { errorClass: "counterparty", reason: failure.reason },
+    }), invalid],
+    ["an on-chain refusal of the other class", (intent) => ({
+      status: "failed", intent,
+      failure: { errorClass: "counterparty", reason: "solana-spl-transfer-failed-on-chain" },
+    }), invalid],
+    ["an undefined class and store text", (intent) => ({
+      status: "failed", intent, failure: { errorClass: undefined, reason: "store text" },
+    }), invalid],
+    ["an undefined class and a known reason", (intent) => ({
+      status: "failed", intent, failure: { errorClass: undefined, reason: failure.reason },
     }), invalid],
     ["a reason that is not a string", (intent) => ({
       status: "failed", intent, failure: { errorClass: "permanent", reason: ["solana-spl-insufficient-token-balance"] },
@@ -1936,11 +2494,15 @@ describe("advanceSolanaSplSettlement uncertain paths are never failed", () => {
   test.each<[string, Record<string, unknown>]>([
     ["another owner", { owner: "worker-x" }],
     ["generation 0", { generation: 0 }],
+    ["a negative generation", { generation: -1 }],
     ["a string generation", { generation: "1" }],
     ["a fractional generation", { generation: 1.5 }],
+    ["an unsafe generation", { generation: 2 ** 53 }],
     ["an expiry equal to now", { expiresAt: 1_000 }],
     ["an expiry before now", { expiresAt: 999 }],
     ["a string expiry", { expiresAt: "1100" }],
+    ["a fractional expiry", { expiresAt: 1_100.5 }],
+    ["an unsafe expiry", { expiresAt: 2 ** 53 }],
   ])("a lease with %s is settlement-store-lease-invalid without any effect", async (_name, lease) => {
     const base = createInMemorySolanaSplSettlementStore();
     const effects = [

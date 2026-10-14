@@ -8,21 +8,27 @@ persist state through `SolanaSplSettlementStore`.
 The core:
 
 - binds the agreement, selected rail, payer, payee, mint, amount, decimals,
-  cluster, commitment and phase into one immutable intent;
-- converts the canonical DACS amount into exact integer token base units;
+  cluster, commitment and phase into one immutable intent, keyed by a
+  canonical CORE JID-1 `jobId`;
+- converts the canonical DACS amount into exact integer token base units,
+  within the SPL `u64` range;
 - requires `TransferChecked` and records its exact instruction index;
+- pays only the payee's associated token account, which it derives itself;
 - refuses to create a missing associated token account unless the selected
   authority explicitly permits it, and charges its rent to the payer;
-- checks token, network-fee and optional rent balances before signing;
+- checks token, network-fee and optional rent balances before signing, and
+  that the payer ends at zero lamports or at least its rent-exempt minimum;
 - persists the complete signed transaction before any broadcast;
 - reconciles the retained signature before rebroadcast or replacement;
 - permits a replacement signature only after authenticated, confirmed
   blockhash-expiry evidence is durably recorded;
+- closes the key as `failed` when the chain refused the retained transfer at
+  `finalized` commitment;
 - checks the durable generation fence before and after each wallet/RPC call,
   while requiring adapters to recheck the supplied fence immediately before
   each authority-bearing side effect; and
 - emits `solana-instruction` coordinates only after the exact transfer reaches
-  the selected commitment level.
+  at least the selected commitment level.
 
 ```ts
 import {
@@ -64,18 +70,23 @@ missing field, a throwing getter) is classified, and `reason` is always one of
 the fixed codes below. Adapter, RPC, store and caller text never appears in a
 result.
 
-- `settled`: the exact transfer reached the intent's commitment level and the
-  store recorded it.
+- `settled`: the exact transfer reached at least the intent's commitment
+  level and the store recorded it. Commitment only strengthens
+  (`processed` < `confirmed` < `finalized`), so a transfer first observed at
+  `finalized` settles a `confirmed` intent. `finalityCommitmentLevel` is
+  always the intent's level, the rail parameter the Standard sources it
+  from; one observed below that level is `waiting`.
 - `waiting`: resume the same authority later.
 - `indeterminate`: the phase may be paid, or a retained transfer may still
   land. Resume the same authority, or resolve the store or adapter problem out
   of band. A transfer that landed but does not match the intent
   (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
   is reported here, because funds may have moved.
-- `failed`: nothing under this settlement key can land, and nothing ever
-  will. The store shows no retained attempt, or every retained attempt with
-  complete, durably acknowledged expiry evidence, no new transfer was signed,
-  and the store has closed the key.
+- `failed`: nothing under this settlement key moved tokens or can land. The
+  store shows no retained attempt, or every retained attempt with complete,
+  durably acknowledged expiry evidence, except that the latest may instead
+  have landed and been refused by the chain at `finalized` commitment
+  (`solana-spl-transfer-failed-on-chain`). The store has closed the key.
 
 `failed` is terminal, and the phase may be paid by another route. The core
 reports it only after the store has acknowledged `recordFailure`, one atomic
@@ -90,18 +101,45 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 
 | Status | Reason codes |
 |---|---|
-| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance` |
+| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-transfer-failed-on-chain` |
 | `failed` / `counterparty` | `solana-spl-payee-ata-missing`, `solana-spl-payee-ata-binding-mismatch` |
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
-| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
+| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
-| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
 phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
 hold a broadcast this call cannot inspect, so it must be resolved out of band.
+`solana-spl-failure-persistence-uncertain` also covers a close after an
+on-chain refusal that the store did not acknowledge.
+
+### Reporting to the phase handler
+
+DACS-4 PC-4 classifies a payment phase as `ok: true`, or `ok: false` with an
+`errorClass`. Map each result as follows:
+
+| Result | `PhaseHandlerResult` |
+|---|---|
+| `settled` | `ok: true`, with `txRefs: [settlement.txRef]` and `settlementFinality`. Anchoring then follows PC-7. |
+| `failed` | `ok: false` with the result's `errorClass`: `permanent` or `counterparty`. The phase may be paid another way. |
+| `waiting` | Not a phase outcome. Keep the session non-terminal and resume the same authority. |
+| `indeterminate` | Not a phase outcome. Keep the session non-terminal: PC-7 reconciliation of the original binding, by resuming or out of band. |
+
+Never report `waiting` or `indeterminate` as `transient`. A transient
+failure can exhaust a retry budget and end the session as `failed-perm`
+(DACS-5) while a retained transfer can still land. §9.5.3's "congestion or
+timeout → `transient`" is the case the core reports as `waiting` or
+`indeterminate` for that reason: once a transfer may have been broadcast,
+only reconciliation may end the phase.
+
+PC-5 requires `amount.currency` to resolve to the rail's asset symbol. The
+caller checks this before calling, from the pinned agreement and rail, and
+reports a mismatch itself as `ok: false` / `permanent` with nothing paid. The
+core cannot build an intent for such an authority, so it never reads the
+store and reports `solana-spl-authority-invalid`.
 
 ## Store and adapter contract
 
@@ -121,7 +159,10 @@ replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
 `recordFailure` must close the key only for the current lease generation and
-only while no retained attempt lacks expiry evidence. Once it has, `claim`
+only while every retained attempt has expiry evidence or is the attempt that
+`landedFailure` names. A store must refuse a `landedFailure` that does not
+name a retained attempt or is not `finalized`, and must retain the one it
+accepts with the failure. Once it has, `claim`
 returns `{ status: "failed", intent, failure }`, `isCurrent` is false, and
 every other write for the key is refused. `failure` is exactly
 `{ errorClass, reason }`, with a reason from the `failed` rows above and its
@@ -225,21 +266,91 @@ confirmed ledger view. Its `authenticationHash` must bind the cluster,
 signature, retained last-valid bound, observed height and commitment; hash
 format alone is not authentication. Adapters that omit the optional expiry
 fields remain source-compatible but produce an `indeterminate` result at
-runtime. Preflight amounts must be canonical decimal strings, `payeeAtaExists`
-a boolean, and `payerTokenAccount` and `payeeAta` Base58 public keys. When
-`payeeAtaExists` is true, `payeeAtaOwner` and `payeeAtaMint` must be Base58
-public keys too: strings, so pass `toBase58()` rather than a `PublicKey`
-object. Anything else, including an object that converts to a decimal string
-or prints as a key, is `indeterminate` with `solana-spl-preflight-invalid`:
-nothing is signed, and the key stays open. A malformed answer is an adapter
-or RPC fault, never a chain refusal, so it is never `failed`. Only a
-well-formed owner or mint that is not the intent's payee or mint is `failed`
-with `solana-spl-payee-ata-binding-mismatch`.
+runtime.
+
+`settled-same` and `landed-failed` report the commitment level actually
+observed, as `getSignatureStatuses` returns it: never the intent's level in
+its place. For a transaction that landed with a non-null error status, the
+adapter returns `landed-failed` with the slot, the observed commitment and an
+`authenticationHash` that binds the cluster, signature, slot, error and
+commitment. Below `finalized` the core waits, because a fork could still roll
+the refusal back. At `finalized`, nothing in the transaction took effect and
+its signature can never land again, so the core closes the key as
+`solana-spl-transfer-failed-on-chain` (PC-4: refused by chain). The core
+never acts on `broadcastRetained`'s answer, including `rejected`: a
+synchronous RPC answer is not ledger state. A malformed `landed-failed` is
+`solana-spl-landed-failure-proof-invalid`.
+
+`prepareSignedTransfer` must sign a recent-blockhash transaction, never a
+durable-nonce one. A nonce transaction stays valid past its blockhash's last
+valid block height, so expiry evidence would prove nothing about it.
+
+`settled-same` reports the instruction it decoded at `instructionIndex`:
+`standard: "spl-transfer-checked"` means that instruction is an SPL Token or
+Token-2022 `TransferChecked`. This is not the DACS ledger-event `standard`.
+The Standard's authenticated Solana event names either SPL instruction
+`spl-transfer` and carries the DACS amount and asset. An adapter that
+authenticates such an event translates it losslessly: `mint` from the asset,
+`amountBaseUnits` from the amount and the decimals, and
+`spl-transfer-checked` only after decoding `TransferChecked` at that index.
+The core refuses an untranslated event as
+`solana-spl-settled-instruction-mismatch`. The result's `txRef` is the
+Standard's `solana-instruction` reference, which carries no `standard`.
+
+Preflight amounts must be canonical decimal strings within the `u64` range,
+`payeeAtaExists` a boolean, and `payerTokenAccount` and `payeeAta` Base58
+public keys. `payeeAta` must be the payee's associated token account for the
+mint, under SPL Token or Token-2022. The core derives both addresses and
+refuses any other destination as `solana-spl-payee-ata-not-associated`. That
+covers any other token account the payee owns for the mint, because the
+address is derived, not observed, so another one is the adapter's fault.
+Nothing is signed and the key stays open.
+
+`payerRentExemptMinimumLamports` is the rent-exempt minimum of the payer's
+system account, `getMinimumBalanceForRentExemption(0)`. The payer must end
+with zero lamports or at least that minimum after the network fee and any
+ATA rent. The runtime refuses a fee payer left in between, at the fee check
+or after execution, so such a transfer could never succeed. The core reports
+it as the matching `permanent` balance failure.
+
+When `payeeAtaExists` is true, `payeeAtaOwner` and `payeeAtaMint` must be
+Base58 public keys too: strings, so pass `toBase58()` rather than a
+`PublicKey` object. Anything else, including an object that converts to a
+decimal string or prints as a key, is `indeterminate` with
+`solana-spl-preflight-invalid`: nothing is signed, and the key stays open. A
+malformed answer is an adapter or RPC fault, never a chain refusal, so it is
+never `failed`. Only a well-formed owner or mint that is not the intent's
+payee or mint is `failed` with `solana-spl-payee-ata-binding-mismatch`.
 The durable store is part of the trusted implementation boundary and
 must return exactly the evidence it accepted. A transport response or an
 unverified signature string is not settlement evidence. A live wallet/RPC
 adapter and funded public-network proof remain a separate integration
 deliverable.
+
+The guarantee behind `failed` is as strong as its evidence. Expiry evidence
+is observed at `confirmed`, and Solana reserves full rollback safety for
+`finalized`. A `failed` key whose last attempt expired could therefore, in
+the rare event that a confirmed block is rolled back, see that attempt land
+on another fork before its last valid block height. A refusal by the chain
+is acted on only at `finalized`.
+
+## Solana references
+
+The core imports no Solana package, but its checks follow these definitions,
+read at these revisions:
+
+| Behaviour | Source |
+|---|---|
+| Commitment levels, `getSignatureStatuses` and its `err`, blockhash expiry, durable nonces, fee-payer rent | agave `v4.3.0` (`825efd18292aff6ffcf9daa0f7612f21b3531a72`): `rpc/src/rpc.rs`, `runtime/src/bank/check_transactions.rs`, `svm/src/account_loader.rs`, `svm/src/rent_calculator.rs` |
+| Wire format: compact-u16 signature count, then the signatures | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
+| `TransferChecked` (`u64` amount, `u8` decimals), token-account owner, mint and state, on-chain refusals | SPL Token `program@v9.0.0` (`dfb260231c761be7d9c8b63728e770a102b86495`) |
+| Associated token account address: seeds owner, token program and mint under `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`; SPL Token `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` and Token-2022 `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `@solana/spl-token` 0.3.11 `getAssociatedTokenAddressSync` and `@solana/web3.js` 1.98.0 `findProgramAddressSync`, as `package-lock.json` resolves them; the tests pin their answers |
+| Base58 | `bs58` 5.0.0; the tests pin its answers |
+| DACS-4 §9.5.3, PC-4 to PC-7, SB-1 and the settlement-event vectors | DACS-Standard `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, `package.json` `dacs.standardRevision` |
+
+The `@solana/*` packages and `bs58` are transitive development dependencies
+only, used here as references. Recheck these definitions before moving to a
+new revision of any of them.
 
 ## Upgrading
 
@@ -265,3 +376,21 @@ deliverable.
 - **Records whose bytes do not carry their signature**, which a correct
   adapter never produces, are refused as `solana-spl-retained-state-corrupt`
   in the same way.
+- **Adapters** must return `payerRentExemptMinimumLamports` from `preflight`.
+  A preflight without it is `solana-spl-preflight-invalid`: nothing is
+  signed, and the key stays open. They must return the payee's associated
+  token account as `payeeAta`, and report the commitment level they observed.
+  They should return `landed-failed` for a retained transaction whose status
+  carries an error; until they do, such a transaction stays `indeterminate`,
+  as before.
+- **Stores** must accept `recordFailure` with `landedFailure` and retain it.
+  A store that refuses it leaves the key open as
+  `solana-spl-failure-persistence-uncertain`, so nothing is paid twice.
+- **`jobId` must be a canonical CORE JID-1 ULID.** Any other value is
+  `solana-spl-authority-invalid` before the store is read. A canonical
+  `jobId` is ASCII, so earlier versions' NFC normalization never changed it:
+  its settlement key and binding are unchanged. A key created for any other
+  `jobId` can no longer be resumed: reconcile any attempt retained under it
+  by hand before the phase is paid another way.
+- **Amounts above the SPL `u64` range** are `solana-spl-authority-invalid`.
+  `TransferChecked` cannot carry them, so no such transfer was ever valid.

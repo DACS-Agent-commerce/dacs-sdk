@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -7,16 +8,29 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const DEFAULT_LEASE_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const UINT_RE = /^(0|[1-9][0-9]*)$/;
+// SPL token amounts and lamport balances are `u64` on chain.
+const U64_MAX = 0xffff_ffff_ffff_ffffn;
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
 const BASE58_ALPHABET =
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+// The associated token account program, and the two token programs whose
+// accounts it derives: SPL Token and Token-2022.
+const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const TOKEN_PROGRAMS = [
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+] as const;
+const ED25519_P = 2n ** 255n - 19n;
 
 export type SolanaCluster = "mainnet" | "devnet" | "testnet";
 export type SolanaCommitmentLevel = "processed" | "confirmed" | "finalized";
+/** Commitment levels from weakest to strongest. */
+const COMMITMENT_LEVELS: readonly SolanaCommitmentLevel[] = ["processed", "confirmed", "finalized"];
 
 export interface SolanaSplSettlementAuthority {
   jobId: string;
@@ -69,6 +83,11 @@ export interface SolanaSplPreflight {
   payeeAtaMint: string;
   networkFeeLamports: string;
   ataRentExemptReserveLamports: string;
+  /**
+   * The rent-exempt minimum of the payer's system account: the fee payer must
+   * end the transaction with zero lamports or at least this many.
+   */
+  payerRentExemptMinimumLamports: string;
 }
 
 export interface SolanaSplTransferPlan {
@@ -99,16 +118,35 @@ export interface SolanaSplExpiryEvidence {
   authenticationHash: string;
 }
 
+/**
+ * Proof that a retained transaction landed and the chain refused it (its
+ * status carries an error): no instruction took effect, and the signature can
+ * never land again. Only `finalized` proof is terminal.
+ */
+export interface SolanaSplLandedFailureEvidence {
+  signature: string;
+  slot: number;
+  commitmentLevel: "finalized";
+  authenticationHash: string;
+}
+
 export interface SolanaSplObservedTransfer {
   cluster: SolanaCluster;
   signature: string;
   instructionIndex: number;
+  /**
+   * The decoded instruction at `instructionIndex`: an SPL Token or Token-2022
+   * `TransferChecked`. This is not the DACS ledger-event `standard`, which
+   * names an authenticated event `spl-transfer` for either instruction; see
+   * "Store and adapter contract" in `docs/pay-solana-spl.md`.
+   */
   standard: "spl-transfer-checked";
   mint: string;
   payer: string;
   payee: string;
   amountBaseUnits: string;
   tokenDecimals: number;
+  /** The level the transfer was observed at, which may exceed the intent's. */
   commitmentLevel: SolanaCommitmentLevel;
   finalityObservedAt: number;
   authenticationHash: string;
@@ -124,9 +162,20 @@ export type SolanaSplReconciliation =
       observedBlockHeight?: number;
       commitmentLevel?: SolanaCommitmentLevel;
     }
+  | {
+      /** The retained transaction landed with an error status. */
+      disposition: "landed-failed";
+      slot: number;
+      commitmentLevel: SolanaCommitmentLevel;
+      authenticationHash: string;
+    }
   | { disposition: "settled-different"; reason: string; authenticationHash: string }
   | { disposition: "indeterminate"; reason: string };
 
+/**
+ * Advisory only: the core never acts on a broadcast answer, because a
+ * synchronous RPC answer is not ledger state. It reconciles instead.
+ */
 export type SolanaSplBroadcastResult =
   | { disposition: "submitted" }
   | { disposition: "rejected" | "indeterminate"; reason: string };
@@ -144,7 +193,15 @@ export interface SolanaSplEffectFence {
  * transaction and authenticate reconciliation against Solana ledger state. An
  * absent-expired result must derive absence and block height from one coherent
  * confirmed view, and its authentication hash must bind the cluster,
- * signature, last-valid bound, observed height and commitment level.
+ * signature, last-valid bound, observed height and commitment level. A
+ * landed-failed result must come from the transaction's authenticated status
+ * with a non-null error, and its hash must bind the cluster, signature, slot,
+ * error and commitment level. A settled-same or landed-failed result reports
+ * the commitment level actually observed.
+ *
+ * `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
+ * durable-nonce one: expiry evidence proves nothing about a nonce transaction,
+ * which stays valid past its blockhash's last valid block height.
  */
 export interface SolanaSplAdapter {
   preflight(
@@ -273,9 +330,11 @@ export interface SolanaSplSettlementStore {
   }): Promise<SolanaSplStoreWrite>;
   /**
    * Closes the key with a terminal failure, in one atomic write that succeeds
-   * only for the current lease generation. From then on `claim` returns the
-   * `failed` claim with exactly this failure, and every other write for the
-   * key is refused.
+   * only for the current lease generation and only while every retained
+   * attempt has expiry evidence or is the one `landedFailure` names, which the
+   * store retains with the failure. From then on `claim` returns the `failed`
+   * claim with exactly this failure, and every other write for the key is
+   * refused.
    */
   recordFailure(input: {
     settlementKey: string;
@@ -283,6 +342,7 @@ export interface SolanaSplSettlementStore {
     owner: string;
     generation: number;
     failure: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
+    landedFailure?: Readonly<SolanaSplLandedFailureEvidence>;
   }): Promise<SolanaSplStoreWrite>;
 }
 
@@ -291,19 +351,20 @@ export interface SolanaSplSettlementStore {
  * fixed `solana-spl-*` code; it never carries adapter, RPC, store or caller
  * text.
  *
- * - `settled`: the exact transfer reached the intent's commitment and the
- *   store recorded it.
+ * - `settled`: the exact transfer reached at least the intent's commitment
+ *   and the store recorded it.
  * - `waiting`: try the same authority again later. It never authorizes a
  *   fresh payment.
  * - `indeterminate`: the phase may or may not be paid. A transfer may have
  *   landed or may still land. It never authorizes a fresh payment; resolve it
  *   by resuming the same authority or out of band.
- * - `failed`: nothing under this settlement key can land, and nothing ever
- *   will. Every retained attempt has durable expiry evidence, no new transfer
- *   was signed, and the store closed the key before this was reported. Every
- *   later call with the same authority returns the same result without
- *   signing or broadcasting, so the phase may be paid another way. A retry
- *   after a top-up needs a new phase, and so a new key.
+ * - `failed`: nothing under this settlement key moved tokens or can land.
+ *   Every retained attempt has durable expiry evidence, except that the
+ *   latest may instead have landed and been refused by the chain at
+ *   `finalized` commitment. The store closed the key before this was
+ *   reported. Every later call with the same authority returns the same
+ *   result without signing or broadcasting, so the phase may be paid another
+ *   way. A retry after a top-up needs a new phase, and so a new key.
  */
 export type SolanaSplProgress =
   | { status: "waiting" | "indeterminate"; reason: string }
@@ -407,10 +468,64 @@ function firstSignature(transaction: Uint8Array): Uint8Array | null {
 
 function uint(value: unknown, label: string): bigint {
   // Only a string: an object could print as one amount and convert to another.
-  if (typeof value !== "string" || !UINT_RE.test(value)) {
-    throw new DacsError(`pay-solana-spl: ${label} must be canonical unsigned decimal`);
+  if (typeof value !== "string" || !UINT_RE.test(value) || BigInt(value) > U64_MAX) {
+    throw new DacsError(`pay-solana-spl: ${label} must be a canonical decimal u64`);
   }
   return BigInt(value);
+}
+
+function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
+  let result = 1n;
+  let factor = base % modulus;
+  for (let rest = exponent; rest > 0n; rest >>= 1n) {
+    if (rest & 1n) result = (result * factor) % modulus;
+    factor = (factor * factor) % modulus;
+  }
+  return result;
+}
+
+/**
+ * Whether 32 bytes decompress to an ed25519 point, decided as Solana's
+ * `create_program_address` decides it (curve25519-dalek `decompress`): the
+ * low 255 bits, little-endian, are y, and the point exists when
+ * (y² − 1) / (d·y² + 1) is a square mod p, zero included.
+ */
+function isOnEd25519Curve(bytes: Uint8Array): boolean {
+  const p = ED25519_P;
+  let y = 0n;
+  for (let index = 31; index >= 0; index -= 1) y = (y << 8n) | BigInt(bytes[index] as number);
+  y = (y & ((1n << 255n) - 1n)) % p;
+  const d = ((p - 121665n) * modPow(121666n, p - 2n, p)) % p;
+  const y2 = (y * y) % p;
+  const ratio = (((y2 + p - 1n) % p) * modPow((d * y2 + 1n) % p, p - 2n, p)) % p;
+  return ratio === 0n || modPow(ratio, (p - 1n) / 2n, p) === 1n;
+}
+
+/** Solana `find_program_address`: the first off-curve candidate from bump 255 down. */
+function programAddress(seeds: readonly Uint8Array[], program: Uint8Array): Buffer {
+  for (let bump = 255; bump >= 0; bump -= 1) {
+    const hash = createHash("sha256");
+    for (const seed of seeds) hash.update(seed);
+    const candidate = hash.update(Uint8Array.of(bump)).update(program)
+      .update("ProgramDerivedAddress").digest();
+    if (!isOnEd25519Curve(candidate)) return candidate;
+  }
+  throw new DacsError("pay-solana-spl: no program address");
+}
+
+/**
+ * Whether `account` is the owner's associated token account for the mint
+ * under SPL Token or Token-2022: the address the associated token account
+ * program derives from the seeds owner, token program and mint. Each value
+ * must already be a checked 32-byte Base58 key.
+ */
+function isAssociatedTokenAccount(account: string, owner: string, mint: string): boolean {
+  const address = base58Bytes(account, 32);
+  const program = base58Bytes(ASSOCIATED_TOKEN_PROGRAM, 32);
+  return TOKEN_PROGRAMS.some((tokenProgram) => programAddress(
+    [base58Bytes(owner, 32), base58Bytes(tokenProgram, 32), base58Bytes(mint, 32)],
+    program,
+  ).equals(address));
 }
 
 function positiveSafeInteger(value: number, label: string): number {
@@ -435,8 +550,11 @@ export function solanaSplSettlementKey(input: {
   if (!Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0) {
     throw new DacsError("pay-solana-spl: phaseIndex must be a non-negative safe integer");
   }
+  // CORE JID-1/JID-3: validated before it is hashed, and never repaired or
+  // normalized. A canonical jobId is ASCII, so keys derived before the check
+  // (which applied NFC) are unchanged for it.
   return sha256Hex(`dacs-solana-spl-settlement:v1:${canonicalize({
-    jobId: requireString(input.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(input.jobId, "pay-solana-spl: jobId"),
     phaseIndex: input.phaseIndex,
     railId: requireString(input.railId, "railId").normalize("NFC"),
   })}`);
@@ -459,7 +577,7 @@ export function createSolanaSplSettlementIntent(
     throw new DacsError("pay-solana-spl: payment currency does not match rail asset symbol");
   }
   const commitmentLevel = authority.commitmentLevel ?? "confirmed";
-  if (!["processed", "confirmed", "finalized"].includes(commitmentLevel)) {
+  if (!COMMITMENT_LEVELS.includes(commitmentLevel)) {
     throw new DacsError("pay-solana-spl: unsupported commitment level");
   }
   if (!["mainnet", "devnet", "testnet"].includes(authority.cluster)) {
@@ -467,10 +585,14 @@ export function createSolanaSplSettlementIntent(
   }
   const amount = assertPositiveAmount(authority.amount);
   const amountBaseUnits = baseUnits(amount, authority.tokenDecimals);
+  // TransferChecked carries a u64 amount; a larger one cannot be encoded.
+  if (BigInt(amountBaseUnits) > U64_MAX) {
+    throw new DacsError("pay-solana-spl: amount exceeds the SPL u64 range");
+  }
   const unsigned = {
     intentVersion: "1" as const,
     settlementKey: solanaSplSettlementKey(authority),
-    jobId: requireString(authority.jobId, "jobId").normalize("NFC"),
+    jobId: requireCanonicalJobId(authority.jobId, "pay-solana-spl: jobId"),
     phaseIndex: authority.phaseIndex,
     railId: requireString(authority.railId, "railId"),
     railDescriptorHash: authority.railDescriptorHash,
@@ -509,11 +631,18 @@ function validatePreflight(
       payeeAtaMint: value.payeeAtaMint,
       networkFeeLamports: value.networkFeeLamports,
       ataRentExemptReserveLamports: value.ataRentExemptReserveLamports,
+      payerRentExemptMinimumLamports: value.payerRentExemptMinimumLamports,
     };
     requireBase58Bytes(preflight.payerTokenAccount, "payerTokenAccount", 32);
     requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
     if (typeof preflight.payeeAtaExists !== "boolean") {
       throw new DacsError("pay-solana-spl: payeeAtaExists must be a boolean");
+    }
+    // DACS-4 §9.5.3: the destination is the payee's associated token account.
+    // The address is derived, not observed, so another one is the adapter's
+    // fault, never a failure that closes the key.
+    if (!isAssociatedTokenAccount(preflight.payeeAta, intent.payee, intent.mint)) {
+      return { status: "indeterminate", reason: "solana-spl-payee-ata-not-associated" };
     }
     // An existing account's owner and mint decide a binding mismatch, which
     // closes the key, so only well-formed keys may reach that comparison.
@@ -525,6 +654,10 @@ function validatePreflight(
     const nativeBalance = uint(preflight.payerNativeBalanceLamports, "payerNativeBalanceLamports");
     const networkFee = uint(preflight.networkFeeLamports, "networkFeeLamports");
     const ataRent = uint(preflight.ataRentExemptReserveLamports, "ataRentExemptReserveLamports");
+    const rentExemptMinimum = uint(
+      preflight.payerRentExemptMinimumLamports,
+      "payerRentExemptMinimumLamports",
+    );
     if (tokenBalance < BigInt(intent.amountBaseUnits)) {
       return { status: "failed", errorClass: "permanent", reason: "solana-spl-insufficient-token-balance" };
     }
@@ -536,7 +669,11 @@ function validatePreflight(
       return { status: "failed", errorClass: "counterparty", reason: "solana-spl-payee-ata-binding-mismatch" };
     }
     const requiredNative = networkFee + (preflight.payeeAtaExists ? 0n : ataRent);
-    if (nativeBalance < requiredNative) {
+    // The runtime refuses a fee payer left between zero and its rent-exempt
+    // minimum, at the fee check or after execution, so such a transfer can
+    // never succeed.
+    const remaining = nativeBalance - requiredNative;
+    if (remaining < 0n || (remaining > 0n && remaining < rentExemptMinimum)) {
       return {
         status: "failed",
         errorClass: "permanent",
@@ -655,7 +792,46 @@ const FAILURES: ReadonlyMap<string, "permanent" | "counterparty"> = new Map([
   ["solana-spl-insufficient-ata-rent-and-fee-balance", "permanent"],
   ["solana-spl-payee-ata-missing", "counterparty"],
   ["solana-spl-payee-ata-binding-mismatch", "counterparty"],
+  ["solana-spl-transfer-failed-on-chain", "permanent"],
 ]);
+/** DACS-4 PC-4: a transfer refused by the chain is `permanent`. */
+const LANDED_FAILURE = {
+  status: "failed",
+  errorClass: "permanent",
+  reason: "solana-spl-transfer-failed-on-chain",
+} as const;
+
+/**
+ * Checks a landed-failure proof for a retained attempt. Returns null for a
+ * well-formed proof below `finalized`, which a fork could still roll back,
+ * and throws for a malformed one.
+ */
+function captureLandedFailure(
+  value: Readonly<{
+    signature: unknown;
+    slot: unknown;
+    commitmentLevel: unknown;
+    authenticationHash: unknown;
+  }>,
+  attempt: Readonly<SolanaSplSignedAttempt>,
+): Readonly<SolanaSplLandedFailureEvidence> | null {
+  if (value.signature !== attempt.signature) {
+    throw new DacsError("pay-solana-spl: landed failure signature mismatch");
+  }
+  if (typeof value.slot !== "number" || !Number.isSafeInteger(value.slot) || value.slot < 0 ||
+      typeof value.authenticationHash !== "string" ||
+      !HASH_RE.test(value.authenticationHash) ||
+      !COMMITMENT_LEVELS.includes(value.commitmentLevel as SolanaCommitmentLevel)) {
+    throw new DacsError("pay-solana-spl: landed failure proof is invalid");
+  }
+  if (value.commitmentLevel !== "finalized") return null;
+  return Object.freeze({
+    signature: attempt.signature,
+    slot: value.slot,
+    commitmentLevel: value.commitmentLevel,
+    authenticationHash: value.authenticationHash,
+  });
+}
 
 /**
  * Captures a store object as plain data: the one meaning of "plain data" for
@@ -894,11 +1070,16 @@ function captureStoredSettlement(
   }
 }
 
+/**
+ * The settlement an observed transfer proves, `pending` when it is exactly
+ * the retained transfer but below the intent's commitment, or null when it is
+ * not the retained transfer.
+ */
 function settlementFrom(
   intent: Readonly<SolanaSplSettlementIntent>,
   attempt: Readonly<SolanaSplSignedAttempt>,
   value: Readonly<SolanaSplObservedTransfer>,
-): Readonly<SolanaSplSettlementResult> | null {
+): Readonly<SolanaSplSettlementResult> | "pending" | null {
   // Read each field once, so what is checked is what is reported.
   const observed: SolanaSplObservedTransfer = {
     cluster: value.cluster,
@@ -920,11 +1101,19 @@ function settlementFrom(
       observed.payer !== intent.payer || observed.payee !== intent.payee ||
       observed.amountBaseUnits !== intent.amountBaseUnits ||
       observed.tokenDecimals !== intent.tokenDecimals ||
-      observed.commitmentLevel !== intent.commitmentLevel ||
+      !COMMITMENT_LEVELS.includes(observed.commitmentLevel) ||
       typeof observed.authenticationHash !== "string" ||
       !HASH_RE.test(observed.authenticationHash) ||
       !Number.isSafeInteger(observed.finalityObservedAt) || observed.finalityObservedAt < 0) {
     return null;
+  }
+  // Commitment only strengthens, so a transfer observed above the intent's
+  // level has reached it, as Solana's own confirmation treats it. The result
+  // still records the intent's level: DACS-4 `SettlementFinalityRecord`
+  // sources it from the rail parameter.
+  if (COMMITMENT_LEVELS.indexOf(observed.commitmentLevel) <
+      COMMITMENT_LEVELS.indexOf(intent.commitmentLevel)) {
+    return "pending";
   }
   return Object.freeze({
     txRef: Object.freeze({
@@ -1060,6 +1249,7 @@ type ReconciledState =
   | { disposition: "pending" }
   | { disposition: "absent-valid" }
   | { disposition: "absent-expired"; evidence: Readonly<SolanaSplExpiryEvidence> }
+  | { disposition: "landed-failed"; evidence: Readonly<SolanaSplLandedFailureEvidence> }
   | { disposition: "indeterminate"; reason: string };
 
 /**
@@ -1086,16 +1276,27 @@ function readReconciliation(
   switch (disposition) {
     case "settled-same":
       try {
-        return {
-          disposition,
-          settlement: settlementFrom(
-            intent,
-            attempt,
-            result.transfer as Readonly<SolanaSplObservedTransfer>,
-          ),
-        };
+        const settlement = settlementFrom(
+          intent,
+          attempt,
+          result.transfer as Readonly<SolanaSplObservedTransfer>,
+        );
+        return settlement === "pending" ? { disposition: "pending" } : { disposition, settlement };
       } catch {
         return { disposition, settlement: null };
+      }
+    case "landed-failed":
+      try {
+        const evidence = captureLandedFailure({
+          signature: attempt.signature,
+          slot: result.slot,
+          commitmentLevel: result.commitmentLevel,
+          authenticationHash: result.authenticationHash,
+        }, attempt);
+        // A refusal below finalized is awaited, never acted on.
+        return evidence ? { disposition, evidence } : { disposition: "pending" };
+      } catch {
+        return { disposition: "indeterminate", reason: "solana-spl-landed-failure-proof-invalid" };
       }
     case "absent-valid":
       try {
@@ -1282,11 +1483,40 @@ export async function advanceSolanaSplSettlement(
     }
     return readReconciliation(intent, attempt, result);
   };
+  // A failure lets the caller pay the phase another way, so it is reported
+  // only once the store has closed the key under this lease: no later call
+  // can then sign under it.
+  const close = async (
+    failure: Extract<SolanaSplProgress, { status: "failed" }>,
+    landedFailure?: Readonly<SolanaSplLandedFailureEvidence>,
+  ): Promise<SolanaSplProgress> => {
+    try {
+      const closed = storeWrite(await recordFailure({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        failure: Object.freeze({ errorClass: failure.errorClass, reason: failure.reason }),
+        ...(landedFailure ? { landedFailure } : {}),
+      }));
+      const status = closed.status;
+      if (status === "recorded" || status === "existing") return failure;
+    } catch {
+      // Falls through to the uncertain result.
+    }
+    return { status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain" };
+  };
   // Returns null only for the two absent dispositions, which the caller handles.
   const finalize = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
     result: ReconciledState,
   ): Promise<SolanaSplProgress | null> => {
+    // The chain refused the transfer: nothing in it took effect, and its
+    // signature can never land again. Every predecessor already has expiry
+    // evidence, so nothing under the key can land.
+    if (result.disposition === "landed-failed") {
+      return close(LANDED_FAILURE, result.evidence);
+    }
     // A retained signature landed in both settled dispositions: funds may have
     // moved, so neither is ever a failure a caller could pay again after.
     if (result.disposition === "settled-same") {
@@ -1399,26 +1629,7 @@ export async function advanceSolanaSplSettlement(
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
   const plan = validatePreflight(intent, preflight);
-  if ("status" in plan) {
-    if (plan.status !== "failed") return plan;
-    // A failure lets the caller pay the phase another way, so it is reported
-    // only once the store has closed the key under this lease: no later call
-    // can then sign under it.
-    try {
-      const closed = storeWrite(await recordFailure({
-        settlementKey: intent.settlementKey,
-        bindingHash: intent.bindingHash,
-        owner: fence.owner,
-        generation: fence.generation,
-        failure: Object.freeze({ errorClass: plan.errorClass, reason: plan.reason }),
-      }));
-      const status = closed.status;
-      if (status === "recorded" || status === "existing") return plan;
-    } catch {
-      // Falls through to the uncertain result.
-    }
-    return { status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain" };
-  }
+  if ("status" in plan) return plan.status === "failed" ? close(plan) : plan;
 
   const attemptNumber = attempts.length + 1;
   // The signer's errors may carry key or wallet detail; only fixed codes leave.
@@ -1479,6 +1690,7 @@ interface MemoryRecord {
   expired: Map<string, Readonly<SolanaSplExpiryEvidence>>;
   settlement?: Readonly<SolanaSplSettlementResult>;
   failure?: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
+  landedFailure?: Readonly<SolanaSplLandedFailureEvidence>;
 }
 
 /** Test/development store. Production callers must persist encrypted signed bytes. */
@@ -1615,8 +1827,25 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
       if (record.settlement) return { status: "conflict", reason: "solana-settlement-already-settled" };
+      let landedFailure: Readonly<SolanaSplLandedFailureEvidence> | undefined;
+      if (input.landedFailure !== undefined) {
+        const attempt = record.attempts.find(
+          (retained) => retained.signature === input.landedFailure?.signature,
+        );
+        try {
+          landedFailure = attempt
+            ? captureLandedFailure(input.landedFailure, attempt) ?? undefined
+            : undefined;
+        } catch {
+          landedFailure = undefined;
+        }
+        if (!landedFailure) {
+          return { status: "conflict", reason: "solana-landed-failure-invalid" };
+        }
+      }
       // Only a key with no attempt that can still land may be closed.
-      if (record.attempts.some((attempt) => !record.expired.has(attempt.signature))) {
+      if (record.attempts.some((attempt) => !record.expired.has(attempt.signature) &&
+          attempt.signature !== landedFailure?.signature)) {
         return { status: "conflict", reason: "solana-failure-attempt-live" };
       }
       const failure = Object.freeze({
@@ -1624,11 +1853,13 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
         reason: input.failure.reason,
       });
       if (record.failure) {
-        return canonicalize(record.failure) === canonicalize(failure)
+        return canonicalize(record.failure) === canonicalize(failure) &&
+            canonicalize(record.landedFailure ?? null) === canonicalize(landedFailure ?? null)
           ? { status: "existing" }
           : { status: "conflict", reason: "solana-failure-conflict" };
       }
       record.failure = failure;
+      if (landedFailure) record.landedFailure = landedFailure;
       return { status: "recorded" };
     },
   };
