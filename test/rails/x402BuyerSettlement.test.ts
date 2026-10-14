@@ -374,6 +374,20 @@ describe("durable buyer x402 intent", () => {
     }
   });
 
+  test("refuses a signed payment payload that is not x402 protocol version 2", () => {
+    for (const x402Version of [1, 3, "2"]) {
+      const draft = intentDraft();
+      const payload = {
+        ...draft.signedPaymentPayload,
+        x402Version,
+      } as unknown as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+      draft.signedPaymentPayload = payload;
+      draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+      expect(() => createX402BuyerSettlementIntent(draft), String(x402Version))
+        .toThrow("x402 buyer signedPaymentPayload must be protocol version 2");
+    }
+  });
+
   test("rejects every authority-bearing intent substitution", () => {
     const original = makeIntent();
     const mutations: Array<(candidate: Record<string, unknown>) => void> = [
@@ -906,8 +920,50 @@ describe("advanceX402BuyerSettlement", () => {
         event: signedEvent({ logIndex: 8 }),
         authenticationEvent: signedEvent({ logIndex: 7 }),
       })],
+      // DACS-4 X402-3: the receipt network, the signed event chain and the
+      // intent network must agree, and payer/amount bind the retained intent.
+      // Each case is otherwise self-consistent (receipt hash, authentication).
+      ["signed event resource", (intent) => capturedSettlement(intent, {
+        event: signedEvent({ httpResource: "https://seller.example/other" }),
+      })],
+      ["network agreed by receipt and event but not the intent", (intent) => {
+        const response = receiptResponse({ network: "eip155:8453" });
+        return capturedSettlement(intent, {
+          response,
+          event: signedEvent({
+            chainId: 8453,
+            paymentReceiptHash: sha256Hex(canonicalize(response)),
+          }),
+        });
+      }],
+      ["receipt network", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ network: "eip155:8453" }),
+      })],
+      ["receipt payer", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ payer: `0x${"99".repeat(20)}` }),
+      })],
+      ["receipt amount", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ amount: "999" }),
+      })],
+      ["capture version", (intent) => ({
+        ...capturedSettlement(intent),
+        captureVersion: "2" as "1",
+      })],
+      ["disclosure protocol version", (intent) => ({
+        ...capturedSettlement(intent),
+        protocolVersion: "1" as "2",
+      })],
+      ["response header name", (intent) => ({
+        ...capturedSettlement(intent),
+        headerName: "X-PAYMENT-RESPONSE" as "PAYMENT-RESPONSE",
+      })],
+      // X402-1/X402-4: a well-formed settlement response that does not report
+      // success decodes and hashes like a success, but is never a settlement.
+      ["receipt that does not report success", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ success: false, errorReason: "insufficient_funds" }),
+      })],
     ];
-    for (const [_label, mutation] of cases) {
+    for (const [label, mutation] of cases) {
       const intent = makeIntent();
       const store = createInMemoryX402BuyerSettlementStore();
       const result = await advanceX402BuyerSettlement({
@@ -924,7 +980,7 @@ describe("advanceX402BuyerSettlement", () => {
         })),
         now: () => 1_000,
       });
-      expect(result).toEqual({
+      expect(result, label).toEqual({
         status: "indeterminate",
         reason: "settled-same-capture-invalid",
       });

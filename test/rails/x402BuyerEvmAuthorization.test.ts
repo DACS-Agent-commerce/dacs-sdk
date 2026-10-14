@@ -461,6 +461,21 @@ describe("x402 buyer EVM authorization provider", () => {
     ["payer", transfer({ topics: [ERC20_TRANSFER_TOPIC, addressTopic(`0x${"99".repeat(20)}`), addressTopic(PAYEE)] })],
     ["payee", transfer({ topics: [ERC20_TRANSFER_TOPIC, addressTopic(PAYER), addressTopic(`0x${"99".repeat(20)}`)] })],
     ["amount", transfer({ data: uintData("1001") })],
+    // Near misses that only the event shape checks can exclude (DACS-4 SB-1).
+    ["event signature", transfer({ topics: [
+      keccak256(stringToHex("Approval(address,address,uint256)")),
+      addressTopic(PAYER),
+      addressTopic(PAYEE),
+    ] })],
+    ["topic count", transfer({ topics: [
+      ERC20_TRANSFER_TOPIC,
+      addressTopic(PAYER),
+      addressTopic(PAYEE),
+      `0x${"00".repeat(31)}01`,
+    ] })],
+    ["amount encoding", transfer({
+      data: `0x${BigInt(AMOUNT).toString(16).padStart(4, "0")}`,
+    })],
   ])("classifies a nonce consumed with wrong %s as used-different", async (_label, wrongTransfer) => {
     const customReceipt = receipt({ logs: [log(), wrongTransfer] });
     const { result } = await reconcile(provider(reader({ receipt: customReceipt })));
@@ -485,6 +500,18 @@ describe("x402 buyer EVM authorization provider", () => {
   test("requires the configured confirmation depth", async () => {
     const { result } = await reconcile(provider(reader({ headBlock: 102 })));
     expect(result).toEqual({
+      disposition: "indeterminate",
+      reason: "eip3009-settlement-not-finalized",
+    });
+  });
+
+  test("counts the inclusion block as the first of the configured confirmations", async () => {
+    // Inclusion at 100 with a minimum of 5: head 104 is the 5th confirmation
+    // block and settles; head 103 is one short (DACS-4 §9.7 block depth).
+    const atMinimum = await reconcile(provider(reader({ headBlock: 104 })));
+    expect(atMinimum.result).toMatchObject({ disposition: "settled-same" });
+    const oneShort = await reconcile(provider(reader({ headBlock: 103 })));
+    expect(oneShort.result).toEqual({
       disposition: "indeterminate",
       reason: "eip3009-settlement-not-finalized",
     });
@@ -522,6 +549,37 @@ describe("x402 buyer EVM authorization provider", () => {
     expect(result).toMatchObject({
       disposition: "cancelled",
       authenticationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  });
+
+  // DACS-4 SB-3: a nonce that is used or cancelled more than once, or both,
+  // cannot be reconciled and fails closed. Each observation is otherwise
+  // well-formed; the last one would read as unused if the event count were
+  // not checked first.
+  test.each<[string, Partial<ReaderState>]>([
+    ["two AuthorizationUsed events", {
+      used: [log(), log({ logIndex: 6 })],
+    }],
+    ["AuthorizationUsed and AuthorizationCanceled", {
+      cancelled: [log({
+        topics: [EIP3009_AUTHORIZATION_CANCELED_TOPIC, addressTopic(PAYER), nonce()],
+        logIndex: 6,
+      })],
+    }],
+    ["two AuthorizationCanceled events beside an unused state read", {
+      used: [],
+      cancelled: [5, 6].map((logIndex) => log({
+        topics: [EIP3009_AUTHORIZATION_CANCELED_TOPIC, addressTopic(PAYER), nonce()],
+        logIndex,
+      })),
+      authorizationUsed: false,
+      receipt: null,
+    }],
+  ])("refuses to reconcile a nonce with %s", async (_label, state) => {
+    const { result } = await reconcile(provider(reader(state)), null);
+    expect(result).toEqual({
+      disposition: "indeterminate",
+      reason: "eip3009-nonce-events-ambiguous",
     });
   });
 

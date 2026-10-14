@@ -154,6 +154,33 @@ describe("prepareX402BuyerSettlement", () => {
         resource: { url: RESOURCE },
         accepts: [requirements({ extra: { name: "USD Coin" } })],
       },
+      // The agreement's network is checked before signing: a client
+      // registered for every eip155 network would sign this challenge.
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ network: "eip155:8453" })],
+      },
+      {
+        x402Version: 1,
+        resource: { url: RESOURCE },
+        accepts: [requirements()],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ scheme: "upto" })],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ asset: `0x${"99".repeat(20)}` })],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ amount: "999" })],
+      },
     ];
     for (const challenge of challenges) {
       const result = await prepareX402BuyerSettlement(
@@ -164,7 +191,7 @@ describe("prepareX402BuyerSettlement", () => {
           fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
         },
       );
-      expect(result).toEqual({
+      expect(result, JSON.stringify(challenge)).toEqual({
         disposition: "rejected",
         reason: "x402-payment-requirements-mismatch",
       });

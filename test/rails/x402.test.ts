@@ -770,11 +770,51 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     const client = fakeClient([
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
+    const authenticateTransfer = vi.fn(async () => {
+      throw new Error("must not authenticate without a complete response");
+    });
     await expect(x402SettleCore(
       params,
-      coreDeps(client, fakeFetch({ omitReceipt: true })),
-    )).rejects.toThrow(/PAYMENT-RESPONSE/);
+      coreDeps(client, fakeFetch({ omitReceipt: true }), authenticateTransfer),
+    )).rejects.toThrow("x402: paid response returned HTTP 200 without PAYMENT-RESPONSE");
+    expect(authenticateTransfer).not.toHaveBeenCalled();
   });
+
+  // DACS-4 X402-4: without the complete successful response there is no
+  // success, even when a conforming settlement header rides on an error.
+  test.each([402, 409, 500])(
+    "refuses a paid HTTP %i that carries a conforming PAYMENT-RESPONSE",
+    async (status) => {
+      const client = fakeClient([
+        { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+      ]);
+      const authenticateTransfer = vi.fn(async () => {
+        throw new Error("must not authenticate a failed paid response");
+      });
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return new Response(JSON.stringify({ x402Version: 2 }), { status: 402 });
+        }
+        return new Response(JSON.stringify({ error: "settlement failed" }), {
+          status,
+          headers: {
+            "PAYMENT-RESPONSE": encodedReceipt({
+              success: true,
+              transaction: TX_HASH,
+              network: NETWORK,
+              payer: PAYER,
+              amount: "1000000",
+            }),
+          },
+        });
+      }) as unknown as typeof fetch;
+      await expect(x402SettleCore(params, coreDeps(client, fetchImpl, authenticateTransfer)))
+        .rejects.toThrow(`x402: paid response returned HTTP ${status} with PAYMENT-RESPONSE`);
+      expect(authenticateTransfer).not.toHaveBeenCalled();
+    },
+  );
 
   test("rejects malformed raw receipt and independent finality failure", async () => {
     const client = fakeClient([
