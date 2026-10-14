@@ -1807,6 +1807,25 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
+  // DACS-4 SB-1: the authenticated binding's rail and `:resolved` state must
+  // match the payment evidence; no later phase check re-tests either one.
+  test.each<[string, { railId?: string; resolved?: boolean }]>([
+    ["another rail", { railId: "x402:other" }],
+    ["a :resolved successor the evidence does not claim", { resolved: true }],
+  ])("rejects payment evidence whose authenticated binding names %s", async (_label, change) => {
+    const f = fixture();
+    const ordinary = f.provider.resolvePaymentPhaseIndex!;
+    f.provider.resolvePaymentPhaseIndex = vi.fn(async (input) => {
+      const binding = await ordinary(input);
+      return binding.disposition === "valid" ? { ...binding, ...change } : binding;
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      "payment evidence contradicts its authenticated job/rail/phase/resolved binding",
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
   test("rejects a consumed payment authorization rebound to another agreement", async () => {
     const f = fixture();
     f.input.fulfilment.consumedPaymentAuthorization.agreementHash = "f".repeat(64);
@@ -2448,6 +2467,33 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
       /fulfilment handoff receipt does not match/,
     );
+    expect(f.sellerSign).not.toHaveBeenCalled();
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  // DACS-5 ST-11 steps 1-2: every dependency needs an established finalized
+  // receipt bound to its own logical address. (A receipt for other content is
+  // already refused when the dependency set is captured.)
+  test.each<[string, (anchor: AnchorReceipt) => void, RegExp]>([
+    ["only included", (anchor) => { anchor.state = "included"; },
+      /lacks an established finalized AnchorReceipt/],
+    ["an indeterminate observation", (anchor) => {
+      anchor.observationDisposition = "indeterminate";
+      anchor.preservedReceiptHash = "9".repeat(64);
+    }, /lacks an established finalized AnchorReceipt/],
+    ["bound to another logical address", (anchor) => {
+      anchor.logicalAddress = "dacs-test:another-artifact";
+    }, /receipt binds a different logical address/],
+  ])("rejects an agreement dependency receipt that is %s", async (_label, mutate, message) => {
+    const f = fixture();
+    const agreementDependency = f.input.dependencies.find(
+      (dependency) =>
+        dependency.source.kind === "attestation-ref" &&
+        dependency.source.ref.contentHash === f.input.agreementRef.contentHash,
+    )!;
+    mutate(agreementDependency.anchorReceipt);
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(message);
     expect(f.sellerSign).not.toHaveBeenCalled();
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
