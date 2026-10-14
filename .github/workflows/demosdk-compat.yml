@@ -1,0 +1,76 @@
+name: demosdk compatibility
+
+# The demosdk peer and dev range (^4.0.16) admits every later 4.x release, but
+# the committed lockfile resolves 4.0.16, so ordinary CI never compiles against
+# a newer one. 4.0.18 broke `tsc` and the build while CI stayed green (#339).
+# This scheduled job typechecks and builds against the locked version, 4.0.18,
+# and the newest release in range, without changing the lockfile.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  demosdk-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        demosdk: ["locked", "4.0.18", "newest-in-range"]
+    name: typecheck + build (demosdk ${{ matrix.demosdk }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install locked dependencies
+        # Typecheck and build need no install scripts.
+        run: npm ci --no-audit --ignore-scripts
+
+      - name: Install demosdk ${{ matrix.demosdk }} without saving
+        if: matrix.demosdk != 'locked'
+        env:
+          DEMOSDK: ${{ matrix.demosdk }}
+        run: |
+          if [ "$DEMOSDK" = "newest-in-range" ]; then
+            spec="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+          else
+            spec="$DEMOSDK"
+          fi
+          npm install --no-save --no-audit --ignore-scripts "@kynesyslabs/demosdk@${spec}"
+          git diff --exit-code -- package.json package-lock.json
+
+      - name: Check the resolved demosdk version
+        env:
+          DEMOSDK: ${{ matrix.demosdk }}
+        run: |
+          resolved="$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")"
+          echo "demosdk resolved: $resolved"
+          echo "demosdk ${DEMOSDK}: resolved ${resolved}" >> "$GITHUB_STEP_SUMMARY"
+          case "$DEMOSDK" in
+            locked)
+              expected="$(node -p "require('./package-lock.json').packages['node_modules/@kynesyslabs/demosdk'].version")"
+              ;;
+            newest-in-range)
+              expected="$resolved"
+              ;;
+            *)
+              expected="$DEMOSDK"
+              ;;
+          esac
+          test "$resolved" = "$expected"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
