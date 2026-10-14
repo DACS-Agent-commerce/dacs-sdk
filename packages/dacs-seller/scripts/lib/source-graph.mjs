@@ -211,9 +211,19 @@ export function scanReferences(path, text, { pathStrings = false } = {}) {
   const refs = [];
   const counted = new Set();
   const line = (node) => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+  const bindings = (node) => {
+    if (ts.isExportDeclaration(node)) return node.exportClause ? node.exportClause.elements.map((e) => (e.propertyName ?? e.name).text) : ['*'];
+    const clause = node.importClause;
+    if (!clause) return [];
+    const names = clause.name ? ['default'] : [];
+    const nb = clause.namedBindings;
+    if (nb && ts.isNamespaceImport(nb)) names.push('*');
+    else if (nb) names.push(...nb.elements.map((e) => (e.propertyName ?? e.name).text));
+    return names;
+  };
   const visit = (node) => {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-      refs.push({ kind: ts.isImportDeclaration(node) ? 'import' : 'export-from', specifier: node.moduleSpecifier.text, line: line(node) });
+      refs.push({ kind: ts.isImportDeclaration(node) ? 'import' : 'export-from', specifier: node.moduleSpecifier.text, line: line(node), names: bindings(node) });
       counted.add(node.moduleSpecifier);
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       const arg = node.arguments[0];
@@ -241,7 +251,7 @@ export function resolveSpecifier(from, specifier) {
 const isModule = (p) => /\.(?:mjs|js|cjs)$/.test(p);
 const FOLLOW_KINDS = new Set(['import', 'export-from', 'dynamic-import', 'url']);
 // A relative path literal that names no file is not a file reference.
-const NOT_A_FILE = new Set(['missing', 'outside-http-mcp', 'node-modules-path', 'directory']);
+export const NOT_A_FILE = new Set(['missing', 'outside-http-mcp', 'node-modules-path', 'directory']);
 
 // One reference resolved and classified against a tree. stop is null when
 // the closure follows it.
