@@ -61,12 +61,24 @@ jobs:
               expected="$(node -p "require('./package-lock.json').packages['node_modules/@kynesyslabs/demosdk'].version")"
               ;;
             newest-in-range)
-              expected="$resolved"
+              # The newest release the registry lists in the package.json
+              # range, read independently of the install that resolved it.
+              spec="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+              expected="$(npm view "@kynesyslabs/demosdk@${spec}" version --json | node -e '
+                const versions = [].concat(JSON.parse(require("fs").readFileSync(0, "utf8")));
+                const parts = (v) => v.split(/[.+-]/, 3).map(Number);
+                versions.sort((a, b) => {
+                  const [x, y] = [parts(a), parts(b)];
+                  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+                });
+                console.log(versions.at(-1));
+              ')"
               ;;
             *)
               expected="$DEMOSDK"
               ;;
           esac
+          echo "demosdk expected: $expected"
           test "$resolved" = "$expected"
 
       - name: Typecheck
