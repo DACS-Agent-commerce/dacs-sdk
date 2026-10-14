@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { contentHash } from "../../src/canonical/index.js";
+import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import {
   createBoundArtifactRepository,
   createInMemoryBindingIndex,
@@ -26,6 +26,8 @@ import { AnchorHistoryRestartRequiredError } from "../../src/discovery/index.js"
 import { createDemosHistoryPageFetcher } from "../../src/substrate/demosHistory.js";
 
 const OWNER = "seller";
+// A JID-1 canonical ULID (CORE §B.1).
+const JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const logical = (id: string) => `dacs1:${OWNER}:${id}:v1`;
 const row = (id: string): RawAnchorEntry => ({
   nativeAddress: `stor-${id}`,
@@ -271,12 +273,12 @@ describe("createScanningArtifactRepository (#54)", () => {
       adapter: { getAddress: () => OWNER, anchorWriteOnce: write, readAnchor: async (address) => records.get(address) ?? null },
       index: store, publisher: store,
     });
-    const slots = [logical("v1"), `stor-${"a".repeat(64)}`, "dacs1-revoked:seller:v1:v1", "dacs3:commit:job-1"];
+    const slots = [logical("v1"), `stor-${"a".repeat(64)}`, "dacs1-revoked:seller:v1:v1", `dacs3:commit:${JOB}`];
     for (const slot of slots) {
-      expect((await writer.write(slot, { logicalAddress: slot, signature: { signer: OWNER } })).status).toBe("published");
+      expect((await writer.write(slot, { logicalAddress: slot, signatures: [{ signer: OWNER }] })).status).toBe("published");
     }
     const verify = vi.fn<ScanningArtifactRepositoryDeps["verifyArtifact"]>((value, resolved, anchor) =>
-      (value.signature as { signer: string }).signer === OWNER &&
+      (value.signatures as { signer: string }[])[0]?.signer === OWNER &&
       value.logicalAddress === resolved.logicalAddress && anchor.logicalAddress === resolved.logicalAddress,
     );
     const fetchPage = vi.fn(async (cursor: string | null, limit: number): Promise<RawScanPage> => {
@@ -295,12 +297,14 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(first.state.exhausted).toBe(false);
     expect(second.status).toBe("page");
     expect(second.state.exhausted).toBe(true);
+    // A bundle needs DACS-5 BundleBinding verification, which a generic binding cannot give.
     expect([...first.results, ...second.results].map(({ anchor, outcome }) => [anchor.kind, outcome.status])).toEqual([
-      ["listing", "verified"], ["bundle", "verified"], ["listing-revocation", "verified"], ["agreement-commitment", "verified"],
+      ["listing", "verified"], ["bundle", "unverifiable"], ["listing-revocation", "verified"], ["agreement-commitment", "verified"],
     ]);
+    expect(first.results[1]?.outcome).toMatchObject({ code: "unsupported-kind" });
     expect(second.state.seen.size).toBe(4);
     expect(first.state.seen.size).toBe(2);
-    expect(verify).toHaveBeenCalledTimes(4);
+    expect(verify).toHaveBeenCalledTimes(3);
     expect(buyer.publisher.publish).not.toHaveBeenCalled();
     expect(write).toHaveBeenCalledTimes(4);
   });
@@ -456,21 +460,129 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.verifyArtifact).toHaveBeenCalledOnce();
   });
 
-  test("preserves unreadable, unverifiable and conflict diagnostics", async () => {
-    const ids = ["unreadable", "hashless", "conflict", "different-native", "good"];
+  test("preserves unverifiable and conflict diagnostics", async () => {
+    const ids = ["hashless", "conflict", "different-native", "good"];
     const fixture = setup(ids, { index: createInMemoryBindingIndex([
-      binding("unreadable"), { ...binding("hashless"), contentHash: undefined },
+      { ...binding("hashless"), contentHash: undefined },
       binding("conflict"), { ...binding("conflict"), nativeAddress: "stor-other" },
       { ...binding("different-native"), nativeAddress: "stor-other" }, binding("good"),
     ]) });
-    fixture.records.delete("stor-unreadable");
     const result = await fixture.repo.scanPage();
     expect(result.status).toBe("page");
     expect(result.results.map(({ outcome }) => outcome.status)).toEqual([
-      "unreadable", "unverifiable", "conflict", "conflict", "verified",
+      "unverifiable", "conflict", "conflict", "verified",
     ]);
     expect(result.state.seen.size).toBe(ids.length);
     expect(fixture.verifyArtifact).toHaveBeenCalledOnce();
+  });
+
+  // CORE SR-2: an ordinary not-found is indeterminate, never authoritative absence.
+  test("a history row whose record is not found yet is retried, then verified once visible", async () => {
+    const fixture = setup(["a", "b"]);
+    fixture.fetchPage.mockResolvedValue({ entries: [row("a"), row("b")], nextCursor: "later" });
+    const lagging = fixture.records.get("stor-a")!;
+    fixture.records.delete("stor-a");
+    const first = await fixture.repo.scanPage();
+    expect(first).toMatchObject({
+      status: "indeterminate", code: "record-not-yet-visible",
+      state: { cursor: null, pendingRow: { nativeAddress: "stor-a", attempts: 1 } },
+    });
+    expect(first.results.map(({ outcome }) => outcome)).toEqual([{
+      status: "indeterminate", code: "record-not-yet-visible", reason: "no record is visible at stor-a yet",
+    }]);
+    expect(first.state.seen.size).toBe(0);
+    fixture.records.set("stor-a", lagging); // The node catches up.
+    const second = await fixture.repo.scanPage(first.state);
+    expect(second.status).toBe("page");
+    expect(second.results.map(({ outcome }) => outcome.status)).toEqual(["verified", "verified"]);
+    expect([...second.state.seen.keys()]).toEqual(["stor-a", "stor-b"]);
+  });
+
+  test("a record that stays not found is deferred with its code, never handled", async () => {
+    const fixture = setup(["a", "b"], { maxRowAttempts: 2 });
+    fixture.records.delete("stor-a");
+    const first = await fixture.repo.scanPage();
+    const second = await fixture.repo.scanPage(first.state);
+    expect(second.status).toBe("page");
+    expect(second.deferred).toMatchObject([{ anchor: { nativeAddress: "stor-a" }, code: "record-not-yet-visible", attempts: 2 }]);
+    expect(second.results.map(({ outcome }) => outcome.status)).toEqual(["indeterminate", "verified"]);
+    expect(second.state.seen.has("stor-a")).toBe(false);
+    // A persisted deferred row with this code is a valid state.
+    const persisted: ArtifactScanState = {
+      ...second.state, seen: new Map(second.state.seen), metadata: new Map(second.state.metadata),
+      consumedCursors: new Set(second.state.consumedCursors),
+      deferred: JSON.parse(JSON.stringify(second.state.deferred)) as ArtifactScanDeferredRow[],
+    };
+    expect(await fixture.repo.scanPage(persisted)).toMatchObject({ status: "page", results: [] });
+  });
+
+  // DACS-5 §10.4.1 omits `signatures` and `anchoredByRole`; BB-4 needs a BundleBinding.
+  test("bundle role copies are bound by the §10.4.1 hash and are final unsupported-kind", async () => {
+    const copy = (anchoredByRole: string) => ({
+      bundleVersion: "1", jobId: JOB, outcome: "completed", anchoredByRole,
+      signatures: [{ signer: OWNER, value: "public-test-signature" }],
+    });
+    const bundleHash = sha256Hex(canonicalize({ bundleVersion: "1", jobId: JOB, outcome: "completed" }));
+    const buyer = { nativeAddress: "stor-buyer", logicalAddress: `stor-${"b".repeat(64)}`, owner: OWNER };
+    const seller = { nativeAddress: "stor-seller", logicalAddress: `stor-${"c".repeat(64)}`, owner: OWNER };
+    const wrong = { nativeAddress: "stor-wrong", logicalAddress: `stor-${"d".repeat(64)}`, owner: OWNER };
+    const records = new Map<string, Record<string, unknown>>([
+      ["stor-buyer", copy("buyer")], ["stor-seller", copy("seller")],
+      ["stor-wrong", { ...copy("buyer"), outcome: "faulted" }],
+    ]);
+    const fixture = setup([], {
+      index: createInMemoryBindingIndex([buyer, seller, wrong].map((entry) => ({ ...entry, contentHash: bundleHash }))),
+      adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+        readAnchor: async (address) => records.get(address) ?? null },
+    });
+    fixture.fetchPage.mockResolvedValue({ entries: [buyer, seller, wrong], nextCursor: null });
+    const result = await fixture.repo.scanPage();
+    expect(result.results.map(({ anchor, outcome }) => [anchor.kind, outcome.status, "code" in outcome ? outcome.code : undefined])).toEqual([
+      ["bundle", "unverifiable", "unsupported-kind"],
+      ["bundle", "unverifiable", "unsupported-kind"],
+      ["bundle", "hash-mismatch", undefined],
+    ]);
+    expect(result.state.seen.size).toBe(3);
+    expect(fixture.verifyArtifact).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["payment-disposition", `dacs4:payment-disposition:${JOB}:3:${"ab".repeat(32)}`],
+    ["payload-attestation", `dacs4:payload-attestation:${JOB}:${"ab".repeat(32)}:0`],
+  ])("a %s row reaches the artifact verifier and can verify", async (kind, logicalAddress) => {
+    const value = { logicalAddress, signature: { signer: OWNER, value: "public-test-signature" } };
+    const entry = { nativeAddress: "stor-dacs4", logicalAddress, owner: OWNER };
+    const verifyArtifact = vi.fn<ScanningArtifactRepositoryDeps["verifyArtifact"]>((_value, _binding, anchor) => anchor.kind === kind);
+    const fixture = setup([], {
+      verifyArtifact,
+      index: createInMemoryBindingIndex([{ ...entry, contentHash: contentHash(value) }]),
+      adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+        readAnchor: async () => value },
+    });
+    fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
+    const result = await fixture.repo.scanPage();
+    expect(result.results).toMatchObject([{ anchor: { kind }, outcome: { status: "verified" } }]);
+    expect(verifyArtifact).toHaveBeenCalledOnce();
+  });
+
+  // CORE JID-3: malformed job IDs reach no resolver or discovery surface.
+  test("rows with malformed job IDs are never resolved or read", async () => {
+    const malformed = ["dacs3:commit:not-a-ulid", `dacs3:commit:${JOB.toLowerCase()}`, "dacs4:deliverable:x"];
+    const resolve = vi.fn(async () => ({ status: "absent" as const }));
+    const fixture = setup([], { index: { resolve }, maxRowAttempts: 1 });
+    const entries = malformed.map((logicalAddress, i) => ({ nativeAddress: `stor-${i}`, logicalAddress, owner: OWNER }));
+    fixture.fetchPage.mockResolvedValue({ entries, nextCursor: null });
+    const dropped = await fixture.repo.scanPage();
+    expect(dropped).toMatchObject({ status: "page", results: [], state: { exhausted: true } });
+    const included = await fixture.repo.scanPage(undefined, { includeUnknown: true });
+    expect(included.results.map(({ anchor, outcome }) => [anchor.kind, outcome])).toEqual(malformed.map(() => [
+      "unknown",
+      { status: "unclassified", reason: "history row logical address is not an exact current-profile DACS address" },
+    ]));
+    expect(included.state.seen.size).toBe(3);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+    expect(fixture.verifyArtifact).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -771,20 +883,23 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.readAnchor).toHaveBeenCalledOnce();
   });
 
-  test("unknown candidates remain unverifiable even with an accepting verifier", async () => {
+  test("unknown candidates are final unclassified, never resolved, read or verified", async () => {
     const verifyArtifact = vi.fn(() => true);
-    const fixture = setup(["a"], { index: createInMemoryBindingIndex([{ ...binding("a"), logicalAddress: "dacs9:unknown" }]),
-      verifyArtifact });
+    const index = createInMemoryBindingIndex([{ ...binding("a"), logicalAddress: "dacs9:unknown" }]);
+    const resolve = vi.spyOn(index, "resolve");
+    const fixture = setup(["a"], { index, verifyArtifact });
     fixture.fetchPage.mockResolvedValue({ entries: [{ ...row("a"), logicalAddress: "dacs9:unknown" }], nextCursor: null });
     const result = await fixture.repo.scanPage(undefined, { includeUnknown: true });
-    expect(result.results[0]?.outcome).toMatchObject({
-      status: "unverifiable", code: "unsupported-kind", reason: expect.stringContaining("no artifact verifier"),
+    expect(result.results[0]?.outcome).toEqual({
+      status: "unclassified", reason: "history row logical address is not an exact current-profile DACS address",
     });
     expect(result.state.seen.has("stor-a")).toBe(true);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(verifyArtifact).not.toHaveBeenCalled();
   });
 
-  test("reads an overlapping filtered row when includeUnknown is later enabled", async () => {
+  test("reports an overlapping filtered row when includeUnknown is later enabled", async () => {
     const unknown = { ...row("a"), logicalAddress: "dacs9:unknown" };
     const fixture = setup(["a"], {
       index: createInMemoryBindingIndex([{ ...binding("a"), logicalAddress: unknown.logicalAddress }]),
@@ -796,10 +911,10 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(first.results).toEqual([]);
     expect(first.state.seen.size).toBe(0);
     const second = await fixture.repo.scanPage(first.state, { includeUnknown: true });
-    expect(second.results).toMatchObject([{ anchor: unknown, outcome: { status: "unverifiable" } }]);
+    expect(second.results).toMatchObject([{ anchor: unknown, outcome: { status: "unclassified" } }]);
     expect(second.state.seen.get("stor-a")).toBe(unknown.logicalAddress);
     expect(first.state.seen.size).toBe(0);
-    expect(fixture.readAnchor.mock.calls).toEqual([["stor-a"]]);
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(fixture.verifyArtifact).not.toHaveBeenCalled();
   });
 
@@ -1170,6 +1285,8 @@ describe("createScanningArtifactRepository (#54)", () => {
     const tx = (n: number) => ({
       hash: `tx-${n}`, status: "confirmed", blockNumber: n,
       content: {
+        // Newest first: rows 1..3, then the prepended rows from 1000 upwards above them.
+        timestamp: n < 1000 ? 1000 - n : n,
         type: "storageProgram", from: `0x${ownerHex}`, to: address(n),
         data: ["storageProgram", {
           operation: "CREATE_STORAGE_PROGRAM", storageAddress: address(n),
@@ -1253,15 +1370,15 @@ describe("createScanningArtifactRepository (#54)", () => {
     const ownerHex = "ab".repeat(32);
     const native = `stor-${"1".repeat(40)}`;
     const listing = `dacs1:${ownerHex}:listing:v1`;
-    const create = (hash: string, logicalAddress: string) => ({
+    const create = (hash: string, logicalAddress: string, timestamp: number) => ({
       hash, status: "confirmed", blockNumber: 1,
       content: {
-        type: "storageProgram", from: `0x${ownerHex}`, to: native,
+        timestamp, type: "storageProgram", from: `0x${ownerHex}`, to: native,
         data: ["storageProgram", { operation: "CREATE_STORAGE_PROGRAM", storageAddress: native, metadata: { logicalAddress } }],
       },
     });
     // Newest first: an older create assigns another logical address to the same program.
-    const history = [create("tx-2", listing), create("tx-1", `dacs1:${ownerHex}:other:v1`)];
+    const history = [create("tx-2", listing, 2), create("tx-1", `dacs1:${ownerHex}:other:v1`, 1)];
     const client = {
       getTransactionHistory: vi.fn(async (_owner: string, _type: string, { start, limit }: { start: number; limit: number }) =>
         history.slice(start, start + limit)),
@@ -1287,6 +1404,44 @@ describe("createScanningArtifactRepository (#54)", () => {
         results: [], deferred: [], state: first.state,
       });
     }
+  });
+
+  test("a new traversal recovers from rewritten history through the same Demos fetcher", async () => {
+    const ownerHex = "ab".repeat(32);
+    const native = `stor-${"1".repeat(40)}`;
+    const create = (logicalAddress: string) => ({
+      hash: "tx-1", status: "confirmed", blockNumber: 1,
+      content: {
+        timestamp: 1, type: "storageProgram", from: `0x${ownerHex}`, to: native,
+        data: ["storageProgram", { operation: "CREATE_STORAGE_PROGRAM", storageAddress: native, metadata: { logicalAddress } }],
+      },
+    });
+    const before = `dacs1:${ownerHex}:before:v1`;
+    const after = `dacs1:${ownerHex}:after:v1`;
+    let history = [create(before)];
+    const client = {
+      getTransactionHistory: vi.fn(async (_owner: string, _type: string, { start, limit }: { start: number; limit: number }) =>
+        history.slice(start, start + limit)),
+    };
+    const value = { listing: 1 };
+    const store = createInMemoryBindingIndex([before, after].map((logicalAddress) => ({
+      logicalAddress, nativeAddress: native, owner: `0x${ownerHex}`, contentHash: contentHash(value),
+    })));
+    const repo = createScanningArtifactRepository({
+      expectedOwner: ownerHex, index: store, publisher: { publish: async () => { throw new Error("unexpected publish"); } },
+      adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+        readAnchor: async () => value },
+      fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
+      verifyArtifact: () => true,
+    });
+    const first = await repo.scanPage();
+    expect(first).toMatchObject({ status: "page", state: { exhausted: true } });
+    expect(first.results.map(({ anchor }) => anchor.logicalAddress)).toEqual([before]);
+    history = [create(after)];
+    // After operator review, scanPage() without state starts a new traversal.
+    const recovered = await repo.scanPage();
+    expect(recovered).toMatchObject({ status: "page", state: { exhausted: true } });
+    expect(recovered.results.map(({ anchor, outcome }) => [anchor.logicalAddress, outcome.status])).toEqual([[after, "verified"]]);
   });
 
   test("the README example returns unverifiable, then an empty exhausted page", async () => {

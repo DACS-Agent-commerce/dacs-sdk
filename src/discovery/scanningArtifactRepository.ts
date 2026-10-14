@@ -1,4 +1,5 @@
-import { contentHash } from "../canonical/index.js";
+import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import type { AnchorBinding, BindingIndex } from "./binding.js";
 import {
   createBoundArtifactRepository,
@@ -47,6 +48,9 @@ export interface ScanningArtifactRepositoryDeps extends BoundArtifactRepositoryD
    * error that only carries `code: "unsupported-kind"`: the check is
    * `instanceof`, so throw the class exported by this package, from the same
    * installed copy as the repository. A non-function is refused at construction.
+   * It is never called for an `unknown` row, which is `unclassified`, or for a
+   * `bundle` row, which is a final `unsupported-kind` after its DACS-5 §10.4.1
+   * hash check because the generic binding is not a DACS-5 BundleBinding.
    */
   verifyArtifact: (
     record: Record<string, unknown>,
@@ -60,11 +64,18 @@ export interface ScanningArtifactRepositoryDeps extends BoundArtifactRepositoryD
   maxRowAttempts?: number;
 }
 
-/** Retryable row diagnostics. The row is not handled and does not enter `seen`. */
+/**
+ * Retryable row diagnostics. The row is not handled and does not enter `seen`.
+ * `record-not-yet-visible` is a read that found no record at the bound native
+ * address: CORE SR-2 makes an ordinary not-found `indeterminate`, and a lagging
+ * node reports a history-confirmed anchor that way. So does a deleted program;
+ * the repository cannot tell the two apart, so such a row is eventually deferred.
+ */
 export type ArtifactRowIndeterminateCode =
   | "index-indeterminate"
   | "binding-not-yet-visible"
   | "read-indeterminate"
+  | "record-not-yet-visible"
   | "verifier-unavailable";
 
 /**
@@ -125,12 +136,16 @@ export interface ArtifactScanState {
 
 /**
  * Row outcome. Existing read diagnostics are preserved, except that a missing
- * binding is `indeterminate` (`binding-not-yet-visible`), as in `write`.
+ * binding is `indeterminate` (`binding-not-yet-visible`), as in `write`, and a
+ * record that cannot be found is `indeterminate` (`record-not-yet-visible`).
+ * `unclassified` is a row whose logical address is not an exact current-profile
+ * address, including one with a malformed job ID; it is neither resolved nor read.
  */
 export type ScannedArtifactOutcome =
-  | Exclude<VerifiedRead, { status: "unverifiable" | "indeterminate" | "absent" }>
+  | Exclude<VerifiedRead, { status: "unverifiable" | "indeterminate" | "absent" | "unreadable" }>
   | (Extract<VerifiedRead, { status: "unverifiable" }> & { code?: "unsupported-kind" })
   | { status: "indeterminate"; reason: string; code: ArtifactRowIndeterminateCode }
+  | { status: "unclassified"; reason: string }
   | { status: "conflict"; reason: string };
 
 /** Known binding disagreements are explicit. */
@@ -216,8 +231,23 @@ const ROW_CODES: ReadonlySet<string> = new Set<ArtifactRowIndeterminateCode>([
   "index-indeterminate",
   "binding-not-yet-visible",
   "read-indeterminate",
+  "record-not-yet-visible",
   "verifier-unavailable",
 ]);
+
+/**
+ * DACS-5 §10.4.1 `attestation_bundle_hash`: omit `signatures` and
+ * `anchoredByRole`, as the SDK's bundle producer does.
+ */
+function attestationBundleHash(record: Record<string, unknown>): string {
+  const snapshot = snapshotCanonicalJsonRead(record, "attestation bundle");
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new TypeError("attestation bundle must be a canonical JSON object");
+  }
+  return sha256Hex(canonicalize(Object.fromEntries(
+    Object.entries(snapshot).filter(([key]) => key !== "signatures" && key !== "anchoredByRole"),
+  )));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -424,6 +454,14 @@ export function createScanningArtifactRepository(
         reason: "history row owner does not match expectedOwner",
       };
     }
+    // CORE JID-3: a malformed address reaches no resolver, and no verifier can
+    // be selected for an unknown kind, so neither is consulted.
+    if (anchor.kind === "unknown") {
+      return {
+        status: "unclassified",
+        reason: "history row logical address is not an exact current-profile DACS address",
+      };
+    }
     // The stage reached explains a retryable result; resolveAndRead keeps reasons.
     const row: { code: ArtifactRowIndeterminateCode; unsupported: boolean } = {
       code: "index-indeterminate",
@@ -483,12 +521,14 @@ export function createScanningArtifactRepository(
         row.code = "read-indeterminate";
         return adapter.readAnchor(address);
       },
-      contentHashOf: contentHash,
+      // A bundle binding commits to the DACS-5 §10.4.1 hash, which role copies share.
+      contentHashOf: anchor.kind === "bundle" ? attestationBundleHash : contentHash,
       verifySignature: async (record, binding) => {
         try {
-          // An unclassified kind is final through the same class as a verifier's.
-          if (anchor.kind === "unknown") {
-            throw new UnsupportedArtifactKindError("no artifact verifier for this anchor kind");
+          // DACS-5 BB-4/BB-5 require a BundleBinding, which the generic binding
+          // lacks; refuse through the same class as a verifier's.
+          if (anchor.kind === "bundle") {
+            throw new UnsupportedArtifactKindError("bundle rows need DACS-5 BundleBinding verification");
           }
           return await verifyArtifact(record, binding, { ...anchor });
         } catch (e) {
@@ -509,6 +549,14 @@ export function createScanningArtifactRepository(
         status: "indeterminate",
         reason: "history row has no binding visible in the configured index yet",
         code: "binding-not-yet-visible",
+      };
+    }
+    if (read.status === "unreadable") {
+      // CORE SR-2: not-found is never authoritative absence; keep it retryable.
+      return {
+        status: "indeterminate",
+        reason: `no record is visible at ${read.nativeAddress} yet`,
+        code: "record-not-yet-visible",
       };
     }
     if (read.status === "unverifiable") {

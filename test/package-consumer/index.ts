@@ -184,8 +184,19 @@ const rowIndeterminateCodes = {
   "index-indeterminate": true,
   "binding-not-yet-visible": true,
   "read-indeterminate": true,
+  "record-not-yet-visible": true,
   "verifier-unavailable": true,
 } satisfies Record<ArtifactRowIndeterminateCode, true>;
+const scanOutcomeStatuses = {
+  "verified": true,
+  "hash-mismatch": true,
+  "signature-invalid": true,
+  "binding-mismatch": true,
+  "unverifiable": true,
+  "indeterminate": true,
+  "unclassified": true,
+  "conflict": true,
+} satisfies Record<ScannedArtifactOutcome["status"], true>;
 const scanPageCodes = {
   "metadata-conflict": true,
   "cursor-cycle": true,
@@ -265,6 +276,7 @@ void replaySettlementVerified;
 void nextScanState;
 void scanOutcomeCode;
 void rowIndeterminateCodes;
+void scanOutcomeStatuses;
 void scanPageCodes;
 void unsupportedKindCode;
 void historyRestartCode;

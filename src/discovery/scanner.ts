@@ -37,17 +37,25 @@ export type AnchorKind =
   | "deliverable"
   | "entitlement"
   | "settlement-amendment"
+  | "payment-disposition"
+  | "payload-attestation"
   | "bundle"
   | "rating"
   | "unknown";
 
 /**
- * Classify exact current-profile logical-address structures. Broad `dacsN:`
- * prefix matching is deliberately insufficient: ratings are not bundles, and
- * only `dacs4:payment:` is SettlementEvidence.
+ * Classify exact current-profile logical-address structures (CORE §B.1 CF-4).
+ * Broad `dacsN:` prefix matching is deliberately insufficient: ratings are not
+ * bundles, and only `dacs4:payment:` is SettlementEvidence. Every `{jobId}` must
+ * be a JID-1 canonical ULID; an address with a malformed one is `unknown`, which
+ * a consumer must not repair or resolve (JID-3). A `stor-` bundle address has the
+ * same shape as a DACS-1 stor-cred slot; classification cannot tell them apart.
  */
 export function classifyAnchor(logicalAddress: string): AnchorKind {
   const segment = "[^:]+";
+  const jobId = "[0-7][0-9A-HJKMNP-TV-Z]{25}";
+  const index = "(0|[1-9][0-9]*)";
+  const hash = "[0-9a-f]{64}";
   if (new RegExp(`^dacs1-revoked:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
     return "listing-revocation";
   }
@@ -55,28 +63,34 @@ export function classifyAnchor(logicalAddress: string): AnchorKind {
     return "listing";
   }
   if (logicalAddress === "dacs2:registry:v0.1") return "verification-registry";
-  if (new RegExp(`^dacs2:composite:${segment}:${segment}$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs2:composite:${jobId}:${segment}$`).test(logicalAddress)) {
     return "verification-composite";
   }
-  if (new RegExp(`^dacs2:${segment}:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs2:${jobId}:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
     return "verification-result";
   }
-  if (new RegExp(`^dacs3:commit:${segment}$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs3:commit:${jobId}$`).test(logicalAddress)) {
     return "agreement-commitment";
   }
   if (logicalAddress === "dacs4:registry:v0.1") return "rail-registry";
-  if (new RegExp(`^dacs4:payment:${segment}:${segment}:(0|[1-9][0-9]*)(:resolved)?$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs4:payment:${jobId}:${segment}:${index}(:resolved)?$`).test(logicalAddress)) {
     return "settlement-evidence";
   }
-  if (new RegExp(`^dacs4:deliverable:${segment}$`).test(logicalAddress)) return "deliverable";
-  if (new RegExp(`^dacs4:entitlement:${segment}:(0|[1-9][0-9]*)$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs4:payment-disposition:${jobId}:${index}:${hash}$`).test(logicalAddress)) {
+    return "payment-disposition";
+  }
+  if (new RegExp(`^dacs4:payload-attestation:${jobId}:${hash}:${index}$`).test(logicalAddress)) {
+    return "payload-attestation";
+  }
+  if (new RegExp(`^dacs4:deliverable:${jobId}$`).test(logicalAddress)) return "deliverable";
+  if (new RegExp(`^dacs4:entitlement:${jobId}:${index}$`).test(logicalAddress)) {
     return "entitlement";
   }
-  if (new RegExp(`^dacs4:amendment:${segment}:[0-9a-f]{64}:(0|[1-9][0-9]*)$`).test(logicalAddress)) {
+  if (new RegExp(`^dacs4:amendment:${jobId}:${hash}:${index}$`).test(logicalAddress)) {
     return "settlement-amendment";
   }
-  if (/^stor-[0-9a-f]{64}$/.test(logicalAddress)) return "bundle";
-  if (new RegExp(`^dacs5:rating:${segment}:${segment}$`).test(logicalAddress)) return "rating";
+  if (new RegExp(`^stor-${hash}$`).test(logicalAddress)) return "bundle";
+  if (new RegExp(`^dacs5:rating:${jobId}:${segment}$`).test(logicalAddress)) return "rating";
   return "unknown";
 }
 
@@ -113,6 +127,11 @@ export interface ScannedAnchor {
  * Thrown by a history fetcher when its cursor can no longer be resumed, for
  * example because the page boundary left the history window. Retrying the same
  * cursor cannot succeed; the traversal must restart from a null cursor.
+ *
+ * The scanner recognizes this signal by its `code`, not by `instanceof`, so a
+ * fetcher bundled with another copy of the package is still recognized. Any
+ * thrown value carrying the code therefore restarts the traversal: that fails
+ * safe, because a restart re-reads history and never marks a row handled.
  */
 export class AnchorHistoryRestartRequiredError extends Error {
   readonly code = "history-restart-required" as const;

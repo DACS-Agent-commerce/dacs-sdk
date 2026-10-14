@@ -686,6 +686,20 @@ explicit publication path. A connected Demos adapter supplies the fetcher throug
 `adapter.createAnchorHistoryPageFetcher(expectedOwner)`; the helper never connects
 or selects a service itself.
 
+The Demos node pages address history by offset, ordered only by the transaction
+timestamp the signer set, so rows that share a timestamp can come back in a
+different order on each query. The Demos fetcher's cursor therefore names the
+last emitted timestamp and every row emitted with it, and each continuation
+re-reads that timestamp group before moving on, so a reordered group loses no
+row. A group that no longer holds every emitted row, or that does not fit in the
+fetcher's 100-row window, requires a restart. Rows added after a traversal
+starts with a timestamp newer than its cursor, at the head or behind the cursor,
+are seen only by a new traversal. These ordering, status, row-shape and not-found
+assumptions were checked against the `kynesyslabs/node` source at commit
+`ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` and `@kynesyslabs/demosdk` 4.0.16; a
+node that behaves differently is not supported. A cursor from an earlier release
+(`dacs-demos-history-v1.`) requires a restart from null.
+
 This offline example inspects an unsigned synthetic candidate. It deliberately
 returns `unverifiable` until a signature and authorization provider is supplied:
 
@@ -751,9 +765,10 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   loop defers a row moments into a short outage. The state keeps the page's
   starting cursor and remembers only the handled prefix, so the retry re-fetches
   the page and re-reads the failed row. Row codes are `index-indeterminate`,
-  `binding-not-yet-visible`, `read-indeterminate` and `verifier-unavailable`;
-  `history-unavailable` is a page that could not be fetched. The rows after a
-  failed row are not read until it succeeds or is deferred.
+  `binding-not-yet-visible`, `read-indeterminate`, `record-not-yet-visible` and
+  `verifier-unavailable`; `history-unavailable` is a page that could not be
+  fetched. The rows after a failed row are not read until it succeeds or is
+  deferred.
 - `indeterminate` with `invalid-limit` or `page-limit-exceeded` (a fetcher
   returned more entries than `limit`) is a caller or fetcher fault, not a reason
   to retry later: retrying cannot clear it. Fix the `limit` option or the
@@ -773,11 +788,14 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   - `cursor-cycle`, `page-bound` (10,000 consumed pages) and
     `history-restart-required` (the fetcher threw
     `AnchorHistoryRestartRequiredError`, as the Demos fetcher does when its page
-    boundary is missing or duplicated or its cursor cannot be decoded for this
-    owner) come from a valid state. The returned state keeps `seen`, `metadata`,
-    `deferred` and `pendingRow`, so rows already reported are not reported
-    again, but the pages are fetched again: a history longer than 10,000 pages
-    reaches `page-bound` again, and a fetcher whose cursors cycle keeps cycling.
+    boundary is missing, duplicated or outside its window, or its cursor cannot
+    be decoded for this owner) come from a valid state. Any thrown value whose
+    `code` is `history-restart-required` counts, so a fetcher from another copy
+    of the package is recognized; a restart only re-reads history. The returned
+    state keeps `seen`, `metadata`, `deferred` and `pendingRow`, so rows already
+    reported are not reported again, but the pages are fetched again: a history
+    longer than 10,000 pages reaches `page-bound` again, and a fetcher whose
+    cursors cycle keeps cycling.
   - `invalid-state` (including a state saved before `pendingRow` and `deferred`
     existed) and `foreign-owner-state`: nothing in the old state can be
     trusted, so the returned state is a fresh traversal that reads and reports
@@ -799,7 +817,8 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   clear it; alert on it. A restart from a valid state keeps the old `metadata`,
   so if history was rewritten and a handled row now has another logical address,
   every later call returns this conflict. After operator review, recover by
-  starting a new traversal (`scanPage()` without state).
+  starting a new traversal (`scanPage()` without state); the Demos fetcher also
+  forgets its remembered metadata when a traversal starts from a null cursor.
 
 State size is bounded only by the page bound: `seen` and `metadata` hold up to
 10,000 × `limit` entries (one million at the default limit of 100), and each page
@@ -808,14 +827,15 @@ row; it is copied on every page too and is not pruned until a new traversal.
 Reducing this state is a follow-up.
 
 Each result retains its classified `anchor` and discriminated `outcome`:
-`conflict`, `binding-mismatch`, `unreadable`, `hash-mismatch`,
+`conflict`, `binding-mismatch`, `unclassified`, `hash-mismatch`,
 `signature-invalid`, `unverifiable`, `indeterminate` or `verified`. A history row
 whose binding is not yet in the index is `indeterminate` with
 `code: "binding-not-yet-visible"`, as in `write`, which anchors before it
-publishes. `unreadable` is handled and enters `seen`, but it can be temporary: a
-lagging node can report a history-confirmed anchor as not found. Neither a retry
-nor a restart from a valid state re-reads it; start a new traversal or check it
-with `repository.read`. Known binding conflicts carry
+publishes. A read that finds no record at the bound native address is
+`indeterminate` with `code: "record-not-yet-visible"`: an ordinary not-found is
+never proof of absence, and a lagging node reports a history-confirmed anchor
+that way. It is retried and, if it persists (a deleted program looks the same),
+deferred. Known binding conflicts carry
 `code: "binding-conflict"` in the underlying resolver/read API and are
 `conflict` here. A row whose history `owner`
 differs from `expectedOwner` is `binding-mismatch`; this check depends on the
@@ -833,8 +853,17 @@ That includes an error that only carries `code: "unsupported-kind"`, such as a
 forwarded service error body: the check is `instanceof`, so throw the class
 exported by this package. The verifier and the repository must use the same
 installed copy of the package: an instance from another copy, such as a
-duplicated bundle, is not recognized and stays retryable. A row of an
-unclassified kind is a final `unsupported-kind` without calling the verifier.
+duplicated bundle, is not recognized and stays retryable. A row that
+`classifyAnchor` reports as `unknown`, shown only with `includeUnknown`, is a
+final `unclassified`: it is neither resolved, read nor verified. That includes
+a DACS address whose job ID is not a canonical uppercase ULID, which is never
+repaired. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
+stor-cred slot shares) is read and checked against the binding's hash over the
+DACS-5 §10.4.1 scope, which omits `signatures` and `anchoredByRole`, then is a
+final `unverifiable` with `code: "unsupported-kind"` without calling the
+verifier: a generic binding carries none of the DACS-5 BundleBinding fields its
+verification needs. Payment-disposition and payload-attestation rows are
+classified as their own kinds and reach the verifier.
 A missing or non-function `verifyArtifact` is refused when the repository is
 created. Neither classification, a verified artifact nor `exhausted: true`
 proves complete enumeration, freshness, or non-revocation;

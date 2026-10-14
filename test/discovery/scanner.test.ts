@@ -13,23 +13,93 @@ import {
   scanAllAnchors as scanAllAnchorsFromRoot,
   scanAnchorPage as scanAnchorPageFromRoot,
 } from "../../src/index.js";
+import { priorPaymentDispositionAddress } from "../../src/rails/payAlternative.js";
+
+// A JID-1 canonical ULID (CORE §B.1).
+const JOB = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+const HASH = "ab".repeat(32);
 
 describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
   test("classifies exact current-profile logical address structures", () => {
     expect(classifyAnchor("dacs1:0xseller:svc:v1")).toBe("listing");
     expect(classifyAnchor("dacs1-revoked:0xseller:svc:v1")).toBe("listing-revocation");
-    expect(classifyAnchor("dacs2:job-1:web2-domain:example.com:v1")).toBe("verification-result");
-    expect(classifyAnchor("dacs2:composite:job-1:did%3Ademos%3Aagent%3Aabc")).toBe("verification-composite");
+    expect(classifyAnchor(`dacs2:${JOB}:web2-domain:example.com:v1`)).toBe("verification-result");
+    expect(classifyAnchor(`dacs2:composite:${JOB}:did%3Ademos%3Aagent%3Aabc`)).toBe("verification-composite");
     expect(classifyAnchor("dacs2:registry:v0.1")).toBe("verification-registry");
-    expect(classifyAnchor("dacs3:commit:job-1")).toBe("agreement-commitment");
+    expect(classifyAnchor(`dacs3:commit:${JOB}`)).toBe("agreement-commitment");
     expect(classifyAnchor("dacs4:registry:v0.1")).toBe("rail-registry");
-    expect(classifyAnchor("dacs4:payment:job-1:pay-x402:3")).toBe("settlement-evidence");
-    expect(classifyAnchor("dacs4:payment:job-1:pay-x402:3:resolved")).toBe("settlement-evidence");
-    expect(classifyAnchor("dacs4:deliverable:job-1")).toBe("deliverable");
-    expect(classifyAnchor("dacs4:entitlement:job-1:0")).toBe("entitlement");
-    expect(classifyAnchor(`dacs4:amendment:job-1:${"a".repeat(64)}:0`)).toBe("settlement-amendment");
+    expect(classifyAnchor(`dacs4:payment:${JOB}:pay-x402:3`)).toBe("settlement-evidence");
+    expect(classifyAnchor(`dacs4:payment:${JOB}:pay-x402:3:resolved`)).toBe("settlement-evidence");
+    expect(classifyAnchor(`dacs4:deliverable:${JOB}`)).toBe("deliverable");
+    expect(classifyAnchor(`dacs4:entitlement:${JOB}:0`)).toBe("entitlement");
+    expect(classifyAnchor(`dacs4:amendment:${JOB}:${"a".repeat(64)}:0`)).toBe("settlement-amendment");
     expect(classifyAnchor(`stor-${"b".repeat(64)}`)).toBe("bundle");
-    expect(classifyAnchor("dacs5:rating:job-1:did%3Ademos%3Aagent%3Aabc")).toBe("rating");
+    expect(classifyAnchor(`dacs5:rating:${JOB}:did%3Ademos%3Aagent%3Aabc`)).toBe("rating");
+  });
+
+  // Every row of the CF-4 table at the pinned DACS-Standard (CORE.md §B.1).
+  test.each([
+    ["dacs1:{sellerPrimaryClaim}:{listingId}:v{listingVersion}", "dacs1:cci-xm%3Aevm%3Amainnet%3A0x1234:my-listing:v3", "listing"],
+    ["dacs1-revoked:{sellerPrimaryClaim}:{listingId}:v{listingVersion}", "dacs1-revoked:cci-xm%3Aevm%3Amainnet%3A0x1234:my-listing:v3", "listing-revocation"],
+    ["dacs4:payment:{jobId}:{railId}:{phaseIndex}", `dacs4:payment:${JOB}:evm-erc20%3A1%3AUSDC:0`, "settlement-evidence"],
+    ["dacs4:payment:{jobId}:{railId}:{phaseIndex}:resolved", `dacs4:payment:${JOB}:evm-erc20%3A1%3AUSDC:12:resolved`, "settlement-evidence"],
+    ["dacs4:payment-disposition:{priorJobId}:{priorPhaseIndex}:{dispositionId}", `dacs4:payment-disposition:${JOB}:3:${HASH}`, "payment-disposition"],
+    ["dacs4:payload-attestation:{jobId}:{verificationMethodHash}:{attempt}", `dacs4:payload-attestation:${JOB}:${HASH}:0`, "payload-attestation"],
+    ["dacs2:{jobId}:{scheme}:{identifier}:v{recipeVersion}", `dacs2:${JOB}:cci-xm:evm%3Amainnet%3A0x1234:v1`, "verification-result"],
+    ["dacs2:composite:{jobId}:{evaluatedParty}", `dacs2:composite:${JOB}:cci-xm%3Aevm%3Amainnet%3A0x1234`, "verification-composite"],
+    ["dacs3:commit:{jobId}", `dacs3:commit:${JOB}`, "agreement-commitment"],
+    ["dacs5:rating:{jobId}:{rater}", `dacs5:rating:${JOB}:cci-xm%3Aevm%3Amainnet%3A0x1234`, "rating"],
+    ["stor-{sha256(...)}", `stor-${HASH}`, "bundle"],
+  ])("CF-4 %s is classified", (_form, address, kind) => {
+    expect(classifyAnchor(address)).toBe(kind);
+  });
+
+  test("the SDK's own payment-disposition and payload-attestation addresses are classified", () => {
+    expect(classifyAnchor(priorPaymentDispositionAddress(JOB, 0, HASH))).toBe("payment-disposition");
+    expect(classifyAnchor(`dacs4:payload-attestation:${JOB}:${HASH}:12`)).toBe("payload-attestation");
+    // Distinct from settlement evidence, whose signed scope and admission differ.
+    expect(classifyAnchor(`dacs4:payment-disposition:${JOB}:3:${HASH}`)).not.toBe("settlement-evidence");
+  });
+
+  test.each([
+    ["dispositionId not 64 lowercase hex", `dacs4:payment-disposition:${JOB}:3:${HASH.toUpperCase()}`],
+    ["non-minimal priorPhaseIndex", `dacs4:payment-disposition:${JOB}:03:${HASH}`],
+    ["short verificationMethodHash", `dacs4:payload-attestation:${JOB}:${"a".repeat(63)}:0`],
+    ["non-minimal attempt", `dacs4:payload-attestation:${JOB}:${HASH}:01`],
+    ["negative attempt", `dacs4:payload-attestation:${JOB}:${HASH}:-1`],
+  ])("a DACS-4 address with a %s is unknown", (_name, address) => {
+    expect(classifyAnchor(address)).toBe("unknown");
+  });
+
+  // CORE JID-1: malformed job IDs are never repaired, so never classified.
+  test.each([
+    ["not a ULID", "not-a-ulid"],
+    ["lowercase", JOB.toLowerCase()],
+    ["alias I", `${JOB.slice(0, 25)}I`],
+    ["alias L", `${JOB.slice(0, 25)}L`],
+    ["alias O", `${JOB.slice(0, 25)}O`],
+    ["excluded U", `${JOB.slice(0, 25)}U`],
+    ["leading 8", `8${JOB.slice(1)}`],
+    ["leading 9", `9${JOB.slice(1)}`],
+    ["25 characters", JOB.slice(1)],
+    ["27 characters", `${JOB}0`],
+    ["percent encoding", `${JOB.slice(0, 23)}%41`],
+    ["a trailing newline", `${JOB}\n`],
+  ])("a job ID that is %s makes every job-scoped address unknown", (_name, jobId) => {
+    for (const address of [
+      `dacs2:${jobId}:web2-domain:example.com:v1`,
+      `dacs2:composite:${jobId}:did%3Ademos%3Aagent%3Aabc`,
+      `dacs3:commit:${jobId}`,
+      `dacs4:payment:${jobId}:pay-x402:3`,
+      `dacs4:payment-disposition:${jobId}:3:${HASH}`,
+      `dacs4:payload-attestation:${jobId}:${HASH}:0`,
+      `dacs4:deliverable:${jobId}`,
+      `dacs4:entitlement:${jobId}:0`,
+      `dacs4:amendment:${jobId}:${HASH}:0`,
+      `dacs5:rating:${jobId}:did%3Ademos%3Aagent%3Aabc`,
+    ]) {
+      expect(classifyAnchor(address), address).toBe("unknown");
+    }
   });
 
   test("revocation is not misread as a listing (prefix order matters)", () => {
@@ -272,7 +342,7 @@ describe("scanAllAnchors (drain the whole history)", () => {
   test("accumulates every page, deduped, until nextCursor is null", async () => {
     const fetch = pagedFetcher([
       { entries: [entry("a", "dacs1:s:svc:v1")], nextCursor: "1" },
-      { entries: [entry("b", "dacs3:commit:j1"), entry("a", "dacs1:s:svc:v1")], nextCursor: "2" },
+      { entries: [entry("b", `dacs3:commit:${JOB}`), entry("a", "dacs1:s:svc:v1")], nextCursor: "2" },
       { entries: [entry("c", `stor-${"c".repeat(64)}`)], nextCursor: null },
     ]);
     const res = await scanAllAnchors(fetch);
@@ -307,6 +377,44 @@ describe("scanAllAnchors (drain the whole history)", () => {
     const res = await scanAllAnchors(fetch, { maxPages: 3 });
     expect(res.status).toBe("aborted");
     if (res.status === "aborted") expect(res.reason).toMatch(/maxPages/);
+  });
+
+  test("maxPages is exact: it fetches that many pages, and a history of that length completes", async () => {
+    const endless = vi.fn(async (cursor: string | null): Promise<RawScanPage> => ({
+      entries: [], nextCursor: `${cursor ?? 0}x`,
+    }));
+    expect(await scanAllAnchors(endless, { maxPages: 3 })).toMatchObject({ status: "aborted", resumeCursor: "0xxx" });
+    expect(endless).toHaveBeenCalledTimes(3);
+    const threePages = pagedFetcher([
+      { entries: [], nextCursor: "1" }, { entries: [], nextCursor: "2" }, { entries: [], nextCursor: null },
+    ]);
+    expect(await scanAllAnchors(threePages, { maxPages: 3 })).toEqual({ status: "complete", anchors: [] });
+  });
+
+  test("a reused legacy Set keeps logical metadata, so a later page still conflicts", async () => {
+    const seen = new Set<string>();
+    const fetch = pagedFetcher([
+      { entries: [entry("stor-1", "dacs1:s:svc:v1")], nextCursor: "1" },
+      { entries: [entry("stor-1", "dacs1:s:other:v1")], nextCursor: null },
+    ]);
+    expect(await scanAnchorPage(fetch, null, { seen })).toMatchObject({ status: "page" });
+    expect(await scanAnchorPage(fetch, "1", { seen })).toMatchObject({
+      status: "indeterminate", code: "metadata-conflict", cursor: "1",
+    });
+  });
+
+  test("a Map seen with separate logicalMetadata still records yielded rows", async () => {
+    const seen = new Map<string, string>();
+    const logicalMetadata = new Map<string, string>();
+    const fetch = pagedFetcher([
+      { entries: [entry("stor-1", "dacs1:s:svc:v1")], nextCursor: "1" },
+      { entries: [entry("stor-1", "dacs1:s:svc:v1")], nextCursor: null },
+    ]);
+    const first = await scanAnchorPage(fetch, null, { seen, logicalMetadata });
+    const second = await scanAnchorPage(fetch, "1", { seen, logicalMetadata });
+    expect(first).toMatchObject({ status: "page", anchors: [{ nativeAddress: "stor-1" }] });
+    expect(second).toMatchObject({ status: "page", anchors: [] });
+    expect(seen).toEqual(new Map([["stor-1", "dacs1:s:svc:v1"]]));
   });
 
   test("aborts a multi-page cursor cycle instead of spinning", async () => {
