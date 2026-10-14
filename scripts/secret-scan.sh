@@ -7,6 +7,8 @@
 # error but still passes, having scanned only what came before it, so this fails before
 # Gitleaks runs if that log would not show everything, and after it if git failed anyway.
 set -euo pipefail
+# git's messages in English, as the self-test expects them.
+export LC_ALL=C
 
 gitleaks=$1
 shift
@@ -35,10 +37,13 @@ fi
 # Gitleaks runs the first git on its PATH, so it gets this one, which runs the real git and
 # records the exit status of Gitleaks' `git -C . log`: Gitleaks passes even if git dies without
 # a word on stderr. It also drops git's `remerge ...` lines, which describe a merge's
-# conflicts. Gitleaks 8.30.1 reads one as the start of a new commit if it contains the text
-# `commit`, and then drops the merge's commit from that file's fingerprint and every later
-# file's. In `git log -p`, only these lines start with `remerge ` at the start of a line:
-# patch lines start with `+`, `-`, ` ` or `\`, and commit messages are indented.
+# conflicts, and the lines that continue one (git splits a message about a path containing a
+# newline). Gitleaks 8.30.1 reads such a line as the start of a new commit if it contains the
+# text `commit`, and then drops the merge's commit from that file's fingerprint and every later
+# file's. So, from each `diff --git` line to the file's first hunk (`@@`), binary patch, next
+# commit or blank line, only git's own header lines are kept; none of them holds file content.
+# Elsewhere only `remerge ` lines are dropped: patch lines start with `+`, `-`, ` ` or `\`, and
+# commit messages are indented.
 export SECRET_SCAN_GIT SECRET_SCAN_GIT_STATUS="$temp/git-log.status"
 SECRET_SCAN_GIT=$(command -v git)
 mkdir "$temp/bin"
@@ -47,7 +52,12 @@ cat > "$temp/bin/git" <<'EOF'
 if [ "${1-} ${3-}" != "-C log" ]; then exec "$SECRET_SCAN_GIT" "$@"; fi
 set -o pipefail
 status=0
-"$SECRET_SCAN_GIT" "$@" | LC_ALL=C sed '/^remerge /d' || status=$?
+"$SECRET_SCAN_GIT" "$@" | LC_ALL=C sed -E '
+/^diff --git /,/^(@@|Binary files |GIT binary patch|commit |$)/{
+/^(diff --git |old mode |new mode |deleted file mode |new file mode |copy from |copy to |rename from |rename to |similarity index |dissimilarity index |index |--- |\+\+\+ |@@|Binary files |GIT binary patch|commit |$)/!d
+}
+/^remerge /d
+' || status=$?
 echo "$status" > "$SECRET_SCAN_GIT_STATUS"
 exit "$status"
 EOF

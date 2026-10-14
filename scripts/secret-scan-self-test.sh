@@ -9,6 +9,8 @@
 # expected fingerprints. A git or Gitleaks update that changes what the scans see, or the
 # fingerprints to pin, fails here before the real scan runs.
 set -euo pipefail
+# git's messages in English, which the checks below read.
+export LC_ALL=C
 
 gitleaks=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 scan=$(cd "$(dirname "$0")" && pwd)/secret-scan.sh
@@ -90,6 +92,20 @@ commit_file commitment.txt main3 main3
 printf 'marker-later\n' > later.txt
 commit_file commitment.txt marker-no-commit "resolve commitment"
 commitment=$(git rev-parse HEAD)
+# A conflict in a path containing a newline. git continues its remerge line for it on a line of
+# its own, which contains "commit" here, so it must not reach Gitleaks either. (A git bug starts
+# that line with a stray byte; when the byte is 0, git prints no such line.)
+newline_path=$'nl\ncommit.txt'
+printf 'base\n' > "$newline_path"
+commit_file newline-base.txt base "newline base"
+git checkout -q -b side4
+commit_file "$newline_path" side4 side4
+git checkout -q main
+commit_file "$newline_path" main4 main4
+! git merge -q side4 > /dev/null 2>&1
+printf 'marker-newline-later\n' > z-later.txt
+commit_file "$newline_path" resolved "resolve newline"
+newline=$(git rev-parse HEAD)
 # shellcheck disable=SC2086
 git log -p -U0 $LOG_OPTS > "$temp/log"
 if ! grep -q '^remerge CONFLICT .*commitment\.txt' "$temp/log"; then
@@ -108,7 +124,7 @@ commit_file pull.txt marker-pull-request "pull request"
 pull=$(git rev-parse HEAD)
 git update-ref refs/pull/7/head HEAD
 git checkout -q main
-git branch -q -D pull side side2 side3
+git branch -q -D pull side side2 side3 side4
 
 {
   echo "$control:control.txt:marker:1"
@@ -118,6 +134,7 @@ git branch -q -D pull side side2 side3
   echo "$merge:merged.txt:marker:1"
   echo "$commitment:commitment.txt:marker:1"
   echo "$commitment:later.txt:marker:1"
+  echo "$newline:z-later.txt:marker:1"
   if [ "$pull_requests" = true ]; then echo "$pull:pull.txt:marker:1"; fi
 } | LC_ALL=C sort > "$temp/expected"
 fingerprints "$temp/found" > "$temp/found.sorted"

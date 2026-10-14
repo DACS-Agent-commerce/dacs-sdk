@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:f
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const requiredWorkflow = await readFile(join(root, ".github/workflows/secret-scan.yml"), "utf8");
@@ -130,12 +130,26 @@ describe("secret scan workflows", () => {
       expect(valueOf(install, "GITLEAKS_ARCHIVE_SHA256")).toBe(
         valueOf(stepNamed(requiredWorkflow, "Install pinned Gitleaks"), "GITLEAKS_ARCHIVE_SHA256"),
       );
-      expect(valueOf(install, "run")).toContain('sha256sum --check');
-      expect(valueOf(install, "run")).toContain("git --version");
+      // Exactly, so nothing can follow the checksum check that lets an unverified binary run.
+      expect(valueOf(install, "run")).toBe(
+        [
+          'archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"',
+          'download="$RUNNER_TEMP/$archive"',
+          "curl --fail --location --proto '=https' --tlsv1.2 \\",
+          '  --output "$download" \\',
+          '  "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"',
+          'echo "${GITLEAKS_ARCHIVE_SHA256}  ${download}" | sha256sum --check',
+          'tar -xzf "$download" -C "$RUNNER_TEMP" gitleaks',
+          '"$RUNNER_TEMP/gitleaks" version',
+          "git --version",
+          ...(workflow === auditWorkflow ? ["node --version"] : []),
+        ].join("\n"),
+      );
     }
   });
 
-  it("run on a fixed image, pin every action to a commit and upload nothing", () => {
+  // The image generation is fixed, but GitHub updates the git it comes with; the self-test checks that git.
+  it("run on one image generation, pin every action to a commit and upload nothing", () => {
     for (const workflow of [requiredWorkflow, auditWorkflow]) {
       expect(workflow.match(/^ +runs-on: .*$/gm)).toEqual(["    runs-on: ubuntu-24.04"]);
       for (const step of stepsOf(workflow)) {
@@ -421,6 +435,11 @@ describe("secret scan git log options", () => {
       return text.split("\n").filter((line) => line !== "");
     }
 
+    // A failed test must not leave its calls for the next one.
+    afterEach(async () => {
+      await rm(calls, { force: true });
+    });
+
     it("runs Gitleaks on a clean history with the job's options, and keeps its exit status", async () => {
       for (const status of ["0", "1"]) {
         const result = runScript(origin, scanScriptPath, [stub, "--no-banner"], {
@@ -499,6 +518,85 @@ describe("secret scan git log options", () => {
       await stubCalls();
     });
 
+    it("drops git's remerge lines and their continuations from file headers, and nothing else", async () => {
+      const sha = (digit: string) => digit.repeat(40);
+      // What git prints for a merge's remerge diff, with one of each header line; `dropped` marks
+      // the lines Gitleaks must not see.
+      const lines: [string, boolean][] = [
+        [`commit ${sha("1")}`, false],
+        ["Merge: 2222222 3333333", false],
+        ["Author: fixture <fixture@example.invalid>", false],
+        ["Date:   Thu Oct 15 00:00:00 2026 +0000", false],
+        ["", false],
+        ["    remerge: a commit message line", false],
+        ["", false],
+        ["diff --git a/kept.txt b/kept.txt", false],
+        ["remerge CONFLICT (modify/delete): kept.txt deleted in 3333333 (side) and modified in 2222222 (main).", true],
+        ['diff --git "a/nl\\ncommit.txt" "b/nl\\ncommit.txt"', false],
+        ["remerge CONFLICT (content): Merge conflic  in nl", true],
+        // git's continuation of that message, after a stray byte.
+        ["3commit.txt", true],
+        ["index 1111111..2222222 100644", false],
+        ['--- "a/nl\\ncommit.txt"', false],
+        ['+++ "b/nl\\ncommit.txt"', false],
+        ["@@ -1,5 +1,2 @@", false],
+        ["-<<<<<<< 2222222 (main)", false],
+        ["-remerge removed", false],
+        ["+x remerge y", false],
+        ["+remerge added", false],
+        ["\\ No newline at end of file", false],
+        ["diff --git a/image.bin b/image.bin", false],
+        ["remerge warning: Cannot merge binary files: image.bin (2222222 vs. 3333333)", true],
+        ["index 3333333..4444444 100644", false],
+        ["Binary files a/image.bin and b/image.bin differ", false],
+        ["diff --git a/old.txt b/new.txt", false],
+        ["similarity index 90%", false],
+        ["rename from old.txt", false],
+        ["rename to new.txt", false],
+        ["--- a/old.txt", false],
+        ["+++ b/new.txt", false],
+        ["@@ -1 +1 @@", false],
+        ["+marker-renamed", false],
+        ["diff --git a/a.txt b/copy.txt", false],
+        ["dissimilarity index 10%", false],
+        ["copy from a.txt", false],
+        ["copy to copy.txt", false],
+        ["diff --git a/mode.sh b/mode.sh", false],
+        ["old mode 100644", false],
+        ["new mode 100755", false],
+        ["diff --git a/gone.txt b/gone.txt", false],
+        ["deleted file mode 100644", false],
+        ["index 5555555..0000000", false],
+        ["diff --git a/added.txt b/added.txt", false],
+        ["new file mode 100644", false],
+        ["index 0000000..6666666", false],
+        ["--- /dev/null", false],
+        ["+++ b/added.txt", false],
+        ["@@ -0,0 +1 @@", false],
+        ["+marker-added", false],
+        ["diff --git a/last.txt b/last.txt", false],
+        ["remerge CONFLICT (modify/delete): last.txt deleted in 3333333 (side) and modified in 2222222 (main).", true],
+        [`commit ${sha("4")}`, false],
+        ["Author: fixture <fixture@example.invalid>", false],
+        ["", false],
+        ["    next", false],
+        ["", false],
+      ];
+      const fixture = join(directory, "remerge-fixture.log");
+      await writeFile(fixture, lines.map(([line]) => `${line}\n`).join(""));
+      const crafted = await gitShim("crafted-git", `if [ "$1 $3" = "-C log" ]; then cat '${fixture}'; exit; fi`);
+      const read = join(directory, "gitleaks-read-crafted.log");
+      const result = runScript(origin, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, STUB_LOG: read, ...crafted });
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(await readFile(read, "utf8")).toBe(
+        lines
+          .filter(([, dropped]) => !dropped)
+          .map(([line]) => `${line}\n`)
+          .join(""),
+      );
+    });
+
     it("refuses an octopus merge that only a pull request head reaches, in the audit", async () => {
       const repository = join(directory, "octopus-pull");
       await mkdir(repository);
@@ -541,14 +639,39 @@ describe("secret scan git log options", () => {
       const noRemerge = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...quiet });
       expect(noRemerge.status).toBe(1);
       expect(noRemerge.stderr).toContain("self-test: git no longer shows the remerge CONFLICT line this case needs");
+      // A git whose default options would show a merge: the control must fail.
+      const merging = await gitShim(
+        "merging-git",
+        `case " $* " in *" --diff-filter=tuxdb "*) exec '${realGit}' "$@" --text --remerge-diff;; esac`,
+      );
+      const defaults = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...merging });
+      expect(defaults.status).toBe(1);
+      expect(defaults.stderr).toContain("self-test: Gitleaks' default options see more than the control case");
       await stubCalls();
+    });
+
+    it("self-test reads git's messages in English whatever the caller's locale", async () => {
+      // git translates `CONFLICT`, as its German translation does here, unless LC_ALL is C.
+      const translating = await gitShim(
+        "translating-git",
+        `if [ "$1" = log ] && [ "$LC_ALL" != C ]; then '${realGit}' "$@" | sed 's/^remerge CONFLICT/remerge KONFLIKT/'; exit; fi`,
+      );
+      const result = runScript(directory, selfTestPath, [stub], {
+        LOG_OPTS: REQUIRED_LOG_OPTS,
+        LC_ALL: "de_DE.UTF-8",
+        ...translating,
+      });
+      expect(result.stderr).not.toContain("remerge CONFLICT line");
+      // The stub reports nothing, so it gets as far as comparing fingerprints.
+      expect(result.stderr).toContain("self-test: Gitleaks did not report exactly the expected fingerprints");
+      expect(result.status).toBe(1);
     });
 
     // Set GITLEAKS to a Gitleaks 8.30.1 binary to run the workflows' self-test here.
     it.skipIf(!process.env.GITLEAKS)("self-test passes with the pinned Gitleaks under both workflows' options", () => {
       for (const [logOpts, count] of [
-        [REQUIRED_LOG_OPTS, 7],
-        [AUDIT_LOG_OPTS, 8],
+        [REQUIRED_LOG_OPTS, 8],
+        [AUDIT_LOG_OPTS, 9],
       ] as const) {
         const result = runScript(directory, selfTestPath, [process.env.GITLEAKS ?? ""], { LOG_OPTS: logOpts });
         expect(result.stderr).not.toContain("self-test:");
@@ -557,6 +680,21 @@ describe("secret scan git log options", () => {
           `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge is refused.\n`,
         );
       }
+    });
+
+    it.skipIf(!process.env.GITLEAKS)("self-test fails with a scan that doesn't refuse octopus merges", async () => {
+      const scripts = join(directory, "no-octopus-gate");
+      await mkdir(scripts);
+      const scan = await readFile(scanScriptPath, "utf8");
+      const gate = 'if [ -n "$octopus" ]; then';
+      expect(scan).toContain(gate);
+      await writeFile(join(scripts, "secret-scan.sh"), scan.replace(gate, "if false; then"));
+      await writeFile(join(scripts, "secret-scan-self-test.sh"), await readFile(selfTestPath, "utf8"));
+      const result = runScript(directory, join(scripts, "secret-scan-self-test.sh"), [process.env.GITLEAKS ?? ""], {
+        LOG_OPTS: REQUIRED_LOG_OPTS,
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("self-test: the scan did not refuse an octopus merge before running Gitleaks");
     });
   });
 });
