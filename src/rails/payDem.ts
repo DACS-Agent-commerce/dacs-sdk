@@ -1200,8 +1200,12 @@ type ObservedDemosExecution =
  * again within the budget; a stalled read or a confirmed record that does not
  * bind the prepared transfer is indeterminate at once. Like the status poll,
  * this never retries or duplicates the broadcast.
+ *
+ * @internal Exported for tests, because `settle()` maps `failed` and
+ * `indeterminate` to the same not-ok result; not re-exported from the rails
+ * index or the package root.
  */
-async function observeDemosExecutionByHash(
+export async function observeDemosExecutionByHash(
   txHash: string,
   getTxByHash: (hash: string) => Promise<unknown>,
   expected: Readonly<{

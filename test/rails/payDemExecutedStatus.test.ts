@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createPayDemRail, payDemSettle } from "../../src/rails/payDem.js";
+import {
+  createPayDemRail,
+  observeDemosExecutionByHash,
+  payDemSettle,
+} from "../../src/rails/payDem.js";
 
 // #338: the status index reports `included` for a transaction the node records
 // as `failed`. `createPayDemRail().settle()` must report success only when the
@@ -322,6 +326,108 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(3);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the execution observer tells failed from indeterminate (#338)", () => {
+  // `settle()` maps both outcomes to the same not-ok result, so this asserts
+  // the observer's own state and reason.
+  const expected = {
+    blockNumber: BLOCK,
+    transfer: {
+      payer: WALLET,
+      payee: RECIPIENT,
+      amountOs: BigInt(AMOUNT_OS),
+      nonce: NONCE,
+      postFork: true,
+    },
+  };
+
+  function executedRecord(): TransactionRecord {
+    return {
+      hash: TX_HASH,
+      status: "confirmed",
+      blockNumber: BLOCK,
+      content: {
+        type: "native",
+        from: WALLET,
+        from_ed25519_address: WALLET,
+        to: RECIPIENT,
+        amount: AMOUNT_OS,
+        nonce: NONCE,
+        data: [
+          "native",
+          { nativeOperation: "send", args: [RECIPIENT, AMOUNT_OS] },
+        ],
+      },
+    };
+  }
+
+  function observe(read: (hash: string) => Promise<unknown>, budgetMs = 1_000) {
+    return observeDemosExecutionByHash(TX_HASH, read, expected, {
+      ...FAST,
+      transactionRecordTimeoutMs: budgetMs,
+    });
+  }
+
+  it("reports an executed record that matches the prepared transfer", async () => {
+    const read = vi.fn(async () => executedRecord());
+
+    await expect(observe(read)).resolves.toEqual({ state: "executed" });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(TX_HASH);
+  });
+
+  it("reports a failed record as failed", async () => {
+    const read = vi.fn(async () => ({ ...executedRecord(), status: "failed" }));
+
+    await expect(observe(read)).resolves.toEqual({ state: "failed" });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a stalled read", "transaction record read timed out",
+      () => new Promise<never>(() => undefined)],
+    ["a mismatched amount", "transaction record does not match the prepared transfer",
+      async () => {
+        const record = executedRecord();
+        record.content.amount = "1";
+        record.content.data[1].args[1] = "1";
+        return record;
+      }],
+    ["a mismatched nonce", "transaction record does not bind the signed nonce",
+      async () => {
+        const record = executedRecord();
+        record.content.nonce = NONCE + 1;
+        return record;
+      }],
+    ["another inclusion block",
+      "transaction record block does not match the observed inclusion",
+      async () => ({ ...executedRecord(), blockNumber: BLOCK + 1 })],
+  ])("is indeterminate at once for %s", async (_case, reason, read) => {
+    const spy = vi.fn(read);
+
+    await expect(observe(spy)).resolves.toEqual({ state: "indeterminate", reason });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a malformed record", "transaction record is missing or malformed",
+      async () => "Transaction not found"],
+    ["a pending record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "pending" })],
+    ["a rejected read", "transaction record read failed",
+      async () => {
+        throw new Error("socket hang up");
+      }],
+  ])("is indeterminate when the budget ends with %s", async (_case, reason, read) => {
+    const spy = vi.fn(read);
+
+    await expect(observe(spy, FAST.transactionRecordTimeoutMs)).resolves.toEqual({
+      state: "indeterminate",
+      reason,
+    });
+    expect(spy.mock.calls.length).toBeGreaterThan(1);
   });
 });
 
