@@ -166,31 +166,39 @@ explicitly:
 - **Proxies.** Axios honours `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and
   `NO_PROXY` (either case, lowercase first), and also bypasses the proxy for
   a loopback host when `NO_PROXY` names any loopback host. Node's global
-  `fetch` connects directly unless Node installed its own proxy agent at
-  startup. Node does that only on Node 22.21 or later, only when
-  `NODE_USE_ENV_PROXY=1` or `--use-env-proxy` and `HTTP_PROXY` or
-  `HTTPS_PROXY` are set before the process starts (a `.env` file loaded at
-  runtime is too late), and that agent differs from Axios: it never reads
-  `ALL_PROXY`, sends an HTTPS URL through `HTTP_PROXY` when `HTTPS_PROXY` is
-  unset, has no loopback rule, and treats a blank lowercase variable as set.
-  It also tunnels `http://` URLs with `CONNECT`, which many proxies allow only
-  to port 443, and Node prints an experimental warning (Node 22.23).
-  Without an injected `identityFetch`, the adapter compares the route Axios
-  would take with the route of the dispatcher Node actually installed. If
-  they differ, identity reads throw a permanent `DacsError` before signing or
-  sending anything: `Demos GCR identity read would bypass the environment
-  proxy; start Node 22.21+ with NODE_USE_ENV_PROXY=1 or inject identityFetch`
-  when Axios would use a proxy that `fetch` would not, or `Demos GCR identity
-  read would use a proxy demosdk does not; list the RPC host in NO_PROXY or
-  inject identityFetch` in the reverse case. A global dispatcher installed by
-  other code is trusted only when Axios would connect directly. To choose the
-  route yourself, inject an `identityFetch` (for example one with a proxy
-  dispatcher, or `identityFetch: fetch` to connect directly).
-  The check reads the current environment, but Node's agent keeps the proxy
-  URLs it read at startup, so change `HTTP(S)_PROXY` only before Node starts.
-  With the switch, Node 22.21+ also proxies Axios's own direct connections,
-  so some reads that both clients would send through the same proxy are
-  refused; listing the exact RPC host in `NO_PROXY` avoids that.
+  `fetch` ignores those variables unless Node's proxy switch
+  (`NODE_USE_ENV_PROXY=1` or `--use-env-proxy`, Node 22.21 or later) installed
+  a proxy agent at startup. That agent's rules are not Axios's, and they
+  differ between Node releases: Node 22 has no loopback rule and sends an
+  HTTPS URL through `HTTP_PROXY`, Node 24 and 26 also match subdomains of a
+  `NO_PROXY` entry, and Node 26 forward-proxies `http://` URLs. The switch
+  also makes Node proxy Axios's own direct connections, using a copy of the
+  environment taken at startup and Node's `NO_PROXY` rules. It also breaks
+  demosdk's own requests to an `http://` RPC through a proxy: Node 22
+  rewrites the target port, and Node 24 and 26 reject the request.
+  So without an injected `identityFetch`, the adapter does not try to predict
+  Node's proxy agent. It uses global `fetch` only where both clients connect
+  directly: Node's default global dispatcher, the switch off, Node's plain
+  `http`/`https` global agents, and no environment proxy that Axios applies
+  to the RPC URL. Otherwise identity reads throw a permanent `DacsError`
+  before signing or sending anything: `Demos GCR identity read would bypass
+  the environment proxy; inject identityFetch` when Axios would use a proxy,
+  or `Demos GCR identity read cannot verify its route with Node's proxy
+  switch or a custom global dispatcher or agent; inject identityFetch`.
+  To read through a proxy, inject an `identityFetch` that uses one, for
+  example with the `undici` package (not a dependency of this SDK):
+
+  ```ts
+  import { fetch as undiciFetch, ProxyAgent } from "undici";
+
+  const dispatcher = new ProxyAgent(process.env.HTTPS_PROXY!);
+  const identityFetch = ((input: string, init?: RequestInit) =>
+    undiciFetch(input, { ...init, dispatcher } as never)) as unknown as typeof fetch;
+  const adapter = new DemosAdapter({ rpc, identityFetch });
+  ```
+
+  `identityFetch: fetch` sends through whatever global dispatcher is
+  installed. Either way, choosing the route is then up to you.
 
 The wallet authentication headers are those of demosdk's `rpcCall`: a test
 compares them with the installed demosdk and requires the locked 4.0.16. They

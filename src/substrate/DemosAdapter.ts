@@ -4144,8 +4144,8 @@ export class DemosAdapter implements SubstrateAdapter {
       return headers;
     };
     // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; global
-    // fetch must take the same route or not send at all. The message names no
-    // URL, which may hold credentials.
+    // fetch is used only where both provably connect directly, and otherwise
+    // nothing is sent. The message names no URL, which may hold credentials.
     const proxyMismatch = this.config.identityFetch === undefined
       ? fetchProxyMismatch(this.config.rpc) : undefined;
     if (proxyMismatch !== undefined) throw new DacsError(proxyMismatch);

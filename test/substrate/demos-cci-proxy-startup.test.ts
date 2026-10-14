@@ -7,33 +7,53 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-  DEMOS_CCI_PROXY_ADDED,
   DEMOS_CCI_PROXY_BYPASS,
+  DEMOS_CCI_ROUTE_UNVERIFIED,
   fetchProxyMismatch,
+  type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
 
 // Each child starts with exactly the environment below, optionally loads a
-// .env file at runtime as the generated live agent does, then reports the
-// global dispatcher Node installed and sends one request with global fetch and
-// one with axios (demosdk's transport) to a local target. The parent's proxy
-// and target record which route each request took.
+// .env file at runtime as the generated live agent does, then sends one
+// request with global fetch and one with axios (demosdk's transport) to a
+// local target. It reports what the guard reads: the global dispatchers
+// before and after fetch loads, whether Node gave its global agents a proxy
+// configuration, execArgv and the environment. The parent's proxy and target
+// record which route each request took.
 const CHILD = `
 const [rpc, envFile] = process.argv.slice(1);
+const name = (value) => value === undefined ? null : value?.constructor?.name ?? "";
+const dispatchers = () => ["2", "1"].map(n => name(globalThis[Symbol.for("undici.globalDispatcher." + n)]));
+const before = dispatchers();
 if (envFile) process.loadEnvFile(envFile);
-const dispatcher = globalThis[Symbol.for("undici.globalDispatcher.1")]?.constructor?.name ?? null;
-const env = {};
-for (const [name, value] of Object.entries(process.env)) {
-  if (/^(https?|all|no)_proxy$/i.test(name)) env[name] = value;
-}
 const headers = (client) => ({ "content-type": "application/json", "x-probe": client });
 await fetch(rpc, { method: "POST", headers: headers("fetch"), body: "{}", signal: AbortSignal.timeout(5000) })
   .then(response => response.text()).catch(() => undefined);
 const { default: axios } = await import("axios");
 await axios.post(rpc, {}, { headers: headers("axios"), timeout: 5000 }).catch(() => undefined);
-console.log(JSON.stringify({ dispatcher, env }));
+const { default: http } = await import("node:http");
+const { default: https } = await import("node:https");
+const agents = [http.globalAgent, https.globalAgent]
+  .map(agent => ({ name: name(agent), proxied: agent.options?.proxyEnv != null }));
+const env = {};
+for (const [key, value] of Object.entries(process.env)) {
+  if (/^((https?|all|no)_proxy|NODE_USE_ENV_PROXY|NODE_OPTIONS)$/i.test(key)) env[key] = value;
+}
+console.log(JSON.stringify({ before, after: dispatchers(), agents, execArgv: process.execArgv, env }));
 `;
 
 type Route = "proxy" | "direct";
+interface ChildState {
+  before: Array<string | null>;
+  after: Array<string | null>;
+  agents: Array<{ name: string; proxied: boolean }>;
+  execArgv: string[];
+  env: Record<string, string>;
+}
+
+// An object whose constructor has the reported name, as the guard sees it.
+const named = (kind: string | null) => kind === null ? undefined : new ({ [kind]: class {} })[kind]!();
+const SWITCH_FLAG = process.allowedNodeEnvironmentFlags.has("--use-env-proxy");
 
 describe("Demos CCI proxy route decided from Node's actual startup state", () => {
   const routes = new Map<string, Route[]>();
@@ -47,7 +67,7 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
   });
   const target = reply("direct");
   const proxy = reply("proxy");
-  // undici tunnels even http:// requests with CONNECT; answer inside the tunnel.
+  // undici tunnels http:// requests with CONNECT before Node 26; answer inside the tunnel.
   const tunnel = reply("proxy");
   proxy.on("connect", (_request, socket: Socket, head: Buffer) => {
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -74,9 +94,9 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function run(startup: Record<string, string>, dotEnv?: Record<string, string>) {
+  async function run(startup: Record<string, string>, dotEnv?: Record<string, string>, flags: string[] = []) {
     routes.clear();
-    const args = ["--input-type=module", "-e", CHILD, rpc];
+    const args = [...flags, "--input-type=module", "-e", CHILD, rpc];
     if (dotEnv !== undefined) {
       const file = join(dir, `${Object.keys(startup).join("-")}.env`);
       writeFileSync(file, Object.entries(dotEnv).map(([name, value]) => `${name}=${value}\n`).join(""));
@@ -92,42 +112,47 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
       child.on("error", reject);
       child.on("close", code => (code === 0 ? resolve(out) : reject(new Error(`child exited ${code}: ${err}`))));
     });
-    const { dispatcher, env: childEnv } = JSON.parse(stdout.trim().split("\n").pop()!) as {
-      dispatcher: string | null; env: Record<string, string>;
-    };
-    // The guard, given the child's final environment and the dispatcher its
-    // Node installed (an object whose constructor has that name).
-    const installed = dispatcher === null ? undefined : new ({ [dispatcher]: class {} })[dispatcher]!();
-    const mismatch = fetchProxyMismatch(rpc, childEnv, { dispatcher: installed });
+    const child = JSON.parse(stdout.trim().split("\n").pop()!) as ChildState;
+    const state = (dispatchers: Array<string | null>): NodeRouteState => ({
+      dispatchers: [named(dispatchers[0]!), named(dispatchers[1]!)],
+      agents: child.agents.map(({ name, proxied }) =>
+        Object.assign(named(name) ?? {}, { options: proxied ? { proxyEnv: {} } : {} })),
+      execArgv: child.execArgv,
+    });
+    // The guard, given the child's final environment and the state its Node
+    // left before and after fetch first loaded: both must decide alike.
+    const mismatch = fetchProxyMismatch(rpc, child.env, state(child.after));
+    expect(fetchProxyMismatch(rpc, child.env, state(child.before))).toBe(mismatch);
+    const { NODE_USE_ENV_PROXY: _switch, NODE_OPTIONS: _options, ...withoutSwitch } = child.env;
     const fetchRoute = routes.get("fetch");
     const axiosRoute = routes.get("axios");
-    expect(fetchRoute).toHaveLength(1);
-    expect(axiosRoute).toHaveLength(1);
-    // Never allow a route other than Axios's; a bypass refusal means a real one.
-    if (mismatch === undefined) expect(fetchRoute).toEqual(axiosRoute);
-    if (mismatch === DEMOS_CCI_PROXY_BYPASS) expect(fetchRoute).not.toEqual(axiosRoute);
-    return { dispatcher, mismatch, fetchRoute: fetchRoute![0], axiosRoute: axiosRoute![0] };
+    // Allowed only where both clients really connected directly.
+    if (mismatch === undefined) {
+      expect(fetchRoute).toEqual(["direct"]);
+      expect(axiosRoute).toEqual(["direct"]);
+    }
+    return {
+      mismatch,
+      // The decision from Node's state alone, without the switch's variables.
+      fromState: fetchProxyMismatch(rpc, withoutSwitch, state(child.after)),
+      httpsMismatch: fetchProxyMismatch("https://node.example.test/", child.env, state(child.after)),
+      switchApplied: child.agents.some(agent => agent.proxied),
+      fetchRoute: fetchRoute?.[0],
+      axiosRoute: axiosRoute?.[0],
+    };
   }
 
-  it("refuses without the switch: Axios proxies and fetch connects directly", async () => {
-    const result = await run({ HTTP_PROXY: proxyUrl });
-    expect(result).toMatchObject({ mismatch: DEMOS_CCI_PROXY_BYPASS, fetchRoute: "direct", axiosRoute: "proxy" });
-  });
-
-  it("allows the switch only where Node installed its proxy agent (Node 22.21+)", async () => {
-    const result = await run({ HTTP_PROXY: proxyUrl, NODE_USE_ENV_PROXY: "1" });
-    expect(result.mismatch === undefined).toBe(result.dispatcher === "EnvHttpProxyAgent");
-    expect(result.axiosRoute).toBe("proxy");
+  it("allows a read with no proxy, where both clients connect directly", async () => {
+    const result = await run({});
+    expect(result).toMatchObject({ mismatch: undefined, fetchRoute: "direct", axiosRoute: "direct" });
+    expect(result.httpsMismatch).toBeUndefined();
   });
 
   it.each([
-    { kind: "ALL_PROXY, which Node's agent never reads", startup: () => ({ ALL_PROXY: proxyUrl, NODE_USE_ENV_PROXY: "1" }) },
-    { kind: "the switch loaded from .env after startup", startup: () => ({ HTTP_PROXY: proxyUrl }),
-      dotEnv: { NODE_USE_ENV_PROXY: "1" } },
-    { kind: "HTTP_PROXY loaded from .env after startup", startup: () => ({ NODE_USE_ENV_PROXY: "1" }),
-      dotEnv: () => ({ HTTP_PROXY: proxyUrl }) },
-  ])("refuses with $kind: fetch would connect directly", async ({ startup, dotEnv }) => {
-    const result = await run(startup(), typeof dotEnv === "function" ? dotEnv() : dotEnv);
+    { kind: "HTTP_PROXY", startup: () => ({ HTTP_PROXY: proxyUrl }) },
+    { kind: "ALL_PROXY", startup: () => ({ ALL_PROXY: proxyUrl }) },
+  ])("refuses $kind without the switch: Axios proxies and fetch connects directly", async ({ startup }) => {
+    const result = await run(startup());
     expect(result).toMatchObject({ mismatch: DEMOS_CCI_PROXY_BYPASS, fetchRoute: "direct", axiosRoute: "proxy" });
   });
 
@@ -136,14 +161,35 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     expect(result).toMatchObject({ mismatch: undefined, fetchRoute: "direct", axiosRoute: "direct" });
   });
 
-  // Node 22.21+ with the switch also proxies Axios's own direct connections
-  // (http.globalAgent), without Axios's loopback rule. The guard does not model
-  // that and refuses: it fails closed rather than allow an unproven route.
-  it("fails closed where Node's agents proxy a loopback name that Axios alone would bypass", async () => {
-    const result = await run({ HTTP_PROXY: proxyUrl, NO_PROXY: "localhost", NODE_USE_ENV_PROXY: "1" });
-    const installed = result.dispatcher === "EnvHttpProxyAgent";
-    expect(result).toMatchObject(installed
-      ? { mismatch: DEMOS_CCI_PROXY_ADDED, fetchRoute: "proxy", axiosRoute: "proxy" }
-      : { mismatch: undefined, fetchRoute: "direct", axiosRoute: "direct" });
+  // With the switch Node may proxy either client by rules that differ across
+  // releases (and, for Axios, from a startup snapshot), so every read is
+  // refused on every Node line. Where Node applied the switch (22.21+), its
+  // state alone refuses, even with the switch's variables gone.
+  it.each([
+    { kind: "HTTP_PROXY", startup: () => ({ HTTP_PROXY: proxyUrl }) },
+    { kind: "only HTTPS_PROXY", startup: () => ({ HTTPS_PROXY: proxyUrl }) },
+    { kind: "ALL_PROXY", startup: () => ({ ALL_PROXY: proxyUrl }) },
+    { kind: "no proxy at all", startup: () => ({}) },
+    { kind: "a loopback NO_PROXY", startup: () => ({ HTTP_PROXY: proxyUrl, NO_PROXY: "localhost" }) },
+    { kind: "a space-separated NO_PROXY", startup: () => ({ HTTP_PROXY: proxyUrl, NO_PROXY: "other.test 127.0.0.1" }) },
+    { kind: "NO_PROXY loaded from .env", startup: () => ({ HTTP_PROXY: proxyUrl }), dotEnv: () => ({ NO_PROXY: "127.0.0.1" }) },
+    { kind: "HTTP_PROXY loaded from .env", startup: () => ({}), dotEnv: () => ({ HTTP_PROXY: proxyUrl }) },
+  ])("refuses with the switch and $kind", async ({ startup, dotEnv }) => {
+    const result = await run({ ...startup(), NODE_USE_ENV_PROXY: "1" }, dotEnv?.());
+    expect(result.mismatch).toBe(DEMOS_CCI_ROUTE_UNVERIFIED);
+    expect(result.httpsMismatch).toBe(DEMOS_CCI_ROUTE_UNVERIFIED);
+    if (result.switchApplied) expect(result.fromState).toBe(DEMOS_CCI_ROUTE_UNVERIFIED);
+  });
+
+  it("refuses with the switch loaded from .env after startup", async () => {
+    const result = await run({ HTTP_PROXY: proxyUrl }, { NODE_USE_ENV_PROXY: "1" });
+    expect(result).toMatchObject({ mismatch: DEMOS_CCI_ROUTE_UNVERIFIED, switchApplied: false });
+    expect(result).toMatchObject({ fetchRoute: "direct", axiosRoute: "proxy" });
+  });
+
+  it.runIf(SWITCH_FLAG)("refuses with --use-env-proxy on the command line", async () => {
+    const result = await run({ HTTPS_PROXY: proxyUrl, NO_PROXY: "127.0.0.1" }, undefined, ["--use-env-proxy"]);
+    expect(result).toMatchObject({ mismatch: DEMOS_CCI_ROUTE_UNVERIFIED, switchApplied: true });
+    expect(result.fromState).toBe(DEMOS_CCI_ROUTE_UNVERIFIED);
   });
 });

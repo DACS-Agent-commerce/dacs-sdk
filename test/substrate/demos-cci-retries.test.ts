@@ -188,7 +188,7 @@ describe("Demos identity transient retries", () => {
     "Friday, 06 Nov 2099 08:49:37 GMT", "Fri, 06-Nov-70 08:49:37 GMT", "Wednesday, 06-Nov-70 08:49:37 GMT",
     "Thursday, 06-Nov-2070 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 UTC", "Thursday, 31-Feb-70 08:49:37 GMT",
     "Fri Nov  6 24:49:37 2099", "Thu, 31 Dec 2099 24:00:00 GMT", "Thu, 31 Dec 2099 23:60:00 GMT",
-    "Thu, 31 Dec 2099 23:59:61 GMT",
+    "Thu, 31 Dec 2099 23:59:61 GMT", "Thu, 01 Jan 2099 0:00:00 GMT",
     // Each form is anchored at both ends.
     "xThu, 01 Jan 2099 00:00:00 GMT", "Thu, 01 Jan 2099 00:00:00 GMTx",
     "xThursday, 06-Nov-70 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 GMTx",
@@ -198,6 +198,9 @@ describe("Demos identity transient retries", () => {
     // Ahead of 14 Oct 2076 by a day or weeks, so these name 1976, when those dates were a
     // Friday and a Saturday.
     "Thursday, 15-Oct-76 00:00:00 GMT", "Friday, 06-Nov-76 08:49:37 GMT",
+    // One second past the limit names 1976, a Thursday (14 Oct 2076 is a Wednesday);
+    // a date past the limit is never moved a century ahead (15 Oct 2176 is a Tuesday).
+    "Wednesday, 14-Oct-76 00:00:01 GMT", "Tuesday, 15-Oct-76 00:00:00 GMT",
     // Valid, but shorter than the backoff. A two-digit year more than 50 years ahead is in the past.
     "0", "Sun, 06 Nov 1994 08:49:37 GMT", "Sun Nov  6 08:49:37 1994", "Sunday, 06-Nov-77 08:49:37 GMT",
     "Friday, 15-Oct-76 00:00:00 GMT", "Saturday, 06-Nov-76 08:49:37 GMT",
@@ -221,6 +224,11 @@ describe("Demos identity transient retries", () => {
     { retryAfter: ["Sunday, 06-Nov-94 08:49:38 GMT", "Sun Nov  6 08:49:39 1994"], calls: [1_000, 2_000] },
   ])("waits max(backoff, Retry-After) for $retryAfter", async ({ retryAfter, calls }) => {
     await expectRetryCalls("1994-11-06T08:49:37Z", retryAfter, calls);
+  });
+
+  // Each month name maps to its own month: June's last second, then 1 July.
+  it("waits until 1 July from the last second of June", async () => {
+    await expectRetryCalls("2026-06-30T23:59:59Z", ["Wed, 01 Jul 2026 00:00:00 GMT"], [1_000]);
   });
 
   // RFC 9110 §5.6.7 allows second 60; it is the instant after :59.
@@ -523,6 +531,11 @@ describe("Demos identity transient retries", () => {
     },
   );
 
+  it("accepts 1 ms per-attempt and total identity deadlines", () => {
+    expect(() => new DemosAdapter({ rpc: "https://node.example/rpc", identityTimeoutMs: 1 })).not.toThrow();
+    expect(() => new DemosAdapter({ rpc: "https://node.example/rpc", identityTotalTimeoutMs: 1 })).not.toThrow();
+  });
+
   it("accepts 30,000 ms and lets a six-second reply succeed within a configured eight seconds", async () => {
     expect(() => new DemosAdapter({ rpc: "https://node.example/rpc", identityTimeoutMs: 30_000 })).not.toThrow();
     const { adapter, transport } = setup(8_000);
@@ -755,9 +768,9 @@ describe("Demos identity reads against a real local HTTP server", () => {
   });
 
   async function serve(handler: (request: IncomingMessage, response: ServerResponse, connection: number) => void) {
-    // The default transport refuses a route other than Axios's. NO_PROXY must
-    // name the local node rather than be blank: Node's proxy agent, if the run
-    // started with one, re-reads NO_PROXY per request.
+    // Global fetch is injected: the default transport refuses to read if the
+    // run started with Node's proxy switch. NO_PROXY must name the local node
+    // rather than be blank: Node's proxy agent re-reads NO_PROXY per request.
     for (const name of ["http_proxy", "https_proxy", "all_proxy"]) {
       vi.stubEnv(name, "");
       vi.stubEnv(name.toUpperCase(), "");
@@ -773,7 +786,7 @@ describe("Demos identity reads against a real local HTTP server", () => {
     server.on("connection", () => { connections++; });
     await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
-    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/` });
+    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/`, identityFetch: fetch });
     Object.assign(adapter, { connected: true });
     return { adapter, port, counts: () => ({ connections, requests }) };
   }

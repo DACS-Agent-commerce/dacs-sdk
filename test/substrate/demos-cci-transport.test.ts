@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import nodeHttp, { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import nodeHttps from "node:https";
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +12,10 @@ import { DacsError, SubstrateError, TransientError, faultCategory } from "../../
 import { DEMOS_CCI_RESPONSE_LIMITS, parseCciRecord } from "../../src/identity/cci.js";
 import { DemosAdapter, type DemosAdapterConfig } from "../../src/substrate/index.js";
 import {
-  DEMOS_CCI_PROXY_ADDED,
   DEMOS_CCI_PROXY_BYPASS,
+  DEMOS_CCI_ROUTE_UNVERIFIED,
   fetchProxyMismatch,
+  type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
 
 const RPC = "https://node.example/rpc";
@@ -457,6 +459,11 @@ describe("Demos CCI raw response boundary", () => {
     expect(decoder).not.toHaveBeenCalled();
   });
 
+  it("reads a 299 response as a success, not a redirect", async () => {
+    const { adapter } = adapterFor(new Response(JSON.stringify(GCR), { status: 299 }));
+    await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+  });
+
   it("replaces an ordinary transport failure with a fresh SubstrateError, without retrying", async () => {
     vi.useFakeTimers();
     const { adapter, transport } = adapterFor(new Response("unused"));
@@ -583,95 +590,172 @@ describe("Demos CCI raw response boundary", () => {
   });
 });
 
-// Stand-ins named like the global dispatchers Node's fetch can have installed.
+// Stand-ins named like the objects Node can have installed.
 class Agent {}
+class Dispatcher1Wrapper {}
 class EnvHttpProxyAgent {}
 class ProxyAgent {}
+const plainAgent = () => Object.assign(new Agent(), { options: { keepAlive: true } });
+// A global agent built under Node's proxy switch carries its startup snapshot.
+const switchedAgent = (snapshot: Record<string, string> = {}) =>
+  Object.assign(new Agent(), { options: { keepAlive: true, proxyEnv: snapshot } });
+type Dispatchers = [unknown, unknown];
+const routeState = (dispatchers: Dispatchers, agents: unknown[] = [plainAgent(), plainAgent()],
+  execArgv: string[] = []): NodeRouteState => ({ dispatchers, agents, execArgv });
+// Node's default dispatcher under undici.globalDispatcher.2 and .1, as each
+// line leaves it once fetch has loaded (probed on 20.19, 22.23, 24.21, 26.11).
+const DEFAULT_DISPATCHERS: Array<[string, Dispatchers]> = [
+  ["before fetch loads", [undefined, undefined]],
+  ["Node 20 and 22", [undefined, new Agent()]],
+  ["Node 24", [new Agent(), new Agent()]],
+  ["Node 26", [new Agent(), new Dispatcher1Wrapper()]],
+];
 
 describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
   const HTTPS = "https://node.example:8443/rpc";
   const P = "http://proxy:3128";
-  const Q = "http://other-proxy:3128";
   const BYPASS = DEMOS_CCI_PROXY_BYPASS;
-  const ADDED = DEMOS_CCI_PROXY_ADDED;
+  const UNVERIFIED = DEMOS_CCI_ROUTE_UNVERIFIED;
 
-  // Node's default dispatcher, before and after fetch first loads it: direct.
-  it.each([undefined, new Agent()])("with the default dispatcher %o", (dispatcher) => {
+  // With Node's default dispatcher fetch connects directly, so only a read
+  // that Axios would also send directly is allowed.
+  it.each(DEFAULT_DISPATCHERS)("with Node's default dispatcher (%s)", (_line, dispatchers) => {
     const cases: Array<[Record<string, string>, string, string | undefined]> = [
       [{}, HTTPS, undefined],
       [{ HTTPS_PROXY: P }, HTTPS, BYPASS],
       [{ https_proxy: "proxy:3128" }, HTTPS, BYPASS],
+      // Axios skips a blank lowercase variable.
+      [{ https_proxy: "", HTTPS_PROXY: P }, HTTPS, BYPASS],
       [{ ALL_PROXY: P }, HTTPS, BYPASS],
       [{ all_proxy: P }, "http://node.example/", BYPASS],
       // Like Axios, an HTTPS URL does not fall back to HTTP_PROXY.
       [{ HTTP_PROXY: P }, HTTPS, undefined],
       [{ HTTP_PROXY: P }, "http://node.example/", BYPASS],
-      // The switch only matters if Node installed its proxy agent at startup.
-      [{ HTTPS_PROXY: P, NODE_USE_ENV_PROXY: "1" }, HTTPS, BYPASS],
-      [{ HTTPS_PROXY: P, NODE_OPTIONS: "--use-env-proxy" }, HTTPS, BYPASS],
       [{ HTTPS_PROXY: P, NO_PROXY: "*" }, HTTPS, undefined],
       [{ HTTPS_PROXY: P, no_proxy: "other.example, node.example" }, HTTPS, undefined],
+      [{ HTTPS_PROXY: P, NO_PROXY: "other.example, else.example" }, HTTPS, BYPASS],
       [{ HTTPS_PROXY: P, NO_PROXY: "NODE.EXAMPLE" }, HTTPS, undefined],
       [{ HTTPS_PROXY: P, NO_PROXY: ".example" }, HTTPS, undefined],
       [{ HTTPS_PROXY: P, NO_PROXY: "*.example" }, HTTPS, undefined],
+      [{ HTTPS_PROXY: P, NO_PROXY: "*example" }, HTTPS, undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: ".example" }, "http://xexample/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "*.example" }, "http://xexample/", BYPASS],
       [{ HTTPS_PROXY: P, NO_PROXY: "node.example:8443" }, HTTPS, undefined],
       [{ HTTPS_PROXY: P, NO_PROXY: "node.example:0" }, HTTPS, undefined],
       [{ HTTPS_PROXY: P, NO_PROXY: "node.example:443" }, HTTPS, BYPASS],
       [{ HTTPS_PROXY: P, NO_PROXY: "node.example:443" }, "https://node.example/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "node.example:80" }, "http://node.example/", undefined],
       [{ HTTPS_PROXY: P, NO_PROXY: "de.example" }, HTTPS, BYPASS],
       [{ HTTPS_PROXY: P, NO_PROXY: "other.example" }, HTTPS, BYPASS],
       // axios 1.17's own bypass: loopback names are equivalent; trailing dots,
       // brackets and IPv4-mapped IPv6 are normalized.
       [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1" }, "http://localhost:8080/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://127.0.0.1:8080/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "other.example,localhost" }, "http://127.0.0.1:8080/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://127.0.0.255/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1." }, "http://127.0.0.1:8080/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1:8080" }, "http://localhost:8080/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1:9090" }, "http://localhost:8080/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "127.9.9.9" }, "http://[::1]:8080/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "[::1]:8080" }, "http://localhost:8080/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "[::1]:9090" }, "http://localhost:8080/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:0:0:1" }, "http://127.0.0.1/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "::ffff:7f00:1" }, "http://localhost/", undefined],
       [{ HTTP_PROXY: P, NO_PROXY: "10.0.0.1" }, "http://[::ffff:10.0.0.1]/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "10.1.1.1" }, "http://[::ffff:10.1.1.1]/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "::ffff:10.0.0.1" }, "http://10.0.0.1/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "1::ffff:10.0.0.1" }, "http://10.0.0.1/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "*.node.example." }, "http://a.node.example/", undefined],
+      // Near misses of the loopback forms are not loopback.
+      [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://[1:2:3:4:5:6:7:8]/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://[1:2:3:4:5:6:7:1]/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://[0:2:3:4:5:6:7:1]/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "1:0:0:0:0:0:0:1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:0:5:1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "10:0:0:0:0:0:0:1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0a:0:0:0:0:0:0:1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:0:0:21" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:0:0:10" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0127.0.0.1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1.5" }, "http://localhost/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.256" }, "http://localhost/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "10.0.0.1" }, "http://localhost/", BYPASS],
       [{ HTTPS_PROXY: P }, "not a url", undefined],
+      // Node's proxy switch: Node may proxy Axios itself, from a startup
+      // snapshot this check can't read. Node reads only NODE_USE_ENV_PROXY=1.
+      [{ NODE_USE_ENV_PROXY: "1" }, HTTPS, UNVERIFIED],
+      [{ HTTPS_PROXY: P, NODE_USE_ENV_PROXY: "1" }, HTTPS, UNVERIFIED],
+      [{ NODE_OPTIONS: "--use-env-proxy" }, HTTPS, UNVERIFIED],
+      [{ NODE_OPTIONS: "--max-old-space-size=64  --use-env-proxy" }, HTTPS, UNVERIFIED],
+      [{ NODE_USE_ENV_PROXY: "0" }, HTTPS, undefined],
+      [{ NODE_OPTIONS: "--no-use-env-proxy" }, HTTPS, undefined],
     ];
     for (const [env, rpc, expected] of cases) {
-      expect([env, rpc, fetchProxyMismatch(rpc, env, { dispatcher })]).toEqual([env, rpc, expected]);
+      expect([env, rpc, fetchProxyMismatch(rpc, env, routeState(dispatchers))]).toEqual([env, rpc, expected]);
     }
   });
 
-  // Node 22.21+ started with the switch and HTTP(S)_PROXY: undici's rules.
-  it.each([
-    [{}, HTTPS, undefined],
-    [{ HTTP_PROXY: P }, "http://node.example/", undefined],
-    [{ HTTPS_PROXY: P }, HTTPS, undefined],
-    [{ HTTPS_PROXY: P, HTTP_PROXY: Q }, HTTPS, undefined],
-    [{ HTTPS_PROXY: P, HTTP_PROXY: Q }, "http://node.example/", undefined],
-    [{ HTTPS_PROXY: P, NO_PROXY: "node.example" }, HTTPS, undefined],
-    [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1" }, "http://127.0.0.1:8080/", undefined],
-    // Axios connects directly; undici falls back to HTTP_PROXY for HTTPS.
-    [{ HTTP_PROXY: P }, HTTPS, ADDED],
-    // Axios applies its loopback equivalence; undici does not.
-    [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://127.0.0.1:8080/", ADDED],
-    // undici takes a blank lowercase variable; Axios skips it.
-    [{ no_proxy: "", NO_PROXY: "node.example", HTTPS_PROXY: P }, HTTPS, ADDED],
-    [{ http_proxy: "", HTTP_PROXY: P }, "http://node.example/", BYPASS],
-    // undici never reads ALL_PROXY.
-    [{ ALL_PROXY: P }, "http://node.example/", BYPASS],
-    [{ ALL_PROXY: P, HTTP_PROXY: Q }, HTTPS, BYPASS],
-    // A scheme-less proxy: Axios adds the request scheme, undici does not.
-    [{ https_proxy: "proxy:3128" }, HTTPS, BYPASS],
-  ])("with Node's EnvHttpProxyAgent: %o for %s", (env, rpc, expected) => {
-    expect(fetchProxyMismatch(rpc, env, { dispatcher: new EnvHttpProxyAgent() })).toBe(expected);
+  // Node's proxy agent (under either symbol), a Node 26 wrapper of something
+  // else, or a dispatcher installed by other code: fetch's route is unknown.
+  it.each<[string, Dispatchers]>([
+    ["Node 20-22's proxy agent", [undefined, new EnvHttpProxyAgent()]],
+    ["Node 24's proxy agent", [new EnvHttpProxyAgent(), new EnvHttpProxyAgent()]],
+    ["Node 26's proxy agent", [new EnvHttpProxyAgent(), new Dispatcher1Wrapper()]],
+    ["a newer undici's proxy agent", [new ProxyAgent(), new Dispatcher1Wrapper()]],
+    ["an older undici's proxy agent", [new Agent(), new ProxyAgent()]],
+    ["a proxy agent under .1", [undefined, new ProxyAgent()]],
+    ["a wrapper with no current dispatcher", [undefined, new Dispatcher1Wrapper()]],
+    ["a wrapper as the current dispatcher", [new Dispatcher1Wrapper(), new Dispatcher1Wrapper()]],
+    ["null", [null, undefined]],
+    ["null under .1", [undefined, null]],
+    ["a plain object", [undefined, {}]],
+    ["an object without a prototype", [Object.create(null) as unknown, undefined]],
+  ])("refuses %s", (_kind, dispatchers) => {
+    for (const env of [{}, { HTTP_PROXY: P }, { HTTPS_PROXY: P }]) {
+      expect(fetchProxyMismatch(HTTPS, env, routeState(dispatchers))).toBe(UNVERIFIED);
+    }
   });
 
-  it("trusts another global dispatcher only where Axios connects directly", () => {
-    for (const dispatcher of [new ProxyAgent(), null, {}]) {
-      expect(fetchProxyMismatch(HTTPS, {}, { dispatcher })).toBeUndefined();
-      expect(fetchProxyMismatch(HTTPS, { HTTP_PROXY: P }, { dispatcher })).toBeUndefined();
-      expect(fetchProxyMismatch(HTTPS, { HTTPS_PROXY: P }, { dispatcher })).toBe(BYPASS);
+  class HttpsProxyAgent {}
+  it.each<[string, unknown[], string[]]>([
+    ["an http agent from Node's proxy switch", [switchedAgent(), plainAgent()], []],
+    ["an https agent from Node's proxy switch", [plainAgent(), switchedAgent({ HTTPS_PROXY: P })], []],
+    ["a replaced global agent", [plainAgent(), new HttpsProxyAgent()], []],
+    ["a global agent without a prototype", [Object.create(null) as unknown, plainAgent()], []],
+    ["--use-env-proxy on the command line", [plainAgent(), plainAgent()], ["--use-env-proxy"]],
+  ])("refuses %s, through which Node may proxy Axios", (_kind, agents, execArgv) => {
+    for (const [, dispatchers] of DEFAULT_DISPATCHERS) {
+      for (const env of [{}, { HTTPS_PROXY: P }, { HTTP_PROXY: P, NO_PROXY: "node.example" }]) {
+        expect(fetchProxyMismatch(HTTPS, env, routeState(dispatchers, agents, execArgv))).toBe(UNVERIFIED);
+      }
     }
+  });
+
+  // Each route the sweep saw fetch take apart from Axios, with the state Node
+  // had installed: none is allowed.
+  it.each<[string, Record<string, string>, string, Dispatchers, unknown[]]>([
+    ["Node 24, NO_PROXY naming the parent domain", { HTTPS_PROXY: P, NO_PROXY: "example.test", NODE_USE_ENV_PROXY: "1" },
+      "https://node.example.test/", [new EnvHttpProxyAgent(), new EnvHttpProxyAgent()], [switchedAgent(), switchedAgent()]],
+    ["Node 24, a dotted NO_PROXY and the apex", { HTTPS_PROXY: P, NO_PROXY: ".example.test", NODE_USE_ENV_PROXY: "1" },
+      "https://example.test/", [new EnvHttpProxyAgent(), new EnvHttpProxyAgent()], [switchedAgent(), switchedAgent()]],
+    ["Node 24, * inside a NO_PROXY list", { HTTP_PROXY: P, NO_PROXY: "other.test,*", NODE_USE_ENV_PROXY: "1" },
+      "http://127.0.0.1/", [new EnvHttpProxyAgent(), new EnvHttpProxyAgent()], [switchedAgent(), switchedAgent()]],
+    ["Node 26, HTTPS with only HTTP_PROXY", { HTTP_PROXY: P, NODE_USE_ENV_PROXY: "1" },
+      "https://node.example.test/", [new EnvHttpProxyAgent(), new Dispatcher1Wrapper()], [switchedAgent(), switchedAgent()]],
+    ["Node 26, a blank lowercase no_proxy", { HTTP_PROXY: P, no_proxy: "", NO_PROXY: "127.0.0.1", NODE_USE_ENV_PROXY: "1" },
+      "http://127.0.0.1/", [new EnvHttpProxyAgent(), new Dispatcher1Wrapper()], [switchedAgent(), switchedAgent()]],
+    ["a space-separated NO_PROXY", { HTTP_PROXY: P, NO_PROXY: "other.test 127.0.0.1", NODE_USE_ENV_PROXY: "1" },
+      "http://127.0.0.1/", [undefined, new EnvHttpProxyAgent()], [switchedAgent(), switchedAgent()]],
+    ["NO_PROXY loaded after startup", { HTTP_PROXY: P, NO_PROXY: "127.0.0.1", NODE_USE_ENV_PROXY: "1" },
+      "http://127.0.0.1/", [undefined, new EnvHttpProxyAgent()], [switchedAgent({ HTTP_PROXY: P }), switchedAgent()]],
+    ["a proxy changed after startup", { HTTPS_PROXY: "http://new-proxy:3128" },
+      "https://node.example.test/", [undefined, new EnvHttpProxyAgent()], [switchedAgent({ HTTPS_PROXY: P }), switchedAgent()]],
+  ])("refuses the mismatched route of %s", (_kind, env, rpc, dispatchers, agents) => {
+    const decision = fetchProxyMismatch(rpc, env, routeState(dispatchers, agents));
+    expect(decision).toBe(UNVERIFIED);
+    // Even if Node had left the environment variables behind, the state alone refuses.
+    const { NODE_USE_ENV_PROXY: _switch, ...withoutSwitch } = env;
+    expect(fetchProxyMismatch(rpc, withoutSwitch, routeState(dispatchers, agents))).toBe(UNVERIFIED);
   });
 });
 
@@ -682,18 +766,23 @@ describe("Demos CCI default transport and the environment proxy", () => {
     vi.unstubAllEnvs();
   });
 
-  const DISPATCHER = Symbol.for("undici.globalDispatcher.1");
+  const DISPATCHERS = [Symbol.for("undici.globalDispatcher.2"), Symbol.for("undici.globalDispatcher.1")];
   const globals = globalThis as Record<symbol, unknown>;
-  let restoreDispatcher: (() => void) | undefined;
+  const restores: Array<() => void> = [];
 
   afterEach(() => {
-    restoreDispatcher?.();
-    restoreDispatcher = undefined;
+    for (const restore of restores.splice(0).reverse()) restore();
   });
 
-  // Pin the environment and the global fetch dispatcher Node would have
-  // installed. Unset rather than blank: undici treats a blank variable as set.
-  function stubProxyEnvironment(values: Record<string, string | undefined>, dispatcher: unknown) {
+  // Pin the environment and the state Node would have installed: the global
+  // fetch dispatchers, the http and https global agents, and execArgv. Unset
+  // rather than blank: Node's own proxy agent treats a blank variable as set.
+  function stubProxyEnvironment(
+    values: Record<string, string | undefined>,
+    dispatchers: Dispatchers,
+    { agents = [new nodeHttp.Agent(), new nodeHttps.Agent()], execArgv = [] }:
+      { agents?: unknown[]; execArgv?: string[] } = {},
+  ) {
     for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
       vi.stubEnv(name, undefined);
       vi.stubEnv(name.toUpperCase(), undefined);
@@ -701,25 +790,45 @@ describe("Demos CCI default transport and the environment proxy", () => {
     vi.stubEnv("NODE_USE_ENV_PROXY", undefined);
     vi.stubEnv("NODE_OPTIONS", undefined);
     for (const [name, value] of Object.entries(values)) vi.stubEnv(name, value);
-    const had = Object.hasOwn(globals, DISPATCHER);
-    const previous = globals[DISPATCHER];
-    globals[DISPATCHER] = dispatcher;
-    restoreDispatcher = () => {
-      if (had) globals[DISPATCHER] = previous;
-      else delete globals[DISPATCHER];
-    };
+    DISPATCHERS.forEach((symbol, index) => {
+      const had = Object.hasOwn(globals, symbol);
+      const previous = globals[symbol];
+      globals[symbol] = dispatchers[index];
+      restores.push(() => {
+        if (had) globals[symbol] = previous;
+        else delete globals[symbol];
+      });
+    });
+    const [httpAgent, httpsAgent, argv] = [nodeHttp.globalAgent, nodeHttps.globalAgent, process.execArgv];
+    nodeHttp.globalAgent = agents[0] as typeof httpAgent;
+    nodeHttps.globalAgent = agents[1] as typeof httpsAgent;
+    process.execArgv = execArgv;
+    restores.push(() => {
+      nodeHttp.globalAgent = httpAgent;
+      nodeHttps.globalAgent = httpsAgent;
+      process.execArgv = argv;
+    });
   }
 
-  it.each([
-    { kind: "no switch", env: {}, dispatcher: new Agent(), message: DEMOS_CCI_PROXY_BYPASS },
+  const SECRET_PROXY = "http://user:proxy-secret@proxy.example:3128";
+  it.each<{ kind: string; env: Record<string, string | undefined>; dispatchers: Dispatchers;
+    agents?: unknown[]; execArgv?: string[]; message: string }>([
+    { kind: "a proxy Axios uses", env: {}, dispatchers: [undefined, new Agent()], message: DEMOS_CCI_PROXY_BYPASS },
     // Node 20, or a switch read after startup: Node installed no proxy agent.
     { kind: "a switch Node did not apply", env: { NODE_USE_ENV_PROXY: "1", NODE_OPTIONS: "--use-env-proxy" },
-      dispatcher: undefined, message: DEMOS_CCI_PROXY_BYPASS },
+      dispatchers: [undefined, undefined], message: DEMOS_CCI_ROUTE_UNVERIFIED },
     // Node's agent would send this HTTPS read to HTTP_PROXY; Axios connects directly.
-    { kind: "a proxy Axios would not use", env: { HTTPS_PROXY: undefined, HTTP_PROXY: "http://user:proxy-secret@proxy.example:3128" },
-      dispatcher: new EnvHttpProxyAgent(), message: DEMOS_CCI_PROXY_ADDED },
-  ])("refuses a route other than Axios's ($kind), before signing or sending", async ({ env, dispatcher, message }) => {
-    stubProxyEnvironment({ HTTPS_PROXY: "http://user:proxy-secret@proxy.example:3128", ...env }, dispatcher);
+    { kind: "Node 22's proxy agent", env: { HTTPS_PROXY: undefined, HTTP_PROXY: SECRET_PROXY },
+      dispatchers: [undefined, new EnvHttpProxyAgent()], message: DEMOS_CCI_ROUTE_UNVERIFIED },
+    { kind: "Node 26's proxy agent", env: { HTTPS_PROXY: undefined, HTTP_PROXY: SECRET_PROXY },
+      dispatchers: [new EnvHttpProxyAgent(), new Dispatcher1Wrapper()], message: DEMOS_CCI_ROUTE_UNVERIFIED },
+    { kind: "Node's proxy switch on the https agent alone", env: { HTTPS_PROXY: undefined },
+      dispatchers: [undefined, undefined], agents: [new nodeHttp.Agent(), switchedAgent({ HTTPS_PROXY: SECRET_PROXY })],
+      message: DEMOS_CCI_ROUTE_UNVERIFIED },
+    { kind: "--use-env-proxy on the command line", env: { HTTPS_PROXY: undefined },
+      dispatchers: [undefined, undefined], execArgv: ["--use-env-proxy"], message: DEMOS_CCI_ROUTE_UNVERIFIED },
+  ])("refuses a route it can't match to Axios's ($kind), before signing or sending", async (row) => {
+    stubProxyEnvironment({ HTTPS_PROXY: SECRET_PROXY, ...row.env }, row.dispatchers, row);
     const globalFetch = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", globalFetch);
     const adapter = new DemosAdapter({ rpc: "https://user:rpc-secret@node.example/rpc" });
@@ -731,26 +840,27 @@ describe("Demos CCI default transport and the environment proxy", () => {
     const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(DacsError);
-    expect(error).toMatchObject({ message, category: "permanent" });
+    expect(error).toMatchObject({ message: row.message, category: "permanent" });
     expect(inspect(error)).not.toMatch(/secret|proxy\.example|node\.example/);
     expect(globalFetch).not.toHaveBeenCalled();
     expect(sign).not.toHaveBeenCalled();
   });
 
-  it("states the remedies in its stable messages", () => {
-    expect(DEMOS_CCI_PROXY_BYPASS).toBe("Demos GCR identity read would bypass the environment proxy; " +
-      "start Node 22.21+ with NODE_USE_ENV_PROXY=1 or inject identityFetch");
-    expect(DEMOS_CCI_PROXY_ADDED).toBe("Demos GCR identity read would use a proxy demosdk does not; " +
-      "list the RPC host in NO_PROXY or inject identityFetch");
+  it("states the remedy in its stable messages", () => {
+    expect(DEMOS_CCI_PROXY_BYPASS).toBe("Demos GCR identity read would bypass the environment proxy; inject identityFetch");
+    expect(DEMOS_CCI_ROUTE_UNVERIFIED).toBe("Demos GCR identity read cannot verify its route with Node's proxy " +
+      "switch or a custom global dispatcher or agent; inject identityFetch");
   });
 
   it.each([
-    { kind: "Node's proxy agent", env: { HTTPS_PROXY: "http://proxy.example:3128" }, dispatcher: new EnvHttpProxyAgent() },
-    { kind: "NO_PROXY", env: { HTTPS_PROXY: "http://proxy.example:3128", NO_PROXY: "node.example" }, dispatcher: new Agent() },
-    { kind: "no proxy", env: {}, dispatcher: new Agent() },
-    { kind: "no proxy, before fetch loads its dispatcher", env: {}, dispatcher: undefined },
-  ])("uses global fetch with $kind", async ({ env, dispatcher }) => {
-    stubProxyEnvironment(env, dispatcher);
+    { kind: "NO_PROXY", env: { HTTPS_PROXY: "http://proxy.example:3128", NO_PROXY: "node.example" },
+      dispatchers: [undefined, new Agent()] as Dispatchers },
+    { kind: "no proxy", env: {}, dispatchers: [undefined, new Agent()] as Dispatchers },
+    { kind: "no proxy, before fetch loads its dispatcher", env: {}, dispatchers: [undefined, undefined] as Dispatchers },
+    { kind: "Node 24's default dispatcher", env: {}, dispatchers: [new Agent(), new Agent()] as Dispatchers },
+    { kind: "Node 26's default dispatcher", env: {}, dispatchers: [new Agent(), new Dispatcher1Wrapper()] as Dispatchers },
+  ])("uses global fetch with $kind", async ({ env, dispatchers }) => {
+    stubProxyEnvironment(env, dispatchers);
     const globalFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
     vi.stubGlobal("fetch", globalFetch);
     const adapter = new DemosAdapter({ rpc: RPC });
@@ -760,7 +870,7 @@ describe("Demos CCI default transport and the environment proxy", () => {
   });
 
   it("fails an unparseable RPC URL with the stable error, never echoing its credentials", async () => {
-    stubProxyEnvironment({}, new Agent());
+    stubProxyEnvironment({}, [undefined, new Agent()]);
     const adapter = new DemosAdapter({ rpc: "http://user:secret-pass@[bad" });
     Object.assign(adapter, { connected: true });
     const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
@@ -770,7 +880,8 @@ describe("Demos CCI default transport and the environment proxy", () => {
   });
 
   it("leaves routing to an injected transport", async () => {
-    stubProxyEnvironment({ HTTPS_PROXY: "http://proxy.example:3128" }, new Agent());
+    stubProxyEnvironment({ HTTPS_PROXY: "http://proxy.example:3128", NODE_USE_ENV_PROXY: "1" },
+      [new EnvHttpProxyAgent(), new Dispatcher1Wrapper()], { agents: [switchedAgent(), switchedAgent()] });
     const { adapter, transport } = adapterFor(new Response(JSON.stringify(GCR)));
     await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
     expect(transport).toHaveBeenCalledOnce();
@@ -778,7 +889,9 @@ describe("Demos CCI default transport and the environment proxy", () => {
 });
 
 // Node's own fetch, and demosdk's Axios transport for comparison, against a real socket.
-describe("Demos CCI default transport against a real local HTTP server", () => {
+// Global fetch is injected so that a run started with Node's proxy switch, which
+// the default transport refuses, still exercises it.
+describe("Demos CCI Fetch transport against a real local HTTP server", () => {
   let server: Server | undefined;
 
   afterEach(async () => {
@@ -807,7 +920,7 @@ describe("Demos CCI default transport against a real local HTTP server", () => {
     const { port, seen } = await serve((_headers, url) => url === "/"
       ? [status, { Location: "/elsewhere" }, "redirect body"]
       : [200, { "Content-Type": "application/json" }, JSON.stringify(GCR)]);
-    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/` });
+    const adapter = new DemosAdapter({ rpc: `http://127.0.0.1:${port}/`, identityFetch: fetch });
     Object.assign(adapter, { connected: true });
     const error = await adapter.resolveIdentity("subject").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(DacsError);
@@ -818,7 +931,7 @@ describe("Demos CCI default transport against a real local HTTP server", () => {
   it("encodes non-ASCII RPC URL credentials as UTF-8, exactly as demosdk's Axios rpcCall does", async () => {
     const { port, seen } = await serve(() => [200, { "Content-Type": "application/json" }, JSON.stringify(GCR)]);
     const rpc = `http://us%C3%A9r:p%C3%A4ss@127.0.0.1:${port}/`;
-    const adapter = new DemosAdapter({ rpc });
+    const adapter = new DemosAdapter({ rpc, identityFetch: fetch });
     Object.assign(adapter, { connected: true });
     Object.assign(adapter.raw as unknown as Demos, { rpc_url: rpc });
 
@@ -835,7 +948,7 @@ describe("Demos CCI default transport against a real local HTTP server", () => {
       ? [401, {}, "unauthorized"]
       : [200, { "Content-Type": "application/json" }, JSON.stringify(GCR)]);
     const rpc = `http://us%40er:secret%3Apass@127.0.0.1:${port}/`;
-    const adapter = new DemosAdapter({ rpc });
+    const adapter = new DemosAdapter({ rpc, identityFetch: fetch });
     Object.assign(adapter, { connected: true });
     const demos = adapter.raw as unknown as Demos;
     Object.assign(demos, { rpc_url: rpc });

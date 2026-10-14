@@ -1,3 +1,5 @@
+import nodeHttp from "node:http";
+import nodeHttps from "node:https";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
@@ -27,12 +29,38 @@ const makeAdapter = (
   writeJournal,
 });
 
-// The default identity transport refuses to bypass a proxy the environment names.
+const DISPATCHERS = [Symbol.for("undici.globalDispatcher.2"), Symbol.for("undici.globalDispatcher.1")];
+const restoreNodeRoute: Array<() => void> = [];
+
+// The default identity transport reads only where it and demosdk's Axios both
+// connect directly: no environment proxy, Node's proxy switch off, and Node's
+// default dispatcher and global agents. Pin that state; global fetch is stubbed.
 function withoutEnvironmentProxy() {
   for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
     vi.stubEnv(name, "");
     vi.stubEnv(name.toUpperCase(), "");
   }
+  vi.stubEnv("NODE_USE_ENV_PROXY", undefined);
+  vi.stubEnv("NODE_OPTIONS", undefined);
+  const globals = globalThis as Record<symbol, unknown>;
+  for (const symbol of DISPATCHERS) {
+    const had = Object.hasOwn(globals, symbol);
+    const previous = globals[symbol];
+    globals[symbol] = undefined;
+    restoreNodeRoute.push(() => {
+      if (had) globals[symbol] = previous;
+      else delete globals[symbol];
+    });
+  }
+  const [httpAgent, httpsAgent, execArgv] = [nodeHttp.globalAgent, nodeHttps.globalAgent, process.execArgv];
+  nodeHttp.globalAgent = new nodeHttp.Agent();
+  nodeHttps.globalAgent = new nodeHttps.Agent();
+  process.execArgv = [];
+  restoreNodeRoute.push(() => {
+    nodeHttp.globalAgent = httpAgent;
+    nodeHttps.globalAgent = httpsAgent;
+    process.execArgv = execArgv;
+  });
 }
 
 describe("DemosAdapter", () => {
@@ -40,6 +68,7 @@ describe("DemosAdapter", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    for (const restore of restoreNodeRoute.splice(0).reverse()) restore();
   });
 
   it("requires an rpc url", () => {
@@ -53,6 +82,15 @@ describe("DemosAdapter", () => {
       rpc: RPC,
       maximumFeeOs: -1n,
     })).toThrow(/maximumFeeOs/);
+  });
+
+  it("accepts a zero confirmed-fee ceiling", () => {
+    expect(() => new DemosAdapter({ rpc: RPC, maximumFeeOs: 0n })).not.toThrow();
+  });
+
+  it.each([5, null, {}])("rejects a non-string chainIdentity %o", (chainIdentity) => {
+    expect(() => new DemosAdapter({ rpc: RPC, chainIdentity } as unknown as DemosAdapterConfig))
+      .toThrow("DemosAdapterConfig.chainIdentity must be a string");
   });
 
   it("rejects proxy and accessor-backed secret carriers", () => {

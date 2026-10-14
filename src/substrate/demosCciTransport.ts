@@ -1,3 +1,6 @@
+import http from "node:http";
+import https from "node:https";
+
 import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 
@@ -221,13 +224,15 @@ function rpcEndpoint(rpc: string): RpcEndpoint {
 }
 
 const DEFAULT_PORTS: Readonly<Record<string, number>> = { "http:": 80, "https:": 443 };
-const GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
+// Node 26's fetch (undici 8) reads ".2" and stores a Dispatcher1Wrapper of the
+// same dispatcher under ".1"; Node 20-24 read ".1".
+const GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.2");
+const LEGACY_GLOBAL_DISPATCHER = Symbol.for("undici.globalDispatcher.1");
 export const DEMOS_CCI_PROXY_BYPASS =
-  "Demos GCR identity read would bypass the environment proxy; " +
-  "start Node 22.21+ with NODE_USE_ENV_PROXY=1 or inject identityFetch";
-export const DEMOS_CCI_PROXY_ADDED =
-  "Demos GCR identity read would use a proxy demosdk does not; " +
-  "list the RPC host in NO_PROXY or inject identityFetch";
+  "Demos GCR identity read would bypass the environment proxy; inject identityFetch";
+export const DEMOS_CCI_ROUTE_UNVERIFIED =
+  "Demos GCR identity read cannot verify its route with Node's proxy switch " +
+  "or a custom global dispatcher or agent; inject identityFetch";
 
 // proxy-from-env 2.1.0's NO_PROXY match: true when `host` should be proxied.
 function proxyFromEnvShouldProxy(host: string, port: number, noProxy: string): boolean {
@@ -293,75 +298,80 @@ function axiosBypassesProxy(url: URL, port: number, noProxy: string): boolean {
   });
 }
 
-// The proxy demosdk's Axios 1.17 transport uses for `url`, or "" for direct.
-function axiosProxyFor(url: URL, env: NodeJS.ProcessEnv): string {
+// Whether demosdk's Axios 1.17 transport sends `url` through an environment proxy.
+function axiosUsesProxy(url: URL, env: NodeJS.ProcessEnv): boolean {
   const read = (name: string) => env[name] || env[name.toUpperCase()] || "";
-  const scheme = url.protocol.slice(0, -1);
   const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
   const noProxy = read("no_proxy").toLowerCase();
-  if (!proxyFromEnvShouldProxy(url.host.replace(/:\d*$/, ""), port, noProxy)) return "";
-  const proxy = read(`${scheme}_proxy`) || read("all_proxy");
-  if (proxy === "" || axiosBypassesProxy(url, port, noProxy)) return "";
-  return proxy.includes("://") ? proxy : `${scheme}://${proxy}`;
+  if (!proxyFromEnvShouldProxy(url.host.replace(/:\d*$/, ""), port, noProxy)) return false;
+  const proxy = read(`${url.protocol.slice(0, -1)}_proxy`) || read("all_proxy");
+  return proxy !== "" && !axiosBypassesProxy(url, port, noProxy);
 }
 
-// The proxy Node's EnvHttpProxyAgent (undici, as bundled in Node 22.23) uses
-// for `url`, or "" for direct. It never reads ALL_PROXY, and an HTTPS URL falls
-// back to HTTP_PROXY.
-function envAgentProxyFor(url: URL, env: NodeJS.ProcessEnv): string {
-  const noProxy = env.no_proxy ?? env.NO_PROXY ?? "";
-  const host = url.host.replace(/:\d*$/, "").toLowerCase();
-  const port = Number(url.port) || DEFAULT_PORTS[url.protocol] || 0;
-  if (noProxy.split(/[,\s]/).some(entry => entry !== "") &&
-      !proxyFromEnvShouldProxy(host, port, noProxy === "*" ? "*" : noProxy.toLowerCase())) {
-    return "";
-  }
-  const httpProxy = env.http_proxy ?? env.HTTP_PROXY ?? "";
-  const httpsProxy = env.https_proxy ?? env.HTTPS_PROXY ?? "";
-  return url.protocol === "https:" && httpsProxy !== "" ? httpsProxy : httpProxy;
+/** What decides the routes of Node's global fetch and of demosdk's Axios. */
+export interface NodeRouteState {
+  /** The global dispatchers under undici.globalDispatcher.2 and .1, undefined until fetch loads. */
+  dispatchers: readonly [unknown, unknown];
+  /** http.globalAgent and https.globalAgent, which Axios uses when it connects directly. */
+  agents: readonly unknown[];
+  execArgv: readonly string[];
 }
 
-function sameProxy(a: string, b: string): boolean {
-  if (a === "" || b === "") return a === b;
-  try {
-    return new URL(a).href === new URL(b).href;
-  } catch {
-    return false;
-  }
+function nodeRouteState(): NodeRouteState {
+  const globals = globalThis as Record<symbol, unknown>;
+  return {
+    dispatchers: [globals[GLOBAL_DISPATCHER], globals[LEGACY_GLOBAL_DISPATCHER]],
+    agents: [http.globalAgent, https.globalAgent],
+    execArgv: process.execArgv,
+  };
+}
+
+const className = (value: unknown) =>
+  (value as { constructor?: { name?: unknown } } | null | undefined)?.constructor?.name;
+
+// Node's default dispatcher, which connects directly: not loaded yet, or an
+// Agent, which Node 26 also wraps in a Dispatcher1Wrapper under ".1".
+function defaultDispatcher([current, legacy]: readonly [unknown, unknown]): boolean {
+  if (current !== undefined && className(current) !== "Agent") return false;
+  return legacy === undefined || className(legacy) === "Agent" ||
+    current !== undefined && className(legacy) === "Dispatcher1Wrapper";
+}
+
+// With NODE_USE_ENV_PROXY=1 or --use-env-proxy, Node 22.21+ also proxies the
+// global agents Axios connects through "directly", from a snapshot of the
+// environment taken at startup and by Node's own NO_PROXY rules.
+function nodeMayProxyAxios(env: NodeJS.ProcessEnv, state: NodeRouteState): boolean {
+  const flags = [...state.execArgv, ...(env.NODE_OPTIONS ?? "").split(/\s+/)];
+  if (env.NODE_USE_ENV_PROXY === "1" || flags.includes("--use-env-proxy")) return true;
+  return state.agents.some(agent => className(agent) !== "Agent" ||
+    (agent as { options?: { proxyEnv?: unknown } }).options?.proxyEnv != null);
 }
 
 /**
- * Why Node's global fetch would not take the route demosdk's Axios transport
- * takes to `rpc`, or undefined when it would. Axios follows the environment
- * (proxy-from-env 2.1.0, then axios 1.17's NO_PROXY bypass). Fetch follows
- * the dispatcher Node actually installed: the default Agent connects directly;
- * EnvHttpProxyAgent exists only when Node 22.21+ started with
- * NODE_USE_ENV_PROXY=1 or --use-env-proxy and HTTP(S)_PROXY. Any other global
- * dispatcher is trusted only where Axios connects directly. `installed` holds
- * the global dispatcher, undefined until fetch first loads its default Agent.
+ * Why Node's global fetch might not take the route demosdk's Axios transport
+ * takes to `rpc`, or undefined when both connect directly. Axios follows the
+ * environment (proxy-from-env 2.1.0, then axios 1.17's NO_PROXY bypass) and,
+ * with Node's proxy switch on, Node's proxy-aware global agents; fetch follows
+ * the global dispatcher. Node's proxy rules differ by release and its startup
+ * snapshot can't be read, so none is emulated: global fetch is used only while
+ * the dispatcher is Node's default Agent, the switch is off and Axios would
+ * connect directly.
  */
 export function fetchProxyMismatch(
   rpc: string,
   env: NodeJS.ProcessEnv = process.env,
-  installed: { dispatcher: unknown } = {
-    dispatcher: (globalThis as Record<symbol, unknown>)[GLOBAL_DISPATCHER],
-  },
+  state: NodeRouteState = nodeRouteState(),
 ): string | undefined {
-  const { dispatcher } = installed;
   let url: URL;
   try {
     url = new URL(rpc);
   } catch {
     return undefined;
   }
-  const axios = axiosProxyFor(url, env);
-  const kind = (dispatcher as { constructor?: { name?: unknown } } | undefined)?.constructor?.name;
-  if (dispatcher !== undefined && kind !== "Agent" && kind !== "EnvHttpProxyAgent") {
-    return axios === "" ? undefined : DEMOS_CCI_PROXY_BYPASS;
+  if (!defaultDispatcher(state.dispatchers) || nodeMayProxyAxios(env, state)) {
+    return DEMOS_CCI_ROUTE_UNVERIFIED;
   }
-  const fetchProxy = kind === "EnvHttpProxyAgent" ? envAgentProxyFor(url, env) : "";
-  if (sameProxy(axios, fetchProxy)) return undefined;
-  return axios === "" ? DEMOS_CCI_PROXY_ADDED : DEMOS_CCI_PROXY_BYPASS;
+  return axiosUsesProxy(url, env) ? DEMOS_CCI_PROXY_BYPASS : undefined;
 }
 
 /** One fresh, bounded attempt, including time-bound header construction. */
