@@ -1207,18 +1207,45 @@ describe("DemosAdapter.anchorAndWait", () => {
         nonce: 1,
       },
     });
-    await expect(
-      adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
-    ).resolves.toBe(true);
     const portableReceipt = demosWriteEvidenceToAnchorReceipt({
       logicalAddress: name,
       contentHash: contentHash(value),
       writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
       evidence: anchored.demosEvidence!,
     });
+    // This read has node2's shape: no createdByTx/lastModifiedByTx/
+    // interactionTxs. Nothing binds it to this write until the owner's
+    // history does, so both verifiers stay indeterminate (DEMOS-MAPPING §A.2).
+    await expect(
+      adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
+    ).rejects.toBeInstanceOf(SubstrateError);
+    await expect(
+      adapter.verifyDemosAnchorReceipt(portableReceipt),
+    ).rejects.toBeInstanceOf(SubstrateError);
+    const historyTransaction = await raw.getTxByHash(anchored.txRef);
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => options.start === 0 ? [historyTransaction] : []);
+    await expect(
+      adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
+    ).resolves.toBe(true);
     await expect(
       adapter.verifyDemosAnchorReceipt(portableReceipt),
     ).resolves.toBe(true);
+    // History that attributes the value to another create contradicts the proof.
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => options.start === 0 ? [{ ...historyTransaction, hash: "tx-other-create" }] : []);
+    await expect(
+      adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
+    ).resolves.toBe(false);
+    await expect(
+      adapter.verifyDemosAnchorReceipt(portableReceipt),
+    ).resolves.toBe(false);
     raw.storagePrograms.read.mockResolvedValue({
       success: true,
       storageAddress: address,
@@ -1241,7 +1268,6 @@ describe("DemosAdapter.anchorAndWait", () => {
       state: "finalized",
       observationDisposition: "established",
     });
-    const historyTransaction = await raw.getTxByHash(anchored.txRef);
     raw.storagePrograms.read.mockResolvedValue({
       success: true,
       storageAddress: address,
@@ -1417,6 +1443,91 @@ describe("DemosAdapter.anchorAndWait", () => {
       data: { value: 2 },
     });
     await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(false);
+  });
+
+  // CORE SR2-5: a mismatch in any available binding makes the receipt invalid.
+  // Both verifiers must still refuse when the node read, like node2's, carries
+  // no provenance and the owner's history is served.
+  it("refuses a receipt for one write that cites another write's transaction", async () => {
+    const fixture = await makeAdapter();
+    const a = await fixture.adapter.anchorWriteOnce("proof-cross-a", { value: "a" }, {
+      timeoutMs: 1_000, pollMs: 1,
+    });
+    const b = await fixture.adapter.anchorWriteOnce("proof-cross-b", { value: "b" }, {
+      timeoutMs: 1_000, pollMs: 1,
+    });
+    const receiptA = demosWriteEvidenceToAnchorReceipt({
+      logicalAddress: "proof-cross-a",
+      contentHash: contentHash({ value: "a" }),
+      writer: `did:demos:agent:${fixture.wallet.replace(/^0x/, "")}`,
+      evidence: a.demosEvidence!,
+    });
+    const { raw } = fixture;
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const txA = await raw.getTxByHash(a.txRef);
+    const txB = await raw.getTxByHash(b.txRef);
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => [txB, txA].slice(options.start, options.start + options.limit));
+    const proof = JSON.parse(Buffer.from(receiptA.evidence.value, "base64url").toString("utf8"));
+    proof.signedTransactionHash = demosSignedTransactionProofHash(txB);
+    const forged = {
+      ...receiptA,
+      transactionRef: { ...receiptA.transactionRef, value: b.txRef! },
+      nonce: String(b.demosEvidence!.nonce),
+      evidence: {
+        ...receiptA.evidence,
+        value: Buffer.from(canonicalize(proof), "utf8").toString("base64url"),
+      },
+    };
+    const verdict = await fixture.adapter.verifyDemosAnchorReceipt(forged).then(
+      (value) => value,
+      () => "rejected" as const,
+    );
+    expect([false, "rejected"]).toContain(verdict);
+    await expect(fixture.adapter.verifyDemosAnchorReceipt(receiptA)).resolves.toBe(true);
+  });
+
+  it("refuses a proof whose nonce is not the signed transaction's (SR2-5)", async () => {
+    const { adapter, evidence, receipt } = await anchoredProof();
+    const outcome = (promise: Promise<boolean>) => promise.then(
+      (value) => value,
+      () => "rejected" as const,
+    );
+    expect([false, "rejected"]).toContain(
+      await outcome(adapter.verifyDemosAnchorReceipt({
+        ...receipt,
+        nonce: String(evidence.nonce + 1),
+      })),
+    );
+    expect([false, "rejected"]).toContain(
+      await outcome(adapter.verifyDemosWriteEvidence({
+        ...evidence,
+        nonce: evidence.nonce + 1,
+      })),
+    );
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+  });
+
+  it("keeps a block without finality data indeterminate instead of invalid", async () => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    const withoutFinality = async () => {
+      const { validation_data: _v, ...block } = await raw.getBlockByNumber(evidence.blockNumber);
+      raw.getBlockByNumber.mockResolvedValueOnce(block);
+    };
+    await withoutFinality();
+    await expect(adapter.verifyDemosAnchorReceipt(receipt))
+      .rejects.toBeInstanceOf(SubstrateError);
+    await withoutFinality();
+    await expect(adapter.verifyDemosWriteEvidence(evidence))
+      .rejects.toBeInstanceOf(SubstrateError);
   });
 
   it("retains a signed logical address behind its encoded native program name", async () => {
