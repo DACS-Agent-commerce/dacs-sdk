@@ -1302,9 +1302,12 @@ async function driveCopy(role: "buyer" | "seller", input: CompletionInput, deps:
   if (anchor.disposition !== "valid") {
     throw new DacsError(`completed ${role} bundle anchor verification is ${anchor.disposition}`);
   }
+  // As the gate: a lookup that does not show the carried binding gates
+  // nothing (ST-11, BB-8); only a different binding it serves is an answer.
   const lookup = await deps.resolveBundleBinding(copy.binding.logicalAddress, copy.binding.signer);
-  if (lookup.disposition !== "present") {
-    throw new DacsError(`completed ${role} BundleBinding is not resolvable`);
+  if (lookup.disposition === "present" &&
+      canonicalize(lookup.binding) !== canonicalize(copy.binding)) {
+    throw new DacsError(`completed ${role} BundleBinding is not independently resolvable and exact`);
   }
   const verified = await deps.verifyBundleBinding(structuredClone(copy.binding));
   if (verified.disposition !== "valid") {
@@ -1365,38 +1368,60 @@ describe("buyer two-copy completion adapter", () => {
         }),
         expect.objectContaining({ sellerFinalizationProvider: sellerProvider }),
       );
-      expect(adapter.resolveAnchorByName).toHaveBeenCalledWith(
-        bundleAddress(JOB_ID, "seller"),
-        SELLER.slice("did:demos:agent:".length),
-      );
+      // Each copy, and the copy its binding names, is read at its native
+      // address; the bundle name index is never consulted (BB-5, ST-11).
+      for (const role of ["buyer", "seller"] as const) {
+        expect(adapter.readAnchor).toHaveBeenCalledWith(copies[role].nativeAddress);
+        expect(adapter.resolveAnchorByName).not.toHaveBeenCalledWith(
+          bundleAddress(JOB_ID, role),
+          expect.anything(),
+        );
+      }
     },
   );
 
+  // DACS-5 BB-5 step 6, ST-11: the copy is read at the exact native
+  // address the gate names, never through the name index.
   it("reads a role copy only at its exact native address", async () => {
     const harness = await completionHarness("x402");
     const deps = await capturedCompletionDeps(harness);
+    harness.adapter.resolveAnchorByName.mockClear();
 
     await expect(deps.readBundleCopy(harness.copies.seller.nativeAddress, "seller"))
       .resolves.toEqual(harness.copies.seller.bundle);
-    // Demos naming another native address is its answer, not a missing copy.
-    await expect(deps.readBundleCopy("native:other-seller-bundle", "seller"))
-      .rejects.toThrow(/another native address/);
+    expect(harness.adapter.readAnchor).toHaveBeenLastCalledWith(harness.copies.seller.nativeAddress);
+    // Nothing readable there yet is unanswered; other content is an answer.
+    await expect(deps.readBundleCopy("native:other-seller-bundle", "seller")).resolves.toBeNull();
+    harness.adapter.readAnchor.mockResolvedValueOnce({ not: "a bundle" } as never);
+    await expect(deps.readBundleCopy(harness.copies.seller.nativeAddress, "seller"))
+      .rejects.toThrow(/bundle-readback-invalid/);
+    expect(harness.adapter.resolveAnchorByName).not.toHaveBeenCalled();
   });
 
-  // Final r11 review: Demos's name index may lag finality by several blocks,
-  // so a role copy or BundleBinding it does not show yet keeps the audit
-  // retryable instead of parking it at operator action.
+  // DACS-5 ST-11: external index visibility never gates completion.
+  // Demos's name index may lag finality by several blocks; a copy the gate
+  // reads at its native address, with the binding it carries, completes
+  // whether or not the index shows the copy or binding yet.
   it.each([
     ["the seller bundle", bundleAddress(JOB_ID, "seller")],
     ["the buyer bundle", bundleAddress(JOB_ID, "buyer")],
     ["the seller BundleBinding", `dacs5:bundle-binding:${JOB_ID}:seller`],
     ["the buyer BundleBinding", `dacs5:bundle-binding:${JOB_ID}:buyer`],
-  ])("keeps the audit retryable while Demos's name index does not show %s yet", async (_label, name) => {
+  ])("completes while Demos's name index does not show %s yet", async (_label, name) => {
     const harness = await completionHarness("x402");
     const resolve = harness.adapter.resolveAnchorByName.getMockImplementation()!;
-    harness.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) =>
-      logicalAddress === name ? { status: "absent" as const } : resolve(logicalAddress));
-    await expect(harness.authorize()).resolves.toBe("indeterminate");
+    const other = name.endsWith("seller") ? harness.copies.buyer.nativeAddress
+      : harness.copies.seller.nativeAddress;
+    for (const [label, answer] of [
+      ["absent", async () => ({ status: "absent" })],
+      ["indeterminate", async () => ({ status: "indeterminate" })],
+      ["unanswered", async () => { throw new Error("rpc unavailable"); }],
+      ["the other role's copy", async () => ({ status: "present", address: other })],
+    ] as const) {
+      harness.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) =>
+        logicalAddress === name ? await answer() as never : resolve(logicalAddress));
+      await expect(harness.authorize(), label).resolves.toBe(true);
+    }
   });
 
   it.each(["x402", "pay-dem"] as const)(
@@ -1460,13 +1485,6 @@ describe("buyer two-copy completion adapter", () => {
     ["a bundle receipt does not authenticate", (h: CompletionHarness) => {
       h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
     }],
-    ["a role name resolves to the other role's copy", (h: CompletionHarness) => {
-      h.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) => ({
-        status: "present" as const,
-        address: logicalAddress === bundleAddress(JOB_ID, "seller")
-          ? h.copies.buyer.nativeAddress : h.copies.seller.nativeAddress,
-      }));
-    }],
   ])("returns false when %s", async (_label, arrange) => {
     const harness = await completionHarness("x402");
     arrange(harness);
@@ -1475,26 +1493,14 @@ describe("buyer two-copy completion adapter", () => {
   });
 
   it.each([
-    ["a bundle name lookup is indeterminate", (h: CompletionHarness) => {
-      h.adapter.resolveAnchorByName.mockResolvedValueOnce({ status: "indeterminate" } as never);
+    ["a native bundle read finds nothing yet", (h: CompletionHarness) => {
+      h.adapter.readAnchor.mockResolvedValueOnce(null);
     }],
-    ["a bundle name lookup throws", (h: CompletionHarness) => {
-      h.adapter.resolveAnchorByName.mockRejectedValueOnce(new Error("rpc unavailable"));
+    ["a native bundle read throws", (h: CompletionHarness) => {
+      h.adapter.readAnchor.mockRejectedValueOnce(new Error("rpc unavailable"));
     }],
     ["receipt verification errors", (h: CompletionHarness) => {
-      h.adapter.verifyDemosAnchorReceipt
-        .mockResolvedValueOnce(true)
-        .mockRejectedValueOnce(new Error("rpc unavailable"));
-    }],
-    ["a binding lookup is unavailable", (h: CompletionHarness) => {
-      h.adapter.resolveAnchorByName.mockImplementation(async (logicalAddress: string) => {
-        if (logicalAddress.startsWith("dacs5:bundle-binding:")) throw new Error("rpc unavailable");
-        return {
-          status: "present" as const,
-          address: logicalAddress === bundleAddress(JOB_ID, "buyer")
-            ? h.copies.buyer.nativeAddress : h.copies.seller.nativeAddress,
-        };
-      });
+      h.adapter.verifyDemosAnchorReceipt.mockRejectedValueOnce(new Error("rpc unavailable"));
     }],
     ["the seller closure read is indeterminate", () => {
       mocks.verifyCompleted.mockRejectedValueOnce(
@@ -1534,7 +1540,7 @@ describe("buyer two-copy completion adapter", () => {
 
   it("stays retryable for the pay-DEM buyer audit when Demos cannot answer", async () => {
     const harness = await completionHarness("pay-dem");
-    harness.adapter.resolveAnchorByName.mockRejectedValueOnce(new Error("rpc unavailable"));
+    harness.adapter.readAnchor.mockRejectedValueOnce(new Error("rpc unavailable"));
 
     await expect(harness.authorize()).resolves.toBe("indeterminate");
   });
@@ -1719,16 +1725,16 @@ describe("buyer two-copy completion adapter", () => {
     const lease = { ...AUDIT_LEASE, expiresAt: NOW + 30_000 };
     const started = NOW + 2_000;
     const leaseDeadline = lease.expiresAt - 5_000;
-    // Demos answers the buyer copy's first name lookup only when the test says.
-    const heldBuyerName = (harness: CompletionHarness) => {
+    // Demos answers the buyer copy's first native read only when the test says.
+    const heldBuyerRead = (harness: CompletionHarness) => {
       let answer = (): void => undefined;
       let held = false;
-      const resolveName = harness.adapter.resolveAnchorByName.getMockImplementation()!;
-      harness.adapter.resolveAnchorByName.mockImplementation(async (name: string, ...rest: unknown[]) => {
-        if (held || name !== bundleAddress(JOB_ID, "buyer")) return resolveName(name, ...(rest as []));
+      const read = harness.adapter.readAnchor.getMockImplementation()!;
+      harness.adapter.readAnchor.mockImplementation(async (address: string) => {
+        if (held || address !== harness.copies.buyer.nativeAddress) return read(address);
         held = true;
         return await new Promise((resolve) => {
-          answer = () => { void resolveName(name, ...(rest as [])).then(resolve); };
+          answer = () => { void read(address).then(resolve); };
         });
       });
       return () => answer();
@@ -1737,7 +1743,7 @@ describe("buyer two-copy completion adapter", () => {
     it(`authorizes a ${paymentProfile} completion whose valid answer arrives just before the lease's deadline`, async () => {
       const clock = databaseClock(started);
       const harness = await completionHarness(paymentProfile, { start: clock.start }, clock.readTime);
-      const answer = heldBuyerName(harness);
+      const answer = heldBuyerRead(harness);
       const outcome = Promise.resolve(harness.authorize({ lease }));
       await flush();
       expect(clock.armed()).toEqual([leaseDeadline]);
@@ -1752,7 +1758,7 @@ describe("buyer two-copy completion adapter", () => {
     it(`keeps a ${paymentProfile} audit retryable, while its lease is still current, when the valid answer would arrive after the lease`, async () => {
       const clock = databaseClock(started);
       const harness = await completionHarness(paymentProfile, { start: clock.start }, clock.readTime);
-      const answer = heldBuyerName(harness);
+      const answer = heldBuyerRead(harness);
       const outcome = Promise.resolve(harness.authorize({ lease }));
       let decidedAt: number | undefined;
       void outcome.then(() => { decidedAt = clock.readTime(); });
@@ -1896,7 +1902,8 @@ const demosReadCases: Array<[string, "permanent" | "unavailable", (h: Completion
     h.adapter.readAnchor.mockImplementation(async (address: string) =>
       address === h.copies.seller.nativeAddress ? { not: "a bundle" } as never : read(address));
   }],
-  ["an invalid seller bundle receipt", "permanent", (h) => {
+  // DemosAdapter answers false only for a fetched record that contradicts the receipt.
+  ["a seller bundle receipt that fetched Demos records contradict", "permanent", (h) => {
     h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
   }],
   ["invalid BundleBinding content", "permanent", (h) => {
@@ -1915,8 +1922,26 @@ const demosReadCases: Array<[string, "permanent" | "unavailable", (h: Completion
       return forged as never;
     });
   }],
+  // What DemosAdapter throws when the node returns demosdk's bare "error" for
+  // a finalized transaction it has not indexed yet, or hits a DB error.
   ["an unanswered receipt verification", "unavailable", (h) => {
+    h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
+      new IndeterminateSubstrateError("Demos anchor receipt observation unavailable"));
+  }],
+  ["a plain SubstrateError from receipt verification", "unavailable", (h) => {
     h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(new SubstrateError("Demos anchor receipt observation unavailable"));
+  }],
+  // The bundle and binding were just read at their addresses; a node that
+  // then finds no program there has not caught up.
+  ["a receipt lookup that no longer finds the program", "unavailable", (h) => {
+    h.adapter.resolveDemosAnchorReceipt.mockResolvedValue(null);
+  }],
+  // The name index, or a binding, names the copy's address before the node
+  // can read it there.
+  ["a seller copy not readable yet at its address", "unavailable", (h) => {
+    const read = h.adapter.readAnchor.getMockImplementation()!;
+    h.adapter.readAnchor.mockImplementation(async (address: string) =>
+      address === h.copies.seller.nativeAddress ? null : read(address));
   }],
   ["Demos reads that cannot be answered", "unavailable", (h) => {
     h.adapter.resolveAnchorByName.mockRejectedValue(new Error("rpc unavailable"));
@@ -1959,9 +1984,12 @@ describe("buyer audit classification of seller Demos reads", () => {
           }
         } else {
           expect("error" in bundle ? permanent(bundle.error) : false).toBe(false);
-          expect(binding).toEqual({ value: {
-            disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
-          } });
+          // The binding's bundle is read at its native address, not by name.
+          expect(binding).toEqual(label === "a seller bundle name lookup that is indeterminate"
+            ? { value: { disposition: "present", binding: harness.copies.seller.binding } }
+            : { value: {
+              disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
+            } });
         }
 
         const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({

@@ -64,7 +64,7 @@ import {
   rawPublicKey,
   signedBytes,
 } from "../../src/crypto/index.js";
-import { DacsError, IndeterminateSubstrateError } from "../../src/errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 
@@ -783,17 +783,36 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       ["an indeterminate anchor", { verifyBundleAnchor: buyerAnchor("indeterminate", "rpc") }],
       ["an errored anchor", { verifyBundleAnchor: buyerAnchor("error", "rpc") }],
       ["a thrown anchor verifier", { verifyBundleAnchor: fetchFailed }],
-      ["a binding the name index does not show yet", { resolveBundleBinding: () => ({ disposition: "absent" as const }) }],
-      ["an indeterminate binding lookup", { resolveBundleBinding: () => ({
-        disposition: "indeterminate" as const, reason: "index unavailable" }) }],
-      ["a thrown binding lookup", { resolveBundleBinding: fetchFailed }],
       ["an indeterminate binding verifier", { verifyBundleBinding: () => ({ disposition: "indeterminate", reason: "rpc" }) }],
       ["an errored binding verifier", { verifyBundleBinding: () => ({ disposition: "error", reason: "rpc" }) }],
       ["a thrown binding verifier", { verifyBundleBinding: fetchFailed }],
+      // DemosAdapter's unanswered-read signal is a plain SubstrateError.
+      ["a thrown SubstrateError readback", { readBundleCopy: () => {
+        throw new SubstrateError("Demos anchor receipt observation unavailable"); } }],
     ];
     for (const [label, overrides] of unanswered) {
       expect(await outcome(overrides), label).toBeInstanceOf(IndeterminateSubstrateError);
     }
+    // ST-11, BB-2, BB-8: each copy carries its signed binding, so a
+    // discovery lookup that does not show it, or does not answer, never holds
+    // a natively readable, receipt-authenticated pair back from completion.
+    const undiscovered: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>]> = [
+      ["a binding the name index does not show yet", { resolveBundleBinding: () => ({ disposition: "absent" as const }) }],
+      ["an indeterminate binding lookup", { resolveBundleBinding: () => ({
+        disposition: "indeterminate" as const, reason: "index unavailable" }) }],
+      ["a thrown binding lookup", { resolveBundleBinding: fetchFailed }],
+      ["a thrown SubstrateError binding lookup", { resolveBundleBinding: () => {
+        throw new SubstrateError("Demos receipt native read failed"); } }],
+    ];
+    for (const [label, overrides] of undiscovered) {
+      expect(await outcome(overrides), label).toBe("audit-complete");
+    }
+    // A lookup answer about the session still is one.
+    expect(String(await outcome({ resolveBundleBinding: () => {
+      throw new DacsError("binding catalog answered for another session"); } })))
+      .toMatch(/another session/);
+    expect(String(await outcome({ resolveBundleBinding: () => ({ disposition: "unknown" }) as never })))
+      .toMatch(/malformed result/);
     const answers: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>, RegExp]> = [
       ["an invalid anchor", { verifyBundleAnchor: buyerAnchor("invalid", "forged") },
       /anchor verification is invalid/],
@@ -819,6 +838,166 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
         ? new Promise(() => undefined) : fx.deps.readBundleCopy(nativeAddress, role),
     });
     expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+  });
+
+  // Each ST-11 step 4-5, §10.4.1, BB-4 and BB-5 rejection in the
+  // gate is pinned by its own answer. Readback, binding lookup and the
+  // closure follow whatever the input carries, so only the check named can
+  // reject it.
+  it("rejects each copy, receipt and binding that breaks ST-11, §10.4.1, BB-4 or BB-5", async () => {
+    const fx = await fixture();
+    const sellerBinding = binding(fx.sellerBundle, "seller", fx.sellerNative);
+    const base = {
+      ...fx.input,
+      sellerClosure: {
+        ...fx.input.sellerClosure,
+        result: { ...fx.closureResult, binding: sellerBinding as BundleBinding | undefined },
+      },
+      copies: {
+        buyer: { ...fx.input.copies.buyer, binding: binding(fx.buyerBundle, "buyer", fx.buyerNative) },
+        seller: { ...fx.input.copies.seller, binding: sellerBinding },
+      },
+    };
+    type Input = typeof base;
+    type Copy = Input["copies"]["buyer"] | Input["copies"]["seller"];
+    const depsFor = (input: Input): FixedPriceX402AuditCompletionDeps => ({
+      ...fx.deps,
+      sellerFinalizationProvider: { ...fx.sellerFinalizationProvider, mapping: "write-input" as const },
+      readBundleCopy: (_nativeAddress, role) =>
+        structuredClone(input.copies[role].bundle) as unknown as Record<string, unknown>,
+      verifyBundleAnchor: () => ({ disposition: "valid" as const, mapping: "write-input" as const }),
+      resolveBundleBinding: (_logicalAddress, _signer, role) => ({
+        disposition: "present" as const,
+        binding: structuredClone(input.copies[role].binding),
+      }),
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    });
+    // The authenticated closure carries the copies as given.
+    const closed = (input: Input): Input => ({
+      ...input,
+      sellerClosure: {
+        ...input.sellerClosure,
+        result: {
+          ...fx.closureResult,
+          nativeAddress: input.copies.seller.nativeAddress,
+          bundleContentHash: attestationBundleHash(input.copies.seller.bundle),
+          sellerBundle: input.copies.seller.bundle,
+          buyerBundle: input.copies.buyer.bundle,
+          anchorReceipt: input.copies.seller.anchorReceipt,
+          binding: input.copies.seller.binding,
+        },
+      },
+    });
+    const outcome = (input: Input) => verifyFixedPriceX402AuditCompletion(input, depsFor(input))
+      .then(() => "audit-complete", (error: unknown) => error);
+    const mutated = (role: "buyer" | "seller", change: (copy: Copy) => void): Input => {
+      const input = structuredClone(base);
+      change(input.copies[role]);
+      return closed(input);
+    };
+    const signedBinding = (
+      body: Omit<BundleBinding, "signature">,
+      signer: { did: string },
+      key: { privateKey: ReturnType<typeof privateKeyFromSeed> },
+    ): BundleBinding => ({
+      ...body,
+      signature: {
+        algorithm: "ed25519",
+        signer: signer.did,
+        value: Buffer.from(ed25519Sign(
+          signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(body as unknown as Record<string, unknown>)),
+          key.privateKey,
+        )).toString("base64url"),
+      },
+    });
+    const rebind = (change: Partial<Omit<BundleBinding, "signature">>, signer = BUYER, key = signer) =>
+      (copy: Copy) => {
+        const { signature: _signature, ...body } = copy.binding;
+        copy.binding = signedBinding({ ...body, ...change }, signer, key);
+      };
+
+    await expect(outcome(closed(structuredClone(base)))).resolves.toBe("audit-complete");
+
+    const receiptAnswer = (role: string) =>
+      new RegExp(`${role} bundle receipt is not the exact established finalized receipt`);
+    const wrongType = /completed buyer bundle has the wrong type or session binding/;
+    const bindingAnswer = /completed buyer bundle lacks its exact BB-1 binding/;
+    const cases: Array<[string, Input, RegExp]> = [
+      // ST-11 step 4 / §10.4.3: the copy's own receipt is established and finalized.
+      ["an included buyer receipt", mutated("buyer", (copy) => {
+        copy.anchorReceipt.state = "included"; }), receiptAnswer("buyer")],
+      ["an included seller receipt", mutated("seller", (copy) => {
+        copy.anchorReceipt.state = "included"; }), receiptAnswer("seller")],
+      // A well-formed indeterminate receipt preserves the receipt it observed.
+      ["an indeterminate receipt disposition", mutated("buyer", (copy) => {
+        copy.anchorReceipt.observationDisposition = "indeterminate";
+        copy.anchorReceipt.preservedReceiptHash = h("9"); }), receiptAnswer("buyer")],
+      ["a receipt for another logical address", mutated("buyer", (copy) => {
+        copy.anchorReceipt.logicalAddress = bundleAddress(JOB_ID, "seller"); }), receiptAnswer("buyer")],
+      ["a receipt for another native address", mutated("buyer", (copy) => {
+        copy.anchorReceipt.nativeAddress = "native:elsewhere"; }), receiptAnswer("buyer")],
+      ["a receipt for other content", mutated("buyer", (copy) => {
+        copy.anchorReceipt.contentHash = h("e"); }), receiptAnswer("buyer")],
+      // §10.4.3: only a completed, unfaulted copy for this job completes.
+      ["a non-completed outcome", mutated("buyer", (copy) => {
+        (copy.bundle as { outcome: string }).outcome = "failed-perm"; }), wrongType],
+      ["another job's copy", mutated("buyer", (copy) => {
+        copy.bundle.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F"; }), wrongType],
+      // §10.4.1: every signature verifies and every required signer signed.
+      ["an under-signed copy", mutated("buyer", (copy) => {
+        copy.bundle.signatures = copy.bundle.signatures.filter((entry) => entry.party === BUYER.did);
+      }), /completed buyer bundle signature verification failed: copy is missing required signatures/],
+      ["a copy with a bad signature", mutated("buyer", (copy) => {
+        copy.bundle.signatures = copy.bundle.signatures.map((entry) => entry.party === SELLER.did
+          ? { ...entry, value: Buffer.from(ed25519Sign(new Uint8Array([1]), SELLER.privateKey)).toString("base64url") }
+          : entry);
+      }), /completed buyer bundle signature verification failed/],
+      // BB-5 checks 4, 5, 8 and 9: the binding names this copy exactly.
+      ["no binding", mutated("buyer", (copy) => {
+        delete (copy as { binding?: BundleBinding }).binding; }), bindingAnswer],
+      ["a binding by another signer", mutated("buyer", rebind({ signer: SELLER.did }, SELLER)), bindingAnswer],
+      ["a binding for other content", mutated("buyer", rebind({ bundleContentHash: h("e") })), bindingAnswer],
+      ["a binding for another logical address", mutated("buyer", rebind({
+        logicalAddress: bundleAddress(JOB_ID, "seller") })), bindingAnswer],
+      ["a binding for another native address", mutated("buyer", rebind({
+        nativeAddress: "native:elsewhere" })), bindingAnswer],
+      ["a binding for another role", mutated("buyer", rebind({ role: "seller" })), bindingAnswer],
+      ["a binding for another job", mutated("buyer", rebind({ jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" })),
+        bindingAnswer],
+      // BB-4: the binding signature verifies under its signer's key.
+      ["a binding signed with another key", mutated("buyer", rebind({}, BUYER, SELLER)),
+        /completed buyer BundleBinding signature is invalid/],
+    ];
+    // ST-11: the copies are the authenticated closure's.
+    const closure = closed(structuredClone(base));
+    const elsewhere = structuredClone(closure);
+    elsewhere.sellerClosure.result.nativeAddress = "native:elsewhere";
+    const otherReceipt = structuredClone(closure);
+    // A new object: structuredClone keeps the closure sharing the copy's receipt.
+    otherReceipt.sellerClosure.result.anchorReceipt = {
+      ...otherReceipt.sellerClosure.result.anchorReceipt,
+      observedAt: otherReceipt.sellerClosure.result.anchorReceipt.observedAt + 1,
+    };
+    const otherBuyerBundle = structuredClone(closure);
+    otherBuyerBundle.sellerClosure.result.buyerBundle = signBundle({
+      ...(({ anchoredByRole: _role, signatures: _signatures, ...body }) => body)(fx.buyerBundle),
+      finalisedAt: fx.buyerBundle.finalisedAt + 1,
+    }, "buyer");
+    const otherBinding = structuredClone(closure);
+    otherBinding.sellerClosure.result.binding = binding(fx.sellerBundle, "seller", "native:elsewhere");
+    const notTheClosure = /completed bundle copies do not match the authenticated durable session closure/;
+    cases.push(
+      ["a closure at another native address", elsewhere, notTheClosure],
+      ["a closure with another receipt", otherReceipt, notTheClosure],
+      ["a closure with another buyer copy", otherBuyerBundle, notTheClosure],
+      ["a closure with another binding", otherBinding, notTheClosure],
+    );
+    for (const [label, input, message] of cases) {
+      const error = await outcome(input);
+      expect(error, label).toBeInstanceOf(DacsError);
+      expect(error, label).not.toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error), label).toMatch(message);
+    }
   });
 
   it("never accepts caller-selected pure mapping for Demos", async () => {

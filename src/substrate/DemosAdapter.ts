@@ -17,7 +17,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import {
   assertDemosCciResponseBounds,
   parseClaimRef,
@@ -387,31 +387,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-// HTTP statuses that answer the request itself: malformed (400, 422), unknown
-// message or subject (404; demosdk documents the node's 404 "Unknown
-// message"), or gone (410). Every other status, including a 5xx during a node
-// restart, a CDN's 52x or a gateway's 401/403/407, says nothing about the
-// request's subject.
-const ANSWERED_HTTP_STATUSES = new Set([400, 404, 410, 422]);
-
 /**
- * Classifies a Demos read result. demosdk's `call` returns
- * `{ result: 500, response: TransportError }` for every failed POST; the
- * TransportError's `cause` is the HTTP client error. Only HTTP 400, 404, 410
- * or 422, or a non-200 body the node returned itself, is the node's answer. A
- * connection error, a timeout or any other HTTP status left the read
- * unanswered.
+ * Whether a Demos nodeCall read returned no record to compare a receipt with.
+ * demosdk 4.0.16's `call` returns only `response.data.response` for a
+ * nodeCall answered over HTTP 2xx, dropping the RPC `result`, and
+ * `{ result: 500, response: TransportError }` for a failed POST. The node
+ * answers an unknown transaction, a block it has not indexed and an internal
+ * error alike, with a bare string such as `"error"` or `"Error in nodeCall: "`
+ * over HTTP 200, and its HTTP 400 also covers rate-limiter and catch-all
+ * failures. None of those shapes says anything about the receipt's subject,
+ * whatever the node version, so none of them is an answer: only a fetched
+ * transaction or block record that contradicts the receipt is.
+ *
+ * Checked against demosdk 4.0.16 (gitHead d3620ae24f657ae7442e63e7adaefef7094b22e2)
+ * and kynesyslabs/node testnet ac8f45f02fc9c25082ce9b83595c2e3916b49c5a
+ * (`manageNodeCall.ts`, `getBlockByNumber.ts`, `server_rpc.ts`). The repo pins
+ * no node build, so this reads the body, never the HTTP status: a node that
+ * answers in another shape stays retryable, never a rejection.
  */
-function demosObservationFailure(value: unknown): "answered" | "unanswered" | null {
-  if (!isRecord(value) || typeof value.result !== "number" || value.result === 200) return null;
-  const response = value.response;
-  if (!(response instanceof Error)) return "answered";
-  const cause = (response as { cause?: unknown }).cause;
-  const status = isRecord(cause) && isRecord(cause.response) ? cause.response.status : undefined;
-  return response.name === "TransportError" && typeof status === "number" &&
-      ANSWERED_HTTP_STATUSES.has(status)
-    ? "answered"
-    : "unanswered";
+function demosObservationUnanswered(value: unknown): boolean {
+  if (!isRecord(value) || Array.isArray(value)) return true;
+  if (typeof value.result === "number" && value.result !== 200) return true;
+  const record = isRecord(value.response) ? value.response : value;
+  return !isRecord(record) || Array.isArray(record);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1226,21 +1224,27 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
-    const observations = await Promise.all([
-      this.#demos.getTxByHash(receipt.transactionRef.value),
-      this.#demos.getBlockByNumber(blockNumber),
-      this.#demos.storagePrograms.read(receipt.nativeAddress),
-    ]) as unknown[];
-    // demosdk.call catches transport failures and returns an RPC error envelope.
-    // An unanswered observation cannot establish that a receipt is invalid, but
-    // the node's answer about one read is final whatever another read did.
-    const failures = observations.map(demosObservationFailure);
-    if (failures.includes("answered")) return false;
-    if (failures.includes("unanswered")) {
-      throw new SubstrateError("Demos anchor receipt observation unavailable");
+    let observations: unknown[];
+    try {
+      observations = await Promise.all([
+        this.#demos.getTxByHash(receipt.transactionRef.value),
+        this.#demos.getBlockByNumber(blockNumber),
+        this.#demos.storagePrograms.read(receipt.nativeAddress),
+      ]) as unknown[];
+    } catch (error) {
+      // demosdk's storage read throws on any non-2xx HTTP status.
+      throw new IndeterminateSubstrateError(
+        "Demos anchor receipt observation unavailable",
+        { cause: error },
+      );
     }
+    // An unanswered observation cannot establish that a receipt is invalid:
+    // CORE §5.1 keeps it from demoting the receipt, so retry it. A storage
+    // read without the program, or a block without its validation data, is a
+    // node that has not caught up, not a record that contradicts the receipt.
     const transactionResult = observations[0];
     const blockResult = observations[1];
+    const nativeResult = observations[2];
     const transaction = isRecord(transactionResult) &&
         isRecord(transactionResult.response)
       ? transactionResult.response
@@ -1248,9 +1252,10 @@ export class DemosAdapter implements SubstrateAdapter {
     const block = isRecord(blockResult) && isRecord(blockResult.response)
       ? blockResult.response
       : blockResult;
-    if (!isRecord(transaction) || !isRecord(block) ||
-        block.validation_data === undefined) {
-      return false;
+    if (observations.some(demosObservationUnanswered) || !isRecord(transaction) ||
+        !isRecord(block) || block.validation_data === undefined ||
+        !isRecord(nativeResult) || nativeResult.success !== true) {
+      throw new IndeterminateSubstrateError("Demos anchor receipt observation unavailable");
     }
     const evidence: DemosWriteEvidence = {
       evidenceVersion: "1",

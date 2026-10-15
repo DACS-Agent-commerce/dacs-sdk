@@ -5,7 +5,6 @@ import {
   baseUnits,
   bundleAddress,
   canonicalSellerSettlementId,
-  DacsError,
   encodeAddressSegment,
   getAuthenticatedRailProvenance,
   sellerFulfilmentId,
@@ -1720,29 +1719,26 @@ export function createDacsFixedPriceBuyerAuditV1(
         }, {
           deadline: verifierDeadline,
           sellerFinalizationProvider: material.provider,
-          async readBundleCopy(nativeAddress, role) {
-            let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
+          // The copy at its exact native address (DACS-5 BB-5 step 6); the
+          // name index, which may lag finality, never gates completion (ST-11).
+          async readBundleCopy(nativeAddress) {
+            let bundle: Awaited<ReturnType<typeof publication.readBundleAt>>;
             try {
-              anchored = await tracked(publication.resolveRoleBundle(role));
+              bundle = await tracked(publication.readBundleAt(nativeAddress));
             } catch (error) {
-              if (!(error instanceof DacsDemosBundlePublicationError) ||
-                  error.reasonCode === "bundle-resolution-indeterminate") {
-                unavailable = true;
-              } else {
+              if (error instanceof DacsDemosBundlePublicationError) {
                 answeredRejection = true;
+              } else {
+                unavailable = true;
               }
               throw error;
             }
-            // Not in Demos's name index yet: it may lag finality, so retry.
-            if (anchored === null) {
+            // Nothing readable there yet: the node may lag finality, so retry.
+            if (bundle === null) {
               unavailable = true;
               return null;
             }
-            if (anchored.nativeAddress !== nativeAddress) {
-              answeredRejection = true;
-              throw new DacsError(`Demos resolves the ${role} bundle to another native address`);
-            }
-            return copy(anchored.bundle) as unknown as Record<string, unknown>;
+            return copy(bundle) as unknown as Record<string, unknown>;
           },
           async verifyBundleAnchor(candidate) {
             const disposition = await tracked(publication.verifyBundleAnchorReceipt({
@@ -1756,17 +1752,10 @@ export function createDacsFixedPriceBuyerAuditV1(
               ? { disposition: "valid" as const, mapping: "write-input" as const }
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
           },
-          async resolveBundleBinding(logicalAddress, signer) {
-            const resolved = await tracked(publication.resolveBundleBinding(logicalAddress, signer));
-            if ((resolved.disposition === "indeterminate" &&
-                TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) ||
-                resolved.disposition === "absent") {
-              unavailable = true;
-            } else if (resolved.disposition !== "present") {
-              answeredRejection = true;
-            }
-            return resolved;
-          },
+          // Discovery only: the gate reads the binding each copy carries, and
+          // a lookup that does not show it gates nothing (ST-11, BB-8).
+          resolveBundleBinding: (logicalAddress, signer) =>
+            tracked(publication.resolveBundleBinding(logicalAddress, signer)),
           async verifyBundleBinding(binding) {
             const disposition = await tracked(publication.verifyBundleBinding(binding));
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;

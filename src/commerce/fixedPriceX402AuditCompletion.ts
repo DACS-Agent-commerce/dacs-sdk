@@ -15,7 +15,7 @@ import {
 import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
-import { DacsError, IndeterminateSubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,
@@ -642,12 +642,16 @@ function requireExactReceipt(
 }
 
 // A read the host could not answer stays retryable: anything it throws other
-// than a DacsError (an answer) becomes IndeterminateSubstrateError.
+// than a DacsError that is not a substrate fault (an answer) becomes
+// IndeterminateSubstrateError. A plain SubstrateError is a substrate that did
+// not answer (DemosAdapter's "observation unavailable"), not an answer about
+// the session, as in the seller closure's own read classification.
 async function unanswered<T>(read: () => Promise<T> | T, label: string): Promise<T> {
   try {
     return await read();
   } catch (error) {
-    if (error instanceof DacsError) throw error;
+    if (error instanceof IndeterminateSubstrateError) throw error;
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
     throw new IndeterminateSubstrateError(`${label} errored`, { cause: error });
   }
 }
@@ -706,11 +710,17 @@ async function requireBinding(
     throw new DacsError("write-input audit requires a BundleBinding resolver");
   }
   const resolveBundleBinding = deps.resolveBundleBinding;
-  const lookup = await unanswered(() => resolveBundleBinding(
-    binding.logicalAddress,
-    binding.signer,
-    copy.role,
-  ), `${copy.role} BundleBinding resolution`);
+  let lookup: unknown;
+  try {
+    lookup = await unanswered(() => resolveBundleBinding(
+      binding.logicalAddress,
+      binding.signer,
+      copy.role,
+    ), `${copy.role} BundleBinding resolution`);
+  } catch (error) {
+    if (!(error instanceof IndeterminateSubstrateError)) throw error;
+    lookup = { disposition: "indeterminate", reason: "unanswered" };
+  }
   if (!isRecord(lookup) || !(
     (lookup.disposition === "present" && exactKeys(lookup, ["disposition", "binding"])) ||
     (lookup.disposition === "absent" && exactKeys(lookup, ["disposition"])) ||
@@ -720,16 +730,12 @@ async function requireBinding(
   )) {
     throw new DacsError(`${copy.role} BundleBinding resolver returned a malformed result`);
   }
-  // An unanswered lookup, or one whose name index does not show the binding
-  // yet (on Demos it may lag finality), is retryable; a different binding is not.
-  if (lookup.disposition === "indeterminate" || lookup.disposition === "absent") {
-    throw new IndeterminateSubstrateError(
-      lookup.disposition === "indeterminate"
-        ? `completed ${copy.role} BundleBinding resolution is indeterminate`
-        : `completed ${copy.role} BundleBinding is not yet visible in the BundleBinding name index`,
-    );
-  }
-  if (!isBundleBinding(lookup.binding) || !exact(lookup.binding, binding)) {
+  // ST-11: external index visibility never gates completion, and BB-2 lets the
+  // copy carry its signed binding, checked above under BB-4 and BB-5. A lookup
+  // that does not show the binding, or does not answer, is no evidence either
+  // way (BB-8); only a different binding the lookup serves is an answer.
+  if (lookup.disposition === "present" &&
+      (!isBundleBinding(lookup.binding) || !exact(lookup.binding, binding))) {
     throw new DacsError(
       `completed ${copy.role} BundleBinding is not independently resolvable and exact`,
     );
@@ -787,7 +793,7 @@ async function verifyCopy(
     () => deps.readBundleCopy(copy.nativeAddress, copy.role),
     `${copy.role} native bundle readback`,
   );
-  // Nothing readable yet is unanswered (a Demos name index may lag finality);
+  // Nothing readable yet is unanswered (a Demos node may lag finality);
   // different content is an answer against the copy.
   if (readback === null) {
     throw new IndeterminateSubstrateError(
@@ -837,10 +843,12 @@ async function verifyCopy(
  * stronger boundary returns `audit-complete`.
  *
  * A read nobody answered is `IndeterminateSubstrateError`, so retry it: a
- * host read that throws anything but a `DacsError`, an `indeterminate` or
- * `error` verifier disposition, and a bundle copy, seller bundle or
- * BundleBinding that its name index does not show yet. A `DacsError` is an
- * answer against the session and needs an operator.
+ * host read that throws anything but a `DacsError`, a host read that throws a
+ * `SubstrateError`, an `indeterminate` or `error` verifier disposition, a
+ * bundle copy not yet readable at its native address, and a seller bundle its
+ * name index does not show yet. A BundleBinding lookup gates nothing unless it
+ * serves a different binding: the copy carries its own (ST-11, BB-2). Any
+ * other `DacsError` is an answer against the session and needs an operator.
  */
 export async function verifyCompletedTwoSidedSession(
   input: Readonly<CompletedTwoSidedSessionInput>,
@@ -942,8 +950,14 @@ export async function verifyCompletedTwoSidedSession(
 }
 
 /**
- * DACS-5 §10.3.1 ST-11 completion gate, checked against Standard `next`
- * 81ded2b49851d8fa17399e3fdade9e36e33a4ff7.
+ * DACS-5 §10.3.1 ST-11 completion gate. It was first checked against
+ * Standard `next` 81ded2b49851d8fa17399e3fdade9e36e33a4ff7; the profile pins
+ * `FIXED_PRICE_X402_STANDARD_REVISION`. ST-11 steps 1-3, including the signed
+ * Listing, agreement and four-way dispatch the pinned revision adds, are the
+ * seller closure's (`verifyFinalizedSellerBundleReadOnly`). The pinned
+ * revision's BB-5 current-profile admission, that role authority does not
+ * come from caller input or `parties[]`, is not yet re-checked here: this
+ * gate takes `buyer` and `seller` from its caller.
  *
  * The synchronous combiner is intentionally operational and can never return
  * `audit-complete`. This function first re-authenticates the exact durable
