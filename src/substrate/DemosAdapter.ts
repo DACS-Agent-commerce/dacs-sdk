@@ -415,11 +415,17 @@ interface DemosHistoryProvenance {
   created: string | undefined;
 }
 
-/** True when a Storage Program read serves none of its provenance members. */
-function demosReadOmitsProvenance(native: Readonly<Record<string, unknown>>): boolean {
-  return native.createdByTx === undefined &&
-    native.lastModifiedByTx === undefined &&
-    native.interactionTxs === undefined;
+/**
+ * The provenance member DEMOS-MAPPING §A.2 binds a write of this operation to
+ * (`createdByTx` for a create, `lastModifiedByTx` for an update), or
+ * `undefined` when the read does not serve it.
+ */
+function demosOperationProvenance(
+  native: Readonly<Record<string, unknown>>,
+  operation: DemosWriteEvidence["operation"],
+): unknown {
+  const served = operation === "create" ? native.createdByTx : native.lastModifiedByTx;
+  return served === null ? undefined : served;
 }
 
 function httpStatus(error: unknown): number | undefined {
@@ -1121,13 +1127,13 @@ export class DemosAdapter implements SubstrateAdapter {
     return this.#demos.getAddress();
   }
 
-  private demosEvidenceMatchesObservations(
+  private async demosEvidenceMatchesObservations(
     evidence: Readonly<DemosWriteEvidence>,
     transactionResult: unknown,
     blockResult: unknown,
     nativeResult: unknown,
-    historyProvenance?: Readonly<DemosHistoryProvenance>,
-  ): boolean {
+    historyProvenance: () => Promise<Readonly<DemosHistoryProvenance>>,
+  ): Promise<boolean> {
     const transaction = isRecord(transactionResult) &&
         isRecord(transactionResult.response)
       ? transactionResult.response
@@ -1186,45 +1192,41 @@ export class DemosAdapter implements SubstrateAdapter {
     if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
       return false;
     }
-    if (demosReadOmitsProvenance(nativeResult)) {
-      // DEMOS-MAPPING §A.2 binds the read to createdByTx/lastModifiedByTx. A
-      // node that serves neither (kynesyslabs/node GET /storage-program) leaves
-      // only the owner's authenticated write history to bind it; without that
-      // the read cannot be attributed to this write, so it is not verified.
-      if (historyProvenance === undefined) {
-        throw new SubstrateError("Demos native read carries no write provenance");
-      }
-      return (evidence.operation === "create"
-        ? historyProvenance.created
-        : historyProvenance.latest) === evidence.transactionRef;
-    }
-    const provenance = evidence.operation === "create"
-      ? nativeResult.createdByTx
-      : nativeResult.lastModifiedByTx;
-    const interactions = Array.isArray(nativeResult.interactionTxs)
-      ? nativeResult.interactionTxs
-      : [];
-    return provenance === evidence.transactionRef ||
-      interactions.includes(evidence.transactionRef);
+    // DEMOS-MAPPING §A.2 binds the read to this operation's createdByTx or
+    // lastModifiedByTx. A served member is authoritative: `interactionTxs`
+    // only lists writes that touched the address, so it never overrides one.
+    const provenance = demosOperationProvenance(nativeResult, evidence.operation);
+    if (provenance !== undefined) return provenance === evidence.transactionRef;
+    // A node that does not serve it (kynesyslabs/node GET /storage-program)
+    // leaves only the owner's authenticated write history to bind it; when
+    // that is unavailable the read cannot be attributed to this write and the
+    // history read rejects (indeterminate). It is read last, so a proof the
+    // other observations contradict is `false` without it.
+    const history = await historyProvenance();
+    return (evidence.operation === "create"
+      ? history.created
+      : history.latest) === evidence.transactionRef;
   }
 
   /**
-   * Recover provenance from history for a native read that omits it. Any
+   * Recover provenance from the owner's history on demand, at most once. Any
    * failure leaves the proof unanswered (CORE §5.1 `indeterminate`).
    */
-  private async demosHistoryProvenanceFor(
+  private demosHistoryProvenanceFor(
     nativeAddress: string,
     native: Readonly<Record<string, unknown>>,
-  ): Promise<Readonly<DemosHistoryProvenance> | undefined> {
-    if (!demosReadOmitsProvenance(native)) return undefined;
-    try {
-      return await this.resolveDemosProvenanceFromHistory(nativeAddress, native);
-    } catch (error) {
-      if (error instanceof SubstrateError) throw error;
-      throw new SubstrateError("Demos native provenance history is unavailable", {
-        cause: error,
-      });
-    }
+  ): () => Promise<Readonly<DemosHistoryProvenance>> {
+    let pending: Promise<Readonly<DemosHistoryProvenance>> | undefined;
+    return () => {
+      pending ??= this.resolveDemosProvenanceFromHistory(nativeAddress, native)
+        .catch((error: unknown) => {
+          if (error instanceof SubstrateError) throw error;
+          throw new SubstrateError("Demos native provenance history is unavailable", {
+            cause: error,
+          });
+        });
+      return pending;
+    };
   }
 
   /**
@@ -1290,7 +1292,7 @@ export class DemosAdapter implements SubstrateAdapter {
       transaction,
       block,
       native,
-      await this.demosHistoryProvenanceFor(evidence.nativeAddress, native),
+      this.demosHistoryProvenanceFor(evidence.nativeAddress, native),
     );
   }
 
@@ -1352,7 +1354,7 @@ export class DemosAdapter implements SubstrateAdapter {
       transaction,
       block,
       native,
-      await this.demosHistoryProvenanceFor(receipt.nativeAddress, native),
+      this.demosHistoryProvenanceFor(receipt.nativeAddress, native),
     );
   }
 
@@ -1416,13 +1418,12 @@ export class DemosAdapter implements SubstrateAdapter {
         latestProvenance.length > 0
       ? [latestProvenance]
       : [];
-    let historyProvenance: Readonly<DemosHistoryProvenance> | undefined;
+    const historyProvenance = this.demosHistoryProvenanceFor(
+      input.nativeAddress,
+      nativeObservation,
+    );
     if (provenanceCandidates.length === 0) {
-      historyProvenance = await this.resolveDemosProvenanceFromHistory(
-        input.nativeAddress,
-        nativeObservation,
-      );
-      provenanceCandidates = [historyProvenance.latest];
+      provenanceCandidates = [(await historyProvenance()).latest];
     }
 
     let lastFailure: unknown;
@@ -1497,7 +1498,7 @@ export class DemosAdapter implements SubstrateAdapter {
           },
         };
         assertDemosWriteEvidence(evidence);
-        if (!this.demosEvidenceMatchesObservations(
+        if (!await this.demosEvidenceMatchesObservations(
           evidence,
           transaction,
           block,

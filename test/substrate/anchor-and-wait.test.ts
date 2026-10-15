@@ -17,11 +17,30 @@ import {
   logicalToStorageProgramName,
   sha256Hex,
 } from "../../src/canonical/index.js";
-import { SubstrateError } from "../../src/errors.js";
+import { DacsError, SubstrateError } from "../../src/errors.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 let fixtureId = 0;
 const writeJournal = createInMemoryDemosWriteJournal();
+
+/** The rejection of a verification that must not resolve. */
+async function refusal(verdict: Promise<boolean>): Promise<unknown> {
+  return verdict.then(
+    (value) => { throw new Error(`verification resolved ${String(value)}`); },
+    (reason: unknown) => reason,
+  );
+}
+
+/**
+ * SR2-5: a proof whose signed transaction does not bind its claimed write is
+ * invalid outright (a permanent DacsError), never indeterminate.
+ */
+function expectBindingRefusal(error: unknown): void {
+  expect(error).toBeInstanceOf(DacsError);
+  expect(error).not.toBeInstanceOf(SubstrateError);
+  expect((error as DacsError).message)
+    .toBe("Demos signed transaction does not bind its native write");
+}
 
 function notFound(): Error {
   return Object.assign(new Error("not found"), { response: { status: 404 } });
@@ -1539,33 +1558,204 @@ describe("DemosAdapter.anchorAndWait", () => {
         value: Buffer.from(canonicalize(proof), "utf8").toString("base64url"),
       },
     };
-    const verdict = await fixture.adapter.verifyDemosAnchorReceipt(forged).then(
-      (value) => value,
-      () => "rejected" as const,
-    );
-    expect([false, "rejected"]).toContain(verdict);
+    expectBindingRefusal(await refusal(fixture.adapter.verifyDemosAnchorReceipt(forged)));
+    const forgedEvidence = {
+      ...a.demosEvidence!,
+      transactionRef: b.txRef!,
+      nonce: b.demosEvidence!.nonce,
+      signedTransaction: b.demosEvidence!.signedTransaction,
+      signedTransactionHash: b.demosEvidence!.signedTransactionHash,
+      blockNumber: b.demosEvidence!.blockNumber,
+      blockHash: b.demosEvidence!.blockHash,
+      blockTimestamp: b.demosEvidence!.blockTimestamp,
+      finalityProof: b.demosEvidence!.finalityProof,
+      finalityProofHash: b.demosEvidence!.finalityProofHash,
+    };
+    expectBindingRefusal(await refusal(
+      fixture.adapter.verifyDemosWriteEvidence(forgedEvidence),
+    ));
     await expect(fixture.adapter.verifyDemosAnchorReceipt(receiptA)).resolves.toBe(true);
+    await expect(fixture.adapter.verifyDemosWriteEvidence(a.demosEvidence!))
+      .resolves.toBe(true);
   });
 
   it("refuses a proof whose nonce is not the signed transaction's (SR2-5)", async () => {
     const { adapter, evidence, receipt } = await anchoredProof();
-    const outcome = (promise: Promise<boolean>) => promise.then(
-      (value) => value,
-      () => "rejected" as const,
-    );
-    expect([false, "rejected"]).toContain(
-      await outcome(adapter.verifyDemosAnchorReceipt({
-        ...receipt,
-        nonce: String(evidence.nonce + 1),
-      })),
-    );
-    expect([false, "rejected"]).toContain(
-      await outcome(adapter.verifyDemosWriteEvidence({
-        ...evidence,
-        nonce: evidence.nonce + 1,
-      })),
-    );
+    expectBindingRefusal(await refusal(adapter.verifyDemosAnchorReceipt({
+      ...receipt,
+      nonce: String(evidence.nonce + 1),
+    })));
+    expectBindingRefusal(await refusal(adapter.verifyDemosWriteEvidence({
+      ...evidence,
+      nonce: evidence.nonce + 1,
+    })));
     await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+  });
+
+  /** Anchor a create, then an identical-content update of the same program. */
+  async function createThenIdenticalUpdate(name: string) {
+    const fixture = await makeAdapter();
+    const { adapter, raw } = fixture;
+    const value = { value: 1 };
+    const created = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1_000, pollMs: 1 });
+    expect(created.demosEvidence?.operation).toBe("create");
+    vi.mocked(adapter.resolveAnchorByName).mockResolvedValue({
+      status: "present", address: created.address,
+    });
+    // The fixture node serves the update's payload; keep the program's name
+    // and its create provenance, as a node does.
+    const baseRead = raw.storagePrograms.read.getMockImplementation();
+    const programName = (await baseRead(created.address)).programName;
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const current = await baseRead(address);
+      return {
+        ...current,
+        programName: current.programName ?? programName,
+        createdByTx: created.txRef,
+        interactionTxs: [created.txRef, current.lastModifiedByTx],
+      };
+    });
+    const updated = await adapter.anchorAndWait(name, value, {
+      completion: "read-visible", timeoutMs: 1_000, pollMs: 1,
+    });
+    expect(updated.demosEvidence?.operation).toBe("update");
+    const receipt = (evidence: NonNullable<typeof created.demosEvidence>) =>
+      demosWriteEvidenceToAnchorReceipt({
+        logicalAddress: name,
+        contentHash: contentHash(value),
+        writer: `did:demos:agent:${fixture.wallet.replace(/^0x/, "")}`,
+        evidence,
+      });
+    return { ...fixture, created, updated, receipt };
+  }
+
+  // DEMOS-MAPPING §A.2 binds a write to its operation's createdByTx or
+  // lastModifiedByTx. When the node serves that member it is authoritative:
+  // `interactionTxs` naming the write does not override a contradiction.
+  it.each([
+    ["create", "createdByTx"],
+    ["update", "lastModifiedByTx"],
+  ] as const)("refuses a %s proof whose served %s names another write", async (
+    operation,
+    member,
+  ) => {
+    const { adapter, raw, created, updated, receipt: receiptFor } =
+      await createThenIdenticalUpdate(`proof-contradicted-${operation}`);
+    const evidence = (operation === "create" ? created : updated).demosEvidence!;
+    const receipt = receiptFor(evidence);
+    await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => ({
+      ...await read(address),
+      [member]: "tx-another-write",
+      interactionTxs: [created.txRef, updated.txRef, "tx-another-write"],
+    }));
+    raw.getTransactionHistory = vi.fn(async () => {
+      throw new Error("a served provenance member needs no history");
+    });
+    await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(false);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    expect(raw.getTransactionHistory).not.toHaveBeenCalled();
+  });
+
+  // On a provenance-free (node2-shaped) read, a create proof binds to the
+  // history's single create and an update proof to the latest owner mutation.
+  it("binds create and update proofs to owner history by operation", async () => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-history-ops");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const serveHistory = (rows: unknown[]) => {
+      raw.getTransactionHistory = vi.fn(async (
+        _owner: string,
+        _type: string,
+        options: { start: number; limit: number },
+      ) => rows.slice(options.start, options.start + options.limit));
+    };
+    serveHistory([txUpdate, txCreate]);
+    // The create stays verified after a later identical-content update.
+    await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!)))
+      .resolves.toBe(true);
+    await expect(adapter.verifyDemosWriteEvidence(updated.demosEvidence!)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)))
+      .resolves.toBe(true);
+    // A member served as null is not served: history still binds the read.
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return { ...rest, createdByTx: null, lastModifiedByTx: null };
+    });
+    await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)))
+      .resolves.toBe(true);
+    // An update that a later write superseded no longer binds the read.
+    serveHistory([{ ...txUpdate, hash: "tx-later-update" }, txUpdate, txCreate]);
+    await expect(adapter.verifyDemosWriteEvidence(updated.demosEvidence!)).resolves.toBe(false);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)))
+      .resolves.toBe(false);
+    await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!)).resolves.toBe(true);
+  });
+
+  it("surfaces a failed history read as SubstrateError, not a raw transport error", async () => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const failure = rpcFailure();
+    let calls = 0;
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      calls += 1;
+      // The second read is the history path's post-scan freshness read.
+      if (calls % 2 === 0) throw failure;
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const tx = await raw.getTxByHash(evidence.transactionRef);
+    raw.getTransactionHistory = vi.fn(async (
+      _owner: string,
+      _type: string,
+      options: { start: number; limit: number },
+    ) => options.start === 0 ? [tx] : []);
+    for (const verify of [
+      () => adapter.verifyDemosAnchorReceipt(receipt),
+      () => adapter.verifyDemosWriteEvidence(evidence),
+    ]) {
+      const error = await verify().then(() => undefined, (reason: unknown) => reason);
+      expect(error).toBeInstanceOf(SubstrateError);
+      expect((error as SubstrateError).cause).toBe(failure);
+    }
+  });
+
+  it("refuses a contradicted proof without reading the owner history", async () => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    raw.getTransactionHistory = vi.fn(async () => {
+      throw rpcFailure();
+    });
+    await expect(adapter.verifyDemosAnchorReceipt({
+      ...receipt,
+      blockRef: { ...receipt.blockRef!, id: "another-block" },
+    })).resolves.toBe(false);
+    await expect(adapter.verifyDemosWriteEvidence({
+      ...evidence,
+      blockHash: "another-block",
+    })).resolves.toBe(false);
+    expect(raw.getTransactionHistory).not.toHaveBeenCalled();
+    // The uncontradicted proof still needs the history, so it stays unanswered.
+    await expect(adapter.verifyDemosAnchorReceipt(receipt))
+      .rejects.toBeInstanceOf(SubstrateError);
   });
 
   it("keeps a block without finality data indeterminate instead of invalid", async () => {
