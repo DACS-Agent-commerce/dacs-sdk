@@ -245,7 +245,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demosdk": "4.0.18",
       "@x402/core": "2.15.0",
       "@x402/evm": "2.15.0",
       "@x402/fetch": "2.15.0",
@@ -438,6 +438,41 @@ describe("create-dacs-agent", () => {
     expect(combined).not.toContain('availableVersion: "not-queried"');
   });
 
+  test("pins a demosdk that the core package's peer range accepts on every rail", async () => {
+    const core = JSON.parse(await readFile(
+      new URL("../../../package.json", import.meta.url), "utf8",
+    ));
+    const range = core.peerDependencies["@kynesyslabs/demosdk"];
+    // npm refuses to install a generated project whose exact pin falls outside
+    // this peerOptional range (ERESOLVE), so keep the two in step.
+    const caret = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
+    expect(caret, `unsupported peer range ${range}`).not.toBeNull();
+    const floor = caret!.slice(1).map(Number);
+    const parent = await temporaryDirectory();
+    for (const rails of ["pay-dem", "x402", "both"] as const) {
+      const target = join(parent, `pin-${rails}`);
+      await createDacsAgentProject({
+        targetDirectory: target,
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+        deployment: "docker",
+        rails,
+        install: false,
+      });
+      const pinned = JSON.parse(await readFile(join(target, "package.json"), "utf8"))
+        .dependencies["@kynesyslabs/demosdk"];
+      const exact = /^(\d+)\.(\d+)\.(\d+)$/.exec(pinned);
+      expect(exact, `${rails} pin ${pinned} is not exact`).not.toBeNull();
+      const version = exact!.slice(1).map(Number);
+      expect(version[0], `${rails} pin ${pinned} vs ${range}`).toBe(floor[0]);
+      expect(
+        version[1]! > floor[1]! || (version[1] === floor[1] && version[2]! >= floor[2]!),
+        `${rails} pin ${pinned} is below ${range}`,
+      ).toBe(true);
+    }
+  });
+
   test("generates a native DEM project without EVM or x402 dependencies", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "native-agent");
@@ -455,7 +490,7 @@ describe("create-dacs-agent", () => {
     expect(packageSource.dependencies).toEqual({
       "@kynesyslabs/dacs": "0.1.0-alpha.0",
       "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demosdk": "4.0.18",
       "better-sqlite3": "12.6.2",
     });
     const config = await readFile(join(target, "dacs.config.ts"), "utf8");

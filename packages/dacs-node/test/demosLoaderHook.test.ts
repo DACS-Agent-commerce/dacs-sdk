@@ -22,6 +22,15 @@ describe("Demos ESM compatibility loader", () => {
     expect(nextResolve).toHaveBeenCalledOnce();
   });
 
+  it("passes a successful resolution through unchanged (demosdk 4.0.17+)", async () => {
+    const resolved = Object.freeze({
+      url: "file:///app/node_modules/@kynesyslabs/demosdk/build/demoswork/operations/index.js",
+    });
+    const nextResolve = vi.fn(async () => resolved);
+    await expect(resolve("./operations/index.js", context, nextResolve)).resolves.toBe(resolved);
+    expect(nextResolve).toHaveBeenCalledOnce();
+  });
+
   it("preserves all unrelated resolution failures", async () => {
     const error = Object.assign(new Error("directory import"), {
       code: "ERR_UNSUPPORTED_DIR_IMPORT",
