@@ -39,6 +39,12 @@ failures are not failed cryptographic signatures.
 Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
+Negative zero (for example `-0.0`) is an admitted CORE §B.2 number that
+serialises as `0`. `contentHash`, `stripSignature`, `canonicalSignedScope` and
+the signature/Listing verifiers therefore treat an admitted `-0` exactly like
+`0`, and their owned snapshots hold `0`. Locally authored artifacts should use
+`0`: the signing helpers still refuse an in-memory `-0` as a non-wire alias.
+
 This is an **explicit API**, not a current-profile switch. Existing object-based
 SDK consumers, adapters, caches and restored session records do not acquire
 raw-byte provenance by importing this helper. Do not use `JSON.stringify` of
