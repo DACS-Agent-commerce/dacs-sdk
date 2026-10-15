@@ -760,10 +760,13 @@ export interface PayDemRailConfig {
    * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
    * When execution is not established within it, the settlement is
    * indeterminate and never resubmitted. demosdk's transport retries a
-   * connection error or a 502–504 up to four times, backing off up to
-   * 8 seconds per retry, so one transient error can outlast a 5 second
-   * `statusRequestTimeoutMs`; the read then counts as stalled and the
-   * settlement is indeterminate at once (liveness only, never a resubmission).
+   * connection error or a 502–504 up to four times inside one read, backing
+   * off 250, 500, 1 000 and 2 000 ms (up to 8 seconds only when the node sends
+   * `Retry-After`). One transient error adds about 250 ms; a read outlasts a
+   * 5 second `statusRequestTimeoutMs` only after about three consecutive
+   * failures, a long `Retry-After` or a slow gateway. It then counts as
+   * stalled and the settlement is indeterminate at once (liveness only, never
+   * a resubmission).
    */
   transactionRecordTimeoutMs?: number;
 }
@@ -1216,10 +1219,11 @@ type ObservedDemosExecution =
  * the node's transaction record for the retained signed hash. Only a
  * `confirmed` record at the observed inclusion block whose body is exactly the
  * prepared transfer is execution. A `failed` record bound the same way is not
- * settled. A record that is missing, pending, unreadable or malformed is polled
- * again within the budget; a stalled read or a confirmed or failed record that
- * does not bind the prepared transfer is indeterminate at once. Like the status poll,
- * this never retries or duplicates the broadcast.
+ * settled. A record that is missing, pending, unreadable or malformed, or that
+ * carries another hash, is polled again within the budget; a stalled read, or
+ * a confirmed or failed record for the signed hash whose nonce, block or body
+ * does not bind the prepared transfer, is indeterminate at once. Like the
+ * status poll, this never retries or duplicates the broadcast.
  *
  * Node semantics this relies on, verified against kynesyslabs/node
  * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` (what node2 reports
@@ -1231,6 +1235,9 @@ type ObservedDemosExecution =
  *   (`src/utilities/constants.ts` `TRANSACTION_STATUS`);
  * - `content.nonce` is a pg `bigint` column, so it is served as a decimal
  *   string (`src/model/entities/Transactions.ts`);
+ * - `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and
+ *   as a decimal string above it (`src/libs/blockchain/transaction.ts`
+ *   `fromEntityToWireNumber`); both forms are accepted;
  * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
  *   `{result: 404, response: null}` at 52e2e569; both are polled.
  * The default branch (`testnet`) has no `getTransactionStatus`. The recorded

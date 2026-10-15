@@ -13,12 +13,13 @@ the node's transaction record for the retained signed hash with
 - binds the prepared payer, payee and amount.
 
 A `failed` record that binds the same facts is a failed transfer. A
-`confirmed` or `failed` record that does not bind them, or a read that stalls,
-is indeterminate at once. A missing, pending, unreadable or malformed record is
-read again every `inclusionPollIntervalMs` until `transactionRecordTimeoutMs`
-(default 30 seconds) ends, then it is indeterminate. Every not-ok result keeps
-the transaction hash, so the settlement intent stays held, and no path
-broadcasts again.
+`confirmed` or `failed` record for the signed hash whose nonce, block, payer,
+payee or amount does not match, or a read that stalls, is indeterminate at
+once. A missing, pending, unreadable or malformed record, or a record that
+carries another hash, is read again every `inclusionPollIntervalMs` until
+`transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
+indeterminate. Every not-ok result keeps the transaction hash, so the
+settlement intent stays held, and no path broadcasts again.
 
 ## Custom native clients
 
@@ -42,11 +43,12 @@ The mapping was verified against kynesyslabs/node
 |---|---|
 | `getTransactionStatus` returns `pending`, `included` or `unknown`. It returns `included` for every stored transaction row, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
 | A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
-| `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
+| `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
 | `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. demosdk resolves the `response` member, and both are polled. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
 
 The default branch (`testnet`) has no `getTransactionStatus` and records every
 included transaction as `confirmed`; the rail does not support it.
+In the SDK source repository (these files are not in the npm package),
 `test/fixtures/demos-node2-records.json` holds two records read from node2 at
 61b8e75, one `confirmed` and one `failed` with `TX_NONCE_INVALID_LOW`, and
 `test/rails/payDemExecutedStatus.test.ts` runs the execution observer on them.
@@ -73,8 +75,16 @@ Re-check this table when the deployed node moves to another commit.
 
 ## Liveness
 
-demosdk's transport retries a connection error or an HTTP 502–504 up to four
-times, backing off up to 8 seconds per retry. One transient error can
-therefore outlast the 5 second `statusRequestTimeoutMs` default, and the record
-read then counts as stalled: the settlement is indeterminate and held. This
-delays settlement and never causes a second broadcast.
+Inside one status or record read, demosdk's transport retries a connection
+error or an HTTP 502–504 up to four times. For these reads it backs off 250,
+500, 1 000 and 2 000 ms. A retry waits up to 8 seconds only when the node
+sends `Retry-After` (demosdk 4.0.16 and 4.0.18 `_doPost`). So one transient
+error adds about 250 ms. A read outlasts the 5 second `statusRequestTimeoutMs`
+default only in these cases:
+
+- about three consecutive failures plus request time;
+- a `Retry-After` of 5 seconds or more;
+- a slow gateway response.
+
+The read then counts as stalled, and the settlement is indeterminate and held.
+This delays settlement and never causes a second broadcast.
