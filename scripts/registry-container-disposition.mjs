@@ -18,6 +18,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
+// The evidence a complete summary embeds, by the schema its producer writes.
+export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
+export const POLICY_FINDINGS_SCHEMA = "dacs-registry-policy-findings/v1";
 const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
@@ -141,12 +144,18 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
 }
 
 // Every installed copy of a candidate package, top-level, nested or aliased,
-// must be the packed release-set tarball that release-provenance.json records.
-export function candidateIntegrityErrors({ lock, registry, candidates }) {
+// must be the packed release-set tarball that release-provenance.json records,
+// at the release's version both in the lock and, when `installedManifest`
+// reads it, in the installed package.json.
+export function candidateIntegrityErrors({ lock, registry, candidates, installedManifest }) {
   const { origin, path } = consumerRegistry(registry);
   const packages = isPlainObject(lock?.packages) ? lock.packages : {};
   const errors = [];
-  for (const { name, integrity } of candidates) {
+  for (const { name, integrity, version } of candidates) {
+    if (typeof version !== "string" || version === "") {
+      errors.push("candidate record has no release version: " + name);
+      continue;
+    }
     const locations = Object.keys(packages).filter(location => location === "node_modules/" + name ||
       location.endsWith("/node_modules/" + name) || packages[location]?.name === name);
     if (!locations.includes("node_modules/" + name)) errors.push("candidate package is not installed at the top level: " + name);
@@ -159,6 +168,18 @@ export function candidateIntegrityErrors({ lock, registry, candidates }) {
       } else if (entry.integrity !== integrity) {
         errors.push("candidate package integrity does not match the packed tarball: " + location +
           " (expected " + integrity + ", observed " + String(entry.integrity) + ")");
+      }
+      if (entry?.version !== version) {
+        errors.push("candidate package lock version does not match the release: " + location +
+          " (expected " + version + ", observed " + String(entry?.version) + ")");
+      }
+      if (installedManifest) {
+        let manifest;
+        try { manifest = installedManifest(location); } catch { manifest = undefined; }
+        if (manifest?.name !== name || manifest?.version !== version) {
+          errors.push("installed candidate package is not the release: " + location + " (expected " + name + "@" +
+            version + ", observed " + String(manifest?.name) + "@" + String(manifest?.version) + ")");
+        }
       }
     }
   }
@@ -254,12 +275,19 @@ const partialVersion = `v?(${rangeId})(?:\\.(${rangeId})(?:\\.(${rangeId})(?:-($
 const rangeToken = new RegExp(`^(<=|>=|<|>|=|~>|~|\\^)?${partialVersion}$`);
 const hyphenRange = new RegExp(`^${partialVersion} - ${partialVersion}$`);
 const isX = id => id === undefined || id === "x" || id === "X" || id === "*";
+// semver 7.8.5, which the pinned npm 11.19.0 bundles, rejects a plain
+// comparator with a numeric part after an X (`1.x.0`, `>=1.x.0`, `*.1.2`), so
+// npm reports EBADENGINE for it; it still reads tildes, carets and hyphen
+// ranges with one (`~1.x.0`, `^x.1`, `1.x.0 - 2`).
+const numericAfterX = (M, m, p) => (isX(M) && !(isX(m) && isX(p))) || (isX(m) && !isX(p));
 
 // One token's comparators, [operator, [major, minor, patch], prerelease?], as
 // semver desugars carets, tildes and X-ranges. [] is any version.
 function tokenComparators(token) {
   const match = rangeToken.exec(token);
-  if (!match) throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
+  if (!match || (!/^[~^]/.test(match[1] ?? "") && numericAfterX(match[2], match[3], match[4]))) {
+    throw new Error(`unsupported engine range token ${JSON.stringify(token)}`);
+  }
   const [, operator = "", M, m, p, prerelease] = match;
   const [major, minor, patch] = [M, m, p].map(Number);
   if (isX(M)) return operator === ">" || operator === "<" ? [["none"]] : [];
@@ -385,7 +413,7 @@ export function extractPolicyFindings(read) {
       ? { name, location: `node_modules/${name}`, ...identity(`node_modules/${name}`) }
       : { name, location: null, version: null, integrity: null });
   return {
-    schema: "dacs-registry-policy-findings/v1",
+    schema: POLICY_FINDINGS_SCHEMA,
     gitDependencies,
     engine: { exitCode: exitCode("engine-strict.exit-code"), code: npmErrorCode(strictLog),
       reportedPackage: /Not compatible with your version of node\/npm: (\S+)/.exec(strictLog)?.[1] ?? null,
@@ -457,6 +485,11 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
     const failureClass = FAILURE_CLASSES.includes(summary.failureClass) ? summary.failureClass : "functional";
     return { exitCode: 1, failureClass, message: `registry/container acceptance stopped at stage ` +
       `${String(summary.failedStage)} (${failureClass} failure)` };
+  }
+  if (summary.docker?.policy?.schema !== RUNTIME_IMAGE_POLICY_SCHEMA ||
+      summary.securityGate?.findings?.schema !== POLICY_FINDINGS_SCHEMA) {
+    return { exitCode: 1, failureClass: "functional",
+      message: "registry/container acceptance summary embeds evidence with an unexpected schema" };
   }
   if (summary.functionalPassed !== true || summary.generatedTestsPassed !== true) {
     return { exitCode: 1, failureClass: "functional", message: "functional registry/container rehearsal failed" };
@@ -568,9 +601,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (recorded !== integrity) {
         throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
       }
-      return { name, integrity };
+      return { name, integrity, version };
     });
-    const errors = candidateIntegrityErrors({ lock, registry, candidates });
+    const errors = candidateIntegrityErrors({ lock, registry, candidates,
+      installedManifest: location => JSON.parse(readFileSync(join(project, location, "package.json"), "utf8")) });
     if (errors.length) throw new Error(errors.join("\n"));
     const violations = registryDependencyViolations({ manifest, lock, registry });
     writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,

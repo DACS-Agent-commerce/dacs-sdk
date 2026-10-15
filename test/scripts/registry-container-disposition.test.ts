@@ -24,6 +24,7 @@ function baselineOnlySummary() {
     schema: "dacs-registry-container-acceptance/v1",
     generatedTestsPassed: true,
     functionalPassed: true,
+    docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
     audit: { observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
     securityGate: {
       passed: false,
@@ -33,6 +34,7 @@ function baselineOnlySummary() {
       auditExitCode: 1,
       lockSbomExitCode: 0,
       physicalSbomExitCode: 0,
+      findings: { schema: "dacs-registry-policy-findings/v1" } as Record<string, unknown>,
     },
   };
 }
@@ -427,6 +429,11 @@ describe("registry/container workflow wiring", () => {
       [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "main", type: "branch" }] },
         "other than a tag pattern"],
       [protectedEnvironment, { total_count: 31, branch_policies: [{ name: "v*", type: "tag" }] }, "could not be read in full"],
+      // Custom policies with no pattern let nothing deploy; a nameless tag
+      // policy names no pattern.
+      [protectedEnvironment, { total_count: 0, branch_policies: [] }, "could not be read in full"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "", type: "tag" }] }, "other than a tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: null, type: "tag" }] }, "other than a tag pattern"],
       [protectedEnvironment, undefined, undefined],
       [{ ...protectedEnvironment, name: "npm-prerelease" }, tagOnly, "does not exist"],
     ] as const) {
@@ -596,6 +603,7 @@ function dependencyPolicyHarness() {
     const bytes = Buffer.from(name);
     writeFileSync(join(directory, `kynesyslabs-${name}-${CANDIDATE_VERSION}.tgz`), bytes);
     packages[`node_modules/@kynesyslabs/${name}`] = {
+      version: CANDIDATE_VERSION,
       resolved: `${CANDIDATE_REGISTRY}/${name}.tgz`,
       integrity: sri(bytes),
     };
@@ -611,7 +619,19 @@ function dependencyPolicyHarness() {
   expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
     'node scripts/registry-container-disposition.mjs --dependency-policy "$project" "$consumer_registry" \\\n' +
     '  "$artifact_stage/dependency-policy.json" "$release_set" "$version"');
+  // The package.json installed at each candidate lock location: by default
+  // the lock entry's own name and version; `null` installs none.
+  const installed: Record<string, Record<string, unknown> | null> = {};
   const run = () => {
+    rmSync(join(project, "node_modules"), { recursive: true, force: true });
+    for (const [location, entry] of Object.entries(packages)) {
+      const name = typeof entry.name === "string" ? entry.name : location.replace(/^.*node_modules\//, "");
+      if (name !== "@kynesyslabs/dacs" && name !== "@kynesyslabs/dacs-node") continue;
+      const installedManifest = location in installed ? installed[location] : { name, version: entry.version };
+      if (installedManifest === null) continue;
+      mkdirSync(join(project, location), { recursive: true });
+      writeFileSync(join(project, location, "package.json"), JSON.stringify(installedManifest));
+    }
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify({ packages }));
     writeFileSync(join(directory, "release-provenance.json"), JSON.stringify(provenance));
@@ -620,7 +640,7 @@ function dependencyPolicyHarness() {
       project, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION], { cwd: repoRoot, encoding: "utf8" });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
-  return { packages, manifest, provenance, run };
+  return { packages, manifest, provenance, installed, run };
 }
 
 // Executes the script's own summary program over a stage holding the evidence
@@ -631,10 +651,14 @@ function writeSummary(overrides: Record<string, string> = {}) {
   const files: Record<string, string> = {
     "docker-image.json": JSON.stringify([{ Id: "sha256:image", Size: 1, Config: { User: "10001:10001" } }]),
     "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: baselineOnlySummary().audit } }),
-    "dependency-policy.json": JSON.stringify({ passed: true, violations: [] }),
-    "audit-policy.json": JSON.stringify({ observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
-    "runtime-image-policy.json": JSON.stringify({ functionalPassed: true, productionDependencyPolicyPassed: true }),
+    "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: true,
+      violations: [] }),
+    "audit-policy.json": JSON.stringify({ schema: "dacs-registry-audit-policy/v1",
+      observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
+    "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
+      productionDependencyPolicyPassed: true }),
     "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [] }),
+    "release-provenance.json": JSON.stringify({ version: CANDIDATE_VERSION }),
     "engine-strict.exit-code": "0\n",
     "npm-audit.exit-code": "1\n",
     "consumer-lock-sbom.exit-code": "0\n",
@@ -753,6 +777,77 @@ describe("registry/container evidence", () => {
     expect(run().status).not.toBe(0);
   });
 
+  // Every installed candidate copy is the release's version, in the lock and
+  // in the package.json npm installed, top-level, nested or aliased.
+  it.each(["dacs", "dacs-node"])("rejects a @kynesyslabs/%s copy that is not the release version", (name) => {
+    const { packages, installed, run } = dependencyPolicyHarness();
+    const topLevel = `node_modules/@kynesyslabs/${name}`;
+    const nested = `node_modules/some-plugin/node_modules/@kynesyslabs/${name}`;
+    packages[nested] = { ...packages[topLevel]! };
+    packages["node_modules/alias"] = { ...packages[topLevel]!, name: `@kynesyslabs/${name}` };
+    expect(run().status).toBe(0);
+    for (const location of [topLevel, nested, "node_modules/alias"]) {
+      const entry = packages[location]!;
+      for (const version of [undefined, "0.0.0-wrong", "0.1.0-alpha.0"]) {
+        packages[location] = version === undefined
+          ? Object.fromEntries(Object.entries(entry).filter(([key]) => key !== "version"))
+          : { ...entry, version };
+        installed[location] = { name: `@kynesyslabs/${name}`, version: CANDIDATE_VERSION };
+        const lockVersion = run();
+        expect(lockVersion.status, `${location} ${String(version)}`).not.toBe(0);
+        expect(lockVersion.stderr).toContain(`lock version does not match the release: ${location} ` +
+          `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+      }
+      packages[location] = entry;
+      for (const manifest of [null, { name: `@kynesyslabs/${name}`, version: "0.0.0-wrong" },
+        { name: "@kynesyslabs/other", version: CANDIDATE_VERSION }]) {
+        installed[location] = manifest;
+        const installedCopy = run();
+        expect(installedCopy.status, `${location} ${JSON.stringify(manifest)}`).not.toBe(0);
+        expect(installedCopy.stderr).toContain(`installed candidate package is not the release: ${location}`);
+      }
+      delete installed[location];
+      expect(run().status).toBe(0);
+    }
+  });
+
+  it("composes only evidence of its producer's schema for the release version", () => {
+    const evidence: Array<[string, Record<string, unknown>]> = [
+      ["dependency-policy.json", { schema: "dacs-registry-dependency-policy/v1", passed: true, violations: [] }],
+      ["audit-policy.json", { schema: "dacs-registry-audit-policy/v1",
+        observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }],
+      ["runtime-image-policy.json", { schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
+        productionDependencyPolicyPassed: true }],
+      ["policy-findings.json", { schema: "dacs-registry-policy-findings/v1", gitDependencies: [] }],
+    ];
+    const builder = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
+      .split('node - "$artifact_stage" "$version" "$runtime_image"')[1]!.split("<<'NODE'\n")[1]!
+      .split("\nNODE")[0]!;
+    for (const [name, body] of evidence) {
+      for (const schema of [undefined, "wrong/v999"]) {
+        expect(() => writeSummary({ [name]: JSON.stringify({ ...body, schema }) }), `${name} ${String(schema)}`)
+          .toThrow();
+      }
+      expect(builder).toContain(`["${name}", `);
+    }
+    expect(() => writeSummary({ "release-provenance.json": JSON.stringify({ version: "999.999.999" }) })).toThrow();
+
+    // The disposition re-checks the schemas the summary embeds.
+    const passing = writeSummary();
+    expect(registryContainerDisposition(passing).exitCode).toBe(4);
+    const embedded = (change: (summary: typeof passing) => void) => {
+      const summary = structuredClone(passing);
+      change(summary);
+      return registryContainerDisposition(summary);
+    };
+    for (const schema of [undefined, "wrong/v999"]) {
+      expect(embedded((summary) => { summary.docker.policy.schema = schema; }))
+        .toMatchObject({ exitCode: 1, failureClass: "functional" });
+      expect(embedded((summary) => { summary.securityGate.findings.schema = schema; }))
+        .toMatchObject({ exitCode: 1, failureClass: "functional" });
+    }
+  });
+
   it("writes every registry-policy violation to the report the summary reads", () => {
     const { packages, manifest, run } = dependencyPolicyHarness();
     packages["node_modules/x"] = { version: "1.0.0", resolved: "https://example.com/x-1.0.0.tgz", integrity: sri(Buffer.from("x")) };
@@ -772,6 +867,7 @@ describe("registry/container evidence", () => {
     expect(registryContainerDisposition(passing).exitCode).toBe(4);
 
     const violation = writeSummary({ "dependency-policy.json": JSON.stringify({
+      schema: "dacs-registry-dependency-policy/v1",
       passed: false, violations: [{ location: "package.json", value: "file:../dacs" }],
     }) });
     expect(violation.registryDependencyOnly).toBe(false);
@@ -1155,8 +1251,8 @@ describe("assessed advisories", () => {
       unlistedAdvisories: ["GHSA-3333-4444-5555", "GHSA-4444-5555-6666"], assessedAdvisories: [],
       directAdvisories: ["GHSA-3333-4444-5555"], passed: false });
 
-    const policy = { observedAdvisories: [assessedId], unlistedAdvisories: [], assessedAdvisories: [assessedId],
-      directAdvisories: [], passed: true };
+    const policy = { schema: "dacs-registry-audit-policy/v1", observedAdvisories: [assessedId],
+      unlistedAdvisories: [], assessedAdvisories: [assessedId], directAdvisories: [], passed: true };
     const summary = writeSummary({ "audit-policy.json": JSON.stringify(policy), "npm-audit.exit-code": "1\n" });
     expect(summary.securityGate.passed).toBe(true);
     expect(summary.audit).toMatchObject({ assessedAdvisories: [assessedId], directAdvisories: [] });
@@ -1202,7 +1298,8 @@ describe("#191 policy-finding baseline", () => {
   const withLock = (edit: (packages: Record<string, Record<string, unknown>>) => void) => {
     const value = lock(); edit(value.packages); return JSON.stringify(value);
   };
-  const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ passed: false, violations });
+  const dependencyPolicy = (violations: unknown[]) => JSON.stringify({ schema: "dacs-registry-dependency-policy/v1",
+    passed: false, violations });
   const avsc = { location: "node_modules/@bundlr-network/client/node_modules/arbundles", field: "dependencies.avsc",
     value: "https://github.com/Irys-xyz/avsc#csp-fixes" };
   const strictLog = readFileSync(b7b180fFile("engine-strict.log"), "utf8");
@@ -1377,10 +1474,22 @@ describe("lock engine scan", () => {
   });
 
   // semver rejects each of these, so npm would not pass them either.
-  it.each(["please-use-yarn", "01.2.3", ">=1.2.3.4", "^", "1 -2", "> = 1", "1.2-beta", ">=1 || foo", "V1.2.3"])(
+  // The pinned npm's semver 7.8.5 also rejects a plain comparator with a
+  // numeric part after an X.
+  it.each(["please-use-yarn", "01.2.3", ">=1.2.3.4", "^", "1 -2", "> = 1", "1.2-beta", ">=1 || foo", "V1.2.3",
+    "1.x.0", ">=1.x.0", "<1.x.0", "*.1.2", "x.1", "=x.1.2", ">=20 || 1.x.0"])(
     "fails closed on the range %j", (range) => {
       expect(() => satisfiesEngineRange("20.19.1", range)).toThrow(/unsupported engine range/);
     });
+
+  // ...but reads tildes, carets and hyphen ranges with one, as semver 7.8.5 does.
+  it.each([
+    ["1.5.0", "~1.x.0", true], ["2.0.0", "~1.x.0", false], ["1.5.0", "^1.x.2", true], ["2.0.0", "^1.x.2", false],
+    ["1.5.0", "~>1.x.0", true], ["9.9.9", "^x.1", true], ["2.5.0", "1.x.0 - 2", true], ["3.0.0", "1.x.0 - 2", false],
+    ["2.9.0", "1 - 2.x.1", true],
+  ] as const)("reads %s against %j as semver 7.8.5 does", (version, range, expected) => {
+    expect(satisfiesEngineRange(version, range)).toBe(expected);
+  });
 
   it("records the container's Node and npm with the script's own command, not a second npm ci", () => {
     const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8");

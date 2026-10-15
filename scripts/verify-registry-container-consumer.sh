@@ -498,6 +498,21 @@ const runtimeImagePolicy = JSON.parse(
 const policyFindings = JSON.parse(
   fs.readFileSync(path.join(root, "policy-findings.json"), "utf8"),
 );
+// Compose only evidence of the shape its producer writes, for this release.
+for (const [name, evidence, schema] of [
+  ["dependency-policy.json", dependencyPolicy, "dacs-registry-dependency-policy/v1"],
+  ["audit-policy.json", auditPolicy, "dacs-registry-audit-policy/v1"],
+  ["runtime-image-policy.json", runtimeImagePolicy, "dacs-runtime-image-policy/v1"],
+  ["policy-findings.json", policyFindings, "dacs-registry-policy-findings/v1"],
+]) {
+  if (evidence?.schema !== schema) throw new Error(`${name} is not ${schema}`);
+}
+const provenance = JSON.parse(
+  fs.readFileSync(path.join(root, "release-provenance.json"), "utf8"),
+);
+if (provenance?.version !== version) {
+  throw new Error(`release-provenance.json is not for version ${version}`);
+}
 const engineStrictExitCode = Number(
   fs.readFileSync(path.join(root, "engine-strict.exit-code"), "utf8").trim(),
 );
